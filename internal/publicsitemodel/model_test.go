@@ -288,3 +288,27 @@ func TestPublicContentRejectsInvalidEligibleFactsWithoutInventingUnknowns(t *tes
 		t.Fatal("unbounded round history accepted")
 	}
 }
+
+func TestPublicManifestRejectsPrivateReviewGroups(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.ReviewGroups = []presentationmodel.ReviewGroup{{Title: "Private operations", PullNumbers: []int64{7}}}
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private queue groups entered public manifest")
+	}
+}
+
+func TestPublicManifestRejectsPrivateWorkerOrder(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.WorkerOrder = []string{"worker_private"}
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private worker order accepted for publication")
+	}
+}
+
+func TestPublicManifestRejectsPrivateSizingPreference(t *testing.T) {
+	m := approvedManifest()
+	m.Presentation.SuggestedMaxPRFiles = 80
+	if _, err := NormalizeManifest(m); err == nil {
+		t.Fatal("private sizing preference entered public configuration")
+	}
+}

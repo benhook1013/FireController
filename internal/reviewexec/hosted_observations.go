@@ -259,6 +259,10 @@ func (e *Engine) ReadHostedObservations(ctx context.Context, project, attemptID 
 		if err != nil {
 			return err
 		}
+		o, err = historicalCooldownOperation(ctx, tx, o, a)
+		if err != nil {
+			return err
+		}
 		rows, err := tx.QueryContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,body_json FROM review_hosted_observations WHERE project_id=? AND attempt_id=? ORDER BY position LIMIT 201`, project, attemptID)
 		if err != nil {
 			return err

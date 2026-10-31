@@ -75,7 +75,7 @@ func TestHostedAllowanceRecordOriginalBindingReplayAndNoAdmission(t *testing.T) 
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "cancelled", "preparation_stopped", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	state := hostedAllowanceState(t, f, a)
@@ -173,8 +173,8 @@ func TestHostedAllowanceNewRecordRequiresCurrentEligibilityAndConfirmedQuery(t *
 		"revoked": {func(t *testing.T, f *attemptFixture, _ Attempt, _ HostedAllowanceQuery) {
 			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 		}, "forbidden"},
-		"policy pause": {func(t *testing.T, f *attemptFixture, _ Attempt, _ HostedAllowanceQuery) {
-			admissionPolicy(t, f, 1, "hosted")
+		"project pause": {func(t *testing.T, f *attemptFixture, _ Attempt, _ HostedAllowanceQuery) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
 		}, "review_conflict"},
 		"configuration pause": {func(t *testing.T, f *attemptFixture, _ Attempt, _ HostedAllowanceQuery) {
 			f.configure(t, attemptProject, "test-capability", 1, true)

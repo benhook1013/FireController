@@ -21,6 +21,14 @@ type HostedEvidenceMetadata struct {
 	ObservedBaseSHA   string                         `json:"observed_base_sha"`
 	Sources           []HostedFindingSource          `json:"sources"`
 	StandingSummary   *HostedStandingSummaryMetadata `json:"standing_summary,omitempty"`
+	SubmittedReview   *HostedSubmittedReviewMetadata `json:"submitted_review,omitempty"`
+}
+
+// Submitted reviews retain the identities actually supplied by GitHub and
+// CodeRabbit rather than inventing the optional batched-publication identities.
+type HostedSubmittedReviewMetadata struct {
+	ProviderRunID            string `json:"provider_run_id"`
+	AcknowledgementCommentID int64  `json:"acknowledgement_comment_id"`
 }
 
 type HostedStandingSummaryMetadata struct {
@@ -71,13 +79,19 @@ func validateHostedEvidenceMetadata(h *HostedEvidenceMetadata, anchor Anchor, re
 	}
 	if standing := h.StandingSummary; standing != nil {
 		updated, err := time.Parse(time.RFC3339Nano, standing.UpdatedAt)
-		if h.PublicationID != "" || h.ProviderAttemptID != "" || h.ReviewIDs == nil || len(h.ReviewIDs) != 0 || len(h.Sources) != 0 || review.Findings == nil || len(review.Findings) != 0 || review.ReviewedFiles == nil || standing.CommentID <= 0 || standing.CommentID == h.TriggerCommentID || !hostedEvidenceUUID.MatchString(standing.ProviderRunID) || err != nil || updated.IsZero() {
+		if h.SubmittedReview != nil || h.PublicationID != "" || h.ProviderAttemptID != "" || h.ReviewIDs == nil || len(h.ReviewIDs) != 0 || len(h.Sources) != 0 || review.Findings == nil || len(review.Findings) != 0 || review.ReviewedFiles == nil || standing.CommentID <= 0 || standing.CommentID == h.TriggerCommentID || !hostedEvidenceUUID.MatchString(standing.ProviderRunID) || err != nil || updated.IsZero() {
 			return invalid()
 		}
 		return nil
 	}
-	if !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 {
-		return invalid()
+	if submitted := h.SubmittedReview; submitted != nil {
+		if h.PublicationID != "" || h.ProviderAttemptID != "" || len(h.ReviewIDs) != 1 || len(h.Sources) == 0 || !hostedEvidenceUUID.MatchString(submitted.ProviderRunID) || submitted.AcknowledgementCommentID <= 0 || submitted.AcknowledgementCommentID == h.TriggerCommentID {
+			return invalid()
+		}
+	} else {
+		if !hostedEvidenceUUID.MatchString(h.PublicationID) || !hostedEvidenceUUID.MatchString(h.ProviderAttemptID) || len(h.ReviewIDs) < 1 || len(h.ReviewIDs) > 200 {
+			return invalid()
+		}
 	}
 	reviews := make(map[int64]bool, len(h.ReviewIDs))
 	for _, id := range h.ReviewIDs {
@@ -103,7 +117,7 @@ func validateHostedEvidenceMetadata(h *HostedEvidenceMetadata, anchor Anchor, re
 				return invalid()
 			}
 			key = "hosted-comment:" + strconv.FormatInt(source.CommentID, 10) + ":" + source.Fingerprint
-		case "outside_diff", "duplicate":
+		case "outside_diff", "duplicate", "additional":
 			if source.CommentID != 0 || finding.StartLine <= 0 || finding.EndLine < finding.StartLine {
 				return invalid()
 			}

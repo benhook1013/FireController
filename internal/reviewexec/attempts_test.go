@@ -70,7 +70,15 @@ func (f *attemptFixture) configure(t *testing.T, project, capability string, pre
 	t.Helper()
 	c := Configuration{ExpectedRevision: &previous, CapabilityID: capability, Mode: "independent", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}, Paused: paused}
 	phaseStarted := time.Now()
-	_, err := f.e.Configure(context.Background(), f.scope(t, project, f.admin, true), fmt.Sprintf("config-%s-%d", project, previous), c)
+	var err error
+	if previous == 0 {
+		// These lifecycle fixtures model an existing pre-default installation.
+		// Keep authentic predecessor configuration without inventing a product
+		// switch or generating then deleting new-enrollment round allocations.
+		seedLegacyExecutionConfiguration(t, f, project, fmt.Sprintf("config-%s-%d", project, previous), c)
+	} else {
+		_, err = f.e.Configure(context.Background(), f.scope(t, project, f.admin, true), fmt.Sprintf("config-%s-%d", project, previous), c)
+	}
 	if err != nil {
 		t.Fatalf("fixture execution configuration after %s: %v", time.Since(phaseStarted), err)
 	}
@@ -282,7 +290,11 @@ func TestAttemptStartHoldsChangedConfigurationOrAuthorization(t *testing.T) {
 			}
 			var state, reason string
 			var revision int
-			if err := f.store.DB().QueryRow(`SELECT state,reason,revision FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason, &revision); err != nil || state != "held" || reason != wantReason || revision != 2 {
+			wantState, wantRevision := "held", 2
+			if change == "paused" {
+				wantState, wantReason, wantRevision = "queued", "", 1
+			}
+			if err := f.store.DB().QueryRow(`SELECT state,reason,revision FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason, &revision); err != nil || state != wantState || reason != wantReason || revision != wantRevision {
 				t.Fatalf("held projection %s %s %d: %v", state, reason, revision, err)
 			}
 			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`)+attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {

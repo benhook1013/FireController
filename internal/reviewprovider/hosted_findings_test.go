@@ -110,6 +110,25 @@ func TestHostedFindingObservedOutsideAndDuplicateTemplates(t *testing.T) {
 	}
 }
 
+func TestHostedFindingSingularAndPluralSourceFooterPreserveInventory(t *testing.T) {
+	for _, footer := range []string{"_Source: Path instructions_", "_Sources: Coding guidelines, Learnings_"} {
+		outside := hfOutsideCategory(1, strings.Replace(hfOutside(2, "engine/queue.go", "12-15", "Preserve the complete queue record."), "_Source: Path instructions_", footer, 1))
+		duplicate := hfDuplicateCategory(1, hfDuplicateGroup("design/queue.md", 1, hfDuplicateItem(3, "27-27", "Explain the immutable boundary.")+"\n\n"+footer))
+		inline := hfInline(1)
+		f := hfNew(t, []string{inline + "\n\n" + footer + "\n\n<!-- This is an auto-generated comment by CodeRabbit -->"}, outside+"\n\n"+duplicate)
+		got := hfWant(t, f, true, 3)
+		if got.Findings[0].Detail != inline || got.Findings[0].Fingerprint != fmt.Sprintf("%024x", 1) || got.Findings[1].Kind != "outside_diff" || got.Findings[2].Kind != "duplicate" {
+			t.Fatal("source metadata changed source spans, identities or inventory", got.Reason)
+		}
+	}
+	for _, trailer := range []string{"Sources: Another finding", "_Sources: unfinished", "_Sources: one_ extra", "**Another unmarked finding.**"} {
+		f := hfNew(t, []string{hfInline(1) + "\n\n" + trailer}, "")
+		if got := f.extract(t); got.Complete || got.Reason != "finding_trailer_unsupported" {
+			t.Fatal("unknown trailer was silently accepted", trailer, got.Reason)
+		}
+	}
+}
+
 func TestHostedFindingControlledMultipleGroupsItemsAndRootCounts(t *testing.T) {
 	outside := hfOutsideCategory(2, hfOutside(10, "a/one.go", "1", "First full title."), hfOutside(11, "b/two.go", "2-4", "Second full title."))
 	duplicate := hfDuplicateCategory(3, hfDuplicateGroup("c/three.go", 2, hfDuplicateItem(12, "5-6", "Third title."), hfDuplicateItem(13, "7-7", "Fourth title.")), hfDuplicateGroup("d/four.go", 1, hfDuplicateItem(14, "8-9", "Fifth title.")))

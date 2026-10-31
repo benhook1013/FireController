@@ -39,7 +39,7 @@ func TestCheckpointHTTPStrictScopeAndPendingReceipt(t *testing.T) {
 			t.Fatal("invalid publication request", bad, w.Code, w.Body.String())
 		}
 	}
-	for _, prefer := range []string{"", "wait=-1", "wait=61", "wait=01", "wait=+1", "wait=2, wait=3", "respond-async"} {
+	for _, prefer := range []string{"", "wait=-1", "wait=901", "wait=01", "wait=+1", "wait=2, wait=3", "respond-async"} {
 		w := sourceHTTPRequest(f, http.MethodPost, path, f.writer, "invalid", body, &prefer)
 		if w.Code != 400 {
 			t.Fatal("invalid wait preference", prefer, w.Code)
@@ -60,8 +60,8 @@ func TestCheckpointHTTPStrictScopeAndPendingReceipt(t *testing.T) {
 			t.Fatal("authority/query/key boundary", w.Code, tc.want, w.Body.String())
 		}
 	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 0 {
-		t.Fatal("invalid requests created a publication")
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
+		t.Fatal("invalid requests changed the automatic publication")
 	}
 	w := sourceHTTPRequest(f, http.MethodPost, path, f.writer, "pending", body, &zero)
 	var receipt Receipt

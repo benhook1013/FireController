@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
@@ -134,12 +135,12 @@ func TestMutationReceiptsReplayRevisionAndBoundMessageTransitions(t *testing.T) 
 	diagnosticResult(t, call(t, sender, "jobs_create", map[string]any{"idempotency_key": "create-explicit", "title": "Changed"}), "idempotency_conflict", false)
 	edit := map[string]any{"idempotency_key": "edit-explicit", "job_id": initial.ID, "expected_revision": 1, "brief": "", "worker_id": "", "status": "blocked"}
 	var edited, editReplay client.JobReceipt
-	decodeResult(t, call(t, sender, "job_edit", edit), &edited)
-	decodeResult(t, call(t, sender, "job_edit", edit), &editReplay)
+	decodeResult(t, call(t, sender, "job_update", edit), &edited)
+	decodeResult(t, call(t, sender, "job_update", edit), &editReplay)
 	if edited.ID != initial.ID || edited.Revision != 2 || edited.Outcome != "updated" || editReplay != edited {
 		t.Fatal("edit receipt/replay")
 	}
-	conflict := diagnosticResult(t, call(t, sender, "job_edit", map[string]any{"idempotency_key": "stale-edit", "job_id": initial.ID, "expected_revision": 1, "title": "stale"}), "revision_conflict", false)
+	conflict := diagnosticResult(t, call(t, sender, "job_update", map[string]any{"idempotency_key": "stale-edit", "job_id": initial.ID, "expected_revision": 1, "title": "stale"}), "revision_conflict", false)
 	if conflict.RequestID == "" || conflict.Details.(map[string]any)["current_revision"] != float64(2) {
 		t.Fatal("safe revision/request identity lost")
 	}
@@ -199,7 +200,7 @@ func TestMutationArgumentsRejectBeforeCredentialAndHTTP(t *testing.T) {
 	session := connect(t, adapter(t, path, "alpha"), "")
 	cases := []struct{ name, raw string }{
 		{"jobs_create", `{"title":"x"}`}, {"jobs_create", `{"idempotency_key":"","title":"x"}`}, {"jobs_create", `{"idempotency_key":" key","title":"x"}`}, {"jobs_create", `{"idempotency_key":"é","title":"x"}`}, {"jobs_create", `{"idempotency_key":"a\nb","title":"x"}`}, {"jobs_create", `{"idempotency_key":"` + strings.Repeat("k", 129) + `","title":"x"}`}, {"jobs_create", `{"idempotency_key":"k","title":" "}`}, {"jobs_create", `{"idempotency_key":"k","title":"` + strings.Repeat("x", 241) + `"}`}, {"jobs_create", `{"idempotency_key":"k","title":"x","brief":"` + strings.Repeat("x", (32<<10)+1) + `"}`}, {"jobs_create", `{"idempotency_key":"k","title":"x","worker_id":"../other"}`}, {"jobs_create", `{"idempotency_key":"k","title":"x","status":"ready"}`}, {"jobs_create", `{"idempotency_key":"k","title":"x","profile":"other"}`}, {"jobs_create", `{"idempotency_key":"k","idempotency_key":"other","title":"x"}`}, {"jobs_create", `{"idempotency_key":"k","Title":"x"}`}, {"jobs_create", `{"idempotency_key":"k","title":null}`}, {"jobs_create", `{"idempotency_key":"k","title":"bad\ud800"}`},
-		{"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":1}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","title":"x"}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":0,"title":"x"}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":1.5,"title":"x"}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":9223372036854775807,"title":"x"}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":9223372036854775808,"title":"x"}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":1,"brief":null}`}, {"job_edit", `{"idempotency_key":"k","job_id":"job","expected_revision":1,"status":""}`}, {"job_edit", `{"idempotency_key":"k","job_id":"..","expected_revision":1,"title":"x"}`},
+		{"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":1}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","title":"x"}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":0,"title":"x"}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":1.5,"title":"x"}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":9223372036854775807,"title":"x"}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":9223372036854775808,"title":"x"}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":1,"brief":null}`}, {"job_update", `{"idempotency_key":"k","job_id":"job","expected_revision":1,"status":""}`}, {"job_update", `{"idempotency_key":"k","job_id":"..","expected_revision":1,"title":"x"}`},
 		{"inbox_send", `{"idempotency_key":"k","recipient_worker_id":"worker","body":" "}`}, {"inbox_send", `{"idempotency_key":"k","recipient_worker_id":"worker","body":"` + strings.Repeat("x", (16<<10)+1) + `"}`}, {"inbox_send", `{"idempotency_key":"k","recipient_worker_id":"worker","body":"x","reply_to_message_id":"a/b"}`}, {"inbox_send", `{"idempotency_key":"k","recipient_worker_id":"worker","body":"x","sender_worker_id":"other"}`}, {"inbox_send", `{"idempotency_key":"k","recipient_worker_id":"worker","body":"x","reply_to_message_id":null}`},
 		{"inbox_seen", `{"message_id":"message"}`}, {"inbox_seen", `{"idempotency_key":"k","message_id":".."}`}, {"inbox_ack", `{"idempotency_key":"k","message_id":"message","worker_id":"other"}`}, {"inbox_ack", `{"idempotency_key":"k","message_id":null}`},
 	}
@@ -294,6 +295,71 @@ func TestUnknownMutationOutcomeSurvivesAdapterAndExplicitRetry(t *testing.T) {
 			}
 			if writes.Load() != 2 || f.providers.Load() != 1 {
 				t.Fatal("retry/provider count changed")
+			}
+		})
+	}
+}
+
+func TestWriteIdentityFailureDistinguishesUnsentFromUnknownAcrossClients(t *testing.T) {
+	for _, transport := range []string{"cli", "mcp"} {
+		t.Run(transport, func(t *testing.T) {
+			f := mutationFixture(t)
+			var phase, writes atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" && phase.Load() == 0 {
+					http.Error(w, "PRIVATE_PROXY_BODY", http.StatusBadGateway)
+					return
+				}
+				if r.Method == http.MethodPost {
+					writes.Add(1)
+					if r.Header.Get("Idempotency-Key") != "original-send-key" || r.Header.Get("X-FC-Worker") != f.sender {
+						t.Error("original write binding changed")
+					}
+					if phase.Load() == 1 {
+						http.Error(w, "PRIVATE_PROXY_BODY", http.StatusBadGateway)
+						return
+					}
+				}
+				f.handler.ServeHTTP(w, r)
+			}))
+			defer service.Close()
+			c := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
+			file := profiles(t, map[string]profile.Context{"chosen": c}, f.credential)
+			session := connect(t, adapter(t, file, "chosen"), "")
+			invoke := func() ([]byte, bool) {
+				if transport == "mcp" {
+					r := call(t, session, "inbox_send", map[string]any{"recipient_worker_id": f.recipient, "body": "PRIVATE_MESSAGE_BODY", "idempotency_key": "original-send-key"})
+					b, _ := json.Marshal(r.StructuredContent)
+					return b, r.IsError
+				}
+				var out, errout bytes.Buffer
+				code := cli.RunContext(t.Context(), []string{"--profiles-file", file, "--profile", "chosen", "inbox", "send", "--to", f.recipient, "--body", "PRIVATE_MESSAGE_BODY", "--key", "original-send-key"}, nil, &out, &errout)
+				if code != cli.ExitSuccess {
+					return errout.Bytes(), true
+				}
+				return out.Bytes(), false
+			}
+			for n := int64(0); n < 2; n++ {
+				phase.Store(n)
+				raw, failed := invoke()
+				var d struct {
+					Error mcpadapter.Diagnostic `json:"error"`
+				}
+				if !failed || json.Unmarshal(raw, &d) != nil || d.Error.Code != "service_unavailable" || d.Error.OutcomeUnknown != (n == 1) || strings.Contains(string(raw), "PRIVATE_") {
+					t.Fatalf("incorrect safe dispatch classification: %s", raw)
+				}
+				if n == 0 && (!strings.Contains(d.Error.Message, "not sent") || !strings.Contains(d.Error.Action, "idempotency key") || !strings.Contains(d.Error.Action, "earlier uncertain") || writes.Load() != 0) {
+					t.Fatal("identity failure lost known-unsent boundary")
+				}
+				if n == 1 && (!strings.Contains(d.Error.Action, "exact same idempotency key") || writes.Load() != 1) {
+					t.Fatal("actual write failure lost uncertainty or retried")
+				}
+			}
+			phase.Store(2)
+			raw, failed := invoke()
+			var receipt client.MessageReceipt
+			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Outcome != "sent" || writes.Load() != 2 {
+				t.Fatalf("explicit same-key recovery failed: %s", raw)
 			}
 		})
 	}

@@ -33,6 +33,7 @@ type HostedPublication struct {
 	EligibleReviews   []HostedReview
 	FinishedAt        time.Time
 	StandingZero      *HostedStandingZero
+	SubmittedReview   *HostedSubmittedReview
 }
 
 const publicationUUID = `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
@@ -214,6 +215,38 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 	return true
 }
 
+// A strict finished-command reply is diagnostic only. It cannot supply an
+// inventory, comparison, run identity or completion time. The caller has already
+// validated the complete snapshot and original trigger; reuse that resolver's
+// closing boundary rather than independently guessing the command window.
+func publicationFinishedInventoryUnproven(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) bool {
+	inside := func(at time.Time) bool {
+		return at.After(result.Trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
+	}
+	for _, review := range snapshot.Reviews {
+		if publicationActor(review.Author, provider) && review.State == "pending" {
+			return false
+		}
+	}
+	count := 0
+	for _, comment := range snapshot.IssueComments {
+		if !publicationActor(comment.Author, provider) || !inside(comment.UpdatedAt) {
+			continue
+		}
+		if standingFinishedAck(comment.Body) {
+			if !inside(comment.CreatedAt) {
+				return false
+			}
+			count++
+		} else if inside(comment.CreatedAt) {
+			// A different fresh provider reply may be an unknown command outcome.
+			// Older mutable standing comments are allowed to remain unsupported.
+			return false
+		}
+	}
+	return count == 1
+}
+
 // ResolveHostedPublication performs no I/O and does not initiate or retry any
 // provider action. Incomplete/ambiguous evidence never proves absence of a post.
 func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time) (HostedPublication, error) {
@@ -285,6 +318,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		result.EligibleReviews = append(result.EligibleReviews, review)
 	}
 	sort.Slice(result.EligibleReviews, func(i, j int) bool { return result.EligibleReviews[i].ID < result.EligibleReviews[j].ID })
+	if publicationRateLimited(snapshot, result, providerAuthor, closing) {
+		result.State, result.Reason = "rate_limited", "hosted_review_rate_limited"
+		return result, nil
+	}
 	batches := map[int]HostedReview{}
 	total := 0
 	for _, review := range result.EligibleReviews {
@@ -308,8 +345,15 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		batches[marker.ordinal] = review
 	}
 	if total == 0 {
+		if submitted, proven := resolveSubmittedReview(snapshot, result, intent, providerAuthor, closing); proven {
+			return submitted, nil
+		}
 		result = resolveStandingZero(snapshot, result, intent, providerAuthor, closing)
 		if result.State == "attributed" || result.State == "ambiguous" {
+			return result, nil
+		}
+		if publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			return result, nil
 		}
 		if !closing.IsZero() {
@@ -344,8 +388,22 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	count, ok := publicationRootCount(batches[1].Body)
 	if !ok {
-		result.State, result.Reason = "ambiguous", "invalid_actionable_count"
-		return result, nil
+		// A complete outside-only single batch may omit its inline count. Unknown
+		// collections, attached roots or fresh orphan roots cannot imply zero roots.
+		outsideOnly := total == 1 && len(result.Roots) == 0 && snapshot.ReviewComments != nil
+		inside := func(at time.Time) bool {
+			return !at.Before(trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
+		}
+		for _, comment := range snapshot.ReviewComments {
+			if comment.InReplyToID == 0 && !reviewIDs[comment.ReviewID] && publicationActor(comment.Author, providerAuthor) && (inside(comment.CreatedAt) || inside(comment.UpdatedAt)) {
+				outsideOnly = false
+			}
+		}
+		if !outsideOnly || !publicationOutsideOnly(result) {
+			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
+			return result, nil
+		}
+		count = 0
 	}
 	for _, review := range result.Batches {
 		if review.SubmittedAt.After(result.FinishedAt) {
@@ -358,7 +416,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 			return result, nil
 		}
 	}
-	if len(result.Roots) != count {
+	if !hostedInlineCountMatches(result.Roots, count) {
 		result.State, result.Reason = "ambiguous", "root_count_mismatch"
 		return result, nil
 	}

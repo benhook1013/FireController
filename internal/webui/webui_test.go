@@ -48,7 +48,7 @@ func request(t *testing.T, handler http.Handler, method, path string) *httptest.
 
 func TestKnownBrowserRoutesServeOnlyEmbeddedIndex(t *testing.T) {
 	handler := browserFixture()
-	for _, path := range []string{"/", "/?ignored=query", "/projects/project_1", "/projects/" + strings.Repeat("a", 128), "/projects/p/jobs/job-1", "/projects/p/inbox", "/projects/p/inbox/conv_1", "/projects/p/workers", "/projects/p/settings", "/projects/p/reviews", "/projects/p/reviews/pulls/1", "/projects/p/reviews/pulls/2147483647?snapshot=review_snapshot_1", "/projects/p/reviews/runs/review_run_1", "/projects/p/workers/w", "/projects/p/notes", "/projects/p/notes?worker_id=w&status=pending", "/projects/p/notes/note_1", "/projects/p/notes/note_1/history/1", "/projects/p/notes/note_1/history/9223372036854775807", "/projects/p/map", "/projects/p/map/entries/map_entry_1", "/projects/p/map/entries/map_entry_1/history/1", "/projects/p/map/entries/map_entry_1/history/9223372036854775807"} {
+	for _, path := range []string{"/", "/?ignored=query", "/projects/project_1", "/projects/" + strings.Repeat("a", 128), "/projects/p/jobs", "/projects/p/jobs?status=open", "/projects/p/jobs/job-1", "/projects/p/inbox", "/projects/p/inbox/conv_1", "/projects/p/workers", "/projects/p/settings", "/projects/p/reviews", "/projects/p/reviews/pulls/1", "/projects/p/reviews/pulls/2147483647?snapshot=review_snapshot_1", "/projects/p/reviews/runs/review_run_1", "/projects/p/workers/w", "/projects/p/notes", "/projects/p/notes?worker_id=w&status=pending", "/projects/p/notes/note_1", "/projects/p/notes/note_1/history/1", "/projects/p/notes/note_1/history/9223372036854775807", "/projects/p/map", "/projects/p/map/entries/map_entry_1", "/projects/p/map/entries/map_entry_1/history/1", "/projects/p/map/entries/map_entry_1/history/9223372036854775807"} {
 		t.Run(path, func(t *testing.T) {
 			w := request(t, handler, http.MethodGet, path)
 			if w.Code != 200 || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "Embedded browser fixture") {
@@ -58,6 +58,56 @@ func TestKnownBrowserRoutesServeOnlyEmbeddedIndex(t *testing.T) {
 				t.Fatal("HTML content length differs")
 			}
 		})
+	}
+}
+
+func TestReviewHistoryDirectNavigationAndReload(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{"/projects/project_1/reviews/history", "/projects/project_1/reviews/history?cursor=opaque"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := request(t, handler, method, path)
+			if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("history deep link failed for %s: %d", method, w.Code)
+			}
+			if method == http.MethodGet && !strings.Contains(w.Body.String(), "Embedded browser fixture") || method == http.MethodHead && w.Body.Len() != 0 {
+				t.Fatal("history navigation did not preserve embedded GET/HEAD behavior")
+			}
+		}
+	}
+	for _, path := range []string{"/projects/project_1/reviews/history/extra", "/projects/project_1/reviews/historical", "/projects/project_1/reviews/%68istory", "/projects/project_1/reviews/history%2Fextra"} {
+		assertJSONError(t, request(t, handler, http.MethodGet, path), http.StatusNotFound, "not_found")
+	}
+	assertJSONError(t, request(t, handler, http.MethodPost, "/projects/project_1/reviews/history"), http.StatusMethodNotAllowed, "method_not_allowed")
+}
+
+func TestSharedProjectDirectNavigationAndReload(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{
+		"/projects/firemud/project", "/projects/firemud/project?signin=1",
+		"/projects/project_one/published/history/1", "/projects/legacy-public/published/history/1?generation=public_generation_fixture",
+		"/projects/firemud/published/history/9223372036854775807",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			w := request(t, handler, method, path)
+			if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("shared project direct %s %s: %d", method, path, w.Code)
+			}
+			if method == http.MethodGet && !strings.Contains(w.Body.String(), "Embedded browser fixture") || method == http.MethodHead && w.Body.Len() != 0 {
+				t.Fatal("shared project direct GET/HEAD did not preserve embedded response")
+			}
+		}
+	}
+	for _, path := range []string{
+		"/projects/firemud/project/extra", "/projects/firemud/%70roject", "/projects/firemud/project%2Fextra",
+		"/projects/firemud/published", "/projects/firemud/published/history", "/projects/firemud/published/history/0",
+		"/projects/firemud/published/history/-1", "/projects/firemud/published/history/01", "/projects/firemud/published/history/1a",
+		"/projects/firemud/published/history/9223372036854775808", "/projects/firemud/published/history/1/extra",
+		"/projects/firemud/published/%68istory/1", "/projects/firemud/published/history/1%2Fextra",
+	} {
+		assertJSONError(t, request(t, handler, http.MethodGet, path), http.StatusNotFound, "not_found")
+	}
+	for _, path := range []string{"/projects/firemud/project", "/projects/firemud/published/history/1"} {
+		assertJSONError(t, request(t, handler, http.MethodPost, path), http.StatusMethodNotAllowed, "method_not_allowed")
 	}
 }
 
@@ -83,7 +133,7 @@ func TestUnknownRoutesAssetsAndTraversalStayJSONNotFound(t *testing.T) {
 	handler := browserFixture()
 	for _, path := range []string{
 		"/api", "/api/v1/missing", "/api/v1/projects/p", "/healthz", "/healthz/missing", "/readyz/missing",
-		"/unknown", "/index.html", "/package.json", "/projects", "/projects/", "/projects/p/", "/projects/p/jobs", "/projects/p/unknown", "/projects/p/settings/extra", "/projects/p/workers/w/extra", "/projects/p/inbox/c/extra",
+		"/unknown", "/index.html", "/package.json", "/projects", "/projects/", "/projects/p/", "/projects/p/unknown", "/projects/p/settings/extra", "/projects/p/workers/w/extra", "/projects/p/inbox/c/extra",
 		"/projects/p/reviews/pulls", "/projects/p/reviews/runs", "/projects/p/reviews/unknown/1", "/projects/p/reviews/pulls/01", "/projects/p/reviews/pulls/0", "/projects/p/reviews/pulls/-1", "/projects/p/reviews/pulls/2147483648", "/projects/p/reviews/pulls/1a", "/projects/p/reviews/pulls/1/extra", "/projects/p/reviews/runs/run.json", "/projects/p/reviews/runs/" + strings.Repeat("a", 129),
 		"/projects/" + strings.Repeat("a", 129), "/projects/p/jobs/" + strings.Repeat("b", 129), "/projects/p.json", "/projects/雪", "/projects/a%20b",
 		"/projects/p/notes/note_1/extra", "/projects/p/notes/note_1/history", "/projects/p/notes/note_1/history/0", "/projects/p/notes/note_1/history/01", "/projects/p/notes/note_1/history/-1", "/projects/p/notes/note_1/history/9223372036854775808", "/projects/p/notes/note_1/history/1/extra", "/projects/p/notes/" + strings.Repeat("n", 129), "/projects/p/map/entries", "/projects/p/map/unknown/map_entry_1", "/projects/p/map/entries/map_entry_1/extra", "/projects/p/map/entries/map_entry_1/history", "/projects/p/map/entries/map_entry_1/history/0", "/projects/p/map/entries/map_entry_1/history/01", "/projects/p/map/entries/map_entry_1/history/-1", "/projects/p/map/entries/map_entry_1/history/9223372036854775808", "/projects/p/map/entries/map_entry_1/history/1/extra", "/projects/p/map/entries/" + strings.Repeat("a", 129),

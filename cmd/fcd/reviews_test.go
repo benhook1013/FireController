@@ -111,6 +111,17 @@ func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
 				cancel()
 				t.Fatal("worker startup failed", err)
 			}
+			if mode == "cli" || mode == "dual" {
+				starter, ok := drivers["local-cli"].(cliRecoveryStarter)
+				if !ok {
+					cancel()
+					t.Fatal("CLI recovery is absent from daemon composition")
+				}
+				if _, err := starter.StartCLIRecovery(workerCtx); err == nil {
+					cancel()
+					t.Fatal("daemon failed to start its one owned CLI recovery observer")
+				}
+			}
 			cancel()
 			if done != nil {
 				select {
@@ -189,5 +200,48 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	entries, err := os.ReadDir(filepath.Join(dir, "review-captures"))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("idle startup created a provider capture", err)
+	}
+}
+
+func TestReviewExecutionCompositionUsesCLIAllowanceTimeout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	store, err := core.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = reviewexec.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := privateTestCatalog(t, []string{"cli"})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Version      int              `json:"version"`
+		Capabilities []map[string]any `json:"capabilities"`
+	}
+	if json.Unmarshal(data, &file) != nil {
+		t.Fatal("catalog fixture")
+	}
+	file.Capabilities[0]["cli_allowance_timeout_seconds"] = 60
+	data, err = json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := reviewruntime.LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = buildReviewExecution(store, dir, catalog); err != nil {
+		t.Fatal("configured timeout not composed", err)
+	}
+	catalog.Capabilities[0].CLIAllowanceTimeoutSeconds = 61
+	if _, _, err = buildReviewExecution(store, dir, catalog); err == nil {
+		t.Fatal("inconsistent timeout capability was accepted")
 	}
 }

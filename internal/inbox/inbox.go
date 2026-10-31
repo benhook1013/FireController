@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS inbox_recipient_state (
 func Register(mux *http.ServeMux, store *core.Store) {
 	h := &handler{store: store}
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", h.readMessage)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", h.readDelivery)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", h.list)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", h.listOutbox)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", h.snapshot)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", h.conversation)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
@@ -174,12 +177,16 @@ type inboxPage struct {
 }
 
 func (h *handler) list(w http.ResponseWriter, r *http.Request) {
+	h.listMessages(w, r, incomingMessages)
+}
+
+func (h *handler) listMessages(w http.ResponseWriter, r *http.Request, direction messageDirection) {
 	scope, err := h.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged", "newest"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -199,13 +206,21 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, missing(err))
 		return
 	}
-	filter := inboxFilter(workerID, unread, unacknowledged)
+	newest, err := boolFilter(r, "newest")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := inboxOrderFilter(workerID, unread, unacknowledged, newest)
+	if direction == outgoingMessages {
+		filter = "outbox:" + strings.TrimPrefix(filter, "inbox:")
+	}
 	limit, after, err := h.page(r, scope, filter)
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	page, err := h.inboxPage(r.Context(), h.store.DB(), scope, workerID, unread, unacknowledged, filter, limit, after)
+	page, err := h.messagePage(r.Context(), h.store.DB(), scope, workerID, unread, unacknowledged, newest, filter, limit, after, direction)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -229,7 +244,7 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, core.Fail("forbidden", "Select this inbox recipient with X-FC-Worker.", http.StatusForbidden))
 		return
 	}
-	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged"); err != nil {
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged", "newest"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -243,7 +258,12 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	filter := inboxFilter(workerID, unread, unacknowledged)
+	newest, err := boolFilter(r, "newest")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := inboxOrderFilter(workerID, unread, unacknowledged, newest)
 	limit, after, err := h.page(r, scope, filter)
 	if err != nil {
 		core.WriteError(w, err)
@@ -254,7 +274,7 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		if err := checkInboxWorker(ctx, tx, scope.ProjectID, workerID); err != nil {
 			return err
 		}
-		page, err := h.inboxPage(ctx, tx, scope, workerID, unread, unacknowledged, filter, limit, after)
+		page, err := h.inboxPage(ctx, tx, scope, workerID, unread, unacknowledged, newest, filter, limit, after)
 		if err != nil {
 			return err
 		}
@@ -285,16 +305,38 @@ func checkInboxWorker(ctx context.Context, db queryer, projectID, workerID strin
 	return nil
 }
 
-func (h *handler) inboxPage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged bool, filter string, limit int, after int64) (inboxPage, error) {
-	query := `SELECT m.sequence,m.id,m.conversation_id,m.sender_worker_id,m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged FROM inbox_messages m LEFT JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND m.recipient_worker_id=? AND m.sequence>?`
+func (h *handler) inboxPage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged, newest bool, filter string, limit int, after int64) (inboxPage, error) {
+	return h.messagePage(ctx, db, scope, workerID, unread, unacknowledged, newest, filter, limit, after, incomingMessages)
+}
+
+func (h *handler) messagePage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged, newest bool, filter string, limit int, after int64, direction messageDirection) (inboxPage, error) {
+	workerColumn := "m.recipient_worker_id"
+	if direction == outgoingMessages {
+		workerColumn = "m.sender_worker_id"
+	}
+	query := `SELECT m.sequence,m.id,m.conversation_id,m.sender_worker_id,m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged FROM inbox_messages m LEFT JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND ` + workerColumn + `=?`
+	args := []any{scope.ProjectID, workerID}
+	if after > 0 {
+		if newest {
+			query += " AND m.sequence<?"
+		} else {
+			query += " AND m.sequence>?"
+		}
+		args = append(args, after)
+	}
 	if unread {
 		query += " AND COALESCE(s.seen,0)=0"
 	}
 	if unacknowledged {
 		query += " AND COALESCE(s.acknowledged,0)=0"
 	}
-	query += " ORDER BY m.sequence ASC LIMIT ?"
-	rows, err := db.QueryContext(ctx, query, scope.ProjectID, workerID, after, limit+1)
+	if newest {
+		query += " ORDER BY m.sequence DESC LIMIT ?"
+	} else {
+		query += " ORDER BY m.sequence ASC LIMIT ?"
+	}
+	args = append(args, limit+1)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return inboxPage{}, err
 	}
@@ -304,10 +346,14 @@ func (h *handler) inboxPage(ctx context.Context, db queryer, scope core.Scope, w
 		var item inboxItem
 		var body string
 		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &body, &item.CreatedAt, &item.Seen, &item.Acknowledged); err != nil {
-			return inboxPage{}, core.Fail("storage_unavailable", "Stored incoming messages are unavailable.", 500)
+			return inboxPage{}, storedMessagesUnavailable(direction)
 		}
-		if !validStoredInbox(item, body, workerID) {
-			return inboxPage{}, core.Fail("storage_unavailable", "Stored incoming messages are unavailable.", 500)
+		valid := validStoredInbox(item, body, workerID)
+		if direction == outgoingMessages {
+			valid = item.SenderWorkerID == workerID && cleanID(item.RecipientWorkerID) && utf8.ValidString(item.RecipientWorkerID) && validStoredInbox(item, body, item.RecipientWorkerID)
+		}
+		if !valid {
+			return inboxPage{}, storedMessagesUnavailable(direction)
 		}
 		item.Preview, item.PreviewTruncated = preview(body)
 		page.Items = append(page.Items, item)

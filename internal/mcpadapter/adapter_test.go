@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/mcpadapter"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -171,9 +172,9 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			if caps.Logging != nil || caps.Resources != nil || caps.Prompts != nil {
 				t.Fatal("advertised unimplemented capability")
 			}
-			first, err := cs.ListTools(context.Background(), nil)
+			first, err := allDiscoveredTools(t, cs)
 			if err != nil || first.NextCursor != "" {
-				t.Fatal("current inventory must be complete on the first discovery page", err)
+				t.Fatal("complete discovery failed", err)
 			}
 			firstNames := map[string]bool{}
 			for _, tool := range first.Tools {
@@ -181,53 +182,73 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			}
 			for _, name := range []string{"wait_for_messages", "workers_list", "worker_pause_read", "worker_pause_history", "worker_pause_replace"} {
 				if !firstNames[name] {
-					t.Fatalf("critical tool %s absent from first discovery page", name)
+					t.Fatalf("critical tool %s absent from complete discovery", name)
 				}
 			}
 			tools, err := allDiscoveredTools(t, cs)
 			if err != nil {
 				t.Fatal(err)
 			}
-			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			expected["job_context"] = true
+			expected := map[string]bool{"context": true, "doctor": true, "workers_list": true, "jobs_list": true, "jobs_assigned": true, "job_read": true, "job_history": true, "inbox_list": true, "inbox_snapshot": true, "inbox_events": true, "inbox_thread": true, "jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			expected["outbox_list"], expected["inbox_delivery_read"] = true, true
 			expected["wait_for_messages"] = true
+			expected["wait_for_ci"] = true
+			expected["job_revision_read"] = true
+			expected["inbox_message_read"], expected["job_checklist_item_update"] = true, true
 			expected["presentation_read"] = true
-			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
+			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
 				expected[name] = true
 			}
 			expected["note_create"], expected["note_update"], expected["note_read"], expected["note_list"], expected["note_history"], expected["note_revision_read"] = true, true, true, true, true, true
 			expected["worker_pause_read"], expected["worker_pause_replace"], expected["worker_pause_history"] = true, true, true
 			expected["job_primary_read"], expected["job_primary_replace"], expected["job_primary_history"] = true, true, true
-			expected["job_update_append"], expected["job_update_history"], expected["job_checklist_read"], expected["job_checklist_replace"], expected["job_checklist_history"] = true, true, true, true, true
-			expected["job_checkpoint_append"], expected["job_checkpoint_latest"], expected["job_checkpoint_history"] = true, true, true
-			expected["review_queue"], expected["review_pull"], expected["review_runs"], expected["review_run"] = true, true, true, true
+			expected["job_summary_read"], expected["job_summary_set"] = true, true
+			expected["job_update"], expected["job_progress_history"], expected["job_checklist_read"], expected["job_checklist_replace"], expected["job_checklist_history"] = true, true, true, true, true
+			expected["review_queue"], expected["review_pull"], expected["review_runs"], expected["review_run"], expected["review_attempts"] = true, true, true, true, true
 			expected["review_evidence_read"], expected["review_adjudication_read"], expected["review_finding_decide"], expected["review_finding_fix"], expected["review_source_finalize"] = true, true, true, true, true
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"] = true, true, true
+			expected["review_queue_add"], expected["review_queue_move"], expected["review_queue_remove"] = true, true, true
+			expected["review_operations_list"] = true
+			expected["job_status_read"], expected["review_findings_decide"], expected["review_findings_fix"] = true, true, true
 			expected["review_finding_route"], expected["review_route_read"], expected["review_routes_list"], expected["review_route_decide"], expected["review_route_fix"] = true, true, true, true, true
 			expected["review_policy_assess"] = true
+			expected["review_rounds_read"], expected["review_rounds_configure"] = true, true
+			expected["review_start"], expected["review_selection_read"] = true, true
 			expected["review_source_ci_assess"], expected["review_source_readiness"] = true, true
 			expected["review_source_refresh"], expected["review_source_refresh_read"], expected["review_source_policy_assess"] = true, true, true
 			expected["review_checkpoint_publish"], expected["review_checkpoint_read"], expected["review_checkpoint_recover"] = true, true, true
-			if len(first.Tools) != len(expected) {
-				t.Fatalf("first discovery page has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
+			expected["review_subagent_record"], expected["review_subagent_read"], expected["review_subagent_update"] = true, true, true
+			for name := range managementDiscoveryContract {
+				expected[name] = true
 			}
-			writes := map[string]bool{"jobs_create": true, "job_edit": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
-			writes["job_primary_replace"] = true
-			writes["map_entry_create"], writes["map_entry_replace"], writes["job_workstream_replace"] = true, true, true
+			if len(first.Tools) != len(expected) {
+				t.Fatalf("discovery has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
+			}
+			writes := map[string]bool{"jobs_create": true, "job_update": true, "inbox_send": true, "inbox_seen": true, "inbox_ack": true}
+			writes["job_primary_replace"], writes["job_checklist_item_update"] = true, true
+			writes["review_queue_add"], writes["review_queue_move"], writes["review_queue_remove"] = true, true, true
+			writes["review_rounds_configure"], writes["review_start"] = true, true
+			writes["map_entry_create"], writes["map_entry_replace"], writes["map_entry_update"], writes["job_workstream_replace"] = true, true, true, true
 			writes["worker_pause_replace"] = true
 			writes["note_create"], writes["note_update"] = true, true
-			writes["job_update_append"], writes["job_checklist_replace"] = true, true
-			writes["job_checkpoint_append"], writes["review_request"], writes["review_source_refresh"] = true, true, true
+			writes["job_summary_set"] = true
+			writes["job_update"], writes["job_checklist_replace"] = true, true
+			writes["review_request"], writes["review_source_refresh"] = true, true
+			writes["review_findings_decide"], writes["review_findings_fix"] = true, true
 			writes["review_finding_decide"], writes["review_finding_fix"], writes["review_source_finalize"] = true, true, true
 			writes["review_finding_route"], writes["review_route_decide"], writes["review_route_fix"] = true, true, true
 			writes["review_checkpoint_publish"], writes["review_checkpoint_recover"] = true, true
+			writes["review_subagent_record"], writes["review_subagent_update"] = true, true
+			for name, contract := range managementDiscoveryContract {
+				writes[name] = contract.write
+			}
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
 					t.Fatalf("unexpected tool %q", tool.Name)
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (managementDiscoveryContract[tool.Name].destructive || tool.Name == "review_queue_move" || tool.Name == "review_queue_remove" || tool.Name == "review_subagent_update" || tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_findings_decide" || tool.Name == "review_findings_fix" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (managementDiscoveryContract[tool.Name].external || tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)
@@ -255,14 +276,11 @@ func TestDiscoveryCursorBeyondCurrentFirstPageInventory(t *testing.T) {
 	path := profiles(t, map[string]profile.Context{"alpha": localContext()}, "missing-private-token")
 	server := adapter(t, path, "alpha")
 	session := connect(t, server, mcp.SupportedProtocolVersions()[0])
-	current, err := session.ListTools(t.Context(), nil)
+	current, err := allDiscoveredTools(t, session)
 	if err != nil || current.NextCursor != "" {
-		t.Fatal("current inventory must fit before synthetic overflow", err)
+		t.Fatal("current discovery failed before synthetic overflow", err)
 	}
-	extra := 129 - len(current.Tools)
-	if extra < 1 {
-		t.Fatal("current inventory exceeds selected discovery page bound")
-	}
+	extra := max(1, 129-len(current.Tools))
 	for i := 0; i < extra; i++ {
 		server.AddTool(&mcp.Tool{Name: fmt.Sprintf("zz_fixture_%03d", i), InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return &mcp.CallToolResult{Content: []mcp.Content{}}, nil
@@ -273,11 +291,11 @@ func TestDiscoveryCursorBeyondCurrentFirstPageInventory(t *testing.T) {
 		t.Fatal("synthetic overflow did not produce bounded first page", err)
 	}
 	second, err := session.ListTools(t.Context(), &mcp.ListToolsParams{Cursor: first.NextCursor})
-	if err != nil || len(second.Tools) != 1 || second.NextCursor != "" {
-		t.Fatal("synthetic discovery cursor did not return exact terminal tail", err)
+	if err != nil || len(second.Tools) < 1 || len(second.Tools) > 128 {
+		t.Fatal("synthetic discovery cursor did not return a bounded continuation", err)
 	}
 	all, err := allDiscoveredTools(t, session)
-	if err != nil || len(all.Tools) != 129 {
+	if err != nil || len(all.Tools) != len(current.Tools)+extra {
 		t.Fatal("cursor-capable discovery lost or duplicated tools", err)
 	}
 	names := map[string]bool{}
@@ -426,4 +444,172 @@ func TestRunUsesOnlySDKStdioProtocol(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("stdio session did not stop within bound")
 	}
+}
+
+func TestOpenJobFiltersThroughMCP(t *testing.T) {
+	f := mutationFixture(t)
+	var writes atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	session := connect(t, f.adapter(t, service.URL, f.sender), "")
+	expected := map[string]string{}
+	for i, status := range []string{"parked", "completed", "active", "blocked", "blocked"} {
+		worker := f.sender
+		if i == 4 {
+			worker = f.recipient
+		}
+		var receipt client.JobReceipt
+		decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": fmt.Sprintf("open-fixture-%d", i), "title": "Job", "worker_id": worker, "status": status}), &receipt)
+		if status != "completed" {
+			expected[receipt.ID] = worker
+		}
+	}
+	beforeWrites, beforeProviders := writes.Load(), f.providers.Load()
+	for _, tool := range []string{"jobs_list", "jobs_assigned"} {
+		seen := map[string]bool{}
+		previous := ""
+		args := map[string]any{"status": "open", "limit": 1}
+		for page := 0; ; page++ {
+			if page > 5 {
+				t.Fatal("unbounded continuation")
+			}
+			var result client.Page[client.JobSummary]
+			decodeResult(t, call(t, session, tool, args), &result)
+			if len(result.Items) != 1 {
+				t.Fatalf("%s page has %d items", tool, len(result.Items))
+			}
+			item := result.Items[0]
+			if seen[item.ID] || expected[item.ID] == "" || item.Status == "completed" || item.Status < previous || tool == "jobs_assigned" && item.WorkerID != f.sender {
+				t.Fatalf("%s lost scoped open ordering", tool)
+			}
+			previous, seen[item.ID] = item.Status, true
+			if !result.HasMore {
+				break
+			}
+			if result.Cursor == "" {
+				t.Fatal("missing continuation")
+			}
+			args["cursor"] = result.Cursor
+		}
+		want := 4
+		if tool == "jobs_assigned" {
+			want = 3
+		}
+		if len(seen) != want {
+			t.Fatalf("%s got %d jobs, want %d", tool, len(seen), want)
+		}
+	}
+	if writes.Load() != beforeWrites || f.providers.Load() != beforeProviders {
+		t.Fatal("list reads wrote or called provider")
+	}
+}
+
+func TestOpenJobFilterDiscoveryAndMutationRefusal(t *testing.T) {
+	c := localContext()
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	c.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": c}, "never-open-credential"), "alpha"), "")
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, tool := range tools.Tools {
+		if tool.Name != "jobs_list" && tool.Name != "jobs_assigned" && tool.Name != "jobs_create" && tool.Name != "job_update" {
+			continue
+		}
+		data, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		}
+		if json.Unmarshal(data, &schema) != nil {
+			t.Fatal("invalid discovery schema")
+		}
+		values := schema.Properties["status"].Enum
+		found := false
+		for _, value := range values {
+			if value == "open" {
+				found = true
+			}
+		}
+		read := tool.Name == "jobs_list" || tool.Name == "jobs_assigned"
+		wantLength := 4
+		if read {
+			wantLength = 5
+		}
+		if tool.Name == "jobs_assigned" {
+			wantLength = 6
+		}
+		if found != read || len(values) != wantLength {
+			t.Fatalf("%s status enum=%v", tool.Name, values)
+		}
+		checked++
+	}
+	if checked != 4 {
+		t.Fatal("missing job schema")
+	}
+	errorResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "open-create", "title": "Job", "status": "open"}), "invalid_arguments")
+	errorResult(t, call(t, session, "job_update", map[string]any{"idempotency_key": "open-edit", "job_id": "job-one", "expected_revision": 1, "status": "open"}), "invalid_arguments")
+	if requests.Load() != 0 {
+		t.Fatal("invalid mutation reached service")
+	}
+}
+
+// Public management-tool discovery contract, independent of runtime registration.
+var managementDiscoveryContract = map[string]struct{ write, destructive, external bool }{
+	"coordination_import_apply":         {true, true, false},
+	"coordination_import_preview":       {false, false, false},
+	"coordination_import_read":          {false, false, false},
+	"history_collection_cancel":         {true, true, false},
+	"history_collection_capture_read":   {false, false, false},
+	"history_collection_enqueue":        {true, false, true},
+	"history_collection_pages":          {false, false, false},
+	"history_collection_read":           {false, false, false},
+	"history_collection_resume":         {true, false, true},
+	"map_import_apply":                  {true, true, false},
+	"map_import_history":                {false, false, false},
+	"map_import_preview":                {false, false, false},
+	"map_import_read":                   {false, false, false},
+	"map_import_revision_read":          {false, false, false},
+	"presentation_history":              {false, false, false},
+	"presentation_replace":              {true, true, false},
+	"presentation_revision_read":        {false, false, false},
+	"project_credential_grant":          {true, false, false},
+	"project_credential_revoke":         {true, true, false},
+	"project_credential_update":         {true, true, false},
+	"review_operation_control":          {true, true, false},
+	"publication_apply":                 {true, true, false},
+	"publication_configuration_read":    {false, false, false},
+	"publication_prepare":               {false, false, false},
+	"publication_preview":               {false, false, false},
+	"publication_unpublish":             {true, true, false},
+	"review_attempt_settle":             {true, true, false},
+	"review_execution_configure":        {true, true, false},
+	"review_import_apply":               {true, true, false},
+	"review_import_preview":             {false, false, false},
+	"review_obligation_read":            {false, false, false},
+	"review_obligation_resolve":         {true, true, false},
+	"review_obligations_import_apply":   {true, true, false},
+	"review_obligations_import_preview": {false, false, false},
+	"review_obligations_list":           {false, false, false},
+	"review_policy_configure":           {true, true, false},
+	"review_policy_read":                {false, false, false},
+	"review_queue_edit":                 {true, true, false},
+	"review_round_adoption_apply":       {true, true, false},
+	"review_round_adoption_preview":     {false, false, false},
+	"review_transfer_apply":             {true, true, false},
+	"review_transfer_preview":           {false, false, false},
+	"worker_create":                     {true, false, false},
 }

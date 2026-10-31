@@ -46,23 +46,31 @@ func ValidatePrimaryJobRequest(request ReplacePrimaryJobRequest) error {
 	return nil
 }
 
-func (c *Client) primaryJobPath(parts ...string) []string {
-	return c.projectPath(append([]string{"workers", c.identity.WorkerID, "primary-job"}, parts...)...)
+func (c *Client) primaryJobPath(worker string, parts ...string) []string {
+	return c.projectPath(append([]string{"workers", worker, "primary-job"}, parts...)...)
 }
 
 // PrimaryJob reads only focus; it never retrieves the selected job or its history.
-func (c *Client) PrimaryJob(ctx context.Context) (PrimaryJob, error) {
-	var value PrimaryJob
-	if err := c.requestBounded(ctx, http.MethodGet, c.primaryJobPath(), nil, true, "", nil, http.StatusOK, false, &value, 4<<10, decodeResponse); err != nil {
+func (c *Client) PrimaryJob(ctx context.Context, selectedWorker ...string) (PrimaryJob, error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
 		return PrimaryJob{}, err
 	}
-	if value.WorkerID != c.identity.WorkerID || value.Revision < 0 || value.JobID != "" && !validID(value.JobID) || value.Revision == 0 && value.JobID != "" {
+	var value PrimaryJob
+	if err := c.requestBounded(ctx, http.MethodGet, c.primaryJobPath(worker), nil, true, "", nil, http.StatusOK, false, &value, 4<<10, decodeResponse); err != nil {
+		return PrimaryJob{}, err
+	}
+	if value.WorkerID != worker || value.Revision < 0 || value.JobID != "" && !validID(value.JobID) || value.Revision == 0 && value.JobID != "" {
 		return PrimaryJob{}, invalidResponse()
 	}
 	return value, nil
 }
 
-func (c *Client) ReplacePrimaryJob(ctx context.Context, key string, request ReplacePrimaryJobRequest) (PrimaryJobReceipt, error) {
+func (c *Client) ReplacePrimaryJob(ctx context.Context, key string, request ReplacePrimaryJobRequest, selectedWorker ...string) (PrimaryJobReceipt, error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return PrimaryJobReceipt{}, err
+	}
 	if !validMutationKey(key) {
 		return PrimaryJobReceipt{}, mutationValidation()
 	}
@@ -70,17 +78,21 @@ func (c *Client) ReplacePrimaryJob(ctx context.Context, key string, request Repl
 		return PrimaryJobReceipt{}, err
 	}
 	var value PrimaryJobReceipt
-	if err := c.mutate(ctx, http.MethodPut, c.primaryJobPath(), key, request, http.StatusOK, &value); err != nil {
+	if err := c.mutate(ctx, http.MethodPut, c.primaryJobPath(worker), key, request, http.StatusOK, &value); err != nil {
 		return PrimaryJobReceipt{}, err
 	}
-	if value.ID != c.identity.WorkerID || !(value.Outcome == "updated" && value.Revision == request.ExpectedRevision+1 || value.Outcome == "unchanged" && value.Revision == request.ExpectedRevision) {
+	if value.ID != worker || !(value.Outcome == "updated" && value.Revision == request.ExpectedRevision+1 || value.Outcome == "unchanged" && value.Revision == request.ExpectedRevision) {
 		return PrimaryJobReceipt{}, unknownMutation("invalid_response", "The service returned an invalid primary-job receipt; its outcome is unknown.", http.StatusOK)
 	}
 	return value, nil
 }
 
 // PrimaryJobHistory returns exactly one explicit newest-first focus page.
-func (c *Client) PrimaryJobHistory(ctx context.Context, options PageOptions) (Page[PrimaryJobHistoryEntry], error) {
+func (c *Client) PrimaryJobHistory(ctx context.Context, options PageOptions, selectedWorker ...string) (Page[PrimaryJobHistoryEntry], error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return Page[PrimaryJobHistoryEntry]{}, err
+	}
 	if options.Limit == 0 {
 		options.Limit = 20
 	}
@@ -92,7 +104,7 @@ func (c *Client) PrimaryJobHistory(ctx context.Context, options PageOptions) (Pa
 		return Page[PrimaryJobHistoryEntry]{}, err
 	}
 	var page Page[PrimaryJobHistoryEntry]
-	if err = c.get(ctx, c.primaryJobPath("history"), query, true, &page); err != nil {
+	if err = c.get(ctx, c.primaryJobPath(worker, "history"), query, true, &page); err != nil {
 		return Page[PrimaryJobHistoryEntry]{}, err
 	}
 	if !validPage(page, options) || page.Cursor != "" && !validOpaqueCursor(page.Cursor) {
@@ -100,7 +112,7 @@ func (c *Client) PrimaryJobHistory(ctx context.Context, options PageOptions) (Pa
 	}
 	var previous int64
 	for _, entry := range page.Items {
-		if entry.WorkerID != c.identity.WorkerID || entry.Revision < 1 || !validID(entry.ActorID) || entry.ActorWorkerID != "" && !validID(entry.ActorWorkerID) || !validJobProgressTime(entry.CreatedAt) || previous != 0 && entry.Revision >= previous {
+		if entry.WorkerID != worker || entry.Revision < 1 || !validID(entry.ActorID) || entry.ActorWorkerID != "" && !validID(entry.ActorWorkerID) || !validJobProgressTime(entry.CreatedAt) || previous != 0 && entry.Revision >= previous {
 			return Page[PrimaryJobHistoryEntry]{}, invalidResponse()
 		}
 		switch entry.Reason {

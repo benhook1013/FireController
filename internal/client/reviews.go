@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/reviewsize"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -21,8 +22,7 @@ const (
 	maxReviewListResponse = 1 << 20
 	maxReviewRunResponse  = 4 << 20
 	maxReviewPulls        = 100
-	maxReviewRunsPerPull  = 100
-	maxReviewAttempts     = 100
+	maxReviewPageItems    = 100
 	maxReviewFindings     = 100
 )
 
@@ -33,16 +33,17 @@ type ReviewRunOptions struct {
 }
 
 type ReviewQueue struct {
-	ProjectID  string              `json:"project_id"`
-	Configured bool                `json:"configured"`
-	Revision   int64               `json:"revision"`
-	SnapshotID string              `json:"snapshot_id"`
-	Source     string              `json:"source"`
-	ObservedAt string              `json:"observed_at"`
-	RecordedAt string              `json:"recorded_at"`
-	Items      []ReviewPullSummary `json:"items"`
-	Cursor     string              `json:"cursor,omitempty"`
-	HasMore    bool                `json:"has_more"`
+	Observer   *ReviewObserverHealth `json:"observer,omitempty"`
+	ProjectID  string                `json:"project_id"`
+	Configured bool                  `json:"configured"`
+	Revision   int64                 `json:"revision"`
+	SnapshotID string                `json:"snapshot_id"`
+	Source     string                `json:"source"`
+	ObservedAt string                `json:"observed_at"`
+	RecordedAt string                `json:"recorded_at"`
+	Items      []ReviewPullSummary   `json:"items"`
+	Cursor     string                `json:"cursor,omitempty"`
+	HasMore    bool                  `json:"has_more"`
 }
 
 type ReviewPull struct {
@@ -53,7 +54,6 @@ type ReviewPull struct {
 	ObservedAt string            `json:"observed_at"`
 	RecordedAt string            `json:"recorded_at"`
 	Pull       ReviewPullSummary `json:"pull"`
-	Attempts   []ReviewAttempt   `json:"attempts"`
 }
 
 type ReviewRuns struct {
@@ -81,19 +81,45 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
-	Number         int64              `json:"number"`
-	Title          string             `json:"title"`
-	State          string             `json:"state"`
-	HeadSHA        string             `json:"head_sha"`
-	BaseRef        string             `json:"base_ref"`
-	BaseSHA        string             `json:"base_sha"`
-	CIState        string             `json:"ci_state"`
-	Mergeability   string             `json:"mergeability"`
-	Complete       bool               `json:"complete"`
-	RunCount       int64              `json:"run_count"`
-	AttemptCount   int64              `json:"attempt_count"`
-	RecentRuns     []ReviewRunSummary `json:"recent_runs"`
-	LatestAttempts []ReviewAttempt    `json:"latest_attempts"`
+	ReviewSize     *reviewsize.Assessment       `json:"review_size,omitempty"`
+	Observation    *ReviewPullObservationHealth `json:"observation,omitempty"`
+	Diff           *ReviewPullDiff              `json:"diff,omitempty"`
+	IsDraft        *bool                        `json:"is_draft,omitempty"`
+	MergedAt       string                       `json:"merged_at,omitempty"`
+	Number         int64                        `json:"number"`
+	Title          string                       `json:"title"`
+	State          string                       `json:"state"`
+	HeadSHA        string                       `json:"head_sha"`
+	BaseRef        string                       `json:"base_ref"`
+	BaseSHA        string                       `json:"base_sha"`
+	CIState        string                       `json:"ci_state"`
+	Mergeability   string                       `json:"mergeability"`
+	Complete       bool                         `json:"complete"`
+	RunCount       int64                        `json:"run_count"`
+	RunCounts      ReviewChannelRunCounts       `json:"run_counts"`
+	AttemptCount   int64                        `json:"attempt_count"`
+	RecentRuns     []ReviewRunSummary           `json:"recent_runs"`
+	LatestAttempts []ReviewAttempt              `json:"latest_attempts"`
+}
+
+type ReviewChannelRunCounts struct {
+	Hosted   int64 `json:"hosted"`
+	CLI      int64 `json:"cli"`
+	Subagent int64 `json:"subagent"`
+	Manual   int64 `json:"manual"`
+}
+
+func (v ReviewChannelRunCounts) valid(total int64) bool {
+	if total < 0 {
+		return false
+	}
+	for _, n := range []int64{v.Hosted, v.CLI, v.Subagent, v.Manual} {
+		if n < 0 || n > total {
+			return false
+		}
+		total -= n
+	}
+	return total == 0
 }
 
 type ReviewRunSummary struct {
@@ -129,9 +155,11 @@ type ReviewAttempt struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type ReviewFinding struct {
+	DisplaySeverity string              `json:"display_severity,omitempty"`
 	Route           *ReviewFindingRoute `json:"route,omitempty"`
 	SourceFindingID string              `json:"source_finding_id"`
 	Title           string              `json:"title"`
@@ -152,9 +180,13 @@ func (c *Client) ReviewQueue(ctx context.Context, options PageOptions) (ReviewQu
 	if err != nil {
 		return ReviewQueue{}, err
 	}
+	query.Set("include_observation", "true")
 	var value ReviewQueue
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "queue"), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewQueue{}, err
+	}
+	if !validObserverHealth(value.Observer) {
+		return ReviewQueue{}, invalidResponse()
 	}
 	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, value.Configured) {
 		if value.ProjectID != c.identity.ProjectID || value.Configured || value.Revision != 0 || value.SnapshotID != "" || value.Source != "" || value.ObservedAt != "" || value.RecordedAt != "" {
@@ -181,7 +213,7 @@ func (c *Client) ReviewQueue(ctx context.Context, options PageOptions) (ReviewQu
 	return value, nil
 }
 
-// ReviewPull returns one pull summary and its bounded retained attempt records.
+// ReviewPull returns one compact PR summary, without loading its attempt archive.
 func (c *Client) ReviewPull(ctx context.Context, number int64, snapshot string) (ReviewPull, error) {
 	if !validPullNumber(number) || snapshot != "" && !validReviewSnapshot(snapshot) {
 		return ReviewPull{}, validation()
@@ -194,18 +226,8 @@ func (c *Client) ReviewPull(ctx context.Context, number int64, snapshot string) 
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "pulls", strconv.FormatInt(number, 10)), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewPull{}, err
 	}
-	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || snapshot != "" && value.SnapshotID != snapshot || value.Pull.Number != number || !c.validReviewPull(value.Pull) || value.Attempts == nil || len(value.Attempts) > maxReviewAttempts || int64(len(value.Attempts)) != value.Pull.AttemptCount {
+	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || snapshot != "" && value.SnapshotID != snapshot || value.Pull.Number != number || !c.validReviewPull(value.Pull) {
 		return ReviewPull{}, invalidResponse()
-	}
-	seen := make(map[string]struct{}, len(value.Attempts))
-	for _, attempt := range value.Attempts {
-		if !validReviewAttempt(attempt) {
-			return ReviewPull{}, invalidResponse()
-		}
-		if _, exists := seen[attempt.SourceAttemptID]; exists {
-			return ReviewPull{}, invalidResponse()
-		}
-		seen[attempt.SourceAttemptID] = struct{}{}
 	}
 	return value, nil
 }
@@ -223,7 +245,7 @@ func (c *Client) ReviewRuns(ctx context.Context, number int64, options ReviewRun
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "pulls", strconv.FormatInt(number, 10), "runs"), query, true, "", nil, http.StatusOK, false, &value, maxReviewListResponse, decodeReviewResponse); err != nil {
 		return ReviewRuns{}, err
 	}
-	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || options.Snapshot != "" && value.SnapshotID != options.Snapshot || !validReviewPage(value.Items, value.Cursor, value.HasMore, options.PageOptions) || len(value.Items) > maxReviewRunsPerPull {
+	if !c.validReviewMeta(value.ProjectID, value.Revision, value.SnapshotID, value.Source, value.ObservedAt, value.RecordedAt, true) || options.Snapshot != "" && value.SnapshotID != options.Snapshot || !validReviewPage(value.Items, value.Cursor, value.HasMore, options.PageOptions) || len(value.Items) > maxReviewPageItems {
 		return ReviewRuns{}, invalidResponse()
 	}
 	seen := make(map[string]struct{}, len(value.Items))
@@ -285,10 +307,16 @@ func (c *Client) validReviewMeta(project string, revision int64, snapshot, sourc
 }
 
 func (c *Client) validReviewPull(value ReviewPullSummary) bool {
+	if value.ReviewSize != nil && !reviewsize.Valid(*value.ReviewSize, value.Number) {
+		return false
+	}
+	if !validPullObservationHealth(value.Observation) {
+		return false
+	}
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
-		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
-		value.RunCount < 0 || value.RunCount > maxReviewRunsPerPull || value.AttemptCount < 0 || value.AttemptCount > maxReviewAttempts ||
+		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure", "not_required") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
+		!validReviewPullMetadata(value) || value.RunCount < 0 || !value.RunCounts.valid(value.RunCount) || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {
 		return false
@@ -356,7 +384,7 @@ func validReviewRunSummary(value ReviewRunSummary) bool {
 func validReviewAttempt(value ReviewAttempt) bool {
 	if !cleanReviewText(value.SourceAttemptID, 256, true) || !oneReviewOf(value.Channel, "cli", "hosted", "manual", "subagent") ||
 		!validReviewSHA(value.HeadSHA) || !oneReviewOf(value.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
-		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) {
+		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) || !validReviewAttemptReason(value.State, value.Reason) {
 		return false
 	}
 	if value.StartedAt != "" && !validTimestamp(value.StartedAt) || value.FinishedAt != "" && !validTimestamp(value.FinishedAt) {
@@ -373,6 +401,21 @@ func validReviewAttempt(value ReviewAttempt) bool {
 		}
 	}
 	return value.DurationSeconds == nil || *value.DurationSeconds >= 0
+}
+
+func validReviewAttemptReason(state, reason string) bool {
+	if reason == "" {
+		return true
+	}
+	if len(reason) > 128 || !oneReviewOf(state, "held", "uncertain", "rate_limited", "failed") || reason[0] < 'a' || reason[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(reason); i++ {
+		if c := reason[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func validReviewFinding(value ReviewFinding) bool {
@@ -482,8 +525,34 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 		if json.Unmarshal(trimmed, &fields) != nil || fields == nil {
 			return false
 		}
+		if typ == reflect.TypeOf(ReviewAllowanceObservation{}) {
+			var kind string
+			if json.Unmarshal(fields["kind"], &kind) != nil {
+				return false
+			}
+			var required []string
+			switch kind {
+			case "cli_exhausted":
+				required = []string{"kind", "observed_at", "remaining", "limit", "full_capacity_in_ms", "rolling_window_ms"}
+			case "hosted_cooldown":
+				required = []string{"kind", "observed_at", "retry_not_before"}
+			default:
+				return false
+			}
+			if len(fields) != len(required) {
+				return false
+			}
+			for _, name := range required {
+				if _, ok := fields[name]; !ok {
+					return false
+				}
+			}
+		}
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
 			parts := strings.Split(field.Tag.Get("json"), ",")
 			name := parts[0]
 			if name == "-" {
@@ -496,6 +565,12 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 					continue
 				}
 				return false
+			}
+			if name == "reason" && (typ == reflect.TypeOf(ReviewAttempt{}) || typ == reflect.TypeOf(reviewAttemptWire{})) {
+				var reason string
+				if json.Unmarshal(raw, &reason) != nil || reason == "" || len(reason) > 128 {
+					return false
+				}
 			}
 			if typ == reflect.TypeOf(ReviewSourceReviewStateSummary{}) && name == "review_decision" && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue

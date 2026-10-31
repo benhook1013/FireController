@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -47,10 +48,16 @@ func QueryKeys(r *http.Request, code string, allowed ...string) (url.Values, err
 }
 
 func ReadJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+	return ReadJSONLimit(w, r, dst, 256<<10)
+}
+
+// ReadJSONLimit preserves strict decoding while allowing a route's explicitly
+// bounded combined fields to fit after ordinary JSON escaping.
+func ReadJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return Fail("validation_failed", "The request body is unavailable or exceeds 256 KiB.", 400)
+		return Fail("validation_failed", fmt.Sprintf("The request body is unavailable or exceeds %d KiB.", limit>>10), 400)
 	}
 	if strictjson.Decode(data, dst) != nil {
 		return Fail("validation_failed", "Use one strict JSON object with declared fields, unique keys and valid Unicode.", 400)

@@ -76,7 +76,7 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 	f, a, _ := hostedRecoveryFixture(t)
 	a = pendingRecoveryAdvance(t, f, a, "uncertain", "interrupted", "")
 	f.configure(t, attemptProject, "other-account", 1, true)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	admissionSQL(t, f, `DELETE FROM grants WHERE credential_id='exec-writer-cred'`)
 	cliAllowanceReopen(t, f)
@@ -87,7 +87,7 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 	}
 	before := hostedObservationState(t, f, a)
 	got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
-	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, AttemptID: a.ID}) {
+	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID}) {
 		t.Fatal("latest admission settings erased issued observation", got, err)
 	}
 	other, err := f.e.PendingHostedRecovery(t.Context(), "other-account")
@@ -123,8 +123,8 @@ func TestPendingHostedRecoverySeparatesProjectAccountChannelAndFingerprint(t *te
 	}
 	other = pendingRecoveryAdvance(t, f, other, "uncertain", "interrupted", "")
 	for capability, expected := range map[string]*HostedRecoveryCandidate{
-		"test-capability": {ProjectID: attemptProject, AttemptID: a.ID},
-		"other-account":   {ProjectID: otherAttemptProject, AttemptID: other.ID},
+		"test-capability": {ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID},
+		"other-account":   {ProjectID: otherAttemptProject, OperationID: other.OperationID, AttemptID: other.ID},
 	} {
 		selected, err := f.e.PendingHostedRecovery(t.Context(), capability)
 		if err != nil || !reflect.DeepEqual(selected, expected) {

@@ -18,6 +18,9 @@ type Link = publicsitemodel.Link
 type Card = publicsitemodel.Card
 type WorkerLane = publicsitemodel.WorkerLane
 type EnrolledReview = publicsitemodel.EnrolledReview
+type JobRef = publicsitemodel.JobRef
+type MapRef = publicsitemodel.MapRef
+type WorkerRef = publicsitemodel.WorkerRef
 type Manifest = publicsitemodel.Manifest
 type RoundFacts = publicsitemodel.RoundFacts
 type ReviewFacts = publicsitemodel.ReviewFacts
@@ -29,5 +32,11 @@ func NormalizeManifest(in Manifest) (Manifest, error) { return publicsitemodel.N
 func DecodeManifest(raw []byte) (Manifest, error)     { return publicsitemodel.DecodeManifest(raw) }
 func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	return publicsitemodel.BuildContent(manifest, facts)
+}
+
+// BuildWindowContent constructs a bounded current projection. Historical
+// decoders deliberately keep using strict BuildContent without rewindowing.
+func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
+	return publicsitemodel.BuildWindowContent(manifest, facts)
 }
 func ValidSlug(slug string) bool { return publicsitemodel.ValidSlug(slug) }

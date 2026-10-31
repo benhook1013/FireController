@@ -78,10 +78,13 @@ func TestCLIAllowanceVersionThreeMigrationRetainsFactsAndReplayAcrossRestart(t *
 	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='3' WHERE key='schema:review_execution'`)
 	cliAllowanceReopen(t, f)
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "6" || attemptState(t, f, a) != journal {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "9" || attemptState(t, f, a) != journal {
 		t.Fatal("migration changed retained journal", version, err)
 	}
 	receipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
@@ -124,7 +127,7 @@ func TestCLIAllowanceReplayAfterSettlementAccessAndPolicyChanges(t *testing.T) {
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision+1, "completed", "retained", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "cli")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	before := cliAllowanceState(t, f, a)
@@ -229,8 +232,10 @@ func TestCLIAllowanceRechecksCurrentAdmissionBeforeFirstRecord(t *testing.T) {
 		"channel": {func(t *testing.T, f *attemptFixture, a Attempt) {
 			admissionSQL(t, f, `UPDATE review_operations SET channel='hosted' WHERE id=?`, a.OperationID)
 		}, "review_conflict"},
-		"policy":        {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }, "review_conflict"},
-		"paused-policy": {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1, "cli") }, "review_conflict"},
+		"policy": {func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }, "review_conflict"},
+		"project-pause": {func(t *testing.T, f *attemptFixture, a Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
+		}, "review_conflict"},
 		"configuration": {func(t *testing.T, f *attemptFixture, a Attempt) {
 			f.configure(t, attemptProject, "test-capability", 1, false)
 		}, "review_conflict"},

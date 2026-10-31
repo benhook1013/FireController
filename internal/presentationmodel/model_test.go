@@ -84,3 +84,53 @@ func TestSoftAccentSurfaceRequiresReadableTextAndLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewGroupsValidateAndOwnMemberships(t *testing.T) {
+	input := Config{Name: "Project", ReviewGroups: []ReviewGroup{{Title: "  Foundation  ", PullNumbers: []int64{1, 2}}, {Title: "Delivery", PullNumbers: []int64{9}}}}
+	output, err := Normalize(input)
+	if err != nil || output.ReviewGroups[0].Title != "Foundation" {
+		t.Fatal(output, err)
+	}
+	input.ReviewGroups[0].PullNumbers[0] = 99
+	if output.ReviewGroups[0].PullNumbers[0] != 1 {
+		t.Fatal("caller changed normalized membership")
+	}
+	for _, raw := range []string{
+		`{"name":"Project","review_groups":null}`,
+		`{"name":"Project","review_groups":[{"title":"","pull_numbers":[1]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[0]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[2147483648]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[1,1]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[1]},{"title":"Two","pull_numbers":[1]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[1]},{"title":" One ","pull_numbers":[2]}]}`,
+		`{"name":"Project","review_groups":[{"title":"One","pull_numbers":[1],"secret":"extra"}]}`,
+	} {
+		if _, err := Decode([]byte(raw)); err == nil {
+			t.Fatalf("accepted invalid group %s", raw)
+		}
+	}
+	if _, err := Decode([]byte(`{"name":"Project","review_groups":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerOrderValidationAndCopies(t *testing.T) {
+	ids := []string{"worker_two", "worker_one"}
+	c, err := Normalize(Config{Name: "one", WorkerOrder: ids})
+	if err != nil || !reflect.DeepEqual(c.WorkerOrder, ids) {
+		t.Fatal(c, err)
+	}
+	ids[0] = "changed"
+	if c.WorkerOrder[0] != "worker_two" {
+		t.Fatal("order aliases caller")
+	}
+	for _, raw := range []string{`{"name":"one","worker_order":null}`, `{"name":"one","worker_order":["worker_one","worker_one"]}`, `{"name":"one","worker_order":["bad/id"]}`} {
+		if _, err := Decode([]byte(raw)); err == nil {
+			t.Fatal("invalid order accepted", raw)
+		}
+	}
+	if _, err := Normalize(Config{Name: "one", WorkerOrder: make([]string, 101)}); err == nil {
+		t.Fatal("unbounded order accepted")
+	}
+}

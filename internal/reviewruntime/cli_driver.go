@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -17,18 +18,20 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
-	store      *core.Store
-	engine     *reviewexec.Engine
-	capability OperatorCapability
-	manager    *reviewworkspace.Manager
-	captures   *CaptureStore
-	reader     reviewexec.TargetReader
-	fetch      func(context.Context, int64, string, string, string, string) error
-	verify     func(context.Context, reviewworkspace.Workspace) error
-	usage      func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
-	review     func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
-	mu         sync.Mutex
-	prepared   map[string]*cliPrepared
+	store        *core.Store
+	engine       *reviewexec.Engine
+	capability   OperatorCapability
+	manager      *reviewworkspace.Manager
+	captures     *CaptureStore
+	reader       reviewexec.TargetReader
+	fetch        func(context.Context, int64, string, string, string, string) error
+	verify       func(context.Context, reviewworkspace.Workspace) error
+	usage        func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
+	review       func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
+	mu           sync.Mutex
+	prepared     map[string]*cliPrepared
+	recovering   atomic.Bool
+	recoveryWait func(context.Context, time.Duration) error
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
@@ -127,12 +130,38 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
-		if errors.As(err, &failure) && failure.Code == "rate_limited" {
-			return preparation, reviewHold("allowance_exhausted")
+		if errors.As(err, &failure) {
+			if failure.Code == "rate_limited" {
+				if usage.Remaining != 0 {
+					return preparation, reviewHold("allowance_unavailable")
+				}
+				// Negative timing is optional: failure to retain it cannot turn the
+				// Runner's proven exhaustion into a different refusal or a permit.
+				_ = d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles})
+				return preparation, reviewHold("allowance_exhausted")
+			}
+			if failure.Code == "usage_unavailable" {
+				switch failure.FailureStage {
+				case reviewprocess.FailureStageCommandNotStarted:
+					return preparation, reviewHold("allowance_command_not_started")
+				case reviewprocess.FailureStageTimeout:
+					return preparation, reviewHold("allowance_timeout")
+				case reviewprocess.FailureStageCommandFailed:
+					return preparation, reviewHold("allowance_command_failed")
+				case reviewprocess.FailureStageResponseUnproven:
+					return preparation, reviewHold("allowance_response_unproven")
+				}
+			}
 		}
 		return preparation, reviewHold("allowance_unavailable")
 	}
-	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
+	allowanceObservedAt := time.Now().UTC()
+	plan, err = refreshAgedMaterializedSource(ctx, d.reader, current.RepositoryID, current.Configuration, current.Operation, plan, allowanceObservedAt)
+	if err != nil {
+		return preparation, err
+	}
+	anchor.ObservedAt = plan.ObservedAt
+	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: allowanceObservedAt.Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
 		return preparation, err
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
@@ -184,11 +213,17 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		possibleStart = true
 	}
 	// Local capture retention remains finite but survives caller cancellation.
-	retentionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	retentionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
+	cancel()
+	failureReason := "capture_retention_failed"
 	if err == nil {
-		_, err = d.engine.PublishEvidence(retentionCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		// Retention/Git verification must not consume publication's own bounded
+		// local budget. A later observer can finish from this exact final ledger.
+		publicationCtx, cancelPublication := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = d.engine.PublishEvidence(publicationCtx, operation.ProjectID, retained.Receipt.ID, nil)
+		cancelPublication()
+		failureReason = "capture_publication_pending"
 		// Authoritative retained evidence remains usable when current browser
 		// metadata disappeared. Other publication failures remain conservative.
 		var missing *core.Error
@@ -201,7 +236,7 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		if possibleStart {
 			state = "uncertain"
 		}
-		return reviewexec.Result{State: state, Reason: "capture_retention_failed"}, nil
+		return reviewexec.Result{State: state, Reason: failureReason}, nil
 	}
 	if executionErr != nil {
 		if possibleStart {
@@ -217,6 +252,9 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	switch retained.Outcome {
 	case "failed", "cancelled", "rate_limited":
+		if retained.Outcome == "failed" && retained.Reason == "coverage_incomplete" {
+			return reviewexec.Result{State: "failed", Reason: retained.Reason}, nil
+		}
 		return reviewexec.Result{State: retained.Outcome, Reason: "capture_retained"}, nil
 	}
 	return reviewexec.Result{State: "uncertain", Reason: retained.Reason}, nil

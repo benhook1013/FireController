@@ -43,7 +43,7 @@ type EventPage struct {
 
 // readMessageEvents rechecks current authorization in the same read transaction
 // as both the retained events and the returned watermark.
-func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64, limit int) (EventPage, error) {
+func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64, limit int, includeAssignments bool) (EventPage, error) {
 	page := EventPage{Items: make([]Event, 0, limit)}
 	err := s.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var head int64
@@ -63,7 +63,11 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 		if expired {
 			return Fail("resync_required", "The event replay window expired; obtain a new scoped snapshot.", 409)
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,project_id,event_type,resource_id,revision,actor_id,payload_json,created_at FROM events WHERE project_id=? AND sequence>? AND event_type IN ('message.sent','message.seen','message.acknowledged') AND json_extract(payload_json,'$.recipient_worker_id')=? ORDER BY sequence LIMIT ?`, scope.ProjectID, after, scope.WorkerID, limit+1)
+		kinds := "'message.sent','message.seen','message.acknowledged'"
+		if includeAssignments {
+			kinds += ",'job.assigned','job.unassigned'"
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT sequence,project_id,event_type,resource_id,revision,actor_id,payload_json,created_at FROM events WHERE project_id=? AND sequence>? AND event_type IN (`+kinds+`) AND json_extract(payload_json,'$.recipient_worker_id')=? ORDER BY sequence LIMIT ?`, scope.ProjectID, after, scope.WorkerID, limit+1)
 		if err != nil {
 			return err
 		}

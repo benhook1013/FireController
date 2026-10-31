@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 const hostedRecoveryInterval = 15 * time.Second
 const hostedRecoveryBackoffMinimum = 30 * time.Second
 const hostedRecoveryBackoffMaximum = 5 * time.Minute
+const hostedRecoveryPendingErrorMaximum = time.Minute
 const hostedRecoveryRetryMaximum = 24 * time.Hour
 
 // StartRecovery observes only already-issued hosted work. The application starts
@@ -31,7 +33,9 @@ func (d *HostedDriver) StartRecovery(ctx context.Context) (<-chan error, error) 
 	return done, nil
 }
 
-func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
+func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
+	var lastCheck *reviewexec.HostedObserverCheck
+	defer func() { d.engine.StopHostedObserver(lastCheck, failure) }()
 	wait := d.wait
 	if wait == nil {
 		wait = waitHosted
@@ -54,7 +58,10 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 		}
 		delay := hostedRecoveryInterval
 		normal := candidate == nil && err == nil
+		recoveryFailed := false
 		if candidate != nil {
+			lastCheck = d.engine.BeginHostedObserver(d.capability.ID, candidate.ProjectID, candidate.OperationID, candidate.AttemptID)
+			reason := "observation_unavailable"
 			query, queryErr := d.engine.ReadHostedAllowanceQuery(ctx, candidate.ProjectID, candidate.AttemptID)
 			err = queryErr
 			if queryErr == nil {
@@ -66,12 +73,22 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 					// survives credential revocation, policy pauses and a changed login actor.
 					var observed RecoveredHosted
 					observed, err = RecoverHosted(ctx, d.provider, d.captures, d.engine, candidate.ProjectID, candidate.AttemptID, d.capability.ID, query.PostingActor, actor)
-					// Pending observations retain useful raw source but consume the
-					// finite reference journal. Keep their cadence on bounded backoff;
-					// only completion or no candidate restores the idle interval.
-					normal = err == nil && observed.State == "completed"
+					// A reason is returned only after the original recovery binding
+					// was read successfully; binding refusals keep ordinary backoff.
+					reason = observed.Reason
+					recoveryFailed = err != nil && observed.Reason != ""
+					// A complete source read with the original trigger still pending keeps
+					// a short cadence, including ambiguous attribution. This changes no
+					// capture/admission decision. Identical source reuses its retained
+					// capture; provider failures and binding refusals still back off.
+					normal = err == nil && (observed.State == "completed" || observed.State == "rate_limited")
+					if err == nil && observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches" || observed.Reason == "attribution_window_closed" && observed.TriggerCommentID > 0) {
+						normal = true
+						delay = hostedRecoveryBackoffMinimum
+					}
 				}
 			}
+			d.engine.FinishHostedObserver(lastCheck, time.Now().UTC(), time.Time{}, reason, hostedObserverFailure(reason, err))
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -86,10 +103,21 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) error {
 			}
 			delay = backoff
 			var providerError *reviewprovider.Error
-			if errors.As(err, &providerError) && providerError.RetryAfterSeconds > 0 {
+			hasProviderError := errors.As(err, &providerError)
+			rateLimited := hasProviderError && (providerError.Code == "provider_rate_limited" || providerError.Status == 429)
+			// An issued result may already be captured while local publication or
+			// settlement failed. Retry this same pass promptly, retaining semantic
+			// holds and provider cooldowns rather than starting another observer.
+			if recoveryFailed && !rateLimited {
+				delay = min(delay, hostedRecoveryPendingErrorMaximum)
+			}
+			if hasProviderError && providerError.RetryAfterSeconds > 0 {
 				retry := time.Duration(min(providerError.RetryAfterSeconds, int64(hostedRecoveryRetryMaximum/time.Second))) * time.Second
 				delay = max(delay, retry)
 			}
+		}
+		if candidate != nil {
+			d.engine.ScheduleHostedObserver(lastCheck, time.Now().UTC().Add(delay))
 		}
 		if err := wait(ctx, delay); err != nil {
 			if ctx.Err() != nil {

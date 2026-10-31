@@ -23,14 +23,33 @@ describe('project appearance and metadata boundary', () => {
     expect(validPresentationConfig({ ...config, theme: { surface_text: '#f7f6f3' } })).toBe(false);
     expect(validPresentationConfig({ ...config, headings: { jobs: 'Untrusted\nheading' } })).toBe(false);
   });
-  it('keeps every original fallback color/layout byte and covers the shared token vocabulary', async () => {
+  it('validates bounded project queue groups without changing queue or review rules', () => {
+    const config={name:'Project',brand_name:'Brand',tagline:'Tagline',headings:{},theme:{},review_groups:[{title:'Foundation',pull_numbers:[1,2]},{title:'Delivery',pull_numbers:[9]}]};
+    expect(validPresentationConfig(config)).toBe(true);
+    expect(validPresentationConfig({...config,review_groups:null})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[1]},{title:'Two',pull_numbers:[1]}]})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[]}]})).toBe(false);
+    expect(validPresentationConfig({...config,review_groups:[{title:'One',pull_numbers:[2147483648]}]})).toBe(false);
+    expect(validPresentationSnapshot({...snapshot,presentation:{...presentation,review_groups:config.review_groups}},project.id)).toBe(false);
+    expect(validPresentationSnapshot({...snapshot,presentation:{...presentation,revision:1,updated_at:'2026-10-19T00:00:00Z',review_groups:config.review_groups}},project.id)).toBe(true);
+    expect(validPresentationConfig({...config,theme:{merged_text:'#f2ebf8'}})).toBe(false);
+    expect(validPresentationConfig({...config,theme:{merged_rail_text:'#7042a0'}})).toBe(false);
+  });
+  it('preserves the approved fallback colors and layout and covers the shared token vocabulary', async () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const base = styles.split('\n/* Bounded presentation text. */')[0];
+    // Baseline keeps the selected Inter 600 header/five-pixel gap and removes
+    // the redundant left hero eyebrow and permission pill as requested. The
+    // mobile title now scales below 390px so ordinary words fit at 320px;
+    // the 390px and desktop title sizes remain unchanged. Outer surfaces now
+    // use the selected square-corner hierarchy; nested cards retain rounding.
+    // PR headings now use one uniformly styled number-and-title link.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('723a8ad8312d157a0b357cde763b1d16e9b59f477b4ea51c97a3327700e4f54f');
-    const tokens = new Set(Array.from(styles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('79c398c876bc33ea2ab36a9924f3b50336b8ebbb046b7103c071f29cfce530b3');
+    const modularStyles = styles + fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
+    const tokens = new Set(Array.from(modularStyles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());
     // Decorative shadows may stay literal. All informative declarations use
     // bounded roles, including colors added by stored-review views.
@@ -58,6 +77,26 @@ describe('project appearance and metadata boundary', () => {
     const page: ProjectMetadataPage = { items: [{ event_type: 'map.entry_updated', resource_id: 'entry_one', revision: 2, event_cursor: 'event_cursor' }], event_cursor: 'event_cursor', has_more: true };
     expect(validMetadataPage(page, 25)).toBe(true);
     for (const value of [{ ...page, cursor: 'message_cursor' }, { ...page, event_cursor: null }, { ...page, items: null }, { ...page, has_more: true, items: [] }, { ...page, event_cursor: 'wrong_last' }, { ...page, items: [...page.items, ...page.items] }, { ...page, items: [{ ...page.items[0], event_type: 'message.sent' }] }, { ...page, items: [{ ...page.items[0], revision: Number.MAX_SAFE_INTEGER + 1 }] }, { ...page, items: [{ ...page.items[0], body: 'not metadata' }] }]) expect(validMetadataPage(value, 25)).toBe(false);
+  });
+
+  it('accepts canonical round-control resources without widening other event identities', () => {
+    const event = { event_type: 'reviews.rounds_configured', resource_id: '32/hosted', revision: 1, event_cursor: 'round_cursor' };
+    const page = { items: [event], event_cursor: event.event_cursor, has_more: false };
+    for (const resource_id of ['1/cli', '32/hosted', '32/cli', '2147483647/hosted']) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, resource_id }] }, 25), resource_id).toBe(true);
+    }
+    for (const resource_id of ['0/cli', '01/cli', '-1/cli', '+1/cli', '1.0/cli', '1e2/cli', '2147483648/cli', '99999999999999999999/cli', '1/CLI', '1/unknown', '1/cli/more', '1//cli', '1%2fcli', '../cli', '1/cli\n', 'record_one', null]) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, resource_id }] }, 25), String(resource_id)).toBe(false);
+    }
+    for (const event_type of ['map.entry_updated', 'coordination.imported', 'review.observed', 'review.evidence.finalized']) {
+      expect(validMetadataPage({ ...page, items: [{ ...event, event_type }] }, 25), event_type).toBe(false);
+      expect(validMetadataPage({ ...page, items: [{ ...event, event_type, resource_id: 'record_one' }] }, 25), event_type).toBe(true);
+    }
+    for (const item of [{ ...event, payload: { channel: 'hosted' } }, { ...event, revision: 0 }, { ...event, event_cursor: '' }]) {
+      expect(validMetadataPage({ ...page, items: [item] }, 25)).toBe(false);
+    }
+    expect(validMetadataPage({ ...page, extra: true }, 25)).toBe(false);
+    expect(validMetadataPage({ ...page, items: [event, event] }, 25)).toBe(false);
   });
 
   it('preserves bounded well-formed retained names only at implicit revision zero', () => {
@@ -115,10 +154,13 @@ describe('project appearance and metadata boundary', () => {
     const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
     const styles = fs.readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const theme: Record<string, string> = { focus: '#808080', accent_background: '#ffffff', accent_text: '#000000', accent_soft_background: '#000000' };
-    for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed']) {
+    for (const family of ['canvas', 'surface', 'header', 'hero', 'active', 'blocked', 'parked', 'completed', 'merged']) {
       theme[`${family}_background`] = '#000000'; theme[`${family}_text`] = '#ffffff';
       if (['canvas', 'surface', 'header', 'hero'].includes(family)) theme[`${family}_muted`] = '#ffffff';
     }
+    const retainedTheme = {...theme}; delete retainedTheme.merged_background; delete retainedTheme.merged_text;
+    expect(validPresentationSnapshot({presentation:{...presentation,revision:1,updated_at:'2026-10-16T01:00:00Z',theme:retainedTheme},event_cursor:'cursor'},project.id)).toBe(true);
+    theme.merged_rail='#000000'; theme.merged_rail_text='#ffffff';
     // Both status surfaces may legally differ from the surrounding dark panel.
     theme.blocked_background = theme.parked_background = '#ffffff';
     theme.blocked_text = theme.parked_text = '#000000';

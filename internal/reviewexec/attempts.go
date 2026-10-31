@@ -81,6 +81,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if o.State != "queued" {
 			return conflict()
 		}
+		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
+			return nil
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -89,7 +92,14 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if err != nil {
 			return err
 		}
-		if c.Paused || revision != o.ConfigurationRevision {
+		if c.Paused {
+			return nil
+		}
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		if !compatible {
 			return holdOperation(ctx, tx, o, "configuration_changed", at)
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
@@ -113,17 +123,25 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if reason != "" {
 			return holdOperation(ctx, tx, o, reason, at)
 		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "review_held" || roundControlRefusal(refusal.Code)) {
+				return holdOperation(ctx, tx, o, preparationReason(err), at)
+			}
+			return err
+		}
 		var repositoryID int64
+		if earlier, err := e.earlierQueuedHostedIntent(ctx, tx, o, c, revision); err != nil {
+			return err
+		} else if earlier != nil {
+			return nil
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
 		if e.publishAttempt != nil {
-			available, err := attemptProjectionCapacity(ctx, tx, o)
-			if err != nil {
+			if err := validateAttemptProjection(ctx, tx, o); err != nil {
 				return err
-			}
-			if !available {
-				return holdOperation(ctx, tx, o, "projection_capacity", at)
 			}
 		}
 		var busy int
@@ -154,10 +172,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 
 func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 }
 
-func readAttempt(ctx context.Context, tx *sql.Tx, project, id string) (Attempt, error) {
+func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
 	var a Attempt
 	var anchor string
 	err := tx.QueryRowContext(ctx, `SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE project_id=? AND id=?`, project, id).Scan(&a.ID, &a.OperationID, &a.ProjectID, &a.Provider, &a.Account, &a.State, &a.Revision, &anchor, &a.Intent, &a.ExternalID)
@@ -193,6 +214,12 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
 		}
+		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
+		if err := requireIncomingRoutesClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -208,7 +235,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err != nil {
 			return err
 		}
-		if !allowed || c.Paused || revision != o.ConfigurationRevision {
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		if !allowed || !compatible {
 			return conflict()
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
@@ -221,6 +252,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if reason != "" {
 			return policyAdmissionConflict()
+		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			return err
 		}
 		state := "active"
 		if o.Channel == "hosted" {
@@ -248,6 +282,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
 			return err
 		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
+		}
 		result = a
 		return nil
 	})
@@ -269,8 +308,12 @@ func safeText(s string, max int) bool {
 	return true
 }
 
-func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason, at string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, at)
+func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reason, at string, refusal ...*SourceRefusal) error {
+	var facts *SourceRefusal
+	if len(refusal) > 0 {
+		facts = refusal[0]
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at,source_refusal_json) VALUES(?,?,?,?,?,?,?)`, a.ID, a.Revision, a.State, reason, a.ExternalID, at, sourceRefusalJSON(facts))
 	if err == nil && e.publishAttempt != nil {
 		return e.publishAttempt(ctx, tx, a)
 	}
@@ -280,6 +323,10 @@ func (e *Engine) transitionRow(ctx context.Context, tx *sql.Tx, a Attempt, reaso
 // Advance records one guarded transition. Uncertain attempts retain both
 // reservations; no retry, lease expiry or restart silently spends another run.
 func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string) (Attempt, error) {
+	return e.advanceWithSourceRefusal(ctx, project, id, expectedRevision, state, reason, externalID, nil)
+}
+
+func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string, refusal *SourceRefusal) (Attempt, error) {
 	if !identifier.MatchString(reason) || externalID != "" && !identifier.MatchString(externalID) {
 		return Attempt{}, invalid()
 	}
@@ -298,6 +345,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		o, err := readOperation(ctx, tx, project, a.OperationID)
 		if err != nil {
 			return err
+		}
+		if !validSourceRefusal(refusal, state, reason, o.PullNumber) {
+			return invalid()
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
 		if err != nil {
@@ -322,8 +372,21 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 				return err
 			}
 		}
-		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
+		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
+		}
+		if state == "completed" {
+			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+		}
+		if state != "posting" && state != "active" && state != "uncertain" {
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil
@@ -386,6 +449,23 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			if a.State == "preparing" && o.Channel == "hosted" {
+				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
+				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+					return readErr
+				}
+				if readErr == nil && record.Input.Observation.State == "cooldown_observed" && record.Input.Observation.RetryNotBefore.After(e.sampleExecutionTime()) {
+					_, scheduleErr := e.scheduleHostedCooldown(ctx, tx, x.project, x.id, a.Revision)
+					if scheduleErr == nil {
+						changed = append(changed, a.OperationID)
+						continue
+					}
+					var refusal *core.Error
+					if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
+						return scheduleErr
+					}
+				}
+			}
 			at, err := attemptRecordingStamp(ctx, tx, o, &a, now)
 			if err != nil {
 				return err
@@ -409,6 +489,11 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
+			}
+			if state == "cancelled" {
+				if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+					return err
+				}
 			}
 			changed = append(changed, a.OperationID)
 		}

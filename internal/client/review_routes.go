@@ -120,7 +120,10 @@ func ValidateReviewRouteDecisionRequest(r ReviewRouteDecisionRequest) error {
 	return nil
 }
 func ValidateReviewRouteFixRequest(r ReviewRouteFixRequest) error {
-	if r.ExpectedRevision < 1 || !validControlRevision(r.ExpectedRevision) || r.ExpectedSHA != "" && !controlHex(r.ExpectedSHA, 40) || !controlHex(r.FixSHA, 40) || !controlText(r.ProofNote, 2048, true) {
+	if err := reviewFixSHAValidation("", r.ExpectedSHA, r.FixSHA); err != nil {
+		return err
+	}
+	if r.ExpectedRevision < 1 || !validControlRevision(r.ExpectedRevision) || !controlText(r.ProofNote, 2048, true) {
 		return mutationValidation()
 	}
 	return nil

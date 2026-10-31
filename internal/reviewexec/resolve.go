@@ -2,7 +2,9 @@ package reviewexec
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -16,16 +18,23 @@ type TargetReader interface {
 	Pull(context.Context, string, int64) (reviewprovider.Pull, error)
 }
 
+// ParentReader resolves a published base branch to its unique open PR in the
+// same repository. Queue position never supplies repository dependency identity.
+type ParentReader interface {
+	ParentPull(context.Context, string, string) (reviewprovider.Pull, error)
+}
+
 type SourcePlan struct {
 	Repository       reviewprovider.Repository
 	Pull             reviewprovider.Pull
 	ParentPullNumber int64
 	ParentSHA        string
 	ObservedAt       string
+	SourceReason     string
 }
 
-// ResolveSource refreshes only the asserted target and preceding PR facts
-// needed to find its effective parent. This supplies source facts, not review
+// ResolveSource refreshes only the asserted target and its actual base-branch
+// parent when present. This supplies source facts, not review
 // policy, activity, allowance or permission to dispatch an external action.
 func ResolveSource(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, request Request) (SourcePlan, error) {
 	return resolveSource(ctx, reader, repositoryID, c, request, true)
@@ -56,8 +65,7 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		}
 		channels[channel] = true
 	}
-	position := slices.Index(c.Queue, request.PullNumber)
-	if position < 0 {
+	if !slices.Contains(c.Queue, request.PullNumber) {
 		return SourcePlan{}, core.Fail("review_not_configured", "The asserted review target is not configured.", 409)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -78,31 +86,34 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return SourcePlan{}, sourceHold("target_changed")
 	}
 	plan := SourcePlan{Repository: repo, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: observed}
-	if c.Mode == "stacked" {
-		for i := position - 1; i >= 0; i-- {
-			parent, err := reader.Pull(ctx, repo.FullName, c.Queue[i])
-			if err != nil {
-				return SourcePlan{}, err
-			}
-			if !sameTarget(parent, repositoryID, c.Queue[i]) {
-				return SourcePlan{}, sourceHold("parent_identity_changed")
-			}
-			if parent.Merged {
-				continue
-			}
-			if parent.State != "open" {
-				return SourcePlan{}, sourceHold("parent_unavailable")
-			}
-			plan.ParentPullNumber = parent.Number
-			plan.ParentSHA = parent.HeadSHA
-			break
+	if c.Mode == "stacked" && pull.BaseRef != repo.DefaultBranch {
+		parents, ok := reader.(ParentReader)
+		if !ok {
+			return SourcePlan{}, unavailableParentHold(pull)
 		}
+		parent, err := parents.ParentPull(ctx, repo.FullName, pull.BaseRef)
+		if err != nil {
+			var hold *core.Error
+			if errors.As(err, &hold) && hold.Code == "review_held" {
+				if details, ok := hold.Details.(map[string]string); ok && details["reason"] == "parent_unavailable" {
+					return SourcePlan{}, unavailableParentHold(pull)
+				}
+			}
+			return SourcePlan{}, err
+		}
+		if parent.Number <= 0 || parent.State != "open" || parent.Merged {
+			return SourcePlan{}, unavailableParentHold(pull)
+		}
+		if !sameTarget(parent, repositoryID, parent.Number) || parent.Number == pull.Number || parent.HeadRef != pull.BaseRef {
+			return SourcePlan{}, sourceHold("parent_identity_changed")
+		}
+		plan.ParentPullNumber, plan.ParentSHA = parent.Number, parent.HeadSHA
 	}
 	if plan.ParentPullNumber == 0 && pull.BaseRef != repo.DefaultBranch {
 		return SourcePlan{}, sourceHold("default_base_changed")
 	}
 	if plan.ParentSHA != pull.BaseSHA {
-		return SourcePlan{}, sourceHold("parent_moved")
+		return SourcePlan{}, &core.Error{Code: "review_held", Message: "The selected parent and observed base differ.", Status: 409, Details: map[string]string{"reason": "parent_moved", "pull_number": strconv.FormatInt(pull.Number, 10), "parent_pull_number": strconv.FormatInt(plan.ParentPullNumber, 10), "observed_base_sha": pull.BaseSHA, "expected_parent_sha": plan.ParentSHA}}
 	}
 	if ctx.Err() != nil {
 		return SourcePlan{}, sourceHold("observation_incomplete")
@@ -129,4 +140,10 @@ func RecheckSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return sourceHold("comparison_changed")
 	}
 	return nil
+}
+
+// The failed lookup may have no parent identity. Retain only facts established
+// by the checked child; later provider observations cannot fill this history in.
+func unavailableParentHold(pull reviewprovider.Pull) error {
+	return &core.Error{Code: "review_held", Message: "The checked PR base branch has no available open parent.", Status: 409, Details: map[string]string{"reason": "parent_unavailable", "pull_number": strconv.FormatInt(pull.Number, 10), "base_ref": pull.BaseRef}}
 }

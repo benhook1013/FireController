@@ -44,7 +44,7 @@ func TestPrimaryJobToolsSDKStdioBoundReplayAndPages(t *testing.T) {
 	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
-	want := map[string]int{"job_primary_read": 0, "job_primary_replace": 3, "job_primary_history": 2}
+	want := map[string]int{"job_primary_read": 1, "job_primary_replace": 4, "job_primary_history": 3}
 	for _, tool := range tools.Tools {
 		fields, ok := want[tool.Name]
 		if !ok {
@@ -128,8 +128,8 @@ func TestPrimaryJobToolsStrictArgumentsBeforeCredentialAndHTTP(t *testing.T) {
 	identity.ServerURL = service.URL
 	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": identity}, "missing-private-credential"), "alpha"), "")
 	for _, v := range []struct{ name, raw string }{
-		{"job_primary_read", `{"worker_id":"other"}`}, {"job_primary_read", `null`}, {"job_primary_history", `{"limit":0}`}, {"job_primary_history", `{"limit":101}`}, {"job_primary_history", `{"cursor":null}`}, {"job_primary_history", `{"cursor":""}`}, {"job_primary_history", `{"job_id":"job-one"}`},
-		{"job_primary_replace", `{"idempotency_key":"k","expected_revision":0}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":null}`}, {"job_primary_replace", `{"idempotency_key":"k","job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":null,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":-1,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":9223372036854775807,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"bad/job"}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"Job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"","job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"","worker_id":"other"}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0.0,"job_id":""}`},
+		{"job_primary_read", `{"worker_id":"bad/worker"}`}, {"job_primary_read", `null`}, {"job_primary_history", `{"limit":0}`}, {"job_primary_history", `{"limit":101}`}, {"job_primary_history", `{"cursor":null}`}, {"job_primary_history", `{"cursor":""}`}, {"job_primary_history", `{"job_id":"job-one"}`},
+		{"job_primary_replace", `{"idempotency_key":"k","expected_revision":0}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":null}`}, {"job_primary_replace", `{"idempotency_key":"k","job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":null,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":-1,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":9223372036854775807,"job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"bad/job"}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"Job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"","job_id":""}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0,"job_id":"","worker_id":"bad/worker"}`}, {"job_primary_replace", `{"idempotency_key":"k","expected_revision":0.0,"job_id":""}`},
 	} {
 		diagnosticResult(t, call(t, session, v.name, json.RawMessage(v.raw)), "invalid_arguments", false)
 	}

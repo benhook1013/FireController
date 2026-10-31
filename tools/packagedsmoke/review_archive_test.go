@@ -1,0 +1,585 @@
+//go:build packaged_smoke && linux
+
+package packagedsmoke
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// The stopped fixture deliberately exceeds observation admission's old ceiling.
+// This proves bounded archive reads, not cap-free publication or migration.
+func TestPackagedReviewArchiveSmoke(t *testing.T) {
+	started := time.Now()
+	// Leave the canonical sixty-second smoke invocation time to join owned
+	// Chromium/daemon groups even when the workload itself times out.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	t.Cleanup(cancel)
+	private := privateFixtureDirectory(t)
+	if os.Chmod(private, 0700) != nil {
+		t.Fatal("private archive fixture unavailable")
+	}
+	binDir := os.Getenv("FC_SMOKE_BIN_DIR")
+	if binDir == "" {
+		binDir, _ = filepath.Abs("../../bin")
+	}
+	if !filepath.IsAbs(binDir) {
+		t.Fatal("absolute packaged binary directory required")
+	}
+	binaries, hashes := map[string]string{}, map[string][32]byte{}
+	for _, name := range []string{"fc", "fcd", "fcmcp"} {
+		binaries[name] = filepath.Join(binDir, name)
+		hashes[name] = binaryHash(t, binaries[name])
+	}
+	// Reuse the existing private proof inventory; do not rebuild or rewrite
+	// source/assets while executing the selected packaged inputs.
+	sourceInputs := map[string]map[string][32]byte{}
+	for _, directory := range []string{"../../cmd", "../../internal", "../../webapp/src"} {
+		sourceInputs[directory] = upgradeFileHashes(t, directory)
+	}
+	archiveDriverHash := binaryHash(t, "review_archive.mjs")
+	defer func() {
+		for name, path := range binaries {
+			if binaryHash(t, path) != hashes[name] {
+				t.Errorf("packaged archive input %s changed", name)
+			}
+		}
+		for directory, before := range sourceInputs {
+			if !reflect.DeepEqual(before, upgradeFileHashes(t, directory)) {
+				t.Errorf("archive smoke changed source/embedded assets in %s", directory)
+			}
+		}
+		if binaryHash(t, "review_archive.mjs") != archiveDriverHash {
+			t.Error("archive browser driver changed during packaged proof")
+		}
+	}()
+	var external, engine atomic.Int64
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { external.Add(1); w.WriteHeader(502) }))
+	t.Cleanup(deny.Close)
+	browserDeny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { engine.Add(1); w.WriteHeader(502) }))
+	t.Cleanup(browserDeny.Close)
+	env := []string{"HOME=" + private, "USERPROFILE=" + private, "TMPDIR=" + private, "PATH=", "HTTP_PROXY=" + deny.URL, "HTTPS_PROXY=" + deny.URL, "NO_PROXY=127.0.0.1,localhost"}
+	data := filepath.Join(private, "data")
+	bootstrap := startDaemon(t, ctx, binaries["fcd"], data, env)
+	adminFile := filepath.Join(data, "bootstrap-admin.token")
+	admin, err := os.ReadFile(adminFile)
+	if err != nil || len(bytes.TrimSpace(admin)) == 0 {
+		t.Fatal("archive bootstrap credential unavailable")
+	}
+	bootstrap.stop(t)
+	project, worker, other, credential := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
+	snapshot, firstRun, tailRun, newer := seedPackagedReviewArchive(t, ctx, data, project, worker, bootstrap.instance, strings.TrimSpace(string(admin)))
+	newObservationFile := filepath.Join(private, "new-observation.json")
+	if os.WriteFile(newObservationFile, newer, 0600) != nil {
+		t.Fatal("private newer observation unavailable")
+	}
+	before := readUpgradeState(t, ctx, data)
+	oldSnapshot := packagedArchiveSnapshotHash(t, ctx, data, project, snapshot)
+	daemon := startDaemon(t, ctx, binaries["fcd"], data, env)
+	if daemon.instance != bootstrap.instance {
+		t.Fatal("archive daemon identity changed")
+	}
+	target, _ := url.Parse("http://" + daemon.address)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	var requests, writes, observations, instanceReads, scopedReads atomic.Int64
+	var lastScopedPath atomic.Value
+	lastScopedPath.Store("")
+	prefix := "/api/v1/projects/" + project
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/instance" {
+			instanceReads.Add(1)
+		}
+		if r.Method == http.MethodGet && (r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/")) {
+			scopedReads.Add(1)
+			lastScopedPath.Store(r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+			if r.Method == http.MethodPost && r.URL.Path == prefix+"/reviews/observations" {
+				observations.Add(1)
+			} else if !(r.URL.Path == prefix+"/browser-session" && (r.Method == http.MethodPost || r.Method == http.MethodDelete) || r.URL.Path == prefix+"/browser-session/renew" && r.Method == http.MethodPost) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() { gateway.CloseClientConnections(); gateway.Close() })
+	profileFile := filepath.Join(private, "archive-profile.json")
+	runCLI(t, ctx, binaries["fc"], env, "--profiles-file", profileFile, "--profile", "archive", "profile", "create", "--server", gateway.URL, "--instance", daemon.instance, "--project", project, "--worker", worker, "--credential-file", credential)
+	cli := func(args ...string) json.RawMessage {
+		t.Helper()
+		previous, previousInstance, previousScoped := requests.Load(), instanceReads.Load(), scopedReads.Load()
+		out := runCLI(t, ctx, binaries["fc"], env, append([]string{"--profiles-file", profileFile, "--profile", "archive", "reviews"}, args...)...)
+		selected := prefix + "/reviews/pulls/" + args[1]
+		if args[0] != "pull" {
+			selected += "/" + args[0]
+		}
+		if requests.Load() != previous+2 || instanceReads.Load() != previousInstance+1 || scopedReads.Load() != previousScoped+1 || lastScopedPath.Load() != selected || bytes.Contains(out, bytes.TrimSpace(admin)) {
+			t.Fatal("archive CLI silently paged, made extra calls or disclosed authority")
+		}
+		return out
+	}
+	type archiveItem struct {
+		ID              string `json:"id"`
+		Source          string `json:"source"`
+		SourceRunID     string `json:"source_run_id"`
+		SourceAttemptID string `json:"source_attempt_id"`
+	}
+	type archivePage struct {
+		SnapshotID string        `json:"snapshot_id"`
+		Source     string        `json:"source"`
+		Items      []archiveItem `json:"items"`
+		Cursor     string        `json:"cursor"`
+		HasMore    bool          `json:"has_more"`
+	}
+	checkPage := func(raw []byte, first int, run bool) archivePage {
+		t.Helper()
+		var page archivePage
+		decode(t, raw, &page)
+		if len(page.Items) != 5 || page.SnapshotID != snapshot || (run && page.Source != "" || !run && page.Source != "archive-publisher") || !page.HasMore || page.Cursor == "" {
+			t.Fatal("packaged archive page lost default-five bound, snapshot or publisher")
+		}
+		for i, item := range page.Items {
+			want := fmt.Sprintf("archive-attempt-%03d", first-i)
+			got := item.SourceAttemptID
+			if run {
+				want, got = fmt.Sprintf("archive-run-%03d", first-i), item.SourceRunID
+			}
+			if got != want || item.Source != "producer-a" {
+				t.Fatal("packaged archive order or original producer changed")
+			}
+		}
+		return page
+	}
+	for _, kind := range []string{"runs", "attempts"} {
+		first := checkPage(cli(kind, "123", "--snapshot", snapshot), 122, kind == "runs")
+		checkPage(cli(kind, "123", "--snapshot", snapshot, "--cursor", first.Cursor), 117, kind == "runs")
+	}
+	var pull map[string]json.RawMessage
+	decode(t, cli("pull", "123", "--snapshot", snapshot), &pull)
+	if _, exists := pull["attempts"]; exists {
+		t.Fatal("compact PR detail expanded attempts")
+	}
+
+	command := exec.CommandContext(ctx, binaries["fcmcp"], "--profiles-file", profileFile, "--profile", "archive")
+	command.Env = env
+	stderr := &boundedOutput{}
+	command.Stderr = stderr
+	connectCtx, stopConnect := context.WithTimeout(ctx, stepTimeout)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "packaged-archive", Version: "1"}, nil).Connect(connectCtx, &mcp.CommandTransport{Command: command, TerminateDuration: time.Second}, nil)
+	stopConnect()
+	if err != nil {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+		t.Fatal("packaged archive MCP unavailable")
+	}
+	closed := false
+	closeMCP := func() {
+		if closed {
+			return
+		}
+		closed = true
+		done := make(chan error, 1)
+		go func() { done <- session.Close() }()
+		select {
+		case err := <-done:
+			if err != nil || stderr.len() != 0 {
+				t.Error("archive MCP failed clean shutdown")
+			}
+		case <-time.After(stepTimeout):
+			_ = command.Process.Kill()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("archive MCP did not join")
+			}
+			t.Error("archive MCP shutdown exceeded budget")
+		}
+	}
+	t.Cleanup(closeMCP)
+	callTool := func(name string, args map[string]any) []byte {
+		t.Helper()
+		previous, previousInstance, previousScoped := requests.Load(), instanceReads.Load(), scopedReads.Load()
+		bounded, stop := context.WithTimeout(ctx, stepTimeout)
+		defer stop()
+		value, err := session.CallTool(bounded, &mcp.CallToolParams{Name: name, Arguments: args})
+		selected := prefix + "/reviews/pulls/123/" + strings.TrimPrefix(name, "review_")
+		if err != nil || value == nil || value.IsError || len(value.Content) != 1 || requests.Load() != previous+2 || instanceReads.Load() != previousInstance+1 || scopedReads.Load() != previousScoped+1 || lastScopedPath.Load() != selected {
+			t.Fatal("archive MCP silently paged or failed")
+		}
+		body, err := json.Marshal(value.StructuredContent)
+		text, ok := value.Content[0].(*mcp.TextContent)
+		if err != nil || !ok || len(body) > 64<<10 || !jsonEqual(body, []byte(text.Text)) || bytes.Contains(body, bytes.TrimSpace(admin)) {
+			t.Fatal("archive MCP structured output is not bounded matching JSON")
+		}
+		return body
+	}
+	for _, kind := range []string{"runs", "attempts"} {
+		first := checkPage(callTool("review_"+kind, map[string]any{"pull_number": 123, "snapshot": snapshot}), 122, kind == "runs")
+		checkPage(callTool("review_"+kind, map[string]any{"pull_number": 123, "snapshot": snapshot, "cursor": first.Cursor}), 117, kind == "runs")
+	}
+	closeMCP()
+	if writes.Load() != 0 || !reflect.DeepEqual(before, readUpgradeState(t, ctx, data)) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
+		t.Fatal("packaged CLI/MCP archive reads changed durable state")
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("Node required for archive browser smoke")
+	}
+	browserPath := os.Getenv("PLAYWRIGHT_BROWSERS_PATH")
+	if browserPath == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal("browser cache unavailable")
+		}
+		browserPath = filepath.Join(cache, "ms-playwright")
+	}
+	if !filepath.IsAbs(browserPath) {
+		t.Fatal("absolute browser cache required")
+	}
+	executable := os.Getenv("FC_BROWSER_EXECUTABLE")
+	if executable != "" && !filepath.IsAbs(executable) {
+		t.Fatal("absolute browser executable required")
+	}
+	config := map[string]string{"origin": gateway.URL, "project": project, "worker": worker, "other_worker": other, "instance": daemon.instance, "admin_file": adminFile, "credential_file": credential, "executable": executable, "proxy": browserDeny.URL, "snapshot": snapshot, "pull_number": "123", "count": "123", "first_attempt_id": "archive-attempt-122", "tail_attempt_id": "shared-attempt", "first_run_id": firstRun, "tail_run_id": tailRun, "source_a": "producer-a", "source_b": "producer-b", "new_observation_file": newObservationFile}
+	if proof := os.Getenv("FC_BROWSER_PROOF_DIR"); proof != "" {
+		if !filepath.IsAbs(proof) {
+			t.Fatal("absolute browser proof directory required")
+		}
+		config["proof_directory"] = proof
+	}
+	raw, _ := json.Marshal(config)
+	configFile := filepath.Join(private, "archive-browser.json")
+	if os.WriteFile(configFile, raw, 0600) != nil {
+		t.Fatal("private archive browser configuration unavailable")
+	}
+	script, _ := filepath.Abs("review_archive.mjs")
+	browser := exec.Command(node, script, configFile)
+	browser.Env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
+	browser.SysProcAttr, browser.WaitDelay = &syscall.SysProcAttr{Setpgid: true}, time.Second
+	output, browserStderr := &browserOutput{}, &boundedOutput{}
+	browser.Stdout, browser.Stderr = output, browserStderr
+	if browser.Start() != nil {
+		t.Fatal("archive browser could not start")
+	}
+	done := make(chan error, 1)
+	go func() { done <- browser.Wait() }()
+	joined := false
+	defer func() {
+		if pid := output.browserPID(); pid > 1 {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(-browser.Process.Pid, syscall.SIGKILL)
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(stepTimeout):
+				t.Error("archive browser did not join")
+			}
+		}
+	}()
+	select {
+	case err = <-done:
+		joined = true
+	case <-ctx.Done():
+		t.Fatal("archive browser exceeded bounded workload")
+	}
+	var result struct {
+		State            string `json:"state"`
+		Phase            string `json:"phase"`
+		DriverLine       int    `json:"driver_line"`
+		ProjectStatus    int    `json:"project_status"`
+		FailureKind      string `json:"failure_kind"`
+		ArchiveRequests  int    `json:"archive_requests"`
+		MaxLimit         int    `json:"max_limit"`
+		SourceCollisions bool   `json:"source_collisions"`
+		PinnedTail       bool   `json:"pinned_tail"`
+		CurrentReset     bool   `json:"current_reset"`
+		InlineFindings   bool   `json:"inline_findings"`
+		DetailRequests   int    `json:"detail_requests"`
+		FixtureWrites    int    `json:"fixture_writes"`
+		QueueWindow      bool   `json:"queue_window"`
+		MergedHistory    bool   `json:"merged_history"`
+	}
+	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
+	if len(lines) == 2 {
+		_ = json.Unmarshal(lines[1], &result)
+	}
+	// Twenty-five-row timeline pages and twenty-row attempt pages are read
+	// only on explicit continuation. Separate six-row channel summaries serve
+	// the hero and queue, including the old merged PR and bounded reload;
+	// no automatic archive walking.
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || result.ArchiveRequests < 26 || result.ArchiveRequests > 27 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+		phase := "unavailable"
+		switch result.Phase {
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
+			phase = result.Phase
+		}
+		if result.DriverLine > 0 && result.DriverLine <= 10000 {
+			t.Logf("safe archive failure phase=%s driver_line=%d project_status=%d failure_kind=%s", phase, result.DriverLine, result.ProjectStatus, result.FailureKind)
+		}
+		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
+	}
+	daemon.stop(t)
+	after := readUpgradeState(t, ctx, data)
+	// One new observation appends changed bodies/memberships, closes the old
+	// intervals, and replaces only current references. Retained payloads and the
+	// old resolved snapshot must remain intact; native ledgers stay unchanged.
+	changed := map[string]int{
+		"review_snapshots": 1, "review_workspace": 0,
+		"review_pull_versions": 7, "review_pull_memberships": 7, "review_current_pulls": 6,
+		"review_run_versions": 2, "review_run_memberships": 2, "review_current_runs": -121, "review_finding_versions": 2,
+		"review_attempt_versions": 1, "review_attempt_memberships": 1, "review_current_attempts": -122,
+		"review_current_totals": 6, "review_current_attempt_order": -122, "review_current_run_order": -121,
+		"events": 1, "receipts": 1, "sqlite_sequence": 0,
+	}
+	if len(before.tables) != len(after.tables) || !reflect.DeepEqual(before.metadata, after.metadata) || oldSnapshot != packagedArchiveSnapshotHash(t, ctx, data, project, snapshot) {
+		t.Fatal("archive browser changed schema, metadata or retained snapshot bytes")
+	}
+	for name, hash := range before.tables {
+		if delta, deliberate := changed[name]; deliberate {
+			if after.counts[name] != before.counts[name]+delta {
+				t.Fatalf("unexpected deliberate fixture row delta in %s", name)
+			}
+		} else if after.tables[name] != hash || after.counts[name] != before.counts[name] {
+			t.Fatalf("archive browser changed unrelated durable table %s", name)
+		}
+	}
+	if external.Load() != 0 || observations.Load() != 1 {
+		t.Fatal("archive workload attempted provider/external HTTP")
+	}
+	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/channel6/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+}
+
+func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) (string, string, string, []byte) {
+	t.Helper()
+	store, err := core.Open(ctx, data)
+	if err != nil {
+		t.Fatal("stopped archive setup unavailable")
+	}
+	defer store.Close()
+	zero := int64(0)
+	at := time.Now().UTC().Add(-time.Hour)
+	draft := true
+	pull := reviews.PullInput{Diff: &reviews.PullDiff{}, IsDraft: &draft, Number: 123, Title: "Retained archive metadata", State: "open", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Complete: true}
+	observation := reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "archive-publisher", ObservedAt: at.Format(time.RFC3339Nano), Queue: []reviews.PullInput{}, Retired: []reviews.RetiredPull{}}
+	raw, _ := json.Marshal(observation)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project+"/reviews/observations", bytes.NewReader(raw)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+admin)
+	r.Header.Set("X-FC-Instance", instance)
+	r.Header.Set("X-FC-Worker", worker)
+	r.Header.Set("Idempotency-Key", "packaged-archive-initial")
+	w := httptest.NewRecorder()
+	mux := server.New(store)
+	reviews.Register(mux, store)
+	mux.ServeHTTP(w, r)
+	var receipt reviews.Receipt
+	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &receipt) != nil || receipt.ID == "" || receipt.Revision != 1 {
+		t.Fatal("authenticated initial archive observation failed")
+	}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal("stopped synthetic archive transaction unavailable")
+	}
+	defer tx.Rollback()
+	var recent []reviews.RunSummary
+	var latest reviews.Attempt
+	var first, tail string
+	for i := 0; i < 123; i++ {
+		source, attemptID := "producer-a", fmt.Sprintf("archive-attempt-%03d", i)
+		if i < 2 {
+			attemptID = "shared-attempt"
+			if i == 1 {
+				source = "producer-b"
+			}
+		}
+		runSourceID := fmt.Sprintf("archive-run-%03d", i)
+		digest := sha256.Sum256([]byte(project + "\x00" + source + "\x00" + runSourceID))
+		id := "review_run_" + hex.EncodeToString(digest[:])[:32]
+		finishedAt := at.Add(time.Duration(i+1) * time.Second)
+		start, finish := at.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), finishedAt.Format(time.RFC3339Nano)
+		// Every synthetic finish is one second after its start. Encode that
+		// exact maximum instant with the schema-five index's signed-Unix bias
+		// and nine nanosecond digits; preserve both colliding producer keys.
+		sortKey := fmt.Sprintf("%016x.%09d", uint64(finishedAt.Unix())^(uint64(1)<<63), finishedAt.Nanosecond())
+		// These stopped synthetic display rows bypass only observation admission.
+		// They never create native execution, captured evidence or provider credit.
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO review_run_versions(project_id,id,version_revision,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json) VALUES(?,?,1,123,?,?,'cli',?,'Synthetic reviewer','full','completed',1,1,?,?,0,0,0,1,0,'[]')`, []any{project, id, source, runSourceID, pull.HeadSHA, start, finish}},
+			{`INSERT INTO review_run_memberships(project_id,id,start_revision,end_revision,version_revision,pull_number,run_order) VALUES(?,?,1,NULL,1,123,?)`, []any{project, id, i}},
+			{`INSERT INTO review_current_runs(project_id,id,start_revision,pull_number,run_order) VALUES(?,?,1,123,?)`, []any{project, id, i}},
+			{`INSERT INTO review_current_run_order(project_id,id,pull_number,channel,outcome,finalized,run_order) VALUES(?,?,123,'cli','completed',1,?)`, []any{project, id, i}},
+			{`INSERT INTO review_attempt_versions(project_id,source,source_attempt_id,version_revision,pull_number,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,1,123,'cli',?,'completed',?,?,1,?,'','')`, []any{project, source, attemptID, pull.HeadSHA, start, finish, runSourceID}},
+			{`INSERT INTO review_attempt_memberships(project_id,source,source_attempt_id,start_revision,end_revision,version_revision,pull_number,position) VALUES(?,?,?,1,NULL,1,123,?)`, []any{project, source, attemptID, i}},
+			{`INSERT INTO review_current_attempts(project_id,source,source_attempt_id,start_revision,pull_number,position) VALUES(?,?,?,1,123,?)`, []any{project, source, attemptID, i}},
+			{`INSERT INTO review_current_attempt_order(project_id,source,source_attempt_id,pull_number,channel,sort_key,position) VALUES(?,?,?,123,'cli',?,?)`, []any{project, source, attemptID, sortKey, i}},
+		} {
+			if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+				t.Fatalf("synthetic retained version/reference seed failed: %v", err)
+			}
+		}
+		if i == 0 {
+			tail = id
+		}
+		if i == 122 {
+			first = id
+		}
+		if i >= 120 {
+			recent = append([]reviews.RunSummary{{Source: source, ID: id, PullNumber: 123, SourceRunID: runSourceID, Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Synthetic reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: start, FinishedAt: finish, Finalized: true, CoverageLimits: []string{}}}, recent...)
+		}
+		one := int64(1)
+		latest = reviews.Attempt{SourceAttemptID: attemptID, Channel: "cli", HeadSHA: pull.HeadSHA, State: "completed", StartedAt: start, FinishedAt: finish, DurationSeconds: &one, SourceRunID: runSourceID}
+	}
+	recentJSON, _ := json.Marshal(recent)
+	latestJSON, _ := json.Marshal([]reviews.AttemptSummary{reviews.AttemptSummary(latest)})
+	metadataJSON, _ := json.Marshal(reviews.PullDisplayMetadata{Diff: pull.Diff, IsDraft: pull.IsDraft})
+	// The authenticated initial observation established revision one with no
+	// pulls. Insert its synthetic body once rather than rewriting an immutable
+	// version or writing through a logical read-only compatibility view.
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO review_pull_versions(project_id,number,version_revision,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,metadata_json) VALUES(?,123,1,?,'open',?,'main',?,'unknown','unknown',1,123,123,?,?,?)`, []any{project, pull.Title, pull.HeadSHA, pull.BaseSHA, string(recentJSON), string(latestJSON), string(metadataJSON)}},
+		{`INSERT INTO review_pull_memberships(project_id,number,start_revision,end_revision,version_revision,position) VALUES(?,123,1,NULL,1,0)`, []any{project}},
+		{`INSERT INTO review_current_pulls(project_id,number,start_revision,position) VALUES(?,123,1,0)`, []any{project}},
+		{`INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count,hosted_run_count,cli_run_count,subagent_run_count,manual_run_count) VALUES(?,123,123,123,0,0,123,0,0)`, []any{project}},
+	} {
+		if _, err = tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("synthetic compact archive version/reference failed: %v", err)
+		}
+	}
+	if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+		t.Fatal("synthetic archive current summaries disagree with retained references")
+	}
+	if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+		t.Fatal("synthetic archive current run order disagrees with retained references")
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatalf("synthetic archive transaction failed: %v", err)
+	}
+	one := int64(1)
+	pull.Title = "Current archive metadata"
+	draft = false
+	pull.Diff = &reviews.PullDiff{Files: 73, Additions: 6160, Deletions: 136}
+	pull.Runs = []reviews.RunInput{{SourceRunID: "current-only-run", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Synthetic reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), Finalized: true, CoverageLimits: []string{}, Findings: []reviews.Finding{}}}
+	pull.Runs[0].Found = 1
+	pull.Runs[0].Findings = []reviews.Finding{{SourceFindingID: "inline-finding", Title: "Inline retained finding", Detail: "Useful **inline detail**\n\n- Kept in this PR\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)", Severity: "low", Disposition: "rejected", DecisionReason: "Reviewed *source proof*.", Actor: "Fixture reviewer", DecidedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano)}}
+	pull.Attempts = []reviews.Attempt{{SourceAttemptID: "current-only-attempt", Channel: "cli", HeadSHA: pull.HeadSHA, State: "completed", StartedAt: at.Add(3 * time.Minute).Format(time.RFC3339Nano), FinishedAt: at.Add(4 * time.Minute).Format(time.RFC3339Nano), DurationSeconds: &one, SourceRunID: "current-only-run"}}
+	observation.ExpectedRevision, observation.ObservedAt, observation.Queue = &one, at.Add(5*time.Minute).Format(time.RFC3339Nano), []reviews.PullInput{pull}
+	// Selected window inputs use the owning authenticated observation handler,
+	// rather than extending the legacy oversized archive's stopped SQL seed.
+	for _, selected := range []struct {
+		number int64
+		state  string
+		age    time.Duration
+	}{
+		{201, "merged", 10 * 24 * time.Hour},
+		{202, "merged", 9 * 24 * time.Hour},
+		{203, "merged", 4 * 24 * time.Hour},
+		{204, "merged", 0}, // Missing merge time stays visible.
+		{205, "unknown", 0},
+		{206, "merged", 24 * time.Hour},
+	} {
+		item := reviews.PullInput{Number: selected.number, Title: fmt.Sprintf("Queue window %d", selected.number), State: selected.state, HeadSHA: pull.HeadSHA, BaseRef: pull.BaseRef, BaseSHA: pull.BaseSHA, CIState: "success", Mergeability: "mergeable", Complete: true, Runs: []reviews.RunInput{}, Attempts: []reviews.Attempt{}}
+		if selected.age > 0 {
+			item.MergedAt = at.Add(-selected.age).Format(time.RFC3339Nano)
+		}
+		if selected.number == 201 {
+			item.Runs = []reviews.RunInput{{SourceRunID: "old-merged-original-round", Channel: "cli", HeadSHA: pull.HeadSHA, Reviewer: "Original retained reviewer", Scope: "full", Outcome: "completed", Attributable: true, Complete: true, StartedAt: at.Add(-11 * 24 * time.Hour).Format(time.RFC3339Nano), FinishedAt: at.Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano), Found: 1, Finalized: true, CoverageLimits: []string{}, Findings: []reviews.Finding{{SourceFindingID: "old-merged-finding", Title: "Original merged finding", Detail: "Original **retained evidence**.", Severity: "low", Disposition: "rejected", DecisionReason: "Original review disposition.", Actor: "Original retained reviewer", DecidedAt: at.Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano)}}}}
+		}
+		observation.Queue = append(observation.Queue, item)
+	}
+	newer, _ := json.Marshal(observation)
+	return receipt.ID, first, tail, newer
+}
+
+func packagedArchiveSnapshotHash(t *testing.T, ctx context.Context, data, project, snapshot string) [32]byte {
+	t.Helper()
+	u := url.URL{Scheme: "file", Path: filepath.Join(data, "firecontroller.sqlite"), RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal("read-only archive snapshot unavailable")
+	}
+	defer db.Close()
+	// Newer explicit observations may replace current caches, never the pinned
+	// archive. Check their exact canonical derivation on this read-only handle.
+	if err = reviews.ValidateCurrentSummaries(ctx, db); err != nil {
+		t.Fatal("archive workload left inconsistent derived current summaries")
+	}
+	hash := sha256.New()
+	// Hash exact resolved snapshot contents with stable logical ordering. Interval
+	// end_revision/current-reference updates are intentional when newer state
+	// arrives; they must not alter what the pinned older snapshot resolves.
+	for _, selection := range []struct{ table, order string }{
+		{"review_snapshots", "revision"},
+		{"review_pulls", "position,number"},
+		{"review_runs", "pull_number,run_order,id"},
+		{"review_attempts", "pull_number,position,source,source_attempt_id"},
+		{"review_findings", "pull_number,run_id,position,source_finding_id"},
+		{"review_retired_pulls", "position,number"},
+	} {
+		if err := json.NewEncoder(hash).Encode(selection.table); err != nil {
+			t.Fatal("retained archive identity unavailable")
+		}
+		rows, err := db.QueryContext(ctx, `SELECT * FROM `+selection.table+` WHERE project_id=? AND snapshot_id=? ORDER BY `+selection.order, project, snapshot)
+		if err != nil {
+			t.Fatal("retained archive bytes unavailable")
+		}
+		cols, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Fatal("retained archive columns unavailable")
+		}
+		for rows.Next() {
+			values, ptrs := make([]any, len(cols)), make([]any, len(cols))
+			for i := range values {
+				ptrs[i] = &values[i]
+			}
+			if rows.Scan(ptrs...) != nil || json.NewEncoder(hash).Encode(values) != nil {
+				rows.Close()
+				t.Fatal("retained archive rows unavailable")
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal("retained archive read interrupted")
+		}
+	}
+	var sum [32]byte
+	copy(sum[:], hash.Sum(nil))
+	return sum
+}

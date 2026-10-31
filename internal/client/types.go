@@ -20,12 +20,13 @@ type CreateJobRequest struct {
 	Status   string `json:"status"`
 }
 
-type EditJobRequest struct {
-	ExpectedRevision int64   `json:"expected_revision"`
-	Title            *string `json:"title,omitempty"`
-	Brief            *string `json:"brief,omitempty"`
-	WorkerID         *string `json:"worker_id,omitempty"`
-	Status           *string `json:"status,omitempty"`
+type UpdateJobRequest struct {
+	ExpectedRevision int64          `json:"expected_revision"`
+	Title            *string        `json:"title,omitempty"`
+	Brief            *string        `json:"brief,omitempty"`
+	WorkerID         *string        `json:"worker_id,omitempty"`
+	Status           *string        `json:"status,omitempty"`
+	Progress         *ProgressPatch `json:"progress,omitempty"`
 }
 
 type SendMessageRequest struct {
@@ -51,7 +52,7 @@ type PageOptions struct {
 	Cursor string
 }
 type JobFilter struct{ WorkerID, Status string }
-type InboxFilter struct{ Unread, Unacknowledged bool }
+type InboxFilter struct{ Unread, Unacknowledged, Newest bool }
 type Page[T any] struct {
 	Items   []T    `json:"items"`
 	Cursor  string `json:"cursor"`
@@ -63,28 +64,50 @@ type Worker struct {
 	Name      string `json:"name"`
 }
 type JobSummary struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	WorkerID string `json:"worker_id"`
-	Status   string `json:"status"`
-	Revision int64  `json:"revision"`
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	WorkerID          string `json:"worker_id"`
+	Status            string `json:"status"`
+	Revision          int64  `json:"revision"`
+	ProgressSummary   string `json:"progress_summary"`
+	Blocker           string `json:"blocker"`
+	ProgressTruncated bool   `json:"progress_truncated"`
+	BlockerTruncated  bool   `json:"blocker_truncated"`
 }
 type Job struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"project_id"`
-	Title     string `json:"title"`
-	Brief     string `json:"brief"`
-	WorkerID  string `json:"worker_id"`
-	Status    string `json:"status"`
-	Revision  int64  `json:"revision"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID        string              `json:"id"`
+	ProjectID string              `json:"project_id"`
+	Title     string              `json:"title"`
+	Brief     string              `json:"brief"`
+	WorkerID  string              `json:"worker_id"`
+	Status    string              `json:"status"`
+	Revision  int64               `json:"revision"`
+	CreatedAt string              `json:"created_at"`
+	UpdatedAt string              `json:"updated_at"`
+	Progress  Progress            `json:"progress"`
+	Checklist JobChecklistSummary `json:"checklist"`
+	Notes     Page[NoteSummary]   `json:"notes"`
+}
+
+// JobState is immutable job history. Older source states may lack progress;
+// that absence does not describe the current job.
+type JobState struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Title     string    `json:"title"`
+	Brief     string    `json:"brief"`
+	WorkerID  string    `json:"worker_id"`
+	Status    string    `json:"status"`
+	Revision  int64     `json:"revision"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at"`
+	Progress  *Progress `json:"progress,omitempty"`
 }
 type JobHistoryEntry struct {
-	Revision  int64  `json:"revision"`
-	ActorID   string `json:"actor_id"`
-	State     Job    `json:"state"`
-	CreatedAt string `json:"created_at"`
+	Revision  int64    `json:"revision"`
+	ActorID   string   `json:"actor_id"`
+	State     JobState `json:"state"`
+	CreatedAt string   `json:"created_at"`
 }
 type InboxItem struct {
 	ID                string `json:"id"`

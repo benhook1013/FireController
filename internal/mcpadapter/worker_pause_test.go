@@ -44,7 +44,7 @@ func TestWorkerPauseToolsSDKStdioReplayHistoryAndAnnotations(t *testing.T) {
 	if err != nil || len(tools.Tools) == 0 || tools.NextCursor != "" {
 		t.Fatal("discovery", err)
 	}
-	want := map[string]int{"worker_pause_read": 0, "worker_pause_replace": 4, "worker_pause_history": 2}
+	want := map[string]int{"worker_pause_read": 1, "worker_pause_replace": 5, "worker_pause_history": 3}
 	for _, tool := range tools.Tools {
 		fields, ok := want[tool.Name]
 		if !ok {
@@ -122,7 +122,7 @@ func TestWorkerPauseToolsStrictBeforeCredentialAndHTTP(t *testing.T) {
 	identity.ServerURL = service.URL
 	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": identity}, "missing-private-credential"), "alpha"), "")
 	for _, v := range []struct{ name, raw string }{
-		{"worker_pause_read", `{"worker_id":"other"}`}, {"worker_pause_read", `null`}, {"worker_pause_history", `{"limit":0}`}, {"worker_pause_history", `{"cursor":null}`}, {"worker_pause_history", `{"cursor":""}`},
+		{"worker_pause_read", `{"worker_id":"bad/worker"}`}, {"worker_pause_read", `null`}, {"worker_pause_history", `{"limit":0}`}, {"worker_pause_history", `{"cursor":null}`}, {"worker_pause_history", `{"cursor":""}`},
 		{"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"reason":""}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":null,"reason":""}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":false}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":false,"reason":null}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":false,"reason":"x"}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":true,"reason":"\r"}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":true,"reason":"\ud800"}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0.0,"paused":false,"reason":""}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":9223372036854775807,"paused":false,"reason":""}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":false,"reason":"","Paused":true}`}, {"worker_pause_replace", `{"idempotency_key":"k","expected_revision":0,"paused":false,"reason":"","reason":""}`},
 	} {
 		diagnosticResult(t, call(t, session, v.name, json.RawMessage(v.raw)), "invalid_arguments", false)

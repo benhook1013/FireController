@@ -17,9 +17,9 @@ import (
 
 const (
 	MessageWaitDefaultLimit   = 20
-	MessageWaitDefaultSeconds = 25
+	MessageWaitDefaultSeconds = 300
 	MessageWaitMaxLimit       = 100
-	MessageWaitMaxSeconds     = 60
+	MessageWaitMaxSeconds     = 900
 	messageWaitFrameBytes     = 1 << 20
 )
 
@@ -41,9 +41,9 @@ func MessageWaitBudget(waitSeconds int) time.Duration {
 var errMessageWaitExpired = errors.New("message wait expired")
 
 // WaitForMessages owns one incoming-message stream until the first page with
-// message.sent events or a quiet timeout. It neither acknowledges messages nor
+// message.sent or assignment events or a quiet timeout. It neither acknowledges messages nor
 // reconnects; the caller retains its cursor if any error occurs. Typed zero
-// limit/waitSeconds select 20 events and 25 seconds respectively.
+// limit/waitSeconds select 20 events and 300 seconds respectively.
 func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, waitSeconds int) (MessageEventPage, error) {
 	if limit == 0 {
 		limit = MessageWaitDefaultLimit
@@ -93,7 +93,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 	}
 	u.Path, _ = url.PathUnescape(escaped)
 	u.RawPath = escaped
-	u.RawQuery = url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}}.Encode()
+	u.RawQuery = url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}, "include_assignments": {"true"}}.Encode()
 	r, err := http.NewRequestWithContext(stream, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return MessageEventPage{}, validation()
@@ -102,6 +102,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 	r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+	r.Header.Set("X-FC-Session", c.sessionID)
 	// The ordinary five-second whole-response timeout must not cut off an
 	// established stream. This call owns both overrides; concurrent finite reads
 	// retain their original client and transport settings.
@@ -126,6 +127,9 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		return MessageEventPage{}, fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode >= 500 && response.StatusCode < 600 && (err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "") {
+		return MessageEventPage{}, fail("service_unavailable", "The service returned an HTTP server error.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", response.StatusCode)
+	}
 	if err != nil || response.Header.Get("Content-Encoding") != "" {
 		return MessageEventPage{}, invalidResponse()
 	}
@@ -154,6 +158,10 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			return interrupted()
 		}
 		if err != nil {
+			var transport net.Error
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
+				return MessageEventPage{}, fail("connection_failed", "The message connection was lost.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", 0)
+			}
 			return MessageEventPage{}, invalidResponse()
 		}
 		if frame.event == "error" {
@@ -176,7 +184,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 				return MessageEventPage{}, invalidResponse()
 			}
 			previous = item.Sequence
-			if item.Type == "message.sent" {
+			if item.Type == "message.sent" || item.Type == "job.assigned" || item.Type == "job.unassigned" {
 				sent = append(sent, item)
 			}
 		}

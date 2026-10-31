@@ -57,7 +57,9 @@ func TestReviewToolsReadNativeSnapshotsWithoutEffects(t *testing.T) {
 				}
 				pull.Runs = append(pull.Runs, run)
 			}
-			pull.Attempts = []reviews.Attempt{{SourceAttemptID: "attempt", Channel: "subagent", State: "unknown", SourceRunID: "source-run-5"}}
+			for k := 0; k < 6; k++ {
+				pull.Attempts = append(pull.Attempts, reviews.Attempt{SourceAttemptID: "attempt-" + strconv.Itoa(k), Channel: "subagent", State: "unknown", SourceRunID: "source-run-5"})
+			}
 		}
 		observation.Queue = append(observation.Queue, pull)
 	}
@@ -95,8 +97,17 @@ func TestReviewToolsReadNativeSnapshotsWithoutEffects(t *testing.T) {
 	}
 	var pull client.ReviewPull
 	decodeResult(t, call(t, session, "review_pull", map[string]any{"pull_number": 1, "snapshot": queue.SnapshotID}), &pull)
-	if pull.Pull.Complete || len(pull.Attempts) != 1 || pull.Attempts[0].DurationSeconds != nil {
+	if pull.Pull.Complete || pull.Pull.AttemptCount != 6 {
 		t.Fatal("incomplete observation or unknown duration repaired")
+	}
+	var attempts, attemptTail client.ReviewAttempts
+	decodeResult(t, call(t, session, "review_attempts", map[string]any{"pull_number": 1, "snapshot": queue.SnapshotID}), &attempts)
+	if len(attempts.Items) != 5 || !attempts.HasMore || attempts.Items[0].SourceAttemptID != "attempt-5" || attempts.Items[0].DurationSeconds != nil || attempts.Items[0].Source != "synthetic MCP fixture" {
+		t.Fatal("attempt default-five, order, source or unknown duration changed")
+	}
+	decodeResult(t, call(t, session, "review_attempts", map[string]any{"pull_number": 1, "snapshot": queue.SnapshotID, "cursor": attempts.Cursor}), &attemptTail)
+	if len(attemptTail.Items) != 1 || attemptTail.HasMore || attemptTail.SnapshotID != queue.SnapshotID || attemptTail.Items[0].SourceAttemptID != "attempt-0" {
+		t.Fatal("explicit attempt continuation lost an item")
 	}
 	var runs, last client.ReviewRuns
 	decodeResult(t, call(t, session, "review_runs", map[string]any{"pull_number": 1, "snapshot": queue.SnapshotID}), &runs)
@@ -112,7 +123,7 @@ func TestReviewToolsReadNativeSnapshotsWithoutEffects(t *testing.T) {
 	if detail.SnapshotID != queue.SnapshotID || detail.Run.Complete || len(detail.Findings) != 1 || detail.Findings[0].Detail != "PRIVATE_FINDING_DETAIL" || len(detail.Run.CoverageLimits) != 1 {
 		t.Fatal("explicit source evidence changed")
 	}
-	if writes.Load() != 0 || reads.Load() != 7 || counts() != before || f.providers.Load() != providerBefore {
+	if writes.Load() != 0 || reads.Load() != 9 || counts() != before || f.providers.Load() != providerBefore {
 		t.Fatal("review tool performed extra requests, provider work or durable effects")
 	}
 }
@@ -129,6 +140,7 @@ func TestReviewToolArgumentsFailBeforeCredentialAndHTTP(t *testing.T) {
 		{"review_queue", `{"limit":0}`}, {"review_queue", `{"limit":101}`}, {"review_queue", `{"limit":1,"limit":2}`},
 		{"review_queue", `{"cursor":null}`}, {"review_queue", `{"cursor":" padded "}`}, {"review_queue", `{"cursor":"bad\u0000"}`},
 		{"review_queue", `{"cursor":"` + strings.Repeat("x", 4097) + `"}`}, {"review_queue", `{"snapshot":"other"}`},
+		{"review_attempts", `{}`}, {"review_attempts", `{"pull_number":null}`}, {"review_attempts", `{"pull_number":0}`}, {"review_attempts", `{"pull_number":2147483648}`}, {"review_attempts", `{"pull_number":1,"limit":101}`}, {"review_attempts", `{"pull_number":1,"cursor":" bad"}`}, {"review_attempts", `{"pull_number":1,"snapshot":"bad"}`}, {"review_attempts", `{"pull_number":1,"project_id":"override"}`}, {"review_attempts", `{"pull_number":1,"limit":null}`},
 		{"review_pull", `{}`}, {"review_pull", `{"pull_number":null}`}, {"review_pull", `{"pull_number":0}`},
 		{"review_pull", `{"pull_number":2147483648}`}, {"review_pull", `{"pull_number":1.5}`}, {"review_pull", `{"pull_number":"1"}`},
 		{"review_pull", `{"Pull_number":1}`}, {"review_pull", `{"pull_number":1,"pull_number":2}`},

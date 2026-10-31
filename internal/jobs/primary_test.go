@@ -372,7 +372,7 @@ func TestPrimaryFocusRestartAndJobsThreeMigration(t *testing.T) {
 	jobPath := "/api/v1/projects/" + p + "/jobs/" + j1
 	standing := a.call("GET", jobPath, token, "", nil).Body.String()
 	history := a.call("GET", jobPath+"/history", token, "", nil).Body.String()
-	if _, err := a.store.DB().Exec(`DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;UPDATE metadata SET value='3' WHERE key='schema:jobs'`); err != nil {
+	if _, err := a.store.DB().Exec(`DROP TABLE job_progress_history; DROP TABLE job_progress; DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE worker_primary_job_history;DROP TABLE worker_primary_jobs;UPDATE metadata SET value='3' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	var dbfile string

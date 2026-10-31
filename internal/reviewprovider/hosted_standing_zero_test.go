@@ -120,6 +120,115 @@ func TestHostedStandingZeroCRLFAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestHostedStandingZeroModerateRiskStillRequiresCompleteInventory(t *testing.T) {
+	for _, mode := range []string{"moderate", "unknown_label", "wrong_coverage_head", "missing_ack"} {
+		t.Run(mode, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "🔵 Low", "🟡 Moderate", 1)
+			switch mode {
+			case "unknown_label":
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "🟡 Moderate", "Unclassified", 1)
+			case "wrong_coverage_head":
+				s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, `"coveredCommitId":"`+intent.HeadSHA, `"coveredCommitId":"`+strings.Repeat("d", 40), 1)
+			case "missing_ack":
+				s.IssueComments = s.IssueComments[:2]
+			}
+			before := append([]IssueComment(nil), s.IssueComments...)
+			inventory, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "moderate" {
+				if !inventory.Complete || inventory.Publication.StandingZero == nil || len(inventory.Findings) != 0 {
+					t.Fatal("risk rating prevented otherwise proven zero inventory", inventory.Complete, inventory.Reason)
+				}
+			} else if inventory.Complete || inventory.Publication.StandingZero != nil {
+				t.Fatal("risk label support bypassed inventory proof", inventory.Complete, inventory.Reason)
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("source comments changed")
+			}
+		})
+	}
+}
+
+func TestHostedStandingZeroOptionalNoReviewableSubset(t *testing.T) {
+	block := func(count, paths string) string {
+		return "<details>\n<summary><strong>💤 Files with no reviewable changes: " + count + "</strong></summary>\n<dl>\n<dd>\n" + paths + "\n</dd>\n</dl>\n</details>"
+	}
+	for _, mode := range []string{"one", "all", "zero", "omitted_ignored", "unknown_path", "ignored_path", "duplicate", "count_mismatch", "zero_with_path", "overflow", "leading_zero", "more_than_selected", "backticks", "html", "link", "markup_selected_path", "emphasis_selected_path", "unsafe_path", "extra_prose", "wrong_envelope", "duplicate_block", "after_availability"} {
+		t.Run(mode, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			body := strings.Replace(s.IssueComments[1].Body, "🔵 Low", "🟡 Moderate", 1)
+			section := block("1", "* pkg/alpha.go")
+			switch mode {
+			case "all":
+				section = block("2", "* pkg/alpha.go\n* docs/guide.md")
+			case "zero":
+				section = block("0", "")
+			case "omitted_ignored":
+				body = strings.Replace(body, standingTestIgnoredBlock(t, body), "", 1)
+			case "unknown_path":
+				section = block("1", "* pkg/unknown.go")
+			case "ignored_path":
+				section = block("1", "* build/generated.js")
+			case "duplicate":
+				section = block("2", "* pkg/alpha.go\n* pkg/alpha.go")
+			case "count_mismatch":
+				section = block("2", "* pkg/alpha.go")
+			case "zero_with_path":
+				section = block("0", "* pkg/alpha.go")
+			case "overflow":
+				section = block("10001", "* pkg/alpha.go")
+			case "leading_zero":
+				section = block("01", "* pkg/alpha.go")
+			case "more_than_selected":
+				section = block("3", "* pkg/alpha.go")
+			case "backticks":
+				section = block("1", "* `pkg/alpha.go`")
+			case "html":
+				section = block("1", "* <code>pkg/alpha.go</code>")
+			case "link":
+				section = block("1", "* [pkg/alpha.go](pkg/alpha.go)")
+			case "markup_selected_path":
+				body = strings.Replace(body, "`pkg/alpha.go`", "`[pkg/alpha.go](target)`", 1)
+				section = block("1", "* [pkg/alpha.go](target)")
+			case "emphasis_selected_path":
+				body = strings.Replace(body, "`pkg/alpha.go`", "`**pkg/alpha.go**`", 1)
+				section = block("1", "* **pkg/alpha.go**")
+			case "unsafe_path":
+				section = block("1", "* ../pkg/alpha.go")
+			case "extra_prose":
+				section = block("1", "* pkg/alpha.go\nUnknown review state.")
+			case "wrong_envelope":
+				section = strings.Replace(section, "<dd>", "<div>", 1)
+			case "duplicate_block":
+				section += "\n" + section
+			}
+			availability := "**Included review availability:**"
+			if mode == "after_availability" {
+				start := strings.Index(body, availability)
+				end := start + strings.Index(body[start:], "\n")
+				body = body[:end] + "\n" + section + body[end:]
+			} else {
+				body = strings.Replace(body, availability, section+"\n"+availability, 1)
+			}
+			s.IssueComments[1].Body = body
+			inventory, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			want := mode == "one" || mode == "all" || mode == "zero" || mode == "omitted_ignored"
+			if err != nil || inventory.Complete != want || (inventory.Publication.StandingZero != nil) != want {
+				t.Fatal("optional subset changed inventory proof", inventory.Complete, inventory.Reason, err)
+			}
+			if want && (inventory.Publication.StandingZero.SelectedFiles != 2 || len(inventory.Findings) != 0) {
+				t.Fatal("subset changed selected-for-processing count or findings")
+			}
+			if s.IssueComments[1].Body != body {
+				t.Fatal("optional metadata mutated original source")
+			}
+		})
+	}
+}
+
 func TestHostedStandingZeroAttributionInventoryAndComparison(t *testing.T) {
 	s, intent, poster, bot, earliest := standingTestFixture(t)
 	before := append([]IssueComment(nil), s.IssueComments...)
@@ -238,6 +347,28 @@ func TestHostedStandingZeroVisibilityCannotBeLaundered(t *testing.T) {
 	}
 }
 
+func TestHostedStandingZeroSummaryMayFinishAfterCommandAcknowledgement(t *testing.T) {
+	s, intent, poster, bot, earliest := standingTestFixture(t)
+	s.IssueComments[1].UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Second)
+	s.ObservedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+	before := append([]IssueComment(nil), s.IssueComments...)
+	got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || !got.Complete || got.Publication.StandingZero == nil || !got.Publication.FinishedAt.Equal(s.IssueComments[1].UpdatedAt) || !reflect.DeepEqual(before, s.IssueComments) {
+		t.Fatal("proven final inventory requires an arbitrary provider edit order", got, err)
+	}
+	// A later trigger still closes attribution even when the delayed summary
+	// proves a clean run on this head. It cannot be borrowed across requests.
+	other := s.IssueComments[0]
+	other.ID += 1000
+	other.CreatedAt, other.UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Millisecond), s.IssueComments[2].UpdatedAt.Add(time.Millisecond)
+	other.Body = "@coderabbitai full review"
+	s.IssueComments = append(s.IssueComments, other)
+	got, err = ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || got.Complete || got.Publication.StandingZero != nil {
+		t.Fatal("late summary crossed a later request window", got, err)
+	}
+}
+
 func TestHostedStandingZeroWindowOriginAndCompetingInventory(t *testing.T) {
 	changes := map[string]func(*HostedPublicationSnapshot, HostedTriggerIntent){
 		"incomplete": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) { s.Complete = false },
@@ -246,9 +377,6 @@ func TestHostedStandingZeroWindowOriginAndCompetingInventory(t *testing.T) {
 		},
 		"ack at trigger": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
 			s.IssueComments[2].CreatedAt = s.IssueComments[0].CreatedAt
-		},
-		"summary after ack": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
-			s.IssueComments[1].UpdatedAt = s.IssueComments[2].UpdatedAt.Add(time.Second)
 		},
 		"future edit": func(s *HostedPublicationSnapshot, _ HostedTriggerIntent) {
 			s.IssueComments[1].UpdatedAt = s.ObservedAt.Add(time.Second)
@@ -554,7 +682,7 @@ func TestHostedStandingZeroOptionalIgnoredNeverHidesMalformedInventory(t *testin
 			b = strings.Replace(b, standingTestIgnoredBlock(t, b), "", 1)
 			return strings.Replace(b, "docs/guide.md", "pkg/alpha.go", 1)
 		},
-		"unknown risk label": func(b string) string { return strings.Replace(b, "🔵 Low", "🟡 Moderate", 1) },
+		"unknown risk label": func(b string) string { return strings.Replace(b, "🔵 Low", "Unclassified", 1) },
 		"mismatched minimal prefix": func(b string) string {
 			b = strings.Replace(b, "🔵 Low", "⚪ Minimal", 1)
 			return strings.Replace(b, "<code>ccccc</code>", "<code>ddddd</code>", 1)

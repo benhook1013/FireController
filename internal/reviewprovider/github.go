@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,11 +32,16 @@ const (
 )
 
 // GitHub is a bounded adapter for explicitly selected GitHub resources. It
-// never discovers repositories, retries requests, or chooses review targets.
+// never discovers repositories or chooses review targets. CI inventory movement
+// permits one bounded recollection of the same immutable commit.
 type GitHub struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
+	cacheMu    sync.Mutex
+	cache      map[string]conditionalEntry
+	cacheBytes int
+	cacheClock uint64
 }
 
 // NewGitHub creates the production GitHub API adapter. An empty token permits
@@ -120,19 +127,26 @@ func (g *GitHub) Repository(ctx context.Context, id int64) (Repository, error) {
 }
 
 func (g *GitHub) Pull(ctx context.Context, repository string, number int64) (Pull, error) {
+	pull, _, err := g.pullWithIdentity(ctx, repository, number)
+	return pull, err
+}
+
+// Keep the ordinary Pull read/normalization identical while letting a bounded
+// parent lookup verify the fresh wire repository identity before discarding it.
+func (g *GitHub) pullWithIdentity(ctx context.Context, repository string, number int64) (Pull, githubPull, error) {
 	if !validRepositorySelector(repository) || !validPullNumber(number) {
-		return Pull{}, invalidSelector()
+		return Pull{}, githubPull{}, invalidSelector()
 	}
 	path := "/repos/" + repository + "/pulls/" + strconv.FormatInt(number, 10)
 	var raw githubPull
 	if err := g.getJSON(ctx, path, nil, &raw); err != nil {
-		return Pull{}, err
+		return Pull{}, githubPull{}, err
 	}
 	pull, err := normalizePull(raw, number)
 	if err != nil {
-		return Pull{}, invalidResponse(false, 200)
+		return Pull{}, githubPull{}, invalidResponse(false, 200)
 	}
-	return pull, nil
+	return pull, raw, nil
 }
 
 func (g *GitHub) IssueComments(ctx context.Context, repository string, number int64) ([]IssueComment, error) {
@@ -259,10 +273,23 @@ func (g *GitHub) getJSON(ctx context.Context, path string, query url.Values, dst
 
 func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url.Values, body []byte, expectedStatus int, dst any) error {
 	if ctx == nil || ctx.Err() != nil {
-		return providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return providerTransportError(ctx, nil, false)
 	}
 	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || path == "" || path[0] != '/' {
 		return providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
+	}
+	if method == http.MethodGet && expectedStatus == http.StatusOK {
+		data, headers, status, err := g.requestBytes(ctx, method, path, query, body)
+		if err != nil {
+			return err
+		}
+		if status != expectedStatus {
+			return statusError(&http.Response{StatusCode: status, Header: headers}, false)
+		}
+		if decodeProviderJSON(data, dst) != nil {
+			return invalidResponse(false, status)
+		}
+		return nil
 	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path
 	if len(query) != 0 {
@@ -283,15 +310,18 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 	}
 	response, err := g.httpClient.Do(request)
 	if err != nil {
-		return providerError("provider_unavailable", "The provider request failed.", 0, 0, method == http.MethodPost)
+		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		return statusError(response, method == http.MethodPost)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
-	if err != nil || len(data) > githubMaxBody {
+	if len(data) > githubMaxBody {
 		return invalidResponse(method == http.MethodPost, response.StatusCode)
+	}
+	if err != nil {
+		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
 	if err := decodeProviderJSON(data, dst); err != nil {
 		return invalidResponse(method == http.MethodPost, response.StatusCode)
@@ -301,7 +331,7 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 
 func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 	if ctx == nil || ctx.Err() != nil {
-		return providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return providerTransportError(ctx, nil, false)
 	}
 	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || path == "" || path[0] != '/' {
 		return providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
@@ -356,7 +386,7 @@ func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 
 func (g *GitHub) requestBytes(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return nil, nil, 0, providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path + "?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
@@ -369,19 +399,58 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 	if g.token != "" {
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
+	cached, conditional := g.conditionalRequest(request)
 	response, err := g.httpClient.Do(request)
 	if err != nil {
-		return nil, nil, 0, providerError("provider_unavailable", "The provider request failed.", 0, 0, false)
+		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		if !conditional {
+			return nil, nil, 0, invalidResponse(false, response.StatusCode)
+		}
+		return cached.body, cached.headers.Clone(), http.StatusOK, nil
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, response.Header.Clone(), response.StatusCode, nil
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
-	if err != nil || len(data) > githubMaxBody {
+	if len(data) > githubMaxBody {
 		return nil, nil, 0, invalidResponse(false, response.StatusCode)
 	}
+	if err != nil {
+		return nil, nil, 0, providerTransportError(ctx, err, false)
+	}
+	g.rememberConditional(request, response, data)
 	return data, response.Header.Clone(), response.StatusCode, nil
+}
+
+// Transport failures include reads after successful response headers. Retain
+// only caller cancellation identity, never a raw transport error or its URL.
+func providerTransportError(ctx context.Context, err error, unknown bool) *Error {
+	failure := providerError("provider_unavailable", "The provider request failed.", 0, 0, unknown)
+	if ctx != nil {
+		failure.cause = ctx.Err()
+	}
+	switch {
+	case ctx == nil || errors.Is(failure.cause, context.Canceled):
+		failure.Message = "The provider request was canceled."
+	case errors.Is(failure.cause, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || providerTransportTimeout(err):
+		failure.Status = http.StatusRequestTimeout
+		failure.Message = "The provider request timed out."
+	}
+	return failure
+}
+
+func providerTransportTimeout(err error) bool {
+	// A url.Error may report false for Timeout when its immediate wrapped error
+	// lacks that method, even though a deeper transport error is a timeout.
+	for ; err != nil; err = errors.Unwrap(err) {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			return true
+		}
+	}
+	return false
 }
 
 func statusError(response *http.Response, mutation bool) error {
@@ -449,6 +518,10 @@ func nextPage(linkHeaders []string, baseURL, path string, current int64) (int64,
 // Collection-specific fixed selectors must survive pagination exactly; a Link
 // may select only the adjacent page, never change the original request scope.
 func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64, fixed url.Values) (int64, bool, error) {
+	return nextPageWithLimit(linkHeaders, baseURL, path, current, fixed, githubMaxPages)
+}
+
+func nextPageWithLimit(linkHeaders []string, baseURL, path string, current int64, fixed url.Values, maxPage int64) (int64, bool, error) {
 	for key, values := range fixed {
 		if key == "" || key == "page" || key == "per_page" || len(values) != 1 || values[0] == "" {
 			return 0, false, errors.New("invalid fixed query")
@@ -491,7 +564,7 @@ func nextPageWithQuery(linkHeaders []string, baseURL, path string, current int64
 				}
 			}
 			page, err := strconv.ParseInt(query.Get("page"), 10, 64)
-			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > githubMaxPages {
+			if err != nil || strconv.FormatInt(page, 10) != query.Get("page") || page != current+1 || page <= 0 || page > maxPage {
 				return 0, false, errors.New("nonadvancing next")
 			}
 			next = page
@@ -725,6 +798,7 @@ type githubPull struct {
 	Merged bool   `json:"merged,required"`
 	Head   struct {
 		SHA  string            `json:"sha,required"`
+		Ref  *string           `json:"ref"`
 		Repo *githubRepository `json:"repo,required"`
 	} `json:"head,required"`
 	Base struct {
@@ -732,7 +806,13 @@ type githubPull struct {
 		Ref  string           `json:"ref,required"`
 		Repo githubRepository `json:"repo,required"`
 	} `json:"base,required"`
-	ChangedFiles int64 `json:"changed_files,required"`
+	ChangedFiles int64   `json:"changed_files,required"`
+	Additions    *int64  `json:"additions"`
+	Deletions    *int64  `json:"deletions"`
+	Draft        *bool   `json:"draft"`
+	MergedAt     *string `json:"merged_at"`
+	Mergeable    *bool   `json:"mergeable"`
+	MergeState   string  `json:"mergeable_state"`
 }
 
 type githubIssueComment struct {
@@ -889,6 +969,13 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	if !validPlainText(raw.Title, 4096) || strings.TrimSpace(raw.Title) == "" || raw.Number != expectedNumber || raw.ChangedFiles < 0 || raw.ChangedFiles > 1000000 || raw.State != "open" && raw.State != "closed" || raw.Merged && raw.State != "closed" || raw.Base.Repo.ID <= 0 || !validSHA(raw.Head.SHA) || !validSHA(raw.Base.SHA) || !validPlainText(raw.Base.Ref, 255) || strings.TrimSpace(raw.Base.Ref) == "" {
 		return Pull{}, errors.New("invalid pull")
 	}
+	headRef := ""
+	if raw.Head.Ref != nil {
+		headRef = *raw.Head.Ref
+		if !validRequiredBranch(headRef) {
+			return Pull{}, errors.New("invalid head branch")
+		}
+	}
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
 		return Pull{}, errors.New("invalid base repository")
 	}
@@ -897,7 +984,40 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 			return Pull{}, errors.New("invalid head repository")
 		}
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles}, nil
+	mergedAt := ""
+	if raw.MergedAt != nil {
+		mergedAt = *raw.MergedAt
+	}
+	if (raw.Additions == nil) != (raw.Deletions == nil) {
+		return Pull{}, errors.New("GitHub pull request metadata is incomplete.")
+	}
+	for _, n := range []*int64{raw.Additions, raw.Deletions} {
+		if n != nil && (*n < 0 || *n > 2147483647) {
+			return Pull{}, errors.New("GitHub pull request metadata is invalid.")
+		}
+	}
+	if mergedAt != "" {
+		if !raw.Merged || len(mergedAt) > 64 {
+			return Pull{}, errors.New("GitHub merge time is invalid.")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, mergedAt); err != nil {
+			return Pull{}, errors.New("GitHub merge time is invalid.")
+		}
+	}
+	mergeability := "unknown"
+	if raw.Mergeable != nil {
+		mergeability = "conflicting"
+		if *raw.Mergeable {
+			mergeability = "mergeable"
+		}
+	}
+	mergeState := strings.ToUpper(raw.MergeState)
+	switch mergeState {
+	case "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE":
+	default:
+		mergeState = "UNKNOWN"
+	}
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

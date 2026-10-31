@@ -34,21 +34,22 @@ type SourceReviewStateSummary struct {
 }
 
 type SourceReadinessAssessment struct {
-	ProjectID              string                    `json:"project_id"`
-	RefreshID              string                    `json:"refresh_id"`
-	Source                 string                    `json:"source"`
-	ConfigurationRevision  int64                     `json:"configuration_revision"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	SourceObservedAt       string                    `json:"source_observed_at"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	Target                 SourceObservation         `json:"target"`
-	State                  string                    `json:"state"`
-	Reasons                []string                  `json:"reasons"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
-	CI                     SourceCISummary           `json:"ci"`
-	ReviewState            SourceReviewStateSummary  `json:"review_state"`
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	RefreshID                string                    `json:"refresh_id"`
+	Source                   string                    `json:"source"`
+	ConfigurationRevision    int64                     `json:"configuration_revision"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	SourceObservedAt         string                    `json:"source_observed_at"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	Target                   SourceObservation         `json:"target"`
+	State                    string                    `json:"state"`
+	Reasons                  []string                  `json:"reasons"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
+	CI                       SourceCISummary           `json:"ci"`
+	ReviewState              SourceReviewStateSummary  `json:"review_state"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
 }
 
 type sourceReviewReader interface {
@@ -179,7 +180,11 @@ func (e *Engine) assessmentSourceBinding(ctx context.Context, tx *sql.Tx, r sour
 		return 0, "", err
 	}
 	cap, ok := e.capabilities[c.CapabilityID]
-	if !sameSourceConfiguration(c, retained) || repositoryID != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
+	parent := int64(0)
+	if r.Observation != nil {
+		parent = r.Observation.ParentPullNumber
+	}
+	if !sameSourceTargetConfiguration(c, retained, r.PullNumber, parent) || repositoryID != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
 		return revision, "source_configuration_changed", nil
 	}
 	return revision, "", nil
@@ -258,22 +263,32 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 		} else if out.IncomingRoutesPending > 0 {
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
 		}
-		anchor := Anchor{RepositoryID: r.repositoryID, PullNumber: number, CandidateSHA: r.Observation.HeadSHA, BaseSHA: r.Observation.BaseSHA, BaseRef: r.Observation.BaseRef, ParentPullNumber: r.Observation.ParentPullNumber, ParentSHA: r.Observation.ParentSHA}
-		missing, pending := false, false
+		out.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		if out.SourceObligationsPending > 0 {
+			out.Reasons = append(out.Reasons, "source_obligations_pending")
+		}
+		missing, pending, roundsPending := false, false, false
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}
-			out.Channels = append(out.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
+			out.Channels = append(out.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
 			missing = missing || !state.Covered
 			pending = pending || state.Pending
+			roundsPending = roundsPending || state.RoundsConfigured && !state.RoundsComplete
 		}
 		if missing {
 			out.Reasons = append(out.Reasons, "review_coverage_missing")
 		}
 		if pending {
 			out.Reasons = append(out.Reasons, "review_evidence_pending")
+		}
+		if roundsPending {
+			out.Reasons = append(out.Reasons, "review_rounds_pending")
 		}
 		switch out.CI.State {
 		case "satisfied", "not_required":

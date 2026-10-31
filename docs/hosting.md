@@ -2,11 +2,15 @@
 
 ## Supported boundary
 
-One FireController service serves the API, live event transport and embedded browser. Local and remote installations use the same application and project permissions. Hosting remotely does not make private project data public. The optional public projection in [browser privacy](browser.md#privacy-and-public-status) remains unimplemented.
+One FireController service serves the API, live event transport and embedded browser. Local and remote installations use the same application and project permissions. Hosting remotely does not make private project data public. The [public project website](public-site.md) implements an explicit opt-in projection; private hosting or a service upgrade alone does not publish project data.
 
 The current daemon accepts only loopback listeners. Remote deployment places a TLS reverse proxy in front of that listener. The Go CLI and local stdio MCP adapter can use an HTTPS service URL in their private profiles; a remote controller does not require a remotely exposed MCP endpoint. See [client binding](agent-client.md) and [MCP configuration](mcp.md#configure-one-agent-binding).
 
+The [container runtime guide](container-runtime.md) provides the supported Linux/amd64 image build, Git HTTPS dependencies and private-volume run configuration. The image’s default command listens on `127.0.0.1:8081`; set the proxy upstream to the daemon’s actual `--listen` address. Native hosted reviews require Git even when no provider CLI is installed.
+
 ## A single authoritative installation
+
+Plain HTTP browser connections use HTTP/1.1. Chromium typically limits an origin to six simultaneous connections; each open live view can retain one project stream and another for a selected inbox. Enough simultaneous live views can therefore block further browser navigation even while the API remains healthy. Close extra live views or serve the installation through a TLS proxy that negotiates HTTP/2, which multiplexes those streams. This is a browser transport constraint, independent of project authorization and the eight-session cookie-retention policy. A focused Chromium check reproduced six active HTTP/1.1 project streams blocking a seventh document, with direct API access still successful and navigation recovering after one view closed. The hosted deployment negotiated HTTP/2 in the corresponding check. Ordinary hidden-tab lifecycle behavior and physical-device limits were not established by that experiment.
 
 Run one active service replica with SQLite on the server's local filesystem. One instance can serve multiple projects; each client retains its explicit instance, project, worker and credential binding. Clients use the API rather than opening the database or requiring a server checkout.
 
@@ -24,7 +28,7 @@ For a standalone host where Caddy owns the HTTP/HTTPS ports, the proxy configura
 
 ```caddyfile
 controller.example.com {
-    reverse_proxy 127.0.0.1:8080 {
+    reverse_proxy 127.0.0.1:8081 {
         flush_interval -1
     }
 }
@@ -40,11 +44,15 @@ A container with a read-only root filesystem also needs writable temporary stora
 
 The implemented browser feed uses SSE over HTTPS. Disable response buffering and allow idle intervals longer than its fifteen-second transport keepalive at every proxy. Verify actual frame delivery through the deployed route; a successful page load alone does not prove streaming. WebSocket transport and remote MCP endpoints remain separate, unimplemented capabilities.
 
+Optional [review-result waits](review-execution.md#collecting-review-results) can remain silent for up to 900 seconds. Every proxy must allow that selected wait plus the client/service margin before timing out response headers or upstream reads. For example, a 915-second upstream read timeout accommodates the maximum wait and its five-second request margin. Keep request-upload and header-reading limits independent. SSE keepalives do not protect a separate quiet result-wait request from a shorter proxy timeout.
+
 Before relocating an instance, stop its existing writer, capture a consistent database snapshot and required private files, and verify integrity, identities and retained records at the destination. Switch clients only after destination checks pass and keep the predecessor stopped. A stale predecessor is not a rollback database after new writes reach the destination. The [architecture recovery contract](architecture.md#storage-operations-and-growth) owns disaster restore, credential rotation and fencing; a planned relocation is distinct from disaster restore.
 
 Local [operator backup, inspection, inactive restore and managed scheduling](backups.md) are implemented. Remote/browser backup controls and automatic off-host transfer remain unimplemented. A migration backup does not establish an installed recurring backup policy or off-host durability.
 
 ## Executed deployment proof
+
+The sections below are historical deployment checkpoints pinned to the source and conditions tested. Statements that the predecessor remained primary describe those checkpoints; current working authority is recorded in [development runtime](delivery.md#development-runtime).
 
 The original single-server deployment used source `648c363a34ea52ffa36573260802602f2adf8745` and packaged `fcd` SHA-256 `c7cf7b8f18174108d154e4c5d5dde0154fa477a2fc05efa436a28464d98ee3a7`. Existing ingress and cert-manager passed publicly trusted HTTPS checks with that service and embedded browser. This build preceded persistent browser sessions; the following original deployment checks do not establish the cookie flow. Desktop and 390px browser checks exercised project connection, retained merged/open review history, real run details, workers/jobs and read-only Refresh. They observed no browser writes, credential persistence, JavaScript/CSP errors or overflow. A viewport check is not proof from a physical phone.
 
@@ -83,3 +91,43 @@ Runtime `265af4a5bc48f354516ee73bc578e586f4d2fcde` was installed from its verifi
 Twenty-nine trusted-HTTPS API checks and desktop/390px Chromium checks passed for retained reviews/jobs, explicit pause/focus defaults and histories, empty notes/map, implicit appearance, scoped links, Refresh, same-cookie reload and Disconnect/reset. Both the incoming-message and independent project-metadata streams delivered initial frames and idle keepalives through the deployed proxies. The browser made 238 requests: 234 reads and four session exchanges, with no successful domain mutations or observed browser errors. All eight screenshots were inspected. Two initial Notes captures showed a transient loading state; a separately preserved narrow follow-up awaited the fresh notes response and settled empty panel at both widths, then inspected two new captures. That follow-up made twenty reads and four session exchanges, with complete owned cleanup. No product change or full-case rerun was needed.
 
 This remains QA with imported historical review observations. The old working controller/site remain primary pending human GUI acceptance and migration/cutover proof. The later source-policy CI-inventory isolation fix has separate source/validation evidence and is not part of this pinned installed artifact. Installed nonempty theme/note mutations, provider execution, physical phones, fleet throughput, human GUI acceptance and operational cutover remain unproven; local controlled matrices cover the nonempty browser paths.
+
+## Activity-based browser renewal QA upgrade
+
+Clean source `ee344a0d36edb98065f6761647c54c7bb1467f44`, packaged daemon SHA-256 `73225828216a05932c29dc426c3de88ea39c50dcc9cdb984fa0884335857424c`, was installed behind the existing trusted-HTTPS ingress. A canonical stopped-source backup was exported and independently inspected before application. The additive project-map migration advanced version one to two and added three empty import-provenance tables; all existing table contents, other metadata, signing/instance identities, receipts, event sequence and captures stayed unchanged. Provider dispatch, recurring backups and public publication remained disabled.
+
+Desktop and 390px authenticated Chromium checks passed in 50.963 seconds, including eight real session renewals, selected-worker/reload continuity, secure cookies, no credential storage, retained nonempty reviews/jobs/map, Refresh and Disconnect. There were no JavaScript/CSP errors, horizontal overflow or domain/provider writes. The [renewal owner](browser-session-renewal.md) records the request counts and client-clock proof limits. An initial unqualified image-tag import was refused before stopping the application; a separately staged fully qualified release passed. No disposable candidate startup/restart experiment or physical-phone test was performed. The old working controller/site remain primary; this upgrade does not establish operational cutover.
+
+## Inter masthead QA update
+
+Clean source `701b6c4873c6f7d6c28e26380383a83e1b55767b` adds the self-hosted Inter semibold masthead, proportional flame and adjusted alignment. Its 280 browser tests and documentation/build checks passed; packaged CLI/MCP/API/upgrade/map-import checks passed in 1.134 seconds and private/public Chromium workloads in 5.541 seconds. The font and its license ship with the website; no font-provider request is needed.
+
+The installed immutable image passed a fresh canonical stopped-source backup, independent local inspection and strict same-schema conservation: all 62 table counts and row hashes, complete schema definitions/versions, signing and instance identities, receipts, event sequence and captures stayed unchanged. Trusted-HTTPS Chromium at desktop and 390px then verified actual Inter glyph rendering and exact font bytes, selected header geometry, nonempty review/map/job views, Refresh and authenticated reload in 29.426 seconds. Its 176 requests were 170 reads, two session creations, two existing renewals and two session deletions; no domain/provider writes, browser errors, clipping or overflow were observed. Both owned sessions were cleared. This is emulated narrow-browser proof, not a physical-phone test, human GUI acceptance or operational cutover.
+
+## Optional history acquisition
+
+A deployment may enable explicitly selected GitHub history reads with `--history-collection`, using the optional existing `--github-token-file`. This is independent of native review executable catalogs. The service remains the provider owner; clients enqueue selected work and read retained captures. Default deployments perform no collection. Restore holds apply before credentials or worker startup. See the [collection contract](history-collection.md) for bounded work, agent commands and proof limits.
+
+## Full runtime and Delivery/Project evaluation upgrade
+
+Full source `6beac06e9f34fa560487fb3834fa8668dd5e56db`, daemon SHA-256 `c53fe30e243525f59855b06d6f8eb7be50a438279d1854c5ca35e7fcd394d77b`, replaces the earlier narrow GUI overlay in the configured evaluation installation. An independent clean archive rebuild reproduced the binary. Before installation, an isolated retained-data copy passed startup, ordinary restart, canonical backup/inspection and inactive restore, with old-runtime session continuity through migration and restart.
+
+The guarded server update stopped the predecessor, created a canonical backup using that predecessor, exported and independently inspected it locally with the candidate, then started the new sole writer. All 78 existing tables retained their columns and rows except four added schema metadata entries and project-map version two to three. Ten new native tables were empty; five review views, complete retained review history, signing and instance identities, access grants, receipts, event sequence and captures were conserved. Candidate canonical post-upgrade backup and inspection passed.
+
+Thirteen authenticated HTTPS browser checks passed in 32.262 seconds across desktop, 390px and 320px: Delivery lanes and stored queue/head, separate Jobs/Inbox selection, actual ordered Project content, review history, sticky Refresh, secure session reload and logout. Refresh retained the cookie and feed; reload renewed the same session with the expected cookie rotation. Both project and inbox feeds delivered actual transport keepalives after about 14.85 seconds. The run used one owned login, renewal and logout, with no domain mutations, foreign requests or browser/HTTP errors. A post-browser read found all 88 table aggregates and retained captures unchanged. An initial connection wait timed out without an attributed cause; a separate unchanged diagnostic and the final workload passed. An immediate Reviews count assertion was corrected to await asynchronous rendering without changing its expected count or timeout.
+
+Functional checks do not establish visual acceptance: inspection found narrow merge-head review pills require a readable stacked layout. Physical-phone testing, human GUI acceptance and operational cutover remain open. Provider catalogs, history collection, recurring schedules and public publication remain disabled; the retained development controller remains operational authority. Later source review fixes are not implied by this immutable installation pin.
+
+## Readable merge-head follow-up
+
+Full source `dd48ff1dfd76bcfb301a671829515eff7f707639`, daemon SHA-256 `e8cd74a8ce6ac2129a35648320785c12ae364b94e17b5953de33db5ff6c80c00`, adds the scoped merge-head layout correction and accepted public-stream-capacity/backup-cancellation fixes. The immutable archive and all 920 source files were reconciled independently; local retained-data startup/restart/backup/inactive-restore qualification passed in 6.832 seconds. All 372 frontend checks, focused changed-domain race checks and the five packaged browser groups passed. A durable archive-browser assertion verifies actual single-line round counts/dates, unclipped pills and stacked narrow groups while retaining the desktop two-card layout.
+
+The follow-up server replacement used a newly verified stopped-source backup and independent local export verification. It preserved every schema definition and all 88 table columns/counts/row hashes, complete retained history, identity/access/receipts/events and captures. Canonical post-upgrade backup and inspection passed. Thirteen actual HTTPS checks passed in 34.340 seconds, including readable merge-head geometry at desktop/390px/320px, the existing five routes, Refresh, explicit current-session read-only authority, rolling renewal/reload/logout and both live-feed keepalives. The post-browser aggregate read remained identical. There were no domain mutations, foreign requests or browser/HTTP errors. An earlier driver's mint-response body read failed without a classified cause; the successful run verifies current authority through an explicit scoped session read and does not claim to have reproduced that earlier error.
+
+The earlier narrow-pill defect is resolved. Human GUI acceptance and physical-phone use remain separate. This image still serves coordination with provider dependencies/configuration disabled; installed native review execution and operational cutover require their own qualification.
+
+## Quiet result-wait proxy proof
+
+An installed proxy-only correction raises the upstream read timeout from 75 to 915 seconds for the unchanged `509a81fa4aa1e35e05e2708a2dc56a51be1f26d0` daemon. A disposable controlled workload using the same pinned Nginx image first returned 504 after 75.070 seconds; with the new setting it returned the exact quiet upstream response after 80.005 seconds. The live configuration passed Nginx validation and reloaded without changing its master PID, app pod, image or restart counts. All 88 table/schema/row aggregates, identities and retained captures remained unchanged. Five HTTPS session/data/Refresh/SSE checks passed in 24.084 seconds, including the same Refresh cookie and a real 14.517-second stream keepalive.
+
+The installed outer proxy has no configured response-write or response-header timeout overriding its unlimited defaults. The 80-second quiet-response workload exercised Nginx directly; normal authenticated browser requests exercised the public ingress. A long quiet wait through the complete public route, a full 900-second expiry and an actual native provider operation remain separate qualification boundaries.

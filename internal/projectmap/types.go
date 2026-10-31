@@ -21,6 +21,7 @@ type Editable struct {
 	Phases      []Phase `json:"phases"`
 	Links       []Link  `json:"links"`
 	Archived    bool    `json:"archived"`
+	Position    int64   `json:"position,omitempty"`
 }
 type Entry struct {
 	ID          string  `json:"id"`
@@ -38,6 +39,7 @@ type Entry struct {
 	Archived    bool    `json:"archived"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	Position    int64   `json:"position,omitempty"`
 }
 type Summary struct {
 	ID       string `json:"id"`

@@ -156,8 +156,9 @@ func sameRouteOrigin(a, b ReviewRoute) bool {
 }
 
 // readFindingRoute never loads source adjudication, avoiding recursive loaders.
-// Consumers validate the current source link before using an active obligation.
-func readFindingRoute(ctx context.Context, tx *sql.Tx, project, id string) (ReviewRoute, error) {
+// Source-sensitive consumers also validate the current source link; receiving
+// policy separately preserves this self/current-history/origin boundary.
+func readFindingRoute(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewRoute, error) {
 	var route ReviewRoute
 	var repositoryID, finding, sourcePull, targetPull, revision, hasFix int64
 	var sourceEvidence, head, state, disposition, created, body string
@@ -261,6 +262,9 @@ func persistFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, rout
 		return conflict()
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO review_finding_route_revisions(route_id,project_id,revision,actor_id,kind,created_at,body_json) VALUES(?,?,?,?,?,?,?)`, route.ID, route.ProjectID, route.Revision, scope.PrincipalID, kind, route.UpdatedAt, encoded(route)); err != nil {
+		return err
+	}
+	if err = refreshRoutePolicyFact(ctx, tx, route.ProjectID, route.ID); err != nil {
 		return err
 	}
 	return core.AppendEvent(ctx, tx, scope, "review.route."+kind, route.ID, route.Revision, struct {
@@ -376,6 +380,9 @@ func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, 
 			if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
 				return nil, err
 			}
+		}
+		if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, route.SourceEvidenceID); err != nil {
+			return nil, err
 		}
 		return Receipt{ID: id, State: kind, Revision: route.Revision}, nil
 	})
@@ -508,44 +515,25 @@ func (e *Engine) ListFindingRoutes(ctx context.Context, scope core.Scope, target
 	return result, nil
 }
 
-// pendingIncomingRoutes validates every active route before counting unresolved
-// obligations, including apparently resolved rows. More than 100 is explicit
-// capacity, never an unbounded scan or a false empty/passing obligation set.
+// Receiving policy needs exact unresolved obligations and valid retained route
+// authority, including apparently resolved rows. A dependency change leaves an
+// indexed invalidation until that route is validated by its owning mutation.
 func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM review_finding_routes WHERE project_id=? AND target_pull_number=? AND state='active' ORDER BY created_at DESC,id DESC LIMIT 101`, project, pull)
-	if err != nil {
+	var dirty bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_route_policy_invalidations WHERE project_id=? AND target_pull_number=?)`, project, pull).Scan(&dirty); err != nil {
 		return 0, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			break
-		}
-		ids = append(ids, id)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	_ = rows.Close()
-	if err != nil {
-		return 0, err
-	}
-	if len(ids) > 100 {
-		return 0, core.Fail("review_capacity", "The receiving PR has more active routes than the bounded assessment can inspect.", 409)
+	if dirty {
+		return 0, routeStorageError()
 	}
 	var pending int64
-	for _, id := range ids {
-		route, err := readFindingRoute(ctx, tx, project, id)
-		if err != nil {
-			return 0, err
-		}
-		if route.State != "active" || route.TargetPullNumber != pull {
-			return 0, routeStorageError()
-		}
-		if route.Disposition == "unadjudicated" || route.Disposition == "accepted" && route.FixSHA == "" {
-			pending++
-		}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_route_policy_facts WHERE project_id=? AND target_pull_number=? AND active=1 AND pending=1`, project, pull).Scan(&pending); err != nil {
+		return 0, err
+	}
+	// Browser JSON must preserve the exact count; this is a wire precision
+	// invariant, not a practical retained-route capacity or page-size limit.
+	if pending < 0 || pending > 1<<53-1 {
+		return 0, routeStorageError()
 	}
 	return pending, nil
 }

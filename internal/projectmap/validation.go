@@ -47,16 +47,19 @@ func validStamp(v string) bool {
 	return e == nil && !t.IsZero() && t.Year() >= 1 && t.Year() <= 9999 && strings.HasSuffix(v, "Z")
 }
 func editable(e Entry) Editable {
-	return Editable{Kind: e.Kind, Title: e.Title, Description: e.Description, State: e.State, Where: e.Where, Next: e.Next, Trigger: e.Trigger, Phases: e.Phases, Links: e.Links, Archived: e.Archived}
+	return Editable{Kind: e.Kind, Title: e.Title, Description: e.Description, State: e.State, Where: e.Where, Next: e.Next, Trigger: e.Trigger, Phases: e.Phases, Links: e.Links, Archived: e.Archived, Position: e.Position}
 }
 func entry(e Editable, project, id string, rev int64, created, updated string) Entry {
-	return Entry{ID: id, ProjectID: project, Revision: rev, Kind: e.Kind, Title: e.Title, Description: e.Description, State: e.State, Where: e.Where, Next: e.Next, Trigger: e.Trigger, Phases: e.Phases, Links: e.Links, Archived: e.Archived, CreatedAt: created, UpdatedAt: updated}
+	return Entry{ID: id, ProjectID: project, Revision: rev, Kind: e.Kind, Title: e.Title, Description: e.Description, State: e.State, Where: e.Where, Next: e.Next, Trigger: e.Trigger, Phases: e.Phases, Links: e.Links, Archived: e.Archived, CreatedAt: created, UpdatedAt: updated, Position: e.Position}
+}
+func validKind(kind string) bool {
+	return kind == "workstream" || kind == "return_point" || kind == "section"
 }
 func validateEditable(e Editable) error {
-	if e.Kind != "workstream" && e.Kind != "return_point" || !named(e.Title, 240) || !short(e.State, 240) || !text(e.Description, 8<<10) || !text(e.Where, 8<<10) || !text(e.Next, 8<<10) || !text(e.Trigger, 8<<10) || e.Phases == nil || e.Links == nil || len(e.Phases) > 64 || len(e.Links) > 12 {
+	if !validKind(e.Kind) || e.Position < 0 || e.Position > 1000000 || !named(e.Title, 240) || !short(e.State, 240) || !text(e.Description, 8<<10) || !text(e.Where, 8<<10) || !text(e.Next, 8<<10) || !text(e.Trigger, 8<<10) || e.Phases == nil || e.Links == nil || len(e.Phases) > 64 || len(e.Links) > 12 {
 		return invalid()
 	}
-	if e.Kind == "workstream" && e.Trigger != "" || e.Kind == "return_point" && (e.Where != "" || e.Next != "" || len(e.Phases) != 0) {
+	if e.Kind == "workstream" && e.Trigger != "" || e.Kind == "return_point" && (e.Where != "" || e.Next != "" || len(e.Phases) != 0) || e.Kind == "section" && (e.Where != "" || e.Next != "" || e.Trigger != "" || len(e.Phases) != 0) {
 		return invalid()
 	}
 	ids := make(map[string]bool, len(e.Phases))
@@ -131,6 +134,7 @@ type editableRequest struct {
 	Phases      []phaseRequest `json:"phases"`
 	Links       []linkRequest  `json:"links"`
 	Archived    *bool          `json:"archived"`
+	Position    *int64         `json:"position,omitempty"`
 }
 
 // Optional scalar omission supplies the replacement default. Explicit null is
@@ -192,6 +196,9 @@ func (r editableRequest) value() (Editable, error) {
 		return Editable{}, invalid()
 	}
 	e := Editable{Kind: *r.Kind, Title: strings.TrimSpace(*r.Title), Description: stringValue(r.Description), State: stringValue(r.State), Where: stringValue(r.Where), Next: stringValue(r.Next), Trigger: stringValue(r.Trigger), Archived: boolValue(r.Archived), Phases: make([]Phase, 0, len(r.Phases)), Links: make([]Link, 0, len(r.Links))}
+	if r.Position != nil {
+		e.Position = *r.Position
+	}
 	for _, p := range r.Phases {
 		if p.ID == nil || p.Name == nil {
 			return Editable{}, invalid()

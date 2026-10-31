@@ -98,9 +98,9 @@ func TestPrimaryJobCommandsUseBoundFocusAndRecoverOriginalKey(t *testing.T) {
 
 func TestPrimaryJobCommandsValidateBeforeProfileIO(t *testing.T) {
 	for _, args := range [][]string{
-		{"jobs", "primary", "job-one"}, {"jobs", "primary", "--worker", "other"}, {"jobs", "primary-history", "--limit", "0"}, {"jobs", "primary-history", "--limit", "101"}, {"jobs", "primary-history", "--cursor", " bad"}, {"jobs", "primary-history", "--cursor", ""}, {"jobs", "primary-history", "--limit", "1", "--limit", "2"},
+		{"jobs", "primary", "job-one"}, {"jobs", "primary", "--worker", "bad/worker"}, {"jobs", "primary-history", "--limit", "0"}, {"jobs", "primary-history", "--limit", "101"}, {"jobs", "primary-history", "--cursor", " bad"}, {"jobs", "primary-history", "--cursor", ""}, {"jobs", "primary-history", "--limit", "1", "--limit", "2"},
 		{"jobs", "primary-set", "job-one", "--key", "explicit"}, {"jobs", "primary-set", "job-one", "--expect-revision", "0"}, {"jobs", "primary-set", "bad/job", "--expect-revision", "0", "--key", "explicit"}, {"jobs", "primary-set", "", "--expect-revision", "0", "--key", "explicit"},
-		{"jobs", "primary-clear", "job-one", "--expect-revision", "0", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "-1", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "9223372036854775807", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "0", "--key", "a", "--key", "b"}, {"jobs", "primary-clear", "--expect-revision", "0", "--key", "explicit", "--worker", "other"},
+		{"jobs", "primary-clear", "job-one", "--expect-revision", "0", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "-1", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "9223372036854775807", "--key", "explicit"}, {"jobs", "primary-clear", "--expect-revision", "0", "--key", "a", "--key", "b"}, {"jobs", "primary-clear", "--expect-revision", "0", "--key", "explicit", "--worker", "bad/worker"},
 	} {
 		code, out, err := run(append([]string{"--profiles-file", "/unavailable/private.json", "--profile", "absent"}, args...), nil)
 		if code != cli.ExitUsage || out != "" || !strings.Contains(err, "invalid_arguments") {

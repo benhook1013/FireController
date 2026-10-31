@@ -21,7 +21,9 @@ import (
 func TestBackupScheduleRejectsInvalidConfigurationBeforeState(t *testing.T) {
 	for _, options := range [][]string{
 		{"--backup-destination", "DEST"}, {"--backup-interval", "1m"}, {"--backup-keep", "1"},
-		{"--backup-timeout", "1m"},
+		{"--backup-timeout", "1m"}, {"--backup-max-bytes", "1000"},
+		{"--backup-destination", "DEST", "--backup-interval", "1m", "--backup-keep", "1", "--backup-max-bytes", "-1"},
+		{"--backup-destination", "DEST", "--backup-interval", "1m", "--backup-keep", "1", "--backup-max-bytes", "0"},
 		{"--backup-destination", "DEST", "--backup-interval", "1m"},
 		{"--backup-destination", "DEST", "--backup-interval", "59s", "--backup-keep", "1"},
 		{"--backup-destination", "DEST", "--backup-interval", "720h1ns", "--backup-keep", "1"},

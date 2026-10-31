@@ -282,9 +282,24 @@ func readBounded(ctx context.Context, path string, limit int64) ([]byte, error) 
 	return data, nil
 }
 
-// inspectManifest verifies only a completed immutable bundle. The checksum file
-// is the commit marker; a reserved but unfinished directory is never usable.
+// inspectManifest verifies both the exact bundle bytes and their current
+// supported database/domain semantics for operator inspection and restore.
 func inspectManifest(ctx context.Context, bundleDir string) (Manifest, error) {
+	m, err := inspectBundleIntegrity(ctx, bundleDir)
+	if err != nil {
+		return m, err
+	}
+	absolute, _ := filepath.Abs(bundleDir)
+	if err = validateSnapshot(ctx, absolute, m); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+// inspectBundleIntegrity verifies completed immutable bytes, not database
+// semantics. Managed retention additionally requires the manifest hash recorded
+// only after full validation at creation. The checksum remains the commit marker.
+func inspectBundleIntegrity(ctx context.Context, bundleDir string) (Manifest, error) {
 	var m Manifest
 	if checkContext(ctx) != nil {
 		return m, unavailable()
@@ -329,9 +344,6 @@ func inspectManifest(ctx context.Context, bundleDir string) (Manifest, error) {
 		if err != nil || actual.SHA256 != a.SHA256 || actual.Bytes != a.Bytes {
 			return m, invalid()
 		}
-	}
-	if err = validateSnapshot(ctx, absolute, m); err != nil {
-		return m, err
 	}
 	return m, nil
 }

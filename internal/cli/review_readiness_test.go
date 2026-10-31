@@ -108,6 +108,14 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 	operation.CI = &assessment.CI
 	operation.ReviewState = &assessment.ReviewState
 	var mode atomic.Int64
+	operationAtMode := func() client.ReviewSourceOperation {
+		value := operation
+		if mode.Load() == 3 {
+			ci := client.ReviewSourceCISummary{State: "unproven", Reason: "ci_provider_observation_changed_assessment", ObservedAt: assessment.Target.ObservedAt}
+			value.CI = &ci
+		}
+		return value
+	}
 	var requests atomic.Int64
 	var expectedWait atomic.Int64
 	expectedWait.Store(2)
@@ -132,8 +140,10 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 				w.WriteHeader(202)
 				_ = json.NewEncoder(w).Encode(client.ReviewRequestReceipt{ID: cliRefreshID, State: "queued", Revision: 1})
 			} else {
-				_ = json.NewEncoder(w).Encode(operation)
+				_ = json.NewEncoder(w).Encode(operationAtMode())
 			}
+		case base + "source-refreshes/" + cliRefreshID:
+			_ = json.NewEncoder(w).Encode(operationAtMode())
 		case base + "source/2/readiness":
 			if r.Method != "GET" || r.Header.Get("Prefer") != "" || r.Header.Get("Idempotency-Key") != "" {
 				t.Error("readiness read mutated or refreshed")
@@ -148,6 +158,10 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 				value.State = "held"
 				value.Reasons = []string{"ci_merge_state_unproven"}
 				value.CI = client.ReviewSourceCISummary{State: "unproven", Reason: "ci_candidate_unproven", MergeState: "unproven", ObservedAt: value.Target.ObservedAt}
+			case 3:
+				value.State = "held"
+				value.Reasons = []string{"ci_unproven"}
+				value.CI = *operationAtMode().CI
 			}
 			_ = json.NewEncoder(w).Encode(value)
 		default:
@@ -181,18 +195,30 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 			}
 		}
 	}
-	for i := int64(0); i < 3; i++ {
+	for i := int64(0); i < 4; i++ {
 		mode.Store(i)
 		code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "readiness", "--pr", "2")
-		var got client.ReviewSourceReadinessAssessment
+		var got client.ReviewReadinessOutput
 		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || got.Target != assessment.Target || got.Source != "observed_comparison" || len(out) > 16<<10 || strings.Contains(out, `"threads":`) || strings.Contains(out, `"checks":`) || (got.State == "ready_as_observed") != (i == 0) {
 			t.Fatal("readiness lost held/observed facts", code, out, stderr)
+		}
+		if (got.CIDiagnostic != nil) != (i == 3) {
+			t.Fatal("readiness diagnostic missing or spurious", got)
 		}
 		if i == 1 && got.ReviewState.UnresolvedOutdated != 1 || i == 2 && got.CI.MergeState != "unproven" {
 			t.Fatal(got)
 		}
 	}
-	if requests.Load() != 12 || f.resolverHit.Load() != providers {
+	mode.Store(3)
+	expectedWait.Store(2)
+	for _, args := range [][]string{append(sourceCLIArgs(), "--readiness"), {"reviews", "source-operation", cliRefreshID}} {
+		code, out, stderr := mutationInvoke(t, path, "builder", args...)
+		var got client.ReviewSourceOperationOutput
+		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || got.CIDiagnostic == nil || got.CI == nil || got.CI.State != "unproven" || got.CI.Required != 0 || got.ID != operation.ID || got.HeadSHA != operation.HeadSHA || got.State != "completed" {
+			t.Fatal("source result lost diagnostic or original facts", code, out, stderr)
+		}
+	}
+	if requests.Load() != 18 || f.resolverHit.Load() != providers {
 		t.Fatal("readiness adapter polled or used provider", requests.Load())
 	}
 }

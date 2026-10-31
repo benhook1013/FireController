@@ -40,16 +40,23 @@ func (m *Manager) retain(ctx context.Context) error {
 	}
 	// Without an excess owned copy, retention has nothing to delete and makes
 	// no claim about the present bytes of the protected bundles.
+	keep, oversized, err := m.retentionCount(ctx)
+	if err != nil {
+		return err
+	}
 	var candidate int
-	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?)`, m.config.Destination, m.store.InstanceID(), m.config.Keep).Scan(&candidate); err != nil {
+	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?)`, m.config.Destination, m.store.InstanceID(), keep).Scan(&candidate); err != nil {
 		return unavailable()
 	}
 	if candidate == 0 {
+		if oversized {
+			return invalid()
+		}
 		return nil
 	}
 	// Verify the retained safety floor once per maintenance pass, before any
 	// older copy can be removed. Ledger ownership alone is not a usable backup.
-	if err := m.verifyKeepers(ctx); err != nil {
+	if err := m.verifyKeepersCount(ctx, keep); err != nil {
 		return err
 	}
 	for {
@@ -57,8 +64,11 @@ func (m *Manager) retain(ctx context.Context) error {
 			return unavailable()
 		}
 		var b ownedBundle
-		err := m.store.DB().QueryRowContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?`, m.config.Destination, m.store.InstanceID(), m.config.Keep).Scan(&b.id, &b.destination, &b.instance, &b.hash, &b.state)
+		err := m.store.DB().QueryRowContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?`, m.config.Destination, m.store.InstanceID(), keep).Scan(&b.id, &b.destination, &b.instance, &b.hash, &b.state)
 		if errors.Is(err, sql.ErrNoRows) {
+			if oversized {
+				return invalid()
+			}
 			return nil
 		}
 		if err != nil {
@@ -123,7 +133,10 @@ func (m *Manager) retain(ctx context.Context) error {
 	}
 }
 func (m *Manager) verifyKeepers(ctx context.Context) error {
-	rows, err := m.store.DB().QueryContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT ?`, m.config.Destination, m.store.InstanceID(), m.config.Keep)
+	return m.verifyKeepersCount(ctx, m.config.Keep)
+}
+func (m *Manager) verifyKeepersCount(ctx context.Context, keep int) error {
+	rows, err := m.store.DB().QueryContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT ?`, m.config.Destination, m.store.InstanceID(), keep)
 	if err != nil {
 		return unavailable()
 	}
@@ -158,7 +171,9 @@ func (m *Manager) verifyOwnedBundle(ctx context.Context, b ownedBundle) (Manifes
 	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
 		return zero, nil, invalid()
 	}
-	manifest, err := inspectManifest(ctx, path)
+	// The registered manifest binds bytes fully validated by createManaged.
+	// Rehash every file, but do not repeat domain scans for unchanged snapshots.
+	manifest, err := inspectBundleIntegrity(ctx, path)
 	if err != nil {
 		// Inspection cannot unlink. Cancellation can obscure a validation
 		// failure inside hashing; defer that judgment, never deletion checks.

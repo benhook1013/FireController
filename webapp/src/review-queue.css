@@ -1,0 +1,71 @@
+.review-guide{margin:0 0 14px;padding:10px 13px;border-left:3px solid var(--fc-accent_background,#a51f27);background:var(--fc-surface_background,#e7e7e7);color:var(--fc-surface_muted,#57636c);font-size:.72rem;line-height:1.45}
+.review-guide h3{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;margin:0 0 6px;color:var(--fc-surface_text,#242832)}
+.review-guide dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:4px 15px;margin:0}.review-guide dt,.review-guide dd{display:inline}.review-guide dt{font-weight:750;color:var(--fc-surface_text,#242832)}.review-guide dd{margin-left:5px}.review-guide p{margin:7px 0 0}.review-guide .review-count-key{margin-top:8px;padding-top:7px;border-top:1px solid var(--fc-surface_border,#c8c7c4)}
+.review-queue-panel{border-top:3px solid var(--fc-accent_background,#a51f27)}.review-queue-group{display:grid;grid-template-columns:minmax(130px,.35fr) minmax(0,1.65fr);gap:14px;padding:10px 12px}.review-queue-group+.review-queue-group{border-top:1px solid var(--fc-surface_border,#c8c7c4)}.review-queue-group-title{margin:4px 0;font-size:1rem;line-height:1.35;overflow-wrap:anywhere}.review-queue-group>.review-queue{grid-column:2}
+.review-queue>li.review-queue-row{color:var(--fc-surface_text,#242832);scroll-margin-top:var(--review-anchor-clearance,130px);display:grid;grid-template-columns:42px minmax(0,1fr);padding:0;gap:0;background:var(--fc-surface_background,#f7f6f3);border-bottom:1px solid var(--fc-surface_border,#c8c7c4)}.review-queue-position{align-self:stretch;display:block;padding:17px 3px;background:var(--fc-accent_background,#a51f27);color:var(--fc-accent_text,#fff);text-align:center;font-size:.77rem;font-weight:750;font-variant-numeric:tabular-nums}.review-queue-content{padding:5px 18px;min-width:0}.review-queue>li.review-row-merged{background:var(--fc-merged_background,#f2ebf8);color:var(--fc-merged_text,#392451)}.review-row-merged .review-queue-position,.review-pull-facts .review-state-merged{background:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_rail_text,#fff)}.review-row-closed .review-queue-position{background:var(--fc-canvas_text,#252833);color:var(--fc-canvas_background,#e8e7e4)}.review-state-open{background:var(--fc-active_background,#f3dcd4);color:var(--fc-active_text,#a3382c)}.review-state-closed,.review-state-unknown{background:var(--fc-canvas_background,#e5e7eb);color:var(--fc-canvas_text,#454b56)}
+.review-missing-facts{font-size:.72rem;max-width:100%;color:inherit}.review-missing-facts summary{cursor:pointer;font-weight:650}.review-missing-facts ul{list-style:disc;margin:8px 0 0;padding-left:19px}.review-missing-facts li{margin:3px 0}.review-attempt-state{display:inline-block;max-width:100%;overflow-wrap:anywhere;margin:7px 0 0;padding:2px 7px;border-radius:4px;font-size:.64rem;font-weight:750;background:var(--fc-parked_background,#f1e8d5);color:var(--fc-parked_text,#755018)}.review-attempt-failed,.review-attempt-uncertain{background:var(--fc-blocked_background,#f3e2e1);color:var(--fc-blocked_text,#82293b)}
+.review-history .review-round-pill time,.review-history .review-round-pill .review-pill-age{font-weight:750}.review-details-link{display:block;width:max-content;max-width:100%;margin:12px 0 0 auto;font-family:ui-sans-serif,system-ui,sans-serif;font-size:.89rem;font-weight:700;font-synthesis:weight;white-space:nowrap;text-decoration:underline;color:var(--fc-surface_text,#242832)}.review-details-link:hover{color:var(--fc-surface_text,#242832)}
+@media(max-width:900px){.review-queue-group{grid-template-columns:minmax(0,1fr);gap:7px}.review-queue-group>.review-queue{grid-column:1}.review-queue-group-title{margin:3px 0 3px 42px}}@media(max-width:650px){.review-queue-content{padding:4px 12px}.review-queue>li.review-queue-row{grid-template-columns:35px minmax(0,1fr)}.review-queue-position{font-size:.72rem}.review-queue-group{padding:8px}.review-guide{font-size:.68rem}.review-queue-group-title{margin-left:35px}}
+
+.review-row-merged .review-pull-heading h3 a,.review-row-merged .review-pull-heading h3 a:hover,.review-row-merged .review-pull-facts{color:var(--fc-merged_text,#392451)}
+.review-row-merged .review-round-pill,.review-row-merged .review-round-pill:hover{background:var(--fc-merged_background,#f2ebf8);border-color:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_text,#392451)}.review-row-merged .review-round-pill time,.review-row-merged .review-pill-age,.review-row-merged .review-pill-state{color:var(--fc-merged_text,#392451)}
+.review-row-merged .review-pill-completed.review-pill-zero,.review-row-merged .review-pill-completed.review-pill-zero:hover{background:var(--fc-merged_rail,#7042a0);border-color:var(--fc-merged_rail,#7042a0);color:var(--fc-merged_rail_text,#fff)}.review-row-merged .review-pill-zero time,.review-row-merged .review-pill-zero .review-pill-age{color:var(--fc-merged_rail_text,#fff)}
+
+.review-current-progress{display:flex;flex-wrap:wrap;gap:.25rem .65rem;padding:.45rem .6rem;margin:.35rem 0 .5rem;border:1px solid currentColor;border-radius:.5rem;font-size:.8rem}.review-progress-state{font-weight:700}.review-current-progress>span{white-space:normal}
+
+.review-diff{font-variant-numeric:tabular-nums}.review-diff strong,.review-merged-age{font-weight:750}.review-pull-facts .review-state-draft{background:var(--fc-parked_background,#e5e0d4);color:var(--fc-parked_text,#82704c)}
+
+.review-diff .review-additions{color:var(--fc-completed_text,#237451)}.review-diff .review-deletions{color:var(--fc-blocked_text,#a32234)}
+
+.review-pull-facts>.badge{border-radius:0}
+
+.review-page-body{padding:18px}
+@media(max-width:650px){.review-page-body{padding:14px}}
+
+/* Show a bounded recent window; full round history belongs to review details. */
+.review-lane{container-type:inline-size}
+.review-lane .review-recent-rounds{flex-wrap:nowrap}
+.review-queue-history-link{margin:0}
+@container(max-width:480px){.review-recent-rounds>.review-round-pill:nth-last-child(n+6){display:none}}
+@container(max-width:399px){.review-recent-rounds>.review-round-pill:nth-last-child(n+5){display:none}}
+@container(max-width:318px){.review-recent-rounds>.review-round-pill:nth-last-child(n+4){display:none}}
+@container(max-width:237px){.review-recent-rounds>.review-round-pill:nth-last-child(n+3){display:none}}
+@container(max-width:156px){.review-recent-rounds>.review-round-pill:nth-last-child(n+2){display:none}}
+@media(max-width:650px){.review-recent-rounds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.review-recent-rounds>.review-round-pill:nth-child(n){display:flex}}
+
+
+
+.review-queue-tools{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-left:auto;max-width:100%;min-width:0}
+.review-technical-details{position:relative;flex:none;font-size:.78rem;color:var(--fc-surface_text,#242832)}.review-technical-details>summary{display:grid;place-items:center;list-style:none;cursor:pointer;width:1.7rem;height:1.7rem;font-size:1.1rem;color:var(--fc-canvas_muted,#666874)}.review-technical-details>summary::-webkit-details-marker{display:none}.review-technical-details>summary:focus-visible{outline:2px solid var(--fc-accent_background,#a51f27);outline-offset:2px}
+.review-technical-popover{position:absolute;z-index:30;inset-block-start:calc(100% + 8px);inset-inline-end:0;box-sizing:border-box;width:min(28rem,calc(100vw - 48px));max-height:min(26rem,70vh);overflow:auto;overflow-wrap:anywhere;margin:0;padding:15px;background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);border:1px solid var(--fc-surface_border,#c8c7c4);box-shadow:0 5px 16px #0002}.review-technical-popover>div+div{margin-top:10px}.review-technical-popover dt{font-weight:700;margin-bottom:3px}.review-technical-popover dd{margin:0;min-width:0}.review-technical-popover code{white-space:normal;overflow-wrap:anywhere}
+
+/* The hero uses the same PR item, without inventing a queue position. */
+.review-queue>li.review-row-without-order{grid-template-columns:minmax(0,1fr)}
+.review-queue .review-pull-heading,.review-queue .review-pull-heading h3 a,.review-queue .review-pull-heading h3 a:hover{color:var(--fc-surface_text,#242832)}
+.review-pull-facts>.review-fact-pill{background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:999px;padding:3px 8px;text-transform:none;font-size:inherit;letter-spacing:normal;font-weight:600}
+
+.review-queue-content>.review-pull-heading{margin-bottom:4px}
+.review-queue-content>.review-details-link{margin-top:4px;padding:0;font-size:.78rem}
+
+.review-queue .review-queue-content>.review-history{margin:6px 0 0}
+
+.review-ci.review-fact-not_required{background:#edf0f4;color:#43505d;border-color:#c7cdd5}
+
+/* Channel holds share the heading instead of creating another content row. */
+.review-lane-heading h4{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px;min-width:0}.review-lane-heading .review-channel-position{margin-left:0}.review-lane-heading .review-attempt-state{margin:0;letter-spacing:normal;text-transform:none}
+
+.review-round-placeholder strong,.review-round-placeholder .review-pill-age{background:var(--fc-surface_border,#d8d1ca);border-radius:3px;min-width:3em;opacity:.6}.review-round-placeholder{pointer-events:none}
+
+.review-file-count.review-size-exceeded{color:var(--fc-blocked_text,#8e2634)}
+
+
+.review-queue-content .review-pull-heading h3{line-height:1.35}
+.review-queue-content>.review-pull-facts{row-gap:4px}
+.review-queue-content>.review-history>.review-lanes>.review-lane{padding:9px 12px}
+.review-queue .review-row-draft .review-queue-position{background:var(--fc-parked_text,#82704c);color:var(--fc-parked_background,#e5e0d4)}
+.review-queue .review-row-draft.review-status-closed .review-queue-position{background-image:repeating-linear-gradient(135deg,var(--fc-canvas_text,#242832) 0 4px,var(--fc-parked_text,#82704c) 4px 10px)}
+
+/* Refresh feedback marks the outline, never the result-colour fill. */
+.review-round-pill.semantic-change-0{animation:review-pill-refresh-even 1.2s ease-out both}.review-round-pill.semantic-change-1{animation:review-pill-refresh-odd 1.2s ease-out both}
+@keyframes review-pill-refresh-even{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}@keyframes review-pill-refresh-odd{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}
+@media(prefers-reduced-motion:reduce){.review-round-pill.semantic-change-0,.review-round-pill.semantic-change-1{animation:none}}

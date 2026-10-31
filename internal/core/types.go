@@ -20,6 +20,7 @@ type Scope struct {
 	readOnly       bool
 	expiresAt      time.Time
 	sessionProject string
+	clientSession  string
 }
 
 type Mutation struct {

@@ -87,6 +87,7 @@ func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedT
 		return uncertain, nil
 	}
 	seen := make(map[int64]struct{}, len(comments))
+	historicalAttempts := map[string]bool{}
 	lowerBound := earliestPosting.Add(-HostedProviderClockSkew)
 	total := 0
 	var match *IssueComment
@@ -104,6 +105,15 @@ func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedT
 		// A quoted, fenced, modified or malformed copy of this owned marker is
 		// conflicting evidence, never a second format accepted for adoption.
 		ownedMarker := strings.Contains(comment.Body, markerFamily) && (strings.Contains(comment.Body, "operation="+intent.OperationID) || strings.Contains(comment.Body, "attempt="+intent.AttemptID))
+		if comment.Body != body && ownedMarker && markerFamily == "firecontroller-allowance-query" {
+			if historical, ok := historicalHostedAllowanceIntent(*comment, intent, postingAuthor, earliestPosting); ok {
+				if historicalAttempts[historical.AttemptID] {
+					return ambiguous, nil
+				}
+				historicalAttempts[historical.AttemptID] = true
+				continue
+			}
+		}
 		if comment.Body != body && !ownedMarker {
 			continue
 		}
@@ -116,4 +126,23 @@ func recoverHostedCommand(comments []IssueComment, complete bool, intent HostedT
 		return uncertain, nil
 	}
 	return HostedTriggerRecovery{State: "adopted", Reason: "exact_trigger_found", CommentID: match.ID, CreatedAt: match.CreatedAt}, nil
+}
+
+// Cooldown retries retain the operation but have distinct attempt-bound queries.
+// Recognize only an exact earlier command from the original posting identity;
+// malformed markers, later commands and repeated historical attempts conflict.
+// The complete history remains available to the allowance attribution window.
+func historicalHostedAllowanceIntent(comment IssueComment, current HostedTriggerIntent, author Author, earliest time.Time) (HostedTriggerIntent, bool) {
+	prefix := "@coderabbitai rate limit\n\n<!-- firecontroller-allowance-query v1 operation=" + current.OperationID + " attempt="
+	suffix := " head=" + current.HeadSHA + " -->"
+	if !strings.HasPrefix(comment.Body, prefix) || !strings.HasSuffix(comment.Body, suffix) || comment.Author.ID != author.ID || comment.Author.Kind != author.Kind || !comment.CreatedAt.Before(earliest) || !comment.UpdatedAt.Equal(comment.CreatedAt) {
+		return HostedTriggerIntent{}, false
+	}
+	attempt := strings.TrimSuffix(strings.TrimPrefix(comment.Body, prefix), suffix)
+	if attempt == current.AttemptID || !hostedTriggerID(attempt, "review_attempt_") {
+		return HostedTriggerIntent{}, false
+	}
+	prior := HostedTriggerIntent{OperationID: current.OperationID, AttemptID: attempt, HeadSHA: current.HeadSHA}
+	body, err := HostedAllowanceQueryBody(prior)
+	return prior, err == nil && body == comment.Body
 }

@@ -14,7 +14,9 @@ func TestStoredHistoryValidationReturnsStorageUnavailable(t *testing.T) {
 			var route, query string
 			var args []any
 			if kind == "job-update" {
-				progressOK(t, a.callWorker("POST", base+"/updates", token, worker, "retained-update", map[string]any{"expected_job_revision": 1, "body": "original private update"}), 201)
+				if _, err := a.store.DB().Exec(`INSERT INTO job_updates(id,project_id,job_id,job_revision,actor_id,worker_id,body,evidence_json,created_at) VALUES(?,?,?,1,'legacy-actor','','original private update','[]','2026-01-01T00:00:00Z')`, "legacy-update", project, strings.TrimPrefix(base, "/api/v1/projects/"+project+"/jobs/")); err != nil {
+					t.Fatal(err)
+				}
 				route = base + "/updates"
 				query = `UPDATE job_updates SET evidence_json='null' WHERE project_id=?`
 				args = []any{project}

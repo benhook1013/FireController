@@ -19,6 +19,7 @@ import (
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -58,7 +59,7 @@ func reviewControlsStdio(t *testing.T, path, name string) *mcp.ClientSession {
 	return session
 }
 
-func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
+func reviewControlsFixture(t *testing.T, native ...bool) (*mutationAPI, http.Handler, string) {
 	t.Helper()
 	f := mutationFixture(t)
 	ctx := context.Background()
@@ -67,7 +68,14 @@ func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
 			t.Fatal(err)
 		}
 	}
-	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli"}}})
+	var options []reviewexec.EngineOption
+	if len(native) > 0 && native[0] {
+		if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+			t.Fatal(err)
+		}
+		options = append(options, reviewexec.WithNativeProjection())
+	}
+	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli"}}}, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +98,7 @@ func reviewControlsFixture(t *testing.T) (*mutationAPI, http.Handler, string) {
 		return result
 	}
 	zero := int64(0)
-	if _, err = engine.ConfigurePolicy(ctx, scope(true), "fixture-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	if _, err = engine.ConfigurePolicy(ctx, scope(true), "fixture-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = engine.Configure(ctx, scope(true), "fixture-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}); err != nil {
@@ -244,6 +252,10 @@ func TestReviewControlsStdioReadsDecisionsFixFinalizationAndExactRetry(t *testin
 	decodeResult(t, call(t, session, "review_source_finalize", finalize), &replay)
 	if receipt != replay || receipt.Revision != 3 || receipt.State != "finalized" {
 		t.Fatal("finalization receipt or exact retry changed")
+	}
+	var queued int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=? AND state='queued'`, evidenceID).Scan(&queued); err != nil || queued != 1 {
+		t.Fatal("MCP finalization did not queue exactly one summary without a publish call", queued, err)
 	}
 	compact, _ := json.Marshal(receipt)
 	var fields map[string]any

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,12 +12,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backup"
+	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/githubhook"
+	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
@@ -37,6 +42,9 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode int) {
 	stderr = &daemonDiagnosticWriter{writer: stderr}
+	if len(args) > 0 && (args[0] == "backup-push" || args[0] == "backup-fetch" || args[0] == "backup-offsite-status") {
+		return runOffsiteCommand(ctx, args[0], args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "restore-resume-providers" {
 		return runProviderResumptionCommand(ctx, args[1:], stdout, stderr)
 	}
@@ -48,10 +56,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
+	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
+	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
 	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
+	backupMaxBytes := flags.Int64("backup-max-bytes", 0, "retained managed backup byte budget; default 5 GiB")
 	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
+	var backupHealthFiles server.BackupHealthFiles
+	flags.Var(&backupHealthFiles, "backup-offsite-health-file", "optional redacted offsite status file (repeatable, maximum eight)")
 	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -66,11 +79,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	providedBackupFlags := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { providedBackupFlags[f.Name] = true })
 	hasSchedule := providedBackupFlags["backup-destination"] || providedBackupFlags["backup-interval"] || providedBackupFlags["backup-keep"]
-	if hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) {
-		diagnostic(stderr, "configuration_invalid", "Configure --backup-destination, --backup-interval and --backup-keep together; --backup-timeout requires a schedule and a positive duration.")
+	if hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) || providedBackupFlags["backup-max-bytes"] && (!hasSchedule || *backupMaxBytes <= 0) {
+		diagnostic(stderr, "configuration_invalid", "Configure --backup-destination, --backup-interval and --backup-keep together; --backup-timeout and --backup-max-bytes require a schedule and positive values.")
 		return 2
 	}
-	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout})
+	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout, MaxBytes: *backupMaxBytes})
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 2
@@ -107,9 +120,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
+	var webhookSecret []byte
 	var catalog reviewruntime.Catalog
 	var resolver server.RepositoryResolver
+	var historyProvider historycollect.Provider
+	var historyFingerprint string
 	if !recovery.ProvidersHeld {
+		webhookSecret, err = loadGitHubWebhookSecret(*githubWebhookSecretFile)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 		catalog, err = reviewruntime.LoadCatalog(*reviewCatalog)
 		if err != nil {
 			diagnosticError(stderr, err)
@@ -119,6 +140,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		if err != nil {
 			diagnosticError(stderr, err)
 			return 3
+		}
+		if *historyEnabled {
+			historyProvider, historyFingerprint, err = server.GitHubHistoryReader(*tokenFile)
+			if err != nil {
+				diagnosticError(stderr, err)
+				return 3
+			}
 		}
 	}
 	address := *listen
@@ -148,6 +176,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = coordimport.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = reviews.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -166,6 +198,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = historycollect.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	backupManager, err := backup.NewManager(store, *dataDir, schedule)
 	if err != nil {
 		diagnosticError(stderr, err)
@@ -178,14 +214,34 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()))
-	jobs.Register(mux, store)
+	collection, err := historycollect.New(store, historyProvider, historyFingerprint, historycollect.WithWaitLifetime(resultWaitLifetime))
+	if err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
+	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()), server.WithBackupHealthFiles(backupHealthFiles), server.WithBackupHealthReader(backup.ReadHealthRecord))
+	jobs.Register(mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
+		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
+	}))
 	projectmap.Register(mux, store)
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)
-	reviews.Register(mux, store)
+	coordimport.Register(mux, store)
+	reviews.Register(mux, store, execution.ObservationHealth)
+	for _, path := range []string{"/about", "/privacy", "/backup-info.css"} {
+		mux.Handle(path, webui.BackupInfoHandler())
+	}
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
+	if len(webhookSecret) > 0 {
+		hook, hookErr := githubhook.New(webhookSecret, execution.HintGitHub)
+		if hookErr != nil {
+			diagnostic(stderr, "configuration_invalid", "The GitHub webhook configuration is invalid.")
+			return 3
+		}
+		mux.Handle("POST /api/v1/hooks/github", hook)
+	}
+	collection.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)
 	server.RegisterProjectStream(mux, store, ctx)
 	var listenConfig net.ListenConfig
@@ -215,7 +271,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 				diagnosticError(stderr, reviewErr)
 				exitCode = 3
 			}
-		case <-time.After(12 * time.Second):
+		case <-time.After(40 * time.Second):
 			diagnostic(stderr, "shutdown_failed", "Native review workers did not settle within the shutdown budget; inspect retained evidence before restarting.")
 			exitCode = 3
 		}
@@ -230,6 +286,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		cancelReviews()
 		if err := waitBackupWorker(backupDone, 12*time.Second); err != nil {
 			diagnosticError(stderr, err)
+			exitCode = 3
+		}
+	}()
+	var collectionDone <-chan error
+	if historyProvider != nil {
+		collectionDone, err = collection.Run(reviewCtx)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
+	}
+	defer func() {
+		cancelReviews()
+		if collectionDone == nil {
+			return
+		}
+		select {
+		case err := <-collectionDone:
+			if err != nil {
+				diagnosticError(stderr, err)
+				exitCode = 3
+			}
+		case <-time.After(12 * time.Second):
+			diagnostic(stderr, "shutdown_failed", "History collection did not settle within the shutdown budget.")
 			exitCode = 3
 		}
 	}()
@@ -279,6 +359,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			diagnostic(stderr, "review_execution_stopped", "The native review supervisor stopped unexpectedly.")
 			return 3
 		}
+	case collectionErr := <-collectionDone:
+		cancelOperationWaits()
+		cancelReviews()
+		shutdownErr := shutdownHTTPServer(srv, 5*time.Second)
+		<-done
+		if collectionErr != nil {
+			diagnosticError(stderr, collectionErr)
+			return 3
+		}
+		if shutdownErr != nil || ctx.Err() == nil {
+			diagnostic(stderr, "history_collection_stopped", "The history collection worker stopped unexpectedly.")
+			return 3
+		}
 	}
 	return 0
 }
@@ -323,8 +416,41 @@ func diagnostic(w io.Writer, code, message string) {
 func diagnosticError(w io.Writer, err error) {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		diagnostic(w, failure.Code, failure.Message)
+		if details := safePersistenceDetails(failure); len(details) != 0 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": failure.Code, "message": failure.Message, "details": details}})
+		} else {
+			diagnostic(w, failure.Code, failure.Message)
+		}
 	} else {
 		diagnostic(w, "internal_error", "The service could not be started.")
 	}
+}
+
+var persistenceOperationID = regexp.MustCompile(`^review_operation_[0-9a-f]{32}$`)
+var persistenceAttemptID = regexp.MustCompile(`^review_attempt_[0-9a-f]{32}$`)
+
+func safePersistenceDetails(failure *core.Error) map[string]string {
+	if failure.Code != "review_persistence_failed" {
+		return nil
+	}
+	details, ok := failure.Details.(map[string]string)
+	if !ok {
+		return nil
+	}
+	safe := make(map[string]string)
+	switch value := details["stage"]; value {
+	case "pending_read", "attempt_start", "configuration_read", "cooldown_schedule", "admission", "outcome_write":
+		safe["stage"] = value
+	}
+	switch value := details["cause"]; value {
+	case "other", "overloaded", "storage_unavailable", "review_conflict", "validation_failed", "not_found", "review_held", "review_projection_missing":
+		safe["cause"] = value
+	}
+	if value := details["operation_id"]; persistenceOperationID.MatchString(value) {
+		safe["operation_id"] = value
+	}
+	if value := details["attempt_id"]; persistenceAttemptID.MatchString(value) {
+		safe["attempt_id"] = value
+	}
+	return safe
 }

@@ -14,11 +14,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
+	"github.com/benhook1013/FireController/internal/coordimport"
+	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -219,17 +223,49 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_management": 1, "project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 11, "review_policy": 2, "review_execution": 9, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
-	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
-	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
-	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
-	"project_presentations":            {"project_presentation", 1, "project_id revision state_json"},
-	"project_presentation_history":     {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
-	"project_map_entries":              {"project_map", 1, "project_id id kind title state archived revision state_json"},
-	"project_map_entry_history":        {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
-	"job_workstreams":                  {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
-	"job_workstream_history":           {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
+	"review_hosted_discovery_state":     {"reviews", 10, "project_id repository_id pull_number cutoff_at initialized_at"},
+	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
+	"job_progress_history":              {"jobs", 8, "sequence id project_id job_id job_revision actor_id worker_id summary next blocker evidence_json created_at"},
+	"project_handles":                   {"project_handles", 1, "project_id handle"},
+	"job_summaries":                     {"jobs", 7, "project_id job_id revision job_revision title body actor_id worker_id created_at"},
+	"job_summary_history":               {"jobs", 7, "project_id job_id revision job_revision title body actor_id worker_id created_at"},
+	"review_adoption_sources":           {"review_adoption_obligations", 1, "project_id namespace repository_id snapshot_sha256 revision"},
+	"review_adoption_imports":           {"review_adoption_obligations", 1, "project_id namespace revision batch_json batch_sha256 actor_id worker_id created_at"},
+	"review_adoption_obligations":       {"review_adoption_obligations", 1, "id project_id namespace source_key source_revision original_json original_sha256 status revision actor_id worker_id created_at"},
+	"review_adoption_targets":           {"review_adoption_obligations", 1, "obligation_id project_id pull_number"},
+	"review_adoption_resolutions":       {"review_adoption_obligations", 1, "obligation_id revision reason evidence_json actor_id worker_id resolved_at"},
+	"review_front_frames":               {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
+	"review_selections":                 {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
+	"review_round_adoptions":            {"review_round_adoption", 1, "project_id pull_number channel grant_revision epoch source source_key source_sha256 prepared_json"},
+	"review_round_controls":             {"review_rounds", 1, "project_id pull_number channel revision epoch grant_revision closed minimum maximum taper used dry tapered actor_id created_at updated_at"},
+	"review_round_changes":              {"review_rounds", 1, "project_id pull_number channel revision epoch action body_json worker_id"},
+	"review_round_operation_bindings":   {"review_rounds", 1, "operation_id project_id pull_number channel epoch grant_revision"},
+	"review_round_completions":          {"review_rounds", 1, "operation_id evidence_id project_id pull_number channel epoch ordinal accepted completed_at"},
+	"coordination_import_messages":      {"coordination_import", 2, "project_id source source_key message_id conversation_id reply_message_id import_revision item_sha256 source_sha256 item_json created_at"},
+	"coordination_import_state":         {"coordination_import", 1, "project_id revision"},
+	"coordination_import_records":       {"coordination_import", 1, "project_id source source_key job_id import_revision item_sha256 source_sha256 item_json created_at"},
+	"coordination_import_batches":       {"coordination_import", 1, "project_id revision source source_sha256 payload_sha256 actor_id worker_id created_at"},
+	"history_collections":               {"history_collection", 1, "id project_id repository_id actor_id worker_id reader_fingerprint selection_json state revision reason position_json pass_number page_count record_count created_at updated_at"},
+	"history_collection_pages":          {"history_collection", 1, "id project_id collection_id sequence pass_number reader_fingerprint pull_number resource page_number record_count body_sha256 body_json created_at"},
+	"history_collection_seen":           {"history_collection", 1, "project_id collection_id pass_number record_id page_id"},
+	"review_route_policy_facts":         {"review_route_policy", 1, "route_id project_id target_pull_number revision active pending"},
+	"review_route_policy_invalidations": {"review_route_policy", 1, "project_id target_pull_number route_id"},
+	"review_comparison_proofs":          {"review_comparison", 1, "operation_id project_id pull_number channel state repository_id candidate_sha base_sha parent_sha parent_pull_number base_ref evidence_id"},
+	"review_applicability":              {"review_applicability", 1, "id project_id evidence_id repository_id pull_number channel candidate_sha base_sha parent_sha parent_pull_number base_ref body_json"},
+	"project_publications":              {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
+	"public_project_snapshots":          {"public_site", 1, "project_id generation revision content_json created_at"},
+	"managed_backup_publication_holds":  {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
+	"project_presentations":             {"project_presentation", 1, "project_id revision state_json"},
+	"project_presentation_history":      {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
+	"project_map_entries":               {"project_map", 1, "project_id id kind title state archived revision state_json"},
+	"project_map_entry_history":         {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
+	"job_workstreams":                   {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
+	"job_workstream_history":            {"project_map", 1, "project_id job_id revision workstream_id workstream_title actor_id job_revision created_at"},
+	"project_map_import_sources":        {"project_map", 2, "project_id source_key revision record_json"},
+	"project_map_import_history":        {"project_map", 2, "project_id source_key revision actor_id worker_id record_json created_at"},
+	"project_map_import_items":          {"project_map", 2, "project_id source_key item_key entry_id entry_revision source_revision"},
 
 	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
 	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
@@ -247,8 +283,25 @@ var tables = map[string]tableVersion{
 	"jobs": {"jobs", 1, "project_id id title brief worker_id status revision created_at updated_at"}, "job_history": {"jobs", 1, "project_id job_id revision actor_id state_json created_at"}, "job_checkpoints": {"jobs", 2, "sequence id project_id job_id job_revision actor_id worker_id done next blocker evidence_json created_at"},
 	"inbox_conversations": {"inbox", 1, "project_id id root_message_id"}, "inbox_messages": {"inbox", 1, "sequence project_id id conversation_id sender_worker_id recipient_worker_id reply_to_message_id body created_at"}, "inbox_recipient_state": {"inbox", 1, "project_id message_id worker_id seen acknowledged revision"},
 	"review_snapshots": {"reviews", 1, "project_id snapshot_id revision repository_id source observed_at recorded_at payload_sha256"}, "review_workspace": {"reviews", 1, "project_id revision snapshot_id"}, "review_pulls": {"reviews", 1, "project_id snapshot_id position number title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"}, "review_runs": {"reviews", 1, "project_id snapshot_id pull_number run_order id source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"}, "review_findings": {"reviews", 1, "project_id snapshot_id pull_number run_id position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at"}, "review_attempts": {"reviews", 1, "project_id snapshot_id pull_number position source source_attempt_id channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"}, "review_retired_pulls": {"reviews", 1, "project_id snapshot_id position number reason"},
-	"review_policy_config":    {"review_policy", 1, "project_id revision body_json actor_id created_at"},
-	"review_execution_config": {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
+	"review_pull_versions":         {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
+	"review_run_versions":          {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
+	"review_finding_versions":      {"reviews", 4, "project_id run_id run_version_revision pull_number position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at route_json"},
+	"review_attempt_versions":      {"reviews", 4, "project_id source source_attempt_id version_revision pull_number channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"},
+	"review_retired_versions":      {"reviews", 4, "project_id number version_revision reason"},
+	"review_pull_memberships":      {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_run_memberships":       {"reviews", 4, "project_id id start_revision end_revision version_revision pull_number run_order"},
+	"review_attempt_memberships":   {"reviews", 4, "project_id source source_attempt_id start_revision end_revision version_revision pull_number position"},
+	"review_retired_memberships":   {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_current_pulls":         {"reviews", 4, "project_id number start_revision position"},
+	"review_current_runs":          {"reviews", 4, "project_id id start_revision pull_number run_order"},
+	"review_current_attempts":      {"reviews", 4, "project_id source source_attempt_id start_revision pull_number position"},
+	"review_current_retired":       {"reviews", 4, "project_id number start_revision position"},
+	"review_current_totals":        {"reviews", 5, "project_id pull_number run_count attempt_count incomplete_run_count"},
+	"review_current_attempt_order": {"reviews", 5, "project_id source source_attempt_id pull_number channel sort_key position"},
+	"review_current_run_order":     {"reviews", 6, "project_id id pull_number channel outcome finalized run_order"},
+	"review_policy_config":         {"review_policy", 1, "project_id revision body_json actor_id created_at"},
+	"review_execution_config":      {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
+	"review_operation_waits":    {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
 	"review_execution_evidence": {"review_evidence", 1, "id project_id attempt_id operation_id body_json fingerprint"}, "review_hosted_observations": {"review_evidence", 3, "id project_id attempt_id operation_id position capture_sha256 capture_bytes body_json"},
 	"review_adjudication_state": {"review_adjudication", 1, "evidence_id project_id revision body_json"}, "review_adjudication_changes": {"review_adjudication", 1, "evidence_id revision project_id actor_id kind finding_index input_json created_at"}, "review_finding_routes": {"review_adjudication", 2, "id project_id repository_id source_evidence_id finding_index source_pull_number source_head_sha target_pull_number state revision disposition has_fix created_at body_json"}, "review_finding_route_revisions": {"review_adjudication", 2, "route_id project_id revision actor_id kind created_at body_json"},
 	"review_source_refreshes":        {"review_source_refresh", 1, "id project_id repository_id actor_id worker_id configuration_revision capability_id capability_fingerprint pull_number head_sha state revision reason created_at updated_at observation_json"},
@@ -332,17 +385,23 @@ func projectMapColumn(table, column, kind string, notnull, pk int, defaultValue 
 	case "project_id":
 		expectedPK = 1
 	case "id", "entry_id", "job_id":
+		if table != "project_map_import_items" {
+			expectedPK = 2
+		}
+	case "source_key":
 		expectedPK = 2
+	case "item_key":
+		expectedPK = 3
 	case "revision":
 		expectedKind = "INTEGER"
-		if table == "project_map_entry_history" || table == "job_workstream_history" {
+		if table == "project_map_entry_history" || table == "job_workstream_history" || table == "project_map_import_history" {
 			expectedPK = 3
 		}
-	case "archived", "job_revision":
+	case "archived", "job_revision", "entry_revision", "source_revision":
 		expectedKind = "INTEGER"
 	case "workstream_id":
 		expectedNull = 0
-	case "kind", "title", "state", "state_json", "actor_id", "created_at", "workstream_title":
+	case "kind", "title", "state", "state_json", "actor_id", "worker_id", "record_json", "created_at", "workstream_title":
 	default:
 		return false
 	}
@@ -536,8 +595,55 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err != nil {
 		return nil, invalid()
 	}
-	if err = validateTriggers(ctx, db, versions["reviews"]); err != nil {
+	if err = validateTriggers(ctx, db, versions["reviews"], versions["review_comparison"], versions["review_route_policy"], versions["review_adoption_obligations"], versions["review_applicability"]); err != nil {
 		return nil, err
+	}
+	if err = validateHistoryViews(ctx, db, versions["reviews"]); err != nil {
+		return nil, err
+	}
+	if versions["reviews"] >= 4 {
+		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
+			return nil, err
+		}
+	}
+	if err = validateExternalHostedEvidenceIndexes(ctx, db, versions["review_evidence"]); err != nil {
+		return nil, err
+	}
+	if versions["review_comparison"] > 0 {
+		if err = validateComparisonPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if versions["review_applicability"] > 0 {
+		if versions["review_comparison"] == 0 || versions["review_evidence"] == 0 || versions["review_adjudication"] == 0 {
+			return nil, invalid()
+		}
+		if err = validateApplicabilityPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if versions["review_route_policy"] > 0 {
+		if err = validateRoutePolicyPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if versions["history_collection"] > 0 {
+		if err = validateHistoryCollectionPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if versions["coordination_import"] >= 2 {
+		if err = validateCoordinationMessagesPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if err = validateSharedProjectPhysicalSchema(ctx, db, versions); err != nil {
+		return nil, err
+	}
+	if versions["jobs"] >= 8 {
+		if err = validateUnifiedJobProgressPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
@@ -546,6 +652,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	for name, spec := range tables {
 		expected := spec.domain == "" || versions[spec.domain] >= spec.since
+		if spec.domain == "reviews" && versions["reviews"] >= 4 {
+			switch name {
+			case "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls":
+				expected = false // Version four retains these as canonical read views.
+			}
+		}
 		if actual[name] != expected {
 			return nil, invalid()
 		}
@@ -553,6 +665,24 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_current_totals" && versions["reviews"] >= 9 {
+			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
+		}
+		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
+			columns += " reason"
+		}
+		if name == "review_pull_versions" && versions["reviews"] >= 11 {
+			columns += " metadata_json delivery_selected"
+		}
+		if name == "review_pull_versions" && versions["reviews"] >= 7 && versions["reviews"] < 11 {
+			columns += " metadata_json"
+		}
+		if name == "review_round_controls" && versions["review_rounds"] >= 2 {
+			columns += " initial_dry initially_tapered origin_source origin_key origin_sha256"
+		}
+		if name == "review_round_controls" && versions["review_rounds"] >= 3 {
+			columns += " maximum_unbounded"
+		}
 		receiptPK := map[string]int{}
 		if name == "receipts" {
 			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
@@ -571,9 +701,21 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			if versions[spec.domain] >= 3 {
 				columns += " policy_revision"
 			}
+			if versions[spec.domain] >= 7 {
+				columns += " allow_out_of_order"
+			}
+			if versions[spec.domain] >= 8 {
+				columns += " override_file_limit"
+			}
+		}
+		if name == "grants" && versions["project_management"] > 0 {
+			columns += " can_manage"
 		}
 		if name == "review_runs" && versions[spec.domain] >= 2 {
 			columns += " snapshot_revision"
+		}
+		if name == "review_execution_transitions" && versions["review_source_refusals"] > 0 {
+			columns += " source_refusal_json"
 		}
 		if name == "review_findings" && versions[spec.domain] >= 3 {
 			columns += " route_json"
@@ -631,6 +773,14 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "review_operations" && (col == "allow_out_of_order" || col == "override_file_limit") && !reviewOrderColumn(kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if name == "review_execution_transitions" && col == "source_refusal_json" && (kind != "TEXT" || notnull != 1 || pk != 0 || defaultValue != "'null'") {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -657,6 +807,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if name == "job_updates" {
 			if err = validateJobUpdateIdentity(ctx, db); err != nil {
+				return nil, err
+			}
+		}
+		if name == "review_operations" && versions[spec.domain] >= 7 {
+			if err = validateReviewOrderPhysicalSchema(ctx, db, versions[spec.domain]); err != nil {
 				return nil, err
 			}
 		}
@@ -727,6 +882,20 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if err != nil {
 		return err
 	}
+	if versions["project_management"] > 0 {
+		var bad int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE can_manage NOT IN (0,1) OR (can_manage=1 AND (can_read<>1 OR can_write<>1))`).Scan(&bad); err != nil || bad != 0 {
+			return invalid()
+		}
+	}
+	if versions["coordination_import"] > 0 {
+		if err := coordimport.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	// Published source bundles must leave room to archive their active source.
 	// Live preflight/status/startup keep accepting a valid bounded history.
 	if !allowInactive && versions["recovery_history"] != 0 {
@@ -769,6 +938,68 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if bad || err != nil {
 		return invalid()
 	}
+	if versions["reviews"] >= 4 {
+		if err = reviews.ValidateHistoryReferences(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 5 {
+		if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 6 {
+		if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 10 {
+		if err = reviews.ValidateExternalHostedFrontiers(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 8 {
+		if err = reviews.ValidateAttemptReasonsHistory(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 7 {
+		if err = reviews.ValidatePullMetadataHistory(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if err = validateSharedProjectRows(ctx, tx, versions); err != nil {
+		if checkContext(ctx) != nil {
+			return unavailable()
+		}
+		return invalid()
+	}
+	if versions["jobs"] >= 8 {
+		if err = jobs.ValidateProgressSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -801,6 +1032,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["history_collection"] > 0 {
+		if err = historycollect.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	refs := map[string]Artifact{}
 	for _, a := range m.Artifacts {
 		refs[a.Path] = a
@@ -813,6 +1052,100 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if versions["review_evidence"] >= 3 {
 		if err = validateObservationReferences(ctx, tx, refs); err != nil {
 			return err
+		}
+	}
+	if versions["review_execution"] >= 4 {
+		if err := reviewexec.ValidateAllowanceSnapshot(ctx, tx, versions["review_execution"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 9 {
+		if err := reviewexec.ValidateOperationWaitsSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_source_refusals"] > 0 {
+		if versions["review_execution"] == 0 {
+			return invalid()
+		}
+		if err = reviewexec.ValidateSourceRefusalsSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_comparison"] > 0 {
+		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_applicability"] > 0 {
+		if err = reviewexec.ValidateReviewApplicability(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_route_policy"] > 0 {
+		if err = reviewexec.ValidateRoutePolicyFacts(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_adoption_obligations"] > 0 {
+		if err = adoptionholds.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_round_adoption"] > 0 && versions["review_rounds"] < 2 {
+		return invalid()
+	}
+	if versions["review_rounds"] > 0 {
+		if err = reviewexec.ValidateRoundSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_fronts"] > 0 {
+		if err = reviewexec.ValidateFrontSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_selection"] > 0 {
+		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 7 {
+		if err = validateReviewOrderRows(ctx, tx, versions["review_execution"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
 		}
 	}
 	return checkContext(ctx)
@@ -909,16 +1242,181 @@ func validateObservationReferences(ctx context.Context, db sqlReader, refs map[s
 	return nil
 }
 
-// The only application triggers are defined by reviews schema version two.
+// Stored DDL omits the final statement delimiter. Otherwise canonical
+// definitions must match exactly; inspection never executes an incoming view.
+func historyDefinitionSQL(definition string) string {
+	return strings.TrimSuffix(strings.TrimSpace(definition), ";")
+}
+
+func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) error {
+	expected := map[string]string{}
+	if reviewVersion >= 4 {
+		expected = reviews.HistoryReadViewSQLV6()
+		if reviewVersion >= 7 {
+			expected = reviews.HistoryReadViewSQLV7()
+		}
+		if reviewVersion >= 8 {
+			expected = reviews.HistoryReadViewSQLV10()
+		}
+		if reviewVersion >= 11 {
+			expected = reviews.HistoryReadViewSQL()
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='view' LIMIT 6`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var definition sql.NullString
+		if rows.Scan(&name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || historyDefinitionSQL(definition.String) != historyDefinitionSQL(want) {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Exact canonical DDL binds CHECK, PK, UNIQUE, default and partial-index
+// semantics in addition to the independent column/FK inventory below.
+func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	var names []string
+	definitions := reviews.HistorySchemaSQLV6()
+	if version >= 7 {
+		definitions = reviews.HistorySchemaSQLV7()
+	}
+	if version >= 8 {
+		definitions = reviews.HistorySchemaSQLV10()
+	}
+	if version >= 11 {
+		definitions = reviews.HistorySchemaSQL()
+	}
+	expectedTables, expectedObjects := 13, 22
+	if version >= 5 {
+		if version >= 9 {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		} else {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQLV8()...)
+		}
+		expectedTables, expectedObjects = 15, 25
+	}
+	if version >= 6 {
+		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
+		expectedTables, expectedObjects = 16, 27
+	}
+	if version >= 10 {
+		definitions = append(definitions, reviews.ExternalHostedSchemaSQL()...)
+		expectedTables, expectedObjects = 17, 29
+	}
+	for _, definition := range definitions {
+		fields := strings.Fields(definition)
+		if len(fields) < 4 || fields[0] != "CREATE" {
+			return invalid()
+		}
+		kind, name := "table", fields[2]
+		switch fields[1] {
+		case "TABLE":
+			names = append(names, name)
+		case "INDEX":
+			kind = "index"
+		case "UNIQUE":
+			if len(fields) < 5 || fields[2] != "INDEX" {
+				return invalid()
+			}
+			kind, name = "index", fields[3]
+		default:
+			return invalid()
+		}
+		if _, duplicate := expected[name]; duplicate {
+			return invalid()
+		}
+		expected[name] = object{kind, historyDefinitionSQL(definition)}
+	}
+	if len(names) != expectedTables || len(expected) != expectedObjects {
+		return invalid()
+	}
+	placeholders := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, name := range names {
+		placeholders[i] = "?"
+		args[i] = name
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(expectedObjects+1), args...)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Reviews versions two and three contain exact revision triggers; comparison
+// and route-policy domains additionally own exact invalidation/retention triggers.
 // Exact text and table binding are required; inspection never executes custom
 // trigger programs, and restore must reject them before rotating credentials.
-func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) error {
+func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparisonVersion, routePolicyVersion, adoptionVersion, applicabilityVersion int) error {
 	expected := map[string]string{}
-	if reviewVersion >= 2 {
+	expectedTables := map[string]string{}
+	if reviewVersion >= 2 && reviewVersion <= 3 {
 		expected["review_runs_snapshot_revision_insert"] = "CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
 		expected["review_runs_snapshot_revision_update"] = "CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
+		for name := range expected {
+			expectedTables[name] = "review_runs"
+		}
 	}
-	rows, err := db.QueryContext(ctx, `SELECT name,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=2048 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT 3`)
+	var nativeDefinitions []string
+	if comparisonVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, reviewexec.ComparisonSchemaSQL()...)
+	}
+	if routePolicyVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, reviewexec.RoutePolicySchemaSQL()...)
+	}
+	if adoptionVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, adoptionholds.SchemaSQL()...)
+	}
+	if applicabilityVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, reviewexec.ApplicabilitySchemaSQL()...)
+	}
+	for _, statement := range nativeDefinitions {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 || fields[1] != "TRIGGER" {
+			continue
+		}
+		expected[fields[2]] = historyDefinitionSQL(statement)
+		for i, field := range fields {
+			if field == "ON" && i+1 < len(fields) {
+				expectedTables[fields[2]] = fields[i+1]
+				break
+			}
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT `+strconv.Itoa(len(expected)+1))
 	if err != nil {
 		return invalid()
 	}
@@ -931,12 +1429,136 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) erro
 			return invalid()
 		}
 		want, known := expected[name]
-		if !known || table != "review_runs" || want != strings.TrimSpace(definition.String) {
+		if !known || table != expectedTables[name] || want != historyDefinitionSQL(definition.String) {
 			return invalid()
 		}
 		count++
 	}
 	if rows.Err() != nil || count != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Bind every comparison table/index detail to the frozen owning DDL, including
+// primary keys, defaults and both scoped comparison indexes.
+func validateComparisonPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.ComparisonSchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 3 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name='review_comparison_proofs' AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 4`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Retained applicability is optional, but its immutable rows and target lookup
+// must use exactly the owning schema rather than a weaker names-only shape.
+func validateApplicabilityPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.ApplicabilitySchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			name, _, _ := strings.Cut(fields[2], "(")
+			expected[name] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 2 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name='review_applicability' AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 3`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// These derived tables are optional for supported predecessors. When present,
+// every table/index detail must match their owning canonical definitions.
+func validateRoutePolicyPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.RoutePolicySchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 4 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name IN ('review_route_policy_facts','review_route_policy_invalidations') AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 5`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
 		return invalid()
 	}
 	return nil
@@ -954,14 +1576,45 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
-	"project_publications":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"public_project_snapshots":     {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
-	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"project_presentation_history": {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
-	"project_map_entries":          {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"project_map_entry_history":    {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
-	"job_workstreams":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
-	"job_workstream_history":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"job_progress":                      {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_progress_history":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"project_handles":                   {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"job_summaries":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_summary_history":               {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"review_adoption_sources":           {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_adoption_imports":           {canonicalFK("review_adoption_sources", "project_id,namespace", "project_id,namespace", "NO ACTION")},
+	"review_adoption_obligations":       {canonicalFK("review_adoption_imports", "project_id,namespace,source_revision", "project_id,namespace,revision", "NO ACTION")},
+	"review_adoption_targets":           {canonicalFK("review_adoption_obligations", "obligation_id,project_id", "id,project_id", "NO ACTION")},
+	"review_adoption_resolutions":       {canonicalFK("review_adoption_obligations", "obligation_id", "id", "NO ACTION")},
+	"review_front_frames":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
+	"review_selections":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
+	"review_round_adoptions":            {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_controls":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_changes":              {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_round_operation_bindings":   {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_completions":          {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("review_round_operation_bindings", "operation_id,project_id,pull_number,channel,epoch", "operation_id,project_id,pull_number,channel,epoch", "NO ACTION")},
+	"coordination_import_messages":      {canonicalFK("inbox_messages", "project_id,message_id", "project_id,id", "NO ACTION"), canonicalFK("inbox_conversations", "project_id,conversation_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
+	"coordination_import_state":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"coordination_import_records":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
+	"coordination_import_batches":       {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"history_collections":               {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"history_collection_pages":          {canonicalFK("history_collections", "project_id,collection_id", "project_id,id", "NO ACTION")},
+	"history_collection_seen":           {canonicalFK("history_collection_pages", "project_id,collection_id,page_id", "project_id,collection_id,id", "NO ACTION")},
+	"review_route_policy_facts":         {canonicalFK("review_finding_routes", "route_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_route_policy_invalidations": {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_comparison_proofs":          {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_applicability":              {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION")},
+	"project_publications":              {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"public_project_snapshots":          {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
+	"project_presentations":             {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_presentation_history":      {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
+	"project_map_entries":               {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_entry_history":         {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
+	"job_workstreams":                   {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"job_workstream_history":            {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"project_map_import_sources":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_import_history":        {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE")},
+	"project_map_import_items":          {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE"), canonicalFK("project_map_entry_history", "project_id,entry_id,entry_revision", "project_id,entry_id,revision", "NO ACTION"), canonicalFK("project_map_import_history", "project_id,source_key,source_revision", "project_id,source_key,revision", "NO ACTION")},
 
 	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
@@ -989,10 +1642,28 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_findings":                 {canonicalFK("review_runs", "project_id,snapshot_id,pull_number,run_id", "project_id,snapshot_id,pull_number,id", "CASCADE")},
 	"review_attempts":                 {canonicalFK("review_pulls", "project_id,snapshot_id,pull_number", "project_id,snapshot_id,number", "CASCADE")},
 	"review_retired_pulls":            {canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "CASCADE")},
+	"review_pull_versions":            {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_run_versions":             {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_finding_versions":         {canonicalFK("review_run_versions", "project_id,run_id,run_version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_versions":         {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_retired_versions":         {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_pull_memberships":         {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_pull_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_run_memberships":          {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_run_versions", "project_id,id,version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_memberships":      {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_attempt_versions", "project_id,source,source_attempt_id,version_revision,pull_number", "project_id,source,source_attempt_id,version_revision,pull_number", "NO ACTION")},
+	"review_retired_memberships":      {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_retired_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_current_pulls":            {canonicalFK("review_pull_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_runs":             {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
+	"review_current_attempts":         {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
+	"review_current_retired":          {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_hosted_discovery_state":   {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"review_current_totals":           {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
+	"review_current_attempt_order":    {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
+	"review_current_run_order":        {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
 	"review_policy_config":            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_execution_config":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_operations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_execution_attempts":       {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_operation_waits":          {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "baseline_attempt_id", "id", "NO ACTION")},
 	"review_execution_reservations":   {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
 	"review_execution_transitions":    {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
 	"review_cli_preflight":            {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
@@ -1024,7 +1695,7 @@ func validateForeignKeys(ctx context.Context, db sqlReader, table string) error 
 		var id, seq int
 		var parent, update, onDelete, match string
 		var from, to sql.NullString
-		if count > 64 || rows.Scan(&id, &seq, &parent, &from, &to, &update, &onDelete, &match) != nil || id < 0 || seq < 0 || seq >= 4 || !from.Valid || !to.Valid {
+		if count > 64 || rows.Scan(&id, &seq, &parent, &from, &to, &update, &onDelete, &match) != nil || id < 0 || seq < 0 || seq >= 6 || !from.Valid || !to.Valid {
 			return invalid()
 		}
 		if groups[id] == nil {
@@ -1069,6 +1740,61 @@ func validateForeignKeys(ctx context.Context, db sqlReader, table string) error 
 		if remaining != 0 {
 			return invalid()
 		}
+	}
+	return nil
+}
+
+// Message provenance is the additive coordination-import v2 table. Compare its
+// exact owning declaration, including deferred batch linkage, before reads.
+func validateCoordinationMessagesPhysicalSchema(ctx context.Context, db sqlReader) error {
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE tbl_name='coordination_import_messages' AND sql IS NOT NULL LIMIT 2`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var kind, name, definition string
+		if rows.Scan(&kind, &name, &definition) != nil || kind != "table" || name != "coordination_import_messages" || historyDefinitionSQL(definition) != historyDefinitionSQL(coordimport.MessageSchemaSQL()) {
+			return invalid()
+		}
+		count++
+	}
+	if rows.Err() != nil || count != 1 {
+		return invalid()
+	}
+	return nil
+}
+
+// Only schema four owns these exact JSON identity indexes. Older evidence
+// bundles keep their genuine layout and are never upgraded during inspection.
+func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, version int) error {
+	expected := map[string]string{}
+	if version >= 4 {
+		for _, definition := range reviewexec.ExternalHostedEvidenceIndexSQL() {
+			fields := strings.Fields(definition)
+			if len(fields) < 3 {
+				return invalid()
+			}
+			expected[fields[2]] = historyDefinitionSQL(definition)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name,CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql ELSE NULL END FROM sqlite_schema WHERE name IN ('review_evidence_hosted_publication','review_evidence_hosted_run') LIMIT 3`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var definition sql.NullString
+		if rows.Scan(&name, &definition) != nil || !definition.Valid || seen[name] || expected[name] == "" || expected[name] != historyDefinitionSQL(definition.String) {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
 	}
 	return nil
 }

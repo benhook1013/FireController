@@ -1,13 +1,15 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError } from './api';
+import { PageSkeleton } from './loading';
 import type { Api } from './api';
 import type { BrowserSessionBinding } from './browser-session';
+import { terminalBrowserSession } from './browser-session';
 import type { BrowserActionMemory } from './browser-actions';
 import type { Page, PresentationSnapshot, Project, Worker } from './types';
 
-export type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding; actions: BrowserActionMemory };
-export type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker): void; fail(error: unknown): void; ready: boolean };
+export type Session = { api: Api; project: Project; instanceId: string; nonce: string; controller: AbortController; projectController: AbortController; presentationSnapshot: PresentationSnapshot; worker: Worker | null; binding: BrowserSessionBinding; actions: BrowserActionMemory; renewalAttemptAt?: number };
+export type WorkspaceValue = { session: Session; key: readonly string[]; home: string; selectWorker(worker: Worker | null): void; fail(error: unknown): void; ready: boolean };
 export const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function useWorkspace(): WorkspaceValue { const value = useContext(WorkspaceContext); if (!value) throw new Error('Workspace unavailable'); return value; }
 
@@ -25,18 +27,21 @@ export function errorText(error: unknown): string {
   return 'This information could not be loaded. Try refreshing this view.';
 }
 
-export function usePaging() {
-  const [state, setState] = useState({ trail: [''], index: 0 });
-  return { cursor: state.trail[state.index], number: state.index + 1, previous: () => setState(value => ({ ...value, index: Math.max(0, value.index - 1) })), next: (cursor: string) => setState(value => ({ trail: [...value.trail.slice(0, value.index + 1), cursor], index: value.index + 1 })) };
+export function usePaging(scope = '') {
+  const [stored, setState] = useState({ scope, trail: [''], index: 0 });
+  const state = stored.scope === scope ? stored : { scope, trail: [''], index: 0 };
+  if (stored.scope !== scope) setState(state);
+  return { cursor: state.trail[state.index], number: state.index + 1, previous: () => setState(value => ({ ...value, index: Math.max(0, value.index - 1) })), next: (cursor: string) => setState(value => ({ scope, trail: [...value.trail.slice(0, value.index + 1), cursor], index: value.index + 1 })) };
 }
 export function Pager({ paging, page, label, busy }: { paging: ReturnType<typeof usePaging>; page?: Page<unknown>; label: string; busy: boolean }) {
-  return <div className="pager"><span>Page {paging.number}{page ? ` · ${page.items.length} shown` : ''}{page && <small>{page.has_more ? 'More available' : 'End of list'}</small>}</span><div><button type="button" aria-label={`Previous ${label}`} disabled={paging.number === 1 || busy} onClick={paging.previous}>Previous</button><button type="button" aria-label={`Next ${label}`} disabled={!page?.has_more || !page.cursor || busy} onClick={() => { if (page?.cursor) paging.next(page.cursor); }}>Next</button></div></div>;
+  return <div className="pager"><span>Page {paging.number}{page && !page.has_more ? ` of ${paging.number}` : ''}{page ? ` (${page.items.length} ${page.items.length === 1 ? 'item' : 'items'})` : ''}</span><div><button type="button" aria-label={`Previous ${label}`} disabled={paging.number === 1 || busy} onClick={paging.previous}>Previous</button><button type="button" aria-label={`Next ${label}`} disabled={!page?.has_more || !page.cursor || busy} onClick={() => { if (page?.cursor) paging.next(page.cursor); }}>Next</button></div></div>;
 }
-export function ReadState({ error, loading, empty, children }: { error: unknown; loading: boolean; empty: boolean; children: ReactNode }) {
+export function ReadState({ error, loading, empty, children, retained = false }: { error: unknown; loading: boolean; empty: boolean; children: ReactNode; retained?: boolean }) {
   const { fail } = useWorkspace();
   useEffect(() => { if (error) fail(error); }, [error, fail]);
-  if (error) return <div className="notice" role="alert">{errorText(error)}</div>;
-  if (loading) return <p className="empty" role="status">Loading…</p>;
+  const failure = error ? <div className="notice" role="alert">{errorText(error)}</div> : null;
+  if (error && (!retained || error instanceof ApiError && terminalBrowserSession(error))) return failure;
+  if (loading) return <PageSkeleton />;
   if (empty) return <p className="empty">Nothing here yet.</p>;
-  return children;
+  return <>{children}{failure}</>;
 }

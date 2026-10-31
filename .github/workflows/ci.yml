@@ -5,22 +5,65 @@ on:
   push:
     branches:
       - main
+      - develop
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux checks
+  changes:
+    name: Select development checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      website_only: ${{ steps.select.outputs.website_only }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Select checks against a successfully qualified source
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          base=''
+          if [ "$EVENT_NAME" = push ] && [ "$SOURCE_REF" = refs/heads/develop ]; then
+            base="$(timeout 20s gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=develop&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)"
+            if [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+              timeout 30s git fetch --no-tags --depth=1 origin "$base" || base=''
+            else
+              base=''
+            fi
+          fi
+          python3 tools/ci/development-checks.py --base "$base" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          if [ -n "$base" ]; then
+            printf 'Backend qualification reference: `%s`. Website-only changes may reuse it; all other changes require full checks.\n' "$base" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Full checks selected: no verified development qualification reference is available for this event.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  static:
+    name: Source and browser checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -30,24 +73,123 @@ jobs:
             webapp/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-          cache: false
-      - run: make check build
-      - name: Smoke packaged binaries
-        run: make smoke
-      - name: Install pinned Chromium
-        working-directory: webapp
-        timeout-minutes: 5
-        run: npx --no-install playwright install --with-deps chromium
-      - name: Smoke embedded browser lifecycle
-        timeout-minutes: 2
-        run: make browser-smoke
+      - run: make workflow-check ci-selection-check fmt-check docs-check source-converter-check browser-check browser-build
       - name: Verify embedded browser assets match source
         run: |
           git diff --exit-code -- internal/webui/assets
           test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+
+  linux:
+    name: Go race (${{ matrix.shard }})
+    needs: [changes]
+    if: needs.changes.outputs.website_only != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Use available hosted capacity without the previous tail of queued slices.
+      max-parallel: 20
+      matrix:
+        shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Isolate the race build cache
+        run: printf 'GOCACHE=%s/firecontroller-go-race\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Select Go packages
+        id: packages
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          go list ./... > "$RUNNER_TEMP/firecontroller-go-packages"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" >> "$GITHUB_OUTPUT"
+      - name: Select complementary package tests
+        id: partition
+        if: steps.packages.outputs.partitioned == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+        run: |
+          set -euo pipefail
+          go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-go-tests"
+          python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" --tests "$RUNNER_TEMP/firecontroller-go-tests" >> "$GITHUB_OUTPUT"
+      - name: Run fresh race tests and vet
+        env:
+          GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
+          GO_TEST_RUN: ${{ steps.partition.outputs.run || '.' }}
+        run: make test-race vet
+
+  qualification:
+    name: Packaged qualification
+    # Keep the browser dependency baseline explicit across hosted image rollouts.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - name: Build packaged binaries
+        run: make build legacyimport
+      - name: Verify embedded browser assets match source
+        run: |
+          git diff --exit-code -- internal/webui/assets
+          test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
+      - name: Check ordinary-runtime limits
+        run: make test-budgets
+      - name: Smoke packaged binaries and legacy adoption
+        run: make smoke migration-smoke
+      - name: Install pinned optional backup transport
+        env:
+          RCLONE_VERSION: v1.75.2
+          RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+        run: |
+          curl --fail --silent --show-error --location --max-time 90 "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip" --output "$RUNNER_TEMP/rclone.zip"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = root / 'rclone.zip'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == os.environ['RCLONE_SHA256']
+          with zipfile.ZipFile(archive) as zipped:
+              (root / 'rclone').write_bytes(zipped.read('rclone-' + os.environ['RCLONE_VERSION'] + '-linux-amd64/rclone'))
+          (root / 'rclone').chmod(0o755)
+          PY
+      - name: Smoke offsite S3 transfer and encrypted recovery
+        timeout-minutes: 4
+        run: make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"
+      - name: Install browser system dependencies
+        working-directory: webapp
+        timeout-minutes: 10
+        run: |
+          test -f /etc/apt/apt-mirrors.txt
+          printf '%s\tpriority:%s\n' \
+            'https://archive.ubuntu.com/ubuntu/' 1 \
+            'http://azure.archive.ubuntu.com/ubuntu/' 2 \
+            'https://security.ubuntu.com/ubuntu/' 3 \
+            | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          npx --no-install playwright install-deps chromium
+      - name: Install pinned Chromium
+        working-directory: webapp
+        timeout-minutes: 5
+        run: npx --no-install playwright install chromium
+      - name: Smoke embedded browser lifecycle
+        timeout-minutes: 2
+        run: make browser-smoke
       - name: Check standalone Windows and macOS builds
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fc-windows.exe ./cmd/fc
@@ -57,8 +199,64 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/fcmcp-windows.exe ./cmd/fcmcp
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /tmp/fcmcp-macos ./cmd/fcmcp
 
+      - name: Package tested Linux clients
+        run: python3 tools/release/package-clients.py bin linux-amd64 "$RUNNER_TEMP/client-release" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clients-linux-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/client-release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  container:
+    name: Container runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and check provider container runtime
+        run: |
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            -t firecontroller:ci .
+          docker run --rm --pull=never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=67108864,mode=1777 \
+            --entrypoint /bin/sh firecontroller:ci -ec '
+              test "$(id -u)" = 65532
+              test "$(id -g)" = 65532
+              git --version
+              test -x /usr/lib/git-core/git-remote-https
+              test -s /etc/ssl/certs/ca-certificates.crt
+              git init --bare --template= /tmp/source.git
+            '
+      - name: Retain the tested image for publication
+        if: github.event_name == 'push'
+        run: |
+          cp tools/release/image-reference.py "$RUNNER_TEMP/image-reference.py"
+          docker save firecontroller:ci --output "$RUNNER_TEMP/firecontroller-image.tar"
+          cd "$RUNNER_TEMP"
+          sha256sum firecontroller-image.tar > firecontroller-image.tar.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'push'
+        with:
+          name: container-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/firecontroller-image.tar
+            ${{ runner.temp }}/firecontroller-image.tar.sha256
+            ${{ runner.temp }}/image-reference.py
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   native-smoke:
     name: Native smoke (${{ matrix.os }})
+    needs: [changes]
+    if: needs.changes.outputs.website_only != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -77,7 +275,8 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go.sum
       - name: Build native packaged binaries
         env:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
@@ -88,6 +287,7 @@ jobs:
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fc$exe" ./cmd/fc
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcd$exe" ./cmd/fcd
           go build -trimpath -o "$FC_SMOKE_BIN_DIR/fcmcp$exe" ./cmd/fcmcp
+          printf 'FC_SMOKE_BIN_DIR=%s\n' "$FC_SMOKE_BIN_DIR" >> "$GITHUB_ENV"
       - name: Smoke native coordination binaries
         timeout-minutes: 2
         env:
@@ -99,16 +299,93 @@ jobs:
           FC_SMOKE_BIN_DIR: ${{ runner.temp }}/firecontroller-native-bin
         run: go test -v -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$' -count=1 -timeout=60s ./tools/packagedsmoke
 
+      - name: Package tested native clients
+        run: python3 tools/release/package-clients.py "$FC_SMOKE_BIN_DIR" "$(go env GOOS)-$(go env GOARCH)" "$RUNNER_TEMP/client-release" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clients-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/client-release/*
+          if-no-files-found: error
+          retention-days: 14
+
   validate:
     name: validate
     runs-on: ubuntu-latest
-    needs: [linux, native-smoke]
+    needs: [changes, static, linux, qualification, container, native-smoke]
     if: ${{ always() }}
     steps:
-      - name: Require Linux and both native smoke results
+      - name: Require every check family
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          WEBSITE_ONLY: ${{ needs.changes.outputs.website_only }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REF: ${{ github.ref }}
+          STATIC_RESULT: ${{ needs.static.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
+          QUALIFICATION_RESULT: ${{ needs.qualification.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
           NATIVE_RESULT: ${{ needs.native-smoke.result }}
         run: |
-          test "$LINUX_RESULT" = success
-          test "$NATIVE_RESULT" = success
+          test "$CHANGES_RESULT" = success
+          test "$STATIC_RESULT" = success
+          test "$QUALIFICATION_RESULT" = success
+          test "$CONTAINER_RESULT" = success
+          if [ "$WEBSITE_ONLY" = true ]; then
+            test "$EVENT_NAME" = push
+            test "$SOURCE_REF" = refs/heads/develop
+            test "$LINUX_RESULT" = skipped
+            test "$NATIVE_RESULT" = skipped
+          else
+            test "$LINUX_RESULT" = success
+            test "$NATIVE_RESULT" = success
+          fi
+
+  publish:
+    name: Publish tested container
+    needs: [validate]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: container-publication-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: container-${{ github.sha }}
+          path: ${{ runner.temp }}/container
+      - name: Load the exact image tested by this run
+        working-directory: ${{ runner.temp }}/container
+        run: |
+          sha256sum --check firecontroller-image.tar.sha256
+          docker load --input firecontroller-image.tar
+          test "$(docker image inspect firecontroller:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect firecontroller:ci --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/$GITHUB_REPOSITORY"
+      - name: Publish revision image to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/registry-auth
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag firecontroller:ci "$image:sha-$GITHUB_SHA"
+          docker push "$image:sha-$GITHUB_SHA"
+          docker pull --platform linux/amd64 "$image:sha-$GITHUB_SHA"
+          digest="$(docker image inspect "$image:sha-$GITHUB_SHA" --format '{{json .RepoDigests}}' | python3 "$RUNNER_TEMP/container/image-reference.py" "$image")"
+          printf '### Published container\n\n`%s`\n\nSource: `%s`\n' "$digest" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/image-reference.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-reference-${{ github.sha }}
+          path: ${{ runner.temp }}/image-reference.txt
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove temporary registry authentication
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/registry-auth
+        run: docker logout ghcr.io

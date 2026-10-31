@@ -13,6 +13,7 @@ import (
 // RestoredWorkSummary counts local abandonments, never external cancellations
 // or completed review credit.
 type RestoredWorkSummary struct {
+	Selections       int64 `json:"selections,omitempty"`
 	QueuedOperations int64 `json:"queued_operations"`
 	Attempts         int64 `json:"attempts"`
 	SourceRefreshes  int64 `json:"source_refreshes"`
@@ -52,7 +53,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 			return result, restoredWorkInvalid()
 		}
 	}
-	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "6")
+	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "9")
 	if err != nil {
 		return result, err
 	}
@@ -73,7 +74,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 		enabled bool
 		query   string
 	}{
-		{execution, `SELECT o.capability_fingerprint,o.policy_revision,a.anchor_json,r.action_class,t.external_id,c.body_json,q.body_json FROM review_operations o,review_execution_attempts a,review_execution_reservations r,review_execution_transitions t,review_execution_config c,review_hosted_allowance_queries q LIMIT 0`},
+		{execution, `SELECT o.capability_fingerprint,o.policy_revision,o.allow_out_of_order,o.override_file_limit,a.anchor_json,r.action_class,t.external_id,c.body_json,q.body_json,w.baseline_attempt_id,w.retry_not_before,w.paused FROM review_operations o,review_execution_attempts a,review_execution_reservations r,review_execution_transitions t,review_execution_config c,review_hosted_allowance_queries q,review_operation_waits w LIMIT 0`},
 		{source, `SELECT ` + refreshMetadataColumns + `,ci_observation_json,review_state_json FROM review_source_refreshes LIMIT 0`},
 		{checkpoint, `SELECT p.body_json,r.body_json,i.body_json FROM review_checkpoint_publications p,review_checkpoint_revisions r,review_checkpoint_intents i LIMIT 0`},
 	}
@@ -93,6 +94,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 		enabled bool
 		query   string
 	}{
+		{execution, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE typeof(allow_out_of_order)!='integer' OR allow_out_of_order NOT IN (0,1) OR typeof(override_file_limit)!='integer' OR override_file_limit NOT IN (0,1))`},
 		{execution, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE state NOT IN ('queued','preparing','posting','active','uncertain','held','failed','completed','cancelled','rate_limited')) OR EXISTS(SELECT 1 FROM review_execution_attempts WHERE state NOT IN ('preparing','posting','active','uncertain','held','failed','completed','cancelled','rate_limited'))`},
 		{source, `SELECT EXISTS(SELECT 1 FROM review_source_refreshes WHERE state NOT IN ('queued','running','completed','held'))`},
 	}
@@ -106,6 +108,9 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 	}
 
 	if execution {
+		if err := ValidateOperationWaitsSnapshot(ctx, tx); err != nil {
+			return result, restoredWorkInvalid()
+		}
 		if err = abandonRestoredAttempts(ctx, tx, at, &result); err == nil {
 			err = pauseRestoredConfigurations(ctx, tx, &result)
 		}
@@ -202,7 +207,7 @@ func abandonRestoredAttempts(ctx context.Context, tx *sql.Tx, at time.Time, summ
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_attempts WHERE operation_id=?`, o.ID).Scan(&linked); err != nil {
 			return err
 		}
-		if !restoredOperationValid(o) || o.AttemptID != "" || linked != 0 {
+		if !restoredOperationValid(o) || o.AttemptID != "" || linked != 0 && (o.Wait == nil || o.Wait.BaselineAttemptID == "") {
 			return restoredWorkInvalid()
 		}
 		stamp, err := attemptRecordingStamp(ctx, tx, o, nil, at)
@@ -226,7 +231,10 @@ func abandonRestoredAttempts(ctx context.Context, tx *sql.Tx, at time.Time, summ
 		if err != nil {
 			return err
 		}
-		if !restoredOperationValid(o) || a.ID != o.AttemptID || a.ProjectID != o.ProjectID || a.OperationID != o.ID || a.State != o.State || a.Revision < 1 || a.Revision >= math.MaxInt64-1 || o.Revision != a.Revision+1 || !hostedObservationID(a.ID, "review_attempt_") || !identifier.MatchString(a.Provider) || !identifier.MatchString(a.Account) || (a.ExternalID != "" && !identifier.MatchString(a.ExternalID)) {
+		// Operation revisions also include queued controls and earlier cooldown
+		// attempts. Current ownership plus the complete transition/reservation
+		// validation below establishes this attempt, not revision equality.
+		if !restoredOperationValid(o) || a.ID != o.AttemptID || a.ProjectID != o.ProjectID || a.OperationID != o.ID || a.State != o.State || a.Revision < 1 || a.Revision >= math.MaxInt64-1 || o.Revision <= a.Revision || !hostedObservationID(a.ID, "review_attempt_") || !identifier.MatchString(a.Provider) || !identifier.MatchString(a.Account) || (a.ExternalID != "" && !identifier.MatchString(a.ExternalID)) {
 			return restoredWorkInvalid()
 		}
 		stamp, err := attemptRecordingStamp(ctx, tx, o, &a, at)

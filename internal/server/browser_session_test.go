@@ -31,9 +31,14 @@ func browserRequest(f *fixture, method, path, token, id, body, host string, cook
 
 func browserLogin(t *testing.T, f *fixture, project, token, id, host string) *http.Cookie {
 	t.Helper()
+	return browserLoginCapabilities(t, f, project, token, id, host, false, false)
+}
+
+func browserLoginCapabilities(t *testing.T, f *fixture, project, token, id, host string, writes, settings bool) *http.Cookie {
+	t.Helper()
 	w := browserRequest(f, "POST", "/api/v1/projects/"+project+"/browser-session", token, "", `{"session_id":"`+id+`"}`, host)
 	v := require(t, w, 200)
-	if len(v) != 6 || v["allow_writes"] != false || v["can_edit_presentation"] != false || v["session_id"] != id || v["project_id"] != project || v["instance_id"] != f.store.InstanceID() {
+	if len(v) != 6 || v["allow_writes"] != writes || v["can_edit_presentation"] != settings || v["session_id"] != id || v["project_id"] != project || v["instance_id"] != f.store.InstanceID() {
 		t.Fatal("session response shape mismatch")
 	}
 	if expiry, err := time.Parse(time.RFC3339, v["expires_at"].(string)); err != nil || time.Until(expiry) < 23*time.Hour || time.Until(expiry) > 24*time.Hour {
@@ -62,7 +67,7 @@ func TestBrowserSessionPublicReadOnlyIsolationAndRestart(t *testing.T) {
 	events, receipts, calls := count(t, f.store, "events"), count(t, f.store, "receipts"), f.calls.Load()
 	for i, token := range []string{read, write, f.admin} {
 		id := strings.Repeat(string(rune('a'+i)), 32)
-		cookie := browserLogin(t, f, p, token, id, "localhost")
+		cookie := browserLoginCapabilities(t, f, p, token, id, "localhost", i != 0, i == 2)
 		if cookie.Secure || cookie.Name != "fc-local-browser-"+id {
 			t.Fatal("loopback HTTP cookie flags invalid")
 		}
@@ -77,7 +82,7 @@ func TestBrowserSessionPublicReadOnlyIsolationAndRestart(t *testing.T) {
 	}
 	id1, id2 := strings.Repeat("d", 32), strings.Repeat("e", 32)
 	c1 := browserLogin(t, f, p, read, id1, "localhost")
-	c2 := browserLogin(t, f, other, f.admin, id2, "localhost")
+	c2 := browserLoginCapabilities(t, f, other, f.admin, id2, "localhost", true, true)
 	require(t, browserRequest(f, "GET", "/api/v1/projects/"+p, "", id1, "", "localhost", c1, c2), 200)
 	require(t, browserRequest(f, "GET", "/api/v1/projects/"+p, "", id2, "", "localhost", c1, c2), 403)
 	w := browserRequest(f, "DELETE", "/api/v1/projects/"+p+"/browser-session", "", id1, `{}`, "localhost", c1, c2)
@@ -126,7 +131,7 @@ func TestBrowserSessionStrictOriginProxyAndAuthenticationFailures(t *testing.T) 
 	f := setup(t)
 	p := f.project(t, "owner/one")
 	id := strings.Repeat("a", 32)
-	proxyCookie := browserLogin(t, f, p, f.admin, id, "preview.example")
+	proxyCookie := browserLoginCapabilities(t, f, p, f.admin, id, "preview.example", true, true)
 	if !proxyCookie.Secure || proxyCookie.Name != "__Host-fc-browser-"+id {
 		t.Fatal("public proxy weakened cookie")
 	}
@@ -190,7 +195,7 @@ func TestBrowserSessionStrictOriginProxyAndAuthenticationFailures(t *testing.T) 
 	if !w.Result().Cookies()[0].Secure {
 		t.Fatal("proxy cookie not secure")
 	}
-	cookie := browserLogin(t, f, p, f.admin, id, "localhost")
+	cookie := browserLoginCapabilities(t, f, p, f.admin, id, "localhost", true, true)
 	for _, name := range []string{"ambient", "bad_bearer", "ambiguous", "duplicate_cookie", "duplicate_selector", "tamper"} {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequest("GET", "http://localhost/api/v1/projects/"+p, nil)

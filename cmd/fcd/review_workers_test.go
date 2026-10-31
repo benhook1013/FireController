@@ -116,7 +116,7 @@ func newObserverTestFixture(t *testing.T) *observerTestFixture {
 		if _, err := f.engine.Configure(t.Context(), scope, "configure", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: project, Mode: "independent", Queue: []int64{1}, Channels: []string{"hosted"}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, PausedChannels: []string{}}); err != nil {
+		if _, err := f.engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

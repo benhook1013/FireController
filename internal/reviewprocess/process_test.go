@@ -299,7 +299,7 @@ func TestUnsafeBillingRefreshClearsPermitWithoutReview(t *testing.T) {
 func TestZeroIncludedUsageIsExplicitRateLimited(t *testing.T) {
 	f := newProcessFixture(t)
 	r := f.runner(t, fmt.Sprintf(`printf '%%s' %q`, usageJSON("owner/repo", "owner", 0, 5, 0, 1)))
-	if _, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); !errorCode(err, "rate_limited") {
+	if got, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner"); !errorCode(err, "rate_limited") || got.Remaining != 0 || got.Limit != 5 || got.FullCapacityInMS != 0 || got.RollingWindowMS != 1 {
 		t.Fatalf("zero allowance result: %v", err)
 	}
 	if _, err := r.Review(context.Background(), f.workspace); !errorCode(err, "permit_required") {
@@ -694,5 +694,134 @@ func TestOwnedProcessConfigurationRejectsUnsupportedAndStartFailureIsSafe(t *tes
 	cleanup, err = configureOwnedProcess(invalid)
 	if !errorCode(err, "configuration_invalid") || cleanup != nil {
 		t.Fatal("preexisting process accepted as a new owned group", err)
+	}
+}
+
+func TestUsageFailureStagesPreserveSafeErrorsAndRevokePermit(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		stage        FailureStage
+	}{
+		{"not-started", "", FailureStageCommandNotStarted},
+		{"nonzero", "printf 'private provider token' >&2; exit 7", FailureStageCommandFailed},
+		{"overflow", "head -c 65537 /dev/zero", FailureStageCommandFailed},
+		{"timeout", "exec sleep 60", FailureStageTimeout},
+		{"malformed-response", "printf 'private invalid provider output'", FailureStageResponseUnproven},
+		{"caller-deadline", "exec sleep 60", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newProcessFixture(t)
+			r := f.runner(t, fmt.Sprintf("printf '%%s' %q", usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)))
+			if _, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "not-started" {
+				if err := os.Remove(r.executable); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.executable(t, tc.script)
+			}
+			ctx := t.Context()
+			cancel := func() {}
+			if tc.name == "caller-deadline" {
+				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+			}
+			defer cancel()
+			started := time.Now()
+			usage, err := r.Usage(ctx, f.workspace, "owner/repo", "owner")
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Code != "usage_unavailable" || failure.FailureStage != tc.stage || failure.OutcomeUnknown || usage != (Usage{}) || err.Error() != "Included review allowance could not be verified." {
+				t.Fatalf("unsafe or missing usage stage: code=%v stage=%v", errorCode(err, "usage_unavailable"), failure)
+			}
+			if tc.name == "timeout" && (time.Since(started) < usageTimeout || time.Since(started) > usageTimeout+5*time.Second) {
+				t.Fatal("internal usage deadline changed")
+			}
+			if _, err := r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+				t.Fatal("failed usage retained permission", err)
+			}
+		})
+	}
+}
+
+func TestUsagePrecommandContextKeepsUnclassifiedFailure(t *testing.T) {
+	f := newProcessFixture(t)
+	r := f.runner(t, "exit 99")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, current := range []context.Context{nil, ctx} {
+		_, err := r.Usage(current, f.workspace, "owner/repo", "owner")
+		var failure *Error
+		if !errors.As(err, &failure) || failure.Code != "usage_unavailable" || failure.FailureStage != "" || failure.OutcomeUnknown {
+			t.Fatal("context failure gained a command stage", err)
+		}
+	}
+	for _, stage := range []FailureStage{FailureStageCommandNotStarted, FailureStageTimeout, FailureStageCommandFailed, FailureStageResponseUnproven, "private_path_or_token"} {
+		if got := (&Error{Code: "usage_unavailable", FailureStage: stage}).Error(); got != "Included review allowance could not be verified." {
+			t.Fatal("stage exposed error details")
+		}
+	}
+}
+
+func TestZeroUsageVerifiesSourceBeforeExposingFacts(t *testing.T) {
+	f := newProcessFixture(t)
+	r := f.runner(t, fmt.Sprintf("printf 'tamper' > source.txt; printf '%%s' %q", usageJSON("owner/repo", "owner", 0, 3, 1234, 3600000)))
+	got, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner")
+	if !errorCode(err, "source_changed") || got != (Usage{}) {
+		t.Fatal("changed workspace exposed trusted exhausted facts", got, err)
+	}
+	r.mu.Lock()
+	permit := r.permit
+	r.mu.Unlock()
+	if permit != nil {
+		t.Fatal("zero observation issued permit")
+	}
+}
+
+func TestUsageTimeoutOverrideIsBoundedAndHonorsCancellation(t *testing.T) {
+	f := newProcessFixture(t)
+	exe := f.executable(t, "exec sleep 60")
+	for _, invalid := range []time.Duration{0, -time.Second, time.Millisecond, 61 * time.Second} {
+		if _, err := New(f.manager, exe, nil, WithUsageTimeout(invalid)); !errorCode(err, "configuration_invalid") {
+			t.Fatal("invalid timeout accepted", invalid, err)
+		}
+	}
+	r, err := New(f.manager, exe, nil, WithUsageTimeout(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = r.Usage(t.Context(), f.workspace, "owner/repo", "owner")
+	var failure *Error
+	if !errors.As(err, &failure) || failure.FailureStage != FailureStageTimeout || time.Since(started) < time.Second || time.Since(started) > 3*time.Second {
+		t.Fatal("override did not bound command", err, time.Since(started))
+	}
+	r, err = New(f.manager, exe, nil, WithUsageTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started = time.Now()
+	_, err = r.Usage(ctx, f.workspace, "owner/repo", "owner")
+	if !errors.As(err, &failure) || failure.FailureStage != "" || time.Since(started) > 2*time.Second {
+		t.Fatal("override ignored shorter caller", err, time.Since(started))
+	}
+	if _, err = r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+		t.Fatal("failed check granted permission", err)
+	}
+}
+
+func TestUsageTimeoutOverrideAllowsSlowSuccessfulCheck(t *testing.T) {
+	f := newProcessFixture(t)
+	exe := f.executable(t, fmt.Sprintf("sleep 16\nprintf '%%s' %q", usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)))
+	r, err := New(f.manager, exe, nil, WithUsageTimeout(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	u, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner")
+	if err != nil || u.Remaining != 1 || time.Since(started) <= usageTimeout {
+		t.Fatal("valid check beyond default was lost", u, err)
 	}
 }

@@ -11,14 +11,15 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-// WithNativeProjection connects journal transitions and adjudication changes
-// to the native browser projection in the same transaction. The owner must
+// WithNativeProjection connects queue enrollment, journal transitions and
+// adjudication changes to the native browser projection in the same transaction. The owner must
 // install the reviews and evidence schemas before accepting requests. Isolated journal users
 // need not install a browser projection.
 func WithNativeProjection() EngineOption {
 	return func(e *Engine) {
 		e.publishAdjudication = publishReviewAdjudication
 		e.publishAttempt = publishAttemptTransition
+		e.publishQueue = reviews.PublishExecutionQueue
 	}
 }
 
@@ -73,7 +74,7 @@ func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope
 
 // projectedFindingRoute derives receiving state from the authoritative ledger
 // inside the caller's transaction. Imported display rows cannot supply proof.
-func projectedFindingRoute(ctx context.Context, tx *sql.Tx, evidence ReviewEvidence, finding FindingDecision) (*reviews.FindingRoute, error) {
+func projectedFindingRoute(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, finding FindingDecision) (*reviews.FindingRoute, error) {
 	if finding.Disposition != "routed" {
 		if finding.RouteID != "" {
 			return nil, adjudicationStorageError()

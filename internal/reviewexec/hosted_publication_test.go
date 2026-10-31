@@ -231,3 +231,36 @@ func TestHostedPublicationZeroFindingsDoNotCreditCLI(t *testing.T) {
 	}
 	hostedPublicationComparison(t, f, a)
 }
+
+func TestHostedSubmittedReviewRetainedPublicationAndReplay(t *testing.T) {
+	f, a, in := hostedPublicationFixture(t, false)
+	h := in.Hosted
+	h.PublicationID, h.ProviderAttemptID = "", ""
+	h.ReviewIDs = []int64{201}
+	h.Sources = h.Sources[:1]
+	in.Review.Findings, in.Review.ReportedFindings = in.Review.Findings[:1], 1
+	h.SubmittedReview = &HostedSubmittedReviewMetadata{ProviderRunID: "33333333-3333-3333-3333-333333333333", AcknowledgementCommentID: 102}
+	retained, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
+	if err != nil {
+		t.Fatal("submitted source capture failed", err)
+	}
+	replay, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, evidenceClone(in))
+	if err != nil || replay != retained {
+		t.Fatal("submitted capture replay changed identity", err)
+	}
+	pull := projectionPull(2)
+	if _, err = f.e.PublishEvidence(t.Context(), attemptProject, retained.ID, &pull); err != nil {
+		t.Fatal(err)
+	}
+	response := f.request(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/evidence/"+retained.ID, f.reader, "", "")
+	evidenceHTTPRequire(t, response, http.StatusOK, "")
+	var exact evidenceResponse
+	if json.Unmarshal(response.Body.Bytes(), &exact) != nil || exact.Capture.Hosted == nil || !reflect.DeepEqual(exact.Capture.Hosted.SubmittedReview, h.SubmittedReview) || exact.Capture.Hosted.PublicationID != "" || exact.Capture.Hosted.ProviderAttemptID != "" || !reflect.DeepEqual(exact.Capture.Hosted.ReviewIDs, h.ReviewIDs) {
+		t.Fatal("HTTP lost real submitted identities or invented batch identities")
+	}
+	detail := cliPublicationDetail(t, f, 2, retained.ID)
+	if detail.Run.Found != 1 || detail.Run.Finalized || detail.Run.Channel != "hosted" || len(detail.Findings) != 1 {
+		t.Fatal("native projection lost submitted findings or invented adjudication")
+	}
+	hostedPublicationComparison(t, f, a)
+}

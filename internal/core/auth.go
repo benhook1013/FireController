@@ -15,11 +15,61 @@ type querier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// Administrative reports whether this scope was obtained through AdminScope.
+// A project-bound scope may use an explicit management grant; this never grants
+// instance administration or access to another project.
+// It is a requirement pin, not cached permission: Store reads, mutations and
+// receipt replay still reauthorize the current credential at their boundary.
+func (scope Scope) Administrative() bool { return scope.admin }
+
+// RequireAdministration pins the stronger authorization requirement for a
+// trusted service entry point. It grants no authority: reads, mutations and
+// receipt replay still authenticate this scope's current credential and grant.
+func (scope Scope) RequireAdministration() Scope {
+	scope.admin = true
+	return scope
+}
+
+// CheckProjectAdministrator rechecks a retained background actor before work.
+// Background records retain principal/project identity rather than a secret.
+// Foreground operations must additionally use authenticated scoped Store calls.
+func CheckProjectAdministrator(ctx context.Context, tx *sql.Tx, project, principal string) error {
+	if project == "" || principal == "" {
+		return Fail("forbidden", "Project management permission is required.", 403)
+	}
+	var allowed bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c WHERE c.principal_id=? AND c.revoked=0 AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1 AND g.can_manage=1)))`, principal, project).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return Fail("forbidden", "Project management permission is required.", 403)
+	}
+	return nil
+}
+
+// IsInstanceAdministrator distinguishes operator-owned configuration inside an
+// already authenticated transaction. It does not grant or replace a Scope.
+func IsInstanceAdministrator(ctx context.Context, tx *sql.Tx, principal string) (bool, error) {
+	var allowed bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials WHERE principal_id=? AND revoked=0 AND is_admin=1)`, principal).Scan(&allowed)
+	return allowed, err
+}
+
 // Authenticate validates a current credential for instance identity inspection.
 // Project data still requires Scope and administrative actions AdminScope.
 func (s *Store) Authenticate(r *http.Request) (Scope, error) { return s.authenticate(r) }
 
 func (s *Store) Scope(r *http.Request, permission string) (Scope, error) {
+	return s.ScopeWithLifetime(r, permission, r.Context())
+}
+
+// ScopeWithLifetime separates bounded authentication from a trusted handler's
+// request lifetime, notably for quiet streams. It grants no additional authority.
+func (s *Store) ScopeWithLifetime(r *http.Request, permission string, lifetime context.Context) (Scope, error) {
+	if lifetime == nil {
+		return Scope{}, Fail("validation_failed", "A request lifetime is required.", 400)
+	}
 	if permission != "read" && permission != "write" {
 		return Scope{}, Fail("forbidden", "The requested permission is unavailable.", 403)
 	}
@@ -33,6 +83,7 @@ func (s *Store) Scope(r *http.Request, permission string) (Scope, error) {
 	if err = s.authorize(r.Context(), s.db, scope, permission); err != nil {
 		return Scope{}, err
 	}
+	s.observeWorkerContact(lifetime, scope)
 	return scope, nil
 }
 
@@ -45,12 +96,16 @@ func (s *Store) AdminScope(r *http.Request) (Scope, error) {
 		return Scope{}, err
 	}
 	scope.admin = true
+	s.observeWorkerContact(r.Context(), scope)
 	return scope, nil
 }
 
 func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	selectors := r.Header.Values("X-FC-Browser-Session")
 	if len(selectors) != 0 {
+		if len(r.Header.Values("X-FC-Session")) != 0 {
+			return Scope{}, Fail("validation_failed", "Client connection attribution requires bearer authentication.", 400)
+		}
 		if len(r.Header.Values("Authorization")) != 0 {
 			return Scope{}, Fail("unauthorized", "Select one authentication method.", 401)
 		}
@@ -64,7 +119,14 @@ func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	if token == "" || len(token) > 256 || strings.ContainsAny(token, " \t\r\n") {
 		return Scope{}, Fail("unauthorized", "A valid bearer credential is required.", 401)
 	}
+	clientSessions := r.Header.Values("X-FC-Session")
+	if len(clientSessions) > 1 || len(clientSessions) == 1 && !validClientSession(clientSessions[0]) {
+		return Scope{}, Fail("validation_failed", "Select at most one valid client connection identity.", 400)
+	}
 	scope := Scope{ProjectID: r.PathValue("project_id"), WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: tokenHash(token), instanceID: s.instanceID}
+	if len(clientSessions) == 1 {
+		scope.clientSession = clientSessions[0]
+	}
 	var admin int
 	err := s.db.QueryRowContext(r.Context(), "SELECT principal_id,is_admin FROM credentials WHERE token_sha256=? AND revoked=0", scope.tokenHash).Scan(&scope.PrincipalID, &admin)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -78,6 +140,9 @@ func (s *Store) authenticate(r *http.Request) (Scope, error) {
 	}
 	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
 		return Scope{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
+	}
+	if scope.ProjectID, err = s.ResolveProjectID(r.Context(), scope.ProjectID); err != nil {
+		return Scope{}, err
 	}
 	return scope, nil
 }
@@ -114,7 +179,7 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 	if err != nil {
 		return storageError(err)
 	}
-	if permission == "admin" && admin != 1 {
+	if permission == "admin" && admin != 1 && scope.ProjectID == "" {
 		return Fail("forbidden", "Administrative permission is required.", 403)
 	}
 	if scope.ProjectID != "" {
@@ -125,9 +190,9 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 			return storageError(err)
 		}
 		if admin != 1 {
-			var read, write int
-			err = q.QueryRowContext(ctx, "SELECT can_read,can_write FROM grants WHERE credential_id=? AND project_id=?", credential, scope.ProjectID).Scan(&read, &write)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && (read != 1 || permission == "write" && write != 1)) {
+			var read, write, manage int
+			err = q.QueryRowContext(ctx, "SELECT can_read,can_write,can_manage FROM grants WHERE credential_id=? AND project_id=?", credential, scope.ProjectID).Scan(&read, &write, &manage)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && (read != 1 || permission == "write" && write != 1 || permission == "admin" && (manage != 1 || write != 1))) {
 				return Fail("forbidden", "The credential does not grant this project operation.", 403)
 			}
 			if err != nil {

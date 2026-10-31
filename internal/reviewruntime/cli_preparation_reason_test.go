@@ -28,6 +28,12 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), "allowance_exhausted"},
 		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, "allowance_unavailable"},
 		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), "allowance_unavailable"},
+		{"not started", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageCommandNotStarted}, "allowance_command_not_started"},
+		{"timeout", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageTimeout}, "allowance_timeout"},
+		{"command failed", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageCommandFailed}, "allowance_command_failed"},
+		{"wrapped malformed", fmt.Errorf("private token: %w", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageResponseUnproven}), "allowance_response_unproven"},
+		{"unknown stage", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: "private_token"}, "allowance_unavailable"},
+		{"unrelated code stage", &reviewprocess.Error{Code: "process_failed", FailureStage: reviewprocess.FailureStageTimeout}, "allowance_unavailable"},
 		{"raw text", errors.New("rate_limited private token diagnostic"), "allowance_unavailable"},
 		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), "allowance_unavailable"},
 	} {
@@ -36,6 +42,9 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			var usage atomic.Int64
 			f.driver.usage = func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error) {
 				usage.Add(1)
+				if tc.want == "allowance_exhausted" {
+					return reviewprocess.Usage{Limit: 3, RollingWindowMS: 3600000}, tc.failure
+				}
 				return reviewprocess.Usage{}, tc.failure
 			}
 			op, a, c := f.start(t, 2, 1, "prepare-usage-refusal")
@@ -48,7 +57,11 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			if !ok || details["reason"] != tc.want || strings.Contains(failure.Error(), "private") || prepared.Anchor != (reviewexec.Anchor{}) {
 				t.Fatal("bad safe refusal", failure, prepared)
 			}
-			if usage.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			wantRows := 0
+			if tc.want == "allowance_exhausted" {
+				wantRows = 1
+			}
+			if usage.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("refused allowance retained permission/evidence")
 			}
 			f.driver.mu.Lock()
@@ -62,7 +75,7 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 }
 
 func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
-	for _, mode := range []string{"exhausted", "unavailable", "repository_changed"} {
+	for _, mode := range []string{"exhausted", "retention_refused", "unavailable", "repository_changed", "not_started", "command_failed", "capture_failed", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			expected := "allowance_exhausted"
@@ -73,12 +86,37 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				body := `{"type":"status","phase":"usage","status":"complete","organization":"fixture-org","includedReviews":{"state":"available","repository":"owner/repo","remaining":0,"limit":3,"fullCapacityInMs":0,"rollingWindowMs":60000},"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}}`
 				if mode == "unavailable" {
 					body = "private invalid provider diagnostic"
-					expected = "allowance_unavailable"
+					expected = "allowance_response_unproven"
 				}
 				// The real Runner executes this allowlisted local Usage process. It emits no
 				// network calls and would log any accidental review invocation.
 				script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + cliShellQuote(f.log) + "\nprintf '%s\\n' " + cliShellQuote(body) + "\n"
+				switch mode {
+				case "not_started":
+					expected = "allowance_command_not_started"
+				case "command_failed":
+					script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + cliShellQuote(f.log) + "\nprintf 'private failure' >&2\nexit 7\n"
+					expected = "allowance_command_failed"
+				case "capture_failed":
+					script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + cliShellQuote(f.log) + "\nhead -c 65537 /dev/zero\n"
+					expected = "allowance_command_failed"
+				case "timeout":
+					script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + cliShellQuote(f.log) + "\nexec sleep 60\n"
+					expected = "allowance_timeout"
+				}
 				if err := os.WriteFile(f.capability.CLIExecutable, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "not_started" {
+				if err := os.Remove(f.capability.CLIExecutable); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "retention_refused" {
+				// Refuse only the optional observation/event transaction after the
+				// real Runner has strictly parsed and verified a zero balance.
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER refuse_exhaustion_event BEFORE INSERT ON events WHEN NEW.event_type='review.cli_preflight' BEGIN SELECT RAISE(ABORT,'synthetic private retention failure'); END`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -116,7 +154,11 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				})
 			}
 			defer stop()
-			deadline := time.NewTimer(4 * time.Second)
+			settleBudget := 4 * time.Second
+			if mode == "timeout" {
+				settleBudget = 20 * time.Second
+			}
+			deadline := time.NewTimer(settleBudget)
 			defer deadline.Stop()
 			tick := time.NewTicker(5 * time.Millisecond)
 			defer tick.Stop()
@@ -139,11 +181,32 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			if operation.Reason != expected || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
 				t.Fatal("safe hold reason missing or review dispatched", operation, reviews.Load())
 			}
-			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 {
+			wantRows := 0
+			if mode == "exhausted" {
+				wantRows = 1
+				v := operation.Allowance
+				if v == nil || v.Kind != "cli_exhausted" || v.Remaining == nil || *v.Remaining != 0 || v.Limit == nil || *v.Limit != 3 || v.FullCapacityInMS == nil || *v.FullCapacityInMS != 0 || v.RollingWindowMS == nil || *v.RollingWindowMS != 60000 {
+					t.Fatal("native exhausted facts lost", v)
+				}
+			} else if operation.Allowance != nil {
+				t.Fatal("unproven failure invented capacity", operation.Allowance)
+			}
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
 			}
+			if mode == "retention_refused" && cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.cli_preflight'`) != 0 {
+				t.Fatal("failed negative retention left an observation event")
+			}
+			var heldReason string
+			if err := f.store.DB().QueryRow(`SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND state='held'`, operation.AttemptID).Scan(&heldReason); err != nil || heldReason != expected {
+				t.Fatal("held reason not journaled", heldReason, err)
+			}
 			log, err := os.ReadFile(f.log)
-			if mode == "repository_changed" {
+			if mode == "not_started" {
+				if !os.IsNotExist(err) {
+					t.Fatal("unstarted command ran", err)
+				}
+			} else if mode == "repository_changed" {
 				if !os.IsNotExist(err) || f.fetches.Load() != 0 {
 					t.Fatal("repository mismatch reached allowance/fetch", err, string(log))
 				}

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ReviewExecutionConfiguration contains stored project settings only. It does
@@ -24,19 +27,24 @@ type ReviewRequest struct {
 	PullNumber                    int64  `json:"pull_number"`
 	Channel                       string `json:"channel"`
 	HeadSHA                       string `json:"head_sha"`
+	AllowOutOfOrder               bool   `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit             bool   `json:"override_file_limit,omitempty"`
 }
 
 type ReviewRequestReceipt struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	Revision int64  `json:"revision"`
+	deploymentDraining bool
+	ReviewSize         *reviewsize.Assessment `json:"review_size,omitempty"`
+	ID                 string                 `json:"id"`
+	State              string                 `json:"state"`
+	Revision           int64                  `json:"revision"`
 }
 
 // ReviewRequestResult contains exactly one flat wire result: the original
 // durable receipt, or the authorized terminal operation collected by a wait.
 type ReviewRequestResult struct {
-	Receipt   *ReviewRequestReceipt
-	Operation *ReviewOperation
+	queuedCause string
+	Receipt     *ReviewRequestReceipt
+	Operation   *ReviewOperation
 }
 
 func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
@@ -50,22 +58,67 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
-	ID                    string `json:"id"`
-	ProjectID             string `json:"project_id"`
-	ActorID               string `json:"actor_id"`
-	WorkerID              string `json:"worker_id"`
-	ConfigurationRevision int64  `json:"configuration_revision"`
-	PolicyRevision        int64  `json:"policy_revision"`
-	CapabilityFingerprint string `json:"capability_fingerprint"`
-	PullNumber            int64  `json:"pull_number"`
-	Channel               string `json:"channel"`
-	HeadSHA               string `json:"head_sha"`
-	State                 string `json:"state"`
-	Revision              int64  `json:"revision"`
-	Reason                string `json:"reason"`
-	AttemptID             string `json:"attempt_id"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	queuedCause           string
+	Observer              *ReviewHostedObserverStatus  `json:"observer,omitempty"`
+	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
+	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
+	SourceRefusal         *ReviewSourceRefusal         `json:"source_refusal,omitempty"`
+	deploymentDraining    bool
+	EvidenceID            string                      `json:"evidence_id,omitempty"`
+	PendingEvidence       *ReviewPendingEvidence      `json:"pending_evidence,omitempty"`
+	ID                    string                      `json:"id"`
+	ProjectID             string                      `json:"project_id"`
+	ActorID               string                      `json:"actor_id"`
+	WorkerID              string                      `json:"worker_id"`
+	ConfigurationRevision int64                       `json:"configuration_revision"`
+	PolicyRevision        int64                       `json:"policy_revision"`
+	CapabilityFingerprint string                      `json:"capability_fingerprint"`
+	PullNumber            int64                       `json:"pull_number"`
+	Channel               string                      `json:"channel"`
+	HeadSHA               string                      `json:"head_sha"`
+	AllowOutOfOrder       bool                        `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool                        `json:"override_file_limit,omitempty"`
+	State                 string                      `json:"state"`
+	Revision              int64                       `json:"revision"`
+	Reason                string                      `json:"reason"`
+	AttemptID             string                      `json:"attempt_id"`
+	CreatedAt             string                      `json:"created_at"`
+	UpdatedAt             string                      `json:"updated_at"`
+	Allowance             *ReviewAllowanceObservation `json:"allowance,omitempty"`
+}
+
+// ReviewAllowanceObservation describes this held attempt's retained facts, not
+// current account availability or permission to start another review.
+type ReviewAllowanceObservation struct {
+	Kind             string `json:"kind"`
+	ObservedAt       string `json:"observed_at"`
+	Remaining        *int64 `json:"remaining,omitempty"`
+	Limit            *int64 `json:"limit,omitempty"`
+	FullCapacityInMS *int64 `json:"full_capacity_in_ms,omitempty"`
+	RollingWindowMS  *int64 `json:"rolling_window_ms,omitempty"`
+	RetryNotBefore   string `json:"retry_not_before,omitempty"`
+}
+
+func validAllowanceTime(value string) bool {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil && !parsed.IsZero() && parsed.UTC().Format(time.RFC3339Nano) == value
+}
+
+func validReviewAllowance(value ReviewOperation) bool {
+	a := value.Allowance
+	if a == nil {
+		return true
+	}
+	if value.State != "held" || value.AttemptID == "" || !validAllowanceTime(a.ObservedAt) {
+		return false
+	}
+	switch a.Kind {
+	case "cli_exhausted":
+		return value.Channel == "cli" && value.Reason == "allowance_exhausted" && a.Remaining != nil && *a.Remaining == 0 && a.Limit != nil && *a.Limit >= 1 && *a.Limit <= 10000 && a.FullCapacityInMS != nil && *a.FullCapacityInMS >= 0 && *a.FullCapacityInMS <= 86400000 && a.RollingWindowMS != nil && *a.RollingWindowMS >= 1 && *a.RollingWindowMS <= 86400000 && a.RetryNotBefore == ""
+	case "hosted_cooldown":
+		return value.Channel == "hosted" && value.Reason == "hosted_allowance_cooldown" && a.Remaining == nil && a.Limit == nil && a.FullCapacityInMS == nil && a.RollingWindowMS == nil && validAllowanceTime(a.RetryNotBefore)
+	}
+	return false
 }
 
 func validExecutionIdentifier(value string) bool {
@@ -101,7 +154,7 @@ func (c *Client) ReviewExecution(ctx context.Context) (ReviewExecutionConfigurat
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "execution", "configuration"), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse); err != nil {
 		return ReviewExecutionConfiguration{}, err
 	}
-	if value.ProjectID != c.identity.ProjectID || !validExecutionIdentifier(value.ProjectID) || value.Revision < 1 || !validExecutionIdentifier(value.CapabilityID) || !oneReviewOf(value.Mode, "independent", "stacked") || value.Queue == nil || len(value.Queue) < 1 || len(value.Queue) > 100 || value.Channels == nil || len(value.Channels) < 1 || len(value.Channels) > 2 {
+	if value.ProjectID != c.identity.ProjectID || !validExecutionIdentifier(value.ProjectID) || value.Revision < 1 || !validExecutionIdentifier(value.CapabilityID) || !oneReviewOf(value.Mode, "independent", "stacked") || value.Queue == nil || len(value.Queue) > 100 || value.Channels == nil || len(value.Channels) < 1 || len(value.Channels) > 2 {
 		return ReviewExecutionConfiguration{}, invalidResponse()
 	}
 	numbers := make(map[int64]bool, len(value.Queue))
@@ -133,6 +186,8 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 	}
 	var result ReviewRequestResult
 	var status int
+	var draining bool
+	var queuedCause string
 	decode := func(data []byte, _ any) error {
 		if status == http.StatusOK {
 			result.Operation = &ReviewOperation{}
@@ -141,14 +196,18 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(data, result.Receipt)
 	}
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, queuedCause: &queuedCause, deploymentDraining: &draining}); err != nil {
 		return ReviewRequestResult{}, err
 	}
 	valid := false
 	if operation := result.Operation; operation != nil {
-		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
+		operation.deploymentDraining = draining
+		operation.queuedCause = queuedCause
+		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.AllowOutOfOrder == request.AllowOutOfOrder && operation.OverrideFileLimit == request.OverrideFileLimit && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
 	} else if receipt := result.Receipt; receipt != nil {
-		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
+		receipt.deploymentDraining = draining
+		result.queuedCause = queuedCause
+		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || reviewsize.Valid(*receipt.ReviewSize, request.PullNumber))
 	}
 	if !valid {
 		return ReviewRequestResult{}, unknownMutation("invalid_response", "The service returned invalid review request facts; its outcome is unknown.", status)
@@ -170,7 +229,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining}); err != nil {
 		return ReviewOperation{}, err
 	}
 	if value.ID != id || !c.validReviewOperation(value) {
@@ -180,5 +239,17 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 }
 
 func (c *Client) validReviewOperation(value ReviewOperation) bool {
-	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt)
+	if !validReviewHostedObserver(value.Observer, value.Channel, value.State, value.AttemptID) {
+		return false
+	}
+	if !validReviewHostedQuery(value.HostedQuery, value) {
+		return false
+	}
+	if !validReviewSourceRefusal(value.SourceRefusal, value.State, value.Reason, value.PullNumber) {
+		return false
+	}
+	if value.EvidenceID != "" && (value.AttemptID == "" || !validReviewOpaqueID(value.EvidenceID, "review_evidence_")) {
+		return false
+	}
+	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt) && validReviewOperationWait(value.Wait, value.Channel, value.State, value.AttemptID) && validReviewAllowance(value) && validReviewPendingEvidence(value.PendingEvidence, value.State, value.Reason)
 }

@@ -141,7 +141,11 @@ func build(ctx context.Context, tx *sql.Tx, project string, m Manifest, salt str
 			return Content{}, "", err
 		}
 	}
-	content, err := BuildContent(m, facts)
+	resolved, err := resolveLinkedSources(ctx, tx, project, m)
+	if err != nil {
+		return Content{}, "", err
+	}
+	content, err := BuildWindowContent(resolved, facts)
 	if err != nil {
 		return Content{}, "", unavailable()
 	}
@@ -212,6 +216,8 @@ func preserveReviewFacts(ctx context.Context, tx *sql.Tx, project string, m Mani
 			fact = ReviewFacts{Number: enrolled.Number, Lifecycle: old.Lifecycle}
 		}
 		if retained {
+			fact.CLIHasMore = fact.CLIHasMore || old.CLIHasMore
+			fact.HostedHasMore = fact.HostedHasMore || old.HostedHasMore
 			fact.CLI, err = merge(old.CLI, fact.CLI)
 			if err != nil {
 				return nil, err
@@ -287,7 +293,7 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 			return Receipt{r.revision, "unchanged"}, nil
 		}
 		var owner string
-		err = tx.QueryRowContext(ctx, `SELECT project_id FROM project_publications WHERE slug=? AND project_id<>?`, input.Manifest.Slug, scope.ProjectID).Scan(&owner)
+		err = tx.QueryRowContext(ctx, `SELECT project_id FROM project_publications WHERE slug=? AND project_id<>? UNION ALL SELECT project_id FROM project_handles WHERE handle=? AND project_id<>? LIMIT 1`, input.Manifest.Slug, scope.ProjectID, input.Manifest.Slug, scope.ProjectID).Scan(&owner)
 		if err == nil {
 			return nil, core.Fail("publication_slug_conflict", "The public slug is unavailable.", 409)
 		}
@@ -399,7 +405,30 @@ func publishContent(ctx context.Context, tx *sql.Tx, r record, content string) e
 	return nil
 }
 
-// Refresh is called inside the authoritative current-review transaction. A
+// RefreshForJob avoids rebuilding a publication for an unselected job. It runs
+// inside the assignment/status transaction and retains Refresh's optional
+// projection failure boundary. Private prose edits do not invoke this hook.
+func RefreshForJob(ctx context.Context, tx *sql.Tx, project, job string, reader SourceReader) error {
+	r, found, err := readRecord(ctx, tx, project)
+	if err != nil {
+		return Refresh(ctx, tx, project, reader)
+	}
+	if !found || !r.enabled {
+		return nil
+	}
+	m, err := DecodeManifest([]byte(r.manifest))
+	if err != nil {
+		return Refresh(ctx, tx, project, reader)
+	}
+	for _, selected := range m.JobRefs {
+		if selected.JobID == job {
+			return Refresh(ctx, tx, project, reader)
+		}
+	}
+	return nil
+}
+
+// Refresh is called inside an authoritative current-source transaction. A
 // failed projection is contained and reported privately, preserving both the
 // authoritative review write and the last successfully published snapshot.
 func Refresh(ctx context.Context, tx *sql.Tx, project string, reader SourceReader) error {

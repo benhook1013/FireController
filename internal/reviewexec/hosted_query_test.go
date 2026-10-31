@@ -46,10 +46,13 @@ func TestHostedQueryMigrationConcurrentBeginAndRetainedReplay(t *testing.T) {
 	original := evidenceState(t, f, a)
 	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='5' WHERE key='schema:review_execution'`)
 	cliAllowanceReopen(t, f)
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "6" || evidenceState(t, f, a) != original {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "9" || evidenceState(t, f, a) != original {
 		t.Fatal("v5 upgrade changed retained state", version, err)
 	}
 	type result struct {
@@ -95,7 +98,7 @@ func TestHostedQueryMigrationConcurrentBeginAndRetainedReplay(t *testing.T) {
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "cancelled", "user_cancelled", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	f.configure(t, attemptProject, "other-account", 1, true)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	cliAllowanceReopen(t, f)
@@ -192,8 +195,8 @@ func TestHostedQueryRejectsNewIneligibleInputWithoutEffects(t *testing.T) {
 		"revoked": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
 			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 		}, "forbidden"},
-		"policy paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
-			admissionPolicy(t, f, 1, "hosted")
+		"project paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
 		}, "review_conflict"},
 		"configuration paused": {func(t *testing.T, f *attemptFixture, _ *Attempt, _ *Anchor, _, _ *reviewprovider.Author) {
 			f.configure(t, attemptProject, "test-capability", 1, true)

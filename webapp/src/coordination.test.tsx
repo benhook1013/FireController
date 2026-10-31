@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MemoryRouter } from 'react-router';
-import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, notesPath, parseNoteFilters } from './coordination';
+import { MemoryRouter, createMemoryRouter, RouterProvider } from 'react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { WorkspaceContext, type Session } from './workspace';
+import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, WorkerCoordinationView, notesPath, parseNoteFilters } from './coordination';
 import type { Note, NoteRevision } from './types';
 
 const home = '/projects/project_one';
@@ -87,6 +89,29 @@ describe('read-only coordination rendering', () => {
   });
 });
 
+
+describe('worker pending-note placement', () => {
+  it('shows direct pending notes after the worker identity and before pause/focus details', () => {
+    const client = new QueryClient();
+    const key = ['fc', 'connection_one', 'instance_one', 'project_one', ''] as const;
+    const workerId = 'worker_one';
+    client.setQueryData([...key, 'worker', workerId], { id: workerId, project_id: 'project_one', name: 'Worker display name' });
+    client.setQueryData([...key, 'worker-pause', workerId], { worker_id: workerId, paused: false, revision: 0, reason: '' });
+    client.setQueryData([...key, 'worker-primary', workerId], { worker_id: workerId, job_id: '', revision: 0 });
+    client.setQueryData([...key, 'notes', { worker_id: workerId, include_assigned_jobs: false, status: 'pending', limit: 5 }, ''], { items: [{ ...summary, status: 'pending' }], has_more: false });
+    const session = { controller: new AbortController(), api: {} } as Session;
+    const router = createMemoryRouter([{ path: '/projects/project_one/workers/:workerId', element: <WorkerCoordinationView /> }], { initialEntries: [home + '/workers/' + workerId] });
+    try {
+      const html = renderToStaticMarkup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}><RouterProvider router={router} /></WorkspaceContext.Provider></QueryClientProvider>);
+      expect(html.indexOf('Worker display name')).toBeLessThan(html.indexOf('Pending notes'));
+      expect(html.indexOf('Pending notes')).toBeLessThan(html.indexOf('Explicit pause'));
+      expect(html).toContain('Preview &lt;img src=x&gt;');
+      expect(html).toContain('Primary job');
+      expect(html).not.toContain('Notes for this worker');
+      expect(html).toContain('View all notes and history');
+    } finally { router.dispose(); client.clear(); }
+  });
+});
 
 describe('note URL filter admission', () => {
   it('rejects invalid scopes, enums, dependency flags and phase byte/control bounds locally', () => {

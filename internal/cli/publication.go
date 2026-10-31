@@ -18,8 +18,10 @@ import (
 
 type publicationInvocation struct {
 	operation, file, key, preview string
+	output                        string
 	revision                      int64
 	input                         client.PublicationInput
+	changes                       client.PublicationChanges
 }
 
 func parsePublication(operation string, args []string) (*publicationInvocation, bool) {
@@ -29,6 +31,8 @@ func parsePublication(operation string, args []string) (*publicationInvocation, 
 	case "read":
 	case "preview":
 		allowed["--file"] = true
+	case "prepare":
+		allowed["--file"], allowed["--output"] = true, true
 	case "apply":
 		allowed["--file"], allowed["--preview-sha256"], allowed["--key"] = true, true, true
 	case "unpublish":
@@ -57,9 +61,15 @@ func parsePublication(operation string, args []string) (*publicationInvocation, 
 		}
 		values[flag] = value
 	}
-	if operation == "preview" || operation == "apply" {
+	if operation == "preview" || operation == "apply" || operation == "prepare" {
 		in.file = values["--file"]
 		if !filepath.IsAbs(in.file) || len(in.file) > 4096 {
+			return nil, false
+		}
+	}
+	if operation == "prepare" {
+		in.output = values["--output"]
+		if !filepath.IsAbs(in.output) || len(in.output) > 4096 || filepath.Clean(in.output) == filepath.Clean(in.file) {
 			return nil, false
 		}
 	}
@@ -81,7 +91,7 @@ func parsePublication(operation string, args []string) (*publicationInvocation, 
 }
 
 func preparePublication(ctx context.Context, in *publicationInvocation) error {
-	if in.operation != "preview" && in.operation != "apply" {
+	if in.operation != "preview" && in.operation != "apply" && in.operation != "prepare" {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -113,6 +123,13 @@ func preparePublication(ctx context.Context, in *publicationInvocation) error {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+	if in.operation == "prepare" {
+		in.changes, err = client.DecodePublicationChanges(raw)
+		if err != nil {
+			return err
+		}
+		return preparePublicationOutput(in)
+	}
 	in.input, err = client.DecodePublicationInput(raw)
 	if err != nil {
 		return invalid()
@@ -127,6 +144,8 @@ func executePublication(ctx, parent context.Context, c *client.Client, in *publi
 	var value any
 	var err error
 	switch in.operation {
+	case "prepare":
+		value, err = executePublicationPreparation(ctx, c, in)
 	case "read":
 		value, err = c.Publication(ctx)
 	case "preview":
@@ -138,6 +157,9 @@ func executePublication(ctx, parent context.Context, c *client.Client, in *publi
 	}
 	if err != nil {
 		return reportClientError(stderr, err, parent)
+	}
+	if in.operation == "prepare" {
+		return emitPreparedPublication(stdout, stderr, value)
 	}
 	if in.operation != "apply" && in.operation != "unpublish" {
 		return emit(stdout, stderr, value)

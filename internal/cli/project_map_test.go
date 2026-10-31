@@ -310,3 +310,37 @@ func TestProjectMapCommittedOutputFailureAndSharedCancellation(t *testing.T) {
 		t.Fatal("cancel changed map or returned data", code, stdout.String(), stderr.String())
 	}
 }
+
+func TestProjectMapCommandsSectionAndPosition(t *testing.T) {
+	f := mapCLIService(t)
+	p := f.project(t, "section-cli")
+	worker := f.worker(t, p, "Builder")
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {p, worker}})
+	content := map[string]any{"kind": "section", "title": "Narrative", "description": "## Literal **Markdown** <tag>", "position": 27}
+	file := mapCLIFile(t, content)
+	code, out, diagnostic := mutationInvoke(t, path, "chosen", "map", "create", "--file", file, "--key", "section-cli")
+	var receipt client.ProjectMapReceipt
+	if code != 0 || diagnostic != "" || json.Unmarshal([]byte(out), &receipt) != nil {
+		t.Fatal(code, out, diagnostic)
+	}
+	code, out, diagnostic = mutationInvoke(t, path, "chosen", "map", "read", receipt.ID)
+	var current client.ProjectMapEntry
+	if code != 0 || diagnostic != "" || json.Unmarshal([]byte(out), &current) != nil || current.Position != 27 || current.Kind != "section" || current.Description != content["description"] {
+		t.Fatal(code, out, diagnostic)
+	}
+	code, out, diagnostic = mutationInvoke(t, path, "chosen", "map", "list", "--kind", "section")
+	var page client.Page[client.ProjectMapSummary]
+	if code != 0 || diagnostic != "" || json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || page.Items[0].ID != receipt.ID {
+		t.Fatal(code, out, diagnostic)
+	}
+	for _, position := range []any{nil, -1, 1000001} {
+		content["position"] = position
+		bad := mapCLIFile(t, content)
+		code, out, diagnostic = mutationInvoke(t, filepath.Join(t.TempDir(), "missing-profiles"), "chosen", "map", "create", "--file", bad, "--key", "invalid-section")
+		if code != cli.ExitUsage || out != "" || !strings.Contains(diagnostic, "invalid_map_file") {
+			t.Fatal(code, out, diagnostic)
+		}
+	}
+}

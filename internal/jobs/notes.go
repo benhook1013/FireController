@@ -103,6 +103,9 @@ func (request *notePatchRequest) UnmarshalJSON(data []byte) error {
 func noteValidation() error {
 	return core.Fail("validation_failed", "Supply a valid scoped note with bounded text, explicit fields and revision.", 400)
 }
+func noteTargetValidation() error {
+	return core.Fail("validation_failed", "A note must target an existing project worker or job; phase is only a label.", 400)
+}
 func noteUnavailable() error {
 	return core.Fail("storage_unavailable", "Stored note history is unavailable.", 500)
 }
@@ -208,6 +211,9 @@ func createNote(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "notes.create", Target: "notes", Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+			if n.WorkerID == "" && n.JobID == "" {
+				return nil, noteTargetValidation()
+			}
 			if err := checkNoteTargets(ctx, tx, n); err != nil {
 				return nil, err
 			}
@@ -292,6 +298,9 @@ func patchNote(store *core.Store) http.HandlerFunc {
 			}
 			if !validNoteContent(next) {
 				return nil, noteValidation()
+			}
+			if (req.WorkerID != nil || req.JobID != nil || req.Phase != nil) && next.WorkerID == "" && next.JobID == "" {
+				return nil, noteTargetValidation()
 			}
 			if err = checkNoteTargets(ctx, tx, next); err != nil {
 				return nil, err
@@ -411,6 +420,18 @@ type noteListFilter struct {
 	Route, WorkerID, JobID, Phase, Kind, Status string
 	IncludeAssignedJobs                         bool
 }
+
+// Exact-job reads share the resume page's selection regardless of client worker
+// defaults or later assignment changes. Canonicalize before signing or parsing
+// cursors so equivalent exact-job requests retain one pagination identity.
+func (filter noteListFilter) canonical() noteListFilter {
+	if filter.JobID != "" {
+		filter.WorkerID = ""
+		filter.IncludeAssignedJobs = false
+	}
+	return filter
+}
+
 type notePosition struct {
 	CreatedAt string `json:"created_at"`
 	ID        string `json:"id"`
@@ -448,6 +469,7 @@ func listNotes(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, core.Fail("invalid_query", "Use valid exact note filters; assignment expansion requires a worker.", 400))
 			return
 		}
+		filter = filter.canonical()
 		limit, err := core.PageLimit(r)
 		if err != nil {
 			core.WriteError(w, err)
@@ -492,6 +514,7 @@ func listNotes(store *core.Store) http.HandlerFunc {
 // readNotePage uses the caller's authorized snapshot and ordinary list cursor
 // identity. Resume context and explicit notes reads share this bounded selection.
 func readNotePage(ctx context.Context, tx *sql.Tx, store *core.Store, scope core.Scope, filter noteListFilter, limit int, position *notePosition) (notePage, error) {
+	filter = filter.canonical()
 	filterBytes, _ := json.Marshal(filter)
 	filterKey := string(filterBytes)
 	result := notePage{Items: make([]noteSummary, 0, limit)}

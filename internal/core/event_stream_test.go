@@ -21,7 +21,7 @@ func streamFixture(t *testing.T) (*Store, Scope, string) {
 	t.Cleanup(func() { s.Close() })
 	token := "synthetic-core-stream-token-1234567"
 	sum := sha256.Sum256([]byte(token))
-	_, err = s.DB().Exec(`INSERT INTO projects VALUES('project','project',1,'synthetic/project');INSERT INTO workers VALUES('project','worker','worker');INSERT INTO credentials VALUES('credential','principal',?,0,0);INSERT INTO grants VALUES('credential','project',1,1)`, hex.EncodeToString(sum[:]))
+	_, err = s.DB().Exec(`INSERT INTO projects VALUES('project','project',1,'synthetic/project');INSERT INTO workers VALUES('project','worker','worker');INSERT INTO credentials VALUES('credential','principal',?,0,0);INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('credential','project',1,1)`, hex.EncodeToString(sum[:]))
 	if err != nil {
 		t.Fatal(err)
 	}

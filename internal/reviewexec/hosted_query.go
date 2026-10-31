@@ -55,7 +55,14 @@ func validHostedQueryComment(query HostedAllowanceQuery, comment reviewprovider.
 // readHostedQuery validates indexed facts against canonical owned JSON and the
 // original operation. Later review admission may have a separately refreshed
 // anchor; it cannot rewrite this earlier query's source observation.
-func readHostedQuery(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (HostedAllowanceQuery, error) {
+func readHostedQuery(ctx context.Context, tx EvidenceQuery, a Attempt, o Operation) (HostedAllowanceQuery, error) {
+	if o.AttemptID != a.ID {
+		var err error
+		o, err = historicalCooldownOperation(ctx, tx, o, a)
+		if err != nil {
+			return HostedAllowanceQuery{}, err
+		}
+	}
 	var record HostedAllowanceQuery
 	var id, project, attempt, operation, fingerprint, body string
 	var revision int64

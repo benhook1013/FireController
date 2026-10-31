@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PublicSiteApi, validatePublicChange, validatePublicSnapshot, type PublicSnapshot } from './public-site-api';
+import { publicProjectLocation } from './public-site-api';
 
 const generation = `public_generation_${'a'.repeat(32)}`;
 const published = '2026-10-17T12:00:00Z';
@@ -11,7 +12,53 @@ function frame(revision: number, extra: Record<string, unknown> = {}) { const cu
 async function flush() { for (let i = 0; i < 80; i++) await Promise.resolve(); }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+describe('anonymous project address resolution', () => {
+  it.each(['firemud','project_one','legacy-public'])('resolves only the enabled publication slug for %s without cookies or private identity', async address => {
+    const fetch=vi.fn().mockResolvedValue(new Response(JSON.stringify({slug:'published-showcase'}),{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetch);
+    await expect(publicProjectLocation(address,new AbortController().signal)).resolves.toBe('published-showcase');
+    expect(fetch.mock.calls[0][0]).toBe(`/api/v1/public/project-locations/${address}`);
+    expect(fetch.mock.calls[0][1]).toMatchObject({method:'GET',credentials:'omit',cache:'no-store',redirect:'error',headers:{Accept:'application/json'}});
+  });
+  it.each([{slug:'published-showcase',project_id:'private'}, {slug:null}, {slug:'UPPER'}, {}, {slug:'../other'}])('rejects any private or malformed location field',async value=>{
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}})));
+    await expect(publicProjectLocation('firemud',new AbortController().signal)).rejects.toBeDefined();
+  });
+  it('refuses malformed addresses before I/O and preserves unpublished404',async()=>{
+    const fetch=vi.fn().mockResolvedValue(new Response('{}',{status:404,headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetch);
+    await expect(publicProjectLocation('../other',new AbortController().signal)).rejects.toBeDefined();expect(fetch).not.toHaveBeenCalled();
+    await expect(publicProjectLocation('firemud',new AbortController().signal)).rejects.toMatchObject({status:404});
+  });
+});
+
 describe('anonymous publication DTO boundary', () => {
+  it('preserves old payloads and accepts only optional boolean channel window flags', () => {
+    const old = snapshot(), before = JSON.stringify(old);
+    expect(validatePublicSnapshot(old, 'showcase')).toBe(true);
+    expect(JSON.stringify(old)).toBe(before);
+    expect(Object.hasOwn(old.content.reviews[0], 'cli_has_more')).toBe(false);
+    for (const field of ['cli_has_more', 'hosted_has_more']) {
+      for (const flag of [true, false]) {
+        const value = snapshot(); Object.assign(value.content.reviews[0], { [field]: flag });
+        expect(validatePublicSnapshot(value, 'showcase')).toBe(true);
+      }
+      for (const flag of [null, 0, 1, 'true', [], {}, undefined]) {
+        const value = snapshot(); Object.assign(value.content.reviews[0], { [field]: flag });
+        expect(validatePublicSnapshot(value, 'showcase')).toBe(false);
+      }
+    }
+    const unknown = snapshot(); Object.assign(unknown.content.reviews[0], { has_more: true });
+    expect(validatePublicSnapshot(unknown, 'showcase')).toBe(false);
+  });
+  it('retains the 100-round transfer bound even when more rounds are declared', () => {
+    for (const channel of ['cli', 'hosted'] as const) {
+      const value = snapshot(), review = value.content.reviews[0];
+      review[channel] = Array.from({ length: 100 }, (_, i) => ({ ...review.hosted[0], key: `public_round_${i.toString(16).padStart(32, '0')}` }));
+      review[`${channel}_has_more`] = true;
+      expect(validatePublicSnapshot(value, 'showcase')).toBe(true);
+      review[channel].push({ ...review[channel][0], key: `public_round_${'f'.repeat(32)}` });
+      expect(validatePublicSnapshot(value, 'showcase')).toBe(false);
+    }
+  });
   it('accepts only selected public values and explicit unknown round details', () => {
     expect(validatePublicSnapshot(snapshot(), 'showcase')).toBe(true);
     for (const [path, value] of [['project_id', 'PRIVATE_PROJECT'], ['snapshot_id', 'PRIVATE_SNAPSHOT'], ['actor_id', 'PRIVATE_ACTOR'], ['credential', 'PRIVATE_TOKEN']]) {
@@ -34,6 +81,19 @@ describe('anonymous publication DTO boundary', () => {
 });
 
 describe('public transport has no private connection authority', () => {
+  it('reads window flags anonymously in current and frozen content and refuses malformed wire flags', async () => {
+    const value = snapshot(); value.content.reviews[0].cli_has_more = true; value.content.reviews[0].hosted_has_more = false;
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => { expect(init.credentials).toBe('omit'); return json(value); });
+    vi.stubGlobal('fetch', fetcher);
+    const api = new PublicSiteApi('showcase'), signal = new AbortController().signal;
+    expect((await api.snapshot(signal)).content.reviews[0]).toEqual(value.content.reviews[0]);
+    expect((await api.snapshot(signal, 1, generation)).content.reviews[0]).toEqual(value.content.reviews[0]);
+    const raw = JSON.stringify(value);
+    for (const invalid of [raw.replace('"cli_has_more":true', '"cli_has_more":null'), raw.replace('"cli_has_more":true', '"cli_has_more":1'), raw.replace('"cli_has_more":true', '"cli_has_more":true,"cli_has_more":true'), raw.replace('"cli_has_more":true', '"private_has_more":true')]) {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(invalid, { headers: { 'content-type': 'application/json' } })));
+      await expect(api.snapshot(signal)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
   it('accepts decoded Fetch bodies retaining compression headers and bounds decoded bytes', async () => {
     // Fetch exposes decoded body bytes even when the gzip/br response headers
     // and compressed Content-Length remain visible to application code.
