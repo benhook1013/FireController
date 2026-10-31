@@ -44,7 +44,21 @@ func (e *Engine) waitRunState(ctx context.Context, scope core.Scope, id string, 
 	if seconds == 0 {
 		return e.readRunState(ctx, scope, id)
 	}
-	budget, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	read := func() (RunState, bool, error) {
+		var state RunState
+		var terminal bool
+		err := core.RetryReadAdmission(ctx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			state, terminal, readErr = e.readRunState(readCtx, scope, id)
+			return readErr
+		})
+		if ctx.Err() != nil {
+			return RunState{}, false, resultWaitCanceled(ctx, "The accepted selection wait was canceled; its request is retained.")
+		}
+		return state, terminal, err
+	}
+	budget, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	run, terminal, err := e.WaitRun(budget, scope, id, seconds)
 	if err == nil && terminal && run.State == "selected" {
@@ -52,11 +66,11 @@ func (e *Engine) waitRunState(ctx context.Context, scope core.Scope, id string, 
 	}
 	if err != nil {
 		if errors.Is(budget.Err(), context.DeadlineExceeded) && ctx.Err() == nil || waitCapacityError(err) {
-			return e.readRunState(ctx, scope, id)
+			return read()
 		}
 		return RunState{}, false, err
 	}
-	return e.readRunState(ctx, scope, id)
+	return read()
 }
 
 func waitCapacityError(err error) bool {

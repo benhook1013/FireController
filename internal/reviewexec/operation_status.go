@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -188,10 +189,22 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 // Waiting owns only result collection; the final compact read reauthorizes and
 // rereads its unique ledger binding after the existing notification wait.
 func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id string, seconds int) (OperationStatus, error) {
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	if _, _, err := e.WaitOperation(ctx, scope, id, seconds); err != nil {
 		return OperationStatus{}, err
 	}
-	return e.ReadOperationStatus(ctx, scope, id)
+	waitCtx, cleanup := e.resultWaitContext(ctx)
+	defer cleanup()
+	var value OperationStatus
+	err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+		var readErr error
+		value, readErr = e.ReadOperationStatus(readCtx, scope, id)
+		return readErr
+	})
+	if waitCtx.Err() != nil {
+		return OperationStatus{}, resultWaitCanceled(waitCtx, "The review result wait was canceled; the retained operation is unchanged.")
+	}
+	return value, err
 }
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "X-FC-Hosted-Observer")

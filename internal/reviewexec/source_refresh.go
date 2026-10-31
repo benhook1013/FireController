@@ -771,6 +771,7 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 900*time.Second {
 		return SourceRefreshOperation{}, invalid()
 	}
+	deadline := time.Now().Add(maxWait)
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
 	canceled := func() error {
@@ -780,7 +781,12 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 		if waitCtx.Err() != nil {
 			return SourceRefreshOperation{}, canceled()
 		}
-		value, err := e.ReadSourceRefresh(waitCtx, scope, id)
+		var value SourceRefreshOperation
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			value, readErr = e.ReadSourceRefresh(readCtx, scope, id)
+			return readErr
+		})
 		if waitCtx.Err() != nil {
 			return SourceRefreshOperation{}, canceled()
 		}
@@ -818,7 +824,7 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 			delete(e.sourceWaiterPrincipals, waiter.principal)
 		}
 	}()
-	timer := time.NewTimer(maxWait)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		value, err := read()

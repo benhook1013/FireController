@@ -86,6 +86,10 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 	}
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
+	var deadline time.Time
+	if waitSeconds > 0 {
+		deadline = time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	}
 	canceled := func() error {
 		return resultWaitCanceled(waitCtx, "The review result wait was canceled; the retained operation is unchanged.")
 	}
@@ -93,7 +97,12 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
-		value, err := e.ReadOperation(waitCtx, scope, id)
+		var value Operation
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var err error
+			value, err = e.ReadOperation(readCtx, scope, id)
+			return err
+		})
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
@@ -136,7 +145,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 			delete(e.operationWaiterPrincipals, waiter.principal)
 		}
 	}()
-	timer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		value, err := read()

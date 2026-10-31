@@ -300,8 +300,14 @@ func (e *Engine) WaitRun(ctx context.Context, scope core.Scope, id string, secon
 	if ctx == nil || !validRunID(id) || !identifier.MatchString(scope.PrincipalID) || seconds < 0 || seconds > 900 {
 		return Run{}, false, invalid()
 	}
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	read := func() (Run, error) {
-		r, err := e.ReadRun(ctx, scope, id)
+		var r Run
+		err := core.RetryReadAdmission(ctx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			r, readErr = e.ReadRun(readCtx, scope, id)
+			return readErr
+		})
 		if ctx.Err() != nil {
 			return Run{}, core.Fail("overloaded", "The accepted selection wait was canceled; its request is retained.", 503)
 		}
@@ -341,7 +347,7 @@ func (e *Engine) WaitRun(ctx context.Context, scope core.Scope, id string, secon
 			delete(e.operationWaiterPrincipals, waiter.principal)
 		}
 	}()
-	timer := time.NewTimer(time.Duration(seconds) * time.Second)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		r, err := read()

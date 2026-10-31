@@ -111,9 +111,25 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 	if ctx == nil || e == nil || e.store == nil || !validCIWatchTargets(targets) || waitSeconds < 0 || waitSeconds > 900 {
 		return CIWatchResult{}, invalid()
 	}
+	var deadline time.Time
+	if waitSeconds > 0 {
+		deadline = time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	}
 	ctx, cleanup := e.resultWaitContext(ctx)
 	defer cleanup()
-	binding, err := e.ciWatchBinding(ctx, scope)
+	readBinding := func() (ciWatchBinding, error) {
+		var value ciWatchBinding
+		err := core.RetryReadAdmission(ctx, deadline, func(readCtx context.Context) error {
+			var err error
+			value, err = e.ciWatchBinding(readCtx, scope)
+			return err
+		})
+		if ctx.Err() != nil {
+			return ciWatchBinding{}, resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released.")
+		}
+		return value, err
+	}
+	binding, err := readBinding()
 	if err != nil {
 		return CIWatchResult{}, err
 	}
@@ -128,10 +144,14 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 		return CIWatchResult{}, err
 	}
 	defer s.unregisterCIWatch(sub)
-	timer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+	remaining := time.Duration(0)
+	if waitSeconds > 0 {
+		remaining = time.Until(deadline)
+	}
+	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	for {
-		fresh, err := e.ciWatchBinding(ctx, scope)
+		fresh, err := readBinding()
 		if err != nil {
 			return CIWatchResult{}, err
 		}
@@ -150,7 +170,7 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 			return CIWatchResult{}, resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released.")
 		case <-timer.C:
 			// Reauthorize after a quiet wait, just as after a source notification.
-			fresh, err := e.ciWatchBinding(ctx, scope)
+			fresh, err := readBinding()
 			if err != nil {
 				return CIWatchResult{}, err
 			}

@@ -73,13 +73,19 @@ func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration
 	if ctx == nil || !operationPattern.MatchString(id) || scope.PrincipalID == "" || duration < 0 || duration > 900*time.Second {
 		return Operation{}, invalid()
 	}
+	deadline := time.Now().Add(duration)
 	waitCtx, cleanup := e.waitContext(ctx)
 	defer cleanup()
 	read := func() (Operation, error) {
 		if waitCtx.Err() != nil {
 			return Operation{}, waitCanceled(waitCtx)
 		}
-		value, err := e.Read(waitCtx, scope, id)
+		var value Operation
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			value, readErr = e.Read(readCtx, scope, id)
+			return readErr
+		})
 		if waitCtx.Err() != nil {
 			return Operation{}, waitCanceled(waitCtx)
 		}
@@ -117,7 +123,7 @@ func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration
 			delete(e.principals, w.principal)
 		}
 	}()
-	timer := time.NewTimer(duration)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		value, err := read()
