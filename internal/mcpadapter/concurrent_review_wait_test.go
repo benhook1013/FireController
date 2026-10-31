@@ -36,7 +36,7 @@ func TestConcurrentReviewWaitsDoNotBlockNativeMutation(t *testing.T) {
 				t.Error("review read changed binding or action")
 			}
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/projects/"+f.project+"/reviews/operations/"), "/status")
-			if r.Header.Get("Prefer") == "wait=50" {
+			if boundedPositiveReviewWait(t, r.Header.Get("Prefer")) {
 				waitCalls.Add(1)
 				waiting.Add(1)
 				started <- id

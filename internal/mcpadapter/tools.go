@@ -142,6 +142,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return resultFailure(err), nil
 			}
 			defer service.Close()
+			args = fitReviewWait(ctx, tool.name, args)
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			if existingManagementTool(tool.name) {

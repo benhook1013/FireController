@@ -63,7 +63,7 @@ func TestReviewStartMCPActualReplayAndBackgroundWait(t *testing.T) {
 		if selection && r.Method == "POST" {
 			posts.Add(1)
 		}
-		waiting := selection && r.Method == "GET" && r.Header.Get("Prefer") == "wait=50"
+		waiting := selection && r.Method == "GET" && boundedPositiveReviewWait(t, r.Header.Get("Prefer"))
 		if waiting {
 			started <- struct{}{}
 		}

@@ -25,7 +25,7 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=50"
+		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && boundedPositiveReviewWait(t, r.Header.Get("Prefer"))
 		if waiting {
 			readStarted <- struct{}{}
 		}
