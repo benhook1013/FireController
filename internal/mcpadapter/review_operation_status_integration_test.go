@@ -41,7 +41,7 @@ func TestOperationStatusStdioCompactDiagnosticsAndNoProviders(t *testing.T) {
 	if compactReads.Load() != 1 || fullReads.Load() != 1 || before != f.providers.Load() {
 		t.Fatal("output view polled or fetched provider")
 	}
-	for _, args := range []map[string]any{{"operation_id": receipt.ID, "wait_seconds": 51}, {"operation_id": receipt.ID, "diagnostics": nil}} {
+	for _, args := range []map[string]any{{"operation_id": receipt.ID, "wait_seconds": 901}, {"operation_id": receipt.ID, "diagnostics": nil}} {
 		diagnosticResult(t, call(t, session, "review_operation_read", args), "invalid_arguments", false)
 	}
 }
@@ -54,8 +54,8 @@ func TestOperationStatusWaitDiagnosticBeforeCredentialsOrNetwork(t *testing.T) {
 	bound.ServerURL = service.URL
 	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": bound}, "missing-private-credential"), "chosen"), "")
 	id := "review_operation_" + strings.Repeat("a", 32)
-	d := diagnosticResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id, "wait_seconds": 60}), "invalid_arguments", false)
-	for _, phrase := range []string{"wait_seconds", "MCP", "0 to 50", "CLI", "900"} {
+	d := diagnosticResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id, "wait_seconds": 901}), "invalid_arguments", false)
+	for _, phrase := range []string{"wait_seconds", "MCP", "0 to 900", "CLI", "900"} {
 		if !strings.Contains(d.Message, phrase) {
 			t.Fatal("missing field-specific MCP/CLI bound", d)
 		}
@@ -65,7 +65,7 @@ func TestOperationStatusWaitDiagnosticBeforeCredentialsOrNetwork(t *testing.T) {
 	}
 	// Valid bounds pass argument admission and reach the existing credential
 	// refusal; they neither start a wait nor contact the synthetic service here.
-	for _, args := range []map[string]any{{"operation_id": id}, {"operation_id": id, "wait_seconds": 0}, {"operation_id": id, "wait_seconds": 50}} {
+	for _, args := range []map[string]any{{"operation_id": id}, {"operation_id": id, "wait_seconds": 0}, {"operation_id": id, "wait_seconds": 900}} {
 		diagnosticResult(t, call(t, session, "review_operation_read", args), "credential_unreadable", false)
 	}
 	if requests.Load() != 0 {

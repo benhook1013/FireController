@@ -66,7 +66,7 @@ func TestMessageWaitCommandQuietPublicDeliveryTimeoutAndCancellation(t *testing.
 		go func() { done <- cli.RunContext(ctx, args, nil, out, diag) }()
 		return out, diag, done
 	}
-	out, diag, done := start(t.Context()) // Default wait25; delivery ends the stream early.
+	out, diag, done := start(t.Context()) // Default wait300; delivery ends the stream early.
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -117,7 +117,7 @@ func TestMessageWaitCommandQuietPublicDeliveryTimeoutAndCancellation(t *testing.
 	cursor = page.Cursor
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	out, diag, done = start(ctx, "--wait-seconds", "60", "--limit", "100")
+	out, diag, done = start(ctx, "--wait-seconds", "900", "--limit", "100")
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -157,7 +157,7 @@ func TestMessageWaitCommandRejectsBeforeProfileOrHTTP(t *testing.T) {
 	p := f.project(t, "invalid-wait")
 	w := f.worker(t, p, "Bound")
 	path := mutationProfiles(t, f, service.URL, map[string][2]string{"bound": {p, w}})
-	cases := [][]string{nil, {"--cursor"}, {"--cursor", ""}, {"--cursor", " x"}, {"--cursor", "x\n"}, {"--cursor", string([]byte{255})}, {"--cursor", strings.Repeat("é", 2048) + "x"}, {"--cursor", "x", "--cursor", "y"}, {"--cursor", "x", "--limit", "0"}, {"--cursor", "x", "--limit", "101"}, {"--cursor", "x", "--wait-seconds", "0"}, {"--cursor", "x", "--wait-seconds", "61"}, {"--cursor", "x", "--wait-seconds", "null"}, {"--cursor", "x", "--wait-seconds", "1.0"}, {"--cursor", "x", "--wait-seconds", "1", "--wait-seconds", "2"}, {"--cursor", "x", "--worker", "other"}, {"--cursor", "x", "--unread"}, {"--cursor", "x", "extra"}}
+	cases := [][]string{nil, {"--cursor"}, {"--cursor", ""}, {"--cursor", " x"}, {"--cursor", "x\n"}, {"--cursor", string([]byte{255})}, {"--cursor", strings.Repeat("é", 2048) + "x"}, {"--cursor", "x", "--cursor", "y"}, {"--cursor", "x", "--limit", "0"}, {"--cursor", "x", "--limit", "101"}, {"--cursor", "x", "--wait-seconds", "0"}, {"--cursor", "x", "--wait-seconds", "901"}, {"--cursor", "x", "--wait-seconds", "null"}, {"--cursor", "x", "--wait-seconds", "1.0"}, {"--cursor", "x", "--wait-seconds", "1", "--wait-seconds", "2"}, {"--cursor", "x", "--worker", "other"}, {"--cursor", "x", "--unread"}, {"--cursor", "x", "extra"}}
 	for _, args := range cases {
 		for _, profiles := range []string{path, "/unavailable/profile"} {
 			full := append([]string{"--profiles-file", profiles, "--profile", "bound", "inbox", "wait"}, args...)

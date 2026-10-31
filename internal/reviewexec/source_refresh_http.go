@@ -155,7 +155,7 @@ func sourceRefreshPreference(r *http.Request) (time.Duration, error) {
 	}
 	raw := strings.TrimPrefix(values[0], "wait=")
 	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 0 || seconds > 60 || strconv.Itoa(seconds) != raw {
+	if err != nil || seconds < 0 || seconds > 900 || strconv.Itoa(seconds) != raw {
 		return 0, invalid()
 	}
 	return time.Duration(seconds) * time.Second, nil

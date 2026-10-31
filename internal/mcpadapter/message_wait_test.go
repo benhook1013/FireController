@@ -129,7 +129,7 @@ func TestMessageWaitToolsSDKDiscoveryQuietConcurrentDeliveryAndCancel(t *testing
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done = start(ctx, map[string]any{"cursor": page.Cursor, "wait_seconds": 50, "limit": 100})
+	done = start(ctx, map[string]any{"cursor": page.Cursor, "wait_seconds": 900, "limit": 100})
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -191,7 +191,7 @@ func TestMessageWaitToolsInvalidBeforeCredentialsOrHTTP(t *testing.T) {
 			t.Fatal("diagnostic echoed private input")
 		}
 	}
-	for _, raw := range []string{`{}`, `null`, `{"cursor":null}`, `{"cursor":""}`, `{"cursor":" x"}`, `{"cursor":"x\n"}`, `{"cursor":"\ud800"}`, `{"cursor":"x","cursor":"y"}`, `{"Cursor":"x"}`, `{"cursor":"` + strings.Repeat("é", 2048) + `x"}`, `{"cursor":"x","limit":0}`, `{"cursor":"x","limit":101}`, `{"cursor":"x","limit":null}`, `{"cursor":"x","limit":1.0}`, `{"cursor":"x","wait_seconds":0}`, `{"cursor":"x","wait_seconds":51}`, `{"cursor":"x","wait_seconds":60}`, `{"cursor":"x","wait_seconds":61}`, `{"cursor":"x","wait_seconds":null}`, `{"cursor":"x","wait_seconds":"1"}`, `{"cursor":"x","wait_seconds":1e0}`, `{"cursor":"x","wait_seconds":1,"wait_seconds":2}`, `{"cursor":"x","worker_id":"other"}`, `{"cursor":"x","unread":true}`} {
+	for _, raw := range []string{`{}`, `null`, `{"cursor":null}`, `{"cursor":""}`, `{"cursor":" x"}`, `{"cursor":"x\n"}`, `{"cursor":"\ud800"}`, `{"cursor":"x","cursor":"y"}`, `{"Cursor":"x"}`, `{"cursor":"` + strings.Repeat("é", 2048) + `x"}`, `{"cursor":"x","limit":0}`, `{"cursor":"x","limit":101}`, `{"cursor":"x","limit":null}`, `{"cursor":"x","limit":1.0}`, `{"cursor":"x","wait_seconds":0}`, `{"cursor":"x","wait_seconds":901}`, `{"cursor":"x","wait_seconds":null}`, `{"cursor":"x","wait_seconds":"1"}`, `{"cursor":"x","wait_seconds":1e0}`, `{"cursor":"x","wait_seconds":1,"wait_seconds":2}`, `{"cursor":"x","worker_id":"other"}`, `{"cursor":"x","unread":true}`} {
 		diagnosticResult(t, call(t, session, "wait_for_messages", json.RawMessage(raw)), "invalid_arguments", false)
 	}
 	if calls.Load() != 0 {

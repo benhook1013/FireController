@@ -16,9 +16,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Keep model-facing waits plus establishment within 55 seconds, leaving
-// transport/serialization margin under a 60-second host tool deadline.
-const maxToolWaitSeconds = 50
+// Quiet waits are finite and share the CLI result-wait ceiling.
+const maxToolWaitSeconds = 900
 
 type arguments struct {
 	ownerManagement            *ownerManagementInvocation
@@ -122,19 +121,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					buildinfo.Connection
 				}{binding.Context, buildinfo.ConnectionInfo(Version)}, false), nil
 			}
-			timeout := 5 * time.Second
-			if tool.name == "wait_for_messages" {
-				timeout = client.MessageWaitBudget(args.messageWaitSeconds)
-			}
-			if tool.name == "review_source_refresh" || checkpointWrite(tool.name) {
-				timeout = client.SourceRefreshBudget(args.reviewSourceWait)
-			}
-			if tool.name == "review_start" || tool.name == "review_selection_read" || tool.name == "review_request" || tool.name == "review_operation_read" {
-				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
-			}
-			// Allow bounded identity recovery before a normal five-second
-			// operation; long waits retain their existing 55-second host cap.
-			timeout = max(timeout, 15*time.Second, existingManagementBudget(args.existingManagement))
+			timeout := toolCallBudget(tool.name, args)
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			service, err := transports.newClient(ctx, binding, request.Session)
@@ -378,4 +365,19 @@ func resultFailure(err error) *mcp.CallToolResult {
 	return result(struct {
 		Error *Diagnostic `json:"error"`
 	}{d}, true)
+}
+
+// Identity bootstrap may use ten seconds before the selected quiet wait; the
+// client wait budget supplies five further seconds for response transport.
+func toolCallBudget(name string, args arguments) time.Duration {
+	timeout := 5 * time.Second
+	switch name {
+	case "wait_for_messages":
+		timeout = client.MessageWaitBudget(args.messageWaitSeconds)
+	case "review_source_refresh", "review_checkpoint_publish", "review_checkpoint_recover":
+		timeout = client.SourceRefreshBudget(args.reviewSourceWait)
+	case "review_start", "review_selection_read", "review_request", "review_operation_read":
+		timeout = client.ReviewOperationBudget(args.reviewSourceWait)
+	}
+	return max(timeout+10*time.Second, 15*time.Second, existingManagementBudget(args.existingManagement))
 }

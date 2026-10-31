@@ -101,7 +101,7 @@ func TestReviewCheckpointCLIInvalidBeforeCredentials(t *testing.T) {
 			cases = append(cases, args)
 		}
 	}
-	for _, suffix := range [][]string{{"--wait-seconds", "61"}, {"--wait-seconds", "01"}, {"--wait-seconds", "0", "--wait-seconds", "1"}, {"--retry-unposted=true"}, {"--retry-unposted", "--retry-unposted"}, {"--project", "other"}} {
+	for _, suffix := range [][]string{{"--wait-seconds", "901"}, {"--wait-seconds", "01"}, {"--wait-seconds", "0", "--wait-seconds", "1"}, {"--retry-unposted=true"}, {"--retry-unposted", "--retry-unposted"}, {"--project", "other"}} {
 		cases = append(cases, append([]string{"reviews", "publication-recover", id, "--expect-revision", "1", "--key", "k"}, suffix...))
 	}
 	for _, args := range cases {

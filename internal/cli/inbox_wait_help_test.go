@@ -28,7 +28,7 @@ func TestInboxWaitHelpOfflineWithoutConnection(t *testing.T) {
 			if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &help) != nil || len(help.Required) != 1 || len(help.Optional) != 2 || help.Documentation != "docs/message-wait.md" {
 				t.Fatal("offline wait help failed", args, code, stdout.String(), stderr.String())
 			}
-			for _, text := range []string{"--cursor", "event_cursor", "inbox.cursor", "default 20", "default 25", "1-60", "timed_out", "saved cursor", "acknowledge"} {
+			for _, text := range []string{"--cursor", "event_cursor", "inbox.cursor", "default 20", "default 300", "1-900", "timed_out", "saved cursor", "acknowledge"} {
 				if !strings.Contains(stdout.String(), text) {
 					t.Fatal("help omitted wait contract", text)
 				}
@@ -59,9 +59,9 @@ func TestInboxWaitHelpExactGrammarAndExistingDefaults(t *testing.T) {
 		args           []string
 		limit, seconds int
 	}{
-		{example, 20, 25},
-		{[]string{"inbox", "wait", "--cursor", "event-cursor"}, 20, 25},
-		{[]string{"inbox", "wait", "--cursor", "event-cursor", "--limit", "100", "--wait-seconds", "60"}, 100, 60},
+		{example, 20, 300},
+		{[]string{"inbox", "wait", "--cursor", "event-cursor"}, 20, 300},
+		{[]string{"inbox", "wait", "--cursor", "event-cursor", "--limit", "100", "--wait-seconds", "900"}, 100, 900},
 	} {
 		call, valid := parseInvocation(test.args)
 		if !valid || call.command != "inbox" || call.subcommand != "wait" || call.limit != test.limit || call.waitSeconds != test.seconds || call.helpOperation != "" {

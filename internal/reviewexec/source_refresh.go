@@ -768,7 +768,7 @@ func (e *Engine) notifySourceRefresh(id string) {
 	}
 }
 func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id string, maxWait time.Duration) (SourceRefreshOperation, error) {
-	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 60*time.Second {
+	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 900*time.Second {
 		return SourceRefreshOperation{}, invalid()
 	}
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)

@@ -42,7 +42,7 @@ func TestReviewStartMCPStrictArgumentsAndDiscovery(t *testing.T) {
 		t.Fatal("selection tools missing")
 	}
 	for name, rows := range map[string][]string{
-		"review_start":          {`{}`, `null`, `[]`, `{"channel":"cli"}`, `{"channel":"cli","idempotency_key":"once","expected_pull_number":null}`, `{"channel":"cli","idempotency_key":"once","expected_configuration_revision":0}`, `{"channel":"cli","idempotency_key":"once","expected_configuration_revision":9223372036854775807}`, `{"channel":"cli","idempotency_key":"once","expected_pull_number":1.5}`, `{"channel":"cli","idempotency_key":"once","wait_seconds":51}`, `{"channel":"cli","idempotency_key":"once","channel":"hosted"}`, `{"channel":"cli","idempotency_key":"once","worker_id":"other"}`, `{"channel":"CLI","idempotency_key":"once"}`},
+		"review_start":          {`{}`, `null`, `[]`, `{"channel":"cli"}`, `{"channel":"cli","idempotency_key":"once","expected_pull_number":null}`, `{"channel":"cli","idempotency_key":"once","expected_configuration_revision":0}`, `{"channel":"cli","idempotency_key":"once","expected_configuration_revision":9223372036854775807}`, `{"channel":"cli","idempotency_key":"once","expected_pull_number":1.5}`, `{"channel":"cli","idempotency_key":"once","wait_seconds":901}`, `{"channel":"cli","idempotency_key":"once","channel":"hosted"}`, `{"channel":"cli","idempotency_key":"once","worker_id":"other"}`, `{"channel":"CLI","idempotency_key":"once"}`},
 		"review_selection_read": {`{}`, `{"selection_id":"review_run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, `{"selection_id":"review_selection_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","wait_seconds":-1}`, `{"selection_id":"review_selection_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","project_id":"other"}`},
 	} {
 		for _, raw := range rows {

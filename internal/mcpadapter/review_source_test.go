@@ -97,7 +97,7 @@ func TestReviewSourceMCPDiscoveryAndInvalidArgumentsBeforeCredentials(t *testing
 			bad(json.RawMessage(strings.Replace(text, `"`+field+`":`, `"`+strings.ToUpper(field)+`":`, 1)))
 		}
 		if name == "review_source_refresh" {
-			for _, value := range []any{nil, -1, 51, 60, 61, 1.5, "2"} {
+			for _, value := range []any{nil, -1, 901, 1.5, "2"} {
 				copy := sourceMCPArguments()
 				copy["wait_seconds"] = value
 				bad(copy)
@@ -221,6 +221,9 @@ func TestReviewSourceMCPCancellationReleasesWait(t *testing.T) {
 			return
 		}
 		_, _ = io.Copy(io.Discard, r.Body)
+		if r.Header.Get("Prefer") != "wait=900" {
+			t.Error("selected long wait was not retained")
+		}
 		entered <- struct{}{}
 		select {
 		case <-r.Context().Done():
@@ -236,7 +239,7 @@ func TestReviewSourceMCPCancellationReleasesWait(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	args := sourceMCPArguments()
-	args["wait_seconds"] = 50
+	args["wait_seconds"] = 900
 	go func() {
 		_, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "review_source_refresh", Arguments: args})
 		done <- err

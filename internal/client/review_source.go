@@ -35,7 +35,7 @@ func (r ReviewSourceResult) MarshalJSON() ([]byte, error) {
 }
 
 func ValidateReviewSourceWait(seconds int) error {
-	if seconds < 0 || seconds > 60 {
+	if seconds < 0 || seconds > 900 {
 		return mutationValidation()
 	}
 	return nil

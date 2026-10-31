@@ -69,6 +69,7 @@ type lifecycleKey struct {
 	number  int64
 }
 type lifecycleDue struct {
+	hints                                                [2]lifecycleHint
 	checkedAt, successAt, ciCheckedAt, hostedCheckedAt   time.Time
 	ciError, hostedError                                 string
 	baseSHA, baseRef                                     string
@@ -107,6 +108,9 @@ type lifecycleSchedule struct {
 	options   LifecycleSyncOptions
 }
 type lifecycleTarget struct {
+	hintGeneration     uint64
+	forceCI            bool
+	ciOnly             bool
 	project, account   string
 	repository, number int64
 	configuration      Configuration
@@ -308,6 +312,8 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		start := slices.Index(numbers, s.lanes[lane].lastPull[p.id]) + 1
 		var number int64
 		var due lifecycleDue
+		var hinted bool
+		var ordinaryDue bool
 		for offset := range len(numbers) {
 			n := numbers[(start+offset)%len(numbers)]
 			d := s.due[lifecycleKey{p.id, n}]
@@ -317,8 +323,12 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				next = d.enrichmentNext
 				changed = d.head != "" && (d.head != d.enrichmentHead || d.baseSHA != d.enrichmentBaseSHA || d.baseRef != d.enrichmentBaseRef)
 			}
-			if changed || !now.Before(next) {
+			hint := d.hints[lane]
+			eventDue := hint.wanted != hint.done && (hint.attemptAt.IsZero() || !now.Before(hint.attemptAt.Add(5*time.Second)))
+			if changed || !now.Before(next) || eventDue {
 				number, due = n, d
+				hinted = eventDue
+				ordinaryDue = changed || !now.Before(next)
 				break
 			}
 		}
@@ -333,7 +343,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			pins, err = reviews.PinSourceMetadata(ctx, tx, p.id, []int64{number})
 			if err == nil && len(pins) > 0 {
 				comparison, err = readLifecycleComparison(ctx, tx, p.id, number)
-				if _, ok := readers[p.config.CapabilityID].(ExternalHostedReader); err == nil && ok && lane == lifecycleEnrichment {
+				if _, ok := readers[p.config.CapabilityID].(ExternalHostedReader); err == nil && ok && lane == lifecycleEnrichment && !(hinted && !ordinaryDue) {
 					_, err = reviews.InitializeExternalHostedFrontier(ctx, tx, p.id, p.repository, number)
 				}
 			}
@@ -346,11 +356,32 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			continue
 		}
 		s.mu.Lock()
+		if hinted && lane == lifecycleEnrichment && due.hints[lane].head != comparison.head {
+			// The CI event selected an older stored head. Do not spend reads on
+			// a later comparison merely because that event was queued first.
+			key := lifecycleKey{p.id, number}
+			current := s.due[key]
+			current.hints[lane].done = max(current.hints[lane].done, due.hints[lane].wanted)
+			s.due[key] = current
+			if !ordinaryDue {
+				s.mu.Unlock()
+				continue
+			}
+			hinted = false
+		}
+		generation := uint64(0)
+		if hinted {
+			generation = due.hints[lane].wanted
+			key := lifecycleKey{p.id, number}
+			current := s.due[key]
+			current.hints[lane].attemptAt = now
+			s.due[key] = current
+		}
 		s.lanes[lane].projects[p.id] = true
 		s.lanes[lane].accounts[account] = true
 		s.lanes[lane].lastPull[p.id] = number
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
 	return nil, nil
 }
@@ -418,6 +449,9 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	// after this target was claimed; copying its old due snapshot would lose it.
 	key := lifecycleKey{target.project, target.number}
 	due := s.due[key]
+	// A hint delivered while provider work runs has a later generation. Finish
+	// only the claimed generation, preserving that later request for another tick.
+	due.hints[target.lane].done = max(due.hints[target.lane].done, target.hintGeneration)
 	if target.lane == lifecycleMetadata {
 		due.checkedAt, due.lastErrorCode, due.next = now, errorCode, now.Add(interval)
 		if published {
@@ -425,7 +459,10 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 			due.head, due.baseSHA, due.baseRef = head, target.due.baseSHA, target.due.baseRef
 		}
 	} else {
-		due.enrichmentNext, due.enrichmentError = now.Add(interval), errorCode
+		if !target.ciOnly {
+			due.enrichmentNext = now.Add(interval)
+			due.enrichmentError = errorCode
+		}
 		if published && head != "" {
 			due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = head, target.due.baseSHA, target.due.baseRef
 		}
@@ -434,7 +471,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
 			due.ciCheckedAt, due.ciError = target.due.ciCheckedAt, target.due.ciError
 		}
-		if published && !target.due.hostedCheckedAt.IsZero() {
+		if published && !target.ciOnly && !target.due.hostedCheckedAt.IsZero() {
 			due.hostedCheckedAt, due.hostedError = target.due.hostedCheckedAt, target.due.hostedError
 		}
 	}

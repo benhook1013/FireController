@@ -19,6 +19,7 @@ import (
 	"github.com/benhook1013/FireController/internal/backup"
 	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/githubhook"
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
@@ -54,6 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
+	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
@@ -117,11 +119,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
+	var webhookSecret []byte
 	var catalog reviewruntime.Catalog
 	var resolver server.RepositoryResolver
 	var historyProvider historycollect.Provider
 	var historyFingerprint string
 	if !recovery.ProvidersHeld {
+		webhookSecret, err = loadGitHubWebhookSecret(*githubWebhookSecretFile)
+		if err != nil {
+			diagnosticError(stderr, err)
+			return 3
+		}
 		catalog, err = reviewruntime.LoadCatalog(*reviewCatalog)
 		if err != nil {
 			diagnosticError(stderr, err)
@@ -224,6 +232,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
+	if len(webhookSecret) > 0 {
+		hook, hookErr := githubhook.New(webhookSecret, execution.HintGitHub)
+		if hookErr != nil {
+			diagnostic(stderr, "configuration_invalid", "The GitHub webhook configuration is invalid.")
+			return 3
+		}
+		mux.Handle("POST /api/v1/hooks/github", hook)
+	}
 	collection.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)
 	server.RegisterProjectStream(mux, store, ctx)

@@ -169,6 +169,6 @@ func TestReviewCheckpointClientLostResponseAndLocalInvalid(t *testing.T) {
 	}
 	_, err = absent.RequestReviewCheckpoint(t.Context(), "", client.ReviewCheckpointRequest{EvidenceID: controlEvidenceID}, 2)
 	checkError(t, err, "validation_failed")
-	_, err = absent.RecoverReviewCheckpoint(t.Context(), "key", checkpointID, client.ReviewCheckpointRecovery{ExpectedRevision: 1}, 61)
+	_, err = absent.RecoverReviewCheckpoint(t.Context(), "key", checkpointID, client.ReviewCheckpointRecovery{ExpectedRevision: 1}, 901)
 	checkError(t, err, "validation_failed")
 }

@@ -185,7 +185,7 @@ func TestReviewSourceInvalidArgumentsAreLocal(t *testing.T) {
 		_, err := c.RefreshReviewSource(t.Context(), key, valid, 0)
 		checkError(t, err, "validation_failed")
 	}
-	for _, seconds := range []int{-1, 61} {
+	for _, seconds := range []int{-1, 901} {
 		_, err := c.RefreshReviewSource(t.Context(), "explicit", valid, seconds)
 		checkError(t, err, "validation_failed")
 	}

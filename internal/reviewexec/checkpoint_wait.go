@@ -31,7 +31,7 @@ func (e *Engine) notifyCheckpoint(id string) {
 // WaitCheckpointPublication observes only committed status and reauthorizes each
 // result. The boolean is true for a terminal result, false for accepted work.
 func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope, id string, waitSeconds int) (CheckpointPublication, bool, error) {
-	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 60 {
+	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 900 {
 		return CheckpointPublication{}, false, invalid()
 	}
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)

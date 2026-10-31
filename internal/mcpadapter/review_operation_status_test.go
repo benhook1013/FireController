@@ -16,7 +16,7 @@ func TestOperationStatusArgumentsAndDefinition(t *testing.T) {
 			t.Fatal(raw, v, err)
 		}
 	}
-	for _, raw := range []string{`{}`, `{"operation_id":"bad"}`, `{"operation_id":"` + id + `","wait_seconds":51}`, `{"operation_id":"` + id + `","wait_seconds":null}`, `{"operation_id":"` + id + `","diagnostics":null}`, `{"operation_id":"` + id + `","diagnostics":"true"}`, `{"operation_id":"` + id + `","diagnostics":true,"diagnostics":false}`, `{"operation_id":"` + id + `","extra":true}`} {
+	for _, raw := range []string{`{}`, `{"operation_id":"bad"}`, `{"operation_id":"` + id + `","wait_seconds":901}`, `{"operation_id":"` + id + `","wait_seconds":null}`, `{"operation_id":"` + id + `","diagnostics":null}`, `{"operation_id":"` + id + `","diagnostics":"true"}`, `{"operation_id":"` + id + `","diagnostics":true,"diagnostics":false}`, `{"operation_id":"` + id + `","extra":true}`} {
 		if _, err := operationStatusArguments(json.RawMessage(raw)); err == nil {
 			t.Fatal("invalid status arguments accepted", raw)
 		}
@@ -30,7 +30,7 @@ func TestOperationStatusArgumentsAndDefinition(t *testing.T) {
 
 func TestOperationStatusWaitRangeDiagnosticAndValidBounds(t *testing.T) {
 	id := "review_operation_" + strings.Repeat("a", 32)
-	for _, seconds := range []int{-1, 51, 60, 901} {
+	for _, seconds := range []int{-1, 901} {
 		_, err := operationStatusArguments(json.RawMessage(fmt.Sprintf(`{"operation_id":%q,"wait_seconds":%d}`, id, seconds)))
 		var diagnostic *Diagnostic
 		if !errors.As(err, &diagnostic) || diagnostic.Code != "invalid_arguments" || !strings.Contains(diagnostic.Message, "wait_seconds") || !strings.Contains(diagnostic.Message, fmt.Sprintf("0 to %d", maxToolWaitSeconds)) || !strings.Contains(diagnostic.Message, "CLI") || !strings.Contains(diagnostic.Message, "900") || !strings.Contains(diagnostic.Action, "No operation request was sent") {

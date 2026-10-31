@@ -452,9 +452,9 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "inbox wait":
 		out.Usage = "<bound launcher> inbox wait --cursor EVENT_CURSOR [--limit N] [--wait-seconds N]"
 		out.Required = []string{"--cursor EVENT_CURSOR (event_cursor from inbox snapshot or cursor from a prior successful wait; not inbox.cursor pagination)"}
-		out.Optional = []string{"--limit N (1-100, default 20)", "--wait-seconds N (1-60, default 25)"}
+		out.Optional = []string{"--limit N (1-100, default 20)", "--wait-seconds N (1-900, default 300)"}
 		out.Semantics = []string{"One quiet bounded wait returns new incoming-message or job-assignment event metadata, or an empty timed_out result with a continuation cursor. Full message bodies require inbox read MESSAGE_ID; this is not a pending-inbox query.", "No automatic retry, reconnect, pagination or acknowledgment occurs; reads never acknowledge or mark messages seen. On error retain the saved cursor, then retry the wait or read the bound-worker inbox when the service is available."}
-		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 25"
+		out.Example = "<bound launcher> inbox wait --cursor saved-event-cursor --wait-seconds 300"
 		out.Documentation = "docs/message-wait.md"
 	case "inbox list", "inbox snapshot", "inbox sent":
 		out.Usage = "<bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--unread] [--unacknowledged] [--newest] | <bound launcher> " + operation + " [--limit N] [--cursor CURSOR] [--newest] --all"

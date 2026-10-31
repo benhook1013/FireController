@@ -70,8 +70,8 @@ var existingManagementSpecs = []existingManagementSpec{
 	{"review_obligations_import_preview", "Preview one strict native carried-obligation batch, preserving original evidence and provenance; no application or new review.", []string{"document"}, []string{"document"}, false, false, false},
 	{"review_obligations_import_apply", "Apply the exact previewed carried-obligation batch with preview_sha256 and explicit key. Existing source conflicts and evidence requirements remain enforced.", []string{"document", "preview_sha256", "idempotency_key"}, []string{"document", "preview_sha256", "idempotency_key"}, true, true, false},
 	{"review_obligation_resolve", "Resolve one carried obligation using the native {expected_revision,reason,evidence} document and explicit key. Requires a real evidence-backed resolution; grants no review credit.", []string{"obligation_id", "document", "idempotency_key"}, []string{"obligation_id", "document", "idempotency_key"}, true, true, false},
-	{"history_collection_enqueue", "Queue bounded GitHub history collection for explicit pull_numbers. This reads provider history; it does not request reviews or enroll PRs. Optional wait_seconds (0-50) returns existing progress/receipt without blind retries.", []string{"pull_numbers", "wait_seconds", "idempotency_key"}, []string{"pull_numbers", "idempotency_key"}, true, false, true},
-	{"history_collection_read", "Read one existing history collection, optionally waiting up to 50 seconds. No new provider collection is queued by this read.", []string{"collection_id", "wait_seconds"}, []string{"collection_id"}, false, false, false},
+	{"history_collection_enqueue", "Queue bounded GitHub history collection for explicit pull_numbers. This reads provider history; it does not request reviews or enroll PRs. Optional wait_seconds (0-900) returns existing progress/receipt without blind retries.", []string{"pull_numbers", "wait_seconds", "idempotency_key"}, []string{"pull_numbers", "idempotency_key"}, true, false, true},
+	{"history_collection_read", "Read one existing history collection, optionally waiting up to 900 seconds. No new provider collection is queued by this read.", []string{"collection_id", "wait_seconds"}, []string{"collection_id"}, false, false, false},
 	{"history_collection_resume", "Resume one existing history collection with its current expected_revision and explicit key. Continues authorized provider reads; no review request or automatic PR enrollment.", []string{"collection_id", "expected_revision", "idempotency_key"}, []string{"collection_id", "expected_revision", "idempotency_key"}, true, false, true},
 	{"history_collection_cancel", "Cancel one existing history collection with its current expected_revision and explicit key; retains already captured history.", []string{"collection_id", "expected_revision", "idempotency_key"}, []string{"collection_id", "expected_revision", "idempotency_key"}, true, true, false},
 	{"history_collection_pages", "Read one bounded page of capture metadata for an existing collection; full retained source requires history_collection_capture_read.", []string{"collection_id", "limit", "cursor"}, []string{"collection_id"}, false, false, false},
@@ -291,7 +291,7 @@ func managementHash(value string) bool {
 }
 func existingManagementBudget(a *existingManagementArgs) time.Duration {
 	if a != nil && strings.HasPrefix(a.name, "history_collection_") {
-		return max(15*time.Second, client.HistoryCollectionBudget(a.input.WaitSeconds))
+		return max(15*time.Second, client.HistoryCollectionBudget(a.input.WaitSeconds)+10*time.Second)
 	}
 	return 15 * time.Second
 }

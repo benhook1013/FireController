@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -105,7 +106,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	ciReason := ""
 	// CI is less frequent than lifecycle reads. Same-comparison retained status
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
-	collectCI := state == "open" && (target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
+	collectCI := state == "open" && (target.forceCI || target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
 		ciCollected = true
 		ciState = "unknown"
@@ -131,7 +132,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if ctx.Err() != nil {
 		return nil
 	}
-	external, hostedCollected, externalErr := collectExternalHosted(ctx, target, repo.FullName, providerErr)
+	var external []reviewprovider.ExternalHostedRun
+	var hostedCollected bool
+	var externalErr error
+	if !target.ciOnly {
+		external, hostedCollected, externalErr = collectExternalHosted(ctx, target, repo.FullName, providerErr)
+	}
 	if externalErr != nil && (providerErr == nil || lifecycleProviderDelay(externalErr, 0) > lifecycleProviderDelay(providerErr, 0)) {
 		providerErr = externalErr
 	}

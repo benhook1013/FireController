@@ -81,3 +81,7 @@ Local review execution additionally needs administrator-configured source availa
 ## Optional public website
 
 Ask whether the project needs a shareable anonymous view. Private is the default. When requested, use the [publication preview/apply commands](public-site.md#agent-setup-commands) under an explicit administrator profile to select approved branding, summaries, links and PR enrollment. Show the resulting public fields and destinations before applying within the user's authorized scope. Share the canonical `/projects/{handle}` address. Signed-out visitors see only approved public content; signing in at that same address enables authorized private content. Never share a credential. Existing private messages, briefs, notes and findings remain private regardless of publication. The public website contract records current executable proof and deployment limits.
+
+### MCP wait configuration
+
+The packaged tools support message and result waits up to 900 seconds, with a 300-second default quiet inbox wait. Configure each selected Codex MCP server with `tool_timeout_sec = 930` to accommodate that range, including identity and response headroom. Reconnect the affected host connection after installing a new client or changing its configuration; changing the launcher alone does not replace an existing process. See [agent transport and host proof](agent-client.md#installed-codex-host-long-wait-proof) and [message waiting](message-wait.md) for the verified boundaries.

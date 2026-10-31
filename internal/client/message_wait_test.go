@@ -108,7 +108,7 @@ func TestMessageWaitExplicitUpperBoundsAndCursorBytes(t *testing.T) {
 		_, _ = fmt.Fprint(w, waitFrame(waitPage("next", waitEvent(7, "message.sent"))))
 	})
 	c := newClient(t, s)
-	page, err := c.WaitForMessages(t.Context(), cursor, 100, 60)
+	page, err := c.WaitForMessages(t.Context(), cursor, 100, 900)
 	if err != nil || len(page.Items) != 1 || page.Cursor != "next" || page.TimedOut {
 		t.Fatalf("valid boundary refused: page=%+v err=%v", page, err)
 	}
@@ -143,7 +143,7 @@ func TestMessageWaitRejectsInvalidArgumentsBeforeHTTP(t *testing.T) {
 	for _, tc := range []struct {
 		cursor      string
 		limit, wait int
-	}{{"", 1, 1}, {" cursor", 1, 1}, {"c\n", 1, 1}, {strings.Repeat("x", 4097), 1, 1}, {"c", -1, 1}, {"c", 101, 1}, {"c", 1, -1}, {"c", 1, 61}} {
+	}{{"", 1, 1}, {" cursor", 1, 1}, {"c\n", 1, 1}, {strings.Repeat("x", 4097), 1, 1}, {"c", -1, 1}, {"c", 101, 1}, {"c", 1, -1}, {"c", 1, 901}} {
 		_, err := c.WaitForMessages(context.Background(), tc.cursor, tc.limit, tc.wait)
 		checkError(t, err, "validation_failed")
 	}
