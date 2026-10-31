@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func automaticCheckpoint(t *testing.T, f *attemptFixture, evidence string) CheckpointPublication {
@@ -64,6 +65,64 @@ func TestCheckpointAutomaticFinalizationBeforeFixAndOneDelivery(t *testing.T) {
 	later, _ := checkpointRequest(t, f, id, "old-agent-extra-publish")
 	if later.ID != v.ID || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
 		t.Fatal("old agent created another comment")
+	}
+}
+
+func TestCheckpointAutomaticBlockedPostDoesNotHoldFinalizationReceipt(t *testing.T) {
+	f, a, id, _ := coverageFixture(t, 1, false)
+	adjudicationComplete(t, f, a)
+	adjudicationDecide(t, f, id, "blocked-post-accept", 0, 0, "accepted")
+	scope := f.scope(t, attemptProject, f.writer, false)
+	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}
+	p := &checkpointFake{entered: make(chan struct{}), release: make(chan struct{})}
+	cancel, workerDone := checkpointStart(t, f.e, p)
+	defer func() {
+		select {
+		case <-p.release:
+		default:
+			close(p.release)
+		}
+		checkpointStop(t, cancel, workerDone)
+	}()
+	type finalized struct {
+		raw []byte
+		err error
+	}
+	returned := make(chan finalized, 1)
+	go func() {
+		raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "blocked-post-finalize", id, request)
+		returned <- finalized{raw, err}
+	}()
+	select {
+	case <-p.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("automatic publication did not reach its gated provider post")
+	}
+	var original finalized
+	select {
+	case original = <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("background provider post held the finalization response")
+	}
+	var receipt Receipt
+	if original.err != nil || json.Unmarshal(original.raw, &receipt) != nil || receipt.ID != id || receipt.State != "finalized" || receipt.Revision != 2 {
+		t.Fatal("finalization did not return its original compact receipt", string(original.raw), original.err)
+	}
+	// The provider is still blocked. A fresh read and exact-key replay must
+	// remain local and independent of that background request's eventual result.
+	ctx, stop := context.WithTimeout(t.Context(), 2*time.Second)
+	defer stop()
+	replay, err := f.e.FinalizeReviewEvidence(ctx, scope, "blocked-post-finalize", id, request)
+	publication := automaticCheckpoint(t, f, id)
+	if err != nil || !bytes.Equal(original.raw, replay) || !adjudicationRead(t, f, id).Finalized || publication.State != "posting" || publication.Counts != (FindingCounts{Found: 1, Accepted: 1}) || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
+		t.Fatal("blocked post changed counts, receipt or local mutation independence", publication, err)
+	}
+	close(p.release)
+	if got := checkpointTerminal(t, f, publication.ID); got.State != "published" {
+		t.Fatal(got)
+	}
+	if posts, _ := p.counts(); posts != 1 {
+		t.Fatal("receipt recovery reposted the checkpoint", posts)
 	}
 }
 
