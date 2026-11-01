@@ -68,7 +68,7 @@ func (r *rclone) run(ctx context.Context, args ...string) ([]byte, error) {
 	processGroup(cmd)
 	// Provider options, alternate remotes and interactive password commands are
 	// not inherited from unrelated agent/session environment variables.
-	for _, key := range []string{"PATH", "SystemRoot", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+	for _, key := range []string{"PATH", "SystemRoot", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if v, ok := os.LookupEnv(key); ok {
 			cmd.Env = append(cmd.Env, key+"="+v)
 		}
