@@ -49,14 +49,15 @@ type SourceCISummary struct {
 }
 
 type SourceCIAssessment struct {
-	Checks                *[]SourceCIContext `json:"checks,omitempty"`
-	ProjectID             string             `json:"project_id"`
-	RefreshID             string             `json:"refresh_id"`
-	Source                string             `json:"source"`
-	ConfigurationRevision int64              `json:"configuration_revision"`
-	SourceObservedAt      string             `json:"source_observed_at"`
-	EvaluatedAt           string             `json:"evaluated_at"`
-	Target                SourceObservation  `json:"target"`
+	MergeBaseMismatch     *reviewprovider.CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
+	Checks                *[]SourceCIContext                  `json:"checks,omitempty"`
+	ProjectID             string                              `json:"project_id"`
+	RefreshID             string                              `json:"refresh_id"`
+	Source                string                              `json:"source"`
+	ConfigurationRevision int64                               `json:"configuration_revision"`
+	SourceObservedAt      string                              `json:"source_observed_at"`
+	EvaluatedAt           string                              `json:"evaluated_at"`
+	Target                SourceObservation                   `json:"target"`
 	SourceCISummary
 }
 
@@ -192,6 +193,12 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 func validCIWithAuthorityBranch(o reviewprovider.CIObservation, source SourceObservation, gateRef string, allowLegacyOriginHold bool) bool {
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
+	}
+	if o.Candidate != nil && o.Candidate.MergeBaseMismatch != nil {
+		c, m := o.Candidate, o.Candidate.MergeBaseMismatch
+		if o.State != "unproven" || o.Reason != "ci_merge_base_mismatch" || o.Selection != "" || o.SelectedCommitSHA != "" || o.MergeState != "unproven" || c.State != "unproven" || c.Reason != o.Reason || c.MergeState != o.MergeState || c.RepositoryID != source.RepositoryID || !strings.EqualFold(c.Repository, source.RepositoryName) || c.PullNumber != source.PullNumber || c.HeadSHA != source.HeadSHA || c.BaseSHA != source.BaseSHA || c.BaseRef != source.BaseRef || c.MergeSHA != "" || c.MergeBaseParentSHA != "" || c.ObservedAt.IsZero() || !sha.MatchString(m.PRBaseSHA) || !sha.MatchString(m.LiveBaseSHA) || !sha.MatchString(m.MergeSHA) || !sha.MatchString(m.MergeBaseParentSHA) || m.PRBaseSHA != c.BaseSHA || m.LiveBaseSHA == m.MergeBaseParentSHA || m.MergeBaseParentSHA == c.HeadSHA || m.MergeSHA == c.HeadSHA || m.MergeSHA == m.MergeBaseParentSHA {
+			return false
+		}
 	}
 	switch o.State {
 	case "satisfied", "failed", "pending", "unproven", "not_required":
@@ -379,6 +386,10 @@ func (e *Engine) readSourceCIAssessment(ctx context.Context, scope core.Scope, n
 			if sourceCITarget(*latest.Observation) != sourceCITarget(*r.Observation) {
 				result.State, result.Reason = "held", "source_comparison_changed"
 			}
+		}
+		if result.State == "unproven" && result.Reason == "ci_merge_base_mismatch" && r.ciObservation.Candidate != nil && r.ciObservation.Candidate.MergeBaseMismatch != nil {
+			facts := *r.ciObservation.Candidate.MergeBaseMismatch
+			result.MergeBaseMismatch = &facts
 		}
 		return nil
 	})

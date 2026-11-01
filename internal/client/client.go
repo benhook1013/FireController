@@ -386,10 +386,13 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+	if method == http.MethodGet && len(segments) >= 4 && segments[len(segments)-4] == "reviews" && segments[len(segments)-3] == "source" && segments[len(segments)-1] == "ci" {
+		r.Header.Set("X-FC-CI-Watch", "change-v2")
+	}
 	if wait != nil {
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 		if wait.ciWatchChange {
-			r.Header.Set("X-FC-CI-Watch", "change-v1")
+			r.Header.Set("X-FC-CI-Watch", "change-v2")
 		}
 		if wait.ciWorkflowDetails {
 			r.Header.Set("X-FC-CI-Workflow-Details", "1")

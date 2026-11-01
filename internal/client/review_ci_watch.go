@@ -30,6 +30,7 @@ type CIWorkflowFailure struct {
 }
 
 type CIWatchTargetResult struct {
+	MergeBaseMismatch    *CIMergeBaseMismatch    `json:"merge_base_mismatch,omitempty"`
 	PullNumber           int64                   `json:"pull_number"`
 	HeadSHA              string                  `json:"head_sha"`
 	BaseSHA              string                  `json:"base_sha,omitempty"`
@@ -149,6 +150,9 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
+		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
+			return false
+		}
 		if !validCIWatchWorkflowFailures(item, pin) || !validCIWatchWorkflowObservations(item, pin) {
 			return false
 		}

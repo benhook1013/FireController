@@ -120,6 +120,10 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 		entry := sub.entries[i]
 		if entry.version >= sub.minimum[i] {
 			item = entry.result
+			if item.MergeBaseMismatch != nil {
+				facts := *item.MergeBaseMismatch
+				item.MergeBaseMismatch = &facts
+			}
 			item.Checks = append([]SourceCIContext{}, item.Checks...)
 			for i := range item.Checks {
 				if p := item.Checks[i].CheckRun; p != nil {
@@ -144,6 +148,9 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			}
 		}
 		item.CIWatchTarget = target
+		if item.State != "pending" || item.Reason != "ci_merge_base_mismatch" {
+			item.MergeBaseMismatch = nil
+		}
 		item.FailureWorkflowIDs = append([]int64(nil), target.FailureWorkflowIDs...)
 		rows := item.WorkflowFailures
 		observations := item.WorkflowObservations
@@ -367,6 +374,10 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		return nil
 	}
 	summary := summarizeSourceCI(observation)
+	if observation.Reason == "ci_merge_base_mismatch" && observation.Candidate != nil && observation.Candidate.MergeBaseMismatch != nil {
+		facts := *observation.Candidate.MergeBaseMismatch
+		item.MergeBaseMismatch = &facts
+	}
 	item.Reason, item.ObservedAt, item.CICommitSHA, item.Selection = summary.Reason, summary.ObservedAt, summary.SelectedCommitSHA, summary.Selection
 	item.Required, item.Satisfied, item.Failed, item.Pending, item.Unproven = summary.Required, summary.Satisfied, summary.Failed, summary.Pending, summary.Unproven
 	item.Checks, err = sourceCIContextDetails(&observation)
@@ -497,7 +508,8 @@ func ciWatchObservationKey(project string, observation reviewprovider.CIObservat
 		RepositoryID, PullNumber                                      int64
 		Head, Base, BaseRef, Gate, CICommit, Selection, State, Reason string
 		Checks                                                        []check
-	}{project, observation.Target.RepositoryID, observation.Target.PullNumber, observation.Target.HeadSHA, observation.Target.BaseSHA, observation.Target.BaseRef, item.GateRef, item.CICommitSHA, item.Selection, item.State, item.Reason, checks}
+		MergeBaseMismatch                                             *reviewprovider.CIMergeBaseMismatch `json:",omitempty"`
+	}{project, observation.Target.RepositoryID, observation.Target.PullNumber, observation.Target.HeadSHA, observation.Target.BaseSHA, observation.Target.BaseRef, item.GateRef, item.CICommitSHA, item.Selection, item.State, item.Reason, checks, item.MergeBaseMismatch}
 	body, _ := json.Marshal(facts)
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:])
