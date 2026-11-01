@@ -16,3 +16,12 @@
 .review-detail-technical{align-items:flex-start}.review-detail-technical>.review-attempts{flex:1 1 260px}.review-detail-technical>details>summary,.review-detail-technical>.review-attempts>details>summary{padding:0;margin:0;font-size:.8rem;line-height:1.4;font-weight:650;color:inherit}
 
 .review-detail-overview{margin-bottom:20px;border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:0}.review-detail-page .review-round-history>.section-heading h3{font-size:1.5rem;line-height:1.25}
+
+/* One heading surface; disclosure precedes the name and the link stays right. */
+.review-timeline .review-history-row-heading{flex-wrap:nowrap;gap:0;padding:0;align-items:center}
+.review-timeline .review-history-row-heading:hover,.review-timeline .review-history-row-heading:focus-within{background:color-mix(in srgb,var(--fc-accent_soft_background,#f0dfd8) 50%,transparent)}
+.review-timeline .review-history-toggle{min-width:0;flex:1 1 auto;display:flex;flex-wrap:wrap;gap:6px 10px}
+.review-timeline .review-history-toggle:hover{background:transparent}
+.review-timeline .review-history-disclosure{margin:0;flex:0 0 10px}
+.review-timeline .review-history-details-link{flex:0 0 auto;margin:0;padding:10px 12px 10px 0;align-self:center;font-size:.73rem}
+@media(max-width:650px){.review-timeline .review-history-toggle{display:grid;grid-template-columns:10px minmax(0,1fr);gap:5px 8px}.review-timeline .review-history-disclosure{grid-column:1;grid-row:1}.review-timeline .review-history-kind{grid-column:2;grid-row:1}.review-timeline .review-history-age{grid-column:2;grid-row:2}.review-timeline .review-history-counts{grid-column:2;grid-row:3;width:auto;justify-content:flex-start;margin:0}.review-timeline .review-history-details-link{align-self:flex-start;padding-top:10px;padding-left:0;font-size:.7rem}}

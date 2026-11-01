@@ -211,6 +211,13 @@ try {
   need(requests(current,'runs').filter(item => item.snapshot !== config.snapshot).length === 1);
   need(requests(current,'attempts').filter(item => item.snapshot !== config.snapshot).length === 1);
   phase = 'inline-current-findings';
+  const routed = current.page.getByRole('region', {name:`PR #${number} routed findings`,exact:true});
+  await expect(routed.getByRole('heading', {name:'Routed Findings',exact:true})).toBeVisible();
+  await expect(routed).toContainText('Synthetic routed follow-up');
+  await expect(routed.locator('.review-routed-count-open')).toHaveText('Open: 1');
+  await routed.getByText('Finding details and proof', {exact:true}).click();
+  await expect(routed.getByRole('heading', {name:'Original evidence',exact:true})).toBeVisible();
+  await routed.getByText('Finding details and proof', {exact:true}).click();
   const currentRow = current.rounds.locator('.review-history-row');
   need(details.length === 1);
   await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('Found: 1');
@@ -257,6 +264,10 @@ try {
 
   await currentRow.getByRole('button', {name:'Hide findings for CodeRabbit CLI #1', exact:true}).click();
   need(await currentRow.locator('.review-history-findings').count() === 0 && details.length === 2);
+  await currentRow.getByRole('button', {name:'Show findings for CodeRabbit CLI #1', exact:true}).click();
+  await expect(currentRow.getByRole('heading', {name:'Inline retained finding', exact:true})).toBeVisible();
+  need(details.length === 2 && await currentRow.locator('[aria-busy="true"]').count() === 0);
+  await currentRow.getByRole('button', {name:'Hide findings for CodeRabbit CLI #1', exact:true}).click();
 
   phase = 'recent-queue';
   const reviewPath = `${current.home}/reviews`;
@@ -291,6 +302,13 @@ try {
   await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('Required CI: Success');
   await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Merge: Unknown');
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
+  const attention = current.page.getByRole('region', {name:'Routed findings requiring attention',exact:true});
+  await expect(attention).toContainText('Synthetic routed follow-up');
+  await expect(attention).toContainText('No receiving PR is assigned.');
+  await current.page.setViewportSize({width:1440,height:900});
+  const workerHeads = await current.page.locator('.delivery-lane-heading').evaluateAll(heads=>heads.slice(0,3).map(head=>({height:head.getBoundingClientRect().height,nameTop:head.querySelector('h3').getBoundingClientRect().top-head.getBoundingClientRect().top,paused:!!head.querySelector('.delivery-worker-pause')})));
+  need(workerHeads.length===3 && workerHeads[0].paused);
+  need(workerHeads.every(head=>Math.abs(head.height-workerHeads[0].height)<1 && Math.abs(head.nameTop-workerHeads[0].nameTop)<1));
   if (config.proof_directory) for (const width of [1440,390]) {
     await current.page.setViewportSize({width,height:900});
     need(await current.page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));

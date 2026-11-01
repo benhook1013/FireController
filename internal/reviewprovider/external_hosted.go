@@ -39,7 +39,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 	if !publicationValidActor(provider) || provider.Kind != "Bot" {
 		return empty, invalidSelector()
 	}
-	if !snapshot.Complete || snapshot.IssueComments == nil || snapshot.Reviews == nil || snapshot.ReviewComments == nil || !hostedTriggerTime(snapshot.ObservedAt) || !validPublicationSnapshot(snapshot) {
+	if !snapshot.Complete || snapshot.IssueComments == nil || snapshot.Reviews == nil || snapshot.ReviewComments == nil || !hostedTriggerTime(snapshot.ObservedAt) || !validHostedArchiveSnapshot(snapshot, provider) {
 		return empty, invalidResponse(false, http.StatusOK)
 	}
 	groups := map[string]*externalHostedGroup{}
@@ -134,6 +134,14 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		roots[root.ReviewID] = append(roots[root.ReviewID], owned)
 	}
 	windows := externalHostedNativeWindows(snapshot.IssueComments, provider)
+	for _, comment := range snapshot.IssueComments {
+		if !publicationIssueClockValid(comment, snapshot.ObservedAt) {
+			// An edited comment may previously have contained a command. Keep
+			// the provider source, but do not infer any native trigger window.
+			windows = externalNativeWindows{}
+			break
+		}
+	}
 	result := make([]ExternalHostedRun, 0, len(groups))
 	for _, g := range groups {
 		pub := &g.run.Inventory.Publication

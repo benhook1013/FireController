@@ -17,6 +17,7 @@ import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } 
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 import { validBackupHealth, type BackupHealth } from './backup-health-model';
 import type { ReviewScheduling, PullScheduling, SchedulingReceipt } from './types';
+import type { ReviewRoutedFindingsOptions, ReviewRoutedFindingsPage, ReviewRoutedFindingDetail } from './review-routed-findings';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -1060,6 +1061,21 @@ export class Api {
     if (value.channels.some(channel => record(channel) && channel.state === 'ready') && (!value.snapshot_id || !positive(value.policy_revision))) throw bad();
     return value as unknown as ReviewFronts;
   }
+  async reviewRoutedFindings(options: ReviewRoutedFindingsOptions = {}, signal?: AbortSignal): Promise<ReviewRoutedFindingsPage> {
+    if (options.pullNumber !== undefined && !pullNumber(options.pullNumber)) throw new ApiError('invalid_request', 'Select a receiving or source PR.');
+    const query = pageOptions(options);
+    if (options.pullNumber === undefined) query.set('view', 'attention');
+    else query.set('pull_number', String(options.pullNumber));
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/routed-findings'), query), signal);
+    if (!validRoutedFindingsPage(value, this.projectId, options)) throw new ApiError('invalid_response', 'The service returned invalid routed findings.');
+    return value as ReviewRoutedFindingsPage;
+  }
+  async reviewRoute(selected: string, signal?: AbortSignal): Promise<ReviewRoutedFindingDetail> {
+    if (!/^review_route_[a-f0-9]{32}$/u.test(selected)) throw new ApiError('invalid_request', 'Select a routed finding.');
+    const value = await this.finiteGet(this.projectRoute(`reviews/routes/${encodeURIComponent(selected)}`), signal);
+    if (!validRoutedFindingDetail(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid routed finding details.');
+    return value as ReviewRoutedFindingDetail;
+  }
   async reviewObligations(number: number, options: {cursor?: string; limit?: number; status:'open'}, signal?: AbortSignal): Promise<AdoptionObligationPage> {
     if (!pullNumber(number) || options.status!=='open') throw new ApiError('invalid_request','Select one PR and open carried obligations.');
     const query=pageOptions(options);query.set('pull_number',String(number));query.set('status',options.status);
@@ -1289,6 +1305,33 @@ export class Api {
 
 function obligationID(value:unknown):value is string {return typeof value==='string' && /^adoption_obligation_[a-f0-9]{32}$/u.test(value);}
 function obligationPulls(value:unknown):value is number[] {return Array.isArray(value) && value.length>0 && value.length<=100 && value.every(pullNumber) && new Set(value).size===value.length;}
+function validRoutedFindingsPage(value: unknown, project: string, options: ReviewRoutedFindingsOptions): value is ReviewRoutedFindingsPage {
+  if (!record(value) || !keys(value, ['project_id', 'view', 'pull_number', 'counts', 'items', 'has_more'], ['cursor']) || value.project_id !== project || value.view !== (options.pullNumber === undefined ? 'attention' : 'pull') || value.pull_number !== (options.pullNumber ?? 0) || typeof value.has_more !== 'boolean' || value.cursor !== undefined && !cursor(value.cursor) || value.has_more && !value.cursor) return false;
+  const counts = value.counts;
+  if (!record(counts) || !keys(counts, ['open', 'fixed', 'rejected', 'resolved']) || !Object.values(counts).every(nonnegative) || !Array.isArray(value.items) || value.items.length > (options.limit ?? 20)) return false;
+  const ids = new Set<string>();
+  const shown = { open: 0, fixed: 0, rejected: 0, resolved: 0 };
+  for (const item of value.items) {
+    if (!record(item) || !keys(item, ['id', 'kind', 'state', 'source_pull_numbers', 'target_state', 'title', 'revision', 'created_at'], ['target_pull_number', 'source_evidence_id']) || !['native', 'carried'].includes(String(item.kind)) || !['open', 'fixed', 'rejected', 'resolved'].includes(String(item.state)) || !['open', 'closed', 'merged', 'unknown', 'unassigned'].includes(String(item.target_state)) || !positive(item.revision) || !assessmentTime(item.created_at) || !checkpointText(item.title, 1024, true) || !Array.isArray(item.source_pull_numbers) || item.source_pull_numbers.length > 100 || !item.source_pull_numbers.every(pullNumber) || new Set(item.source_pull_numbers).size !== item.source_pull_numbers.length || item.target_pull_number !== undefined && !pullNumber(item.target_pull_number)) return false;
+    if (item.kind === 'native' ? typeof item.id !== 'string' || !/^review_route_[a-f0-9]{32}$/u.test(item.id) || !reviewEvidenceID(item.source_evidence_id) || item.source_pull_numbers.length !== 1 || item.target_pull_number === undefined || item.state === 'resolved' : !obligationID(item.id) || item.source_evidence_id !== undefined || !['open', 'resolved'].includes(String(item.state))) return false;
+    if (item.target_state === 'unassigned' && item.target_pull_number !== undefined || ['open', 'closed', 'merged'].includes(String(item.target_state)) && item.target_pull_number === undefined || ids.has(String(item.id))) return false;
+    ids.add(String(item.id));
+    shown[item.state as keyof typeof shown]++;
+    if (options.pullNumber !== undefined && item.kind === 'native' && item.target_pull_number !== options.pullNumber && !item.source_pull_numbers.includes(options.pullNumber)) return false;
+    if (options.pullNumber === undefined && (item.state !== 'open' || item.target_state === 'open')) return false;
+  }
+  if (options.pullNumber === undefined && (counts.fixed !== 0 || counts.rejected !== 0 || counts.resolved !== 0)) return false;
+  return (Object.keys(shown) as Array<keyof typeof shown>).every(state => Number(counts[state]) >= shown[state]);
+}
+function validRoutedFindingDetail(value: unknown, project: string, selected: string): value is ReviewRoutedFindingDetail {
+  if (!record(value) || !keys(value, ['route', 'source_anchor', 'source_finding']) || !record(value.route) || !record(value.source_anchor) || !record(value.source_finding)) return false;
+  const route = value.route, anchor = value.source_anchor, finding = value.source_finding;
+  if (route.id !== selected || route.project_id !== project || !positive(route.repository_id) || !reviewEvidenceID(route.source_evidence_id) || !nonnegative(route.finding) || !pullNumber(route.source_pull_number) || !pullNumber(route.target_pull_number) || route.source_pull_number === route.target_pull_number || !positive(route.revision) || !['active', 'superseded'].includes(String(route.state)) || !['unadjudicated', 'accepted', 'rejected'].includes(String(route.disposition))) return false;
+  if (![route.source_head_sha, anchor.candidate_sha, anchor.base_sha, anchor.merge_base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !sha(anchor.parent_sha) || !nonnegative(anchor.parent_pull_number) || anchor.repository_id !== route.repository_id || anchor.pull_number !== route.source_pull_number || anchor.candidate_sha !== route.source_head_sha || !checkpointText(anchor.repository, 256, true) || !checkpointText(anchor.base_ref, 256, true) || typeof anchor.patch_sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(anchor.patch_sha256) || !assessmentTime(anchor.observed_at)) return false;
+  if (!checkpointText(route.routing_reason, 2048, true) || !id(route.routing_actor_id) || !checkpointText(route.reason, 2048, false) || !checkpointText(route.actor_id, 128, false) || !maybeTimestamp(route.decided_at) || !sha(route.fix_sha) || !checkpointText(route.proof_note, 2048, false) || !maybeTimestamp(route.fixed_at) || !assessmentTime(route.created_at) || !assessmentTime(route.updated_at)) return false;
+  if (route.fix_sha !== '' && (route.disposition !== 'accepted' || !route.proof_note || !route.fixed_at) || route.fix_sha === '' && (route.proof_note !== '' || route.fixed_at !== '')) return false;
+  return finding.finding === route.finding && checkpointText(finding.title, 500, true) && checkpointText(finding.detail, 16 << 10, false) && ['info', 'low', 'medium', 'high', 'critical', 'unknown'].includes(String(finding.severity)) && checkpointText(finding.path, 1024, false) && nonnegative(finding.start_line) && nonnegative(finding.end_line);
+}
 function validObligationItem(value:unknown,number:number):boolean {
  return record(value) && keys(value,['id','namespace','source_key','kind','status','revision','affected_pull_numbers']) && obligationID(value.id) && checkpointText(value.namespace,200,true) && checkpointText(value.source_key,512,true) && ['finding','route','result'].includes(String(value.kind)) && value.status==='open' && positive(value.revision) && obligationPulls(value.affected_pull_numbers) && value.affected_pull_numbers.includes(number);
 }

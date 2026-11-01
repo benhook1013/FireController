@@ -92,7 +92,7 @@ function CarriedObligationRow({ item }: { item: AdoptionObligationItem }) {
   </details></li>;
 }
 
-function ReviewObligationList({ number }: { number: number }) {
+function ReviewObligationList({ number, excludeRoutes }: { number: number; excludeRoutes: boolean }) {
   const { session, key, fail } = useWorkspace();
   const paging = usePaging();
   const query = useQuery({
@@ -101,7 +101,7 @@ function ReviewObligationList({ number }: { number: number }) {
     staleTime: Infinity, retry: false,
   });
   useEffect(() => { if (query.error) fail(query.error); }, [query.error, fail]);
-  const page = query.data;
+  const page = query.data && (excludeRoutes ? { ...query.data, items: query.data.items.filter(item => item.kind !== 'route') } : query.data);
   if (page && !page.items.length && paging.number === 1 && !page.next_cursor && !query.error) return null;
   return <section className="panel review-history" aria-label={`PR #${number} carried review work`}>
     <h3>Carried review work</h3>
@@ -120,6 +120,6 @@ function ReviewObligationList({ number }: { number: number }) {
   </section>;
 }
 
-export function ReviewObligations({ number }: { number: number }) {
-  return <ReviewObligationList key={number} number={number} />;
+export function ReviewObligations({ number, excludeRoutes = false }: { number: number; excludeRoutes?: boolean }) {
+  return <ReviewObligationList key={number} number={number} excludeRoutes={excludeRoutes} />;
 }

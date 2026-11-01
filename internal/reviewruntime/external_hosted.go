@@ -18,6 +18,11 @@ func (r *hostedArchiveSource) Pull(ctx context.Context, repository string, numbe
 	return r.provider.Pull(ctx, repository, number)
 }
 func (r *hostedArchiveSource) ObserveHosted(ctx context.Context, repository string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
+	if archive, ok := r.provider.(interface {
+		ObserveHostedArchive(context.Context, string, int64, reviewprovider.Author) (reviewprovider.HostedPublicationSnapshot, error)
+	}); ok {
+		return archive.ObserveHostedArchive(ctx, repository, number, r.actor)
+	}
 	return r.provider.ObserveHosted(ctx, repository, number)
 }
 func (r *hostedArchiveSource) TrustedHostedActor() reviewprovider.Author { return r.actor }

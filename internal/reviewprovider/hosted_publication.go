@@ -174,6 +174,30 @@ func publicationValidActor(a Author) bool {
 }
 
 func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
+	return validHostedSnapshot(s, nil)
+}
+
+func validHostedArchiveSnapshot(s HostedPublicationSnapshot, provider Author) bool {
+	return publicationValidActor(provider) && provider.Kind == "Bot" && validHostedSnapshot(s, &provider)
+}
+
+func publicationIssueClockValid(c IssueComment, observedAt time.Time) bool {
+	return !c.UpdatedAt.Before(c.CreatedAt) && !c.UpdatedAt.After(observedAt)
+}
+
+func publicationHasReviewCommand(body string) bool {
+	for _, line := range publicationVisibleLines(body) {
+		if publicationCommand.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// Native attribution validates every clock. Passive archive collection can
+// retain unrelated chatter with contradictory clocks, but never uses it to
+// establish a command window or native trigger ownership.
+func validHostedSnapshot(s HostedPublicationSnapshot, archiveProvider *Author) bool {
 	if len(s.IssueComments) > githubMaxItems || len(s.Reviews) > githubMaxItems || len(s.ReviewComments) > githubMaxItems || len(s.IssueComments)+len(s.Reviews)+len(s.ReviewComments) > githubMaxItems {
 		return false
 	}
@@ -181,7 +205,10 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 	add := func(body string) bool { total += len(body); return total <= githubMaxAggregate && validBody(body) }
 	seen := map[int64]bool{}
 	for _, c := range s.IssueComments {
-		if c.ID <= 0 || seen[c.ID] || !add(c.Body) || !publicationValidActor(c.Author) || !hostedTriggerTime(c.CreatedAt) || !hostedTriggerTime(c.UpdatedAt) || c.UpdatedAt.Before(c.CreatedAt) || c.UpdatedAt.After(s.ObservedAt) {
+		if c.ID <= 0 || seen[c.ID] || !add(c.Body) || !publicationValidActor(c.Author) || !hostedTriggerTime(c.CreatedAt) || !hostedTriggerTime(c.UpdatedAt) {
+			return false
+		}
+		if !publicationIssueClockValid(c, s.ObservedAt) && (archiveProvider == nil || publicationActor(c.Author, *archiveProvider) || publicationHasReviewCommand(c.Body)) {
 			return false
 		}
 		seen[c.ID] = true

@@ -25,6 +25,18 @@ function fixture(page?: AdoptionObligationPage, selectedApi?: Api) {
 }
 
 describe('private carried review work', () => {
+  it('leaves routes to the unified routed section while retaining other carried obligations', () => {
+    const onlyRoutes = fixture({ items: [{ ...item, kind: 'route', affected_pull_numbers: [3251] }] });
+    const mixed = fixture({ items: [{ ...item, kind: 'route', affected_pull_numbers: [3251] }, { ...item, id: 'other_finding', affected_pull_numbers: [3251] }] });
+    try {
+      expect(onlyRoutes.render(<ReviewObligations number={3251} excludeRoutes />)).toBe('');
+      const html = mixed.render(<ReviewObligations number={3251} excludeRoutes />);
+      expect(html).toContain('1 open item');
+      expect(html).toContain('Read carried finding');
+      expect(html).not.toContain('Read carried routed finding');
+    } finally { onlyRoutes.client.clear(); mixed.client.clear(); }
+  });
+
   it('loads the initial component page through the real API without an empty cursor or detail fanout', async () => {
     vi.stubGlobal('location', { origin: 'https://service.example' });
     const api = new Api('private-obligations-token', 'project_one');

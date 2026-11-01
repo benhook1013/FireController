@@ -119,6 +119,11 @@ func readDetail(ctx context.Context, q Query, project, id string) (m.Detail, err
 	return readDetailWithSources(ctx, q, project, id, nil)
 }
 
+// ReadDetail composes the canonical retained read within an authorized transaction.
+func ReadDetail(ctx context.Context, q Query, project, id string) (m.Detail, error) {
+	return readDetail(ctx, q, project, id)
+}
+
 // A facts read may reuse successfully validated namespaces within its current
 // transaction. Originals, target lists and resolutions remain individually checked.
 func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]m.SourceState) (m.Detail, error) {

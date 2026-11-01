@@ -24,6 +24,19 @@ function markup(node: React.ReactNode) {
 }
 
 describe('bounded Delivery board', () => {
+  it('uses one worker status slot with pause taking precedence over attached contact', () => {
+    const at = '2026-11-01T10:00:00Z';
+    const presence = { project_id: 'project_one', evaluated_at: at, observed_since: at, complete: true, items: [{ worker_id: worker.id, attached: true, last_seen_at: at }] };
+    const one = { workers: { items: [worker], has_more: false }, jobs: { items: [], has_more: false } };
+    const paused = markup(<DeliveryLanes value={one} home={home} presence={presence} />);
+    expect(paused).toContain('Paused');
+    expect(paused).not.toContain('Client attached');
+    expect(paused).toContain('</h3><details class="delivery-worker-pause"');
+    const active = markup(<DeliveryLanes value={{...one,workers:{...one.workers,items:[{...worker,paused:false}]}}} home={home} presence={presence} />);
+    expect(active).toContain('Client attached');
+    expect(active).not.toContain('Paused');
+  });
+
   it('keeps configured workers first, then alphabetical workers, with Unassigned last', () => {
     const lanes = groupDeliveryLanes(board,['empty_worker','worker_one']);
     expect(lanes.map(lane=>lane.id)).toEqual(['empty_worker','worker_one','outside_owner','']);

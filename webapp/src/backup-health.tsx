@@ -34,7 +34,7 @@ export function BackupHealthView({ health, unavailable = false, now = Date.now()
   useEffect(() => details.current ? dismissBackupHealth(details.current) : undefined, []);
   const headline = backupHeadline(health, unavailable, now);
   const stale = !health || unavailable || now - Date.parse(health.checked_at) > 120000 || Date.parse(health.checked_at) > now + 30000;
-  return <details ref={details} className={`backup-health backup-health-${headline.tone}`}><summary><span className="backup-health-dot" aria-hidden="true" />{headline.label}</summary><div className="backup-health-details"><h3 className="backup-health-heading">Backup status</h3>{stale ? <p>Current status could not be checked.</p> : <><ul><CopyStatus label="Local" row={health.local} />{health.offsite.map((row, index) => <CopyStatus key={index} label={row.label} row={row} />)}</ul>{health.offsite.length === 0 && <p>Offsite status reporting is not configured.</p>}<p>Times show the latest successfully backed-up snapshot.</p></>}</div></details>;
+  return <details ref={details} className={`backup-health backup-health-${headline.tone}`}><summary><span className="backup-health-dot" aria-hidden="true" />{headline.label}</summary><div className="backup-health-details"><h3 className="backup-health-heading">Backup status</h3>{stale ? <p>Current status could not be checked.</p> : <><ul><CopyStatus label="Local" row={health.local} />{health.offsite.map((row, index) => <CopyStatus key={index} label={row.label} row={row} />)}</ul>{health.offsite.length === 0 && <p>Offsite status reporting is not configured.</p>}</>}</div></details>;
 }
 export function BackupHealthIndicator({ session }: { session: Session }) {
   const [now, setNow] = useState(Date.now);

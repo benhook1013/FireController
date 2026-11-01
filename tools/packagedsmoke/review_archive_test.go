@@ -24,7 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/adoptionholds"
+	adoptionmodel "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -92,6 +95,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	bootstrap.stop(t)
 	project, worker, other, credential := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
 	snapshot, firstRun, tailRun, newer := seedPackagedReviewArchive(t, ctx, data, project, worker, bootstrap.instance, strings.TrimSpace(string(admin)))
+	seedArchiveRoutedWork(t, ctx, data, project, worker, bootstrap.instance, strings.TrimSpace(string(admin)))
 	newObservationFile := filepath.Join(private, "new-observation.json")
 	if os.WriteFile(newObservationFile, newer, 0600) != nil {
 		t.Fatal("private newer observation unavailable")
@@ -378,6 +382,43 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		t.Fatal("archive workload attempted provider/external HTTP")
 	}
 	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/channel6/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+}
+
+func seedArchiveRoutedWork(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) {
+	t.Helper()
+	store, err := core.Open(ctx, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mux := server.New(store)
+	jobs.Register(mux, store)
+	adoptionholds.New(store).Register(mux)
+	request := func(method, path, key string, body any) []byte {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(method, "/api/v1/projects/"+project+path, bytes.NewReader(raw)).WithContext(ctx)
+		r.Header.Set("Authorization", "Bearer "+admin)
+		r.Header.Set("X-FC-Instance", instance)
+		r.Header.Set("X-FC-Worker", worker)
+		r.Header.Set("Idempotency-Key", key)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("routed fixture setup %s failed: %d", path, w.Code)
+		}
+		return w.Body.Bytes()
+	}
+	request(http.MethodPut, "/workers/"+worker+"/pause", "archive-worker-pause", map[string]any{"expected_revision": 0, "paused": true, "reason": "Synthetic pause reason"})
+	zero := int64(0)
+	batch := adoptionmodel.Batch{Version: 1, Source: adoptionmodel.Source{Namespace: "archive-routed-work", RepositoryID: 991, SnapshotSHA256: strings.Repeat("a", 64)}, ExpectedRevision: &zero, Obligations: []adoptionmodel.Obligation{{SourceKey: "route:archive-followup", Kind: "route", AffectedPullNumbers: []int64{123}, Summary: "Synthetic routed follow-up", Evidence: []string{"target-pr:unassigned"}, OriginalStatus: "open"}}}
+	var preview adoptionmodel.Preview
+	if err := json.Unmarshal(request(http.MethodPost, "/reviews/adoption-obligations/preview", "archive-route-preview", batch), &preview); err != nil {
+		t.Fatal(err)
+	}
+	request(http.MethodPost, "/reviews/adoption-obligations/apply", "archive-route-apply", adoptionmodel.ApplyRequest{Batch: batch, PreviewSHA256: preview.PreviewSHA256})
 }
 
 func seedPackagedReviewArchive(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) (string, string, string, []byte) {

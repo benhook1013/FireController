@@ -100,3 +100,8 @@
 @media(max-width:650px){.delivery-hero>.project-introduction .hero-project{padding:24px}.project-introduction-text{font-size:.95rem;max-width:none}}
 
 .skeleton-hero .project-introduction-category .skeleton-ink{width:48%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink{width:95%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink:last-child{width:80%}.skeleton-hero .project-introduction-link .skeleton-ink{width:9em;height:1.6em}
+
+/* Pause and client contact occupy the same header slot without raising its baseline. */
+.delivery-worker-heading{align-items:flex-start}
+.delivery-worker-heading>.worker-contact,.delivery-worker-heading>.delivery-worker-pause,.delivery-worker-heading>.badge{align-self:center;flex:none;margin:0;font-size:.7rem;line-height:1.2}
+.delivery-worker-heading>.delivery-worker-pause>summary,.delivery-worker-heading>.badge{padding:2px 6px;line-height:1.2}

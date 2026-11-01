@@ -71,3 +71,5 @@
 .review-round-pill.semantic-change-0{animation:review-pill-refresh-even 1.2s ease-out both}.review-round-pill.semantic-change-1{animation:review-pill-refresh-odd 1.2s ease-out both}
 @keyframes review-pill-refresh-even{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}@keyframes review-pill-refresh-odd{from{box-shadow:inset 0 0 0 2px var(--fc-surface_muted,#666874)}to{box-shadow:inset 0 0 0 2px transparent}}
 @media(prefers-reduced-motion:reduce){.review-round-pill.semantic-change-0,.review-round-pill.semantic-change-1{animation:none}}
+
+.review-state-draft{border:1px solid color-mix(in srgb,currentColor 55%,transparent)}

@@ -28,6 +28,12 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('shows Draft without the redundant Queued badge', () => {
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), is_draft: true }} status={{kind:'queued',text:'Queued',description:'Waiting in the queue'}} />);
+    expect(html).toContain('Draft');
+    expect(html).not.toContain('>Queued<');
+  });
+
   it('distinguishes no required CI from an unknown observation without claiming workflow success', () => {
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'not_required' }} />);
     expect(html).toContain('Required CI: None');

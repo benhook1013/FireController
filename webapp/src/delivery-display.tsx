@@ -7,7 +7,7 @@ export function WorkerLaneDisplay({ label, name, ariaLabel = `${label} jobs`, pr
   readingAnchor?: string;
 }) {
   return <section className="panel delivery-lane" aria-label={ariaLabel} data-reading-anchor={readingAnchor}>
-    <header className="delivery-lane-heading"><div className="delivery-worker-heading"><h3>{name}{presence}</h3>{status}</div>
+    <header className="delivery-lane-heading"><div className="delivery-worker-heading"><h3>{name}</h3>{presence}{status}</div>
       {links && <nav className="delivery-worker-links" aria-label={`${label} links`}>{links}</nav>}
       {details}
     </header>
