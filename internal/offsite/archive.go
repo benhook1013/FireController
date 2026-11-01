@@ -37,7 +37,7 @@ func (w *tarSizeWriter) Write(p []byte) (int, error) {
 func pack(ctx context.Context, source, destination string, c Config) (Receipt, error) {
 	s, err := backup.Inspect(ctx, source)
 	if err != nil {
-		return Receipt{}, failure("offsite_source_invalid")
+		return Receipt{}, cancelOrFailure(ctx, "offsite_source_invalid")
 	}
 	if s.SourceInstanceID != c.InstanceID {
 		return Receipt{}, failure("offsite_source_invalid")
@@ -58,7 +58,7 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 	count := 0
 	err = filepath.WalkDir(source, func(file string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || ctx.Err() != nil {
-			return failure("offsite_source_invalid")
+			return cancelOrFailure(ctx, "offsite_source_invalid")
 		}
 		if d.IsDir() {
 			return nil
@@ -102,7 +102,7 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 		if errors.Is(err, errTarSizeLimit) {
 			return Receipt{}, failure("offsite_size_limit")
 		}
-		return Receipt{}, failure("offsite_source_invalid")
+		return Receipt{}, cancelOrFailure(ctx, "offsite_source_invalid")
 	}
 	if err = tw.Close(); err != nil {
 		gz.Close()
@@ -125,7 +125,10 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 
 func unpack(ctx context.Context, archive, destination string, r Receipt, c Config) (backup.Summary, error) {
 	h, n, err := fileHash(ctx, archive, c.MaxBundleBytes)
-	if err != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
+	if err != nil {
+		return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
+	}
+	if h != r.ArchiveSHA256 || n != r.ArchiveBytes {
 		return backup.Summary{}, failure("offsite_archive_invalid")
 	}
 	f, err := os.Open(archive)
@@ -148,7 +151,7 @@ func unpack(ctx context.Context, archive, destination string, r Receipt, c Confi
 			break
 		}
 		if err != nil {
-			return backup.Summary{}, failure("offsite_archive_invalid")
+			return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
 		}
 		count++
 		if count > 100003 || hdr.Typeflag != tar.TypeReg || hdr.Size < 0 || hdr.Size > c.MaxBundleBytes || path.Clean(hdr.Name) != hdr.Name || strings.Contains(hdr.Name, "\\") || !strings.HasPrefix(hdr.Name, r.ID+"/") || seen[hdr.Name] {
@@ -167,15 +170,18 @@ func unpack(ctx context.Context, archive, destination string, r Receipt, c Confi
 		syncErr := out.Sync()
 		closeErr := out.Close()
 		if copyErr != nil || syncErr != nil || closeErr != nil || n != hdr.Size {
-			return backup.Summary{}, failure("offsite_archive_invalid")
+			return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
 		}
 	}
 	// Consume the gzip trailer so corruption after the tar end is not ignored.
 	if _, err = io.Copy(io.Discard, limited); err != nil || limited.N <= 0 {
-		return backup.Summary{}, failure("offsite_archive_invalid")
+		return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
 	}
 	s, err := backup.Inspect(ctx, filepath.Join(destination, r.ID))
-	if err != nil || s.SourceInstanceID != r.InstanceID || s.SnapshotFinishedAt != r.SnapshotFinishedAt || s.EventSequence != r.EventSequence {
+	if err != nil {
+		return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
+	}
+	if s.SourceInstanceID != r.InstanceID || s.SnapshotFinishedAt != r.SnapshotFinishedAt || s.EventSequence != r.EventSequence {
 		return backup.Summary{}, failure("offsite_archive_invalid")
 	}
 	// Persist directory entries from leaves to root before a fetched bundle is

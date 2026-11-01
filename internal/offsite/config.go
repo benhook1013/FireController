@@ -184,10 +184,20 @@ func fileHash(ctx context.Context, path string, limit int64) (string, int64, err
 	}
 	h := sha256.New()
 	n, err := io.Copy(h, &contextReader{ctx: ctx, r: io.LimitReader(f, limit+1)})
-	if err != nil || n > limit || n != s.Size() {
+	if err != nil {
+		return "", 0, cancelOrFailure(ctx, "offsite_archive_invalid")
+	}
+	if n > limit || n != s.Size() {
 		return "", 0, failure("offsite_archive_invalid")
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+func cancelOrFailure(ctx context.Context, code string) error {
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
+	return failure(code)
 }
 
 type contextReader struct {
