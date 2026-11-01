@@ -195,6 +195,10 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			}
 		}
 		if g.reason != "" {
+			switch g.reason {
+			case "conflicting_publication_evidence", "conflicting_submitted_review_evidence", "conflicting_standing_zero_evidence", "root_binding_mismatch":
+				g.run.Inventory.Publication.State = "ambiguous"
+			}
 			g.run.Inventory.Complete = false
 			g.run.Inventory.Reason = g.reason
 			g.run.Inventory.Publication.Reason = g.reason
