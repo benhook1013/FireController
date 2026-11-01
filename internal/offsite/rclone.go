@@ -140,8 +140,8 @@ func (r *rclone) get(ctx context.Context, name, destination string) error {
 		return failure("offsite_configuration_invalid")
 	}
 	_, err := r.run(ctx, "copyto", name, destination, "--ignore-times")
-	if err == nil {
-		err = os.Chmod(destination, 0600)
+	if err == nil && os.Chmod(destination, 0600) != nil {
+		return failure("offsite_storage_unavailable")
 	}
 	return err
 }
