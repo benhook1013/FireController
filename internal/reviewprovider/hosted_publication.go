@@ -57,6 +57,23 @@ func publicationVisibleLines(body string) []string {
 	fenceLength := 0
 	pre, quote := 0, 0
 	hiddenComment := false
+	updateDepth := func(text string) bool {
+		tags := publicationHTMLBlockTag.FindAllStringSubmatch(text, -1)
+		for _, tag := range tags {
+			depth := &pre
+			if strings.EqualFold(tag[1], "blockquote") {
+				depth = &quote
+			}
+			if strings.HasPrefix(tag[0], "</") {
+				if *depth > 0 {
+					*depth--
+				}
+			} else {
+				*depth++
+			}
+		}
+		return len(tags) > 0
+	}
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
@@ -79,39 +96,54 @@ func publicationVisibleLines(body string) []string {
 		if indent > 3 || strings.HasPrefix(trimmed, "\t") {
 			continue
 		}
-		if hiddenComment {
-			if strings.Contains(line, "-->") {
-				hiddenComment = false
-			}
-			continue
-		}
-		if start := strings.Index(line, "<!--"); start >= 0 && !publicationMarker.MatchString(line) {
-			if !strings.Contains(line[start+4:], "-->") {
-				hiddenComment = true
-			}
-			// An unquoted malformed protocol line remains conflicting evidence;
-			// unrelated HTML comments cannot make nested lines into markers.
-			if pre == 0 && quote == 0 && !publicationHTMLBlockTag.MatchString(line[:start]) && strings.Contains(strings.ToLower(line), "coderabbit-review-publication") {
+		if !hiddenComment && publicationMarker.MatchString(line) {
+			if pre == 0 && quote == 0 {
 				lines = append(lines, line)
 			}
 			continue
 		}
-		tags := publicationHTMLBlockTag.FindAllStringSubmatch(line, -1)
-		htmlBlock := pre > 0 || quote > 0 || len(tags) > 0
-		for _, tag := range tags {
-			depth := &pre
-			if strings.EqualFold(tag[1], "blockquote") {
-				depth = &quote
-			}
-			if strings.HasPrefix(tag[0], "</") {
-				if *depth > 0 {
-					*depth--
+		htmlBlock, sawComment, badMarker := pre > 0 || quote > 0, hiddenComment, false
+		for rest := line; rest != ""; {
+			if hiddenComment {
+				end := strings.Index(rest, "-->")
+				if end < 0 {
+					break
 				}
-			} else {
-				*depth++
+				hiddenComment = false
+				rest = rest[end+3:]
+				continue
 			}
+			start := strings.Index(rest, "<!--")
+			outside := rest
+			if start >= 0 {
+				outside = rest[:start]
+			}
+			if (sawComment || start >= 0) && pre == 0 && quote == 0 && !publicationHTMLBlockTag.MatchString(outside) && strings.Contains(strings.ToLower(outside), "coderabbit-review-publication") {
+				badMarker = true
+			}
+			// Tags before/after comments still update quote depth. Tags inside
+			// comments, including multiline comments, never do.
+			if updateDepth(outside) {
+				htmlBlock = true
+			}
+			if start < 0 {
+				break
+			}
+			rest = rest[start+4:]
+			comment := rest
+			if end := strings.Index(comment, "-->"); end >= 0 {
+				comment = comment[:end]
+			}
+			// A visible malformed protocol comment is conflicting evidence;
+			// ordinary comments cannot expose their nested content as markers.
+			badMarker = badMarker || pre == 0 && quote == 0 && strings.Contains(strings.ToLower(comment), "coderabbit-review-publication")
+			hiddenComment, sawComment = true, true
 		}
-		if htmlBlock {
+		if badMarker {
+			lines = append(lines, line)
+			continue
+		}
+		if htmlBlock || sawComment {
 			continue
 		}
 		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
