@@ -357,7 +357,7 @@ func TestExplicitOrderMalformedStoredFlagOrVersionNeverDefaults(t *testing.T) {
 			case "missing-current-column":
 				admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
 			case "unknown-version":
-				admissionSQL(t, f, `UPDATE metadata SET value='10' WHERE key='schema:review_execution'`)
+				admissionSQL(t, f, `UPDATE metadata SET value='11' WHERE key='schema:review_execution'`)
 			case "noncanonical-version":
 				admissionSQL(t, f, `UPDATE metadata SET value='07' WHERE key='schema:review_execution'`)
 			}

@@ -77,7 +77,9 @@ func TestHostedPriorityCooldownAndAtomicClaims(t *testing.T) {
 	}
 	busy := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "busy", "hosted", 2, 1))
 	now = headDue
-	priorityPending(t, f)
+	// Another repository's Hosted reservation does not consume this repo's
+	// slot; the nearer queued intent still excludes the lower request.
+	priorityPending(t, f, head.ID)
 	if _, err := f.e.Advance(t.Context(), otherAttemptProject, busy.ID, 1, "cancelled", "synthetic_release", ""); err != nil {
 		t.Fatal(err)
 	}
