@@ -100,7 +100,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 				g.reason = "conflicting_submitted_review_evidence"
 			}
 			g.run.ProviderRunID, g.count, g.selected = run, count, selected
-			if !valid {
+			if !valid && g.reason == "" {
 				g.reason = "submitted_review_inventory_unproven"
 			}
 		}
