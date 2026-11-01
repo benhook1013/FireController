@@ -42,7 +42,7 @@ func TestCIWatchWorkflowObservationsClientWireAndProofLimit(t *testing.T) {
 				var body struct {
 					Targets []client.CIWatchTarget `json:"targets"`
 				}
-				wantHeader := "2"
+				wantHeader := "3"
 				if mode == "ordinary" {
 					wantHeader = ""
 				}

@@ -21,6 +21,12 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 		phase, diagnostic := ciWatchDiagnostic(item)
 		if len(item.WorkflowObservations) > 0 || len(item.WorkflowFailures) > 0 {
 			limit := " Failure rows identify the exact run/current attempt with a proven failed execution; this may precede newer runs that explicitly skipped that job. Missing workflow details and absent failure rows do not certify that other jobs were checked."
+			for _, row := range item.WorkflowFailures {
+				if row.Basis == "historical_same_head_failure_supersession_unproven" {
+					limit = " Failure rows identify real failed jobs in the supplied run/current numbered attempt. A historical row leaves latest-job coverage or supersession unproven; unlabelled earlier rows require the proven skipped-job chain. Missing workflow details and absent failure rows do not certify that other jobs were checked."
+					break
+				}
+			}
 			if len(item.WorkflowObservations) > 0 {
 				limit = " Selected workflow observations cover only the latest run/current attempt, not older runs or all jobs; absent failure rows do not certify that jobs were checked."
 			}
@@ -37,6 +43,23 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 
 func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagnostic) {
 	if len(item.WorkflowFailures) > 0 {
+		historical := 0
+		for _, row := range item.WorkflowFailures {
+			if row.Basis == "historical_same_head_failure_supersession_unproven" {
+				historical++
+			}
+		}
+		if historical > 0 {
+			phase := "workflow_failure"
+			if item.WaitingForChange {
+				phase = "waiting_for_change"
+			}
+			explanation := "Labelled historical rows identify failed jobs in earlier current-numbered attempts on this same pinned head. The latest jobs do not establish their coverage or supersession; these rows do not prove that the latest/current comparison still fails. Their run base is unknown. Required CI keeps its separate pending or unproven result, without coverage credit."
+			if historical < len(item.WorkflowFailures) {
+				explanation += " Unlabelled rows retain the ordinary proven failure-attention meaning."
+			}
+			return phase, &ReviewOperationDiagnostic{explanation, "Inspect the supplied historical workflow/run/attempt/job IDs for the actual failure; verify or fix it without treating metadata-only success as repair. Reuse observation_key as after_observation_key to wait quietly for changed evidence. Do not rerun CI or change required gates solely to clear this historical signal."}
+		}
 		if item.WorkflowAttentionBasis == "head_only_current_comparison_unproven" {
 			phase := "workflow_failure"
 			if item.WaitingForChange {

@@ -395,7 +395,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 			r.Header.Set("X-FC-CI-Watch", "change-v2")
 		}
 		if wait.ciWorkflowDetails {
-			r.Header.Set("X-FC-CI-Workflow-Details", "2")
+			r.Header.Set("X-FC-CI-Workflow-Details", "3")
 		}
 
 		if wait.reviewBlockers {

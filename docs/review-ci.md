@@ -40,7 +40,7 @@ New stable mismatch observations retain `merge_base_mismatch` facts: `pr_base_sh
 
 For GitHub Actions, workflow identity and provider run number select the newest run for the selected commit. A newer pending or failed run prevents an older successful run from supplying credit. Event type, timestamps and numerical check-run IDs do not establish currentness by themselves.
 
-Optional [CI-wait failure attention](ci-wait.md) separately retains an earlier failed execution across proven same-name skipped jobs. That rule supplies repair attention only and does not change this required-gate selection or reuse an older successful result.
+Optional [CI-wait failure attention](ci-wait.md) separately retains an earlier failed execution across proven same-name skipped jobs. Its explicitly labelled historical rows can also expose an already-read same-head failure whose latest-job coverage or supersession is unproven. Neither form changes this required-gate selection or reuses an older successful result.
 
 After a positively bound stable test-merge base mismatch, explicitly selected CI waits may observe same-head repair failures with an explicit head-only basis. The workflow run's base comparison remains unknown; these failures never populate this contract's required results, selected CI commit or check counts. Ordinary CI assessments and waits without that selection retain their existing collection scope.
 

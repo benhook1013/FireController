@@ -81,7 +81,7 @@ func TestHeadWorkflowAttentionKeepsMismatchedGateAndUsesExactProof(t *testing.T)
 		t.Fatal(err)
 	}
 	f := ciHeadAttentionFixture(t, "skip")
-	got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{30, 31}, []int64{31})
+	got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{30, 31}, []int64{31}, nil)
 	if err != nil || len(rows) != 1 || rows[0].RunID != 60 || !CIWorkflowFailureApplies(got, rows[0]) || CIWorkflowAttentionBasis(got) != CIWorkflowHeadOnlyBasis || !reflect.DeepEqual(workflowGateFacts(t, gate), workflowGateFacts(t, got)) {
 		t.Fatal("same-head attention changed the gate or lost exact proof", got, rows, err)
 	}
@@ -128,7 +128,7 @@ func TestHeadWorkflowAttentionPreservesSkippedJobCurrentnessAndBounds(t *testing
 	for _, mode := range []string{"success", "missing", "matrix ambiguity", "pending", "cancelled", "different event", "repaired", "new run during recheck", "rerun during recheck", "capacity", "moving base"} {
 		t.Run(mode, func(t *testing.T) {
 			f := ciHeadAttentionFixture(t, mode)
-			got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{31})
+			got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{31}, nil)
 			if len(rows) != 0 || got.State != "unproven" || got.Actions != nil || got.Results != nil || got.SelectedCommitSHA != "" {
 				t.Fatal("stale head failure or CI credit", mode, rows, got, err)
 			}
@@ -145,7 +145,7 @@ func TestHeadWorkflowAttentionRequiresSelectionAndExplicitOptIn(t *testing.T) {
 		var rows []CIWorkflowFailure
 		var err error
 		if opt {
-			_, rows, err = f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", nil, nil)
+			_, rows, err = f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", nil, nil, nil)
 		} else {
 			_, rows, err = f.g.ObserveCIGateWithWorkflows(t.Context(), ciObservationTarget(), "main", []int64{31})
 		}
@@ -155,7 +155,7 @@ func TestHeadWorkflowAttentionRequiresSelectionAndExplicitOptIn(t *testing.T) {
 		}
 	}
 	f := ciHeadAttentionFixture(t, "skip")
-	if _, _, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{32}); err == nil {
+	if _, _, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{32}, nil); err == nil {
 		t.Fatal("unselected head workflow accepted")
 	}
 }

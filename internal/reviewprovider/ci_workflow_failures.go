@@ -10,6 +10,7 @@ import (
 // CIWorkflowFailure is optional attention for one explicitly selected workflow.
 // It does not add required checks or change the required-gate assessment.
 type CIWorkflowFailure struct {
+	Basis      string `json:"basis,omitempty"`
 	WorkflowID int64  `json:"workflow_id"`
 	RunID      int64  `json:"run_id"`
 	RunAttempt int64  `json:"run_attempt"`
@@ -20,6 +21,7 @@ type CIWorkflowFailure struct {
 }
 
 const CIWorkflowHeadOnlyBasis = "head_only_current_comparison_unproven"
+const CIWorkflowHistoricalBasis = "historical_same_head_failure_supersession_unproven"
 
 // CIWorkflowAttentionBasis names optional source scope, never CI applicability.
 func CIWorkflowAttentionBasis(o CIObservation) string {
@@ -50,16 +52,17 @@ func (e *CIWorkflowAttentionError) Unwrap() error { return e.Cause }
 // ObserveCIGateWithWorkflows shares the ordinary thirty-second collection
 // budget. Optional failures never replace, invalidate or upgrade gate facts.
 func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget, gateRef string, workflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
-	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, nil)
+	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, nil, nil)
 }
 
 // ObserveCIGateWithWorkflowAttention additionally permits selected head-only
-// failure attention after a positively bound stable test-merge mismatch.
-func (g *GitHub) ObserveCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
-	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, headWorkflowIDs)
+// failure attention after a positively bound stable test-merge mismatch and
+// labelled historical failures from attempts already reached by the strict walk.
+func (g *GitHub) ObserveCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs, historicalWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
+	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, headWorkflowIDs, historicalWorkflowIDs)
 }
 
-func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
+func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs, historicalWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
 	failures := []CIWorkflowFailure{}
 	wanted := make(map[int64]bool, len(workflowIDs))
 	if ctx == nil || len(workflowIDs) > 16 {
@@ -77,6 +80,13 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 			return CIObservation{}, failures, invalidSelector()
 		}
 		headWanted[id] = true
+	}
+	historicalWanted := map[int64]bool{}
+	for _, id := range historicalWorkflowIDs {
+		if !wanted[id] || historicalWanted[id] {
+			return CIObservation{}, failures, invalidSelector()
+		}
+		historicalWanted[id] = true
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -129,6 +139,8 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 			continue
 		}
 		runs := ciWorkflowRuns(actions, newest.WorkflowID)
+		var historical CIWorkflowFailure
+		provenWorkflow := false
 		for index, run := range runs {
 			var attempt ActionsAttempt
 			matches := 0
@@ -156,13 +168,23 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 			}
 			failure, proven, canExtend := ciWorkflowFailureThroughSkips(runs[:index+1], attempts)
 			if proven {
+				provenWorkflow = true
 				failures = append(failures, failure)
 				fallback[failure.WorkflowID] = index > 0
 				break
 			}
+			if historicalWanted[run.WorkflowID] && attentionHead == target.HeadSHA && historical.JobID == 0 {
+				if candidate, ok := ciWorkflowHistoricalFailure(runs[:index+1], attempts); ok {
+					historical = candidate
+				}
+			}
 			if !canExtend {
 				break
 			}
+		}
+		if !provenWorkflow && historical.JobID != 0 {
+			failures = append(failures, historical)
+			fallback[historical.WorkflowID] = true
 		}
 	}
 	needsRecheck := headOnly && len(failures) > 0
@@ -270,6 +292,59 @@ func ciWorkflowFailureThroughSkips(runs []ActionsHeadRun, attempts []ActionsAtte
 	return CIWorkflowFailure{}, false, len(eligible) != 0
 }
 
+// Historical attention uses only the older current attempt that the strict
+// skipped-job walk already reached. Missing job coverage is never converted
+// into a claim that this older failure still applies to the latest comparison.
+func ciWorkflowHistoricalFailure(runs []ActionsHeadRun, attempts []ActionsAttempt) (CIWorkflowFailure, bool) {
+	if len(runs) < 2 {
+		return CIWorkflowFailure{}, false
+	}
+	if _, proven, extend := ciWorkflowFailureThroughSkips(runs[:len(runs)-1], attempts); proven || !extend {
+		return CIWorkflowFailure{}, false
+	}
+	if _, proven, _ := ciWorkflowFailureThroughSkips(runs, attempts); proven {
+		return CIWorkflowFailure{}, false
+	}
+	suppressed := map[string]bool{}
+	var older ActionsAttempt
+	for index, run := range runs {
+		var current ActionsAttempt
+		matches := 0
+		for _, attempt := range attempts {
+			if matchingCIWorkflowAttempt(run, attempt) {
+				current, matches = attempt, matches+1
+			}
+		}
+		if matches != 1 || !validCIWorkflowJobs(run, current) || run.Event != runs[0].Event {
+			return CIWorkflowFailure{}, false
+		}
+		if index == len(runs)-1 {
+			older = current
+			break
+		}
+		counts := map[string]int{}
+		for _, job := range current.Jobs {
+			counts[job.Name]++
+		}
+		for _, job := range current.Jobs {
+			if counts[job.Name] != 1 || job.Status != "completed" || job.Conclusion != "skipped" {
+				suppressed[job.Name] = true
+			}
+		}
+	}
+	counts := map[string]int{}
+	for _, job := range older.Jobs {
+		counts[job.Name]++
+	}
+	var failure CIWorkflowFailure
+	for _, job := range older.Jobs {
+		if ciFailedJob(job) && counts[job.Name] == 1 && !suppressed[job.Name] && (failure.JobID == 0 || job.ID < failure.JobID) {
+			failure = CIWorkflowFailure{Basis: CIWorkflowHistoricalBasis, WorkflowID: older.WorkflowID, RunID: older.RunID, RunAttempt: older.RunAttempt, JobID: job.ID, CheckRunID: job.CheckRunID, Name: job.Name, Conclusion: job.Conclusion}
+		}
+	}
+	return failure, failure.JobID != 0
+}
+
 func sameCIWorkflowChain(original, current ActionsHeadInventory, failure CIWorkflowFailure) bool {
 	if original.RepositoryID != current.RepositoryID || !strings.EqualFold(original.Repository, current.Repository) || original.HeadSHA != current.HeadSHA {
 		return false
@@ -300,8 +375,12 @@ func sameCIWorkflowChain(original, current ActionsHeadInventory, failure CIWorkf
 }
 
 // CIWorkflowFailureApplies validates optional current-attempt attention. An
-// older run additionally needs a complete skipped-job bridge and final run recheck.
+// older run needs a final run recheck plus its declared skipped-job or historical
+// proof; historical attention never establishes latest-job coverage.
 func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailure) bool {
+	if failure.Basis != "" && failure.Basis != CIWorkflowHistoricalBasis {
+		return false
+	}
 	actions, head := observation.Actions, observation.SelectedCommitSHA
 	headOnly := CIWorkflowAttentionBasis(observation) == CIWorkflowHeadOnlyBasis
 	if headOnly {
@@ -315,7 +394,7 @@ func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailu
 		return false
 	}
 	for _, run := range latest.Runs {
-		if !headOnly && run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
+		if failure.Basis == "" && !headOnly && run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
 			return run.RepositoryID == observation.Target.RepositoryID && run.HeadSHA == observation.SelectedCommitSHA
 		}
 	}
@@ -323,6 +402,19 @@ func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailu
 		return false
 	}
 	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
+	if failure.Basis == CIWorkflowHistoricalBasis {
+		if actions.HeadSHA != observation.Target.HeadSHA {
+			return false
+		}
+		runs := ciWorkflowRuns(*actions, failure.WorkflowID)
+		for index, run := range runs {
+			if run.ID == failure.RunID {
+				actual, proven := ciWorkflowHistoricalFailure(runs[:index+1], attempts)
+				return proven && actual == failure
+			}
+		}
+		return false
+	}
 	actual, proven, _ := ciWorkflowFailureThroughSkips(ciWorkflowRuns(*actions, failure.WorkflowID), attempts)
 	return proven && actual == failure
 }

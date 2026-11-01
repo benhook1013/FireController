@@ -60,11 +60,11 @@ func (r *hostedArchiveSource) ObserveCIGateWithWorkflows(ctx context.Context, ta
 	return reviewprovider.CIObservation{}, nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "Workflow failure observation is unavailable for this source adapter."}
 }
 
-func (r *hostedArchiveSource) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gateRef string, ids, headIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+func (r *hostedArchiveSource) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gateRef string, ids, headIDs, historicalIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	if reader, ok := r.provider.(interface {
-		ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+		ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
 	}); ok {
-		return reader.ObserveCIGateWithWorkflowAttention(ctx, target, gateRef, ids, headIDs)
+		return reader.ObserveCIGateWithWorkflowAttention(ctx, target, gateRef, ids, headIDs, historicalIDs)
 	}
 	return r.ObserveCIGateWithWorkflows(ctx, target, gateRef, ids)
 }

@@ -24,18 +24,19 @@ type ciGateWorkflowReader interface {
 }
 
 type ciGateHeadWorkflowReader interface {
-	ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+	ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
 }
 
 const ciWatchFallbackInterval = time.Minute
 
 type ciWatchClaim struct {
-	entry           *ciWatchEntry
-	generation      uint64
-	version         uint64
-	ctx             context.Context
-	workflowIDs     []int64
-	headWorkflowIDs []int64
+	entry                 *ciWatchEntry
+	generation            uint64
+	version               uint64
+	ctx                   context.Context
+	workflowIDs           []int64
+	headWorkflowIDs       []int64
+	historicalWorkflowIDs []int64
 }
 
 func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBinding, targets []CIWatchTarget) (*ciWatchSubscription, error) {
@@ -174,6 +175,9 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 				}
 			}
 			for _, row := range rows {
+				if row.Basis == reviewprovider.CIWorkflowHistoricalBasis && !target.AllowHistoricalAttention {
+					continue
+				}
 				for _, id := range target.FailureWorkflowIDs {
 					if row.WorkflowID == id {
 						item.WorkflowFailures = append(item.WorkflowFailures, row)
@@ -271,7 +275,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		entry.inflight, entry.lastAttempt = true, now
 		readCtx, cancel := context.WithCancel(ctx)
 		entry.cancel = cancel
-		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchHeadWorkflowUnion(entry)}
+		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, false), historicalWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, true)}
 		lane.projects[b.project], lane.accounts[b.account] = true, true
 		s.mu.Unlock()
 		return &lifecycleTarget{project: b.project, account: b.account, repository: b.repository, number: entry.key.number, fingerprint: b.fingerprint, reader: reader, lane: lifecycleEnrichment, watch: claim}, nil
@@ -353,8 +357,8 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	var observation reviewprovider.CIObservation
 	var workflowFailures []reviewprovider.CIWorkflowFailure
 	if len(claim.workflowIDs) > 0 {
-		if reader, ok := target.reader.(ciGateHeadWorkflowReader); ok && len(claim.headWorkflowIDs) > 0 {
-			observation, workflowFailures, err = reader.ObserveCIGateWithWorkflowAttention(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs, claim.headWorkflowIDs)
+		if reader, ok := target.reader.(ciGateHeadWorkflowReader); ok && (len(claim.headWorkflowIDs) > 0 || len(claim.historicalWorkflowIDs) > 0) {
+			observation, workflowFailures, err = reader.ObserveCIGateWithWorkflowAttention(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs, claim.headWorkflowIDs, claim.historicalWorkflowIDs)
 		} else {
 			observation, workflowFailures, err = target.reader.(ciGateWorkflowReader).ObserveCIGateWithWorkflows(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs)
 		}
@@ -426,11 +430,11 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 }
 
 // Called under the scheduler lock; only explicit capable subscribers opt in.
-func ciWatchHeadWorkflowUnion(entry *ciWatchEntry) []int64 {
+func ciWatchOptionalWorkflowUnion(entry *ciWatchEntry, historical bool) []int64 {
 	wanted := map[int64]bool{}
 	for owner := range entry.owners {
 		for _, target := range owner.targets {
-			if target.PullNumber == entry.key.number && target.AllowHeadAttention {
+			if target.PullNumber == entry.key.number && (historical && target.AllowHistoricalAttention || !historical && target.AllowHeadAttention) {
 				for _, id := range target.FailureWorkflowIDs {
 					wanted[id] = true
 				}

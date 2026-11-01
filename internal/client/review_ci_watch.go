@@ -20,6 +20,7 @@ type CIWatchTarget struct {
 }
 
 type CIWorkflowFailure struct {
+	Basis      string `json:"basis,omitempty"`
 	WorkflowID int64  `json:"workflow_id"`
 	RunID      int64  `json:"run_id"`
 	RunAttempt int64  `json:"run_attempt"`
@@ -212,6 +213,9 @@ func validCIWatchWorkflowFailures(item CIWatchTargetResult, pin CIWatchTarget) b
 		selected[id] = true
 	}
 	for _, failure := range item.WorkflowFailures {
+		if failure.Basis != "" && (failure.Basis != "historical_same_head_failure_supersession_unproven" || !headOnly && (item.Selection != "head" || item.CICommitSHA != pin.HeadSHA)) {
+			return false
+		}
 		if !selected[failure.WorkflowID] || workflows[failure.WorkflowID] || failure.RunID <= 0 || failure.RunAttempt <= 0 || failure.JobID <= 0 || jobs[failure.JobID] || failure.CheckRunID <= 0 || checks[failure.CheckRunID] || !controlText(failure.Name, 256, true) || !oneReviewOf(failure.Conclusion, "failure", "timed_out", "action_required", "startup_failure") {
 			return false
 		}

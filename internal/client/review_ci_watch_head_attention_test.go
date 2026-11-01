@@ -43,7 +43,7 @@ func TestCIWatchHeadAttentionClientRejectsUnboundScopeOrCredit(t *testing.T) {
 					return
 				}
 				posts++
-				if r.Header.Get("X-FC-CI-Workflow-Details") != "2" {
+				if r.Header.Get("X-FC-CI-Workflow-Details") != "3" {
 					t.Error("head-only shape not opted in")
 				}
 				write(w, 200, value)

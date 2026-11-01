@@ -11,12 +11,13 @@ import (
 )
 
 type CIWatchTarget struct {
-	AllowHeadAttention  bool    `json:"-"`
-	PullNumber          int64   `json:"pull_number"`
-	HeadSHA             string  `json:"head_sha"`
-	BaseSHA             string  `json:"base_sha,omitempty"`
-	AfterObservationKey string  `json:"-"`
-	FailureWorkflowIDs  []int64 `json:"-"`
+	AllowHeadAttention       bool    `json:"-"`
+	AllowHistoricalAttention bool    `json:"-"`
+	PullNumber               int64   `json:"pull_number"`
+	HeadSHA                  string  `json:"head_sha"`
+	BaseSHA                  string  `json:"base_sha,omitempty"`
+	AfterObservationKey      string  `json:"-"`
+	FailureWorkflowIDs       []int64 `json:"-"`
 }
 
 type CIWatchItem struct {

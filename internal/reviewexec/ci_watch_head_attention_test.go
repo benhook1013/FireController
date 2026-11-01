@@ -30,7 +30,7 @@ func (r *ciWatchHeadAttentionReader) ObserveCIGateWithWorkflows(ctx context.Cont
 	o, err := r.ObserveCIGate(ctx, target, gate)
 	return o, nil, err
 }
-func (r *ciWatchHeadAttentionReader) ObserveCIGateWithWorkflowAttention(_ context.Context, target reviewprovider.CITarget, _ string, _, headIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+func (r *ciWatchHeadAttentionReader) ObserveCIGateWithWorkflowAttention(_ context.Context, target reviewprovider.CITarget, _ string, _, headIDs, _ []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	r.head.Add(1)
 	o := testCIMismatchObservation(target)
 	for _, id := range headIDs {
