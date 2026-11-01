@@ -39,7 +39,7 @@ func (c *archiveStreamCancellation) Err() error {
 		frame, more := frames.Next()
 		stream = stream || strings.HasSuffix(frame.Function, "/offsite.(*contextReader).Read")
 		phase = phase || strings.HasSuffix(frame.Function, "/offsite."+c.phase)
-		hash = hash || strings.HasSuffix(frame.Function, "/offsite.fileHash")
+		hash = hash || strings.HasSuffix(frame.Function, "/offsite.fileHash") || strings.HasSuffix(frame.Function, "/offsite.openHashedArchive")
 		if !more {
 			break
 		}
