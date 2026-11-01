@@ -55,6 +55,10 @@ func TestReviewRunSerializedResponseIncludesNewlineInBudget(t *testing.T) {
 	if remaining != 0 {
 		t.Fatal("fixture cannot reach the full response boundary")
 	}
+	var findingVersion int64
+	if err := f.store.DB().QueryRowContext(t.Context(), `SELECT version_revision FROM review_runs WHERE project_id=? AND snapshot_id=? AND id=?`, f.project, expected.SnapshotID, expected.Run.ID).Scan(&findingVersion); err != nil {
+		t.Fatal(err)
+	}
 	// Disposable SQL setup bypasses only the smaller observation-body budget.
 	// Each retained source finding still respects its individual 16 KiB limit.
 	tx, err := f.store.DB().Begin()
@@ -66,7 +70,7 @@ func TestReviewRunSerializedResponseIncludesNewlineInBudget(t *testing.T) {
 		if len(finding.Detail) > 16<<10 {
 			t.Fatal("source fixture exceeds finding limit")
 		}
-		if _, err := tx.Exec(`UPDATE review_findings SET detail=? WHERE project_id=? AND snapshot_id=? AND run_id=? AND source_finding_id=?`, finding.Detail, f.project, expected.SnapshotID, expected.Run.ID, finding.SourceFindingID); err != nil {
+		if _, err := tx.Exec(`UPDATE review_finding_versions SET detail=? WHERE project_id=? AND run_version_revision=? AND run_id=? AND source_finding_id=?`, finding.Detail, f.project, findingVersion, expected.Run.ID, finding.SourceFindingID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -124,7 +128,7 @@ func TestReviewRunSerializedResponseIncludesNewlineInBudget(t *testing.T) {
 	}
 	for _, extra := range []string{"x", "<"} {
 		expected.Findings[index].Detail += extra
-		if _, err := f.store.DB().Exec(`UPDATE review_findings SET detail=? WHERE project_id=? AND snapshot_id=? AND run_id=? AND source_finding_id=?`, expected.Findings[index].Detail, f.project, expected.SnapshotID, expected.Run.ID, expected.Findings[index].SourceFindingID); err != nil {
+		if _, err := f.store.DB().Exec(`UPDATE review_finding_versions SET detail=? WHERE project_id=? AND run_version_revision=? AND run_id=? AND source_finding_id=?`, expected.Findings[index].Detail, f.project, findingVersion, expected.Run.ID, expected.Findings[index].SourceFindingID); err != nil {
 			t.Fatal(err)
 		}
 		rejected := read()

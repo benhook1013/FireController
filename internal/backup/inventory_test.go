@@ -189,7 +189,7 @@ func TestInventoryReferencesCannotBeResealedAroundMissingOrChangedRawBytes(t *te
 			case "custom_trigger":
 				mutateBundleSQL(t, s.Path, `CREATE TRIGGER corrupt_restore AFTER UPDATE ON credentials BEGIN UPDATE jobs SET brief='corrupted'; END`)
 			case "altered_canonical_trigger":
-				mutateBundleSQL(t, s.Path, `DROP TRIGGER review_runs_snapshot_revision_insert; CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs BEGIN SELECT 1; END`)
+				mutateBundleSQL(t, s.Path, `CREATE TRIGGER review_runs_snapshot_revision_insert INSTEAD OF INSERT ON review_runs BEGIN SELECT 1; END`)
 			}
 			_, err := Inspect(t.Context(), s.Path)
 			backupCode(t, err, "backup_invalid")
@@ -450,8 +450,13 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { store.Close() })
-			for _, ensure := range []func(context.Context, *core.Store) error{jobs.EnsureSchema, inbox.EnsureSchema, reviews.EnsureSchema, reviewexec.EnsureSchema} {
-				if err = ensure(t.Context(), store); err != nil {
+			for index, ensure := range []func(context.Context, *core.Store) error{jobs.EnsureSchema, inbox.EnsureSchema, reviews.EnsureSchema, reviewexec.EnsureSchema} {
+				if test.domain == "reviews" && index == 2 {
+					err = installLegacyReviewInventorySchema(t.Context(), store, test.version)
+				} else {
+					err = ensure(t.Context(), store)
+				}
+				if err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -472,10 +477,8 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `DROP TABLE job_checkpoints`)
 				}
 			case "reviews":
-				statements = []string{`ALTER TABLE review_findings DROP COLUMN route_json`}
-				if test.version == 1 {
-					statements = append(statements, `DROP TRIGGER review_runs_snapshot_revision_insert`, `DROP TRIGGER review_runs_snapshot_revision_update`, `DROP INDEX review_runs_project_source_id`, `ALTER TABLE review_runs DROP COLUMN snapshot_revision`)
-				}
+				// The independent original physical schema is already installed.
+
 			case "review_execution":
 				statements = []string{`DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`}
 				if test.version < 4 {

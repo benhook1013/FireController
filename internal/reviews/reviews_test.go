@@ -25,13 +25,25 @@ type apiFixture struct {
 
 func newAPIFixture(t *testing.T) *apiFixture {
 	t.Helper()
+	return newAPIFixtureWithSchema(t, EnsureSchema)
+}
+
+func newLegacyAPIFixture(t *testing.T) *apiFixture {
+	t.Helper()
+	return newAPIFixtureWithSchema(t, func(ctx context.Context, store *core.Store) error {
+		return store.EnsureSchema(ctx, "reviews", reviewSchemaMigrations()...)
+	})
+}
+
+func newAPIFixtureWithSchema(t *testing.T, install func(context.Context, *core.Store) error) *apiFixture {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	store, err := core.Open(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := EnsureSchema(context.Background(), store); err != nil {
+	if err := install(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
@@ -69,7 +81,7 @@ func (f *apiFixture) call(method, path, token, key string, body any) *httptest.R
 		r.Header.Set("Idempotency-Key", key)
 	}
 	w := httptest.NewRecorder()
-	f.mux.ServeHTTP(w, r)
+	metadataFixtureReaders(f.store, f.mux).ServeHTTP(w, r)
 	return w
 }
 
@@ -166,8 +178,13 @@ func TestReviewDetailsKeepCompactAndFullBoundaries(t *testing.T) {
 		t.Fatalf("historical attempt channel missing: %s", pull.Body.String())
 	}
 	var pullResult PullResponse
-	if err := json.Unmarshal(pull.Body.Bytes(), &pullResult); err != nil || len(pullResult.Attempts) != 2 || pullResult.Attempts[0].DurationSeconds == nil || *pullResult.Attempts[0].DurationSeconds != 60 || pullResult.Attempts[1].DurationSeconds != nil {
-		t.Fatalf("known/unknown durations were not retained: %v %+v", err, pullResult.Attempts)
+	if err := json.Unmarshal(pull.Body.Bytes(), &pullResult); err != nil || pullResult.Pull.AttemptCount != 2 || strings.Contains(pull.Body.String(), `"attempts":`) {
+		t.Fatalf("PR detail must remain compact: %v %s", err, pull.Body.String())
+	}
+	archive := f.call("GET", base+"/pulls/2/attempts?snapshot="+snapshot, f.readToken, "", nil)
+	var attemptPage AttemptsResponse
+	if err := json.Unmarshal(archive.Body.Bytes(), &attemptPage); archive.Code != 200 || err != nil || len(attemptPage.Items) != 2 || attemptPage.Items[0].DurationSeconds != nil || attemptPage.Items[1].DurationSeconds == nil || *attemptPage.Items[1].DurationSeconds != 60 || attemptPage.Items[1].Source != "test-import" {
+		t.Fatalf("known/unknown durations or producer were not retained: %v %s", err, archive.Body.String())
 	}
 
 	runs := f.call("GET", base+"/pulls/2/runs?snapshot="+snapshot, f.readToken, "", nil)
@@ -211,7 +228,7 @@ func TestRunOriginRetainedAcrossPublisherAndOldCompactReadFallback(t *testing.T)
 				delete(compact[0], "source")
 				encoded, _ := json.Marshal(compact)
 				stored = string(encoded)
-				if _, err := f.store.DB().Exec(`UPDATE review_pulls SET recent_runs_json=? WHERE project_id=? AND snapshot_id=? AND number=1`, stored, f.project, snapshot); err != nil {
+				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=? WHERE (project_id,number,version_revision) IN (SELECT m.project_id,m.number,m.version_revision FROM review_pull_memberships m JOIN review_snapshots s ON s.project_id=m.project_id WHERE m.project_id=? AND s.snapshot_id=? AND m.start_revision<=s.revision AND (m.end_revision IS NULL OR s.revision<m.end_revision)) AND number=1`, stored, f.project, snapshot); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -330,7 +347,7 @@ func TestReviewImportRepositoryFinalizedCountsAndAtomicRetry(t *testing.T) {
 	}
 
 	rollback := reviewRequest(1, []PullInput{samplePull(8, "PR 8 retry")})
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_review_pull BEFORE INSERT ON review_pulls BEGIN SELECT RAISE(ABORT,'private SQL detail'); END`); err != nil {
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_review_pull BEFORE INSERT ON review_pull_versions BEGIN SELECT RAISE(ABORT,'private SQL detail'); END`); err != nil {
 		t.Fatal(err)
 	}
 	failed := f.call("POST", base+"/observations", f.admin, "atomic-retry", rollback)

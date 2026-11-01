@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -49,7 +50,7 @@ func projectedAttempt(t *testing.T, f *attemptFixture, a Attempt) (reviews.PullR
 	t.Helper()
 	var pull reviews.PullResponse
 	projectionRead(t, f, "/pulls/2", &pull)
-	for _, value := range pull.Attempts {
+	for _, value := range projectionAttempts(t, f, pull) {
 		if value.SourceAttemptID == a.ID {
 			return pull, reviews.Attempt(value)
 		}
@@ -156,7 +157,7 @@ func TestAttemptProjectionTransitionsPreserveCurrentFactsAndHistory(t *testing.T
 	assertProjectedTimes(t, f, a, completed, true)
 	var afterMerged reviews.PullResponse
 	projectionRead(t, f, "/pulls/1", &afterMerged)
-	if !reflect.DeepEqual(merged.Pull, afterMerged.Pull) || !reflect.DeepEqual(merged.Attempts, afterMerged.Attempts) || originalDigest != projectionDigest(t, f, merged.SnapshotID) {
+	if !reflect.DeepEqual(merged.Pull, afterMerged.Pull) || !reflect.DeepEqual(projectionAttempts(t, f, merged), projectionAttempts(t, f, afterMerged)) || originalDigest != projectionDigest(t, f, merged.SnapshotID) {
 		t.Fatal("native journal projection changed imported/merged or historical evidence")
 	}
 	var actor string
@@ -186,6 +187,7 @@ func TestAttemptProjectionTerminalAndUncertainStates(t *testing.T) {
 			if state == "held" {
 				// The owning trusted publisher also refuses to reopen a held projection.
 				value.State = "preparing"
+				value.Reason = ""
 				pull := projectionPull(2)
 				err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 					_, err := reviews.PublishNative(ctx, tx, core.Scope{ProjectID: attemptProject, PrincipalID: "test"}, reviews.NativePublication{Pull: pull, Attempt: &value})
@@ -334,13 +336,13 @@ func TestAttemptProjectionInitialFallbackPreservesInterveningCurrentObservation(
 	if after.Pull.Title != current.Title || after.Pull.State != current.State || after.Pull.HeadSHA != current.HeadSHA || after.Pull.BaseRef != current.BaseRef || after.Pull.BaseSHA != current.BaseSHA || after.Pull.CIState != current.CIState || after.Pull.Mergeability != current.Mergeability || after.Pull.Complete != current.Complete || projected.HeadSHA != strings.Repeat("a", 40) || after.ObservedAt != initial.ObservedAt {
 		t.Fatal("initial fallback overwrote intervening current PR facts", after.Pull)
 	}
-	if len(after.Attempts) != len(initial.Attempts)+1 || history != projectionDigest(t, f, initial.SnapshotID) {
+	if len(projectionAttempts(t, f, after)) != len(projectionAttempts(t, f, initial))+1 || history != projectionDigest(t, f, initial.SnapshotID) {
 		t.Fatal("fallback lost imported attempts or changed historical snapshot")
 	}
 	foundImported := false
-	for _, value := range after.Attempts {
+	for _, value := range projectionAttempts(t, f, after) {
 		if value.SourceAttemptID == "intervening-imported-attempt" {
-			foundImported = reflect.DeepEqual(value, initial.Attempts[0])
+			foundImported = reflect.DeepEqual(value, projectionAttempts(t, f, initial)[0])
 		}
 	}
 	var afterMerged reviews.PullResponse
@@ -433,54 +435,49 @@ func TestAttemptProjectionFaultRollsBackJournalAndReservation(t *testing.T) {
 	}
 }
 
-func TestAttemptProjectionCapacityHoldsOnceBeforeDriver(t *testing.T) {
+func TestAttemptProjectionRetainedHistoryDoesNotPreventDriver(t *testing.T) {
 	for _, total := range []bool{false, true} {
 		t.Run(fmt.Sprint("total-", total), func(t *testing.T) {
 			f := attemptProjectionFixture(t, true)
-			// Populate only compact rows in the owned current snapshot, not hundreds of
-			// whole snapshots. The existing imported row already contributes one item.
-			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-				var snapshot string
-				if err := tx.QueryRowContext(ctx, `SELECT snapshot_id FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&snapshot); err != nil {
-					return err
-				}
-				for number, count := range map[int]int{2: 100, 4: 0} {
-					if total {
-						if number == 2 {
-							count = 99
-						} else {
-							count = 100
-						}
-					}
-					for i := 0; i < count; i++ {
-						if _, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(project_id,snapshot_id,pull_number,position,source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id) VALUES(?,?,?,?,'synthetic-history',?,'cli',?,'prepared','','',NULL,'','','')`, attemptProject, snapshot, number, i, fmt.Sprintf("retained-%d-%d", number, i), strings.Repeat("a", 40)); err != nil {
-							return err
-						}
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := f.enqueue(t, attemptProject, "capacity-request", "cli", 2, 1)
+			replaceAttemptCapacity(t, f, total, 0)
+			r := f.enqueue(t, attemptProject, "history-request", "cli", 2, 1)
 			driver := &controlledDriver{}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal(err)
 			}
 			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), r.ID)
-			if err != nil || operation.State != "held" || operation.Reason != "projection_capacity" || operation.AttemptID != "" {
-				t.Fatal("full attempt history not held", operation, err)
+			if err != nil || operation.State != "completed" || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+				t.Fatal("history prevented execution", operation, err)
 			}
 			before := projectionDigest(t, f, "")
 			events := attemptCount(t, f.store, `SELECT count(*) FROM events`)
-			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
-				t.Fatal(err)
-			}
-			again, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), r.ID)
-			if err != nil || !reflect.DeepEqual(operation, again) || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
-				t.Fatal("capacity hold retried writes or reached provider", err)
+			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events || driver.calls.Load() != 1 {
+				t.Fatal("completed work dispatched twice", err)
 			}
 		})
+	}
+}
+
+func projectionAttempts(t *testing.T, f *attemptFixture, pull reviews.PullResponse) []reviews.Attempt {
+	t.Helper()
+	out := []reviews.Attempt{}
+	cursor := ""
+	for {
+		var page reviews.AttemptsResponse
+		route := fmt.Sprintf("/pulls/%d/attempts?snapshot=%s&limit=100", pull.Pull.Number, pull.SnapshotID)
+		if cursor != "" {
+			route += "&cursor=" + url.QueryEscape(cursor)
+		}
+		projectionRead(t, f, route, &page)
+		for _, item := range page.Items {
+			out = append(out, reviews.Attempt(item.AttemptSummary))
+		}
+		if !page.HasMore {
+			return out
+		}
+		if page.Cursor == "" || page.Cursor == cursor {
+			t.Fatal("fixture archive cursor failed to advance")
+		}
+		cursor = page.Cursor
 	}
 }

@@ -129,7 +129,7 @@ func TestNativeRoutesLegacyImportsAndMalformedNativeProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, body := range []string{`{}`, `{"id":null}`, strings.Replace(original, `"revision":1`, `"revision":null`, 1), strings.Replace(original, `"revision":1`, `"revision":1,"extra":true`, 1)} {
-		if _, err := f.store.DB().Exec(`UPDATE review_findings SET route_json=? WHERE project_id=? AND snapshot_id=? AND run_id=?`, body, f.project, current.ID, id); err != nil {
+		if _, err := f.store.DB().Exec(`UPDATE review_finding_versions SET route_json=? WHERE project_id=? AND run_version_revision IN(SELECT version_revision FROM review_runs WHERE project_id=review_finding_versions.project_id AND snapshot_id=? AND id=review_finding_versions.run_id) AND run_id=?`, body, f.project, current.ID, id); err != nil {
 			t.Fatal(err)
 		}
 		w := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/runs/"+id, f.readToken, "", nil)
@@ -343,7 +343,7 @@ func TestImportedFindingRoutesRejectMalformedRetainedReceiverProof(t *testing.T)
 				route.Actor = "receiving actor"
 			}
 			// This SQL represents corrupt retained data, not a supported import.
-			if _, err := f.store.DB().Exec(`UPDATE review_findings SET route_json=? WHERE project_id=? AND snapshot_id=? AND run_id=?`, mustJSON(route), f.project, first["id"], id); err != nil {
+			if _, err := f.store.DB().Exec(`UPDATE review_finding_versions SET route_json=? WHERE project_id=? AND run_version_revision IN(SELECT version_revision FROM review_runs WHERE project_id=review_finding_versions.project_id AND snapshot_id=? AND id=review_finding_versions.run_id) AND run_id=?`, mustJSON(route), f.project, first["id"], id); err != nil {
 				t.Fatal(err)
 			}
 			counts := nativeProjectionCounts(t, f)

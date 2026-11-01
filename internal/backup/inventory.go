@@ -19,6 +19,7 @@ import (
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -219,8 +220,24 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 3, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
+	"review_run_versions":              {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
+	"review_finding_versions":          {"reviews", 4, "project_id run_id run_version_revision pull_number position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at route_json"},
+	"review_attempt_versions":          {"reviews", 4, "project_id source source_attempt_id version_revision pull_number channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"},
+	"review_retired_versions":          {"reviews", 4, "project_id number version_revision reason"},
+	"review_pull_memberships":          {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_run_memberships":           {"reviews", 4, "project_id id start_revision end_revision version_revision pull_number run_order"},
+	"review_attempt_memberships":       {"reviews", 4, "project_id source source_attempt_id start_revision end_revision version_revision pull_number position"},
+	"review_retired_memberships":       {"reviews", 4, "project_id number start_revision end_revision version_revision position"},
+	"review_current_pulls":             {"reviews", 4, "project_id number start_revision position"},
+	"review_current_runs":              {"reviews", 4, "project_id id start_revision pull_number run_order"},
+	"review_current_attempts":          {"reviews", 4, "project_id source source_attempt_id start_revision pull_number position"},
+	"review_current_retired":           {"reviews", 4, "project_id number start_revision position"},
+	"review_current_totals":            {"reviews", 5, "project_id pull_number run_count attempt_count incomplete_run_count"},
+	"review_current_attempt_order":     {"reviews", 5, "project_id source source_attempt_id pull_number channel sort_key position"},
+	"review_current_run_order":         {"reviews", 6, "project_id id pull_number channel outcome finalized run_order"},
 	"project_publications":             {"public_site", 1, "project_id revision slug enabled manifest_json round_salt generation public_revision public_updated_at refresh_error"},
 	"public_project_snapshots":         {"public_site", 1, "project_id generation revision content_json created_at"},
 	"managed_backup_publication_holds": {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
@@ -539,6 +556,14 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err = validateTriggers(ctx, db, versions["reviews"]); err != nil {
 		return nil, err
 	}
+	if err = validateHistoryViews(ctx, db, versions["reviews"]); err != nil {
+		return nil, err
+	}
+	if versions["reviews"] >= 4 {
+		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
@@ -546,6 +571,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	for name, spec := range tables {
 		expected := spec.domain == "" || versions[spec.domain] >= spec.since
+		if spec.domain == "reviews" && versions["reviews"] >= 4 {
+			switch name {
+			case "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls":
+				expected = false
+			}
+		}
 		if actual[name] != expected {
 			return nil, invalid()
 		}
@@ -553,6 +584,15 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_current_totals" && versions["reviews"] >= 9 {
+			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
+		}
+		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
+			columns += " reason"
+		}
+		if name == "review_pull_versions" && versions["reviews"] >= 7 {
+			columns += " metadata_json"
+		}
 		receiptPK := map[string]int{}
 		if name == "receipts" {
 			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
@@ -769,6 +809,46 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if bad || err != nil {
 		return invalid()
 	}
+	if versions["reviews"] >= 4 {
+		if err = reviews.ValidateHistoryReferences(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 5 {
+		if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 6 {
+		if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 7 {
+		if err = reviews.ValidatePullMetadataHistory(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["reviews"] >= 8 {
+		if err = reviews.ValidateAttemptReasonsHistory(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["jobs"] >= 6 {
 		if err = jobs.ValidateNotesSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -914,7 +994,7 @@ func validateObservationReferences(ctx context.Context, db sqlReader, refs map[s
 // trigger programs, and restore must reject them before rotating credentials.
 func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) error {
 	expected := map[string]string{}
-	if reviewVersion >= 2 {
+	if reviewVersion >= 2 && reviewVersion <= 3 {
 		expected["review_runs_snapshot_revision_insert"] = "CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
 		expected["review_runs_snapshot_revision_update"] = "CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
 	}
@@ -954,6 +1034,22 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_pull_versions":         {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_run_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_finding_versions":      {canonicalFK("review_run_versions", "project_id,run_id,run_version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_versions":      {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_retired_versions":      {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_pull_memberships":      {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_pull_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_run_memberships":       {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_run_versions", "project_id,id,version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_memberships":   {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_attempt_versions", "project_id,source,source_attempt_id,version_revision,pull_number", "project_id,source,source_attempt_id,version_revision,pull_number", "NO ACTION")},
+	"review_retired_memberships":   {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_retired_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_current_pulls":         {canonicalFK("review_pull_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_runs":          {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
+	"review_current_attempts":      {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
+	"review_current_retired":       {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_totals":        {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
+	"review_current_attempt_order": {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
+	"review_current_run_order":     {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
 	"project_publications":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"public_project_snapshots":     {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
 	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
@@ -1024,7 +1120,7 @@ func validateForeignKeys(ctx context.Context, db sqlReader, table string) error 
 		var id, seq int
 		var parent, update, onDelete, match string
 		var from, to sql.NullString
-		if count > 64 || rows.Scan(&id, &seq, &parent, &from, &to, &update, &onDelete, &match) != nil || id < 0 || seq < 0 || seq >= 4 || !from.Valid || !to.Valid {
+		if count > 64 || rows.Scan(&id, &seq, &parent, &from, &to, &update, &onDelete, &match) != nil || id < 0 || seq < 0 || seq >= 6 || !from.Valid || !to.Valid {
 			return invalid()
 		}
 		if groups[id] == nil {
@@ -1069,6 +1165,126 @@ func validateForeignKeys(ctx context.Context, db sqlReader, table string) error 
 		if remaining != 0 {
 			return invalid()
 		}
+	}
+	return nil
+}
+
+func historyDefinitionSQL(definition string) string {
+	return strings.TrimSuffix(strings.TrimSpace(definition), ";")
+}
+
+func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) error {
+	expected := map[string]string{}
+	if reviewVersion >= 4 {
+		expected = reviews.HistoryReadViewSQLV6()
+		if reviewVersion >= 7 {
+			expected = reviews.HistoryReadViewSQLV7()
+		}
+		if reviewVersion >= 8 {
+			expected = reviews.HistoryReadViewSQLV10()
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='view' LIMIT 6`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var definition sql.NullString
+		if rows.Scan(&name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || historyDefinitionSQL(definition.String) != historyDefinitionSQL(want) {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	var names []string
+	definitions := reviews.HistorySchemaSQLV6()
+	if version >= 7 {
+		definitions = reviews.HistorySchemaSQLV7()
+	}
+	if version >= 8 {
+		definitions = reviews.HistorySchemaSQLV10()
+	}
+	expectedTables, expectedObjects := 13, 22
+	if version >= 5 {
+		if version >= 9 {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		} else {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQLV8()...)
+		}
+		expectedTables, expectedObjects = 15, 25
+	}
+	if version >= 6 {
+		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
+		expectedTables, expectedObjects = 16, 27
+	}
+	for _, definition := range definitions {
+		fields := strings.Fields(definition)
+		if len(fields) < 4 || fields[0] != "CREATE" {
+			return invalid()
+		}
+		kind, name := "table", fields[2]
+		switch fields[1] {
+		case "TABLE":
+			names = append(names, name)
+		case "INDEX":
+			kind = "index"
+		case "UNIQUE":
+			if len(fields) < 5 || fields[2] != "INDEX" {
+				return invalid()
+			}
+			kind, name = "index", fields[3]
+		default:
+			return invalid()
+		}
+		if _, duplicate := expected[name]; duplicate {
+			return invalid()
+		}
+		expected[name] = object{kind, historyDefinitionSQL(definition)}
+	}
+	if len(names) != expectedTables || len(expected) != expectedObjects {
+		return invalid()
+	}
+	placeholders := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, name := range names {
+		placeholders[i] = "?"
+		args[i] = name
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(expectedObjects+1), args...)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
 	}
 	return nil
 }

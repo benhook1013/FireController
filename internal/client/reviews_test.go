@@ -5,6 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/benhook1013/FireController/internal/client"
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/profile"
+	domain "github.com/benhook1013/FireController/internal/reviews"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,11 +19,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/benhook1013/FireController/internal/client"
-	"github.com/benhook1013/FireController/internal/core"
-	"github.com/benhook1013/FireController/internal/profile"
-	domain "github.com/benhook1013/FireController/internal/reviews"
 )
 
 type reviewClientFixture struct {
@@ -69,6 +69,9 @@ func newReviewClientFixture(t *testing.T) *reviewClientFixture {
 	domain.Register(mux, store)
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/reviews/queue") && r.URL.Query().Has("include_observation") {
+			t.Error("history client sent unsupported observer query")
+		}
 		mux.ServeHTTP(w, r)
 	}))
 	ctx := profileBinding(t, f.server.URL, store.InstanceID(), f.project)
@@ -141,11 +144,12 @@ func TestReviewReadsUseScopedNativeProjectionAndPreserveNullableDuration(t *test
 		t.Fatalf("queue=%+v err=%v", queue, err)
 	}
 	pull, err := f.client.ReviewPull(context.Background(), 1, snapshot)
-	if err != nil || pull.Pull.Number != 1 || len(pull.Attempts) != 2 {
+	if err != nil || pull.Pull.Number != 1 || pull.Pull.AttemptCount != 2 {
 		t.Fatalf("pull=%+v err=%v", pull, err)
 	}
-	if pull.Attempts[0].DurationSeconds != nil || pull.Attempts[1].DurationSeconds == nil || *pull.Attempts[1].DurationSeconds != 0 {
-		t.Fatalf("nullable duration collapsed: %+v", pull.Attempts)
+	attempts, err := f.client.ReviewAttempts(context.Background(), 1, client.ReviewAttemptOptions{Snapshot: snapshot})
+	if err != nil || len(attempts.Items) != 2 || attempts.Items[0].DurationSeconds == nil || *attempts.Items[0].DurationSeconds != 0 || attempts.Items[1].DurationSeconds != nil || attempts.Items[0].Source != "explicit-import" {
+		t.Fatalf("nullable duration or attempt origin collapsed: %+v %v", attempts, err)
 	}
 	runs, err := f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: 5}, Snapshot: snapshot})
 	if err != nil || len(runs.Items) != 1 || runs.Items[0].CoverageLimits[0] != "stored source only" || runs.Items[0].Source != "explicit-import" {
@@ -155,7 +159,7 @@ func TestReviewReadsUseScopedNativeProjectionAndPreserveNullableDuration(t *test
 	if err != nil || len(detail.Findings) != 1 || detail.Findings[0].Detail != "A detailed source finding" || detail.Run.Fixed != 1 || detail.Run.Source != "explicit-import" {
 		t.Fatalf("detail=%+v err=%v", detail, err)
 	}
-	if f.calls.Load() != 6 {
+	if f.calls.Load() != 7 {
 		t.Fatalf("unexpected handshake/provider/retry calls: %d", f.calls.Load())
 	}
 	var afterEvents, afterReceipts int
@@ -243,11 +247,11 @@ func TestReviewClientRejectsMalformedNullableAndUnscopedResponses(t *testing.T) 
 
 	validPull.AttemptCount = 1
 	validPull.LatestAttempts = []client.ReviewAttempt{{SourceAttemptID: "attempt", Channel: "manual", State: "unknown"}}
-	validResponse := client.ReviewPull{ProjectID: "project-one", Revision: 1, SnapshotID: meta["snapshot_id"].(string), Source: "import", ObservedAt: meta["observed_at"].(string), RecordedAt: meta["recorded_at"].(string), Pull: validPull, Attempts: []client.ReviewAttempt{{SourceAttemptID: "attempt", Channel: "manual", State: "unknown"}}}
+	validResponse := client.ReviewPull{ProjectID: "project-one", Revision: 1, SnapshotID: meta["snapshot_id"].(string), Source: "import", ObservedAt: meta["observed_at"].(string), RecordedAt: meta["recorded_at"].(string), Pull: validPull}
 	validPullBody, _ := json.Marshal(validResponse)
 	validMock := newReviewMock(t, string(validPullBody), "/api/v1/projects/project-one/reviews/pulls/1")
 	result, err := validMock.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || len(result.Attempts) != 1 || result.Attempts[0].DurationSeconds != nil {
+	if err != nil || len(result.Pull.LatestAttempts) != 1 || result.Pull.LatestAttempts[0].DurationSeconds != nil {
 		t.Fatalf("nullable duration should remain unknown: %+v %v", result, err)
 	}
 	for _, tc := range []struct{ name, body string }{
@@ -255,7 +259,7 @@ func TestReviewClientRejectsMalformedNullableAndUnscopedResponses(t *testing.T) 
 		{"negative_duration", strings.Replace(string(validPullBody), `"duration_seconds":null`, `"duration_seconds":-1`, 1)},
 		{"duration_string", strings.Replace(string(validPullBody), `"duration_seconds":null`, `"duration_seconds":"unknown"`, 1)},
 		{"nullable_title", strings.Replace(string(validPullBody), `"title":"PR"`, `"title":null`, 1)},
-		{"truncated_attempts", strings.Replace(string(validPullBody), `"attempt_count":1`, `"attempt_count":2`, 1)},
+		{"obsolete_attempt_archive", strings.TrimSuffix(string(validPullBody), "}") + `,"attempts":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := newReviewMock(t, tc.body, "/api/v1/projects/project-one/reviews/pulls/1")
@@ -301,7 +305,7 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 		req.Queue[0].Runs[0].Accepted = 0
 	})
 	pull, err := f.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || pull.SnapshotID != snapshot || len(pull.Attempts) != 2 {
+	if err != nil || pull.SnapshotID != snapshot || pull.Pull.AttemptCount != 2 {
 		t.Fatalf("current pull default failed: %+v %v", pull, err)
 	}
 	runs, err := f.client.ReviewRuns(context.Background(), 1, client.ReviewRunOptions{})
@@ -317,7 +321,7 @@ func TestReviewReadsDefaultToCurrentSnapshotAndKeepHistoricalCounts(t *testing.T
 	}
 }
 
-func TestReviewAttemptProgressStatesSurviveStoredQueueAndPullReads(t *testing.T) {
+func TestReviewAttemptProgressStatesSurviveStoredQueueAndArchiveReads(t *testing.T) {
 	f := newReviewClientFixture(t)
 	states := []string{"preparing", "held", "prepared"}
 	f.importSnapshot(t, func(req *domain.ObservationRequest) {
@@ -330,16 +334,16 @@ func TestReviewAttemptProgressStatesSurviveStoredQueueAndPullReads(t *testing.T)
 	if err != nil || len(queue.Items) != 1 || len(queue.Items[0].LatestAttempts) != len(states) {
 		t.Fatalf("queue progress states missing: %+v %v", queue, err)
 	}
-	pull, err := f.client.ReviewPull(context.Background(), 1, "")
-	if err != nil || len(pull.Attempts) != len(states) {
-		t.Fatalf("pull progress states missing: %+v %v", pull, err)
+	attempts, err := f.client.ReviewAttempts(context.Background(), 1, client.ReviewAttemptOptions{})
+	if err != nil || len(attempts.Items) != len(states) {
+		t.Fatalf("attempt progress states missing: %+v %v", attempts, err)
 	}
 	queueStates := make(map[string]string)
 	for _, attempt := range queue.Items[0].LatestAttempts {
 		queueStates[attempt.SourceAttemptID] = attempt.State
 	}
 	for i, state := range states {
-		if queueStates["attempt-"+state] != state || pull.Attempts[i].State != state {
+		if queueStates["attempt-"+state] != state || attempts.Items[len(states)-1-i].State != state {
 			t.Fatal("native progress state was normalized or legacy prepared was lost")
 		}
 	}
@@ -355,7 +359,7 @@ func TestReviewProgressStatesDoNotWeakenAttemptOrRunValidation(t *testing.T) {
 		t.Helper()
 		currentAttempt, currentRun := attempt, run
 		currentAttempt.State, currentRun.Outcome = state, outcome
-		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: 1, AttemptCount: 1, RecentRuns: []client.ReviewRunSummary{currentRun}, LatestAttempts: []client.ReviewAttempt{currentAttempt}}
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: 1, RunCounts: client.ReviewChannelRunCounts{CLI: 1}, AttemptCount: 1, RecentRuns: []client.ReviewRunSummary{currentRun}, LatestAttempts: []client.ReviewAttempt{currentAttempt}}
 		body := map[string]any{}
 		for key, value := range meta {
 			body[key] = value
@@ -367,7 +371,7 @@ func TestReviewProgressStatesDoNotWeakenAttemptOrRunValidation(t *testing.T) {
 			body["configured"], body["items"], body["has_more"] = true, []client.ReviewPullSummary{pull}, false
 		case "pull":
 			path += "/pulls/1"
-			body["pull"], body["attempts"] = pull, []client.ReviewAttempt{currentAttempt}
+			body["pull"] = pull
 		case "runs":
 			path += "/pulls/1/runs"
 			body["items"], body["has_more"] = []client.ReviewRunSummary{currentRun}, false
@@ -414,12 +418,12 @@ func TestReviewClientRequiresRunOriginAndKeepsMixedProducerIdentity(t *testing.T
 		for key, item := range meta {
 			value[key] = item
 		}
-		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: int64(len(items)), RecentRuns: items, LatestAttempts: []client.ReviewAttempt{}}
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: int64(len(items)), RunCounts: client.ReviewChannelRunCounts{Manual: int64(len(items))}, RecentRuns: items, LatestAttempts: []client.ReviewAttempt{}}
 		switch kind {
 		case "queue":
 			value["configured"], value["items"], value["has_more"] = true, []client.ReviewPullSummary{pull}, false
 		case "pull":
-			value["pull"], value["attempts"] = pull, []client.ReviewAttempt{}
+			value["pull"] = pull
 		case "runs":
 			value["items"], value["has_more"] = items, false
 		case "detail":
@@ -612,7 +616,7 @@ func TestReviewClientRejectsNoncanonicalSHAsInPublicResponses(t *testing.T) {
 		read       func(*client.Client) error
 	}{
 		{"queue", "/api/v1/projects/project-one/reviews/queue", queue, []string{"items.0.head_sha", "items.0.base_sha", "items.0.recent_runs.0.head_sha", "items.0.latest_attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewQueue(t.Context(), client.PageOptions{}); return err }},
-		{"pull", "/api/v1/projects/project-one/reviews/pulls/1", pull, []string{"pull.head_sha", "pull.base_sha", "pull.recent_runs.0.head_sha", "pull.latest_attempts.0.head_sha", "attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewPull(t.Context(), 1, ""); return err }},
+		{"pull", "/api/v1/projects/project-one/reviews/pulls/1", pull, []string{"pull.head_sha", "pull.base_sha", "pull.recent_runs.0.head_sha", "pull.latest_attempts.0.head_sha"}, func(c *client.Client) error { _, err := c.ReviewPull(t.Context(), 1, ""); return err }},
 		{"runs", "/api/v1/projects/project-one/reviews/pulls/1/runs", runs, []string{"items.0.head_sha"}, func(c *client.Client) error {
 			_, err := c.ReviewRuns(t.Context(), 1, client.ReviewRunOptions{})
 			return err
@@ -702,5 +706,150 @@ func TestReviewClientRejectsNoncanonicalSHAsInPublicResponses(t *testing.T) {
 	current, err := f.client.ReviewQueue(t.Context(), client.PageOptions{})
 	if err != nil || current.Items[0].HeadSHA != queue.Items[0].HeadSHA {
 		t.Fatal("invalid response handling changed retained source", err)
+	}
+}
+
+func TestReviewAttemptsExplicitPagesPreserveSourceDurationAndNoEffects(t *testing.T) {
+	f := newReviewClientFixture(t)
+	snapshot := f.importSnapshot(t)
+	var beforeEvents, beforeReceipts int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&beforeEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&beforeReceipts); err != nil {
+		t.Fatal(err)
+	}
+	beforeCalls := f.calls.Load()
+	first, err := f.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: 1}, Snapshot: snapshot})
+	if err != nil || len(first.Items) != 1 || !first.HasMore || first.Cursor == "" || first.SnapshotID != snapshot || first.Items[0].Source != "explicit-import" || first.Items[0].SourceAttemptID != "attempt-zero-duration" || first.Items[0].DurationSeconds == nil || *first.Items[0].DurationSeconds != 0 {
+		t.Fatal("first explicit attempt page changed source, order or measured zero", first, err)
+	}
+	// The fixture is already connected: one page must make exactly one read.
+	if f.calls.Load()-beforeCalls != 1 {
+		t.Fatal("attempt page performed hidden calls", f.calls.Load()-beforeCalls)
+	}
+	second, err := f.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: 1, Cursor: first.Cursor}, Snapshot: snapshot})
+	if err != nil || len(second.Items) != 1 || second.HasMore || second.Cursor != "" || second.SnapshotID != first.SnapshotID || second.Items[0].SourceAttemptID != "attempt-unknown-duration" || second.Items[0].DurationSeconds != nil || second.Items[0].Source != first.Items[0].Source {
+		t.Fatal("explicit second attempt page lost its tail, snapshot or unknown duration", second, err)
+	}
+	if f.calls.Load()-beforeCalls != 2 {
+		t.Fatal("continuation performed hidden calls", f.calls.Load()-beforeCalls)
+	}
+	var events, receipts int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM receipts`).Scan(&receipts); err != nil || events != beforeEvents || receipts != beforeReceipts {
+		t.Fatal("attempt reads changed durable state", err)
+	}
+}
+
+func TestReviewAttemptsSelectorsFailBeforeHTTP(t *testing.T) {
+	f := newReviewClientFixture(t)
+	before := f.calls.Load()
+	for _, test := range []struct {
+		number  int64
+		options client.ReviewAttemptOptions
+	}{
+		{0, client.ReviewAttemptOptions{}},
+		{2147483648, client.ReviewAttemptOptions{}},
+		{1, client.ReviewAttemptOptions{Snapshot: "bad"}},
+		{1, client.ReviewAttemptOptions{Snapshot: "review_snapshot_" + strings.Repeat("A", 32)}},
+		{1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: -1}}},
+		{1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: 101}}},
+		{1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Cursor: " bad"}}},
+		{1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Cursor: "bad\x00"}}},
+		{1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Cursor: strings.Repeat("c", 4097)}}},
+	} {
+		_, err := f.client.ReviewAttempts(t.Context(), test.number, test.options)
+		checkError(t, err, "validation_failed")
+	}
+	if f.calls.Load() != before {
+		t.Fatal("invalid local attempt selectors reached service")
+	}
+}
+
+func TestReviewAttemptsValidateExactPageShapeAndProducerIdentity(t *testing.T) {
+	path := "/api/v1/projects/project-one/reviews/pulls/1/attempts"
+	item := client.ReviewAttemptItem{Source: "original producer", ReviewAttempt: client.ReviewAttempt{SourceAttemptID: "same-id", Channel: "manual", State: "unknown", HeadSHA: strings.Repeat("a", 40)}}
+	page := client.ReviewAttempts{ProjectID: "project-one", Revision: 1, SnapshotID: "review_snapshot_" + strings.Repeat("b", 32), Source: "snapshot publisher", ObservedAt: "2026-10-15T12:00:00Z", RecordedAt: "2026-10-15T12:01:00Z", Items: []client.ReviewAttemptItem{item}}
+	encode := func(value any) string {
+		t.Helper()
+		body, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(body)
+	}
+	body := encode(page)
+	valid := newReviewMock(t, body, path)
+	got, err := valid.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{Snapshot: page.SnapshotID})
+	if err != nil || len(got.Items) != 1 || got.Items[0].Source != item.Source || got.Source != page.Source || got.Items[0].DurationSeconds != nil {
+		t.Fatal("flat attempt wire/source or unknown duration changed", got, err)
+	}
+	for _, test := range []struct{ name, body string }{
+		{"foreign_project", strings.Replace(body, `"project-one"`, `"other"`, 1)},
+		{"wrong_snapshot", strings.Replace(body, page.SnapshotID, "review_snapshot_"+strings.Repeat("c", 32), 1)},
+		{"missing_source", strings.Replace(body, `,"source":"original producer"`, "", 1)},
+		{"empty_source", strings.Replace(body, `"source":"original producer"`, `"source":""`, 1)},
+		{"null_source", strings.Replace(body, `"source":"original producer"`, `"source":null`, 1)},
+		{"overlong_source", strings.Replace(body, "original producer", strings.Repeat("s", 129), 1)},
+		{"missing_duration", strings.Replace(body, `,"duration_seconds":null`, "", 1)},
+		{"negative_duration", strings.Replace(body, `"duration_seconds":null`, `"duration_seconds":-1`, 1)},
+		{"string_duration", strings.Replace(body, `"duration_seconds":null`, `"duration_seconds":"unknown"`, 1)},
+		{"missing_state", strings.Replace(body, `,"state":"unknown"`, "", 1)},
+		{"unknown_state", strings.Replace(body, `"state":"unknown"`, `"state":"ready"`, 1)},
+		{"noncanonical_head", strings.Replace(body, strings.Repeat("a", 40), strings.Repeat("A", 40), 1)},
+		{"negative_revision", strings.Replace(body, `"revision":1`, `"revision":-1`, 1)},
+		{"unknown_field", strings.TrimSuffix(body, "}") + `,"merge_ready":true}`},
+		{"unknown_item_field", strings.Replace(body, `"source_attempt_id":"same-id"`, `"source_attempt_id":"same-id","private_capture":"secret"`, 1)},
+		{"duplicate_field", strings.Replace(body, `"revision":1`, `"revision":1,"revision":1`, 1)},
+		{"null_items", strings.Replace(body, `"items":[`+encode(item)+`]`, `"items":null`, 1)},
+		{"missing_items", strings.Replace(body, `,"items":[`+encode(item)+`]`, "", 1)},
+		{"missing_has_more", strings.Replace(body, `,"has_more":false`, "", 1)},
+		{"more_without_cursor", strings.Replace(body, `"has_more":false`, `"has_more":true`, 1)},
+		{"cursor_without_more", strings.TrimSuffix(body, "}") + `,"cursor":"continuation"}`},
+		{"oversized_response", strings.Repeat(" ", (1<<20)+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.body == body {
+				t.Fatal("malformed fixture did not change input")
+			}
+			mock := newReviewMock(t, test.body, path)
+			_, err := mock.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{Snapshot: page.SnapshotID})
+			checkError(t, err, "invalid_response")
+		})
+	}
+	page.Items = append(page.Items, item)
+	duplicate := newReviewMock(t, encode(page), path)
+	_, err = duplicate.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{})
+	checkError(t, err, "invalid_response")
+	page.Items[1].Source = "another producer"
+	mixed := newReviewMock(t, encode(page), path)
+	got, err = mixed.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{})
+	if err != nil || len(got.Items) != 2 || got.Items[0].SourceAttemptID != got.Items[1].SourceAttemptID || got.Items[0].Source == got.Items[1].Source {
+		t.Fatal("distinct producers' identical external attempt IDs were collapsed", got, err)
+	}
+	_, err = mixed.client.ReviewAttempts(t.Context(), 1, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: 1}})
+	checkError(t, err, "invalid_response")
+}
+
+func TestReviewCompactSummaryAcceptsInt64LifetimeCounts(t *testing.T) {
+	f := newReviewClientFixture(t)
+	f.importSnapshot(t)
+	pull, err := f.client.ReviewPull(t.Context(), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull.Pull.RunCount, pull.Pull.AttemptCount = math.MaxInt64, math.MaxInt64
+	pull.Pull.RunCounts = client.ReviewChannelRunCounts{Manual: math.MaxInt64}
+	body, err := json.Marshal(pull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := newReviewMock(t, string(body), "/api/v1/projects/project-one/reviews/pulls/1")
+	got, err := mock.client.ReviewPull(t.Context(), 1, "")
+	if err != nil || got.Pull.RunCount != math.MaxInt64 || got.Pull.AttemptCount != math.MaxInt64 {
+		t.Fatal("compact totals retained old per-page bounds", got, err)
 	}
 }

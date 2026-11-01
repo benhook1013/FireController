@@ -16,11 +16,12 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
-| `GET /reviews/pulls/{number}` | One PR summary and its retained attempts. |
+| `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
+| `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
 | `GET /reviews/pulls/{number}/runs` | Newest-first run summaries with cursor pagination. |
 | `GET /reviews/runs/{run_id}` | One run with its recorded findings, decisions and fix evidence. |
 
-Queue and run lists default to 20 items and accept `limit` up to 100 and an optional signed `cursor`. Pull and run detail accept an optional `snapshot`; run lists accept it too. Each configured response identifies its project, revision, snapshot, source, observed time and recorded time. An unconfigured queue has `configured:false`, revision zero, empty metadata and an empty item list. No empty result implies passing coverage.
+Queue, run and attempt lists default to 20 items and accept `limit` up to 100 and an optional signed `cursor`. Pull and run detail accept an optional `snapshot`; run and attempt lists accept it too. Archive cursors retain the selected snapshot. Each configured response identifies its project, revision, snapshot, source, observed time and recorded time. An unconfigured queue has `configured:false`, revision zero, empty metadata and an empty item list. No empty result implies passing coverage.
 
 Cursors bind the principal, project, route, order and retained snapshot. New imports cannot change a continuation page from an older snapshot. Detail links retain that snapshot for consistent drill-down. Access is checked again on every request, including historical reads and exact mutation retries. Unknown, duplicate and malformed query fields are rejected. PR numbers use canonical positive decimal values through 2147483647.
 
@@ -36,7 +37,7 @@ An observation can contain up to 100 unique PRs; each has identity, lifecycle, h
 
 Nonempty commit hashes use exactly 40 lowercase hexadecimal characters across observations, API responses, agent clients and the browser. Empty values remain unknown where permitted. Imports reject uppercase or mixed-case values before persistence; they do not normalize immutable source identities after admission.
 
-Runs preserve their source ID, channel, head, reviewer, scope, outcome, attribution, structured completeness, timestamps, finalized counts and source coverage limitations. Channels include CLI, hosted, manual and subagent history; supporting historical channels does not install an executor. At most 100 runs per PR and 200 per observation are accepted. Counts are nonnegative, accepted plus routed cannot exceed found, and a structurally complete run includes exactly its reported finding count. A completed run requires ordered start and finish times. Completeness describes retained data; it does not establish successful review coverage or applicability to a current patch.
+Runs preserve their source ID, channel, head, reviewer, scope, outcome, attribution, structured completeness, timestamps, finalized counts and source coverage limitations. Channels include CLI, hosted, manual and subagent history; supporting historical channels does not install an executor. An individual complete observation accepts at most 100 runs per PR and 200 in total; these are request bounds, not retained-history ceilings. Counts are nonnegative, accepted plus routed cannot exceed found, and a structurally complete run includes exactly its reported finding count. A completed run requires ordered start and finish times. Completeness describes retained data; it does not establish successful review coverage or applicability to a current patch.
 
 Every run summary also carries its original producer in `source`. The run identity is `(project, source, source_run_id)`; two producers can use the same external run ID without becoming the same run. Top-level `source` describes the snapshot publisher and does not relabel its historical runs. Older compact projections obtain their original source during reads without modifying retained bytes; new mixed projections store the actual source of every run. Full run detail shows that origin explicitly.
 
@@ -44,7 +45,7 @@ Findings preserve source identity, title, plain detail, severity, disposition, d
 
 Finalized source counts and source run/finding identity are immutable across observations. A later observation may add missing structured evidence or record corrected decision/fix evidence while retaining earlier snapshots; it cannot move the same finalized run to another PR, channel, head or scope, or replace known finding text under unchanged counts. Native run IDs derive from project, source and source run identity, rather than exposing filesystem paths.
 
-Attempts retain source IDs, channel, head, state, timing, nullable duration and optional source-run/provider references, bounded to 100 per PR and 200 per observation. Failed, rate-limited, uncertain and unknown attempts remain visible. An unknown duration is null and displays as “Unknown”; measured zero remains zero. A process exit code alone does not establish completed coverage. Queue summaries contain only the three most recent runs and latest attempt per channel; full findings load explicitly on a run page.
+Attempts retain source IDs, channel, head, state, timing, nullable duration and optional source-run/provider references, bounded to 100 per PR and 200 in each complete observation request. Native publication can retain more across bounded operations. Failed, rate-limited, uncertain and unknown attempts remain visible. An unknown duration is null and displays as “Unknown”; measured zero remains zero. A process exit code alone does not establish completed coverage. Queue and PR summaries contain only the three most recent runs and latest attempt per channel, with completed-run channel counts alongside retained totals. Optional bounded reason codes describe held, rate-limited, uncertain or failed attempts; they never contain provider prose. Attempt pages include the original producer and load explicitly through `reviews attempts PR --snapshot SNAPSHOT --limit LIMIT --cursor CURSOR` or the `review_attempts` MCP tool; snapshot, limit and cursor are optional selectors. Each call returns exactly one page. Full findings load explicitly on a run page.
 
 ## Retention and browser behavior
 
@@ -52,7 +53,7 @@ Merged PRs remain in the queue as completed history. Removing any previous queue
 
 The browser exposes Reviews, PR history and run-finding pages, with source timestamps, incomplete or missing data, head mismatches, historical counts and source coverage limitations visible. It escapes imported text and generates external PR/commit links only from the verified project repository. It does not render imported HTML or accept arbitrary link destinations. “Refresh visible data” rereads the stored snapshot; it neither refreshes GitHub nor starts a review. These pages have no timer-based polling or new live transport. The [browser guide](browser-guide.md) owns connection privacy and packaging.
 
-An initial installation may populate this boundary through a small explicit import. Profile-bound CLI commands `reviews queue`, `reviews pull`, `reviews runs` and `reviews run`, plus the four matching [MCP read tools](mcp.md), inspect these stored projections without provider work. Queue/run tools default to five entries, while explicit run detail loads full findings. Snapshot selectors retain historical consistency. A general migration framework and continuous legacy compatibility service remain separate deliveries. Optional [native executors](review-execution.md) publish retained native evidence through their own trusted path. Review observation writes are not exposed as worker tools.
+An initial installation may populate this boundary through a small explicit import. Profile-bound CLI commands `reviews queue`, `reviews pull`, `reviews runs`, `reviews attempts` and `reviews run`, plus the five matching [MCP read tools](mcp.md), inspect these stored projections without provider work. Queue/run/attempt tools default to five entries, while explicit run detail loads full findings. Snapshot selectors retain historical consistency. Startup conversion is limited to the supported retained-review schema. Optional [native executors](review-execution.md) publish retained native evidence through their own trusted path. Review observation writes are not exposed as worker tools.
 
 ## Validation status
 
@@ -63,6 +64,10 @@ The empty and populated browser sessions made eight and twelve GETs respectively
 The 98-file Go/browser/module/config/asset manifest stayed unchanged: SHA-256 `b0f440033d41aae6639c6ac9bc0aff267b0afd6a32c3d0755c243fb804ee9d02`. The actual service executable and its private copy retained SHA-256 `3e9c1d45478cd5b48adcdc001f266ea6c62b24da1d0a12282475ee189fbe0bc0`. These identify the exact runtime source tested, excluding documentation-only changes. Disposable state and owned processes were cleaned.
 
 These checks use synthetic observations on Linux/WSL Chromium. They do not establish native execution, a complete migration product, populated multi-project browser coverage, remote deployment, fleet throughput or installed-agent behavior. Existing authentication/revocation and strict-parser tests provide separate focused evidence.
+
+## Retained history and bounded archives
+
+The [retained history contract](review-history-growth.md) owns immutable versions, membership, current summaries, migrations and backup validation. PR detail remains compact regardless of archive growth. The browser reads one explicit attempt page at a time, preserving snapshot-bound continuation and original producer identity. Optional observed diff, draft and merge-time metadata remains display evidence, never admission or coverage authority.
 
 ## Agent reads and restored review history
 

@@ -27,3 +27,11 @@ describe('public project browser', () => {
     expect(html).toContain('Revision 2 · frozen'); expect(html).toContain('approved revision is frozen'); expect(html).toContain('href="/public/showcase"'); expect(html).not.toContain('/projects/'); expect(html).not.toContain('Live published view');
   });
 });
+
+it('labels truncated public channels without implying complete private history', () => {
+  const snapshot=fixture(); snapshot.content.reviews[0].cli_has_more=true;
+  const html=renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={snapshot} /></MemoryRouter>);
+  expect(html).toContain('earlier rounds are retained privately');
+  expect(html.match(/earlier rounds are retained privately/gu)).toHaveLength(1);
+  expect(html).not.toContain('/attempts');
+});
