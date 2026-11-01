@@ -8,7 +8,7 @@ Observation requests retain explicit selectors, bounded response bodies, paginat
 
 Conditional GET reuse is scoped to one authenticated adapter and exact request URL. Only a matching server `304` permits reuse of retained response bytes and pagination links. The cache is bounded; typed decoding and pagination checks still run after revalidation. A cached response never establishes collection completeness by itself.
 
-Parent lookup requires a unique open same-repository PR whose head branch is the selected base, followed by a fresh read of that PR. Queue position and historical captures cannot supply that identity. Explicit history-page readers preserve original IDs, actors, bodies, reply relationships and locations. Normalized history validation checks one selected page; cross-page completeness, durable acquisition and import authority remain caller responsibilities.
+Parent lookup returns a unique open same-repository PR whose head branch is the selected base only after a fresh matching read of that PR. A complete unpaginated empty inventory returns a zero `Pull` without an error; invalid, ambiguous or moving inventory returns an error. Queue position and historical captures cannot supply that identity. Explicit history-page readers preserve original IDs, actors, bodies, reply relationships and locations. Normalized history validation checks one selected page; cross-page completeness, durable acquisition and import authority remain caller responsibilities.
 
 Required-check rule decoding preserves the distinction between documented rules and unavailable or unsupported authority. Decoding a requirement set does not establish current workflow success; CI selection and assessment remain with their existing owner.
 
