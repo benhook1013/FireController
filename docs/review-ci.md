@@ -20,7 +20,7 @@ Required checks come from the selected base branch's complete applicable branch 
 
 The collector binds the repository's stable identity, PR, head, base SHA and base branch. It prefers CI on a verified test merge when that commit has check runs or commit statuses. A completely observed empty merge result may fall back to the head. Failed or incomplete merge observation cannot justify that fallback. A conflicting merge can have head CI facts, but their outcome does not imply that the PR is mergeable.
 
-Before crediting a passing result, collection rechecks the source candidate, requirement authority and selected CI identities. A changing check-run total permits one same-commit recollection within the original reader budget; continued movement leaves the observation unproven. Candidate failures and collection failures retain bounded static stage/reason codes, never raw provider error text. These checks produce attributable facts as of their observation interval, not an atomic lock on GitHub or a guarantee that later provider state is unchanged.
+Before crediting a passing result, collection rechecks the source candidate, requirement authority and selected CI identities. A changing check-suite count or check-run total permits one same-commit recollection within the original reader budget; continued movement leaves the observation unproven. Candidate failures and collection failures retain bounded static stage/reason codes, never raw provider error text. These checks produce attributable facts as of their observation interval, not an atomic lock on GitHub or a guarantee that later provider state is unchanged.
 
 ## Current workflow identity
 
