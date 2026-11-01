@@ -107,6 +107,14 @@ func TestExternalHostedUnsupportedRecognizedInventoryStaysIncomplete(t *testing.
 			if len(got) != 1 || got[0].Inventory.Complete || got[0].Inventory.Reason != tc.reason {
 				t.Fatalf("unsupported source became complete/dropped: sources=%d expected=%s", len(got), tc.reason)
 			}
+			wantState := "attributed"
+			switch tc.name {
+			case "wrong-root-head", "wrong-root-actor", "duplicate-batch":
+				wantState = "ambiguous"
+			}
+			if got[0].Inventory.Publication.State != wantState {
+				t.Fatalf("inventory limitation changed attribution incorrectly: reason=%s state=%s want=%s", tc.reason, got[0].Inventory.Publication.State, wantState)
+			}
 		})
 	}
 	f := submittedTestFixture(t)
@@ -286,5 +294,66 @@ func TestExternalHostedOneCommandCannotClaimMultipleRunSources(t *testing.T) {
 	}
 	if string(fixtureJSON(t, f.snapshot)) != string(before) || !reflect.DeepEqual(runs, externalDiscover(t, f)) {
 		t.Fatal("source capture changed or repeat unstable")
+	}
+}
+
+func TestExternalHostedConflictsRetainSourcesAsAmbiguous(t *testing.T) {
+	for _, kind := range []string{"publication", "submitted", "standing-zero", "root-binding"} {
+		t.Run(kind, func(t *testing.T) {
+			var f hfFixture
+			var reason string
+			switch kind {
+			case "publication":
+				f = externalFixture(t)
+				duplicate := f.snapshot.Reviews[0]
+				duplicate.ID++
+				f.snapshot.Reviews = append(f.snapshot.Reviews, duplicate)
+				reason = "conflicting_publication_evidence"
+			case "submitted":
+				f = submittedTestFixture(t)
+				f.snapshot.IssueComments = []IssueComment{}
+				duplicate := f.snapshot.Reviews[0]
+				duplicate.ID++
+				f.snapshot.Reviews = append(f.snapshot.Reviews, duplicate)
+				reason = "conflicting_submitted_review_evidence"
+			case "standing-zero":
+				snapshot, intent, poster, bot, earliest := standingTestFixture(t)
+				first := snapshot.IssueComments[1]
+				duplicate := first
+				duplicate.ID++
+				duplicate.UpdatedAt = duplicate.UpdatedAt.Add(time.Second)
+				snapshot.IssueComments = []IssueComment{first, duplicate}
+				f = hfFixture{snapshot: snapshot, intent: intent, poster: poster, bot: bot, earliest: earliest}
+				reason = "conflicting_standing_zero_evidence"
+			case "root-binding":
+				f = externalFixture(t)
+				f.snapshot.ReviewComments[0].OriginalHeadSHA = strings.Repeat("d", 40)
+				reason = "root_binding_mismatch"
+			}
+			got := externalDiscover(t, f)
+			if len(got) != 1 {
+				t.Fatalf("conflicting source was dropped/split: %d", len(got))
+			}
+			run := got[0]
+			pub := run.Inventory.Publication
+			if run.Inventory.Complete || run.Inventory.Reason != reason || pub.Reason != reason || pub.State != "ambiguous" || len(run.Inventory.Findings) != 0 {
+				t.Fatalf("conflicting source retained attribution or completion: state=%s reason=%s complete=%t findings=%d", pub.State, run.Inventory.Reason, run.Inventory.Complete, len(run.Inventory.Findings))
+			}
+			if len(pub.EligibleReviews) != len(f.snapshot.Reviews) || len(pub.Roots) != len(f.snapshot.ReviewComments) || len(run.ReviewIDs) != len(f.snapshot.Reviews) || run.HeadSHA != f.intent.HeadSHA || run.TriggerCommentID != 0 || run.NativeOperationID != "" {
+				t.Fatal("conflict changed raw inventory identity or invented native ownership", run)
+			}
+			for _, review := range f.snapshot.Reviews {
+				found := false
+				for _, retained := range pub.EligibleReviews {
+					found = found || reflect.DeepEqual(retained, review)
+				}
+				if !found {
+					t.Fatal("conflict discarded actual review source", review.ID)
+				}
+			}
+			if !reflect.DeepEqual(got, externalDiscover(t, f)) {
+				t.Fatal("conflict changed across repeat discovery")
+			}
+		})
 	}
 }
