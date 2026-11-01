@@ -23,7 +23,7 @@ const native: ReviewRoutedFindingDetail = {
   source_finding: { finding: 0, title: 'Preserve original evidence', detail: '<picture><img src="https://outside.invalid/pixel"></picture>\n\nThe decoder loses **original bytes**.\n\n<script>executeMe()</script>\n\n[unsafe](javascript:alert(1))', severity: 'high', path: 'source/file.go', start_line: 10, end_line: 12 },
 };
 const carried: AdoptionObligationDetail = {
-  id: `adoption_obligation_${'c'.repeat(32)}`, project_id: 'project_one', source: { namespace: 'original-controller', repository_id: 17, snapshot_sha256: 'd'.repeat(64) }, source_revision: 1,
+  id: `adoption_obligation_${'c'.repeat(32)}`, project_id: 'project_one', source: { namespace: 'original-controller', repository_id: 17, snapshot_sha256: 'd'.repeat(64) }, source_revision: 1, affected_pull_numbers: [3251],
   original: { source_key: 'old-route', kind: 'route', affected_pull_numbers: [28], summary: '**Carried correction**', evidence: ['original:route'], original_status: 'pending' },
   status: 'resolved', revision: 2, actor_id: 'principal', worker_id: 'worker', created_at: stamp,
   resolution: { revision: 2, reason: '**Resolved with retained proof**', evidence: ['commit:original-fix'], actor_id: 'principal', worker_id: 'worker', resolved_at: stamp },

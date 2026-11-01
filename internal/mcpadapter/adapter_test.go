@@ -603,6 +603,7 @@ var managementDiscoveryContract = map[string]struct{ write, destructive, externa
 	"review_import_apply":               {true, true, false},
 	"review_import_preview":             {false, false, false},
 	"review_obligation_read":            {false, false, false},
+	"review_obligation_retarget":        {true, true, false},
 	"review_obligation_resolve":         {true, true, false},
 	"review_obligations_import_apply":   {true, true, false},
 	"review_obligations_import_preview": {false, false, false},

@@ -10,7 +10,7 @@ const key = ['test', 'connection_one', 'instance_one', 'project_one'];
 const listKey = [...key, 'reviews', 'current', 'adoption-obligations', 3251, ''];
 const item = { id: 'obligation_one', namespace: 'sealed-source', source_key: 'finding-1', kind: 'finding', status: 'open', revision: 1, affected_pull_numbers: [3251] } as const;
 const detail: AdoptionObligationDetail = {
-  id: item.id, project_id: 'project_one', source: { namespace: item.namespace, repository_id: 17, snapshot_sha256: 'a'.repeat(64) }, source_revision: 1,
+  id: item.id, project_id: 'project_one', source: { namespace: item.namespace, repository_id: 17, snapshot_sha256: 'a'.repeat(64) }, source_revision: 1, affected_pull_numbers: [3251],
   original: { source_key: item.source_key, kind: 'finding', affected_pull_numbers: [3251], summary: '**Original correction**\n\n<script>doNotExecute()</script>\n\n[Unsafe](javascript:alert(1))', evidence: ['source:run-1/finding-1', '<img src=x onerror=alert(1)>'], original_status: 'pending' },
   status: 'open', revision: 1, actor_id: 'principal_one', worker_id: 'worker_one', created_at: '2026-10-16T01:00:00Z', resolution: null,
 };
@@ -25,6 +25,17 @@ function fixture(page?: AdoptionObligationPage, selectedApi?: Api) {
 }
 
 describe('private carried review work', () => {
+  it('shows the current receiver while keeping imported evidence and original scope intact', () => {
+    const f=fixture();
+    try {
+      const value:AdoptionObligationDetail={...detail,revision:2,affected_pull_numbers:[3310],original:{...detail.original,kind:'route'},retarget:{revision:2,target_pull_number:3310,reason:'Continue the fix in its replacement PR.',actor_id:'principal_two',worker_id:'worker_two',changed_at:'2026-11-02T00:00:00Z'}};
+      const html=f.render(<CarriedObligationContent value={value}/>);
+      expect(html).toContain('Current receiver'); expect(html).toContain('PR #3310'); expect(html).toContain('Affected PRs: #3310');
+      expect(html).toContain('Original affected PRs'); expect(html).toContain('#3251'); expect(html).toContain('Continue the fix');
+      expect(f.render(<CarriedObligationContent value={{...value,affected_pull_numbers:[],retarget:{...value.retarget!,target_pull_number:0}}}/>)).toContain('Unassigned');
+    } finally { f.client.clear(); }
+  });
+
   it('leaves routes to the unified routed section while retaining other carried obligations', () => {
     const onlyRoutes = fixture({ items: [{ ...item, kind: 'route', affected_pull_numbers: [3251] }] });
     const mixed = fixture({ items: [{ ...item, kind: 'route', affected_pull_numbers: [3251] }, { ...item, id: 'other_finding', affected_pull_numbers: [3251] }] });

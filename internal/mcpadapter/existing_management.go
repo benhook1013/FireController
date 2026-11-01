@@ -32,6 +32,8 @@ type existingManagementInput struct {
 	SourceKey        string          `json:"source_key,omitempty"`
 	PullNumbers      []int64         `json:"pull_numbers,omitempty"`
 	WaitSeconds      int             `json:"wait_seconds,omitempty"`
+	TargetPullNumber *int64          `json:"target_pull_number,omitempty"`
+	Reason           string          `json:"reason,omitempty"`
 }
 type existingManagementArgs struct {
 	name         string
@@ -40,6 +42,7 @@ type existingManagementArgs struct {
 	publication  client.PublicationInput
 	changes      client.PublicationChanges
 	resolution   client.AdoptionObligationResolveRequest
+	retarget     client.AdoptionObligationRetargetRequest
 }
 type existingManagementSpec struct {
 	name, description            string
@@ -69,6 +72,7 @@ var existingManagementSpecs = []existingManagementSpec{
 	{"review_obligation_read", "Read one explicit retained carried obligation and original evidence, without marking it resolved.", []string{"obligation_id"}, []string{"obligation_id"}, false, false, false},
 	{"review_obligations_import_preview", "Preview one strict native carried-obligation batch, preserving original evidence and provenance; no application or new review.", []string{"document"}, []string{"document"}, false, false, false},
 	{"review_obligations_import_apply", "Apply the exact previewed carried-obligation batch with preview_sha256 and explicit key. Existing source conflicts and evidence requirements remain enforced.", []string{"document", "preview_sha256", "idempotency_key"}, []string{"document", "preview_sha256", "idempotency_key"}, true, true, false},
+	{"review_obligation_retarget", "Change the receiving PR of one open carried route with expected_revision, explicit target_pull_number (zero means unassigned backlog), reason and key. Preserves original provenance and open status; no provider work or resolution. Findings/results cannot be retargeted.", []string{"obligation_id", "expected_revision", "target_pull_number", "reason", "idempotency_key"}, []string{"obligation_id", "expected_revision", "target_pull_number", "reason", "idempotency_key"}, true, true, false},
 	{"review_obligation_resolve", "Resolve one carried obligation using the native {expected_revision,reason,evidence} document and explicit key. Requires a real evidence-backed resolution; grants no review credit.", []string{"obligation_id", "document", "idempotency_key"}, []string{"obligation_id", "document", "idempotency_key"}, true, true, false},
 	{"history_collection_enqueue", "Queue bounded GitHub history collection for explicit pull_numbers. This reads provider history; it does not request reviews or enroll PRs. Optional wait_seconds (0-900) returns existing progress/receipt without blind retries.", []string{"pull_numbers", "wait_seconds", "idempotency_key"}, []string{"pull_numbers", "idempotency_key"}, true, false, true},
 	{"history_collection_read", "Read one existing history collection, optionally waiting up to 900 seconds. No new provider collection is queued by this read.", []string{"collection_id", "wait_seconds"}, []string{"collection_id"}, false, false, false},
@@ -120,6 +124,10 @@ func existingManagementDefinitions() []definition {
 				p = map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}
 			case "pull_number":
 				p = map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
+			case "target_pull_number":
+				p = map[string]any{"type": "integer", "minimum": 0, "maximum": 2147483647}
+			case "reason":
+				p = map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}
 			case "pull_numbers":
 				p = map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}}
 			case "limit":
@@ -250,6 +258,8 @@ func parseExistingManagementArguments(name string, raw json.RawMessage) (*existi
 		in.Document, err = client.NormalizeAdoptionObligationDocument(in.Document)
 	case "review_obligations_import_apply":
 		err = client.ValidateAdoptionObligationApply(in.IdempotencyKey, in.PreviewSHA256, in.Document)
+	case "review_obligation_retarget":
+		a.retarget, err = client.NormalizeAdoptionObligationRetarget(client.AdoptionObligationRetargetRequest{ExpectedRevision: in.ExpectedRevision, TargetPullNumber: in.TargetPullNumber, Reason: in.Reason})
 	case "review_obligation_resolve":
 		err = strictjson.Decode(in.Document, &a.resolution)
 		if err == nil {
@@ -345,6 +355,8 @@ func executeExistingManagement(ctx context.Context, c *client.Client, a *existin
 		return c.PreviewAdoptionObligations(ctx, in.Document)
 	case "review_obligations_import_apply":
 		return c.ApplyAdoptionObligations(ctx, in.IdempotencyKey, in.PreviewSHA256, in.Document)
+	case "review_obligation_retarget":
+		return c.RetargetAdoptionObligation(ctx, in.ObligationID, in.IdempotencyKey, a.retarget)
 	case "review_obligation_resolve":
 		return c.ResolveAdoptionObligation(ctx, in.ObligationID, in.IdempotencyKey, a.resolution)
 	case "history_collection_enqueue":

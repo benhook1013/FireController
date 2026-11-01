@@ -123,17 +123,19 @@ func decodeAdoptionObligationDetail(data []byte, dst any) error {
 		return strictjson.ErrSyntax
 	}
 	var wire struct {
-		ID             string                        `json:"id"`
-		ProjectID      string                        `json:"project_id"`
-		Source         adoptionholdsmodel.Source     `json:"source"`
-		SourceRevision int64                         `json:"source_revision"`
-		Original       adoptionholdsmodel.Obligation `json:"original"`
-		Status         string                        `json:"status"`
-		Revision       int64                         `json:"revision"`
-		ActorID        string                        `json:"actor_id"`
-		WorkerID       string                        `json:"worker_id"`
-		CreatedAt      string                        `json:"created_at"`
-		Resolution     json.RawMessage               `json:"resolution"`
+		ID                  string                        `json:"id"`
+		ProjectID           string                        `json:"project_id"`
+		Source              adoptionholdsmodel.Source     `json:"source"`
+		SourceRevision      int64                         `json:"source_revision"`
+		Original            adoptionholdsmodel.Obligation `json:"original"`
+		Status              string                        `json:"status"`
+		Revision            int64                         `json:"revision"`
+		ActorID             string                        `json:"actor_id"`
+		WorkerID            string                        `json:"worker_id"`
+		CreatedAt           string                        `json:"created_at"`
+		Resolution          json.RawMessage               `json:"resolution"`
+		AffectedPullNumbers []int64                       `json:"affected_pull_numbers"`
+		Retarget            *adoptionholdsmodel.Retarget  `json:"retarget,omitempty"`
 	}
 	if strictjson.Decode(data, &wire) != nil {
 		return strictjson.ErrSyntax
@@ -146,7 +148,8 @@ func decodeAdoptionObligationDetail(data []byte, dst any) error {
 		}
 		resolution = &decoded
 	}
-	*value = AdoptionObligation{ID: wire.ID, ProjectID: wire.ProjectID, Source: wire.Source, SourceRevision: wire.SourceRevision, Original: wire.Original, Status: wire.Status, Revision: wire.Revision, ActorID: wire.ActorID, WorkerID: wire.WorkerID, CreatedAt: wire.CreatedAt, Resolution: resolution}
+
+	*value = AdoptionObligation{AffectedPullNumbers: wire.AffectedPullNumbers, Retarget: wire.Retarget, ID: wire.ID, ProjectID: wire.ProjectID, Source: wire.Source, SourceRevision: wire.SourceRevision, Original: wire.Original, Status: wire.Status, Revision: wire.Revision, ActorID: wire.ActorID, WorkerID: wire.WorkerID, CreatedAt: wire.CreatedAt, Resolution: resolution}
 	return nil
 }
 
@@ -206,7 +209,7 @@ func (c *Client) ResolveAdoptionObligation(ctx context.Context, id, key string, 
 	if err = c.requestBounded(ctx, http.MethodPost, c.projectPath("reviews", "adoption-obligations", id, "resolve"), nil, true, key, body, http.StatusOK, true, &result, 4<<10, decodeReviewResponse); err != nil {
 		return AdoptionObligationResolutionReceipt{}, err
 	}
-	if result.ID != id || result.Status != "resolved" || result.Revision != *normalized.ExpectedRevision+1 || result.Revision != 2 {
+	if result.ID != id || result.Status != "resolved" || result.Revision != *normalized.ExpectedRevision+1 {
 		return AdoptionObligationResolutionReceipt{}, unknownMutation("invalid_response", "The obligation resolution receipt was invalid; its outcome is unknown.", http.StatusOK)
 	}
 	return result, nil
@@ -224,7 +227,7 @@ func ValidateAdoptionObligationID(id string) error {
 }
 
 func validAdoptionObligationItem(item AdoptionObligationItem) bool {
-	if !validAdoptionObligationID(item.ID) || !adoptionholdsmodel.ValidSourceKey(item.Namespace) || !adoptionholdsmodel.ValidSourceKey(item.SourceKey) || !adoptionholdsmodel.ValidKind(item.Kind) || item.Status != "open" && item.Status != "resolved" || item.Revision != 1 && item.Revision != 2 || item.Status == "open" && item.Revision != 1 || item.Status == "resolved" && item.Revision != 2 || len(item.AffectedPullNumbers) < 1 || len(item.AffectedPullNumbers) > 100 {
+	if !validAdoptionObligationID(item.ID) || !adoptionholdsmodel.ValidSourceKey(item.Namespace) || !adoptionholdsmodel.ValidSourceKey(item.SourceKey) || !adoptionholdsmodel.ValidKind(item.Kind) || item.Status != "open" && item.Status != "resolved" || item.Revision < 1 || item.Status == "resolved" && item.Revision < 2 || item.AffectedPullNumbers == nil || len(item.AffectedPullNumbers) > 101 || item.Kind != "route" && len(item.AffectedPullNumbers) > 100 || item.Kind != "route" && (len(item.AffectedPullNumbers) < 1 || item.Status == "open" && item.Revision != 1 || item.Status == "resolved" && item.Revision != 2) {
 		return false
 	}
 	for index, number := range item.AffectedPullNumbers {
@@ -249,9 +252,23 @@ func (c *Client) validAdoptionObligation(detail AdoptionObligation, id string) b
 	if err != nil || !reflect.DeepEqual(normalized, detail.Original) || detail.ID != id || detail.ProjectID != c.identity.ProjectID || !adoptionholdsmodel.ValidSource(detail.Source) || detail.SourceRevision < 1 || detail.Original.SourceKey == "" || !validID(detail.ActorID) || !validID(detail.WorkerID) || !validTimestamp(detail.CreatedAt) {
 		return false
 	}
-	item := AdoptionObligationItem{ID: detail.ID, Namespace: detail.Source.Namespace, SourceKey: detail.Original.SourceKey, Kind: detail.Original.Kind, Status: detail.Status, Revision: detail.Revision, AffectedPullNumbers: detail.Original.AffectedPullNumbers}
+	item := AdoptionObligationItem{ID: detail.ID, Namespace: detail.Source.Namespace, SourceKey: detail.Original.SourceKey, Kind: detail.Original.Kind, Status: detail.Status, Revision: detail.Revision, AffectedPullNumbers: detail.AffectedPullNumbers}
 	if !validAdoptionObligationItem(item) {
 		return false
+	}
+	if detail.Retarget == nil {
+		if !reflect.DeepEqual(detail.AffectedPullNumbers, detail.Original.AffectedPullNumbers) || detail.Status == "open" && detail.Revision != 1 || detail.Status == "resolved" && detail.Revision != 2 {
+			return false
+		}
+	} else {
+		retarget := detail.Retarget
+		expected := detail.Revision
+		if detail.Status == "resolved" {
+			expected--
+		}
+		if detail.Original.Kind != "route" || retarget.Revision < 2 || retarget.Revision != expected || !adoptionholdsmodel.ValidText(retarget.Reason, 4096) || !validID(retarget.ActorID) || !validID(retarget.WorkerID) || !validTimestamp(retarget.ChangedAt) || retarget.TargetPullNumber < 0 || retarget.TargetPullNumber > 2147483647 || !reflect.DeepEqual(detail.AffectedPullNumbers, adoptionholdsmodel.RouteAffectedPullNumbers(detail.Original, retarget.TargetPullNumber)) {
+			return false
+		}
 	}
 	if detail.Status == "open" {
 		return detail.Resolution == nil

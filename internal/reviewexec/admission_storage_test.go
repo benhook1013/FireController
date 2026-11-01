@@ -148,6 +148,10 @@ func TestAdmissionObligationTransientRetriesWithoutFalseHold(t *testing.T) {
 
 func TestFrontOperationalQueryFailureDoesNotBecomeHeld(t *testing.T) {
 	f := frontFixture(t)
+	var beforeVersion string
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&beforeVersion); err != nil {
+		t.Fatal(err)
+	}
 	retainObligationSource(t, f, attemptProject, "query-failure-importer", "query-failure-source", strings.Repeat("c", 64), 0)
 	err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		// Remove the queried table only inside this disposable transaction. The
@@ -165,7 +169,7 @@ func TestFrontOperationalQueryFailureDoesNotBecomeHeld(t *testing.T) {
 	})
 	attemptCode(t, err, "storage_unavailable")
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version); err != nil || version != "1" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version); err != nil || version != beforeVersion {
 		t.Fatal("failed read did not roll back fixture change", version, err)
 	}
 }

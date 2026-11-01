@@ -160,6 +160,7 @@ describe('live private project views', () => {
         { event_type: 'reviews.policy_configured', resource_id: 'project' },
         { event_type: 'reviews.adoption_obligations_imported', resource_id: 'sealed-source' },
         { event_type: 'reviews.adoption_obligation_resolved', resource_id: 'adoption_obligation_one' },
+        { event_type: 'reviews.adoption_obligation_retargeted', resource_id: 'adoption_obligation_one' },
         { event_type: 'review.evidence.finalized', resource_id: 'evidence_one' },
       ]), new AbortController().signal);
       for (const query of [workers, pause, focus, notes, note, current, assessment]) expect(query.reads()).toBe(1);

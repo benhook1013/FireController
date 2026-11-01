@@ -16,7 +16,7 @@ func TestSnapshotRequiresCanonicalDomainVersion(t *testing.T) {
 		value any
 		valid bool
 	}{
-		{"canonical", "1", true},
+		{"canonical", "2", true},
 		{"noncanonical-leading-zero", "01", false},
 		{"noncanonical-plus", "+1", false},
 		{"noncanonical-leading-space", " 1", false},
@@ -24,7 +24,7 @@ func TestSnapshotRequiresCanonicalDomainVersion(t *testing.T) {
 		{"noncanonical-decimal", "1.0", false},
 		{"malformed", "broken", false},
 		{"empty", "", false},
-		{"unsupported", "2", false},
+		{"unsupported", "3", false},
 		{"blob", []byte("1"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

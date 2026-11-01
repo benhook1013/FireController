@@ -14,6 +14,7 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+base+"/apply", s.applyHTTP)
 	mux.HandleFunc("GET "+base+"/{id}", s.detailHTTP)
 	mux.HandleFunc("POST "+base+"/{id}/resolve", s.resolveHTTP)
+	mux.HandleFunc("POST "+base+"/{id}/retarget", s.retargetHTTP)
 }
 func (s *Service) scope(w http.ResponseWriter, r *http.Request, admin bool) (core.Scope, bool) {
 	var scope core.Scope

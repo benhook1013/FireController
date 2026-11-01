@@ -51,7 +51,7 @@ func testAdoptionObligationTypedReadsAndWrites(t *testing.T, kind string) {
 			}
 			_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Page{Items: []adoptionholdsmodel.ListItem{{ID: id, Namespace: "sealed-source", SourceKey: "finding-one", Kind: kind, Status: "open", Revision: 1, AffectedPullNumbers: []int64{7}}}})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/"+id):
-			_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Detail{ID: id, ProjectID: "project-one", Source: batch.Source, SourceRevision: 1, Original: batch.Obligations[0], Status: "open", Revision: 1, ActorID: "principal-one", WorkerID: "worker-one", CreatedAt: "2026-10-20T00:00:00Z"})
+			_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Detail{ID: id, ProjectID: "project-one", Source: batch.Source, SourceRevision: 1, Original: batch.Obligations[0], AffectedPullNumbers: batch.Obligations[0].AffectedPullNumbers, Status: "open", Revision: 1, ActorID: "principal-one", WorkerID: "worker-one", CreatedAt: "2026-10-20T00:00:00Z"})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/preview"):
 			var got adoptionholdsmodel.Batch
 			if json.NewDecoder(r.Body).Decode(&got) != nil || got.Obligations[0].SourceKey != "finding-one" || got.Obligations[0].Kind != kind || r.Header.Get("Idempotency-Key") != "" {
@@ -132,7 +132,7 @@ func TestAdoptionObligationUnknownKindResponsesRefuse(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Page{Items: []adoptionholdsmodel.ListItem{{ID: id, Namespace: batch.Source.Namespace, SourceKey: batch.Obligations[0].SourceKey, Kind: "unknown-result", Status: "open", Revision: 1, AffectedPullNumbers: []int64{7}}}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Detail{ID: id, ProjectID: "project-one", Source: batch.Source, SourceRevision: 1, Original: batch.Obligations[0], Status: "open", Revision: 1, ActorID: "principal-one", WorkerID: "worker-one", CreatedAt: "2026-10-20T00:00:00Z"})
+		_ = json.NewEncoder(w).Encode(adoptionholdsmodel.Detail{ID: id, ProjectID: "project-one", Source: batch.Source, SourceRevision: 1, Original: batch.Obligations[0], AffectedPullNumbers: batch.Obligations[0].AffectedPullNumbers, Status: "open", Revision: 1, ActorID: "principal-one", WorkerID: "worker-one", CreatedAt: "2026-10-20T00:00:00Z"})
 	}))
 	defer server.Close()
 	service := newClient(t, server)

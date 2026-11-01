@@ -10,32 +10,41 @@ import (
 )
 
 func domainPresent(ctx context.Context, q Query) (bool, error) {
+	version, err := domainVersion(ctx, q)
+	return version != "", err
+}
+
+func domainVersion(ctx context.Context, q Query) (string, error) {
 	var version any
 	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version)
 	if errors.Is(err, sql.ErrNoRows) {
 		var count int
 		if err = q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE name GLOB 'review_adoption_*'`).Scan(&count); err != nil {
-			return false, err
+			return "", err
 		}
 		if count != 0 {
-			return false, unavailable()
+			return "", unavailable()
 		}
-		return false, nil
+		return "", nil
 	}
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if version != "1" {
-		return false, unavailable()
+	if version != "1" && version != "2" {
+		return "", unavailable()
 	}
 	var tables int
-	if err = q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_adoption_sources','review_adoption_imports','review_adoption_obligations','review_adoption_targets','review_adoption_resolutions')`).Scan(&tables); err != nil {
-		return false, err
+	if err = q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_adoption_sources','review_adoption_imports','review_adoption_obligations','review_adoption_targets','review_adoption_resolutions','review_adoption_retargets')`).Scan(&tables); err != nil {
+		return "", err
 	}
-	if tables != 5 {
-		return false, unavailable()
+	want := 5
+	if version == "2" {
+		want++
 	}
-	return true, nil
+	if tables != want {
+		return "", unavailable()
+	}
+	return version.(string), nil
 }
 
 // ValidateSnapshot checks this optional domain's physical and logical graph.
@@ -56,14 +65,18 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 	if err != nil {
 		return err
 	}
-	if version != "1" {
+	if version != "1" && version != "2" {
 		return unavailable()
 	}
 	expected := map[string]string{}
 	tables := []string{}
-	for _, definition := range SchemaSQL() {
+	schema := SchemaV1SQL()
+	if version == "2" {
+		schema = SchemaSQL()
+	}
+	for _, definition := range schema {
 		fields := strings.Fields(definition)
-		name := strings.Split(fields[2], "(")[0]
+		name := strings.Trim(strings.Split(fields[2], "(")[0], `"`)
 		expected[name] = strings.TrimSuffix(strings.TrimSpace(definition), ";")
 		if fields[1] == "TABLE" {
 			tables = append(tables, name)
@@ -116,6 +129,9 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 		`SELECT EXISTS(SELECT 1 FROM review_adoption_obligations WHERE typeof(id)!='text' OR id='' OR length(CAST(id AS BLOB))>128 OR typeof(project_id)!='text' OR typeof(namespace)!='text' OR typeof(source_key)!='text' OR length(CAST(source_key AS BLOB))>200 OR typeof(source_revision)!='integer' OR typeof(original_json)!='text' OR length(CAST(original_json AS BLOB))>65536 OR typeof(original_sha256)!='text' OR length(CAST(original_sha256 AS BLOB))!=64 OR typeof(status)!='text' OR typeof(revision)!='integer' OR typeof(actor_id)!='text' OR typeof(worker_id)!='text' OR typeof(created_at)!='text')`,
 		`SELECT EXISTS(SELECT 1 FROM review_adoption_targets WHERE typeof(obligation_id)!='text' OR typeof(project_id)!='text' OR typeof(pull_number)!='integer')`,
 		`SELECT EXISTS(SELECT 1 FROM review_adoption_resolutions WHERE typeof(obligation_id)!='text' OR typeof(revision)!='integer' OR typeof(reason)!='text' OR length(CAST(reason AS BLOB))>4096 OR typeof(evidence_json)!='text' OR length(CAST(evidence_json AS BLOB))>16384 OR typeof(actor_id)!='text' OR typeof(worker_id)!='text' OR typeof(resolved_at)!='text')`,
+	}
+	if version == "2" {
+		checks = append(checks, `SELECT EXISTS(SELECT 1 FROM review_adoption_retargets WHERE typeof(obligation_id)!='text' OR typeof(revision)!='integer' OR typeof(target_pull_number)!='integer' OR typeof(targets_json)!='text' OR length(CAST(targets_json AS BLOB))>2048 OR typeof(reason)!='text' OR length(CAST(reason AS BLOB))>4096 OR typeof(actor_id)!='text' OR typeof(worker_id)!='text' OR typeof(changed_at)!='text')`)
 	}
 	for _, query := range checks {
 		var bad bool
@@ -179,8 +195,12 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 			return err
 		}
 		for _, pair := range pairs {
-			if _, err = readDetail(ctx, q, pair[1], pair[0]); err != nil {
+			detail, err := readDetail(ctx, q, pair[1], pair[0])
+			if err != nil {
 				return unavailable()
+			}
+			if err := validateRetargetHistory(ctx, q, detail); err != nil {
+				return err
 			}
 			after = pair[0]
 		}

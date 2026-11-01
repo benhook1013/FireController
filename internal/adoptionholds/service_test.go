@@ -562,7 +562,11 @@ func TestSnapshotCorruptionAndAbsenceAreFailClosed(t *testing.T) {
 	}, "schema": func(f *fixture) { f.exec(`DROP INDEX review_adoption_targets_scope`) }, "batch": func(f *fixture) {
 		f.exec(`DROP TRIGGER review_adoption_imports_immutable`)
 		f.exec(`UPDATE review_adoption_imports SET batch_sha256=?`, strings.Repeat("b", 64))
-		f.exec(h.SchemaSQL()[12])
+		for _, statement := range h.SchemaSQL() {
+			if strings.HasPrefix(statement, "CREATE TRIGGER review_adoption_imports_immutable ") {
+				f.exec(statement)
+			}
+		}
 	}} {
 		t.Run(name, func(t *testing.T) {
 			f := fresh(t)

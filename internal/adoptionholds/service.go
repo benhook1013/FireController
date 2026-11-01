@@ -176,7 +176,8 @@ func (s *Service) Resolve(ctx context.Context, scope core.Scope, id, key string,
 			return nil, conflict()
 		}
 		at := time.Now().UTC().Format(time.RFC3339Nano)
-		result, err := tx.ExecContext(ctx, `UPDATE review_adoption_obligations SET status='resolved',revision=2 WHERE project_id=? AND id=? AND status='open' AND revision=?`, scope.ProjectID, id, *r.ExpectedRevision)
+		revision := current.Revision + 1
+		result, err := tx.ExecContext(ctx, `UPDATE review_adoption_obligations SET status='resolved',revision=? WHERE project_id=? AND id=? AND status='open' AND revision=?`, revision, scope.ProjectID, id, *r.ExpectedRevision)
 		if err != nil {
 			return nil, err
 		}
@@ -187,16 +188,16 @@ func (s *Service) Resolve(ctx context.Context, scope core.Scope, id, key string,
 		if count != 1 {
 			return nil, conflict()
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_adoption_resolutions(obligation_id,revision,reason,evidence_json,actor_id,worker_id,resolved_at) VALUES(?,2,?,?,?,?,?)`, id, r.Reason, string(encode(r.Evidence)), scope.PrincipalID, scope.WorkerID, at); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_adoption_resolutions(obligation_id,revision,reason,evidence_json,actor_id,worker_id,resolved_at) VALUES(?,?,?,?,?,?,?)`, id, revision, r.Reason, string(encode(r.Evidence)), scope.PrincipalID, scope.WorkerID, at); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "reviews.adoption_obligation_resolved", id, 2, struct{}{}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "reviews.adoption_obligation_resolved", id, revision, struct{}{}); err != nil {
 			return nil, err
 		}
 		return struct {
 			ID       string `json:"id"`
 			Status   string `json:"status"`
 			Revision int64  `json:"revision"`
-		}{id, "resolved", 2}, nil
+		}{id, "resolved", revision}, nil
 	})
 }

@@ -29,6 +29,27 @@ type ResolveRequest struct {
 	Reason           string   `json:"reason"`
 	Evidence         []string `json:"evidence"`
 }
+type RetargetRequest struct {
+	ExpectedRevision *int64 `json:"expected_revision"`
+	TargetPullNumber *int64 `json:"target_pull_number"`
+	Reason           string `json:"reason"`
+}
+type Retarget struct {
+	Revision         int64  `json:"revision"`
+	Reason           string `json:"reason"`
+	ActorID          string `json:"actor_id"`
+	WorkerID         string `json:"worker_id"`
+	ChangedAt        string `json:"changed_at"`
+	TargetPullNumber int64  `json:"target_pull_number"`
+}
+type RetargetReceipt struct {
+	ID                  string  `json:"id"`
+	Status              string  `json:"status"`
+	Revision            int64   `json:"revision"`
+	AffectedPullNumbers []int64 `json:"affected_pull_numbers"`
+	Outcome             string  `json:"outcome"`
+	TargetPullNumber    int64   `json:"target_pull_number"`
+}
 type Preview struct {
 	ProjectID      string `json:"project_id"`
 	SourceRevision int64  `json:"source_revision"`
@@ -58,17 +79,19 @@ type Resolution struct {
 	ResolvedAt string   `json:"resolved_at"`
 }
 type Detail struct {
-	ID             string      `json:"id"`
-	ProjectID      string      `json:"project_id"`
-	Source         Source      `json:"source"`
-	SourceRevision int64       `json:"source_revision"`
-	Original       Obligation  `json:"original"`
-	Status         string      `json:"status"`
-	Revision       int64       `json:"revision"`
-	ActorID        string      `json:"actor_id"`
-	WorkerID       string      `json:"worker_id"`
-	CreatedAt      string      `json:"created_at"`
-	Resolution     *Resolution `json:"resolution"`
+	ID                  string      `json:"id"`
+	ProjectID           string      `json:"project_id"`
+	Source              Source      `json:"source"`
+	SourceRevision      int64       `json:"source_revision"`
+	Original            Obligation  `json:"original"`
+	Status              string      `json:"status"`
+	Revision            int64       `json:"revision"`
+	ActorID             string      `json:"actor_id"`
+	WorkerID            string      `json:"worker_id"`
+	CreatedAt           string      `json:"created_at"`
+	Resolution          *Resolution `json:"resolution"`
+	AffectedPullNumbers []int64     `json:"affected_pull_numbers"`
+	Retarget            *Retarget   `json:"retarget,omitempty"`
 }
 type ListItem struct {
 	ID                  string  `json:"id"`

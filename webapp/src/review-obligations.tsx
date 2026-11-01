@@ -20,6 +20,8 @@ export type AdoptionObligationDetail = {
   project_id: string;
   source: { namespace: string; repository_id: number; snapshot_sha256: string };
   source_revision: number;
+  affected_pull_numbers: number[];
+  retarget?: {revision:number;target_pull_number:number;reason:string;actor_id:string;worker_id:string;changed_at:string};
   original: {
     source_key: string;
     kind: AdoptionObligationKind;
@@ -57,6 +59,8 @@ export function CarriedObligationContent({ value }: { value: AdoptionObligationD
   return <div className="review-history-findings">
     <p className="item-meta">{value.status === 'resolved' ? 'Resolved after cutover' : 'Open carried work'} · originally {value.original.original_status}</p>
     <EditorialMarkdown className="full-text">{value.original.summary}</EditorialMarkdown>
+    {value.retarget && <section aria-label="Routed work reassignment"><h4>Current receiver</h4><p>{value.retarget.target_pull_number ? `PR #${value.retarget.target_pull_number}` : 'Unassigned'}</p><EditorialMarkdown className="full-text">{value.retarget.reason}</EditorialMarkdown></section>}
+    <p className="item-meta">Affected PRs: {value.affected_pull_numbers.length ? value.affected_pull_numbers.map(number => `#${number}`).join(', ') : 'None assigned'}</p>
     <h4>Original evidence</h4><Evidence items={value.original.evidence} />
     {value.resolution && <section aria-label="Carried work resolution"><h4>Resolution</h4>
       <EditorialMarkdown className="full-text">{value.resolution.reason}</EditorialMarkdown>
@@ -65,7 +69,7 @@ export function CarriedObligationContent({ value }: { value: AdoptionObligationD
     <details><summary>Source details</summary><dl>
       <div><dt>Source</dt><dd>{value.source.namespace}</dd></div>
       <div><dt>Original key</dt><dd><code>{value.original.source_key}</code></dd></div>
-      <div><dt>Affected PRs</dt><dd>{value.original.affected_pull_numbers.map(number => `#${number}`).join(', ')}</dd></div>
+      <div><dt>Original affected PRs</dt><dd>{value.original.affected_pull_numbers.map(number => `#${number}`).join(', ')}</dd></div>
       <div><dt>Source snapshot</dt><dd><code className="full-text">{value.source.snapshot_sha256}</code></dd></div>
     </dl></details>
   </div>;

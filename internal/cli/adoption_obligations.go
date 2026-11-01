@@ -26,6 +26,7 @@ type adoptionObligationsInvocation struct {
 	key       string
 	document  json.RawMessage
 	resolve   client.AdoptionObligationResolveRequest
+	retarget  client.AdoptionObligationRetargetRequest
 }
 
 func parseAdoptionObligations(args []string) (*adoptionObligationsInvocation, bool) {
@@ -44,6 +45,8 @@ func parseAdoptionObligations(args []string) (*adoptionObligationsInvocation, bo
 		return in, true
 	case "adopt":
 		return parseAdoptionObligationsAdopt(in, args[1:])
+	case "retarget":
+		return parseAdoptionObligationsRetarget(in, args[1:])
 	case "resolve":
 		return parseAdoptionObligationsResolve(in, args[1:])
 	default:
@@ -218,6 +221,9 @@ func executeAdoptionObligations(ctx, parent context.Context, service *client.Cli
 	case "adopt-apply":
 		mutation = true
 		value, err = service.ApplyAdoptionObligations(ctx, in.key, in.preview, in.document)
+	case "retarget":
+		mutation = true
+		value, err = service.RetargetAdoptionObligation(ctx, in.id, in.key, in.retarget)
 	case "resolve":
 		mutation = true
 		value, err = service.ResolveAdoptionObligation(ctx, in.id, in.key, in.resolve)
@@ -241,4 +247,61 @@ func executeAdoptionObligations(ctx, parent context.Context, service *client.Cli
 		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The carried-obligation receipt could not be written.", Action: "Retry the exact same file or resolution arguments, preview fingerprint when applicable, key and bound instance; do not invent a replacement key.", OutcomeUnknown: true})
 	}
 	return ExitSuccess
+}
+
+func parseAdoptionObligationsRetarget(in *adoptionObligationsInvocation, args []string) (*adoptionObligationsInvocation, bool) {
+	if len(args) < 1 || client.ValidateAdoptionObligationID(args[0]) != nil {
+		return nil, false
+	}
+	in.id = args[0]
+	values := map[string]string{}
+	var target int64
+	selected := false
+	for index := 1; index < len(args); index++ {
+		flag, value, assigned := strings.Cut(args[index], "=")
+		if flag == "--unassigned" {
+			if assigned || selected {
+				return nil, false
+			}
+			selected = true
+			target = 0
+			continue
+		}
+		if flag != "--pr" && flag != "--expected-revision" && flag != "--reason" && flag != "--key" || values[flag] != "" {
+			return nil, false
+		}
+		if !assigned {
+			index++
+			if index >= len(args) || strings.HasPrefix(args[index], "--") {
+				return nil, false
+			}
+			value = args[index]
+		}
+		if value == "" {
+			return nil, false
+		}
+		values[flag] = value
+		if flag == "--pr" {
+			if selected {
+				return nil, false
+			}
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n < 1 || n > 2147483647 || strconv.FormatInt(n, 10) != value {
+				return nil, false
+			}
+			target = n
+			selected = true
+		}
+	}
+	if !selected || len(values) < 3 || !client.ValidMutationKey(values["--key"]) {
+		return nil, false
+	}
+	revision, err := strconv.ParseInt(values["--expected-revision"], 10, 64)
+	if err != nil || revision < 1 || revision == math.MaxInt64 || strconv.FormatInt(revision, 10) != values["--expected-revision"] {
+		return nil, false
+	}
+	in.key = values["--key"]
+	in.retarget = client.AdoptionObligationRetargetRequest{ExpectedRevision: &revision, TargetPullNumber: &target, Reason: values["--reason"]}
+	in.retarget, err = client.NormalizeAdoptionObligationRetarget(in.retarget)
+	return in, err == nil
 }

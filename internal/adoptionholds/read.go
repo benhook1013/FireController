@@ -7,7 +7,6 @@ import (
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
-	"slices"
 	"time"
 )
 
@@ -37,13 +36,20 @@ func retainedInteger(value any, out *int64) bool {
 	return ok
 }
 func ReadSource(ctx context.Context, q Query, project, namespace string) (m.SourceState, error) {
+	return readSourceWithVersion(ctx, q, project, namespace, nil)
+}
+
+func readSourceWithVersion(ctx context.Context, q Query, project, namespace string, schema *string) (m.SourceState, error) {
 	var out m.SourceState
-	present, err := domainPresent(ctx, q)
+	version, err := domainVersion(ctx, q)
 	if err != nil {
 		return out, err
 	}
-	if !present {
+	if version == "" {
 		return out, core.Fail("not_found", "The retained source is unavailable in this project.", 404)
+	}
+	if schema != nil {
+		*schema = version
 	}
 	out.ProjectID = project
 	out.Source.Namespace = namespace
@@ -126,7 +132,12 @@ func ReadDetail(ctx context.Context, q Query, project, id string) (m.Detail, err
 
 // A facts read may reuse successfully validated namespaces within its current
 // transaction. Originals, target lists and resolutions remain individually checked.
-func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]m.SourceState) (m.Detail, error) {
+type cachedSourceState struct {
+	m.SourceState
+	version string
+}
+
+func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]cachedSourceState) (m.Detail, error) {
 	var d m.Detail
 	var namespace, body, sha string
 	var idValue, projectValue, namespaceValue, sourceRevisionValue, bodyValue, shaValue, statusValue, revisionValue, actorValue, workerValue, createdValue any
@@ -149,7 +160,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	}
 	state, found := sources[namespace]
 	if !found {
-		state, err = ReadSource(ctx, q, project, namespace)
+		state.SourceState, err = readSourceWithVersion(ctx, q, project, namespace, &state.version)
 		if err != nil {
 			return d, retainedSourceReadError(err)
 		}
@@ -170,7 +181,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	if !retainedText(keyValue, &key) || key != d.Original.SourceKey {
 		return d, unavailable()
 	}
-	rows, err := q.QueryContext(ctx, `SELECT project_id,pull_number FROM review_adoption_targets WHERE obligation_id=? ORDER BY pull_number`, id)
+	rows, err := q.QueryContext(ctx, `SELECT project_id,pull_number FROM review_adoption_targets WHERE obligation_id=? ORDER BY pull_number LIMIT 102`, id)
 	if err != nil {
 		return d, err
 	}
@@ -183,7 +194,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 			rows.Close()
 			return d, err
 		}
-		if !retainedText(ownerValue, &owner) || !retainedInteger(numberValue, &n) || owner != project {
+		if !retainedText(ownerValue, &owner) || !retainedInteger(numberValue, &n) || owner != project || !pull(n) || len(numbers) >= 101 {
 			rows.Close()
 			return d, unavailable()
 		}
@@ -194,15 +205,17 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	if err != nil {
 		return d, err
 	}
-	if !slices.Equal(numbers, d.Original.AffectedPullNumbers) {
-		return d, unavailable()
+	d.AffectedPullNumbers = numbers
+	latestRevision, err := readRetargetState(ctx, q, &d, state.version)
+	if err != nil {
+		return d, err
 	}
 	var resolution m.Resolution
 	var refs string
 	var reasonValue, refsValue, resolvedValue any
 	err = q.QueryRowContext(ctx, `SELECT revision,reason,evidence_json,actor_id,worker_id,resolved_at FROM review_adoption_resolutions WHERE obligation_id=?`, id).Scan(&revisionValue, &reasonValue, &refsValue, &actorValue, &workerValue, &resolvedValue)
 	if errors.Is(err, sql.ErrNoRows) {
-		if d.Status != "open" || d.Revision != 1 {
+		if d.Status != "open" || d.Revision != latestRevision {
 			return d, unavailable()
 		}
 		return d, nil
@@ -213,7 +226,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	if !retainedInteger(revisionValue, &resolution.Revision) || !retainedText(reasonValue, &resolution.Reason) || !retainedText(refsValue, &refs) || !retainedText(actorValue, &resolution.ActorID) || !retainedText(workerValue, &resolution.WorkerID) || !retainedText(resolvedValue, &resolution.ResolvedAt) {
 		return d, unavailable()
 	}
-	if d.Status != "resolved" || d.Revision != 2 || resolution.Revision != 2 || !text(resolution.Reason, 4096) || !identifier.MatchString(resolution.ActorID) || !identifier.MatchString(resolution.WorkerID) || !validTime(resolution.ResolvedAt) || strictjson.Decode([]byte(refs), &resolution.Evidence) != nil || !m.ValidResolutionEvidence(resolution.Evidence) || string(encode(resolution.Evidence)) != refs {
+	if d.Status != "resolved" || d.Revision != latestRevision+1 || resolution.Revision != d.Revision || !text(resolution.Reason, 4096) || !identifier.MatchString(resolution.ActorID) || !identifier.MatchString(resolution.WorkerID) || !validTime(resolution.ResolvedAt) || strictjson.Decode([]byte(refs), &resolution.Evidence) != nil || !m.ValidResolutionEvidence(resolution.Evidence) || string(encode(resolution.Evidence)) != refs {
 		return d, unavailable()
 	}
 	previous := resolution.Revision - 1
@@ -232,7 +245,7 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 		return facts, invalid()
 	}
 	after := ""
-	sources := map[string]m.SourceState{}
+	sources := map[string]cachedSourceState{}
 	for {
 		rows, err := q.QueryContext(ctx, `SELECT obligation_id FROM review_adoption_targets WHERE project_id=? AND pull_number=? AND obligation_id>? ORDER BY obligation_id LIMIT 64`, project, number, after)
 		if err != nil {
@@ -363,7 +376,7 @@ func (s *Service) List(ctx context.Context, scope core.Scope, number int64, stat
 			if err != nil {
 				return err
 			}
-			out.Items = append(out.Items, m.ListItem{ID: d.ID, Namespace: d.Source.Namespace, SourceKey: d.Original.SourceKey, Kind: d.Original.Kind, Status: d.Status, Revision: d.Revision, AffectedPullNumbers: d.Original.AffectedPullNumbers})
+			out.Items = append(out.Items, m.ListItem{ID: d.ID, Namespace: d.Source.Namespace, SourceKey: d.Original.SourceKey, Kind: d.Original.Kind, Status: d.Status, Revision: d.Revision, AffectedPullNumbers: d.AffectedPullNumbers})
 		}
 		return nil
 	})

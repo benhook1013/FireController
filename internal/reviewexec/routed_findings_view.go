@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
+	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -44,24 +45,7 @@ type RoutedFindingsView struct {
 // The target pointer is an explicit retained reference, not text interpreted as
 // a command or evidence of a source PR. Missing/ambiguous pointers stay unknown.
 func routedCarriedTarget(evidence []string) int64 {
-	marker := ""
-	for _, ref := range evidence {
-		if strings.HasPrefix(ref, "target-pr:") {
-			if marker != "" {
-				return -1
-			}
-			marker = ref
-		}
-	}
-	if marker == "target-pr:unassigned" {
-		return 0
-	}
-	raw := strings.TrimPrefix(marker, "target-pr:")
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || !validRoutePull(n) || strconv.FormatInt(n, 10) != raw {
-		return -1
-	}
-	return n
+	return m.OriginalRouteTarget(m.Obligation{Kind: "route", Evidence: evidence})
 }
 
 func routedFindingTitle(text string) string {
@@ -170,7 +154,11 @@ func (e *Engine) ReadRoutedFindings(ctx context.Context, scope core.Scope, pull 
 				if err != nil {
 					return err
 				}
-				if detail.Original.Kind != "route" || detail.Status != item.State || detail.Revision != item.Revision || detail.CreatedAt != item.CreatedAt || routedCarriedTarget(detail.Original.Evidence) != item.TargetPullNumber {
+				currentTarget := routedCarriedTarget(detail.Original.Evidence)
+				if detail.Retarget != nil {
+					currentTarget = detail.Retarget.TargetPullNumber
+				}
+				if detail.Original.Kind != "route" || detail.Status != item.State || detail.Revision != item.Revision || detail.CreatedAt != item.CreatedAt || currentTarget != item.TargetPullNumber {
 					return routeStorageError()
 				}
 				item.Title = routedFindingTitle(detail.Original.Summary)
@@ -200,8 +188,8 @@ func routedFindingsQuery(history bool) string {
 		pulls = `SELECT c.number,v.state FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision AND m.position=c.position AND m.end_revision IS NULL JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE c.project_id=(SELECT project FROM scope)`
 	}
 	return `WITH scope AS (SELECT ? AS project,? AS pull), pulls AS (` + pulls + `),
-	carried AS (SELECT o.id,o.status,o.revision,o.created_at,(SELECT CASE WHEN count(*)=1 THEN min(value) ELSE '' END FROM json_each(o.original_json,'$.evidence') WHERE type='text' AND substr(value,1,10)='target-pr:') AS marker FROM review_adoption_obligations o WHERE o.project_id=(SELECT project FROM scope) AND json_extract(o.original_json,'$.kind')='route'),
-	carried_targets AS (SELECT *,CASE WHEN marker='target-pr:unassigned' THEN 0 WHEN substr(marker,11)=CAST(CAST(substr(marker,11) AS INTEGER) AS TEXT) AND CAST(substr(marker,11) AS INTEGER) BETWEEN 1 AND 2147483647 THEN CAST(substr(marker,11) AS INTEGER) ELSE -1 END AS target FROM carried),
+	carried AS (SELECT o.id,o.status,o.revision,o.created_at,(SELECT CASE WHEN count(*)=1 THEN min(value) ELSE '' END FROM json_each(o.original_json,'$.evidence') WHERE type='text' AND substr(value,1,10)='target-pr:') AS marker,(SELECT r.target_pull_number FROM review_adoption_retargets r WHERE r.obligation_id=o.id ORDER BY r.revision DESC LIMIT 1) AS current_target FROM review_adoption_obligations o WHERE o.project_id=(SELECT project FROM scope) AND json_extract(o.original_json,'$.kind')='route'),
+	carried_targets AS (SELECT *,CASE WHEN current_target IS NOT NULL THEN current_target WHEN marker='target-pr:unassigned' THEN 0 WHEN substr(marker,11)=CAST(CAST(substr(marker,11) AS INTEGER) AS TEXT) AND CAST(substr(marker,11) AS INTEGER) BETWEEN 1 AND 2147483647 THEN CAST(substr(marker,11) AS INTEGER) ELSE -1 END AS target FROM carried),
 	all_routes AS (
 	SELECT r.id,'native' AS kind,CASE WHEN r.disposition='unadjudicated' AND r.has_fix=0 OR r.disposition='accepted' AND r.has_fix=0 THEN 'open' WHEN r.disposition='accepted' AND r.has_fix=1 THEN 'fixed' WHEN r.disposition='rejected' AND r.has_fix=0 THEN 'rejected' ELSE 'invalid' END AS state,r.target_pull_number AS target,r.revision,r.created_at FROM review_finding_routes r WHERE r.project_id=(SELECT project FROM scope) AND r.state='active' AND ((SELECT pull FROM scope)=0 OR r.source_pull_number=(SELECT pull FROM scope) OR r.target_pull_number=(SELECT pull FROM scope))
 	UNION ALL SELECT c.id,'carried',CASE WHEN c.status IN ('open','resolved') THEN c.status ELSE 'invalid' END,c.target,c.revision,c.created_at FROM carried_targets c WHERE (SELECT pull FROM scope)=0 OR c.target=(SELECT pull FROM scope) OR EXISTS(SELECT 1 FROM review_adoption_targets t WHERE t.project_id=(SELECT project FROM scope) AND t.obligation_id=c.id AND t.pull_number=(SELECT pull FROM scope))),

@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -112,6 +113,69 @@ func NormalizeResolution(resolution ResolveRequest) (ResolveRequest, error) {
 		return resolution, ErrInvalid
 	}
 	return resolution, nil
+}
+
+// An explicit zero leaves a route unassigned while retaining its source scope.
+func NormalizeRetarget(request RetargetRequest) (RetargetRequest, error) {
+	if request.ExpectedRevision == nil || *request.ExpectedRevision < 1 || *request.ExpectedRevision == math.MaxInt64 || request.TargetPullNumber == nil || *request.TargetPullNumber < 0 || *request.TargetPullNumber > 2147483647 || !ValidText(request.Reason, 4096) {
+		return request, ErrInvalid
+	}
+	revision := *request.ExpectedRevision
+	request.ExpectedRevision = &revision
+	target := *request.TargetPullNumber
+	request.TargetPullNumber = &target
+	if len(Encode(request)) > 16<<10 {
+		return request, ErrInvalid
+	}
+	return request, nil
+}
+
+// OriginalRouteTarget interprets the original explicit receiver marker only.
+// Missing, conflicting or malformed markers remain unknown, represented by -1.
+func OriginalRouteTarget(original Obligation) int64 {
+	if original.Kind != "route" {
+		return -1
+	}
+	target, count := int64(-1), 0
+	for _, reference := range original.Evidence {
+		if !strings.HasPrefix(reference, "target-pr:") {
+			continue
+		}
+		count++
+		value := strings.TrimPrefix(reference, "target-pr:")
+		if value == "unassigned" {
+			target = 0
+			continue
+		}
+		number, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || !ValidPull(number) || strconv.FormatInt(number, 10) != value {
+			target = -1
+			continue
+		}
+		target = number
+	}
+	if count != 1 {
+		return -1
+	}
+	return target
+}
+
+// RouteAffectedPullNumbers keeps original source scope and replaces only the
+// original receiver whose identity is explicitly known from retained evidence.
+func RouteAffectedPullNumbers(original Obligation, target int64) []int64 {
+	out := make([]int64, 0, len(original.AffectedPullNumbers)+1)
+	prior := OriginalRouteTarget(original)
+	for _, number := range original.AffectedPullNumbers {
+		if prior > 0 && number == prior {
+			continue
+		}
+		out = append(out, number)
+	}
+	if target > 0 && !slices.Contains(out, target) {
+		out = append(out, target)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func Encode(value any) []byte { body, _ := json.Marshal(value); return body }

@@ -370,8 +370,8 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews start --channel hosted --expect-pr 42 --key next-hosted-review"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews obligations":
-		out.Usage = "<bound launcher> reviews obligations list [--pr NUMBER] [--status open|resolved] [--limit N] [--cursor CURSOR] | read OBLIGATION_ID"
-		out.Semantics = []string{"Reads carried unfinished findings, routes and unsettled review results. They are retained obligations, not newly verified current code defects. Open obligations remain pending until deliberately resolved with evidence.", "Project writers can resolve an obligation using its current revision and an explicit key; imports require administrator access. No provider refresh or review request is performed.", recovery}
+		out.Usage = "<bound launcher> reviews obligations list [--pr NUMBER] [--status open|resolved] [--limit N] [--cursor CURSOR] | read OBLIGATION_ID | retarget OBLIGATION_ID --expected-revision N (--pr NUMBER | --unassigned) --reason TEXT --key KEY"
+		out.Semantics = []string{"Reads carried unfinished findings, routes and unsettled review results. They are retained obligations, not newly verified current code defects. Open obligations remain pending until deliberately resolved with evidence.", "Project writers can retarget an open carried route using its current revision and an explicit key. --pr selects one receiver; --unassigned leaves it open in the attention backlog. This changes current receivers, not imported provenance or resolution. Findings/results cannot be retargeted. Project writers can resolve an obligation with real evidence; imports require administrator access. No provider refresh or review request is performed.", recovery}
 		out.Example = "<bound launcher> reviews obligations list --pr 3251 --status open"
 		out.Documentation = "docs/adoption-obligations.md"
 	case "reviews source-refresh":

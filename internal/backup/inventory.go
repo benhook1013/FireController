@@ -224,7 +224,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -241,6 +241,7 @@ var tables = map[string]tableVersion{
 	"review_adoption_obligations":       {"review_adoption_obligations", 1, "id project_id namespace source_key source_revision original_json original_sha256 status revision actor_id worker_id created_at"},
 	"review_adoption_targets":           {"review_adoption_obligations", 1, "obligation_id project_id pull_number"},
 	"review_adoption_resolutions":       {"review_adoption_obligations", 1, "obligation_id revision reason evidence_json actor_id worker_id resolved_at"},
+	"review_adoption_retargets":         {"review_adoption_obligations", 2, "obligation_id revision target_pull_number targets_json reason actor_id worker_id changed_at"},
 	"review_front_frames":               {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
 	"review_selections":                 {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_round_adoptions":            {"review_round_adoption", 1, "project_id pull_number channel grant_revision epoch source source_key source_sha256 prepared_json"},
@@ -1435,7 +1436,9 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparis
 	if routePolicyVersion > 0 {
 		nativeDefinitions = append(nativeDefinitions, reviewexec.RoutePolicySchemaSQL()...)
 	}
-	if adoptionVersion > 0 {
+	if adoptionVersion == 1 {
+		nativeDefinitions = append(nativeDefinitions, adoptionholds.SchemaV1SQL()...)
+	} else if adoptionVersion > 1 {
 		nativeDefinitions = append(nativeDefinitions, adoptionholds.SchemaSQL()...)
 	}
 	if applicabilityVersion > 0 {
@@ -1628,6 +1631,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_adoption_obligations":       {canonicalFK("review_adoption_imports", "project_id,namespace,source_revision", "project_id,namespace,revision", "NO ACTION")},
 	"review_adoption_targets":           {canonicalFK("review_adoption_obligations", "obligation_id,project_id", "id,project_id", "NO ACTION")},
 	"review_adoption_resolutions":       {canonicalFK("review_adoption_obligations", "obligation_id", "id", "NO ACTION")},
+	"review_adoption_retargets":         {canonicalFK("review_adoption_obligations", "obligation_id", "id", "NO ACTION")},
 	"review_front_frames":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_selections":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_round_adoptions":            {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
