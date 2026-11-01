@@ -96,6 +96,7 @@ func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", pendingEvidenceHeader)
 	scope, err := e.store.Scope(r, "write")
@@ -197,9 +198,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			e.deploymentResponseHeader(w)
-			if r.Header.Get(operationWaitHeader) != "1" {
-				operation.Wait = nil
-			}
+			operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
 			operation.SourceRefusal = sourceRefusalForResponse(operation.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"), operation.Reason)
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
@@ -207,7 +206,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var original Receipt
 	if json.Unmarshal(receipt, &original) == nil {
-		e.queuedResponseHeader(w, r, scope, original.ID, original.State, original.Revision)
+		e.queuedResponseHeader(w, r, scope, original.ID, original.State, request.Channel, original.Revision)
 	}
 	e.deploymentResponseHeader(w)
 	core.WriteJSON(w, http.StatusAccepted, receipt)
@@ -268,14 +267,12 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	e.queuedResponseHeader(w, r, scope, operation.ID, operation.State, operation.Revision)
+	e.queuedResponseHeader(w, r, scope, operation.ID, operation.State, operation.Channel, operation.Revision)
 	e.deploymentResponseHeader(w)
 	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
 		operation.Observer = e.observerStatus(operation)
 	}
-	if r.Header.Get(operationWaitHeader) != "1" {
-		operation.Wait = nil
-	}
+	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
 	operation.SourceRefusal = sourceRefusalForResponse(operation.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"), operation.Reason)
 	core.WriteJSON(w, http.StatusOK, operation)
 }

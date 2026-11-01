@@ -59,11 +59,10 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Header.Get(operationWaitHeader) != "1" {
-		for i := range progress.Items {
-			for j := range progress.Items[i].Channels {
-				progress.Items[i].Channels[j].Wait = nil
-			}
+	for i := range progress.Items {
+		for j := range progress.Items[i].Channels {
+			channel := &progress.Items[i].Channels[j]
+			channel.Wait = operationWaitForResponse(channel.Wait, channel.Channel, r.Header.Get(operationWaitHeader))
 		}
 	}
 	core.WriteJSON(w, http.StatusOK, progress)

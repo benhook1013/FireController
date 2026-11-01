@@ -247,13 +247,11 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	value.SourceRefusal = sourceRefusalForResponse(value.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"), value.Reason)
-	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Revision)
+	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)
 	e.deploymentResponseHeader(w)
 	if r.Header.Get("X-FC-Hosted-Observer") != "1" {
 		value.Observer = nil
 	}
-	if r.Header.Get(operationWaitHeader) != "1" {
-		value.Wait = nil
-	}
+	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
 	core.WriteJSON(w, http.StatusOK, value)
 }

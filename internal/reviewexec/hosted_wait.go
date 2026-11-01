@@ -14,6 +14,18 @@ import (
 
 const operationWaitHeader = "X-FC-Operation-Wait"
 
+// Version 1 advertised Hosted cooldown baselines only. Keep its existing CLI
+// queued/pause shape; version 2 additionally understands CLI quota baselines.
+func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
+	if wait == nil || version != "1" && version != "2" {
+		return nil
+	}
+	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
+		return &OperationWait{Paused: wait.Paused}
+	}
+	return wait
+}
+
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {

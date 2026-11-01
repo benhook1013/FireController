@@ -402,7 +402,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 			r.Header.Set("X-FC-Source-Refusal", "v4")
 		}
 		if wait.operationWait {
-			r.Header.Set("X-FC-Operation-Wait", "1")
+			r.Header.Set("X-FC-Operation-Wait", "2")
 		}
 		if wait.hostedQuery {
 			r.Header.Set("X-FC-Hosted-Query", "2")

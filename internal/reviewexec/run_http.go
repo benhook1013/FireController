@@ -84,6 +84,7 @@ func waitCapacityError(err error) bool {
 }
 
 func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "write")
@@ -156,8 +157,8 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 				writeOperationWaitError(w, err)
 				return
 			}
-			if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
-				state.Operation.Wait = nil
+			if state.Operation != nil {
+				state.Operation.Wait = operationWaitForResponse(state.Operation.Wait, state.Operation.Channel, r.Header.Get(operationWaitHeader))
 			}
 			e.queuedRunResponseHeader(w, r, scope, state)
 			core.WriteJSON(w, http.StatusOK, state)
@@ -168,6 +169,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "read")
@@ -202,8 +204,8 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if state.Operation != nil && r.Header.Get(operationWaitHeader) != "1" {
-		state.Operation.Wait = nil
+	if state.Operation != nil {
+		state.Operation.Wait = operationWaitForResponse(state.Operation.Wait, state.Operation.Channel, r.Header.Get(operationWaitHeader))
 	}
 	e.queuedRunResponseHeader(w, r, scope, state)
 	core.WriteJSON(w, http.StatusOK, state)

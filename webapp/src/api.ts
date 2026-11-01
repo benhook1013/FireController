@@ -1256,7 +1256,7 @@ export class Api {
   }
   private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse, operationWait = false): Promise<unknown> {
     const headers = this.headers(instanceId, worker);
-    if (operationWait) headers.set('X-FC-Operation-Wait', '1');
+    if (operationWait) headers.set('X-FC-Operation-Wait', '2');
     const response = await fetch(urlFor(path), { method: 'GET', headers, redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
     return readJson(response, signal, responseMaxBytes, decode);

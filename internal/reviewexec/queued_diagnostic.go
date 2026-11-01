@@ -25,11 +25,14 @@ type queuedReservation struct {
 // admission authority. Drift or unavailable facts omit the header, not the
 // original response/receipt. The exact operation is reauthorized and compared
 // with the response revision before consulting any current scheduling facts.
-func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, id, state string, revision int64) {
+func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, id, state, channel string, revision int64) {
 	if state != "queued" {
 		return
 	}
 	cause, reservation := e.queuedDiagnosticDetails(r.Context(), scope, id, revision)
+	if (cause == "cli_quota_wait" || cause == "queue_order" && channel == "cli") && r.Header.Get(operationWaitHeader) != "2" {
+		cause = "awaiting_scheduler"
+	}
 	if cause != "" {
 		w.Header().Set(queuedDiagnosticHeader, cause)
 	}
@@ -165,7 +168,7 @@ func reservationLiveState(state string) bool {
 func (e *Engine) queuedRunResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, state RunState) {
 	if state.Operation != nil {
 		o := state.Operation
-		e.queuedResponseHeader(w, r, scope, o.ID, o.State, o.Revision)
+		e.queuedResponseHeader(w, r, scope, o.ID, o.State, o.Channel, o.Revision)
 		e.deploymentResponseHeader(w)
 	}
 }
