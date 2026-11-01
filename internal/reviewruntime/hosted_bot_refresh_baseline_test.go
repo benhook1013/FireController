@@ -77,7 +77,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six" || mode == "new_bot_positive" || mode == "new_bot_report"
+			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six"
 			if result.Complete != want {
 				t.Fatalf("complete=%v reason=%s want=%v", result.Complete, result.Reason, want)
 			}
@@ -86,6 +86,9 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				t.Fatal("source or attempt changed", err)
 			}
 			if !want {
+				if (mode == "new_bot_report" || mode == "new_bot_positive") && result.Reason != "attribution_window_closed" {
+					t.Fatal("unobserved original Bot body lost its attribution guard", result.Reason)
+				}
 				if cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
 					t.Fatal("held source credited")
 				}

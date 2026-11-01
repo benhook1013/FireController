@@ -159,9 +159,9 @@ func TestHostedBaselineBotRefreshRefusesUnprovenEdits(t *testing.T) {
 	}
 }
 
-func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
+func TestHostedBaselineNewBotReportRequiresUneditedSource(t *testing.T) {
 	for _, kind := range []string{"standing_zero", "submitted_positive", "batched_five"} {
-		for _, mode := range []string{"report", "before_trigger", "at_trigger", "human", "posting_actor", "provider_actor", "provider_mention", "hidden_command", "late_baseline", "missing_baseline"} {
+		for _, mode := range []string{"report", "unedited", "before_trigger", "at_trigger", "human", "posting_actor", "provider_actor", "provider_mention", "hidden_command", "late_baseline", "missing_baseline"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
 				s, intent, poster, bot, earliest := standingTestFixture(t)
 				if kind != "standing_zero" {
@@ -179,6 +179,8 @@ func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
 				baseline := HostedPublicationSnapshot{Complete: true, ObservedAt: trigger.Add(-time.Second), IssueComments: []IssueComment{}, Reviews: []HostedReview{}, ReviewComments: []ReviewComment{}}
 				report := IssueComment{ID: 901, Author: Author{ID: 902, Login: "synthetic-other-review[bot]", Kind: "Bot"}, CreatedAt: trigger.Add(time.Second), UpdatedAt: s.ObservedAt, Body: "Independent review report. Updated results are ready."}
 				switch mode {
+				case "unedited":
+					report.UpdatedAt = report.CreatedAt
 				case "before_trigger":
 					report.CreatedAt = trigger.Add(-time.Second)
 				case "at_trigger":
@@ -204,7 +206,7 @@ func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "report" {
+				if mode == "unedited" {
 					if !got.Complete || !reflect.DeepEqual(got.Findings, want.Findings) || !got.Publication.FinishedAt.Equal(want.Publication.FinishedAt) {
 						t.Fatal("original inventory lost", got.Reason)
 					}
@@ -219,6 +221,28 @@ func TestHostedBaselineNewBotReportPreservesOriginalReview(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHostedBaselineNewBotRemovedUnobservedCommandCannotCreditTrigger(t *testing.T) {
+	s, intent, poster, bot, earliest := standingTestFixture(t)
+	trigger := s.IssueComments[0].CreatedAt
+	baseline := HostedPublicationSnapshot{Complete: true, ObservedAt: trigger.Add(-time.Second), IssueComments: []IssueComment{}, Reviews: []HostedReview{}, ReviewComments: []ReviewComment{}}
+	// This later edit may have removed an earlier review command. Neither
+	// retained snapshot observes its original body, so a Bot author and safe
+	// current prose cannot establish the absence of a competing trigger.
+	s.IssueComments = append(s.IssueComments, IssueComment{ID: 901, Author: Author{ID: 902, Login: "synthetic-other[bot]", Kind: "Bot"}, CreatedAt: trigger.Add(time.Second), UpdatedAt: s.ObservedAt, Body: "Updated independent report."})
+	before := append([]IssueComment(nil), s.IssueComments...)
+	strict, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || strict.Complete || strict.Reason != "attribution_window_closed" {
+		t.Fatal("fixture does not preserve the competing-command guard", strict.Reason, err)
+	}
+	got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
+	if err != nil || !reflect.DeepEqual(got, strict) {
+		t.Fatal("unobserved original Bot body granted attribution", got.Reason, err)
+	}
+	if !reflect.DeepEqual(s.IssueComments, before) {
+		t.Fatal("raw source mutated")
 	}
 }
 
