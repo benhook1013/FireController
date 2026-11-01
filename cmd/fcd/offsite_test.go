@@ -15,6 +15,11 @@ func TestOffsiteOperatorArgumentsFailBeforeServingOrOpeningSecrets(t *testing.T)
 	for _, args := range [][]string{
 		{"backup-push"}, {"backup-push", "--config", "private-secret", "--config", "other"},
 		{"backup-fetch", "--config", "private-secret"}, {"backup-fetch", "--config", "private-secret", "--destination", "/new", "--id", "x", "--id", "y"},
+		{"backup-fetch", "--config", "private-secret", "--destination", "/new", "--id", "x"},
+		{"backup-fetch", "--config", "private-secret", "--destination", "relative/dir"},
+		{"backup-fetch", "--config", "private-secret", "--destination", "/new/../other"},
+		{"backup-fetch", "--config", "private-secret", "--destination", "/new\nprivate"},
+		{"backup-fetch", "--config", "private-secret", "--destination", "/new", "--id", "backup_" + strings.Repeat("A", 32)},
 		{"backup-offsite-status", "--config", "private-secret", "extra"}, {"backup-push", "--config", "private-secret", "--unsupported", "value"},
 	} {
 		var out, diagnostics bytes.Buffer
@@ -83,5 +88,22 @@ func TestOffsiteHealthInvalidFlagsFailBeforeConfigurationRead(t *testing.T) {
 		if code := run(t.Context(), args, &out, &diagnostics); code != 2 || out.Len() != 0 || strings.Contains(diagnostics.String(), "DO_NOT_READ_PRIVATE") {
 			t.Fatal(code, out.String(), diagnostics.String())
 		}
+	}
+}
+
+func TestOffsiteFetchValidTargetsReachPrivateConfigWithoutProviderWork(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "unavailable-private-config.json")
+	destination := filepath.Join(root, "new-download")
+	for _, tail := range [][]string{nil, {"--id", ""}, {"--id", "backup_" + strings.Repeat("a", 32)}} {
+		var out, diagnostics bytes.Buffer
+		args := append([]string{"backup-fetch", "--config", config, "--destination", destination}, tail...)
+		if code := run(t.Context(), args, &out, &diagnostics); code != 3 || out.Len() != 0 || !strings.Contains(diagnostics.String(), "offsite_configuration_invalid") || strings.Contains(diagnostics.String(), config) || strings.Contains(diagnostics.String(), destination) {
+			t.Fatal("valid target was refused as syntax or leaked private paths", code, diagnostics.String())
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("configuration refusal created fetch/provider state", entries, err)
 	}
 }

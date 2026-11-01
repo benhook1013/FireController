@@ -28,7 +28,7 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 		flags.StringVar(&destination, "destination", "", "new private destination root")
 	}
 	invalid := func() int {
-		diagnostic(stderr, "configuration_invalid", "Provide --config and, for backup-fetch, a new --destination and optional --id (default: latest verified copy). Flags must occur once; no positional arguments are accepted.")
+		diagnostic(stderr, "configuration_invalid", "Provide --config; backup-fetch needs a new canonical absolute --destination and optional --id backup_ followed by 32 lowercase hexadecimal characters (default: latest verified copy). Flags must occur once; no positional arguments are accepted.")
 		return 2
 	}
 	seen := map[string]bool{}
@@ -48,7 +48,7 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 			}
 		}
 	}
-	if flags.Parse(args) != nil || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && destination == "" {
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && !offsite.ValidFetchTarget(id, destination) {
 		return invalid()
 	}
 	if (seen["health-file"] || seen["health-label"] || seen["health-max-age"]) && healthFile == "" {
