@@ -50,6 +50,12 @@ func absolute(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && !strings.ContainsAny(path, "\x00\r\n")
 }
 
+// ValidFetchTarget checks only argument shape, without configuration, filesystem
+// or provider reads. An empty ID deliberately selects the latest verified copy.
+func ValidFetchTarget(id, destination string) bool {
+	return (id == "" || bundleID.MatchString(id)) && absolute(destination)
+}
+
 func privateDir(path string, create bool) error {
 	if !absolute(path) {
 		return failure("offsite_configuration_invalid")

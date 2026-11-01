@@ -666,12 +666,12 @@ func retentionDeleteFailure(ctx context.Context, err error) error {
 }
 
 func Fetch(ctx context.Context, configPath, id, destination string) (backup.Summary, error) {
+	if ctx == nil || !ValidFetchTarget(id, destination) {
+		return backup.Summary{}, failure("offsite_configuration_invalid")
+	}
 	c, err := loadConfig(configPath)
 	if err != nil {
 		return backup.Summary{}, err
-	}
-	if ctx == nil || id != "" && !bundleID.MatchString(id) || !absolute(destination) {
-		return backup.Summary{}, failure("offsite_configuration_invalid")
 	}
 	duration, _ := time.ParseDuration(c.Timeout)
 	ctx, cancel := context.WithTimeout(ctx, duration)
