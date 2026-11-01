@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3 and an independent Docker MinIO fixture, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Existing local backup creation and retention remain unchanged.
+The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3 and an independent Docker MinIO fixture, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Local retention rules are unchanged. Local creation uses hidden staging and atomic publication; an interruption can leave hidden staging for separate cleanup, as described in [local backups](backups.md).
 
 ## One backup format, optional transport
 
