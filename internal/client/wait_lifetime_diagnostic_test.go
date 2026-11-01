@@ -41,7 +41,7 @@ func TestWaitLifetimeDiagnosticRequiresProvenServerReason(t *testing.T) {
 			}))
 			defer s.Close()
 			c := newClient(t, s)
-			_, err := c.WatchCI(t.Context(), []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}}, 300)
+			_, err := c.WatchCI(t.Context(), []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}}, 0)
 			var got *client.Error
 			if !errors.As(err, &got) || got.Code != test.code || got.Status != test.status || got.RequestID != "request-original-wait" || got.OutcomeUnknown || reads.Load() != 1 {
 				t.Fatal("error identity/outcome changed or read retried", got, err, reads.Load())

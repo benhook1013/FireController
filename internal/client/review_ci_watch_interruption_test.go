@@ -133,7 +133,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					if !errors.As(err, &failure) || failure.Code != kind || failure.Status != 0 || failure.OutcomeUnknown || posts.Load() != 1 {
 						t.Fatal("interruption classification changed", err, posts.Load())
 					}
-					for _, fact := range []string{"No retry was performed", "does not establish CI failure or a changed PR head", "same PR/head/base pins", "independently verifying"} {
+					for _, fact := range []string{"No review or CI rerun was requested", "does not establish CI failure or a changed PR head", "same PR/head/base pins", "independently verifying"} {
 						if !strings.Contains(failure.Action, fact) {
 							t.Fatal("missing truthful CI recovery", failure)
 						}

@@ -80,7 +80,11 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	}
 	var value CIWatchResult
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
+	err = resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
+		value = CIWatchResult{}
+		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status})
+	})
+	if err != nil {
 		return CIWatchResult{}, reviewWaitTargetError(ciWatchReadError(err), "", targets)
 	}
 	if value.ProjectID != c.identity.ProjectID || !validCIWatchResult(value, targets) {
@@ -101,7 +105,7 @@ func ciWatchReadError(err error) error {
 	if failure.Code == "deadline_exceeded" {
 		result.Message = "The client CI wait deadline expired before a CI result was received."
 	}
-	result.Action = "No retry was performed. This does not establish CI failure or a changed PR head. Start another bounded CI wait with the same PR/head/base pins only when needed; use different pins only after independently verifying the comparison."
+	result.Action = "No review or CI rerun was requested. This does not establish CI failure or a changed PR head. Start another bounded CI wait with the same PR/head/base pins only when needed; use different pins only after independently verifying the comparison."
 	return &result
 }
 

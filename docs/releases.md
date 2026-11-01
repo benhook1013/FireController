@@ -6,6 +6,8 @@ This project's authorized pre-v1 iterations use locally built binaries copied to
 
 Use proportionate focused checks and independent proof of the affected behavior before deploying. Record the exact clean source revision and hashes of the locally built `fc`, `fcd` and `fcmcp`; keep their matching guidance with the binaries. A launcher update preserves its original profile and worker binding and affects future processes, without restarting another agent's MCP session.
 
+Group related ready changes into one rollout. Use client-only or separately installed helper updates when serving behavior and schema do not change, preserving the existing reader/report contracts and qualified binary hashes.
+
 1. Copy the verified binaries and their manifest to the existing serving node. Assemble and retain an immutable local OCI image bound to that source revision and those hashes; do not select a mutable development tag or relabel a local digest as a registry digest.
 2. Reuse an unchanged qualified runtime base only while the Dockerfile and runtime dependency contract remain unchanged. A change to either requires building and qualifying that runtime again, including its actual container behavior.
 3. Before a schema-bearing server update, upgrade the separately installed offsite and backup-health helpers to schema-qualified binaries and verify their hashes, as required by [offsite backups](offsite-backups.md). Preserve private configuration, destinations and retention.

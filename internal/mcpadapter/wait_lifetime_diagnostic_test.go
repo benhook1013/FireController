@@ -42,7 +42,7 @@ func TestWaitLifetimeDiagnosticPreservedThroughCLIAndRegisteredMCP(t *testing.T)
 	head := strings.Repeat("a", 40)
 	base := strings.Repeat("b", 40)
 	pins := []client.CIWatchTarget{{PullNumber: 2, HeadSHA: head, BaseSHA: base}, {PullNumber: 7, HeadSHA: strings.Repeat("c", 40)}}
-	got := diagnosticResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": pins, "wait_seconds": 300}), "overloaded", false)
+	got := diagnosticResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": pins, "wait_seconds": 0}), "overloaded", false)
 	check := func(got mcpadapter.Diagnostic) {
 		t.Helper()
 		details, ok := got.Details.(map[string]any)
@@ -60,7 +60,7 @@ func TestWaitLifetimeDiagnosticPreservedThroughCLIAndRegisteredMCP(t *testing.T)
 	}
 	check(got)
 	var out, diag bytes.Buffer
-	args := []string{"--profiles-file", path, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + head + ":" + base, "--target", "7:" + pins[1].HeadSHA, "--wait-seconds", "300"}
+	args := []string{"--profiles-file", path, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + head + ":" + base, "--target", "7:" + pins[1].HeadSHA, "--wait-seconds", "0"}
 	if code := cli.RunContext(t.Context(), args, nil, &out, &diag); code != cli.ExitService || out.Len() != 0 {
 		t.Fatal("read shutdown changed CLI exit semantics", code, out.String(), diag.String())
 	}
@@ -79,8 +79,8 @@ func TestWaitLifetimeDiagnosticPreservedThroughCLIAndRegisteredMCP(t *testing.T)
 		}
 	}
 	for _, full := range []bool{false, true} {
-		checkOperation(diagnosticResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": operationID, "wait_seconds": 300, "diagnostics": full}), "overloaded", false))
-		args := []string{"--profiles-file", path, "--profile", "chosen", "reviews", "operation", operationID, "--wait-seconds", "300"}
+		checkOperation(diagnosticResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": operationID, "wait_seconds": 0, "diagnostics": full}), "overloaded", false))
+		args := []string{"--profiles-file", path, "--profile", "chosen", "reviews", "operation", operationID, "--wait-seconds", "0"}
 		if full {
 			args = append(args, "--diagnostics")
 		}

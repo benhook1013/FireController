@@ -30,7 +30,11 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 		return err
 	}
 	if operationID != "" {
-		details["operation_id"] = operationID
+		if ValidateReviewRunSelectionID(operationID) == nil {
+			details["selection_id"] = operationID
+		} else {
+			details["operation_id"] = operationID
+		}
 	} else {
 		details["targets"] = append([]CIWatchTarget(nil), targets...)
 	}
