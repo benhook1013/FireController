@@ -86,7 +86,7 @@ func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		var result operationHelpResponse
-		if code := RunContext(ctx, args, nil, &stdout, &stderr); code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2048 || json.Unmarshal(stdout.Bytes(), &result) != nil || result.Usage != "<bound launcher> reviews help" || !strings.Contains(stdout.String(), "publish --help") {
+		if code := RunContext(ctx, args, nil, &stdout, &stderr); code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 || json.Unmarshal(stdout.Bytes(), &result) != nil || result.Usage != "<bound launcher> reviews help" || !strings.Contains(stdout.String(), "publish --help") || !strings.Contains(stdout.String(), "scheduling --help") || !strings.Contains(stdout.String(), "activity --help") {
 			t.Fatalf("review help read configuration or failed discovery: %v %s %s", args, &stdout, &stderr)
 		}
 	}

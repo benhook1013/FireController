@@ -120,6 +120,9 @@ type Attempt struct {
 }
 
 type Engine struct {
+	automaticCursor            string
+	automaticMu                sync.Mutex
+	automaticNext              time.Time
 	hostedObserverMu           sync.Mutex
 	hostedObservers            map[string]*hostedObserverEntry
 	schedulingNow              func() time.Time

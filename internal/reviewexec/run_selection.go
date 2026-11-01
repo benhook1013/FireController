@@ -116,60 +116,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		input.ExpectedConfigurationRevision = &v
 	}
 	out, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.run", Target: "channel-selection", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		if input.ExpectedConfigurationRevision != nil && *input.ExpectedConfigurationRevision != revision {
-			return nil, configurationRevisionConflict(revision)
-		}
-		if c.Paused {
-			return nil, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
-		}
-		if !slices.Contains(c.Channels, input.Channel) {
-			return nil, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
-		}
-		if e.validateConfiguration(c) != nil {
-			return nil, core.Fail("capability_unavailable", "The configured review capability is unavailable.", 409)
-		}
-		policy, err := readPolicy(ctx, tx, scope.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		if policy.Revision < 1 {
-			return nil, core.Fail("reviews_policy_unconfigured", "Configure project review requirements before selecting a review.", 409)
-		}
-		var busy bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting'))`, scope.ProjectID, input.Channel).Scan(&busy); err != nil {
-			return nil, err
-		}
-		if busy {
-			return nil, core.Fail("review_busy", "A selection in this channel is already pending.", 409)
-		}
-		var total, local int64
-		if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(project_id=?),0) FROM review_selections WHERE state IN ('queued','selecting')`, scope.ProjectID).Scan(&total, &local); err != nil {
-			return nil, err
-		}
-		if local >= 32 || total >= 256 {
-			return nil, core.Fail("overloaded", "Review selection capacity is occupied.", 503)
-		}
-		expected := int64(0)
-		if input.ExpectedPullNumber != nil {
-			expected = *input.ExpectedPullNumber
-		}
-		id, at := core.NewID("review_selection"), stamp()
-		_, err = tx.ExecContext(ctx, `INSERT INTO review_selections(id,project_id,actor_id,worker_id,channel,configuration_revision,policy_revision,capability_fingerprint,expected_pull_number,state,reason,revision,operation_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'queued','',1,NULL,?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, input.Channel, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, expected, at, at)
-		if err != nil {
-			return nil, err
-		}
-		if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, map[string]any{"channel": input.Channel}); err != nil {
-			return nil, err
-		}
-		receipt := Receipt{ID: id, State: "queued", Revision: 1}
-		if expected > 0 {
-			receipt.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, expected)
-		}
-		return receipt, nil
+		return e.enqueueRunTx(ctx, tx, scope, input)
 	})
 	if err == nil {
 		select {
@@ -179,7 +126,73 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 	}
 	return out, err
 }
+
+// enqueueRunTx is shared by explicit requests and the reauthorized automatic coordinator.
+func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope, input RunRequest) (Receipt, error) {
+	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if input.ExpectedConfigurationRevision != nil && *input.ExpectedConfigurationRevision != revision {
+		return Receipt{}, configurationRevisionConflict(revision)
+	}
+	if c.Paused {
+		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
+	}
+	if !slices.Contains(c.Channels, input.Channel) {
+		return Receipt{}, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
+	}
+	if e.validateConfiguration(c) != nil {
+		return Receipt{}, core.Fail("capability_unavailable", "The configured review capability is unavailable.", 409)
+	}
+	policy, err := readPolicy(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if policy.Revision < 1 {
+		return Receipt{}, core.Fail("reviews_policy_unconfigured", "Configure project review requirements before selecting a review.", 409)
+	}
+	var busy bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting'))`, scope.ProjectID, input.Channel).Scan(&busy); err != nil {
+		return Receipt{}, err
+	}
+	if busy {
+		return Receipt{}, core.Fail("review_busy", "A selection in this channel is already pending.", 409)
+	}
+	var total, local int64
+	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(project_id=?),0) FROM review_selections WHERE state IN ('queued','selecting')`, scope.ProjectID).Scan(&total, &local); err != nil {
+		return Receipt{}, err
+	}
+	if local >= 32 || total >= 256 {
+		return Receipt{}, core.Fail("overloaded", "Review selection capacity is occupied.", 503)
+	}
+	expected := int64(0)
+	if input.ExpectedPullNumber != nil {
+		expected = *input.ExpectedPullNumber
+	}
+	id, at := core.NewID("review_selection"), stamp()
+	_, err = tx.ExecContext(ctx, `INSERT INTO review_selections(id,project_id,actor_id,worker_id,channel,configuration_revision,policy_revision,capability_fingerprint,expected_pull_number,state,reason,revision,operation_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'queued','',1,NULL,?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, input.Channel, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, expected, at, at)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, map[string]any{"channel": input.Channel}); err != nil {
+		return Receipt{}, err
+	}
+	receipt := Receipt{ID: id, State: "queued", Revision: 1}
+	if expected > 0 {
+		receipt.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, expected)
+	}
+	return receipt, nil
+}
+
 func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configuration, int64, string, error) {
+	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status == 403 {
+			return Configuration{}, 0, "automation_authorization_changed", nil
+		}
+		return Configuration{}, 0, "", err
+	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
 		return c, 0, "", err

@@ -67,6 +67,8 @@ type arguments struct {
 	reviewCIDiagnostics        bool
 	ciWatchTargets             []client.CIWatchTarget
 	reviewActivity             client.ReviewActivityOptions
+	reviewScheduling           client.ConfigureReviewSchedulingRequest
+	reviewPullScheduling       client.ConfigureReviewPullSchedulingRequest
 	reviewOperations           client.ReviewOperationsOptions
 }
 type definition struct {
@@ -89,6 +91,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, messageWaitDefinition())
 	definitions = append(definitions, ciWatchDefinition())
 	definitions = append(definitions, reviewActivityDefinition())
+	definitions = append(definitions, reviewSchedulingDefinitions()...)
 	definitions = append(definitions, operationListDefinition())
 	definitions = append(definitions, jobStatusDefinitions()...)
 	definitions = append(definitions, reviewBatchDefinitions()...)
@@ -101,9 +104,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	updates := newClientUpdateNotice()
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := existingManagementExternal(tool.name) || checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh" || tool.name == "wait_for_ci"
-		destructive := existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		write := reviewSchedulingWrite(tool.name) || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		openWorld := tool.name == "review_scheduling_configure" || existingManagementExternal(tool.name) || checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh" || tool.name == "wait_for_ci"
+		destructive := reviewSchedulingWrite(tool.name) || existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (response *mcp.CallToolResult, protocolErr error) {
 			defer func() { updates.Apply(response) }()
 			var args arguments
@@ -225,6 +228,14 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value = client.AgentReviewCI(assessment)
 				case "review_activity_read":
 					value, err = service.ReviewActivity(ctx, args.reviewActivity)
+				case "review_scheduling_read":
+					value, err = service.ReviewScheduling(ctx)
+				case "review_scheduling_configure":
+					value, err = service.ConfigureReviewScheduling(ctx, args.key, args.reviewScheduling)
+				case "review_pull_scheduling_read":
+					value, err = service.ReviewPullScheduling(ctx, args.pullNumber)
+				case "review_pull_scheduling_update":
+					value, err = service.ConfigureReviewPullScheduling(ctx, args.key, args.pullNumber, args.reviewPullScheduling)
 				case "wait_for_ci":
 					var watch client.CIWatchResult
 					watch, err = service.WatchCI(ctx, args.ciWatchTargets, args.reviewSourceWait)

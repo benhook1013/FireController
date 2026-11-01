@@ -16,6 +16,7 @@ import type { ReviewFronts } from './review-fronts';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 import { validBackupHealth, type BackupHealth } from './backup-health-model';
+import type { ReviewScheduling, PullScheduling, SchedulingReceipt } from './types';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -28,7 +29,7 @@ const serverErrorCodes = new Set([
   'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
-  'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired',
+  'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired', 'review_conflict', 'pull_scheduling_paused',
 ]);
 
 export class ApiError extends Error {
@@ -270,6 +271,14 @@ function validPauseFields(value: Record<string, unknown>): boolean {
 }
 function validWorkerPause(value: unknown, worker: string): value is WorkerPause {
   return record(value) && keys(value, ['worker_id', 'revision', 'paused', 'reason']) && value.worker_id === worker && nonnegative(value.revision) && validPauseFields(value) && (value.revision !== 0 || value.paused === false);
+}
+function validPullScheduling(value: unknown, project: string, number?: number): value is PullScheduling {
+  if (!record(value) || !keys(value, ['project_id','pull_number','revision','paused','reason'], ['actor_id','updated_at']) || value.project_id !== project || !pullNumber(value.pull_number) || number !== undefined && value.pull_number !== number || !nonnegative(value.revision) || typeof value.paused !== 'boolean' || !text(value.reason,256,true) || /[\u0000-\u001f\u007f]/u.test(value.reason) || !value.paused && value.reason !== '' || value.actor_id !== undefined && !id(value.actor_id) || value.updated_at !== undefined && !assessmentTime(value.updated_at)) return false;
+  return value.revision === 0 ? !value.paused && value.reason === '' && value.actor_id === undefined && value.updated_at === undefined : id(value.actor_id) && assessmentTime(value.updated_at);
+}
+function validReviewScheduling(value: unknown, project: string): value is ReviewScheduling {
+  if (!record(value) || !keys(value,['project_id','revision','automatic_hosted','paused_pulls'],['authorizing_worker_id','updated_at','reason']) || value.project_id !== project || !nonnegative(value.revision) || typeof value.automatic_hosted !== 'boolean' || !Array.isArray(value.paused_pulls) || value.paused_pulls.length>100 || !value.paused_pulls.every(item=>validPullScheduling(item,project) && item.paused) || new Set(value.paused_pulls.map(item=>item.pull_number)).size!==value.paused_pulls.length || value.authorizing_worker_id!==undefined && !id(value.authorizing_worker_id) || value.updated_at!==undefined && !assessmentTime(value.updated_at) || value.reason!==undefined && !['authorizer_unavailable','provider_hold'].includes(String(value.reason))) return false;
+  return value.revision===0 ? !value.automatic_hosted && value.authorizing_worker_id===undefined && value.updated_at===undefined && value.reason===undefined : assessmentTime(value.updated_at) && (!value.automatic_hosted || id(value.authorizing_worker_id)) && (value.automatic_hosted || value.reason===undefined);
 }
 const noteFields = ['id', 'project_id', 'revision', 'worker_id', 'job_id', 'phase', 'kind', 'status', 'created_at', 'updated_at'];
 const noteActors = ['actor_id', 'actor_worker_id', 'recorded_at'];
@@ -690,6 +699,27 @@ export class Api {
     if (!id(worker) || !validPresentationConfig(config) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision >= Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request', 'Use a validated presentation, observed revision, selected worker and original action key.');
     return this.browserMutation(this.projectRoute('presentation'), 'PUT', worker, key, { expected_revision: expectedRevision, presentation: config }, 200,
       (value): value is BrowserPresentationReceipt => record(value) && keys(value, ['project_id', 'revision', 'outcome']) && value.project_id === this.projectId && (value.outcome === 'updated' && value.revision === expectedRevision + 1 || value.outcome === 'unchanged' && value.revision === expectedRevision), signal, true);
+  }
+  async reviewScheduling(signal?: AbortSignal): Promise<ReviewScheduling> {
+    const value=await this.finiteGet(this.projectRoute('reviews/scheduling'),signal,undefined,64<<10,assessmentJSON);
+    if (!validReviewScheduling(value,this.projectId)) throw new ApiError('invalid_response','The service returned invalid review scheduling.');
+    return value;
+  }
+  async pullScheduling(number: number, signal?: AbortSignal): Promise<PullScheduling> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request','Select a valid PR.');
+    const value=await this.finiteGet(this.projectRoute(`reviews/pulls/${number}/scheduling`),signal,undefined,4096,assessmentJSON);
+    if (!validPullScheduling(value,this.projectId,number)) throw new ApiError('invalid_response','The service returned invalid PR scheduling.');
+    return value;
+  }
+  async configureReviewScheduling(worker: string, automatic: boolean, revision: number, key: string, signal?: AbortSignal): Promise<SchedulingReceipt> {
+    if (typeof automatic!=='boolean' || automatic && !id(worker) || worker!=='' && !id(worker) || !nonnegative(revision) || revision>=Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request','Select an active authorizing worker and current settings before enabling automatic Hosted reviews.');
+    return this.browserMutation(this.projectRoute('reviews/scheduling'),'POST',worker,key,{expected_revision:revision,automatic_hosted:automatic},200,
+      (v):v is SchedulingReceipt=>record(v) && keys(v,['id','state','revision']) && v.id===this.projectId && v.state==='scheduling_configured' && v.revision===revision+1,signal,true);
+  }
+  async configurePullScheduling(number: number, paused: boolean, reason: string, revision: number, key: string, signal?: AbortSignal): Promise<SchedulingReceipt> {
+    if (!pullNumber(number) || typeof paused!=='boolean' || !text(reason,256,true) || /[\u0000-\u001f\u007f]/u.test(reason) || !nonnegative(revision) || revision>=Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request','Use a current PR revision and a short pause reason.');
+    return this.browserMutation(this.projectRoute(`reviews/pulls/${number}/scheduling`),'POST','',key,{expected_revision:revision,paused,...(paused && reason ? {reason}: {})},200,
+      (v):v is SchedulingReceipt=>record(v) && keys(v,['id','state','revision']) && v.id===String(number) && v.state==='pull_scheduling_updated' && v.revision===revision+1,signal);
   }
 
   private async browserMutation<T>(path: string, method: 'POST' | 'PUT', worker: string, key: string, body: unknown, expectedStatus: number, validate: (value: unknown) => value is T, signal?: AbortSignal, presentation = false): Promise<T> {

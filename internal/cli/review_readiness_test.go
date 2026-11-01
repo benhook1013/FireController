@@ -229,7 +229,7 @@ func TestReviewReadinessCLIInvalidOptionsBeforeCredentials(t *testing.T) {
 	defer service.Close()
 	path := fixture(t, encode(t, map[string]any{"version": 1, "profiles": map[string]any{"chosen": map[string]any{"server_url": service.URL, "instance_id": "instance-fixture", "project_id": "project-fixture", "worker_id": "worker-fixture", "credential_file": "missing-ready-token"}}}))
 	cases := [][]string{{"reviews", "readiness"}, {"reviews", "readiness", "--pr", "02"}, {"reviews", "readiness", "--pr", "2", "--readiness"}, {"reviews", "readiness", "--pr", "2", "--refresh"}, {"reviews", "readiness", "--pr", "2", "--project", "other"}, {"reviews", "readiness", "--pr", "2", "--pr", "2"}}
-	for _, suffix := range [][]string{{"--readiness=true"}, {"--readiness=false"}, {"--readiness=null"}, {"--readiness=1"}, {"--readiness="}, {"--readiness", "--readiness"}, {"--readiness", "true"}, {"--Readiness"}, {"--include-readiness"}, {"--readiness", "--wait-seconds", "61"}} {
+	for _, suffix := range [][]string{{"--readiness=true"}, {"--readiness=false"}, {"--readiness=null"}, {"--readiness=1"}, {"--readiness="}, {"--readiness", "--readiness"}, {"--readiness", "true"}, {"--Readiness"}, {"--include-readiness"}, {"--readiness", "--wait-seconds", "901"}} {
 		cases = append(cases, append(sourceCLIArgs(), suffix...))
 	}
 	for _, args := range cases {

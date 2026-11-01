@@ -187,6 +187,9 @@ func draftReadinessDiagnostic() *ReviewOperationDiagnostic {
 // A terminal source hold has no linked review action. Unknown historical
 // failures remain unknown; these static explanations never echo provider text.
 func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if hint := schedulingDiagnostic(reason); hint != nil {
+		return hint
+	}
 	if reason == "pull_draft" {
 		return draftReadinessDiagnostic()
 	}
@@ -236,6 +239,9 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	if state != "held" {
 		return nil
+	}
+	if hint := schedulingDiagnostic(reason); hint != nil {
+		return hint
 	}
 	var explanation string
 	switch reason {

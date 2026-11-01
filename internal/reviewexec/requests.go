@@ -171,6 +171,9 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 // enqueueRequestTx shares native acceptance after the caller has established
 // current authority. scope supplies checked attribution; it is not authentication.
 func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
+	if err := requirePullScheduling(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err

@@ -348,7 +348,7 @@ func TestWriteIdentityFailureDistinguishesUnsentFromUnknownAcrossClients(t *test
 				if !failed || json.Unmarshal(raw, &d) != nil || d.Error.Code != "service_unavailable" || d.Error.OutcomeUnknown != (n == 1) || strings.Contains(string(raw), "PRIVATE_") {
 					t.Fatalf("incorrect safe dispatch classification: %s", raw)
 				}
-				if n == 0 && (!strings.Contains(d.Error.Message, "not sent") || !strings.Contains(d.Error.Action, "idempotency key") || !strings.Contains(d.Error.Action, "earlier uncertain") || writes.Load() != 0) {
+				if n == 0 && (!strings.Contains(d.Error.Message, "did not send the selected operation") || !strings.Contains(d.Error.Action, "idempotency key") || !strings.Contains(d.Error.Action, "earlier uncertain") || writes.Load() != 0) {
 					t.Fatal("identity failure lost known-unsent boundary")
 				}
 				if n == 1 && (!strings.Contains(d.Error.Action, "exact same idempotency key") || writes.Load() != 1) {

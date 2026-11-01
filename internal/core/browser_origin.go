@@ -3,6 +3,7 @@ package core
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -46,7 +47,14 @@ func browserMutationAllowed(r *http.Request, project string) bool {
 	if r.URL.Path == base+"messages" {
 		return true
 	}
+	if r.URL.Path == base+"reviews/scheduling" {
+		return true
+	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, base), "/")
+	if strings.HasPrefix(r.URL.Path, base) && len(parts) == 4 && parts[0] == "reviews" && parts[1] == "pulls" && parts[3] == "scheduling" {
+		pull, err := strconv.ParseInt(parts[2], 10, 32)
+		return err == nil && pull > 0 && strconv.FormatInt(pull, 10) == parts[2]
+	}
 	if strings.HasPrefix(r.URL.Path, base) && len(parts) == 3 && parts[0] == "workers" && browserSessionIdentity.MatchString(parts[1]) && parts[2] == "retire" {
 		return true
 	}

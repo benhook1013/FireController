@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/cli"
+	"github.com/benhook1013/FireController/internal/client"
 )
 
 func mutationProfiles(t *testing.T, f *serviceFixture, address string, identities map[string][2]string) string {
@@ -43,8 +44,23 @@ func mutationSuccess(t *testing.T, path, profile string, args ...string) map[str
 		t.Fatalf("mutation code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 	var receipt map[string]any
-	if err := json.Unmarshal([]byte(stdout), &receipt); err != nil || len(receipt) != 3 {
+	if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
 		t.Fatalf("compact receipt: %v %s", err, stdout)
+	}
+	if _, decorated := receipt["diagnostic"]; decorated {
+		var queued struct {
+			ID         string                            `json:"id"`
+			State      string                            `json:"state"`
+			Revision   int64                             `json:"revision"`
+			Diagnostic *client.ReviewOperationDiagnostic `json:"diagnostic"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(stdout))
+		decoder.DisallowUnknownFields()
+		if len(args) < 2 || args[0] != "reviews" || args[1] != "request" || len(receipt) != 4 || decoder.Decode(&queued) != nil || client.ValidateReviewOperationID(queued.ID) != nil || queued.State != "queued" || queued.Revision != 1 || queued.Diagnostic == nil || strings.TrimSpace(queued.Diagnostic.Explanation) == "" || strings.TrimSpace(queued.Diagnostic.NextAction) == "" {
+			t.Fatalf("invalid queued receipt diagnostic: %s", stdout)
+		}
+	} else if len(receipt) != 3 {
+		t.Fatalf("compact receipt has unexpected fields: %s", stdout)
 	}
 	return receipt
 }

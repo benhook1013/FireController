@@ -603,6 +603,10 @@ func (s *session) fetch(ctx context.Context, id, destination string) (result bac
 	if err = syncDir(destination); err != nil {
 		return result, err
 	}
+	// Persist the new destination's directory entry as well as its contents.
+	if err = syncDir(filepath.Dir(destination)); err != nil {
+		return result, err
+	}
 	complete = true
 	return result, nil
 }

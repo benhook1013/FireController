@@ -81,6 +81,20 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if o.State != "queued" {
 			return conflict()
 		}
+		scheduling, err := readPullScheduling(ctx, tx, project, o.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			return nil
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Status == 403 {
+				return nil
+			}
+			return err
+		}
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}

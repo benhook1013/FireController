@@ -374,7 +374,12 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 					if workerCtx.Err() != nil {
 						return
 					}
-					worked, err := e.runNext(workerCtx, owned)
+					generated, err := e.coordinateAutomaticHosted(workerCtx, owned)
+					var worked bool
+					if err == nil {
+						worked, err = e.runNext(workerCtx, owned)
+					}
+					worked = worked || generated
 					if err != nil {
 						if workerCtx.Err() != nil {
 							return
@@ -479,7 +484,20 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		return true, readErr
 	}
 	err = retryRunSelectionLocal(ctx, func() error {
-		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) (resultErr error) {
+			defer func() {
+				if resultErr == nil {
+					var pull int64
+					var reason string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &reason); err != nil {
+						resultErr = err
+						return
+					}
+					if reason != "selection_changed" {
+						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
+					}
+				}
+			}()
 			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
 				return err

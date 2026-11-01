@@ -78,6 +78,7 @@ type invocation struct {
 	reviewCIDiagnostics   bool
 	ciWatch               *ciWatchInvocation
 	reviewActivity        client.ReviewActivityOptions
+	reviewScheduling      *reviewSchedulingInvocation
 
 	reviewQueueChange   *reviewQueueChangeInvocation
 	reviewQueueEdit     *reviewQueueEditInvocation
