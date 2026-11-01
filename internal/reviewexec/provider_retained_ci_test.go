@@ -114,3 +114,62 @@ func TestProviderRetainedCIFreshOriginHoldIsNotAdopted(t *testing.T) {
 		t.Fatal("fresh origin hold was accepted as retained evidence", got.CI)
 	}
 }
+
+func TestProviderRetainedCIExactSameSuiteAmbiguity(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	var current reviewprovider.CIObservation
+	reader := &sourceCITestReader{ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+		current = providerRetainedCIObservation(target, false)
+		old := current.Results.Checks[0]
+		old.ID = 301
+		old.Conclusion = "failure"
+		old.CompletedAt = old.CompletedAt.Add(-time.Hour)
+		old.StartedAt = old.CompletedAt.Add(-time.Minute)
+		current.Results.Checks = append(current.Results.Checks, old)
+		current.Assessment, _ = reviewprovider.AssessRequiredCI(current.Authority, *current.Results, *current.Actions, current.Attempts)
+		current.State, current.Reason = current.Assessment.State, current.Assessment.Reason
+		return current, nil
+	}}
+	receipt := refreshEnqueue(t, f, "provider-rerun-ci", sourceCIRequest())
+	cancel, done := refreshStart(t, f, reader)
+	got := refreshWait(t, f, receipt.ID, "completed")
+	refreshStop(t, cancel, done)
+	if got.CI == nil || got.CI.State != "satisfied" {
+		t.Fatal("current rerun not collected", got.CI)
+	}
+	original := current
+	original.Assessment.Checks = append([]reviewprovider.RequiredCIAssessmentCheck(nil), current.Assessment.Checks...)
+	original.Assessment.State, original.Assessment.Reason = "unproven", "ci_required_checks_unproven"
+	check := &original.Assessment.Checks[0]
+	check.State, check.Reason = "unproven", "ci_check_ambiguous"
+	check.CheckRunID, check.RunID, check.RunAttempt = 0, 0, 0
+	original.State, original.Reason = original.Assessment.State, original.Assessment.Reason
+	if validSourceCI(original, *got.Observation) {
+		t.Fatal("fresh collection adopted parent ambiguity")
+	}
+	admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json=? WHERE id=?`, encoded(original), receipt.ID)
+	before := sourceCITestState(t, f)
+	for i := 0; i < 2; i++ {
+		if i == 1 {
+			var err error
+			f.e, err = New(f.store, attemptCapabilities)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		operation := refreshRead(t, f, receipt.ID)
+		assessment := readSourceCI(t, f)
+		if operation.CI == nil || operation.CI.State != "unproven" || assessment.State != "unproven" || assessment.Unproven != 1 || assessment.Satisfied != 0 {
+			t.Fatal("original ambiguity changed", operation.CI, assessment)
+		}
+	}
+	if sourceCITestState(t, f) != before || reader.ciCalls.Load() != 1 {
+		t.Fatal("retained bytes changed or provider fetched")
+	}
+	original.Assessment.Checks[0].CheckRunID = 300
+	admissionSQL(t, f, `UPDATE review_source_refreshes SET ci_observation_json=? WHERE id=?`, encoded(original), receipt.ID)
+	if _, err := f.e.ReadSourceRefresh(t.Context(), sourceCIScope(t, f), receipt.ID); err == nil {
+		t.Fatal("invented parent check identity accepted")
+	}
+}

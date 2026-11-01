@@ -102,7 +102,7 @@ func TestRetainedCIAssessmentAcceptsOnlyExactLegacyOriginHold(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			f := requiredCIFixture()
 			addCIStatus(&f, 3, status)
-			legacy, err := assessRequiredCI(f.Authority, f.Inventory, f.Actions, f.Attempts, true)
+			legacy, err := assessRequiredCI(f.Authority, f.Inventory, f.Actions, f.Attempts, true, false)
 			if err != nil || legacy.State != "unproven" || legacy.Checks[0].Reason != "ci_status_origin_unproven" {
 				t.Fatal("legacy fixture", legacy, err)
 			}

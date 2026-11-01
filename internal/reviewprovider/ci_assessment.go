@@ -42,12 +42,13 @@ type ciAssessmentFacts struct {
 // Status ordering is retained provider order, never reconstructed from clocks or
 // IDs. Actions job identity comes only from an exact current numbered attempt.
 func AssessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt) (RequiredCIAssessment, error) {
-	return assessRequiredCI(authority, inventory, actions, attempts, false)
+	return assessRequiredCI(authority, inventory, actions, attempts, false, false)
 }
 
 // ValidRetainedRequiredCIAssessment accepts exact current facts, or the exact
-// older conservative App-bound status-origin hold. It never upgrades retained
-// results or accepts an arbitrary unknown assessment in place of source proof.
+// older conservative App-bound status-origin or same-suite ambiguity hold.
+// It never upgrades retained results or accepts an arbitrary unknown assessment
+// in place of source proof.
 func ValidRetainedRequiredCIAssessment(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt, retained RequiredCIAssessment) bool {
 	current, err := AssessRequiredCI(authority, inventory, actions, attempts)
 	if err != nil {
@@ -59,18 +60,24 @@ func ValidRetainedRequiredCIAssessment(authority RequiredCheckAuthority, invento
 	if retained.State != "unproven" || retained.Reason != "ci_required_checks_unproven" {
 		return false
 	}
-	originHold := false
+	conservativeHold := false
 	for _, check := range retained.Checks {
-		originHold = originHold || check.AppID > 0 && check.StatusID > 0 && check.State == "unproven" && check.Reason == "ci_status_origin_unproven"
+		conservativeHold = conservativeHold || check.State == "unproven" && (check.Reason == "ci_check_ambiguous" || check.AppID > 0 && check.StatusID > 0 && check.Reason == "ci_status_origin_unproven")
 	}
-	if !originHold {
+	if !conservativeHold {
 		return false
 	}
-	legacy, err := assessRequiredCI(authority, inventory, actions, attempts, true)
-	return err == nil && reflect.DeepEqual(legacy, retained)
+	// Preserve the exact status-origin hold already accepted with current
+	// rerun selection, as well as the parent's earlier ambiguous reduction.
+	origin, err := assessRequiredCI(authority, inventory, actions, attempts, true, false)
+	if err == nil && reflect.DeepEqual(origin, retained) {
+		return true
+	}
+	parent, err := assessRequiredCI(authority, inventory, actions, attempts, true, true)
+	return err == nil && reflect.DeepEqual(parent, retained)
 }
 
-func assessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt, legacyStatusOrigin bool) (RequiredCIAssessment, error) {
+func assessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInventory, actions ActionsHeadInventory, attempts []ActionsAttempt, retainedStatusOrigin, retainedSameSuite bool) (RequiredCIAssessment, error) {
 	result := RequiredCIAssessment{State: "unproven", Reason: "ci_authority_unproven", Checks: []RequiredCIAssessmentCheck{}}
 	bad := func() (RequiredCIAssessment, error) {
 		return RequiredCIAssessment{State: "unproven", Reason: "ci_facts_invalid", Checks: []RequiredCIAssessmentCheck{}}, invalidResponse(false, http.StatusOK)
@@ -126,13 +133,29 @@ func assessRequiredCI(authority RequiredCheckAuthority, inventory CIResultInvent
 	if err != nil {
 		return result, err
 	}
+	// The earlier reducer admitted only ordered intervals, including skipped
+	// jobs. Do not use its reduction to accept facts it could not have stored.
+	if retainedSameSuite {
+		for _, check := range inventory.Checks {
+			if !check.StartedAt.IsZero() && !check.CompletedAt.IsZero() && check.CompletedAt.Before(check.StartedAt) {
+				return bad()
+			}
+		}
+		for _, attempt := range attempts {
+			for _, job := range attempt.Jobs {
+				if !job.StartedAt.IsZero() && !job.CompletedAt.IsZero() && job.CompletedAt.Before(job.StartedAt) {
+					return bad()
+				}
+			}
+		}
+	}
 	facts, err := assessmentFacts(inventory, actions, latest, attempts, len(required))
 	if err != nil {
 		return result, err
 	}
 	result.State, result.Reason = "satisfied", ""
 	for _, required := range authority.Checks {
-		entry := assessRequiredEntry(required, facts, legacyStatusOrigin)
+		entry := assessRequiredEntry(required, facts, retainedStatusOrigin, retainedSameSuite)
 		result.Checks = append(result.Checks, entry)
 		if ciAssessmentRank(entry.State) > ciAssessmentRank(result.State) {
 			result.State, result.Reason = entry.State, "ci_required_checks_"+entry.State
@@ -235,7 +258,7 @@ func validCIStateFacts(status, conclusion string, start, end time.Time) bool {
 	return true
 }
 
-func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts, legacyStatusOrigin bool) RequiredCIAssessmentCheck {
+func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts, retainedStatusOrigin, retainedSameSuite bool) RequiredCIAssessmentCheck {
 	out := RequiredCIAssessmentCheck{Context: required.Context, AppID: required.AppID, State: "satisfied"}
 	count := 0
 	supersededWorkflows, currentChecks := map[int64]bool{}, map[int64]bool{}
@@ -265,7 +288,7 @@ func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts, legacy
 			supersededWorkflows[run.WorkflowID] = true
 			continue
 		}
-		if check.Status == "completed" && currentAttemptScopes[[2]int64{check.SuiteID, check.AppID}] {
+		if !retainedSameSuite && check.Status == "completed" && currentAttemptScopes[[2]int64{check.SuiteID, check.AppID}] {
 			if _, current := facts.jobs[check.SuiteID][check.ID]; !current {
 				continue
 			}
@@ -322,14 +345,14 @@ func assessRequiredEntry(required RequiredCheck, facts ciAssessmentFacts, legacy
 	}
 	// A commit status cannot identify the required App. Even a successful
 	// status needs its own current App-bound check/workflow proof first.
-	if !legacyStatusOrigin && required.AppID > 0 && count == 0 && out.State == "satisfied" {
+	if !retainedStatusOrigin && required.AppID > 0 && count == 0 && out.State == "satisfied" {
 		out.State, out.Reason = "unproven", "ci_required_check_missing"
 	}
 	status, hasStatus := facts.statuses[required.Context]
 	if hasStatus {
 		out.StatusID = status.ID
 		statusState, reason := "unproven", "ci_status_origin_unproven"
-		if !legacyStatusOrigin || required.AppID == 0 {
+		if !retainedStatusOrigin || required.AppID == 0 {
 			// A same-name status is a separate barrier, never App identity.
 			switch status.State {
 			case "success":
