@@ -42,9 +42,10 @@ type ReviewRequestReceipt struct {
 // ReviewRequestResult contains exactly one flat wire result: the original
 // durable receipt, or the authorized terminal operation collected by a wait.
 type ReviewRequestResult struct {
-	queuedCause string
-	Receipt     *ReviewRequestReceipt
-	Operation   *ReviewOperation
+	queuedCause       string
+	queuedReservation *queuedReservation
+	Receipt           *ReviewRequestReceipt
+	Operation         *ReviewOperation
 }
 
 func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
@@ -59,6 +60,7 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 
 type ReviewOperation struct {
 	queuedCause           string
+	queuedReservation     *queuedReservation
 	Observer              *ReviewHostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
 	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
@@ -188,6 +190,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 	var status int
 	var draining bool
 	var queuedCause string
+	var reservation *queuedReservation
 	decode := func(data []byte, _ any) error {
 		if status == http.StatusOK {
 			result.Operation = &ReviewOperation{}
@@ -196,17 +199,19 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(data, result.Receipt)
 	}
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, queuedCause: &queuedCause, deploymentDraining: &draining}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, queuedCause: &queuedCause, queuedReservation: &reservation, deploymentDraining: &draining}); err != nil {
 		return ReviewRequestResult{}, err
 	}
 	valid := false
 	if operation := result.Operation; operation != nil {
 		operation.deploymentDraining = draining
 		operation.queuedCause = queuedCause
+		operation.queuedReservation = boundQueuedReservation(reservation, operation.ID, operation.Channel)
 		valid = c.validReviewOperation(*operation) && operation.WorkerID == c.identity.WorkerID && operation.PullNumber == request.PullNumber && operation.HeadSHA == request.HeadSHA && operation.Channel == request.Channel && operation.AllowOutOfOrder == request.AllowOutOfOrder && operation.OverrideFileLimit == request.OverrideFileLimit && operation.ConfigurationRevision == request.ExpectedConfigurationRevision && !oneReviewOf(operation.State, "queued", "preparing", "posting", "active")
 	} else if receipt := result.Receipt; receipt != nil {
 		receipt.deploymentDraining = draining
 		result.queuedCause = queuedCause
+		result.queuedReservation = boundQueuedReservation(reservation, receipt.ID, request.Channel)
 		valid = ValidateReviewOperationID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || reviewsize.Valid(*receipt.ReviewSize, request.PullNumber))
 	}
 	if !valid {
@@ -231,7 +236,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	var status int
 	err := resumeResultWait(ctx, waitSeconds, func(ctx context.Context, remaining int) error {
 		value = ReviewOperation{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining})
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, queuedReservation: &value.queuedReservation, deploymentDraining: &value.deploymentDraining})
 	})
 	if err != nil {
 		return ReviewOperation{}, reviewWaitTargetError(err, id, nil)

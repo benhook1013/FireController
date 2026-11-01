@@ -62,6 +62,9 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	var sourceAt time.Time
 	defer func() {
 		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, result.Reason, hostedObserverFailure(result.Reason, failure))
+		if failure == nil && (result.State == "completed" || result.State == "rate_limited") {
+			engine.ForgetHostedObserver(check)
+		}
 	}()
 	if !settle && attempt.State != "active" {
 		result.Reason = "trigger_recording_pending"

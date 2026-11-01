@@ -155,3 +155,128 @@ func TestQueuedSchedulingHintPreservesPauseAndDrainPriority(t *testing.T) {
 		})
 	}
 }
+
+func TestQueuedReservationHeaderDecoratesAllOriginalResultPaths(t *testing.T) {
+	for _, mode := range []string{"compact", "full", "receipt", "selection"} {
+		for _, kind := range []string{"same_project", "other_project", "reservation_unproven"} {
+			t.Run(mode+"/"+kind, func(t *testing.T) {
+				full := sampleReviewOperation()
+				full.State, full.Reason, full.AttemptID, full.Revision, full.WorkerID = "queued", "", "", 1, "worker-one"
+				holder := "review_operation_" + strings.Repeat("e", 32)
+				header := `{"kind":"` + kind + `"}`
+				if kind == "same_project" {
+					header = `{"kind":"same_project","operation_id":"` + holder + `","pull_number":63,"channel":"` + full.Channel + `","state":"active"}`
+				}
+				selection := selectionSample()
+				selection.Selection.ConfigurationRevision, selection.Operation = full.ConfigurationRevision, &full
+				var original any = full
+				switch mode {
+				case "compact":
+					original = client.ReviewOperationStatus{ID: full.ID, PullNumber: full.PullNumber, Channel: full.Channel, State: "queued", Stage: "queued", NextAction: "wait", Revision: 1, UpdatedAt: full.UpdatedAt}
+				case "receipt":
+					original = client.ReviewRequestReceipt{ID: full.ID, State: "queued", Revision: 1}
+				case "selection":
+					original = selection
+				}
+				reads := 0
+				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					reads++
+					wantMethod := "GET"
+					if mode == "receipt" {
+						wantMethod = "POST"
+						if r.Header.Get("Idempotency-Key") != "original-queued-key" {
+							t.Error("original mutation key changed")
+						}
+					}
+					if r.Method != wantMethod || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken {
+						t.Error("diagnostic changed original authority or action")
+					}
+					w.Header().Set("X-FC-Review-Queued", "reservation_busy")
+					w.Header().Set("X-FC-Review-Reservation", header)
+					status := 200
+					if mode == "receipt" {
+						status = 202
+					}
+					write(w, status, original)
+				}))
+				defer service.Close()
+				c := newClient(t, service)
+				var raw, out any
+				var err error
+				switch mode {
+				case "compact":
+					v, e := c.ReviewOperationStatus(t.Context(), full.ID)
+					raw, out, err = v, client.AgentReviewOperationStatus(v), e
+				case "full":
+					v, e := c.ReviewOperation(t.Context(), full.ID)
+					raw, out, err = v, client.AgentReviewOperation(v), e
+				case "receipt":
+					v, e := c.RequestReview(t.Context(), "original-queued-key", client.ReviewRequest{ExpectedConfigurationRevision: full.ConfigurationRevision, PullNumber: full.PullNumber, Channel: full.Channel, HeadSHA: full.HeadSHA}, 0)
+					raw, out, err = v, client.AgentReviewRequestResult(v), e
+				case "selection":
+					v, e := c.WaitReviewSelection(t.Context(), selection.Selection.ID, 0)
+					raw, out, err = v, client.AgentReviewSelection(v), e
+				}
+				before, _ := json.Marshal(original)
+				after, _ := json.Marshal(raw)
+				formatted, _ := json.Marshal(out)
+				if err != nil || string(before) != string(after) || reads != 1 {
+					t.Fatal("header changed original wire facts or repeated request", err, reads)
+				}
+				want := map[string]string{"same_project": holder, "other_project": "another project", "reservation_unproven": "binding could not be verified"}[kind]
+				if !strings.Contains(string(formatted), want) || !strings.Contains(string(formatted), "Keep this original request queued") || strings.Contains(string(formatted), "queuedReservation") || strings.Contains(string(formatted), "X-FC-Review-Reservation") {
+					t.Fatal("bounded useful queued diagnostic missing", string(formatted))
+				}
+			})
+		}
+	}
+}
+
+func TestQueuedReservationHeaderRejectsUntrustedDetails(t *testing.T) {
+	id := "review_operation_" + strings.Repeat("a", 32)
+	holder := "review_operation_" + strings.Repeat("e", 32)
+	valid := `{"kind":"same_project","operation_id":"` + holder + `","pull_number":63,"channel":"hosted","state":"active"}`
+	cases := map[string][]string{
+		"too large":        {strings.Repeat("x", 513)},
+		"multiple":         {valid, valid},
+		"unknown":          {`{"kind":"PRIVATE"}`},
+		"foreign identity": {`{"kind":"other_project","operation_id":"` + holder + `"}`},
+		"foreign null":     {`{"kind":"other_project","state":null}`},
+		"unknown field":    {strings.TrimSuffix(valid, "}") + `,"account":"PRIVATE"}`},
+		"missing state":    {strings.ReplaceAll(valid, `,"state":"active"`, "")},
+		"duplicate":        {strings.TrimSuffix(valid, "}") + `,"state":"active"}`},
+		"invalid ID":       {strings.ReplaceAll(valid, holder, "PRIVATE")},
+		"negative PR":      {strings.ReplaceAll(valid, ":63", ":-1")},
+		"terminal holder":  {strings.ReplaceAll(valid, "active", "completed")},
+		"self holder":      {strings.ReplaceAll(valid, holder, id)},
+		"wrong channel":    {strings.ReplaceAll(valid, "hosted", "cli")},
+	}
+	for name, headers := range cases {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls++
+				w.Header().Set("X-FC-Review-Queued", "reservation_busy")
+				for _, h := range headers {
+					w.Header().Add("X-FC-Review-Reservation", h)
+				}
+				write(w, 200, client.ReviewOperationStatus{ID: id, PullNumber: 2, Channel: "hosted", State: "queued", Stage: "queued", NextAction: "wait", Revision: 1, UpdatedAt: "2026-10-24T00:00:00Z"})
+			}))
+			defer s.Close()
+			v, err := newClient(t, s).ReviewOperationStatus(t.Context(), id)
+			out := client.AgentReviewOperationStatus(v)
+			raw, _ := json.Marshal(out)
+			if err != nil || calls != 1 || out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "reservation is occupied") || strings.Contains(string(raw), holder) || strings.Contains(string(raw), "PRIVATE") {
+				t.Fatal("untrusted details escaped or broke original result", err, string(raw))
+			}
+		})
+	}
+}

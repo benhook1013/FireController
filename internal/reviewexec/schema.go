@@ -45,6 +45,13 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id)`,
 		`CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active','uncertain')`,
 		`CREATE TABLE review_operation_waits(operation_id TEXT PRIMARY KEY REFERENCES review_operations(id),baseline_attempt_id TEXT REFERENCES review_execution_attempts(id),retry_not_before TEXT NOT NULL DEFAULT '',paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN(0,1)),CHECK((baseline_attempt_id IS NULL AND retry_not_before='') OR (baseline_attempt_id IS NOT NULL AND retry_not_before<>'')))`,
+	}, {
+		`CREATE TABLE review_execution_reservations_next(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class))`,
+		`INSERT INTO review_execution_reservations_next(provider,repository_id,pull_number,action_class,account,attempt_id) SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations`,
+		`DROP TABLE review_execution_reservations`,
+		`ALTER TABLE review_execution_reservations_next RENAME TO review_execution_reservations`,
+		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'`,
+		`CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='hosted'`,
 	}}, validateExecutionForeignKeys); err != nil {
 		return err
 	}

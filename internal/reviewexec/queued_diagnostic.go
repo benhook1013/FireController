@@ -4,12 +4,22 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 const queuedDiagnosticHeader = "X-FC-Review-Queued"
+const queuedReservationHeader = "X-FC-Review-Reservation"
+
+type queuedReservation struct {
+	Kind        string `json:"kind"`
+	OperationID string `json:"operation_id,omitempty"`
+	PullNumber  int64  `json:"pull_number,omitempty"`
+	Channel     string `json:"channel,omitempty"`
+	State       string `json:"state,omitempty"`
+}
 
 // A best-effort current scheduling hint, never retained journal state or
 // admission authority. Drift or unavailable facts omit the header, not the
@@ -19,13 +29,24 @@ func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, sc
 	if state != "queued" {
 		return
 	}
-	cause := e.queuedDiagnostic(r.Context(), scope, id, revision)
+	cause, reservation := e.queuedDiagnosticDetails(r.Context(), scope, id, revision)
 	if cause != "" {
 		w.Header().Set(queuedDiagnosticHeader, cause)
 	}
+	if reservation != nil {
+		if body, err := json.Marshal(reservation); err == nil && len(body) <= 512 {
+			w.Header().Set(queuedReservationHeader, string(body))
+		}
+	}
 }
 func (e *Engine) queuedDiagnostic(ctx context.Context, scope core.Scope, id string, revision int64) string {
+	cause, _ := e.queuedDiagnosticDetails(ctx, scope, id, revision)
+	return cause
+}
+
+func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, id string, revision int64) (string, *queuedReservation) {
 	cause := ""
+	var reservation *queuedReservation
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		op, err := readOperation(ctx, tx, scope.ProjectID, id)
 		if err != nil {
@@ -68,17 +89,66 @@ func (e *Engine) queuedDiagnostic(ctx context.Context, scope core.Scope, id stri
 		if !ok || capability.Fingerprint != op.CapabilityFingerprint {
 			return nil
 		}
-		var busy bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations WHERE provider=? AND account=? AND action_class=?) OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE provider=? AND repository_id=? AND pull_number=? AND action_class=?)`, capability.Provider, capability.Account, op.Channel, capability.Provider, repositoryID, op.PullNumber, op.Channel).Scan(&busy)
-		if busy {
+		reservation, err = queuedReservationHolder(ctx, tx, op, capability, repositoryID)
+		if reservation != nil {
 			cause = "reservation_busy"
 		}
 		return err
 	})
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	return cause
+	return cause, reservation
+}
+
+// One matching reservation is enough to explain waiting. Joined current identity
+// must agree before naming a same-project holder; no age-based stale inference
+// or foreign operation facts leave this read. Hosted account exclusivity is per
+// repository, while CLI retains the shared account boundary.
+func queuedReservationHolder(ctx context.Context, tx *sql.Tx, waiting Operation, capability Capability, repositoryID int64) (*queuedReservation, error) {
+	var provider, account, channel, attemptID string
+	var repo, pull int64
+	var aOperation, aProject, aProvider, aAccount, aState, anchor sql.NullString
+	var oID, oProject, oAttempt, oChannel, oState, oHead sql.NullString
+	var aRevision, oPull, oRepo sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT r.provider,r.account,r.action_class,r.repository_id,r.pull_number,r.attempt_id,
+ a.operation_id,a.project_id,a.provider,a.account,a.state,a.revision,
+ CASE WHEN length(CAST(a.anchor_json AS BLOB))<=2048 THEN a.anchor_json END,
+ o.id,o.project_id,o.attempt_id,o.channel,o.state,o.head_sha,o.pull_number,p.github_repository_id
+ FROM review_execution_reservations r
+ LEFT JOIN review_execution_attempts a ON a.id=r.attempt_id
+ LEFT JOIN review_operations o ON o.id=a.operation_id
+ LEFT JOIN projects p ON p.id=o.project_id
+ WHERE r.provider=? AND r.action_class=? AND ((r.account=? AND (?='cli' OR r.repository_id=?)) OR (r.repository_id=? AND r.pull_number=?))
+ ORDER BY r.attempt_id LIMIT 1`, capability.Provider, waiting.Channel, capability.Account, waiting.Channel, repositoryID, repositoryID, waiting.PullNumber).Scan(&provider, &account, &channel, &repo, &pull, &attemptID, &aOperation, &aProject, &aProvider, &aAccount, &aState, &aRevision, &anchor, &oID, &oProject, &oAttempt, &oChannel, &oState, &oHead, &oPull, &oRepo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	unproven := &queuedReservation{Kind: "reservation_unproven"}
+	if repo < 1 || pull < 1 || pull > 2147483647 || !sha.MatchString(oHead.String) || !hostedObservationID(attemptID, "review_attempt_") || !hostedObservationID(oID.String, "review_operation_") || oID.String == waiting.ID || aOperation.String != oID.String || aProject.String == "" || aProject.String != oProject.String || aProvider.String != provider || aAccount.String != account || oAttempt.String != attemptID || oChannel.String != channel || oPull.Int64 != pull || oRepo.Int64 != repo || aRevision.Int64 < 1 || aState.String != oState.String || !reservationLiveState(aState.String) || !anchor.Valid {
+		return unproven, nil
+	}
+	if anchor.String == "null" {
+		if aState.String != "preparing" {
+			return unproven, nil
+		}
+	} else {
+		var admitted Anchor
+		if json.Unmarshal([]byte(anchor.String), &admitted) != nil || encoded(admitted) != anchor.String || !validEvidenceAnchor(admitted) || admitted.RepositoryID != repo || admitted.PullNumber != pull || admitted.CandidateSHA != oHead.String {
+			return unproven, nil
+		}
+	}
+	if oProject.String != waiting.ProjectID {
+		return &queuedReservation{Kind: "other_project"}, nil
+	}
+	return &queuedReservation{Kind: "same_project", OperationID: oID.String, PullNumber: pull, Channel: channel, State: aState.String}, nil
+}
+
+func reservationLiveState(state string) bool {
+	return state == "preparing" || state == "posting" || state == "active" || state == "uncertain"
 }
 func (e *Engine) queuedRunResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, state RunState) {
 	if state.Operation != nil {

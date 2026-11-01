@@ -45,7 +45,7 @@ func TestReviewOperationStatusMCPWaitsForScheduledObservation(t *testing.T) {
 }
 
 func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
-	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown", "target_changed", "queued_hosted_cooldown", "queued_hosted_cooldown_hint"} {
+	for _, fixture := range []string{"parent_moved", "selected_parent_moved", "predecessor_parent_moved", "parent_unavailable", "hosted_allowance_cooldown", "target_changed", "queued_hosted_cooldown", "queued_hosted_cooldown_hint", "queued_hosted_cooldown_reservation"} {
 		t.Run(fixture, func(t *testing.T) {
 			reason := fixture
 			if reason == "selected_parent_moved" {
@@ -95,6 +95,10 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 				if fixture == "queued_hosted_cooldown_hint" {
 					w.Header().Set("X-FC-Review-Queued", "cooldown")
 				}
+				if fixture == "queued_hosted_cooldown_reservation" {
+					w.Header().Set("X-FC-Review-Queued", "reservation_busy")
+					w.Header().Set("X-FC-Review-Reservation", `{"kind":"same_project","operation_id":"review_operation_`+strings.Repeat("f", 32)+`","pull_number":3299,"channel":"hosted","state":"active"}`)
+				}
 				if r.Method != "GET" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.Header.Get("X-FC-Operation-Wait") != "1" {
 					t.Error("SDK diagnostic changed the read or worker binding")
 				}
@@ -138,6 +142,13 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 			decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": id, "diagnostics": true}), &fullOut)
 			if !reflect.DeepEqual(fullOut.ReviewOperation, full) || !reflect.DeepEqual(fullOut.Diagnostic, compactOut.Diagnostic) {
 				t.Fatal("full MCP parent guidance missing, changed retained facts or disagreed", fullOut)
+			}
+			if fixture == "queued_hosted_cooldown_reservation" {
+				for _, hint := range []*client.ReviewOperationDiagnostic{compactOut.Diagnostic, fullOut.Diagnostic} {
+					if !strings.Contains(hint.Explanation, "review_operation_"+strings.Repeat("f", 32)) || !strings.Contains(hint.Explanation, "PR #3299 (hosted, active)") || !strings.Contains(hint.NextAction, "Keep this original request queued") {
+						t.Fatal("same-project reservation holder lost in actual SDK/CLI output", hint)
+					}
+				}
 			}
 			if fixture == "selected_parent_moved" {
 				for _, hint := range []*client.ReviewOperationDiagnostic{compactOut.Diagnostic, fullOut.Diagnostic} {

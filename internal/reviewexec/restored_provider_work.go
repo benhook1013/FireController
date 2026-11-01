@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -53,7 +54,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 			return result, restoredWorkInvalid()
 		}
 	}
-	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "9")
+	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "9", "10")
 	if err != nil {
 		return result, err
 	}
@@ -131,7 +132,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 	return result, nil
 }
 
-func restoredDomain(ctx context.Context, tx *sql.Tx, domain, table, version string) (bool, error) {
+func restoredDomain(ctx context.Context, tx *sql.Tx, domain, table string, versions ...string) (bool, error) {
 	var exists bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)`, table).Scan(&exists); err != nil {
 		return false, restoredWorkInvalid()
@@ -141,7 +142,7 @@ func restoredDomain(ctx context.Context, tx *sql.Tx, domain, table, version stri
 	if !exists && errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	if err != nil || !exists || v != version {
+	if err != nil || !exists || !slices.Contains(versions, v) {
 		return false, restoredWorkSchema()
 	}
 	return true, nil

@@ -229,7 +229,7 @@ func TestComparisonVersionFourUpgradePreservesJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "9" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "10" {
 		t.Fatal("ordered comparison migration", version, err)
 	}
 	if adjudicationState(t, f, a) != before {

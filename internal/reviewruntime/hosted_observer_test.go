@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,13 +140,24 @@ func TestHostedObserverScheduledFreshnessDedupFailureAndStop(t *testing.T) {
 func TestHostedObserverImmediatePassAndOfflineRestart(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	op, a := f.prepareHosted(t)
+	f.provider.partial = true
 	result, err := f.hosted.Dispatch(t.Context(), op, a, f.callback(t, &a))
-	if err != nil || result.State != "completed" {
+	if err != nil || result.State != "uncertain" {
 		t.Fatal(result, err)
 	}
 	live := readHostedObserver(t, f, a)
 	if live.State != "waiting" || live.LastCheckAt == "" || live.LastSourceAt == "" || live.Error != "" {
 		t.Fatal("immediate pass omitted source freshness", live)
+	}
+	f.provider.partial = false
+	completed, err := observeHostedAttempt(t.Context(), f.provider, f.hostedCaptures, f.engine, f.project, a.ID, f.capability.ID, f.provider.actor, f.provider.bot, false)
+	if err != nil || completed.State != "completed" {
+		t.Fatal(completed, err)
+	}
+	// The supervisor still owns the active journal, but completed collection has
+	// no ongoing observation intent and must not consume a health slot forever.
+	if got := readHostedObserver(t, f, a); !reflect.DeepEqual(got, reviewexec.HostedObserverStatus{State: "unknown"}) {
+		t.Fatal("ended live collection retained a health slot", got)
 	}
 	// Durable evidence must not seed observer health in a fresh process.
 	f.engine, err = reviewexec.New(f.store, []reviewexec.Capability{{ID: f.capability.ID, Provider: "coderabbit", Account: f.capability.Account, Channels: f.capability.Channels, Fingerprint: f.capability.Fingerprint}}, reviewexec.WithNativeProjection())
@@ -161,7 +173,43 @@ func TestHostedObserverImmediatePassAndOfflineRestart(t *testing.T) {
 		t.Fatal(resultObserved, err)
 	}
 	offline := readHostedObserver(t, f, a)
-	if offline.State != "waiting" || offline.LastCheckAt == "" || offline.LastSourceAt != "" || f.provider.observations != calls {
-		t.Fatal("offline settlement fabricated source freshness", offline)
+	if !reflect.DeepEqual(offline, reviewexec.HostedObserverStatus{State: "unknown"}) || f.provider.observations != calls {
+		t.Fatal("offline completion retained health or fabricated source freshness", offline)
+	}
+}
+
+func TestHostedObserverRejectionCleanupRetainsFailedSettlement(t *testing.T) {
+	f, captures, attempt, reader := recoveryRuntimeFixture(t, "active")
+	trigger := reader.record.Snapshot.IssueComments[0]
+	if trigger.ID != 100 {
+		t.Fatal("fixture trigger changed")
+	}
+	at := time.Now().UTC()
+	reader.record.Snapshot.Reviews = []reviewprovider.HostedReview{}
+	reader.record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{}
+	reader.record.Snapshot.IssueComments = []reviewprovider.IssueComment{trigger, {
+		ID: 5002, Author: reader.record.ProviderActor, CreatedAt: at, UpdatedAt: at,
+		Body: "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:" + strings.Repeat("c", 64) + " -->\n<details>\n<summary>⚠️ Action not completed</summary>\n<dl>\n<dd>\nReview rate limited.\n</dd>\n</dl>\n</details>",
+	}}
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_rate_limit_settlement BEFORE UPDATE ON review_execution_attempts WHEN NEW.state='rate_limited' BEGIN SELECT RAISE(ABORT,'synthetic settlement refusal'); END`); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := recoverRuntime(t, f, captures, attempt, reader)
+	if err == nil || failed.State != "rate_limited" {
+		t.Fatal("fixture did not fail terminal settlement", failed, err)
+	}
+	status, err := f.engine.ReadOperationStatus(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), attempt.OperationID)
+	if err != nil || status.State != "active" || status.Observer == nil || status.Observer.State != "retrying" || status.Observer.Error == "" {
+		t.Fatal("failed settlement erased live retry diagnostics", status, err)
+	}
+	// The live path leaves journal settlement to its supervisor. Successful
+	// terminal collection nevertheless frees its process-local health entry.
+	ended, err := observeHostedAttempt(t.Context(), reader, captures, f.engine, f.project, attempt.ID, "runtime-capability", reader.record.PostingActor, reader.record.ProviderActor, false)
+	if err != nil || ended.State != "rate_limited" {
+		t.Fatal(ended, err)
+	}
+	status, err = f.engine.ReadOperationStatus(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), attempt.OperationID)
+	if err != nil || status.State != "active" || status.Observer == nil || !reflect.DeepEqual(*status.Observer, reviewexec.HostedObserverStatus{State: "unknown"}) || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 {
+		t.Fatal("ended rejection retained health or changed native accounting", status, err)
 	}
 }

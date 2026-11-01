@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -303,5 +304,35 @@ func TestPullHeadRefOptionalLegacyCaptureAndValidation(t *testing.T) {
 				t.Fatal("malformed retained head ref accepted")
 			}
 		}
+	}
+}
+
+func TestParentPullUnavailableAdapterDoesNotPerformIO(t *testing.T) {
+	var calls atomic.Int64
+	client := &http.Client{Transport: headRunTransport(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader("[]"))}, nil
+	})}
+	for name, g := range map[string]*GitHub{
+		"nil receiver":     nil,
+		"zero adapter":     {},
+		"nil client":       {baseURL: githubAPIURL},
+		"invalid base URL": {baseURL: "https://foreign.invalid", httpClient: client},
+		"empty base URL":   {httpClient: client},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Error("unavailable adapter panicked")
+				}
+			}()
+			pull, err := g.ParentPull(t.Context(), "owner/repo", "feature/parent")
+			if !hasCode(err, "provider_unavailable") || pull != (Pull{}) {
+				t.Fatal("unavailable adapter accepted", pull, err)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatal("unavailable adapter performed I/O", calls.Load())
 	}
 }

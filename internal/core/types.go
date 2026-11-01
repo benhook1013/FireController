@@ -72,6 +72,7 @@ func WriteError(w http.ResponseWriter, err error) {
 	if w.Header().Get("X-Request-ID") == "" {
 		w.Header().Set("X-Request-ID", NewID("request"))
 	}
+	logMutationOverload(err, w.Header().Get("X-Request-ID"))
 	WriteJSON(w, failure.Status, struct {
 		Error     *Error `json:"error"`
 		RequestID string `json:"request_id"`

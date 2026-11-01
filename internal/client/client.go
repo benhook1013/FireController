@@ -334,6 +334,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 type sourceWaitOptions struct {
 	deploymentDraining *bool
 	queuedCause        *string
+	queuedReservation  **queuedReservation
 	reviewBlockers     bool
 	operationEvidence  bool
 	operationWait      bool
@@ -453,6 +454,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	defer response.Body.Close()
 	if wait != nil && wait.queuedCause != nil {
 		*wait.queuedCause = recognizedQueuedCause(response.Header.Get("X-FC-Review-Queued"))
+		if wait.queuedReservation != nil {
+			*wait.queuedReservation = readQueuedReservation(response.Header, *wait.queuedCause)
+		}
 	}
 	if wait != nil && wait.deploymentDraining != nil {
 		*wait.deploymentDraining = response.Header.Get("X-FC-Deployment-Draining") == "true"

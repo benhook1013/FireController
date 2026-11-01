@@ -71,7 +71,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		}
 	}
 	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
-		hint = queuedOperationDiagnostic(value.queuedCause)
+		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
 		hint = deploymentDrainDiagnostic()
@@ -129,7 +129,7 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
 	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
-		hint = queuedOperationDiagnostic(value.queuedCause)
+		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
 		hint = deploymentDrainDiagnostic()
@@ -160,7 +160,7 @@ func AgentReviewRequestResult(value ReviewRequestResult) any {
 		return struct {
 			*ReviewRequestReceipt
 			Diagnostic *ReviewOperationDiagnostic `json:"diagnostic"`
-		}{value.Receipt, queuedOperationDiagnostic(value.queuedCause)}
+		}{value.Receipt, queuedOperationDiagnostic(value.queuedCause, value.queuedReservation)}
 	}
 	if value.Operation != nil && value.Receipt == nil {
 		return AgentReviewOperation(*value.Operation)

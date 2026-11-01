@@ -14,6 +14,18 @@ import (
 
 // A gate publishes the completed pass before the test inspects/mutates fixture
 // facts. No real 15-second timer or unbounded busy loop is needed.
+func singleRuntimeRecovery(t *testing.T, e *reviewexec.Engine, ctx context.Context, capability string) (*reviewexec.HostedRecoveryCandidate, error) {
+	t.Helper()
+	targets, err := e.PendingHostedRecoveries(ctx, capability)
+	if err != nil || len(targets) == 0 {
+		return nil, err
+	}
+	if len(targets) != 1 {
+		t.Fatal("single-target fixture returned multiple candidates", len(targets))
+	}
+	return &targets[0], nil
+}
+
 type schedulerGate struct {
 	calls chan time.Duration
 	next  chan struct{}
@@ -38,13 +50,21 @@ func newSchedulerGate(d *HostedDriver) *schedulerGate {
 }
 func (g *schedulerGate) interval(t *testing.T, want time.Duration) {
 	t.Helper()
-	select {
-	case delay := <-g.calls:
-		if delay != want {
+	for {
+		select {
+		case delay := <-g.calls:
+			if delay == want {
+				return
+			}
+			if delay > 0 && delay < want && delay <= hostedRecoveryInterval {
+				want -= delay
+				g.resume(t)
+				continue
+			}
 			t.Fatalf("recovery interval: got %v want %v", delay, want)
+		case <-time.After(3 * time.Second):
+			t.Fatal("recovery did not reach bounded wait")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("recovery did not reach bounded wait")
 	}
 }
 func (g *schedulerGate) resume(t *testing.T) {
@@ -160,7 +180,7 @@ func TestHostedSchedulerAdoptsPendingThenCompletesWithOriginalActor(t *testing.T
 	if hostedDriverJournal(t, f, a.ID) != "active" || f.provider.observations != 1 || p.currentActors.Load() != 0 || p.repositories.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
 		t.Fatal("pending adoption lost observation ownership/reservation")
 	}
-	candidate, err := f.engine.PendingHostedRecovery(t.Context(), f.capability.ID)
+	candidate, err := singleRuntimeRecovery(t, f.engine, t.Context(), f.capability.ID)
 	if err != nil || candidate == nil || candidate.AttemptID != a.ID {
 		t.Fatal("adopted active work disappeared from recovery candidates", err)
 	}

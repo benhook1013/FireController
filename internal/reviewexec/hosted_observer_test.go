@@ -90,7 +90,7 @@ func TestHostedObserverConcurrentChecksBindingAndRestart(t *testing.T) {
 	if got := restarted.observerStatus(o); !reflect.DeepEqual(got, unknown) {
 		t.Fatal("restart fabricated health", got)
 	}
-	// An old pass may finish after a new operation has replaced the bounded slot.
+	// A late old pass cannot change a different operation sharing this capability.
 	old := e.BeginHostedObserver("test-capability", o.ProjectID, o.ID, o.AttemptID)
 	other = o
 	other.ID = "review_operation_" + strings.Repeat("c", 32)
@@ -103,6 +103,7 @@ func TestHostedObserverConcurrentChecksBindingAndRestart(t *testing.T) {
 		t.Fatal("late old pass corrupted replacement", got)
 	}
 	e.FinishHostedObserver(newer, at, at, "publication_not_proven", nil)
+	e.ForgetHostedObserver(old)
 	if len(e.hostedObservers) != 1 {
 		t.Fatal("unbounded attempt history")
 	}
@@ -153,6 +154,8 @@ func TestHostedObserverSafeCodesAndRace(t *testing.T) {
 				at := time.Now().UTC()
 				e.FinishHostedObserver(check, at, at, "publication_not_proven", nil)
 				e.ScheduleHostedObserver(check, at.Add(time.Minute))
+				e.DelayHostedRecoveryAccount("test-capability", at.Add(time.Minute))
+				_ = e.HostedRecoveryNotBefore("test-capability")
 				_ = e.observerStatus(o)
 			}
 		}()
@@ -160,5 +163,57 @@ func TestHostedObserverSafeCodesAndRace(t *testing.T) {
 	wg.Wait()
 	if got := e.observerStatus(o); got.State != "waiting" || got.Error != "" || got.LastCheckAt == "" || got.LastSourceAt == "" {
 		t.Fatal(got)
+	}
+}
+
+func TestHostedObserverSeparateAttemptsAndSharedAccountDeadline(t *testing.T) {
+	caps := append([]Capability(nil), attemptCapabilities...)
+	caps = append(caps, Capability{ID: "same-account", Provider: caps[0].Provider, Account: caps[0].Account, Channels: []string{"hosted"}})
+	e, err := New(nil, caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, first := observerFixture(t)
+	second := first
+	second.ProjectID, second.ID, second.AttemptID = otherAttemptProject, "review_operation_"+strings.Repeat("c", 32), "review_attempt_"+strings.Repeat("d", 32)
+	checks := []*HostedObserverCheck{
+		e.BeginHostedObserver("test-capability", first.ProjectID, first.ID, first.AttemptID),
+		e.BeginHostedObserver("test-capability", second.ProjectID, second.ID, second.AttemptID),
+	}
+	at := time.Now().UTC()
+	for _, check := range checks {
+		e.FinishHostedObserver(check, at, at, "publication_not_proven", nil)
+		e.ScheduleHostedObserver(check, at.Add(30*time.Second))
+	}
+	until := at.Add(2 * time.Minute)
+	e.DelayHostedRecoveryAccount("same-account", until)
+	e.DelayHostedRecoveryAccount("test-capability", at.Add(time.Minute)) // cannot shorten it
+	if e.HostedRecoveryNotBefore("test-capability") != until || e.HostedRecoveryNotBefore("same-account") != until || !e.HostedRecoveryNotBefore("other-account").IsZero() {
+		t.Fatal("provider account deadline crossed or lost capability binding")
+	}
+	for _, operation := range []Operation{first, second} {
+		got := e.observerStatus(operation)
+		if got.State != "waiting" || got.LastSourceAt == "" || got.NextCheckAt != until.Format(time.RFC3339Nano) {
+			t.Fatal("separate attempt lost effective shared deadline", got)
+		}
+	}
+	e.StopHostedObserver(checks[0], nil)
+	if e.observerStatus(first).State != "stopped" || e.observerStatus(second).State != "waiting" {
+		t.Fatal("stopping one attempt stopped the other")
+	}
+	late := e.BeginHostedObserver("test-capability", second.ProjectID, second.ID, second.AttemptID)
+	e.ForgetHostedObserver(checks[1])
+	e.FinishHostedObserver(late, at, at, "publication_not_proven", nil)
+	if got := e.observerStatus(second); got.State != "unknown" || len(e.hostedObservers) != 1 {
+		t.Fatal("settled attempt retained or recreated local health", got)
+	}
+	e.DelayHostedRecoveryAccount("unknown", until)
+	if len(e.hostedAccountNext) != 1 {
+		t.Fatal("unknown capability allocated account state")
+	}
+	// The process-local deadline and all health reset on restart.
+	restarted, err := New(nil, caps)
+	if err != nil || !restarted.HostedRecoveryNotBefore("same-account").IsZero() || restarted.observerStatus(first).State != "unknown" {
+		t.Fatal("restart inferred old observer health", err)
 	}
 }

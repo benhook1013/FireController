@@ -12,9 +12,22 @@ import (
 	"time"
 )
 
-func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(context.Context, *sql.Tx) (any, error)) (json.RawMessage, error) {
+func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(context.Context, *sql.Tx) (any, error)) (_ json.RawMessage, failure error) {
+	started, stage := time.Now(), "validation"
+	var admission time.Duration
+	var cause error
+	defer func() {
+		failure = observeMutationOverload(failure, cause, stage, time.Since(started), admission)
+	}()
+	normalize := func(err error) error {
+		cause = err
+		if ctx.Err() != nil {
+			cause = ctx.Err()
+		}
+		return mutationError(ctx, err)
+	}
 	if err := ctx.Err(); err != nil {
-		return nil, storageError(err)
+		return nil, normalize(err)
 	}
 	fingerprint, err := mutationFingerprint(scope, m)
 	if err != nil {
@@ -24,34 +37,43 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	defer cancel()
 	changes := &eventChanges{topics: make(map[messageTopic]struct{})}
 	ctx = context.WithValue(ctx, eventChangesKey{}, changes)
+	stage = "writer_admission"
+	waiting := time.Now()
 	select {
 	case s.admission <- struct{}{}:
+		admission = time.Since(waiting)
 		defer func() { <-s.admission }()
 	case <-ctx.Done():
-		return nil, storageError(ctx.Err())
+		admission = time.Since(waiting)
+		return nil, normalize(ctx.Err())
 	}
+	stage = "begin"
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, mutationError(ctx, err)
+		return nil, normalize(err)
 	}
 	defer tx.Rollback()
+	stage = "reauthorize_replay"
 	response, found, err := s.replay(ctx, tx, scope, m, fingerprint)
 	if ctx.Err() != nil {
-		return nil, storageError(ctx.Err())
+		return nil, normalize(ctx.Err())
 	}
 	if err != nil || found {
+		cause = err
 		return response, err
 	}
+	stage = "apply"
 	value, err := fn(ctx, tx)
 	if ctx.Err() != nil {
-		return nil, storageError(ctx.Err())
+		return nil, normalize(ctx.Err())
 	}
 	if err != nil {
-		return nil, mutationError(ctx, err)
+		return nil, normalize(err)
 	}
+	stage = "encode_receipt"
 	encoded, err := json.Marshal(value)
 	if ctx.Err() != nil {
-		return nil, storageError(ctx.Err())
+		return nil, normalize(ctx.Err())
 	}
 	if err != nil {
 		return nil, Fail("internal_error", "The mutation receipt could not be encoded.", 500)
@@ -59,14 +81,16 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	if len(encoded) > 256<<10 {
 		return nil, Fail("internal_error", "The mutation receipt exceeds its bounded size.", 500)
 	}
+	stage = "store_receipt"
 	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,?,?,?,?,?,?,?)", s.instanceID, scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded)); err != nil {
-		return nil, mutationError(ctx, err)
+		return nil, normalize(err)
 	}
 	if ctx.Err() != nil {
-		return nil, storageError(ctx.Err())
+		return nil, normalize(ctx.Err())
 	}
+	stage = "commit"
 	if err = tx.Commit(); err != nil {
-		return nil, mutationError(ctx, err)
+		return nil, normalize(err)
 	}
 	s.notifyEvents(changes)
 	return encoded, nil

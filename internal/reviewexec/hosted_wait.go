@@ -31,7 +31,7 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil {
 		return nil, err
 	}
-	if version != "9" {
+	if version != "9" && version != "10" {
 		return nil, nil
 	}
 	var result OperationWait

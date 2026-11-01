@@ -258,7 +258,7 @@ func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string,
 		return "0", "0", nil
 	case "7":
 		return order, "0", nil
-	case "8", "9":
+	case "8", "9", "10":
 		return order, limit, nil
 	default:
 		return "", "", adjudicationStorageError()

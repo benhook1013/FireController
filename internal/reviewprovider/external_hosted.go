@@ -128,10 +128,10 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		if root.InReplyToID != 0 {
 			continue
 		}
-		copy := root
-		copy.Line, copy.StartLine = copyPublicationLine(root.Line), copyPublicationLine(root.StartLine)
-		copy.OriginalLine, copy.OriginalStartLine = copyPublicationLine(root.OriginalLine), copyPublicationLine(root.OriginalStartLine)
-		roots[root.ReviewID] = append(roots[root.ReviewID], copy)
+		owned := root
+		owned.Line, owned.StartLine = copyPublicationLine(root.Line), copyPublicationLine(root.StartLine)
+		owned.OriginalLine, owned.OriginalStartLine = copyPublicationLine(root.OriginalLine), copyPublicationLine(root.OriginalStartLine)
+		roots[root.ReviewID] = append(roots[root.ReviewID], owned)
 	}
 	windows := externalHostedNativeWindows(snapshot.IssueComments, provider)
 	result := make([]ExternalHostedRun, 0, len(groups))
@@ -194,6 +194,20 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		}
 		g.run.TriggerCommentID, g.run.NativeOperationID = windows.match(g.run.HeadSHA, g.first, g.run.FinishedAt)
 		result = append(result, g.run)
+	}
+	// One command cannot identify multiple independent provider run sources.
+	// Clear every duplicate hint, keeping all raw runs and findings available
+	// for the consumer's separate ledger ownership checks.
+	claims := map[int64]int{}
+	for _, run := range result {
+		if run.TriggerCommentID != 0 {
+			claims[run.TriggerCommentID]++
+		}
+	}
+	for i := range result {
+		if claims[result[i].TriggerCommentID] > 1 {
+			result[i].TriggerCommentID, result[i].NativeOperationID = 0, ""
+		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].FinishedAt.Equal(result[j].FinishedAt) {

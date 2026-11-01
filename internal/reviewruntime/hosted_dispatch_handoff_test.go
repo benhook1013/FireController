@@ -51,7 +51,7 @@ func TestHostedDispatchPendingHandsOffAfterOneObservation(t *testing.T) {
 	if _, err := f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, result.State, result.Reason, result.ExternalID); err != nil {
 		t.Fatal("supervisor could not retain uncertain ownership", err)
 	}
-	candidate, err := f.engine.PendingHostedRecovery(t.Context(), f.capability.ID)
+	candidate, err := singleRuntimeRecovery(t, f.engine, t.Context(), f.capability.ID)
 	if err != nil || candidate == nil || candidate.AttemptID != attempt.ID {
 		t.Fatal("handoff is not observable by scheduled recovery", candidate, err)
 	}
@@ -145,7 +145,7 @@ func TestHostedDispatchFinishedInventoryUnprovenHandsOff(t *testing.T) {
 	if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != result.Reason || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
 		t.Fatal("handoff lost reservation or fabricated credit", bound, err)
 	}
-	candidate, err := f.engine.PendingHostedRecovery(t.Context(), f.capability.ID)
+	candidate, err := singleRuntimeRecovery(t, f.engine, t.Context(), f.capability.ID)
 	if err != nil || candidate == nil || candidate.AttemptID != attempt.ID {
 		t.Fatal("same attempt not eligible for continued observation", candidate, err)
 	}

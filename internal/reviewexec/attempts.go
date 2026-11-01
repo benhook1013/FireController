@@ -69,7 +69,8 @@ func attemptRecordingStamp(ctx context.Context, tx *sql.Tx, o Operation, a *Atte
 	return now.UTC().Format(time.RFC3339Nano), nil
 }
 
-// StartAttempt reserves both the external target and the provider account.
+// StartAttempt reserves the external target and the channel's account scope:
+// CLI is account-wide; Hosted is per repository on that account.
 // It does no provider work; preparing has not authorized an external action.
 func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt, error) {
 	var result Attempt
@@ -159,7 +160,7 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			}
 		}
 		var busy int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND (account=? OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, o.PullNumber).Scan(&busy); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND (action_class='cli' OR repository_id=?)) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
 			return err
 		}
 		if busy != 0 {

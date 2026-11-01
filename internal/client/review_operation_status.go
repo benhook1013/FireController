@@ -13,6 +13,7 @@ import (
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
 	queuedCause        string
+	queuedReservation  *queuedReservation
 	SettlementTarget   *ReviewSettlementTarget     `json:"settlement_target,omitempty"`
 	Observer           *ReviewHostedObserverStatus `json:"observer,omitempty"`
 	Wait               *ReviewOperationWait        `json:"wait,omitempty"`
@@ -46,7 +47,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	var status int
 	err := resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
 		value = ReviewOperationStatus{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: remaining, status: &status, reviewBlockers: true, sourceRefusalV4: true, operationWait: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining})
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: remaining, status: &status, reviewBlockers: true, sourceRefusalV4: true, operationWait: true, hostedObserver: true, queuedCause: &value.queuedCause, queuedReservation: &value.queuedReservation, deploymentDraining: &value.deploymentDraining})
 	})
 	if err != nil {
 		return ReviewOperationStatus{}, reviewWaitTargetError(err, id, nil)

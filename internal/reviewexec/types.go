@@ -124,7 +124,8 @@ type Engine struct {
 	automaticMu                sync.Mutex
 	automaticNext              time.Time
 	hostedObserverMu           sync.Mutex
-	hostedObservers            map[string]*hostedObserverEntry
+	hostedObservers            map[hostedObserverKey]*hostedObserverEntry
+	hostedAccountNext          map[hostedAccountKey]time.Time
 	schedulingNow              func() time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool
