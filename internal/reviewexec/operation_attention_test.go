@@ -142,6 +142,14 @@ func TestOperationAttentionMalformedStopAndFixFactsCannotHideWork(t *testing.T) 
 		t.Fatal(err)
 	}
 	base := "/api/v1/projects/" + attemptProject + "/reviews/operations?status=attention"
+	// Both canonical producer forms stay excluded once all work is settled.
+	for _, fixedAt := range []string{"2026-11-01T12:00:00Z", "2026-11-01T12:00:00.123456789Z"} {
+		admissionSQL(t, f, `UPDATE review_adjudication_state SET body_json=json_set(body_json,'$.findings[0].fixed_at',?) WHERE evidence_id=?`, fixedAt, evidence)
+		if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 0 {
+			t.Fatal("valid UTC fix timestamp became attention", fixedAt, page)
+		}
+	}
+	admissionSQL(t, f, `UPDATE review_adjudication_state SET body_json=? WHERE evidence_id=?`, original, evidence)
 	for name, update := range map[string]string{
 		"empty-object":        `'{}'`,
 		"missing-finalized":   `json_remove(body_json,'$.finalized')`,
@@ -156,6 +164,10 @@ func TestOperationAttentionMalformedStopAndFixFactsCannotHideWork(t *testing.T) 
 		"missing-fix-sha":     `json_remove(body_json,'$.findings[0].fix_sha')`,
 		"missing-proof":       `json_set(body_json,'$.findings[0].proof_note','')`,
 		"invalid-fix-time":    `json_set(body_json,'$.findings[0].fixed_at','PRIVATE_BAD_TIME')`,
+		"relative-fix-time":   `json_set(body_json,'$.findings[0].fixed_at','now')`,
+		"date-only-fix-time":  `json_set(body_json,'$.findings[0].fixed_at','2026-11-01')`,
+		"spaced-fix-time":     `json_set(body_json,'$.findings[0].fixed_at','2026-11-01T12:00:00 Z')`,
+		"empty-fix-fraction":  `json_set(body_json,'$.findings[0].fixed_at','2026-11-01T12:00:00.Z')`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			admissionSQL(t, f, `UPDATE review_adjudication_state SET body_json=`+update+` WHERE evidence_id=?`, evidence)

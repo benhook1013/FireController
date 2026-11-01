@@ -103,6 +103,8 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 				// Provider completion does not settle adjudication or accepted fixes.
 				// Filter these current local obligations before paging, so completed
 				// history cannot crowd an older actionable result out of discovery.
+				// Fix timestamps use RecordFindingFix's UTC RFC3339Nano shape;
+				// SQLite's broader date/relative-time syntax cannot settle a fix.
 				query += ` OR (o.state='completed' AND EXISTS (
  SELECT 1 FROM review_execution_evidence e
  LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
@@ -115,6 +117,12 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
    OR json_extract(f.value,'$.fix_sha') GLOB '*[^0-9a-f]*'
    OR json_type(f.value,'$.proof_note') IS NOT 'text' OR trim(json_extract(f.value,'$.proof_note'))=''
    OR json_type(f.value,'$.fixed_at') IS NOT 'text' OR julianday(json_extract(f.value,'$.fixed_at')) IS NULL
+   OR substr(json_extract(f.value,'$.fixed_at'),1,19) NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+   OR (substr(json_extract(f.value,'$.fixed_at'),20)<>'Z' AND (
+    length(json_extract(f.value,'$.fixed_at')) NOT BETWEEN 22 AND 30
+    OR substr(json_extract(f.value,'$.fixed_at'),20,1)<>'.' OR substr(json_extract(f.value,'$.fixed_at'),-1)<>'Z'
+    OR substr(json_extract(f.value,'$.fixed_at'),21,length(json_extract(f.value,'$.fixed_at'))-21) GLOB '*[^0-9]*'
+   ))
   )
  ))))`
 			}
