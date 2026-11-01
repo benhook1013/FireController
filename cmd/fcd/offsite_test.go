@@ -77,7 +77,7 @@ func TestOffsiteHealthFlagsExportMirrorWithoutChangingRawStatus(t *testing.T) {
 }
 
 func TestOffsiteHealthInvalidFlagsFailBeforeConfigurationRead(t *testing.T) {
-	for _, extra := range [][]string{{"--health-label", "Cloud"}, {"--health-file", "relative"}, {"--health-file", "/private/health", "--health-label", "line\nbreak"}, {"--health-file", "/private/health", "--health-max-age", "0s"}, {"--health-file", "/private/health", "--health-max-age", "1.5s"}, {"--health-file", "/private/health", "--health-file", "/other"}} {
+	for _, extra := range [][]string{{"--health-file="}, {"--health-file", ""}, {"--health-label", "Cloud"}, {"--health-file", "relative"}, {"--health-file", "/private/health", "--health-label", "line\nbreak"}, {"--health-file", "/private/health", "--health-max-age", "0s"}, {"--health-file", "/private/health", "--health-max-age", "1.5s"}, {"--health-file", "/private/health", "--health-file", "/other"}} {
 		var out, diagnostics bytes.Buffer
 		args := append([]string{"backup-offsite-status", "--config", "DO_NOT_READ_PRIVATE"}, extra...)
 		if code := run(t.Context(), args, &out, &diagnostics); code != 2 || out.Len() != 0 || strings.Contains(diagnostics.String(), "DO_NOT_READ_PRIVATE") {
