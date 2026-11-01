@@ -26,7 +26,9 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 	}
 	shutdown := failure.Status == http.StatusServiceUnavailable && failure.Code == "overloaded" && details["reason"] == "result_wait_lifetime"
 	local := failure.Status == 0 && oneReviewOf(failure.Code, "canceled", "deadline_exceeded")
-	if !shutdown && !local {
+	ciRefusal := operationID == "" && ValidateCIWatchTargets(targets) == nil && ciWatchRefusalReason(details["reason"]) &&
+		(failure.Code == "overloaded" && failure.Status == http.StatusServiceUnavailable || failure.Code == "storage_unavailable" && failure.Status == http.StatusInternalServerError)
+	if !shutdown && !local && !ciRefusal {
 		return err
 	}
 	if operationID != "" {
@@ -36,7 +38,11 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 			details["operation_id"] = operationID
 		}
 	} else {
-		details["targets"] = append([]CIWatchTarget(nil), targets...)
+		pinned := append([]CIWatchTarget(nil), targets...)
+		for i := range pinned {
+			pinned[i].FailureWorkflowIDs = append([]int64(nil), pinned[i].FailureWorkflowIDs...)
+		}
+		details["targets"] = pinned
 	}
 	result := *failure
 	result.Details = details

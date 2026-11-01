@@ -22,7 +22,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	headAttention := changeAware && watchVersion == "change-v2" && len(r.Header.Values("X-FC-CI-Workflow-Details")) == 1 && (workflowVersion == "2" || workflowVersion == "3")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
-		core.WriteError(w, err)
+		core.WriteError(w, ciWatchRefusal(err, "ci_watch_scope_read"))
 		return
 	}
 	if _, err = core.QueryKeys(r, "validation_failed"); err != nil {

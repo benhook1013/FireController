@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -153,9 +154,9 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 			return err
 		})
 		if ctx.Err() != nil {
-			return ciWatchBinding{}, resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released.")
+			return ciWatchBinding{}, ciWatchRefusal(resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released."), "ci_watch_canceled")
 		}
-		return value, err
+		return value, ciWatchRefusal(err, "ci_watch_binding_read")
 	}
 	binding, err := readBinding()
 	if err != nil {
@@ -195,7 +196,7 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 		}
 		select {
 		case <-ctx.Done():
-			return CIWatchResult{}, resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released.")
+			return CIWatchResult{}, ciWatchRefusal(resultWaitCanceled(ctx, "The CI watch was canceled; its temporary subscriptions were released."), "ci_watch_canceled")
 		case <-timer.C:
 			// Reauthorize after a quiet wait, just as after a source notification.
 			fresh, err := readBinding()
@@ -224,6 +225,43 @@ func boundedCIWatchResult(value CIWatchResult) (CIWatchResult, error) {
 	return value, nil
 }
 
+// Annotate only operational refusals after read-admission retry has finished.
+// Reasons name a finite local stage, never the underlying storage/provider cause.
+func ciWatchRefusal(err error, reason string) error {
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "overloaded" && failure.Code != "storage_unavailable" {
+		return err
+	}
+	details := map[string]any{}
+	switch previous := failure.Details.(type) {
+	case nil:
+	case map[string]string:
+		if _, exists := previous["reason"]; exists {
+			return err
+		}
+		for key, value := range previous {
+			details[key] = value
+		}
+	case map[string]any:
+		if _, exists := previous["reason"]; exists {
+			return err
+		}
+		for key, value := range previous {
+			details[key] = value
+		}
+	default:
+		return err
+	}
+	copy := *failure
+	details["reason"] = reason
+	copy.Details = details
+	return &copy
+}
+
 func ciWatchUnavailable() error {
-	return core.Fail("overloaded", "CI watch observation is unavailable or at capacity; no review or queue change was requested.", 503)
+	return ciWatchRefusal(core.Fail("overloaded", "The configured CI observer is unavailable; no review or queue change was requested.", 503), "ci_watch_observer_unavailable")
+}
+
+func ciWatchCapacity() error {
+	return ciWatchRefusal(core.Fail("overloaded", "The bounded CI watch capacity is occupied; no extra observation was started.", 503), "ci_watch_capacity")
 }

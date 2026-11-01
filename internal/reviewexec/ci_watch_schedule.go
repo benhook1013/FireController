@@ -42,8 +42,11 @@ type ciWatchClaim struct {
 func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBinding, targets []CIWatchTarget) (*ciWatchSubscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.readers[binding.capability].(ciGateReader); !ok || len(s.watchers) >= 64 || s.watchPrincipals[scope.PrincipalID] >= 8 {
+	if _, ok := s.readers[binding.capability].(ciGateReader); !ok {
 		return nil, ciWatchUnavailable()
+	}
+	if len(s.watchers) >= 64 || s.watchPrincipals[scope.PrincipalID] >= 8 {
+		return nil, ciWatchCapacity()
 	}
 	additional := 0
 	for _, target := range targets {
@@ -65,7 +68,7 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 		}
 	}
 	if len(s.watches)+additional > 256 {
-		return nil, ciWatchUnavailable()
+		return nil, ciWatchCapacity()
 	}
 	if s.watches == nil {
 		s.watches = map[ciWatchKey]*ciWatchEntry{}

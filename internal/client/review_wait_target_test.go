@@ -40,3 +40,40 @@ func TestReviewWaitInterruptionKeepsImmutableOriginalIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewWaitCIRefusalKeepsValidatedDeepClonedPinsOnly(t *testing.T) {
+	for _, kind := range []struct {
+		code   string
+		status int
+	}{{"overloaded", 503}, {"storage_unavailable", 500}} {
+		for _, reason := range []string{"ci_watch_scope_read", "ci_watch_binding_read", "ci_watch_capacity", "ci_watch_observer_unavailable", "ci_watch_canceled"} {
+			pins := []CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), FailureWorkflowIDs: []int64{31, 32}}}
+			original := &Error{Code: kind.code, Status: kind.status, Details: map[string]any{"reason": reason}}
+			got := reviewWaitTargetError(original, "", pins).(*Error)
+			if got == original || len(original.Details.(map[string]any)) != 1 {
+				t.Fatal("CI annotation mutated original refusal", original)
+			}
+			saved := got.Details.(map[string]any)["targets"].([]CIWatchTarget)
+			pins[0].HeadSHA = strings.Repeat("c", 40)
+			pins[0].FailureWorkflowIDs[0] = 99
+			if saved[0].HeadSHA != strings.Repeat("a", 40) || saved[0].FailureWorkflowIDs[0] != 31 {
+				t.Fatal("CI refusal shared original pin slices", saved)
+			}
+		}
+	}
+	valid := []CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}}
+	for _, original := range []*Error{
+		{Code: "forbidden", Status: 403, Details: map[string]any{"reason": "ci_watch_capacity"}},
+		{Code: "unauthorized", Status: 401, Details: map[string]any{"reason": "ci_watch_binding_read"}},
+		{Code: "overloaded", Status: 403, Details: map[string]any{"reason": "ci_watch_capacity"}},
+		{Code: "overloaded", Status: 503, Details: map[string]any{"reason": "ci_watch_capacity_extra"}},
+	} {
+		if reviewWaitTargetError(original, "", valid) != original {
+			t.Fatal("CI annotation changed unmatched authority/refusal", original)
+		}
+	}
+	failure := &Error{Code: "overloaded", Status: 503, Details: map[string]any{"reason": "ci_watch_capacity"}}
+	if reviewWaitTargetError(failure, "review_operation_"+strings.Repeat("a", 32), valid) != failure || reviewWaitTargetError(failure, "", nil) != failure || reviewWaitTargetError(failure, "", []CIWatchTarget{{PullNumber: 2, HeadSHA: "short"}}) != failure {
+		t.Fatal("CI-only pin annotation escaped validated watch scope")
+	}
+}

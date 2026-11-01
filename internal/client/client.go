@@ -577,6 +577,30 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 			result.Action = "When the controller is available, reattach the same wait with the original operation ID or CI PR/head/base pins. Interrupted waiting does not mean CI failed. Preserve the original request and any key."
 		}
 	}
+	if result.Code == "overloaded" || result.Code == "storage_unavailable" {
+		if details, ok := result.Details.(map[string]any); ok {
+			switch details["reason"] {
+			case "ci_watch_scope_read":
+				result.Message = "The controller could not complete the CI watch's scoped authentication read."
+			case "ci_watch_binding_read":
+				result.Message = "The controller could not complete a fresh CI watch source-binding read."
+			case "ci_watch_capacity":
+				result.Message = "The controller's bounded CI watch capacity is occupied."
+			case "ci_watch_observer_unavailable":
+				result.Message = "The configured CI observer is unavailable."
+			case "ci_watch_canceled":
+				result.Message = "The CI watch request context ended at the controller; no CI result was returned."
+			}
+			if ciWatchRefusalReason(details["reason"]) {
+				result.Action = "If still needed when the controller is available, retry this same bounded CI read with the original PR/head/base pins. This does not establish CI failure or a changed comparison. Keep request_id and reason for persistent failures."
+				if details["reason"] == "ci_watch_capacity" {
+					result.Action = "Let existing watches complete before starting one later bounded read with the same PR/head/base pins if still needed; avoid repeatedly rearming. No CI failure or comparison change was established."
+				} else if details["reason"] == "ci_watch_canceled" {
+					result.Action = "If waiting is still needed, start one new bounded CI read with the same PR/head/base pins. This does not identify who ended the request or establish CI failure."
+				}
+			}
+		}
+	}
 	if status == http.StatusConflict {
 		switch result.Code {
 		case "review_round_capacity":
@@ -661,7 +685,7 @@ func (c *Client) safeDetails(value any, code string) any {
 	for key, item := range object {
 		switch key {
 		case "reason":
-			if reason, ok := item.(string); ok && code == "overloaded" && reason == "result_wait_lifetime" {
+			if reason, ok := item.(string); ok && (code == "overloaded" && reason == "result_wait_lifetime" || (code == "overloaded" || code == "storage_unavailable") && ciWatchRefusalReason(reason)) {
 				result[key] = reason
 			}
 		case "operation_id":
@@ -686,3 +710,12 @@ func (c *Client) safeDetails(value any, code string) any {
 
 // Required DTO fields cannot silently become zero values. Optional cursor and
 // reply fields carry omitempty tags; all JSON validation stays bounded upstream.
+
+// Only static CI-watch refusal stages cross this diagnostic boundary.
+func ciWatchRefusalReason(value any) bool {
+	switch value {
+	case "ci_watch_scope_read", "ci_watch_binding_read", "ci_watch_capacity", "ci_watch_observer_unavailable", "ci_watch_canceled":
+		return true
+	}
+	return false
+}
