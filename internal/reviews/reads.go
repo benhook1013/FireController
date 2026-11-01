@@ -334,10 +334,6 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, validationError("The query exceeds its bounded size."))
 			return
 		}
-		if view, selected := query["view"]; selected && (len(view) != 1 || view[0] != "display") {
-			core.WriteError(w, validationError("Select display for the run detail view."))
-			return
-		}
 		runID := r.PathValue("run_id")
 		if len(runID) != len("review_run_")+32 || !strings.HasPrefix(runID, "review_run_") {
 			core.WriteError(w, validationError("Use a valid review run identity."))
