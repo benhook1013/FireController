@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -62,11 +63,17 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			continue
 		}
 		marker, found, bad := publicationBatchMarker(review.Body)
-		if bad {
-			continue
-		}
 		var g *externalHostedGroup
-		if found {
+		if bad {
+			// A visible malformed/duplicate marker identifies this real provider
+			// review, but supplies no trustworthy publication grouping identity.
+			g = group("review:"+strconv.FormatInt(review.ID, 10), review.HeadSHA)
+			if g == nil {
+				return empty, invalidResponse(false, http.StatusOK)
+			}
+			g.reason = "conflicting_publication_evidence"
+			g.run.Inventory.Publication.State = "ambiguous"
+		} else if found {
 			g = group("publication:"+marker.publication, review.HeadSHA)
 			if g == nil {
 				return empty, invalidResponse(false, http.StatusOK)
@@ -169,7 +176,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 				g.run.ReviewIDs = append(g.run.ReviewIDs, review.ID)
 				for _, root := range roots[review.ID] {
 					pub.Roots = append(pub.Roots, root)
-					if !publicationActor(root.Author, provider) || root.OriginalHeadSHA != g.run.HeadSHA || root.CreatedAt.After(g.run.FinishedAt) || g.total == 0 && (root.UpdatedAt.After(g.run.FinishedAt) || !g.selected[root.Path]) {
+					if g.reason == "" && (!publicationActor(root.Author, provider) || root.OriginalHeadSHA != g.run.HeadSHA || root.CreatedAt.After(g.run.FinishedAt) || g.total == 0 && (root.UpdatedAt.After(g.run.FinishedAt) || !g.selected[root.Path])) {
 						g.reason = "root_binding_mismatch"
 					}
 				}
