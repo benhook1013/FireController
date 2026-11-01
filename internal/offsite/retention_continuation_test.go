@@ -10,6 +10,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/backuphealth"
 )
 
 func TestOffsiteFetchDistinguishesExistingDestinationFromStorageFailure(t *testing.T) {
@@ -269,5 +272,78 @@ func TestOffsiteRetentionIntegrityCancellationAndSaveFailuresRemainTerminal(t *t
 				t.Fatal("changed old object was overwritten")
 			}
 		})
+	}
+}
+
+func TestOffsiteUnchangedSourceClearsObsoleteRetentionWarningAfterKeepIncrease(t *testing.T) {
+	f := newFixture(t)
+	f.bundle(t)
+	deleteCalls := 0
+	remote := &retentionBoundaryTransport{memoryTransport: memory(), removeHook: func(string) error { deleteCalls++; return nil }}
+	if _, err := push(t.Context(), f.c, remote); err != nil {
+		t.Fatal(err)
+	}
+	latest := f.bundle(t)
+	remote.failDelete = true
+	_, err := push(t.Context(), f.c, remote)
+	wantCode(t, err, "offsite_transport_failed")
+	if deleteCalls == 0 {
+		t.Fatal("fixture did not attempt an actual owned-object deletion")
+	}
+	// The same source must retain its warning while cleanup is still required.
+	unchanged, err := push(t.Context(), f.c, remote)
+	wantCode(t, err, "offsite_transport_failed")
+	before := state(t, f.c)
+	if unchanged.State != "unchanged" || len(before.Owned) != 2 || before.RetentionReason != "offsite_retention_failed" || before.Pending != nil || before.LastSuccess == nil || before.LastSuccess.ID != latest.ID {
+		t.Fatal("pending cleanup warning was lost", unchanged, before)
+	}
+	config := filepath.Join(t.TempDir(), "offsite.json")
+	if err := writeJSON(config, f.c); err != nil {
+		t.Fatal(err)
+	}
+	reportDir := t.TempDir()
+	if err := os.Chmod(reportDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	healthPath := filepath.Join(reportDir, "health.json")
+	failed, err := ReadStatusAndWriteHealth(t.Context(), config, healthPath, "Cloud backup", time.Hour)
+	if err != nil || failed.RetentionReason != "offsite_retention_failed" {
+		t.Fatal("retention failure missing from report", failed, err)
+	}
+	mirror, err := backuphealth.ReadMirror(healthPath)
+	if err != nil || !mirror.RetentionWarning || backuphealth.Offsite(mirror, f.c.InstanceID, time.Now()).State != "failed" {
+		t.Fatal("retention failure missing from health", mirror, err)
+	}
+	beforePuts := make(map[string]int)
+	for name, count := range remote.puts {
+		beforePuts[name] = count
+	}
+	beforeFiles := make(map[string][]byte)
+	for name, body := range remote.files {
+		beforeFiles[name] = bytes.Clone(body)
+	}
+	beforeDeletes, beforeDeleteCalls := remote.deletes, deleteCalls
+	f.c.Keep = len(before.Owned)
+	if err := writeJSON(config, f.c); err != nil {
+		t.Fatal(err)
+	}
+	result, err := push(t.Context(), f.c, remote)
+	if err != nil || result.State != "unchanged" || result.BackupID != latest.ID || result.Retained != 2 {
+		t.Fatal("changed Keep did not recover unchanged push", result, err)
+	}
+	after := state(t, f.c)
+	if after.RetentionReason != "" || after.LastAttempt.State != "unchanged" || after.LastAttempt.Reason != "" || !reflect.DeepEqual(after.LastSuccess, before.LastSuccess) || !reflect.DeepEqual(after.Owned, before.Owned) || !reflect.DeepEqual(after.Pending, before.Pending) {
+		t.Fatal("obsolete warning remained or verified ownership changed", before, after)
+	}
+	if !reflect.DeepEqual(remote.puts, beforePuts) || !reflect.DeepEqual(remote.files, beforeFiles) || remote.deletes != beforeDeletes || deleteCalls != beforeDeleteCalls {
+		t.Fatal("Keep increase rewrote or deleted remote objects")
+	}
+	report, err := ReadStatusAndWriteHealth(t.Context(), config, healthPath, "Cloud backup", time.Hour)
+	if err != nil || report.RetentionReason != "" || !reflect.DeepEqual(report.LastSuccess, before.LastSuccess) || report.LastAttempt.State != "unchanged" {
+		t.Fatal("retained status did not recover", report, err)
+	}
+	mirror, err = backuphealth.ReadMirror(healthPath)
+	if err != nil || mirror.RetentionWarning || mirror.AttemptState != "unchanged" || mirror.LastSnapshotAt != before.LastSuccess.SnapshotFinishedAt || backuphealth.Offsite(mirror, f.c.InstanceID, time.Now()).State != "healthy" {
+		t.Fatal("health did not recover without inventing a fresh snapshot", mirror, err)
 	}
 }
