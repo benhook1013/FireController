@@ -561,7 +561,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 // Transport, account and configuration failures retain the global source hold.
 func perPullSourceHold(reason string) bool {
 	switch reason {
-	case "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "target_changed":
+	case "pull_draft", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "target_changed":
 		return true
 	}
 	return false
