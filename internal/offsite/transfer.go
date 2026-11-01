@@ -228,6 +228,9 @@ func (s *session) verifyRemote(ctx context.Context, r Receipt) error {
 }
 
 func newest(ctx context.Context, c Config) (backup.Summary, error) {
+	if ctx.Err() != nil {
+		return backup.Summary{}, failure("offsite_cancelled")
+	}
 	if err := privateDir(c.SourceRoot, false); err != nil {
 		return backup.Summary{}, err
 	}
@@ -247,12 +250,18 @@ func newest(ctx context.Context, c Config) (backup.Summary, error) {
 }
 
 func newestEntries(ctx context.Context, c Config, entries []os.DirEntry) (backup.Summary, error) {
+	if ctx.Err() != nil {
+		return backup.Summary{}, failure("offsite_cancelled")
+	}
 	var selected backup.Manifest
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return backup.Summary{}, failure("offsite_cancelled")
+		}
 		if !bundleID.MatchString(entry.Name()) {
 			continue
 		}
-		if ctx.Err() != nil || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return backup.Summary{}, failure("offsite_source_invalid")
 		}
 		path := filepath.Join(c.SourceRoot, entry.Name())
@@ -281,11 +290,17 @@ func newestEntries(ctx context.Context, c Config, entries []os.DirEntry) (backup
 			selected = m
 		}
 	}
+	if ctx.Err() != nil {
+		return backup.Summary{}, failure("offsite_cancelled")
+	}
 	if selected.ID == "" {
 		return backup.Summary{}, failure("offsite_source_empty")
 	}
 	s, err := backup.Inspect(ctx, filepath.Join(c.SourceRoot, selected.ID))
-	if err != nil || s.SourceInstanceID != c.InstanceID {
+	if err != nil {
+		return s, cancelOrFailure(ctx, "offsite_source_invalid")
+	}
+	if s.SourceInstanceID != c.InstanceID {
 		return s, failure("offsite_source_invalid")
 	}
 	return s, nil
