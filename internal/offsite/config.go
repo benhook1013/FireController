@@ -176,28 +176,45 @@ func syncDir(path string) error {
 }
 
 func fileHash(ctx context.Context, path string, limit int64) (string, int64, error) {
+	f, hash, size, err := openHashedArchive(ctx, path, limit)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	return hash, size, nil
+}
+
+// Keep the validated descriptor open so a caller can consume exactly the file
+// whose bytes were hashed, even if its pathname is subsequently replaced.
+func openHashedArchive(ctx context.Context, path string, limit int64) (*os.File, string, int64, error) {
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || runtime.GOOS != "windows" && before.Mode().Perm()&0077 != 0 {
-		return "", 0, failure("offsite_archive_invalid")
+		return nil, "", 0, failure("offsite_archive_invalid")
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", 0, failure("offsite_storage_unavailable")
+		return nil, "", 0, failure("offsite_storage_unavailable")
 	}
-	defer f.Close()
+	complete := false
+	defer func() {
+		if !complete {
+			f.Close()
+		}
+	}()
 	s, err := f.Stat()
-	if err != nil || !s.Mode().IsRegular() || !os.SameFile(before, s) || s.Size() > limit {
-		return "", 0, failure("offsite_archive_invalid")
+	if err != nil || !s.Mode().IsRegular() || !os.SameFile(before, s) || s.Size() > limit || runtime.GOOS != "windows" && s.Mode().Perm()&0077 != 0 {
+		return nil, "", 0, failure("offsite_archive_invalid")
 	}
 	h := sha256.New()
 	n, err := io.Copy(h, &contextReader{ctx: ctx, r: io.LimitReader(f, limit+1)})
 	if err != nil {
-		return "", 0, cancelOrFailure(ctx, "offsite_archive_invalid")
+		return nil, "", 0, cancelOrFailure(ctx, "offsite_archive_invalid")
 	}
 	if n > limit || n != s.Size() {
-		return "", 0, failure("offsite_archive_invalid")
+		return nil, "", 0, failure("offsite_archive_invalid")
 	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
+	complete = true
+	return f, hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 func cancelOrFailure(ctx context.Context, code string) error {
