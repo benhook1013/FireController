@@ -1,7 +1,7 @@
 import { validReviewSize } from './review-size';
 import type { AdoptionObligationPage, AdoptionObligationDetail } from './review-obligations';
 import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './worker-presence';
-import type { WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
+import type { WorkerOptions, WorkerRetirement, WorkerRetirementReceipt, WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
 import type {
   Checkpoint, ConversationPage, DeliverySnapshot, DeliveryOptions, InboxItem, InboxOptions, InboxSnapshot, Job, JobOptions, LatestCheckpoint,
   JobSummary, JobPublicSummary, JobProgress, JobProgressEntry, JobUpdate, JobChecklist, ChecklistItem, ChecklistHistoryEntry, Message, MessageEvent, MessageEventPage, Page, PageOptions,
@@ -28,7 +28,7 @@ const serverErrorCodes = new Set([
   'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
-  'project_presentation_revision_conflict', 'worker_required',
+  'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired',
 ]);
 
 export class ApiError extends Error {
@@ -172,7 +172,7 @@ function validProject(value: unknown, expected: string): value is Project {
   return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository'], ['handle']) && id(value.id) && (value.handle === undefined || handle(value.handle)) && (value.id === expected || value.handle === expected || publicationAlias && handle(value.handle)) && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
 function validWorker(value: unknown, projectId: string): value is Worker {
-  return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
+  return record(value) && keys(value, ['id', 'project_id', 'name'], ['retired']) && (value.retired === undefined || value.retired === true) && id(value.id) && value.project_id === projectId && displayName(value.name);
 }
 function validSummary(value: unknown): value is JobSummary {
   return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision', 'progress_summary', 'blocker', 'progress_truncated', 'blocker_truncated']) && validProgressPreview(value) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
@@ -459,8 +459,8 @@ function validReviewPull(value: unknown): value is ReviewPullSummary {
   if (record(value) && value.review_size!==undefined && !validReviewSize(value.review_size,Number(value.number))) return false;
   if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position', 'observation', 'merge_status', 'review_size']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
   if (Object.hasOwn(value,'observation') && !validObservationHealth(value.observation)) return false;
-  if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) !== value.run_count) return false;
-  for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel).length > Number(value.run_counts[channel])) return false;
+  if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) > Number(value.run_count)) return false;
+  for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel && item.outcome === 'completed').length > Number(value.run_counts[channel])) return false;
   if (Object.hasOwn(value, 'diff') && (!record(value.diff) || !keys(value.diff, ['files', 'additions', 'deletions']) || ![value.diff.files, value.diff.additions, value.diff.deletions].every(count => nonnegative(count) && count <= 2147483647))) return false;
   if (Object.hasOwn(value,'merge_status') && (!record(value.merge_status) || !keys(value.merge_status,['state','reason']) || !['ready','blocked','pending','unknown'].includes(String(value.merge_status.state)) || !['pull_state_unknown','draft','merge_conflicts','required_ci_failed','github_blocked','github_behind','github_draft','required_ci_pending','required_ci_unknown','merge_state_unknown','github_and_required_ci_clear'].includes(String(value.merge_status.reason)))) return false;
   if (record(value.merge_status) && value.merge_status.state === 'ready' && (value.state !== 'open' || value.is_draft === true || value.mergeability !== 'mergeable' || !['success','not_required'].includes(String(value.ci_state)))) return false;
@@ -730,9 +730,12 @@ export class Api {
     return value;
   }
 
-  async workers(options: PageOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {
-    const value = await this.finiteGet(withQuery(this.projectRoute('workers'), pageOptions(options)), signal);
-    if (!validPage(value, defaultLimit(options)) || !value.items.every((item) => validWorker(item, this.projectId))) throw new ApiError('invalid_response', 'The service returned an invalid worker page.');
+  async workers(options: WorkerOptions = {}, signal?: AbortSignal): Promise<Page<Worker>> {
+    if (options.include_retired !== undefined && typeof options.include_retired !== 'boolean') throw new ApiError('invalid_request', 'The worker filter is invalid.');
+    const query = pageOptions(options);
+    if (options.include_retired) query.set('include_retired', 'true');
+    const value = await this.finiteGet(withQuery(this.projectRoute('workers'), query), signal);
+    if (!validPage(value, defaultLimit(options)) || !value.items.every((item) => validWorker(item, this.projectId) && (options.include_retired || !item.retired))) throw new ApiError('invalid_response', 'The service returned an invalid worker page.');
     return value as Page<Worker>;
   }
   async worker(workerId: string, signal?: AbortSignal): Promise<Worker> {
@@ -740,6 +743,27 @@ export class Api {
     const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}`), signal, undefined, 4096, assessmentJSON);
     if (!validWorker(value, this.projectId) || value.id !== workerId) throw new ApiError('invalid_response', 'The service returned an invalid worker.');
     return value;
+  }
+  async workerRetirement(workerId: string, signal?: AbortSignal): Promise<WorkerRetirement> {
+    if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
+    const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}/retirement`), signal, undefined, 16384, assessmentJSON);
+    if (!record(value) || !keys(value, ['worker_id', 'retired', 'can_retire', 'blockers']) || value.worker_id !== workerId || typeof value.retired !== 'boolean' || typeof value.can_retire !== 'boolean' || !record(value.blockers) || !keys(value.blockers, ['jobs', 'notes', 'messages'])) throw new ApiError('invalid_response', 'The service returned an invalid retirement preview.');
+    for (const group of Object.values(value.blockers)) {
+      if (!record(group) || !keys(group, ['count', 'ids']) || !Number.isSafeInteger(group.count) || Number(group.count) < 0 || !Array.isArray(group.ids) || group.ids.length !== Math.min(Number(group.count), 20) || !group.ids.every(id) || new Set(group.ids).size !== group.ids.length) throw new ApiError('invalid_response', 'The service returned invalid retirement blockers.');
+    }
+    const blockers = value.blockers as unknown as WorkerRetirement['blockers'];
+    if (value.can_retire !== (!value.retired && Object.values(blockers).every(group => group.count === 0))) throw new ApiError('invalid_response', 'The retirement preview is inconsistent.');
+    return value as unknown as WorkerRetirement;
+  }
+  async retireWorker(workerId: string, actingWorker: string, key: string, signal?: AbortSignal): Promise<WorkerRetirementReceipt> {
+    if (!id(workerId) || actingWorker !== '' && !id(actingWorker) || !mutationKey(key)) throw new ApiError('invalid_request', 'Use a worker and original retirement action key.');
+    return this.browserMutation(this.projectRoute(`workers/${encodeURIComponent(workerId)}/retire`), 'POST', actingWorker, key, {}, 200,
+      (value): value is WorkerRetirementReceipt => record(value) && keys(value, ['id', 'revision', 'outcome']) && value.id === workerId && value.revision === 2 && (value.outcome === 'retired' || value.outcome === 'unchanged'), signal);
+  }
+  async acknowledgeWorkerMessage(actingWorker: string, recipient: string, messageId: string, key: string, signal?: AbortSignal): Promise<BrowserMessageReceipt> {
+    if (actingWorker !== '' && !id(actingWorker) || !id(recipient) || !id(messageId) || !mutationKey(key)) throw new ApiError('invalid_request', 'Use the recipient, message and original acknowledgement key.');
+    return this.browserMutation(this.projectRoute(`messages/${encodeURIComponent(messageId)}/ack`), 'POST', actingWorker, key, { worker_id: recipient }, 200,
+      (value): value is BrowserMessageReceipt => record(value) && keys(value, ['id', 'conversation_id', 'outcome']) && value.id === messageId && id(value.conversation_id) && (value.outcome === 'acknowledged' || value.outcome === 'unchanged'), signal);
   }
   async workerPrimary(workerId: string, signal?: AbortSignal): Promise<WorkerPrimary> {
     if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');

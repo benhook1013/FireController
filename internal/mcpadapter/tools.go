@@ -20,6 +20,7 @@ import (
 const maxToolWaitSeconds = 900
 
 type arguments struct {
+	includeRetired             bool
 	ownerManagement            *ownerManagementInvocation
 	existingManagement         *existingManagementArgs
 	subagentRecord             client.SubagentRecordRequest
@@ -178,7 +179,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					}
 				case "review_queue_add", "review_queue_move", "review_queue_remove":
 					value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
-				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "project_credential_grant", "project_credential_revoke", "project_credential_update":
+				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
 					value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
 				case "review_execution_read":
 					value, err = service.ReviewExecution(ctx)
@@ -275,7 +276,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				case "worker_pause_history":
 					value, err = service.WorkerPauseHistory(ctx, options, args.worker)
 				case "workers_list":
-					value, err = service.Workers(ctx, options)
+					value, err = service.WorkersWithRetired(ctx, options, args.includeRetired)
 				case "jobs_list":
 					value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
 				case "jobs_assigned":
@@ -331,7 +332,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				case "inbox_seen":
 					value, err = service.MarkSeen(ctx, args.key, args.id)
 				case "inbox_ack":
-					value, err = service.Acknowledge(ctx, args.key, args.id)
+					value, err = service.Acknowledge(ctx, args.key, args.id, args.worker)
 				}
 			}
 			if err != nil {

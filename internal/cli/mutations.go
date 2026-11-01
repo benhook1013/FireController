@@ -83,6 +83,8 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	call := &mutationInvocation{operation: command + " " + operation}
 	allowed := map[string]bool{"--key": true}
 	switch call.operation {
+	case "inbox ack":
+		allowed["--worker"] = true
 	case "jobs create":
 		for _, flag := range []string{"--title", "--brief", "--brief-file", "--worker", "--status"} {
 			allowed[flag] = true
@@ -138,8 +140,13 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	if len(values["--brief"]) > 32<<10 {
 		return nil, false
 	}
-	if worker := values["--worker"]; worker != "" && !validResourceID(worker) {
-		return nil, false
+	if worker, present := values["--worker"]; present {
+		if !validResourceID(worker) {
+			return nil, false
+		}
+		if call.operation == "inbox ack" {
+			call.targetWorker = worker
+		}
 	}
 	if status, present := values["--status"]; present && !validStatus(status) {
 		return nil, false
@@ -238,6 +245,6 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 	case "reviews finalize":
 		return service.FinalizeReviewSource(ctx, call.key, call.id, call.reviewFinalize)
 	default:
-		return service.Acknowledge(ctx, call.key, call.id)
+		return service.Acknowledge(ctx, call.key, call.id, call.targetWorker)
 	}
 }

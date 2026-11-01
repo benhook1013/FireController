@@ -11,6 +11,7 @@ import { PublicSiteRouter, PublicProjectAddress } from './public-site';
 import { BrowserActionMemory, MessageComposer, RecipientActions } from './browser-actions';
 import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
+import { WorkerRetirementPanel } from './worker-retirement';
 import { WorkerCoordinationView, NotesView, NoteView, NoteRevisionView } from './coordination';
 import { ContextualNotes } from './contextual-notes';
 import { EditorialMarkdown } from './editorial-markdown';
@@ -442,15 +443,16 @@ export function Workspace({ session, metadataStatus, reconnectProjectUpdates, se
   </main></RestoringReadingPosition.Provider></WorkspaceContext.Provider>;
 }
 
-function WorkerList({ compact = false }: { compact?: boolean }) {
+export function WorkerList({ compact = false, includeRetired = false }: { compact?: boolean; includeRetired?: boolean }) {
+  const [retirement, setRetirement] = useState('');
   const presentation = usePresentation();
   const label = useProjectHeading('workers');
   const { session, key, home, selectWorker } = useWorkspace();
-  const paging = usePaging(JSON.stringify(usePresentation()?.worker_order ?? []));
-  const query = useQuery({ queryKey: [...key, 'workers', paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
-  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}><button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button><Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link></li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
+  const paging = usePaging(JSON.stringify([usePresentation()?.worker_order ?? [], includeRetired]));
+  const query = useQuery({ queryKey: [...key, 'workers', ...(includeRetired ? ['archive'] : []), paging.cursor], queryFn: ({ signal }) => session.api.workers({ limit: pageSize, ...(includeRetired ? { include_retired: true } : {}), ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
+  return <section className={compact ? 'worker-panel' : 'panel'}><div className="section-heading"><div><p className="eyebrow">People & agents</p><h2>{compact ? label : presentation?.headings.workers ?? 'Project workers'}</h2></div>{compact && <span className="small-label">Select worker</span>}</div><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul className="worker-list">{query.data?.items.map(worker => <li key={worker.id}>{!worker.retired && <button type="button" aria-label={compact ? `Select worker ${worker.name}` : `Open ${worker.name} inbox`} aria-pressed={compact ? session.worker?.id === worker.id : undefined} onClick={() => selectWorker(worker)}><span className="worker-avatar" aria-hidden="true">{worker.name.slice(0, 2).toUpperCase()}</span><span><strong>{worker.name}</strong><small>{worker.id}</small></span><span className="worker-arrow" aria-hidden="true">↗</span></button>}{worker.retired && <p>{worker.name} · Retired</p>}<Link className="worker-detail-link" to={`${home}/workers/${encodeURIComponent(worker.id)}`} aria-label={`Read ${worker.name} details`}>Worker details</Link>{!compact && !worker.retired && session.api.browserCapabilities.allow_writes && <button type="button" aria-expanded={retirement === worker.id} onClick={() => setRetirement(value => value === worker.id ? '' : worker.id)}>Review retirement for {worker.name}</button>}{retirement === worker.id && <WorkerRetirementPanel worker={worker} />}</li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="workers" busy={query.isFetching} /></section>;
 }
-function Workers() { const label = useProjectHeading('workers'); return <><div className="page-heading tab-heading"><h2>{label}</h2><p>View worker details or open an inbox.</p></div><WorkerList /></>; }
+function Workers() { const label = useProjectHeading('workers'); const [includeRetired, setIncludeRetired] = useState(false); return <><div className="page-heading tab-heading"><h2>{label}</h2><p>View worker details or open an inbox.</p><label><input type="checkbox" checked={includeRetired} onChange={event => setIncludeRetired(event.target.checked)} />Include retired workers and history</label></div><WorkerList includeRetired={includeRetired} /></>; }
 export function Jobs() {
   const label = useProjectHeading('jobs');
   const [search, setSearch] = useSearchParams();

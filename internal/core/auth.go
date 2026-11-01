@@ -163,7 +163,7 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 		if scope.expiresAt.IsZero() || !time.Now().Before(scope.expiresAt) {
 			return Fail("unauthorized", "The browser session has expired; connect again.", 401)
 		}
-		if scope.sessionProject == "" || scope.ProjectID != scope.sessionProject || scope.readOnly && permission != "read" {
+		if scope.sessionProject == "" || scope.ProjectID != scope.sessionProject || scope.readOnly && permission != "read" || permission == "admin" && !scope.sessionManage {
 			return Fail("forbidden", "The browser session does not permit this project operation.", 403)
 		}
 	}

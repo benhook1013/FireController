@@ -203,7 +203,7 @@ func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
 		columns = summaryAttemptColumnsV7 + `,''`
 	}
 	if version >= 9 {
-		if err := validateChannelRunCounts(ctx, q); err != nil {
+		if err := validateChannelRunCounts(ctx, q, version); err != nil {
 			return err
 		}
 	}
@@ -322,7 +322,7 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 		isRun := change.spec.current == historyRunRecord.current
 		columns, join := "c.pull_number", ""
 		if isRun {
-			columns += ",v.complete,v.channel"
+			columns += ",v.complete,v.channel,v.outcome"
 			join = " JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision"
 		}
 		where := []string{"c.project_id=?"}
@@ -332,10 +332,10 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 		args := append([]any{w.project}, change.keys...)
 		var oldNumber int64
 		var complete bool
-		var channel string
+		var channel, outcome string
 		targets := []any{&oldNumber}
 		if isRun {
-			targets = append(targets, &complete, &channel)
+			targets = append(targets, &complete, &channel, &outcome)
 		}
 		err := w.scan(ctx, tx, "SELECT "+columns+" FROM "+change.spec.current+" c"+join+" WHERE "+strings.Join(where, " AND "), args, targets...)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -345,8 +345,10 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 			delta := deltas[oldNumber]
 			if isRun {
 				delta.runs--
-				if err := delta.channels.add(channel, -1); err != nil {
-					return nil, err
+				if outcome == "completed" {
+					if err := delta.channels.add(channel, -1); err != nil {
+						return nil, err
+					}
 				}
 				if !complete {
 					delta.incomplete--
@@ -365,12 +367,14 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 		}
 		delta := deltas[newNumber]
 		if isRun {
-			if err := w.scan(ctx, tx, `SELECT v.complete,v.channel FROM review_run_memberships m JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.id=? AND m.start_revision=?`, []any{w.project, change.keys[0], change.values[0]}, &complete, &channel); err != nil {
+			if err := w.scan(ctx, tx, `SELECT v.complete,v.channel,v.outcome FROM review_run_memberships m JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.id=? AND m.start_revision=?`, []any{w.project, change.keys[0], change.values[0]}, &complete, &channel, &outcome); err != nil {
 				return nil, err
 			}
 			delta.runs++
-			if err := delta.channels.add(channel, 1); err != nil {
-				return nil, err
+			if outcome == "completed" {
+				if err := delta.channels.add(channel, 1); err != nil {
+					return nil, err
+				}
 			}
 			if !complete {
 				delta.incomplete++

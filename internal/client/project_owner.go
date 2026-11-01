@@ -11,8 +11,9 @@ import (
 )
 
 type ReviewPolicy struct {
-	RequiredChannels []string `json:"required_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	RequiredChannels []string             `json:"required_channels"`
+	MaxReviewFiles   int64                `json:"max_review_files"`
+	RoundDefaults    *ReviewRoundDefaults `json:"round_defaults,omitempty"`
 }
 type ReviewPolicyRecord struct {
 	ProjectID  string       `json:"project_id"`
@@ -22,9 +23,10 @@ type ReviewPolicyRecord struct {
 	Policy     ReviewPolicy `json:"policy"`
 }
 type ConfigureReviewPolicyRequest struct {
-	ExpectedRevision int64    `json:"expected_revision"`
-	RequiredChannels []string `json:"required_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	ExpectedRevision int64                `json:"expected_revision"`
+	RequiredChannels []string             `json:"required_channels"`
+	MaxReviewFiles   int64                `json:"max_review_files"`
+	RoundDefaults    *ReviewRoundDefaults `json:"round_defaults,omitempty"`
 }
 type ConfigureReviewExecutionRequest struct {
 	ExpectedRevision int64    `json:"expected_revision"`
@@ -94,7 +96,7 @@ func ownerText(s string, max int, multiline bool) bool {
 	return true
 }
 func ValidateConfigureReviewPolicy(r ConfigureReviewPolicyRequest) error {
-	if r.ExpectedRevision < 0 || r.ExpectedRevision == math.MaxInt64 || !ownerChannels(r.RequiredChannels) || r.MaxReviewFiles < 0 || r.MaxReviewFiles > 100000 {
+	if r.ExpectedRevision < 0 || r.ExpectedRevision == math.MaxInt64 || !ownerChannels(r.RequiredChannels) || r.MaxReviewFiles < 0 || r.MaxReviewFiles > 100000 || !validReviewRoundDefaults(r.RoundDefaults) {
 		return mutationValidation()
 	}
 	return nil
@@ -165,7 +167,7 @@ func (c *Client) ReviewPolicy(ctx context.Context) (ReviewPolicyRecord, error) {
 	if err != nil {
 		return v, err
 	}
-	if v.ProjectID != c.identity.ProjectID || v.Revision < 1 || !validID(v.ActorID) || !validJobProgressTime(v.RecordedAt) || !ownerChannels(v.Policy.RequiredChannels) || v.Policy.MaxReviewFiles < 0 || v.Policy.MaxReviewFiles > 100000 {
+	if v.ProjectID != c.identity.ProjectID || v.Revision < 1 || !validID(v.ActorID) || !validJobProgressTime(v.RecordedAt) || !ownerChannels(v.Policy.RequiredChannels) || v.Policy.MaxReviewFiles < 0 || v.Policy.MaxReviewFiles > 100000 || !validReviewRoundDefaults(v.Policy.RoundDefaults) {
 		return ReviewPolicyRecord{}, invalidResponse()
 	}
 	return v, nil

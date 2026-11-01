@@ -1,5 +1,11 @@
 # Per-PR review rounds
 
+## Project defaults
+
+Newly enrolled PRs receive product bounds of minimum two / maximum three Hosted reviews and minimum two / maximum six CLI reviews unless the project policy explicitly supplies `round_defaults`. That optional policy object contains both `hosted` and `cli` bounds, each with explicit `minimum` and `maximum`; minimum can be zero, maximum is finite from one through one thousand, and minimum cannot exceed maximum. Existing Hosted/CLI clean-streak thresholds remain unchanged.
+
+Set defaults through the existing guarded project policy configuration, using its current revision and explicit key. The selected bounds initialize only missing PR/channel controls during enrollment. Updating defaults leaves existing grants, completed counts, taper and closure intact; deliberately change an existing PR through its ordinary round controls. Omitted defaults preserve existing policy JSON and product behavior. These values are project preferences rather than provider quota or permission to dispatch automatically.
+
 ## Implementation status
 
 The native service, bound CLI and MCP implement explicit per-PR/channel additional-round grants, minimum and maximum requirements, taper, closure/reopening and persistent native completion accounting. Source preparation and final admission recheck the grant independently of captured coverage; policy/readiness and browser assessment reads show outstanding round requirements. Backup validation preserves the control history and native completion links. Focused checks are recorded below. The service owns channel-front selection for one explicit start command. Prepared operational adoption and the offline source-helper adapter implement the selected carry boundary; acquiring a complete canonical source frame and real-project adoption remain separate steps. A grant alone performs no provider action and does not weaken the separate [review policy](reviews.md#project-policy).

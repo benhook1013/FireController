@@ -165,14 +165,24 @@ func checkNoteTargets(ctx context.Context, tx *sql.Tx, n note) error {
 		if err := primaryWorker(ctx, tx, n.ProjectID, n.WorkerID); err != nil {
 			return err
 		}
+		if n.Status == "pending" {
+			if err := core.CheckActiveWorker(ctx, tx, n.ProjectID, n.WorkerID); err != nil {
+				return err
+			}
+		}
 	}
 	if n.JobID != "" {
-		var exists int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE project_id=? AND id=?`, n.ProjectID, n.JobID).Scan(&exists)
+		var assigned string
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(worker_id,'') FROM jobs WHERE project_id=? AND id=?`, n.ProjectID, n.JobID).Scan(&assigned)
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.Fail("job_not_found", "The target job is unavailable in this project.", 404)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if n.Status == "pending" && assigned != "" {
+			return core.CheckActiveWorker(ctx, tx, n.ProjectID, assigned)
+		}
 	}
 	return nil
 }

@@ -563,6 +563,12 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	if status == http.StatusConflict {
 		switch result.Code {
+		case "worker_retirement_blocked":
+			result.Message = "The worker still owns unfinished work or unacknowledged messages."
+			result.Action = "Read workers retirement WORKER_ID (MCP worker_retirement_read) for blockers. Reassign or finish jobs, reassign or resolve pending direct/assigned-job notes, and explicitly acknowledge messages before retrying retirement with a new key. Nothing is reassigned or acknowledged automatically."
+		case "worker_retired":
+			result.Message = "This worker is retired."
+			result.Action = "Select an active worker for new assignments or messages; retained historical records remain readable."
 		case "reviews_source_unavailable":
 			result.Message = "No completed stored source observation is available for this PR."
 			result.Action = "Collect any already-pending original refresh with review_source_refresh_read (CLI: reviews source-operation). Otherwise request review_source_refresh (CLI: reviews source-refresh) using the current configuration/head, then collect its result. Reassess after the refresh completes. Assessment only reads stored data; it does not refresh GitHub or start a review. Do not change credentials or submit duplicate refreshes."
@@ -606,6 +612,9 @@ func (c *Client) sensitive(value string) bool {
 	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
 }
 func (c *Client) safeDetails(value any, code string) any {
+	if code == "worker_retirement_blocked" {
+		return safeWorkerRetirementBlockers(value)
+	}
 	object, ok := value.(map[string]any)
 	if !ok {
 		return nil

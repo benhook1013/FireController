@@ -33,6 +33,16 @@ describe('live private project views', () => {
     } finally {f.close();}
   });
 
+  it('refreshes retirement, active/archive worker lists and lanes without changing retained history', async () => {
+    const f = fixture(), active = f.add(['workers', '']), archive = f.add(['workers', 'archive', '']), worker = f.add(['worker', 'worker_one']), preview = f.add(['worker-retirement', 'worker_one']), delivery = f.add(['delivery', '', '']);
+    const history = f.add(['worker-primary-history', 'worker_one']), other = f.add(['workers', ''], true, ['fc', 'session', 'instance', 'other_project', 'worker']);
+    try {
+      await refreshProjectMetadata(f.client, key, page([{ event_type: 'workers.retired', resource_id: 'worker_one' }]), new AbortController().signal);
+      for (const view of [active, archive, worker, preview, delivery]) expect(view.reads()).toBe(1);
+      for (const view of [history, other]) { expect(view.reads()).toBe(0); expect(view.state()?.data).toBe('old'); }
+    } finally { f.close(); }
+  });
+
   it('updates current round occupancy and fronts without refetching queue or pinned review history', async () => {
     const f=fixture();const progress=f.add(['reviews','current','round-progress',[31,32]]);const fronts=f.add(['reviews','current','fronts']);
     const queue=f.add(['reviews','current','queue','']);const history=f.add(['reviews','snapshot_old','run','run_one']);const inbox=f.add(['inbox','']);

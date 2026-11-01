@@ -77,7 +77,11 @@ func InsertPreparedJob(ctx context.Context, tx *sql.Tx, projectID, jobID string,
 		seenIDs[id] = true
 	}
 	if item.WorkerID != "" {
-		if err := core.CheckWorker(ctx, tx, projectID, item.WorkerID); err != nil {
+		checkWorker := core.CheckWorker
+		if item.Status != "completed" {
+			checkWorker = core.CheckActiveWorker
+		}
+		if err := checkWorker(ctx, tx, projectID, item.WorkerID); err != nil {
 			return err
 		}
 	}

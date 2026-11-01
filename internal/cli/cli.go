@@ -58,6 +58,7 @@ type invocation struct {
 	cursor                string
 	worker                string
 	status                string
+	includeRetired        bool
 	unread                bool
 	unack                 bool
 	newest                bool
@@ -370,7 +371,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	case call.command == "workers" && call.subcommand == "pause-history":
 		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, call.worker)
 	case call.command == "workers":
-		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+		value, err = service.WorkersWithRetired(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, call.includeRetired)
 	case call.command == "jobs" && call.subcommand == "primary":
 		value, err = service.PrimaryJob(requestCtx, call.worker)
 	case call.command == "jobs" && call.subcommand == "primary-history":
@@ -623,6 +624,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "workers" && (call.subcommand == "pause-state" || call.subcommand == "pause-history") || call.command == "jobs" && (call.subcommand == "primary" || call.subcommand == "primary-history") {
 		allowed["--worker"] = true
 	}
+	if call.command == "workers" && call.subcommand == "list" {
+		allowed["--include-retired"] = true
+	}
 	seen := make(map[string]bool)
 	for i := 0; i < len(operationArgs); i++ {
 		argument := operationArgs[i]
@@ -636,6 +640,11 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 		seen[flag] = true
 		switch flag {
+		case "--include-retired":
+			if assigned {
+				return call, false
+			}
+			call.includeRetired = true
 		case "--all":
 			if assigned {
 				return call, false

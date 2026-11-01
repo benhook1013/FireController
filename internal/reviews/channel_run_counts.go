@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// ChannelRunCounts counts every retained run visible in the selected snapshot,
-// independently of preview pages, outcomes, attempts or native credit.
+// ChannelRunCounts counts completed review outcomes in the selected snapshot,
+// including clean and unfinalized reviews. RunCount separately counts all
+// retained history records, including failed captures; neither grants credit.
 type ChannelRunCounts struct {
 	Hosted   int64 `json:"hosted"`
 	CLI      int64 `json:"cli"`
@@ -26,7 +27,7 @@ func (c ChannelRunCounts) Valid(total int64) bool {
 		}
 		total -= n
 	}
-	return total == 0
+	return true
 }
 func (c *ChannelRunCounts) add(channel string, delta int64) error {
 	switch channel {
@@ -68,11 +69,24 @@ func CurrentSummarySchemaSQL() []string {
 	return out
 }
 
-const channelRunCountAggregate = `SELECT coalesce(sum(v.channel='hosted'),0),coalesce(sum(v.channel='cli'),0),coalesce(sum(v.channel='subagent'),0),coalesce(sum(v.channel='manual'),0)
+const legacyChannelRunCountAggregate = `SELECT coalesce(sum(v.channel='hosted'),0),coalesce(sum(v.channel='cli'),0),coalesce(sum(v.channel='subagent'),0),coalesce(sum(v.channel='manual'),0)
  FROM review_current_runs r
  CROSS JOIN review_run_memberships m ON m.project_id=r.project_id AND m.id=r.id AND m.start_revision=r.start_revision AND m.pull_number=r.pull_number AND m.run_order=r.run_order
  CROSS JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision AND v.pull_number=m.pull_number
  WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number`
+
+// Schema twelve changes only derived cache meaning, not retained run records.
+const channelRunCountAggregate = legacyChannelRunCountAggregate + " AND v.outcome='completed'"
+
+func completedChannelRunCountsMigrationSQL() []string {
+	return []string{"UPDATE review_current_totals AS t SET (" + channelRunCountColumns + ")=(" + channelRunCountAggregate + ")"}
+}
+func channelRunCountAggregateForVersion(version int) string {
+	if version < 12 {
+		return legacyChannelRunCountAggregate
+	}
+	return channelRunCountAggregate
+}
 
 func backfillChannelRunCounts(ctx context.Context, q currentSummarySQL) error {
 	var version int
@@ -82,12 +96,17 @@ func backfillChannelRunCounts(ctx context.Context, q currentSummarySQL) error {
 	if version < 9 {
 		return nil
 	}
-	_, err := q.ExecContext(ctx, `UPDATE review_current_totals AS t SET (`+channelRunCountColumns+`)=(`+channelRunCountAggregate+`)`)
+	_, err := q.ExecContext(ctx, "UPDATE review_current_totals AS t SET ("+channelRunCountColumns+")=("+channelRunCountAggregateForVersion(version)+")")
 	return err
 }
-func validateChannelRunCounts(ctx context.Context, q HistoryQuery) error {
+func validateChannelRunCounts(ctx context.Context, q HistoryQuery, version int) error {
+	aggregate := channelRunCountAggregateForVersion(version)
+	comparison := "<"
+	if version < 12 {
+		comparison = "!="
+	}
 	var bad bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_totals t WHERE typeof(hosted_run_count)!='integer' OR typeof(cli_run_count)!='integer' OR typeof(subagent_run_count)!='integer' OR typeof(manual_run_count)!='integer' OR hosted_run_count<0 OR cli_run_count<0 OR subagent_run_count<0 OR manual_run_count<0 OR run_count!=hosted_run_count+cli_run_count+subagent_run_count+manual_run_count OR (`+channelRunCountColumns+`)!=(`+channelRunCountAggregate+`))`).Scan(&bad)
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM review_current_totals t WHERE typeof(hosted_run_count)!='integer' OR typeof(cli_run_count)!='integer' OR typeof(subagent_run_count)!='integer' OR typeof(manual_run_count)!='integer' OR hosted_run_count<0 OR cli_run_count<0 OR subagent_run_count<0 OR manual_run_count<0 OR run_count"+comparison+"hosted_run_count+cli_run_count+subagent_run_count+manual_run_count OR ("+channelRunCountColumns+")!=("+aggregate+"))").Scan(&bad)
 	if err != nil {
 		return err
 	}
@@ -139,5 +158,5 @@ func fillChannelRunCounts(ctx context.Context, tx *sql.Tx, project string, meta 
 const historicalChannelRunCountsSQL = `SELECT v.channel,count(*)
  FROM review_run_memberships m INDEXED BY review_run_memberships_page
  CROSS JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision AND v.pull_number=m.pull_number
- WHERE m.project_id=? AND m.pull_number=? AND m.start_revision<=? AND (m.end_revision IS NULL OR ?<m.end_revision)
+ WHERE m.project_id=? AND m.pull_number=? AND m.start_revision<=? AND (m.end_revision IS NULL OR ?<m.end_revision) AND v.outcome='completed'
  GROUP BY v.channel`

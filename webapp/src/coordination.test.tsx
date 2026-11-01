@@ -4,6 +4,7 @@ import { MemoryRouter, createMemoryRouter, RouterProvider } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkspaceContext, type Session } from './workspace';
 import { NoteContent, NoteHistoryRows, NoteRevisionContent, NoteSummaryRows, PauseContent, PrimaryContent, WorkerCoordinationView, notesPath, parseNoteFilters } from './coordination';
+import { BrowserActionMemory } from './browser-actions';
 import type { Note, NoteRevision } from './types';
 
 const home = '/projects/project_one';
@@ -99,7 +100,7 @@ describe('worker pending-note placement', () => {
     client.setQueryData([...key, 'worker-pause', workerId], { worker_id: workerId, paused: false, revision: 0, reason: '' });
     client.setQueryData([...key, 'worker-primary', workerId], { worker_id: workerId, job_id: '', revision: 0 });
     client.setQueryData([...key, 'notes', { worker_id: workerId, include_assigned_jobs: false, status: 'pending', limit: 5 }, ''], { items: [{ ...summary, status: 'pending' }], has_more: false });
-    const session = { controller: new AbortController(), api: {} } as Session;
+    const session = { controller: new AbortController(), actions: new BrowserActionMemory(), api: { browserCapabilities: { allow_writes: false, can_edit_presentation: false } } } as Session;
     const router = createMemoryRouter([{ path: '/projects/project_one/workers/:workerId', element: <WorkerCoordinationView /> }], { initialEntries: [home + '/workers/' + workerId] });
     try {
       const html = renderToStaticMarkup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home, selectWorker: () => {}, fail: () => {}, ready: false }}><RouterProvider router={router} /></WorkspaceContext.Provider></QueryClientProvider>);

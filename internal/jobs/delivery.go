@@ -163,7 +163,7 @@ func readDeliveryWorkers(ctx context.Context, tx *sql.Tx, project, after string,
 	rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name,COALESCE(p.job_id,''),COALESCE(s.paused,0),COALESCE(s.reason,'')
 		FROM ordered_workers w
 		LEFT JOIN worker_primary_jobs p ON p.project_id=w.project_id AND p.worker_id=w.id
-		LEFT JOIN worker_pause_state s ON s.project_id=w.project_id AND s.worker_id=w.id`+presentation.WorkerOrderTail, order, project, after, after, limit+1)
+		LEFT JOIN worker_pause_state s ON s.project_id=w.project_id AND s.worker_id=w.id`+strings.Replace(presentation.WorkerOrderTail, " WHERE ", " WHERE NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) AND ", 1), order, project, after, after, limit+1)
 	if err != nil {
 		return err
 	}

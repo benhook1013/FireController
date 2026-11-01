@@ -161,6 +161,11 @@ func admit(ctx context.Context, tx *sql.Tx, scope core.Scope, batch Batch) (Coun
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Counts{}, nil, err
 		}
+		if item.WorkerID != "" && item.Status != "completed" {
+			if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, item.WorkerID); err != nil {
+				return Counts{}, nil, err
+			}
+		}
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE project_id=? AND id=?)`, scope.ProjectID, id).Scan(&exists); err != nil {
 			return Counts{}, nil, err

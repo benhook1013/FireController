@@ -53,6 +53,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job state](job-state.md): one current progress record, partial updates, default working-context reads and existing-data conversion.
 - [Job checklists](job-progress.md): optional ordered plans with guarded history.
+- [Worker retirement](worker-retirement.md): guarded retirement after unfinished jobs, notes and messages are settled, with retained history.
 - [Worker pause state](worker-pause.md): explicit coordination pause independent of job status, focus and execution.
 - [Worker primary job](worker-focus.md): selected optional resume-focus contract, independent of concurrent jobs and status.
 - [Deferred notes](notes.md): scoped reminder/source records, compact reads and guarded history; the owning contract records validation status.

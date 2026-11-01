@@ -1,7 +1,11 @@
 export interface PageOptions {limit?: number; cursor?: string}
 export interface Page<T> {items: T[]; cursor?: string; has_more: boolean}
 export interface Project {handle?: string; id: string; name: string; github_repository_id: number; repository: string}
-export interface Worker {id: string; project_id: string; name: string}
+export interface Worker {id: string; project_id: string; name: string; retired?: boolean}
+export interface WorkerOptions extends PageOptions {include_retired?: boolean}
+export interface WorkerRetirementBlockers {count: number; ids: string[]}
+export interface WorkerRetirement {worker_id: string; retired: boolean; can_retire: boolean; blockers: {jobs: WorkerRetirementBlockers; notes: WorkerRetirementBlockers; messages: WorkerRetirementBlockers}}
+export interface WorkerRetirementReceipt {id: string; revision: 2; outcome: 'retired'|'unchanged'}
 export interface JobIdentity {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
 export interface JobSummary extends JobIdentity {progress_summary: string; blocker: string; progress_truncated: boolean; blocker_truncated: boolean}
 export interface JobProgress {summary: string; next: string; blocker: string; evidence: string[]}

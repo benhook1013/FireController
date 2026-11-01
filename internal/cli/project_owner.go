@@ -27,7 +27,7 @@ type ownerManagementInvocation struct {
 
 func ownerManagementOperation(operation string) bool {
 	switch operation {
-	case "reviews operation-control", "reviews policy", "reviews policy-configure", "reviews execution-configure", "reviews attempt-settle", "workers create", "credentials grant", "credentials revoke", "credentials update":
+	case "reviews operation-control", "reviews policy", "reviews policy-configure", "reviews execution-configure", "reviews attempt-settle", "workers create", "workers retirement", "workers retire", "credentials grant", "credentials revoke", "credentials update":
 		return true
 	}
 	return false
@@ -36,6 +36,13 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 	in := &ownerManagementInvocation{operation: operation}
 	if operation == "reviews operation-control" {
 		return parseOperationControl(in, args)
+	}
+	if operation == "workers retirement" {
+		if len(args) != 1 || !validResourceID(args[0]) {
+			return nil, false
+		}
+		in.id = args[0]
+		return in, true
 	}
 	if operation == "reviews policy" {
 		return in, len(args) == 0
@@ -77,7 +84,7 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 		return nil, false
 	}
 	allowed := map[string]bool{"--key": true}
-	idRequired := operation == "reviews attempt-settle" || operation == "credentials revoke" || operation == "credentials update"
+	idRequired := operation == "workers retire" || operation == "reviews attempt-settle" || operation == "credentials revoke" || operation == "credentials update"
 	if idRequired {
 		if len(positions) != 1 || !validResourceID(positions[0]) {
 			return nil, false
@@ -113,7 +120,7 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 		if client.ValidateGrantProjectCredential(in.grant) != nil {
 			return nil, false
 		}
-	case "credentials revoke":
+	case "workers retire", "credentials revoke":
 	default:
 		return nil, false
 	}
@@ -202,6 +209,10 @@ func executeOwnerManagement(ctx, parent context.Context, c *client.Client, in *o
 		v, err = c.ConfigureReviewExecution(ctx, in.key, in.execution)
 	case "reviews attempt-settle":
 		v, err = c.SettleReviewAttempt(ctx, in.key, in.id, in.settlement)
+	case "workers retirement":
+		v, err = c.WorkerRetirement(ctx, in.id)
+	case "workers retire":
+		v, err = c.RetireWorker(ctx, in.key, in.id)
 	case "workers create":
 		v, err = c.CreateWorker(ctx, in.key, in.worker)
 	case "credentials grant":
@@ -214,7 +225,7 @@ func executeOwnerManagement(ctx, parent context.Context, c *client.Client, in *o
 	if err != nil {
 		return reportClientError(stderr, err, parent)
 	}
-	if in.operation == "reviews policy" {
+	if in.operation == "reviews policy" || in.operation == "workers retirement" {
 		return emit(stdout, stderr, v)
 	}
 	b, err := json.Marshal(v)

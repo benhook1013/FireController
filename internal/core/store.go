@@ -102,6 +102,10 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	if err = s.ensureWorkerRetirements(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

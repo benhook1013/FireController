@@ -12,8 +12,9 @@ import (
 )
 
 type pageInput struct {
-	Limit  *int   `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	IncludeRetired bool   `json:"include_retired,omitempty"`
+	Limit          *int   `json:"limit,omitempty"`
+	Cursor         string `json:"cursor,omitempty"`
 }
 type jobsInput struct {
 	Limit    *int   `json:"limit,omitempty"`
@@ -201,6 +202,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	}
 	switch v := dst.(type) {
 	case *pageInput:
+		args.includeRetired = v.IncludeRetired
 		limit, args.cursor = v.Limit, v.Cursor
 	case *jobsInput:
 		limit, args.cursor, args.worker, args.status = v.Limit, v.Cursor, v.WorkerID, v.Status
@@ -340,7 +342,20 @@ func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 		}
 		args.key = input.Key
 		args.send = client.SendMessageRequest{RecipientWorkerID: input.Recipient, Body: input.Body, ReplyToMessageID: input.Reply}
-	case "inbox_seen", "inbox_ack":
+	case "inbox_ack":
+		var input struct {
+			Key    string  `json:"idempotency_key"`
+			ID     string  `json:"message_id"`
+			Worker *string `json:"worker_id,omitempty"`
+		}
+		if strictjson.Decode(data, &input) != nil || !validID(input.ID) || input.Worker != nil && !validID(*input.Worker) {
+			return args, invalidArguments()
+		}
+		args.key, args.id = input.Key, input.ID
+		if input.Worker != nil {
+			args.worker = *input.Worker
+		}
+	case "inbox_seen":
 		var input struct {
 			Key string `json:"idempotency_key"`
 			ID  string `json:"message_id"`
@@ -393,7 +408,7 @@ func toolDefinitions() []definition {
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
 		{"context", "Inspect the immutable local profile and running client source revision/state; no service verification or credential read.", schema(map[string]any{})},
 		{"doctor", "Verify the configured instance/project/worker and return current worker_pause (revision, paused and private reason), plus running client source revision/state. No provider work or pause changes.", schema(map[string]any{})},
-		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
+		{"workers_list", "Read one compact active-worker page in the bound project. include_retired=true explicitly includes active and retired workers; reuse cursors only within that view.", schema(map[string]any{"limit": limit, "cursor": cursor, "include_retired": map[string]any{"type": "boolean", "default": false}})},
 		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
 		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},
 		{"job_read", "Read one current job snapshot: full private brief and progress, remaining checklist, and exact-job pending-note previews. No worker inbox. Continue pending job notes with note_list(job_id,all_workers:true,cursor); discover worker reminders separately with note_list().", schema(map[string]any{"job_id": id}, "job_id")},
@@ -408,6 +423,6 @@ func toolDefinitions() []definition {
 		{"jobs_create", "Create a job in the bound project using an explicit key; return a compact receipt, without rereading brief/history.", schema(map[string]any{"idempotency_key": key, "title": title, "brief": brief, "worker_id": workerCreate, "status": status}, "idempotency_key", "title")},
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
 		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
-		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
+		{"inbox_ack", "Explicitly acknowledge a message, also establishing seen, using the supplied key. Default recipient is the bound worker; optional worker_id selects another recipient only with project manager/admin permission. Actual acting identity is preserved; never switches credentials.", schema(map[string]any{"idempotency_key": key, "message_id": id, "worker_id": id}, "idempotency_key", "message_id")},
 	}, reviewDefinitions()...)
 }

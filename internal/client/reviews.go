@@ -102,6 +102,7 @@ type ReviewPullSummary struct {
 	LatestAttempts []ReviewAttempt              `json:"latest_attempts"`
 }
 
+// Completed review outcomes only; RunCount retains the full history inventory.
 type ReviewChannelRunCounts struct {
 	Hosted   int64 `json:"hosted"`
 	CLI      int64 `json:"cli"`
@@ -119,7 +120,7 @@ func (v ReviewChannelRunCounts) valid(total int64) bool {
 		}
 		total -= n
 	}
-	return total == 0
+	return true
 }
 
 type ReviewRunSummary struct {

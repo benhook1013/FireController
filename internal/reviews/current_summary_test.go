@@ -37,8 +37,10 @@ func assertCurrentSummaryReduction(t *testing.T, f *apiFixture, number int64) Pu
 	var incomplete int64
 	var counts ChannelRunCounts
 	for _, run := range runs.Items {
-		if err := counts.add(run.Channel, 1); err != nil {
-			t.Fatal(err)
+		if run.Outcome == "completed" {
+			if err := counts.add(run.Channel, 1); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if !run.Complete {
 			incomplete++
@@ -216,7 +218,7 @@ func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
 		t.Fatal("current-summary schema not installed", version, err)
 	}
 	for i, route := range routes {

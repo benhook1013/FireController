@@ -59,7 +59,7 @@ func TestExternalHostedAdditiveArchiveReplayAndCapturedSnapshot(t *testing.T) {
 	run := externalRun(1)
 	second := externalMustPublish(t, f, run)
 	got := channelCountsPull(t, f, "")
-	if got.Pull.RunCounts != (ChannelRunCounts{Hosted: 7, CLI: 6, Subagent: 6, Manual: 6}) || got.Pull.AttemptCount != initial.Pull.AttemptCount || got.Pull.HeadSHA != initial.Pull.HeadSHA || got.Pull.Title != initial.Pull.Title || got.Pull.State != initial.Pull.State {
+	if got.Pull.RunCounts != (ChannelRunCounts{Hosted: 1}) || got.Pull.AttemptCount != initial.Pull.AttemptCount || got.Pull.HeadSHA != initial.Pull.HeadSHA || got.Pull.Title != initial.Pull.Title || got.Pull.State != initial.Pull.State {
 		t.Fatal(got)
 	}
 	if channelCountsPull(t, f, first.ID).Pull.RunCounts != initial.Pull.RunCounts || nativeSnapshotBytes(t, f, first.ID) != original {
@@ -262,7 +262,7 @@ func TestExternalHostedSchemaNineMigrationAndIdentityIndex(t *testing.T) {
 		t.Fatal("v9 migration altered current snapshot")
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
 		t.Fatal(version, err)
 	}
 	externalInit(t, f)

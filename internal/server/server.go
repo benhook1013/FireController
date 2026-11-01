@@ -72,6 +72,8 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/retirement", a.workerRetirement)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/retire", a.retireWorker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
@@ -122,6 +124,7 @@ type workerValue struct {
 	ID        string `json:"id"`
 	ProjectID string `json:"project_id"`
 	Name      string `json:"name"`
+	Retired   bool   `json:"retired,omitempty"`
 }
 
 func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
@@ -324,9 +327,14 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	query, err := listQuery(r)
+	query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "include_retired")
 	if err != nil {
 		core.WriteError(w, err)
+		return
+	}
+	includeRetired := query.Get("include_retired") == "true"
+	if _, exists := query["include_retired"]; exists && !includeRetired {
+		core.WriteError(w, core.Fail("validation_failed", "Use include_retired=true to include archived workers.", 400))
 		return
 	}
 	limit, err := core.PageLimit(r)
@@ -335,6 +343,9 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := presentation.WorkerOrderCursorKind("workers")
+	if includeRetired {
+		filter += ":include_retired"
+	}
 	after, err := a.store.ParseCursor(scope, filter, query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
@@ -346,14 +357,15 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name FROM ordered_workers w`+presentation.WorkerOrderTail, order, scope.ProjectID, after, after, limit+1)
+		tail := strings.Replace(presentation.WorkerOrderTail, " WHERE ", " WHERE (? OR NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)) AND ", 1)
+		rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM ordered_workers w`+tail, order, scope.ProjectID, includeRetired, after, after, limit+1)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var value workerValue
-			if err := rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
+			if err := rows.Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired); err != nil {
 				return err
 			}
 			values = append(values, value)
@@ -384,7 +396,13 @@ func (a *api) worker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var value workerValue
-	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name)
+	err = a.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT id,project_id,name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM workers w WHERE project_id=? AND id=?`, scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired)
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Fail("not_found", "The worker is unavailable in this project.", 404)
+		}
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		err = core.Fail("not_found", "The worker is unavailable in this project.", 404)
 	}

@@ -59,6 +59,7 @@ type Page[T any] struct {
 	HasMore bool   `json:"has_more"`
 }
 type Worker struct {
+	Retired   bool   `json:"retired,omitempty"`
 	ID        string `json:"id"`
 	ProjectID string `json:"project_id"`
 	Name      string `json:"name"`

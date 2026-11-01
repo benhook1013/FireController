@@ -16,7 +16,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   const prefixes = new Map<string, QueryKey>();
   const add = (...parts: string[]) => { const prefix = [...key, ...parts]; prefixes.set(JSON.stringify(prefix), prefix); };
   if (all) {
-    for (const domain of ['delivery', 'map-editorial', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'job-summary', 'workers', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates', 'job-progress-history', 'inbox', 'thread']) add(domain);
+    for (const domain of ['delivery', 'map-editorial', 'map', 'map-entry', 'map-history', 'job-workstream', 'job-workstream-history', 'jobs', 'job', 'job-summary', 'workers', 'worker-retirement', 'worker', 'worker-pause', 'worker-pause-history', 'worker-primary', 'worker-primary-history', 'notes', 'note', 'note-history', 'checklist-current', 'checklist-history', 'checkpoint-latest', 'checkpoints', 'job-updates', 'job-progress-history', 'inbox', 'thread']) add(domain);
     add('reviews', 'current'); add('reviews', 'policy-assessment');
   }
   for (const { event_type: type, resource_id: id } of items) {
@@ -48,8 +48,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('delivery'); add('job-updates');
     } else if (type === 'job.checklist_replaced') {
       add('delivery'); add('job', id); add('checklist-current', id); add('checklist-history', id);
-    } else if (type === 'workers.created') {
-      add('delivery'); add('workers'); add('worker', id);
+    } else if (type === 'workers.created' || type === 'workers.retired') {
+      add('delivery'); add('workers'); add('worker', id); add('worker-retirement', id);
     } else if (type === 'worker.pause_changed') {
       add('delivery'); add('worker-pause', id); add('worker-pause-history', id);
     } else if (type === 'worker.primary_job_changed') {

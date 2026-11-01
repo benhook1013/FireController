@@ -127,6 +127,11 @@ func admitMessages(ctx context.Context, tx *sql.Tx, project string, batch Batch)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		} else {
+			if item.AcknowledgedAt == "" {
+				if err := core.CheckActiveWorker(ctx, tx, project, item.RecipientWorkerID); err != nil {
+					return err
+				}
+			}
 			var exists bool
 			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM inbox_messages WHERE project_id=? AND id=?)`, project, p.id).Scan(&exists); err != nil {
 				return err

@@ -78,7 +78,10 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 			if err := rows.Scan(&event.Sequence, &event.ProjectID, &event.Type, &event.ResourceID, &event.Revision, &event.ActorID, &payload, &event.CreatedAt); err != nil {
 				return err
 			}
-			event.Payload = json.RawMessage(payload)
+			event.Payload, err = messageFeedPayload(event.Type, payload)
+			if err != nil {
+				return err
+			}
 			page.Items = append(page.Items, event)
 		}
 		if err := rows.Err(); err != nil {
@@ -93,4 +96,26 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 		return nil
 	})
 	return page, err
+}
+
+// The incoming feed exposes delivery metadata, never extra durable audit facts.
+func messageFeedPayload(kind, payload string) (json.RawMessage, error) {
+	var retained map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &retained); err != nil {
+		return nil, err
+	}
+	fields := []string{"recipient_worker_id"}
+	if kind == "message.sent" || kind == "message.seen" || kind == "message.acknowledged" {
+		fields = append(fields, "conversation_id")
+	}
+	if kind == "message.sent" || kind == "job.assigned" || kind == "job.unassigned" {
+		fields = append(fields, "sender_worker_id")
+	}
+	public := make(map[string]json.RawMessage, len(fields))
+	for _, field := range fields {
+		if value, ok := retained[field]; ok {
+			public[field] = value
+		}
+	}
+	return json.Marshal(public)
 }

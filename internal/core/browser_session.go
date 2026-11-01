@@ -273,7 +273,7 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 	if project != claims.ProjectID {
 		return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
 	}
-	scope := Scope{PrincipalID: principal, ProjectID: project, WorkerID: worker, tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID}
+	scope := Scope{PrincipalID: principal, ProjectID: project, WorkerID: worker, tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID, sessionManage: claims.CanEditPresentation}
 	// Every read remains attenuated, including /instance and administrator
 	// credentials. Only these explicit mutation routes can widen to write.
 	permission := "read"

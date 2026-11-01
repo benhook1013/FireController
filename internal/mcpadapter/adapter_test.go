@@ -612,4 +612,6 @@ var managementDiscoveryContract = map[string]struct{ write, destructive, externa
 	"review_transfer_apply":             {true, true, false},
 	"review_transfer_preview":           {false, false, false},
 	"worker_create":                     {true, false, false},
+	"worker_retirement_read":            {false, false, false},
+	"worker_retire":                     {true, true, false},
 }

@@ -85,16 +85,27 @@ func TestProjectOwnerSDKManagementAndSelectedWorker(t *testing.T) {
 	identity := profile.Context{Profile: "owner", ServerURL: server.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"owner": identity}, tokenFile), "owner")
 	var policy client.ReviewRequestReceipt
-	decodeResult(t, call(t, session, "review_policy_configure", map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "max_review_files": 100, "idempotency_key": "policy"}), &policy)
+	decodeResult(t, call(t, session, "review_policy_configure", map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "max_review_files": 100, "round_defaults": map[string]any{"hosted": map[string]any{"minimum": 2, "maximum": 5}, "cli": map[string]any{"minimum": 0, "maximum": 8}}, "idempotency_key": "policy"}), &policy)
 	var current client.ReviewPolicyRecord
 	decodeResult(t, call(t, session, "review_policy_read", nil), &current)
-	if current.Revision != policy.Revision || current.Policy.MaxReviewFiles != 100 {
+	if current.Revision != policy.Revision || current.Policy.MaxReviewFiles != 100 || current.Policy.RoundDefaults == nil || current.Policy.RoundDefaults.Hosted.Maximum != 5 || current.Policy.RoundDefaults.CLI.Maximum != 8 {
 		t.Fatal(current)
 	}
 	var configured client.ReviewRequestReceipt
-	decodeResult(t, call(t, session, "review_execution_configure", map[string]any{"expected_revision": 1, "capability_id": "sdk-capability", "mode": "independent", "queue": []int{}, "channels": []string{"cli", "hosted"}, "paused": false, "idempotency_key": "execution"}), &configured)
+	decodeResult(t, call(t, session, "review_execution_configure", map[string]any{"expected_revision": 1, "capability_id": "sdk-capability", "mode": "independent", "queue": []int{2, 4}, "channels": []string{"cli", "hosted"}, "paused": false, "idempotency_key": "execution"}), &configured)
 	if configured.Revision != 2 {
 		t.Fatal(configured)
+	}
+	for _, pair := range []struct {
+		pull             int64
+		channel          string
+		maximum, minimum int64
+	}{{2, "hosted", 3, 2}, {2, "cli", 6, 2}, {4, "hosted", 5, 2}, {4, "cli", 8, 0}} {
+		var control client.ReviewRoundControl
+		decodeResult(t, call(t, session, "review_rounds_read", map[string]any{"pull_number": pair.pull, "channel": pair.channel}), &control)
+		if !control.Configured || control.Minimum != pair.minimum || control.Maximum != pair.maximum || control.Used != 0 || control.Closed {
+			t.Fatal("SDK enrollment changed existing controls or missed defaults", control)
+		}
 	}
 	create := map[string]any{"name": "SDK Inspector", "idempotency_key": "create-worker"}
 	lose.Store(true)
@@ -168,8 +179,11 @@ func TestProjectOwnerSDKInvalidBeforeCredentials(t *testing.T) {
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": identity}, "missing-owner-token"), "chosen")
 	for _, v := range []struct{ name, raw string }{
 		{"inbox_snapshot", `{"worker_id":"other"}`},
-		{"inbox_ack", `{"message_id":"msg-one","worker_id":"other","idempotency_key":"x"}`},
+		{"inbox_ack", `{"message_id":"msg-one","worker_id":"","idempotency_key":"x"}`},
 		{"review_policy_configure", `{"expected_revision":0,"required_channels":["cli"],"idempotency_key":"x"}`},
+		{"review_policy_configure", `{"expected_revision":0,"required_channels":["cli"],"max_review_files":0,"round_defaults":null,"idempotency_key":"x"}`},
+		{"review_policy_configure", `{"expected_revision":0,"required_channels":["cli"],"max_review_files":0,"round_defaults":{"hosted":{"minimum":2,"maximum":1},"cli":{"minimum":0,"maximum":8}},"idempotency_key":"x"}`},
+		{"review_policy_configure", `{"expected_revision":0,"required_channels":["cli"],"max_review_files":0,"round_defaults":{"hosted":{"minimum":2,"maximum":5},"cli":{"maximum":8}},"idempotency_key":"x"}`},
 		{"review_execution_configure", `{"expected_revision":0,"capability_id":"x","mode":"independent","queue":[],"channels":["cli"],"idempotency_key":"x"}`},
 		{"review_attempt_settle", `{"attempt_id":"review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_revision":1,"expected_repository_id":1,"expected_head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_external_id":"","external_action_stopped":null,"reason":"Stopped","evidence_reference":"proof","idempotency_key":"x"}`},
 		{"worker_create", `{"name":" padded ","idempotency_key":"x"}`},

@@ -45,14 +45,14 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	switch operation {
 	case "workers help":
 		out.Usage = "<bound launcher> workers help"
-		out.Optional = []string{"workers create --help", "workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}
+		out.Optional = []string{"workers create --help", "workers retirement --help", "workers retire --help", "workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}
 		out.Semantics = []string{"Worker discovery stays in the bound project. Pause reads and changes target the bound worker, independently of job status, primary focus and review execution.", "All help is local; no profile, credential or network reads."}
 		out.Example = "<bound launcher> workers list --help"
 		out.Documentation = "docs/worker-pause.md"
 	case "workers list":
-		out.Usage = "<bound launcher> workers list [--limit N] [--cursor CURSOR]"
-		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR"}
-		out.Semantics = []string{"Returns one compact page of worker IDs and names in the bound project. Names do not select an authenticated identity or change the current binding.", "Check has_more and continue with the returned cursor. No automatic pagination, pause/history fanout, provider work or writes."}
+		out.Usage = "<bound launcher> workers list [--limit N] [--cursor CURSOR] [--include-retired]"
+		out.Optional = []string{"--limit N (1-100, default 20)", "--cursor CURSOR", "--include-retired (include active and retired workers)"}
+		out.Semantics = []string{"Returns one compact active-worker page by default; --include-retired includes active and retired workers. Names do not select an authenticated identity or change the current binding.", "Check has_more and continue with the returned cursor. No automatic pagination, pause/history fanout, provider work or writes."}
 		out.Example = "<bound launcher> workers list --limit 20"
 		out.Documentation = "docs/development.md"
 	case "workers pause-state":
@@ -443,6 +443,9 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Required = []string{"MESSAGE_ID (full message ID returned by inbox list or inbox read)", "--key KEY"}
 		out.Semantics = []string{"Only the bound actual recipient can change this message. Reading a message never changes seen or acknowledged state.", recovery}
 		if operation == "inbox ack" {
+			out.Usage += " [--worker WORKER_ID]"
+			out.Optional = []string{"--worker WORKER_ID"}
+			out.Semantics[0] = "Default acknowledgement uses the bound recipient. An explicit different recipient requires project manager/admin access and preserves the actual acting worker; no identity switch. Reading never acknowledges."
 			out.Semantics = append(out.Semantics, "Explicitly acknowledges the message and also establishes seen state. Acknowledgement is available through CLI and MCP inbox_ack.")
 		} else {
 			out.Semantics = append(out.Semantics, "Explicitly marks the message seen without acknowledging it. Seen messages remain pending until acknowledged.")

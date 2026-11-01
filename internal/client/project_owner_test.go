@@ -45,7 +45,7 @@ func TestProjectOwnerClientActualScopedManagement(t *testing.T) {
 	owner := f.newClient(t, ownerToken, f.sender, service.URL)
 	writer := f.newClient(t, "synthetic-writer-token", f.sender, service.URL)
 	reader := f.newClient(t, "synthetic-reader-token", f.sender, service.URL)
-	policy := client.ConfigureReviewPolicyRequest{RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 99}
+	policy := client.ConfigureReviewPolicyRequest{RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 99, RoundDefaults: &client.ReviewRoundDefaults{Hosted: client.ReviewRoundBounds{Minimum: 2, Maximum: 5}, CLI: client.ReviewRoundBounds{Minimum: 0, Maximum: 8}}}
 	_, err = writer.ConfigureReviewPolicy(t.Context(), "writer-policy", policy)
 	checkError(t, err, "forbidden")
 	first, err := owner.ConfigureReviewPolicy(t.Context(), "owner-policy", policy)
@@ -57,7 +57,7 @@ func TestProjectOwnerClientActualScopedManagement(t *testing.T) {
 		t.Fatal(replay, err)
 	}
 	record, err := reader.ReviewPolicy(t.Context())
-	if err != nil || record.Policy.MaxReviewFiles != 99 || record.ProjectID != f.project {
+	if err != nil || record.Policy.MaxReviewFiles != 99 || record.ProjectID != f.project || !reflect.DeepEqual(record.Policy.RoundDefaults, policy.RoundDefaults) {
 		t.Fatal(record, err)
 	}
 	_, err = owner.ConfigureReviewPolicy(t.Context(), "stale-policy", policy)

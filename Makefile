@@ -80,6 +80,8 @@ browser-build:
 # Explicit opt-in: actual packaged operator commands and rclone over loopback S3.
 # The default fixture is disposable; FC_TEST_S3_ENDPOINT can select local MinIO.
 offsite-smoke:
+	@test -n "$(RCLONE)" || { printf '%s\n' 'offsite-smoke requires RCLONE=/absolute/path/to/rclone' >&2; exit 1; }
+	@test -x "$(CURDIR)/bin/fcd" || { printf '%s\n' 'offsite-smoke requires bin/fcd from make build' >&2; exit 1; }
 	FC_TEST_RCLONE="$(RCLONE)" FC_TEST_FCD="$(CURDIR)/bin/fcd" $(GO) test -tags=offsite_integration -run '^TestOffsiteRealRcloneS3AndCryptRecovery$$' -count=1 -timeout=180s ./internal/offsite
 
 # Requires the actual outputs from make build; no implicit rebuild.

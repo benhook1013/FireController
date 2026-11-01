@@ -23,13 +23,13 @@ type ownerManagementInvocation struct {
 
 func ownerManagementTool(name string) bool {
 	switch name {
-	case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "project_credential_grant", "project_credential_revoke", "project_credential_update":
+	case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
 		return true
 	}
 	return false
 }
 func ownerManagementWrite(name string) bool {
-	return ownerManagementTool(name) && name != "review_policy_read"
+	return ownerManagementTool(name) && name != "review_policy_read" && name != "worker_retirement_read"
 }
 func ownerManagementDestructive(name string) bool {
 	return ownerManagementWrite(name) && name != "worker_create" && name != "project_credential_grant"
@@ -60,6 +60,17 @@ func ownerDecode(raw json.RawMessage, out any, required ...string) bool {
 func ownerManagementArguments(name string, raw json.RawMessage) (arguments, error) {
 	var args arguments
 	in := &ownerManagementInvocation{name: name}
+	if name == "worker_retirement_read" {
+		var input struct {
+			Worker string `json:"worker_id"`
+		}
+		if !ownerDecode(raw, &input, "worker_id") || !validID(input.Worker) {
+			return args, invalidArguments()
+		}
+		in.id = input.Worker
+		args.ownerManagement = in
+		return args, nil
+	}
 	if name == "review_policy_read" {
 		if !ownerDecode(raw, &struct{}{}) {
 			return args, invalidArguments()
@@ -84,6 +95,8 @@ func ownerManagementArguments(name string, raw json.RawMessage) (arguments, erro
 		idField = "operation_id"
 	case "review_attempt_settle":
 		idField = "attempt_id"
+	case "worker_retire":
+		idField = "worker_id"
 	case "project_credential_revoke", "project_credential_update":
 		idField = "credential_id"
 	}
@@ -108,7 +121,7 @@ func ownerManagementArguments(name string, raw json.RawMessage) (arguments, erro
 		valid = ownerDecode(body, &in.worker, "name") && client.ValidateCreateWorker(in.worker) == nil
 	case "project_credential_grant":
 		valid = ownerDecode(body, &in.grant, "token_sha256", "permissions") && client.ValidateGrantProjectCredential(in.grant) == nil
-	case "project_credential_revoke":
+	case "worker_retire", "project_credential_revoke":
 		valid = ownerDecode(body, &struct{}{})
 	case "project_credential_update":
 		valid = ownerDecode(body, &in.update, "expected_permissions", "permissions") && client.ValidateUpdateProjectCredential(in.id, in.update) == nil
@@ -131,6 +144,10 @@ func executeOwnerManagement(ctx context.Context, c *client.Client, in *ownerMana
 		return c.ConfigureReviewExecution(ctx, in.key, in.execution)
 	case "review_attempt_settle":
 		return c.SettleReviewAttempt(ctx, in.key, in.id, in.settlement)
+	case "worker_retirement_read":
+		return c.WorkerRetirement(ctx, in.id)
+	case "worker_retire":
+		return c.RetireWorker(ctx, in.key, in.id)
 	case "worker_create":
 		return c.CreateWorker(ctx, in.key, in.worker)
 	case "project_credential_grant":
@@ -163,9 +180,13 @@ func ownerManagementDefinitions() []definition {
 	operationID["pattern"] = "^review_operation_[a-f0-9]{32}$"
 	add("review_operation_control", "Project writer: pause, resume or cancel only a queued undispatched operation using its current revision and an explicit key. Pause preserves the retry deadline; resume retries this same operation when due. Cancel withdraws intent, never an issued provider request. Posting/active/uncertain work refuses. No changes to grants, taper, findings or project pause. Pause/resume cannot edit head or out-of-order intent. For an authorized comparison/order change, cancel while still queued with current guards; after success, use a fresh current-head/config request/key. Respect any known cooldown because a replacement does not inherit the canceled timer. allow_out_of_order bypasses predecessor dependencies only, not earlier queued Hosted priority. Held target_changed needs a qualified current open comparison and fresh authorized request/key, respecting known cooldowns.", map[string]any{"operation_id": operationID, "expected_revision": integer(1, math.MaxInt64-1), "action": strEnum("pause", "resume", "cancel"), "idempotency_key": key}, "operation_id", "expected_revision", "action", "idempotency_key")
 	add("review_policy_read", "Read this project's current configured review requirements, policy revision and attribution. No source refresh or provider action.", map[string]any{})
-	add("review_policy_configure", "Project manager: replace current review requirements with exact expected_revision and explicit key. max_review_files zero means no project ceiling; provider limits remain separate. Does not change grants, taper or request reviews.", map[string]any{"idempotency_key": key, "expected_revision": revision, "required_channels": channels, "max_review_files": integer(0, 100000)}, "idempotency_key", "expected_revision", "required_channels", "max_review_files")
+	roundBounds := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"minimum": integer(0, 1000), "maximum": integer(1, 1000)}, "required": []string{"minimum", "maximum"}}
+	roundDefaults := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"hosted": roundBounds, "cli": roundBounds}, "required": []string{"hosted", "cli"}}
+	add("review_policy_configure", "Project manager: replace current review requirements with exact expected_revision and explicit key. max_review_files zero means no project ceiling; provider limits remain separate. Optional round_defaults sets hosted/cli minimum and maximum for newly initialized PR controls only; omission uses product defaults. Existing controls and taper are unchanged; no review request. See docs/review-round-controls.md.", map[string]any{"idempotency_key": key, "expected_revision": revision, "required_channels": channels, "max_review_files": integer(0, 100000), "round_defaults": roundDefaults}, "idempotency_key", "expected_revision", "required_channels", "max_review_files")
 	add("review_execution_configure", "Project manager: full guarded replacement of existing capability selection, mode, ordered scheduling queue, channels and pause. Read current configuration and preserve fields outside the intended change. Preserve the current capability_id; capability installation and initial binding are instance-owned. Existing controls/history remain; this requests no review.", map[string]any{"idempotency_key": key, "expected_revision": revision, "capability_id": text(128), "mode": strEnum("independent", "stacked"), "queue": map[string]any{"type": "array", "maxItems": 100, "uniqueItems": true, "items": integer(1, 2147483647)}, "channels": channels, "paused": map[string]any{"type": "boolean"}}, "idempotency_key", "expected_revision", "capability_id", "mode", "queue", "channels", "paused")
 	add("review_attempt_settle", "Project manager: settle eligible attempts with a verified external stop (external_action_stopped:true), or explicitly abandon a confirmed issued pending Hosted request without claiming it stopped (false). The server checks eligibility. Read review_operation_read with its default compact view for attempt_id and settlement_target; use attempt_revision as expected_revision. These guard facts prove neither eligibility nor termination. Preserve exact guards and explicit reason/evidence. Local settlement does not stop a provider, invent evidence, automatically retry, award completion credit or request another review. Preserve original history and trigger identity for late-result pickup.", map[string]any{"idempotency_key": key, "attempt_id": text(128), "expected_revision": integer(1, math.MaxInt64-1), "expected_repository_id": integer(1, math.MaxInt64), "expected_head_sha": sha, "expected_external_id": text(128), "external_action_stopped": map[string]any{"type": "boolean", "description": "Required explicit choice: true asserts an independently verified external stop; false requests operator abandonment only for a confirmed issued pending Hosted request and makes no stop claim."}, "reason": text(1024), "evidence_reference": text(1024)}, "idempotency_key", "attempt_id", "expected_revision", "expected_repository_id", "expected_head_sha", "expected_external_id", "external_action_stopped", "reason", "evidence_reference")
+	add("worker_retirement_read", "Read a worker retirement preview: unfinished assigned jobs, pending direct/assigned-job notes and unacknowledged messages, with total counts and up to20 IDs each. Reassign/finish jobs, reassign/resolve notes and explicitly acknowledge messages first; no automatic changes. Preview is not a reservation.", map[string]any{"worker_id": text(128)}, "worker_id")
+	add("worker_retire", "Project writer: retire one worker after atomic unfinished-job, pending-note and unacknowledged-message checks. One-way, preserves historical references; never reassigns work, acknowledges messages, deletes credentials or changes acting identity. Use retirement preview first. Exact-key replay is retained; no automatic mutation retry.", map[string]any{"worker_id": text(128), "idempotency_key": key}, "worker_id", "idempotency_key")
 	add("worker_create", "Project writer: create one named worker in this bound project. Returns its ID; does not switch the acting worker, create credentials or start an agent.", map[string]any{"idempotency_key": key, "name": text(200)}, "idempotency_key", "name")
 	digest := text(64)
 	digest["pattern"] = "^[a-f0-9]{64}$"

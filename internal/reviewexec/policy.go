@@ -14,15 +14,17 @@ import (
 // PolicyConfiguration is an explicit project preference, not a provider quota.
 // A zero MaxReviewFiles adds no project ceiling and asserts no provider limit.
 type PolicyConfiguration struct {
-	ExpectedRevision *int64   `json:"expected_revision"`
-	RequiredChannels []string `json:"required_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	ExpectedRevision *int64         `json:"expected_revision"`
+	RequiredChannels []string       `json:"required_channels"`
+	MaxReviewFiles   int64          `json:"max_review_files"`
+	RoundDefaults    *RoundDefaults `json:"round_defaults,omitempty"`
 }
 
 // Policy omits the previous-revision assertion from the current stored values.
 type Policy struct {
-	RequiredChannels []string `json:"required_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	RequiredChannels []string       `json:"required_channels"`
+	MaxReviewFiles   int64          `json:"max_review_files"`
+	RoundDefaults    *RoundDefaults `json:"round_defaults,omitempty"`
 }
 
 type PolicyRecord struct {
@@ -44,10 +46,14 @@ func validPolicy(policy Policy) bool {
 		}
 		seen[channel] = true
 	}
-	return true
+	return validRoundDefaults(policy.RoundDefaults)
 }
 
 func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
+	if value.RoundDefaults != nil {
+		defaults := *value.RoundDefaults
+		value.RoundDefaults = &defaults
+	}
 	if value.ExpectedRevision != nil {
 		revision := *value.ExpectedRevision
 		value.ExpectedRevision = &revision
@@ -69,7 +75,7 @@ func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key stri
 		return nil, invalid()
 	}
 	input = clonePolicyConfiguration(input)
-	policy := Policy{RequiredChannels: input.RequiredChannels, MaxReviewFiles: input.MaxReviewFiles}
+	policy := Policy{RequiredChannels: input.RequiredChannels, MaxReviewFiles: input.MaxReviewFiles, RoundDefaults: input.RoundDefaults}
 	if !identifier.MatchString(scope.ProjectID) || input.ExpectedRevision == nil || *input.ExpectedRevision < 0 || *input.ExpectedRevision == math.MaxInt64 || !validPolicy(policy) {
 		return nil, invalid()
 	}

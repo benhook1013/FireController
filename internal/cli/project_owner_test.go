@@ -49,13 +49,13 @@ func TestProjectOwnerCLIExistingOperationsAndPrivateCredentialHash(t *testing.T)
 		}
 		return p
 	}
-	policyFile := file("policy.json", client.ConfigureReviewPolicyRequest{ExpectedRevision: 1, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 88})
+	policyFile := file("policy.json", client.ConfigureReviewPolicyRequest{ExpectedRevision: 1, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 88, RoundDefaults: &client.ReviewRoundDefaults{Hosted: client.ReviewRoundBounds{Minimum: 2, Maximum: 5}, CLI: client.ReviewRoundBounds{Minimum: 0, Maximum: 8}}})
 	var policy client.ReviewRequestReceipt
 	if json.Unmarshal([]byte(invoke("reviews", "policy-configure", "--file", policyFile, "--key", "policy-change")), &policy) != nil || policy.Revision != 2 {
 		t.Fatal(policy)
 	}
 	var current client.ReviewPolicyRecord
-	if json.Unmarshal([]byte(invoke("reviews", "policy")), &current) != nil || current.Policy.MaxReviewFiles != 88 {
+	if json.Unmarshal([]byte(invoke("reviews", "policy")), &current) != nil || current.Policy.MaxReviewFiles != 88 || current.Policy.RoundDefaults == nil || current.Policy.RoundDefaults.Hosted.Maximum != 5 || current.Policy.RoundDefaults.CLI.Minimum != 0 {
 		t.Fatal(current)
 	}
 	executionFile := file("execution.json", client.ConfigureReviewExecutionRequest{ExpectedRevision: 1, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}, Paused: true})
@@ -130,6 +130,16 @@ func TestProjectOwnerCLIHelpAndMalformedBeforeProfiles(t *testing.T) {
 	code, out, stderr := run([]string{"--profiles-file", "/missing/private-profiles", "reviews", "execution-configure", "--file", p, "--key", "bad"}, nil)
 	if code == cli.ExitSuccess || out != "" || !strings.Contains(stderr, "invalid_management_input") {
 		t.Fatal(code, out, stderr)
+	}
+	for _, defaults := range []string{`null`, `{"hosted":{"minimum":0,"maximum":1}}`, `{"hosted":{"minimum":0,"maximum":1},"cli":{"minimum":2,"maximum":1}}`} {
+		body := `{"expected_revision":0,"required_channels":["cli"],"max_review_files":0,"round_defaults":` + defaults + `}`
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, stderr := run([]string{"--profiles-file", "/missing/private-profiles", "reviews", "policy-configure", "--file", p, "--key", "bad"}, nil)
+		if code == cli.ExitSuccess || out != "" || !strings.Contains(stderr, "invalid_management_input") {
+			t.Fatal("invalid policy defaults reached profile loading", code, out, stderr)
+		}
 	}
 	for _, args := range [][]string{{"workers", "create", "--name", " padded ", "--key", "x"}, {"credentials", "grant", "--token-sha256", "raw secret", "--permission", "read", "--key", "x"}, {"credentials", "update", "bad/id", "--file", p, "--key", "x"}} {
 		code, out, stderr := run(append([]string{"--profiles-file", "/missing"}, args...), nil)

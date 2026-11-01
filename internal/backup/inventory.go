@@ -16,6 +16,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/coordimport"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
@@ -223,8 +224,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_management": 1, "project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 11, "review_policy": 2, "review_execution": 9, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"worker_retirements": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 1, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 12, "review_policy": 2, "review_execution": 9, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"worker_retirements":                {"worker_retirements", 1, "project_id worker_id retired_at actor_id"},
 	"review_hosted_discovery_state":     {"reviews", 10, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"job_progress":                      {"jobs", 8, "project_id job_id job_revision summary next blocker evidence_json"},
 	"job_progress_history":              {"jobs", 8, "sequence id project_id job_id job_revision actor_id worker_id summary next blocker evidence_json created_at"},
@@ -741,6 +743,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "worker_retirements" && !workerRetirementColumn(col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			if name == "receipts" && (kind != "TEXT" || notnull != 1 || defaultValue != nil || pk != receiptPK[col]) {
 				columnRows.Close()
 				return nil, invalid()
@@ -881,6 +887,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	versions, err := validateSchema(ctx, tx, allowInactive)
 	if err != nil {
 		return err
+	}
+	if versions["worker_retirements"] > 0 {
+		if err := core.ValidateWorkerRetirementsSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	if versions["project_management"] > 0 {
 		var bad int
@@ -1576,6 +1590,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"worker_retirements":                {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"job_progress":                      {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"job_progress_history":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"project_handles":                   {canonicalFK("projects", "project_id", "id", "NO ACTION")},
@@ -1797,4 +1812,18 @@ func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, ve
 		return invalid()
 	}
 	return nil
+}
+
+func workerRetirementColumn(column, kind string, notnull, pk int, defaultValue any) bool {
+	expectedPK := 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "worker_id":
+		expectedPK = 2
+	case "retired_at", "actor_id":
+	default:
+		return false
+	}
+	return kind == "TEXT" && notnull == 1 && pk == expectedPK && defaultValue == nil
 }

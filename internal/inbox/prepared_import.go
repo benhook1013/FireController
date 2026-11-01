@@ -112,6 +112,11 @@ func InsertPreparedMessage(ctx context.Context, tx *sql.Tx, projectID, messageID
 			return err
 		}
 	}
+	if item.AcknowledgedAt == "" {
+		if err = core.CheckActiveWorker(ctx, tx, projectID, item.RecipientWorkerID); err != nil {
+			return err
+		}
+	}
 	if replyID == "" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO inbox_conversations(project_id,id,root_message_id) VALUES(?,?,?)`, projectID, conversationID, messageID); err != nil {
 			return err

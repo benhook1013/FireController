@@ -21,7 +21,7 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 		out.Usage += " --file POLICY_JSON --key KEY"
 		out.Required = []string{"--file (owner-private absolute JSON path)", "--key KEY"}
 		out.FileExample = map[string]any{"expected_revision": 1, "required_channels": []string{"cli", "hosted"}, "max_review_files": 0}
-		out.Semantics = append(out.Semantics, "Project manager; full policy replacement. max_review_files zero disables the optional project ceiling; provider restrictions remain independent. Read reviews policy for current revision. No grants/taper changes or review request.")
+		out.Semantics = append(out.Semantics, "Project manager; full policy replacement. max_review_files zero disables the optional project ceiling; provider restrictions remain independent. Read reviews policy for current revision. Optional round_defaults provides hosted/cli objects with explicit minimum/maximum for newly initialized PR controls only. Omission uses product defaults; existing controls and taper are unchanged. See docs/review-round-controls.md. No review request.")
 	case "reviews execution-configure":
 		out.Usage += " --file CONFIG_JSON --key KEY"
 		out.Required = []string{"--file (owner-private absolute JSON path)", "--key KEY"}
@@ -33,6 +33,18 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 		out.FileExample = map[string]any{"expected_revision": 4, "expected_repository_id": 123, "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected_external_id": "123456789", "external_action_stopped": false, "reason": "Explicitly abandon this confirmed issued pending Hosted request without claiming it stopped.", "evidence_reference": "private-operator-decision-reference"}
 		out.Semantics = append(out.Semantics, "Project manager; eligible issued Hosted attempts and retained partial CLI results only. Read reviews operation OPERATION_ID for attempt_id and settlement_target; use its attempt_revision, not the operation revision, for expected_revision. Those guard facts do not prove eligibility or termination. external_action_stopped:true asserts independently verified external termination; false explicitly abandons only a confirmed issued pending Hosted request without claiming termination. The server checks eligibility. Local settlement does not stop a provider, automatically retry or award completion credit. Preserve original history and trigger identity for late-result pickup.")
 		out.Documentation = "docs/hosted-settlement.md"
+	case "workers retirement", "workers retire":
+		out.Usage += " WORKER_ID"
+		out.Required = []string{"WORKER_ID"}
+		out.Semantics = []string{"Retirement is one-way and preserves historical worker references. Unfinished assigned jobs, pending direct/assigned-job notes and unacknowledged messages block retirement. Reassign or resolve work and explicitly acknowledge messages first; nothing is moved or acknowledged automatically."}
+		if operation == "workers retire" {
+			out.Usage += " --key KEY"
+			out.Required = append(out.Required, "--key KEY")
+			out.Semantics = append(out.Semantics, "Project writer; atomic blocker checks run again at retirement. Retain the exact request/key after an uncertain result; no automatic retry.")
+		} else {
+			out.Semantics = append(out.Semantics, "Read-only preview reports total blocker counts and up to20 IDs per category. It is not a reservation or a guarantee a later retirement will succeed.")
+		}
+		out.Documentation = "docs/worker-retirement.md"
 	case "workers create":
 		out.Usage += " --name TEXT --key KEY"
 		out.Required = []string{"--name TEXT (1-200 UTF-8 bytes, no surrounding whitespace)", "--key KEY"}

@@ -12,6 +12,7 @@ export const projectEventTypes = [
   'job.update_appended',
   'job.checklist_replaced',
   'workers.created',
+  'workers.retired',
   'worker.pause_changed',
   'worker.primary_job_changed',
   'note.created',

@@ -97,19 +97,23 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 	if revision == math.MaxInt64 {
 		return Receipt{}, core.Fail("revision_exhausted", "The execution configuration revision cannot advance further.", 409)
 	}
-	// Enrolling a new PR/channel installs the product plan atomically.
+	// Enrolling a new PR/channel installs the current project plan atomically.
 	// Existing pairs are deliberately untouched by pause/order/capability
 	// edits, including installations upgraded from unconfigured controls.
+	defaults, err := enrollmentRoundDefaults(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
 	for _, pull := range c.Queue {
 		for _, channel := range c.Channels {
 			if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
 				continue
 			}
-			maximum := int64(6)
+			bounds := defaults.CLI
 			if channel == "hosted" {
-				maximum = 3
+				bounds = defaults.Hosted
 			}
-			if err := initializeRoundControl(ctx, tx, scope, pull, channel, 2, maximum); err != nil {
+			if err := initializeRoundControl(ctx, tx, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
 				return Receipt{}, err
 			}
 		}
