@@ -66,7 +66,9 @@ func ReadStatusAndWriteHealth(ctx context.Context, configPath, output, label str
 		} else {
 			started, e := time.Parse(time.RFC3339Nano, attempt.StartedAt)
 			finished, f := time.Parse(time.RFC3339Nano, attempt.FinishedAt)
-			if e != nil || f != nil || started.IsZero() || finished.Before(started) || attempt.StartedAt != started.UTC().Format(time.RFC3339Nano) {
+			// These are independent wall-clock stamps; a clock correction can
+			// legitimately put completion before start without changing outcome.
+			if e != nil || f != nil || started.IsZero() || finished.IsZero() || attempt.StartedAt != started.UTC().Format(time.RFC3339Nano) {
 				return Report{}, failure("offsite_state_invalid")
 			}
 			if attempt.State == "failed" || attempt.State == "interrupted" {

@@ -296,7 +296,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 			}
 			h, n, e := fileHash(ctx, archive, c.MaxBundleBytes)
 			if e != nil || h != s.state.LastSuccess.ArchiveSHA256 || n != s.state.LastSuccess.ArchiveBytes {
-				return result, failure("offsite_state_invalid")
+				return result, cancelOrFailure(ctx, "offsite_state_invalid")
 			}
 			if os.Remove(archive) != nil {
 				return result, failure("offsite_storage_unavailable")
@@ -365,7 +365,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		prepared := filepath.Join(c.StateDir, "prepare.tar.gz")
 		h, n, e := fileHash(ctx, prepared, c.MaxBundleBytes)
 		if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
-			return result, failure("offsite_pending_invalid")
+			return result, cancelOrFailure(ctx, "offsite_pending_invalid")
 		}
 		if os.Rename(prepared, archive) != nil || syncDir(c.StateDir) != nil {
 			return result, failure("offsite_storage_unavailable")
@@ -373,7 +373,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 	}
 	h, n, e := fileHash(ctx, archive, c.MaxBundleBytes)
 	if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
-		return result, failure("offsite_pending_invalid")
+		return result, cancelOrFailure(ctx, "offsite_pending_invalid")
 	}
 	remote, e := s.remoteReceipt(ctx, r)
 	if e != nil && !errors.Is(e, notFound) {
@@ -481,7 +481,7 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 			h, n, e := fileHash(ctx, archive, s.c.MaxBundleBytes)
 			os.Remove(archive)
 			if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
-				return failure("offsite_remote_conflict")
+				return cancelOrFailure(ctx, "offsite_remote_conflict")
 			}
 		}
 		if err = s.transport.remove(ctx, s.object(r, "archive.tar.gz")); err != nil {
