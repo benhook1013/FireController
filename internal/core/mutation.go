@@ -33,10 +33,9 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
-	defer cancel()
-	changes := &eventChanges{topics: make(map[messageTopic]struct{})}
-	ctx = context.WithValue(ctx, eventChangesKey{}, changes)
+	parent := ctx
+	ctx, cancelAdmission := context.WithTimeout(parent, writeTimeout)
+	defer cancelAdmission()
 	stage = "writer_admission"
 	waiting := time.Now()
 	select {
@@ -47,6 +46,20 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 		admission = time.Since(waiting)
 		return nil, normalize(ctx.Err())
 	}
+	// If admission and its timer became ready together, select may have
+	// acquired the writer after expiry. Do not turn that expired admission
+	// into a fresh transaction budget.
+	if err := ctx.Err(); err != nil {
+		return nil, normalize(err)
+	}
+	// Queue contention must not consume the transaction's execution budget.
+	// Both phases remain independently bounded, and the original caller's
+	// cancellation/deadline still wins. BackgroundWrite keeps its total bound.
+	cancelAdmission()
+	ctx, cancel := context.WithTimeout(parent, writeTimeout)
+	defer cancel()
+	changes := &eventChanges{topics: make(map[messageTopic]struct{})}
+	ctx = context.WithValue(ctx, eventChangesKey{}, changes)
 	stage = "begin"
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
