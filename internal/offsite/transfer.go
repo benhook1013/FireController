@@ -55,7 +55,7 @@ func openSession(c Config, t transport) (*session, error) {
 	s.work, err = prepareWork(c)
 	if err != nil {
 		s.close()
-		return nil, failure("offsite_storage_unavailable")
+		return nil, err
 	}
 	if t == nil {
 		t, err = newTransport(c, s.work)

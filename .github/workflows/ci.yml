@@ -164,7 +164,8 @@ jobs:
           import hashlib, os, pathlib, zipfile
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           archive = root / 'rclone.zip'
-          assert hashlib.sha256(archive.read_bytes()).hexdigest() == os.environ['RCLONE_SHA256']
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != os.environ['RCLONE_SHA256']:
+              raise SystemExit('rclone archive checksum mismatch')
           with zipfile.ZipFile(archive) as zipped:
               (root / 'rclone').write_bytes(zipped.read('rclone-' + os.environ['RCLONE_VERSION'] + '-linux-amd64/rclone'))
           (root / 'rclone').chmod(0o755)
