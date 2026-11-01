@@ -158,18 +158,17 @@ func unpack(ctx context.Context, archive, destination string, r Receipt, c Confi
 	if err := receiptTransferSize(ctx, r, c); err != nil {
 		return backup.Summary{}, err
 	}
-	h, n, err := fileHash(ctx, archive, c.MaxBundleBytes)
+	f, h, n, err := openHashedArchive(ctx, archive, c.MaxBundleBytes)
 	if err != nil {
 		return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
 	}
+	defer f.Close()
 	if h != r.ArchiveSHA256 || n != r.ArchiveBytes {
 		return backup.Summary{}, failure("offsite_archive_invalid")
 	}
-	f, err := os.Open(archive)
-	if err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return backup.Summary{}, failure("offsite_archive_invalid")
 	}
-	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return backup.Summary{}, failure("offsite_archive_invalid")
