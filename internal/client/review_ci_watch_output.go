@@ -25,6 +25,9 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 }
 
 func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagnostic) {
+	if item.WaitingForChange {
+		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI still has the failure identified by after_observation_key. This wait is awaiting a changed result; the failed checks remain current facts.", "Keep this quiet wait pending. After a timeout, reuse the same source pins and after_observation_key if still awaiting that retry. A changed failure or a pass will return normally; this never reruns CI."}
+	}
 	if item.State != "pending" {
 		return "", nil
 	}

@@ -10,28 +10,31 @@ import (
 )
 
 type CIWatchTarget struct {
-	PullNumber int64  `json:"pull_number"`
-	HeadSHA    string `json:"head_sha"`
-	BaseSHA    string `json:"base_sha,omitempty"`
+	PullNumber          int64  `json:"pull_number"`
+	HeadSHA             string `json:"head_sha"`
+	BaseSHA             string `json:"base_sha,omitempty"`
+	AfterObservationKey string `json:"-"`
 }
 
 type CIWatchItem struct {
 	CIWatchTarget
-	State           string            `json:"state"`
-	Reason          string            `json:"reason"`
-	BaseRef         string            `json:"base_ref,omitempty"`
-	GateRef         string            `json:"gate_ref,omitempty"`
-	ObservedHeadSHA string            `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA string            `json:"observed_base_sha,omitempty"`
-	ObservedAt      string            `json:"observed_at,omitempty"`
-	CICommitSHA     string            `json:"ci_commit_sha,omitempty"`
-	Selection       string            `json:"selection,omitempty"`
-	Required        int64             `json:"required"`
-	Satisfied       int64             `json:"satisfied"`
-	Failed          int64             `json:"failed"`
-	Pending         int64             `json:"pending"`
-	Unproven        int64             `json:"unproven"`
-	Checks          []SourceCIContext `json:"checks"`
+	State            string            `json:"state"`
+	Reason           string            `json:"reason"`
+	BaseRef          string            `json:"base_ref,omitempty"`
+	GateRef          string            `json:"gate_ref,omitempty"`
+	ObservedHeadSHA  string            `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA  string            `json:"observed_base_sha,omitempty"`
+	ObservedAt       string            `json:"observed_at,omitempty"`
+	CICommitSHA      string            `json:"ci_commit_sha,omitempty"`
+	Selection        string            `json:"selection,omitempty"`
+	Required         int64             `json:"required"`
+	Satisfied        int64             `json:"satisfied"`
+	Failed           int64             `json:"failed"`
+	Pending          int64             `json:"pending"`
+	Unproven         int64             `json:"unproven"`
+	Checks           []SourceCIContext `json:"checks"`
+	ObservationKey   string            `json:"observation_key,omitempty"`
+	WaitingForChange bool              `json:"waiting_for_change,omitempty"`
 }
 
 type CIWatchResult struct {
@@ -77,7 +80,7 @@ func validCIWatchTargets(targets []CIWatchTarget) bool {
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) {
+		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) || target.AfterObservationKey != "" && !hash.MatchString(target.AfterObservationKey) {
 			return false
 		}
 		seen[target.PullNumber] = true

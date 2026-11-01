@@ -15,9 +15,10 @@ type ciWatchInvocation struct {
 func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 	call := &ciWatchInvocation{seconds: client.CIWatchDefaultSeconds}
 	waitSet := false
+	after := map[int64]string{}
 	for i := 0; i < len(args); i++ {
 		flag, raw, assigned := strings.Cut(args[i], "=")
-		if flag != "--target" && flag != "--wait-seconds" {
+		if flag != "--target" && flag != "--wait-seconds" && flag != "--after-observation" {
 			return nil, false
 		}
 		if !assigned {
@@ -36,6 +37,17 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 			continue
 		}
 		parts := strings.Split(raw, ":")
+		if flag == "--after-observation" {
+			if len(parts) != 2 {
+				return nil, false
+			}
+			number, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil || strconv.FormatInt(number, 10) != parts[0] || parts[1] == "" || after[number] != "" {
+				return nil, false
+			}
+			after[number] = parts[1]
+			continue
+		}
 		if len(parts) != 2 && len(parts) != 3 {
 			return nil, false
 		}
@@ -48,6 +60,13 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 			target.BaseSHA = parts[2]
 		}
 		call.targets = append(call.targets, target)
+	}
+	for i := range call.targets {
+		call.targets[i].AfterObservationKey = after[call.targets[i].PullNumber]
+		delete(after, call.targets[i].PullNumber)
+	}
+	if len(after) != 0 {
+		return nil, false
 	}
 	return call, client.ValidateCIWatchTargets(call.targets) == nil
 }

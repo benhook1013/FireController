@@ -2,6 +2,9 @@ package reviewexec
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -119,7 +122,8 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			}
 		}
 		item.CIWatchTarget = target
-		if result.State == "pending" && item.State != "pending" {
+		item.WaitingForChange = item.State == "failed" && item.ObservationKey != "" && item.ObservationKey == target.AfterObservationKey
+		if result.State == "pending" && item.State != "pending" && !item.WaitingForChange {
 			result.State = item.State
 		}
 		result.Targets = append(result.Targets, item)
@@ -304,7 +308,45 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	if ciWatchRequiredFailure(observation) {
 		item.State, item.Reason = "failed", "ci_required_checks_failed"
 	}
+	item.ObservationKey = ciWatchObservationKey(target.project, observation, item)
 	return nil
+}
+
+// A change key describes relevant proof, not its collection time or scheduling.
+// It cannot authorize CI or provider work; an equal failure only keeps a reader
+// subscribed to the same shared observer while preserving the failed facts.
+func ciWatchObservationKey(project string, observation reviewprovider.CIObservation, item CIWatchItem) string {
+	type check struct {
+		SourceCIContext
+		RunID      int64 `json:"run_id,omitempty"`
+		RunAttempt int64 `json:"run_attempt,omitempty"`
+	}
+	checks := make([]check, 0, len(item.Checks))
+	for _, detail := range item.Checks {
+		value := check{SourceCIContext: detail}
+		for _, assessed := range observation.Assessment.Checks {
+			if assessed.Context == detail.Context && assessed.AppID == detail.AppID {
+				value.RunID, value.RunAttempt = assessed.RunID, assessed.RunAttempt
+				break
+			}
+		}
+		checks = append(checks, value)
+	}
+	sort.Slice(checks, func(i, j int) bool {
+		if checks[i].Context != checks[j].Context {
+			return checks[i].Context < checks[j].Context
+		}
+		return checks[i].AppID < checks[j].AppID
+	})
+	facts := struct {
+		Project                                                       string
+		RepositoryID, PullNumber                                      int64
+		Head, Base, BaseRef, Gate, CICommit, Selection, State, Reason string
+		Checks                                                        []check
+	}{project, observation.Target.RepositoryID, observation.Target.PullNumber, observation.Target.HeadSHA, observation.Target.BaseSHA, observation.Target.BaseRef, item.GateRef, item.CICommitSHA, item.Selection, item.State, item.Reason, checks}
+	body, _ := json.Marshal(facts)
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
 }
 
 // Webhooks wake only active subscriptions; no unobserved repository inventory

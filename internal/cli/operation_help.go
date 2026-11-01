@@ -329,9 +329,9 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI reviews remain explicitly started.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted selection under all existing comparison, obligation, round and provider guards."}
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews ci-wait":
-		out.Usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--target PR:HEAD[:BASE] ...] [--wait-seconds N]"
+		out.Usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--target PR:HEAD[:BASE] ...] [--after-observation PR:KEY] [--wait-seconds N]"
 		out.Required = []string{"--target PR:HEAD[:BASE] (1-20 distinct PRs; full 40-character lowercase commit SHAs)"}
-		out.Optional = []string{"--wait-seconds N (0-900, default 300; zero returns available results immediately without waiting)"}
+		out.Optional = []string{"--wait-seconds N (0-900, default 300; zero returns available results immediately without waiting)", "--after-observation PR:KEY (optional per target: wait beyond the failed observation_key already seen, keeping the same source pins)"}
 		out.Semantics = []string{"Read-only fresh CI for exact source pins, using the repository default merge branch requirements; no enrollment, idempotency key or review request.", "Returns when the first target passes, fails, changes source, closes or has verified no required checks, or the wait expires. The outer state reports the wake condition; all_targets_passed is true only when every target passed. Inspect targets for individual outcomes. Required-check details identify actionable contexts. Omit completed targets from the next explicit wait.", "CI status does not grant merge permission. Cancellation leaves no durable watch or mutation."}
 		out.Example = "<bound launcher> reviews ci-wait --target 42:" + strings.Repeat("a", 40) + " --wait-seconds 300"
 		out.Documentation = "docs/ci-wait.md"

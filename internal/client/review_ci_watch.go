@@ -12,30 +12,33 @@ const CIWatchMaxTargets = 20
 const CIWatchDefaultSeconds = 300
 
 type CIWatchTarget struct {
-	PullNumber int64  `json:"pull_number"`
-	HeadSHA    string `json:"head_sha"`
-	BaseSHA    string `json:"base_sha,omitempty"`
+	PullNumber          int64  `json:"pull_number"`
+	HeadSHA             string `json:"head_sha"`
+	BaseSHA             string `json:"base_sha,omitempty"`
+	AfterObservationKey string `json:"after_observation_key,omitempty"`
 }
 
 type CIWatchTargetResult struct {
-	PullNumber      int64             `json:"pull_number"`
-	HeadSHA         string            `json:"head_sha"`
-	BaseSHA         string            `json:"base_sha,omitempty"`
-	State           string            `json:"state"`
-	Reason          string            `json:"reason"`
-	BaseRef         string            `json:"base_ref,omitempty"`
-	GateRef         string            `json:"gate_ref,omitempty"`
-	ObservedHeadSHA string            `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA string            `json:"observed_base_sha,omitempty"`
-	ObservedAt      string            `json:"observed_at,omitempty"`
-	CICommitSHA     string            `json:"ci_commit_sha,omitempty"`
-	Selection       string            `json:"selection,omitempty"`
-	Required        int64             `json:"required"`
-	Satisfied       int64             `json:"satisfied"`
-	Failed          int64             `json:"failed"`
-	Pending         int64             `json:"pending"`
-	Unproven        int64             `json:"unproven"`
-	Checks          []ReviewCIContext `json:"checks"`
+	PullNumber       int64             `json:"pull_number"`
+	HeadSHA          string            `json:"head_sha"`
+	BaseSHA          string            `json:"base_sha,omitempty"`
+	State            string            `json:"state"`
+	Reason           string            `json:"reason"`
+	BaseRef          string            `json:"base_ref,omitempty"`
+	GateRef          string            `json:"gate_ref,omitempty"`
+	ObservedHeadSHA  string            `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA  string            `json:"observed_base_sha,omitempty"`
+	ObservedAt       string            `json:"observed_at,omitempty"`
+	CICommitSHA      string            `json:"ci_commit_sha,omitempty"`
+	Selection        string            `json:"selection,omitempty"`
+	Required         int64             `json:"required"`
+	Satisfied        int64             `json:"satisfied"`
+	Failed           int64             `json:"failed"`
+	Pending          int64             `json:"pending"`
+	Unproven         int64             `json:"unproven"`
+	Checks           []ReviewCIContext `json:"checks"`
+	ObservationKey   string            `json:"observation_key,omitempty"`
+	WaitingForChange bool              `json:"waiting_for_change,omitempty"`
 }
 
 type CIWatchResult struct {
@@ -51,7 +54,7 @@ func ValidateCIWatchTargets(targets []CIWatchTarget) error {
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) {
+		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) || target.AfterObservationKey != "" && !controlHex(target.AfterObservationKey, 64) {
 			return validation()
 		}
 		seen[target.PullNumber] = true
@@ -82,7 +85,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	var status int
 	err = resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
-		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status})
+		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true})
 	})
 	if err != nil {
 		return CIWatchResult{}, reviewWaitTargetError(ciWatchReadError(err), "", targets)
@@ -116,6 +119,9 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
+		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (item.State != "failed" || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || item.State == "failed" && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
+			return false
+		}
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {
 			return false
 		}
@@ -139,7 +145,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.State == "passed" && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
 			return false
 		}
-		if state == "pending" && item.State != "pending" {
+		if state == "pending" && item.State != "pending" && !item.WaitingForChange {
 			state = item.State
 		}
 	}

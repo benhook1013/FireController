@@ -14,6 +14,8 @@ func (e *Engine) registerCIWatchHTTP(mux *http.ServeMux) {
 
 func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", "X-FC-CI-Watch")
+	changeAware := len(r.Header.Values("X-FC-CI-Watch")) == 1 && r.Header.Get("X-FC-CI-Watch") == "change-v1"
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -30,9 +32,10 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		Targets []struct {
-			PullNumber int64           `json:"pull_number"`
-			HeadSHA    string          `json:"head_sha"`
-			BaseSHA    json.RawMessage `json:"base_sha,omitempty"`
+			PullNumber          int64           `json:"pull_number"`
+			HeadSHA             string          `json:"head_sha"`
+			BaseSHA             json.RawMessage `json:"base_sha,omitempty"`
+			AfterObservationKey json.RawMessage `json:"after_observation_key,omitempty"`
 		} `json:"targets"`
 	}
 	if err = core.ReadJSON(w, r, &input); err != nil {
@@ -46,7 +49,12 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			core.WriteError(w, invalid())
 			return
 		}
-		targets = append(targets, CIWatchTarget{value.PullNumber, value.HeadSHA, base})
+		after := ""
+		if len(value.AfterObservationKey) > 0 && (!changeAware || json.Unmarshal(value.AfterObservationKey, &after) != nil || string(value.AfterObservationKey) == "null" || after == "") {
+			core.WriteError(w, invalid())
+			return
+		}
+		targets = append(targets, CIWatchTarget{PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after})
 	}
 	if !validCIWatchTargets(targets) {
 		core.WriteError(w, invalid())
@@ -61,6 +69,12 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if !changeAware {
+		for i := range result.Targets {
+			result.Targets[i].ObservationKey = ""
+			result.Targets[i].WaitingForChange = false
+		}
 	}
 	core.WriteJSON(w, http.StatusOK, result)
 }
