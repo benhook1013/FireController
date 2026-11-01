@@ -45,7 +45,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	var value ReviewOperationStatus
 	var status int
 	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeCompactOperationStatus, &sourceWaitOptions{seconds: seconds, status: &status, reviewBlockers: true, sourceRefusalV4: true, operationWait: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining}); err != nil {
-		return ReviewOperationStatus{}, err
+		return ReviewOperationStatus{}, reviewWaitTargetError(err, id, nil)
 	}
 	if value.ID != id || !validCompactOperationStatus(value) {
 		return ReviewOperationStatus{}, invalidResponse()

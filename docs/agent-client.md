@@ -75,6 +75,8 @@ If automatic result delivery is unavailable, the adapter reports that limitation
 
 Ending a turn, closing a client or cancelling a wait does not complete or pause a job, update progress, acknowledge messages, or delete durable resources. Subscription lifetime across turns depends on the host; cancellation releases the applicable wait without acknowledging delivery or reversing committed work.
 
+For review-operation and CI waits, CLI/MCP diagnostics retain the validated original operation ID or PR/head/base targets when shutdown, local cancellation or a deadline interrupts collection. Reattach those same identities when appropriate; an interrupted wait does not authorize a new review, change its result or require reconstructing its target from surrounding chat.
+
 Reconnect verifies the expected instance and authenticated project/worker binding before operations resume. Valid cursors continue replay; expired retention produces the explicit snapshot/resubscribe behavior owned by [architecture](architecture.md). Reconnect or a job read does not automatically resume a paused job.
 
 The client imposes no end-of-work checklist or progress-update cadence. The separate [suggested agent workflow](agent-workflow.md) is optional guidance for projects and the [onboarding skill](../skills/firecontroller-onboard/SKILL.md).

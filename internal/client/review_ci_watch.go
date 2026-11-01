@@ -65,6 +65,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	if ValidateCIWatchTargets(targets) != nil || ValidateReviewOperationWait(seconds) != nil {
 		return CIWatchResult{}, validation()
 	}
+	targets = append([]CIWatchTarget(nil), targets...)
 	body, err := json.Marshal(struct {
 		Targets []CIWatchTarget `json:"targets"`
 	}{targets})
@@ -80,7 +81,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	var value CIWatchResult
 	var status int
 	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: seconds, status: &status}); err != nil {
-		return CIWatchResult{}, ciWatchReadError(err)
+		return CIWatchResult{}, reviewWaitTargetError(ciWatchReadError(err), "", targets)
 	}
 	if value.ProjectID != c.identity.ProjectID || !validCIWatchResult(value, targets) {
 		return CIWatchResult{}, invalidResponse()

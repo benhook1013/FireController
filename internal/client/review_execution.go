@@ -230,7 +230,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	var value ReviewOperation
 	var status int
 	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, deploymentDraining: &value.deploymentDraining}); err != nil {
-		return ReviewOperation{}, err
+		return ReviewOperation{}, reviewWaitTargetError(err, id, nil)
 	}
 	if value.ID != id || !c.validReviewOperation(value) {
 		return ReviewOperation{}, invalidResponse()
