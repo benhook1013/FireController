@@ -150,36 +150,90 @@ func TestSchemaBackfillErrorRollsBackAllGroupsAndRetry(t *testing.T) {
 }
 
 func TestSchemaBackfillCancellationRollsBackBeforeCommit(t *testing.T) {
-	for _, deadline := range []bool{false, true} {
-		t.Run(fmt.Sprint("deadline-", deadline), func(t *testing.T) {
-			s := schemaBackfillStore(t)
-			ctx, cancel := context.WithCancel(t.Context())
-			if deadline {
-				cancel()
-				ctx, cancel = context.WithTimeout(t.Context(), 50*time.Millisecond)
-			}
-			defer cancel()
-			calls := 0
-			err := s.EnsureSchemaWithBackfill(ctx, "backfill_probe", schemaBackfillMigrations(), func(ctx context.Context, conn *sql.Conn) error {
-				calls++
-				if _, err := conn.ExecContext(ctx, `CREATE TABLE callback_probe(value TEXT)`); err != nil {
-					return err
+	for _, old := range []bool{false, true} {
+		for _, deadline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("old-%t/deadline-%t", old, deadline), func(t *testing.T) {
+				s := schemaBackfillStore(t)
+				migrations := schemaBackfillMigrations()
+				if old {
+					if err := s.EnsureSchema(t.Context(), "backfill_probe", migrations[0]); err != nil {
+						t.Fatal(err)
+					}
 				}
-				if !deadline {
+				ctx, cancel := context.WithCancel(t.Context())
+				if deadline {
 					cancel()
+					ctx, cancel = context.WithTimeout(t.Context(), 50*time.Millisecond)
 				}
-				<-ctx.Done()
-				// Even a callback that forgets to return cancellation cannot commit.
-				return nil
+				defer cancel()
+				calls := 0
+				err := s.EnsureSchemaWithBackfill(ctx, "backfill_probe", migrations, func(ctx context.Context, conn *sql.Conn) error {
+					calls++
+					if _, err := conn.ExecContext(ctx, `CREATE TABLE callback_probe(value TEXT)`); err != nil {
+						return err
+					}
+					if _, err := conn.ExecContext(ctx, `UPDATE backfill_probe SET stamp='callback-changed'`); err != nil {
+						return err
+					}
+					if !deadline {
+						cancel()
+					}
+					<-ctx.Done()
+					// Even a callback that forgets to return cancellation cannot commit.
+					return nil
+				})
+				wantCode, wantStatus := "overloaded", 503
+				if deadline {
+					wantCode, wantStatus = "schema_migration_timeout", 500
+				}
+				var failure *Error
+				if !errors.As(err, &failure) || failure.Code != wantCode || failure.Status != wantStatus || calls != 1 || ctx.Err() == nil {
+					t.Fatalf("parent cancellation did not abort callback transaction safely: calls%d err%v", calls, err)
+				}
+				if deadline && (!strings.Contains(failure.Message, "operator investigation") || !strings.Contains(failure.Message, "rolled back") || strings.Contains(failure.Message, "retry")) {
+					t.Fatalf("migration timeout did not explain operator recovery: %q", failure.Message)
+				}
+				if strings.Contains(failure.Message, "backfill_probe") || strings.Contains(failure.Message, "callback-changed") || strings.Contains(failure.Message, "COMMIT") {
+					t.Fatalf("migration diagnostic leaked private SQL or values: %q", failure.Message)
+				}
+				assertSchemaBackfillRolledBack(t, s, old)
+				if err := s.EnsureSchemaWithBackfill(t.Context(), "backfill_probe", migrations, nil); err != nil {
+					t.Fatalf("canceled callback retained admission / transaction: %v", err)
+				}
 			})
+		}
+	}
+}
+
+func TestSchemaBackfillBeforeExclusiveKeepsOverloadDiagnostic(t *testing.T) {
+	for _, blocked := range []string{"admission", "exclusive-lock"} {
+		t.Run(blocked, func(t *testing.T) {
+			s := schemaBackfillStore(t)
+			ctx := t.Context()
+			if blocked == "admission" {
+				s.admission <- struct{}{}
+				defer func() { <-s.admission }()
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+			} else {
+				conn, err := s.DB().Conn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+			}
+			called := false
+			err := s.EnsureSchemaWithBackfill(ctx, "backfill_probe", schemaBackfillMigrations(), func(context.Context, *sql.Conn) error { called = true; return nil })
 			var failure *Error
-			if !errors.As(err, &failure) || failure.Code != "overloaded" || calls != 1 || ctx.Err() == nil {
-				t.Fatalf("parent cancellation did not abort callback transaction: calls%d err%v", calls, err)
+			if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Status != 503 || called {
+				t.Fatalf("pre-exclusive contention changed diagnostic or ran backfill: called%t err%v", called, err)
 			}
 			assertSchemaBackfillRolledBack(t, s, false)
-			if err := s.EnsureSchemaWithBackfill(t.Context(), "backfill_probe", schemaBackfillMigrations(), nil); err != nil {
-				t.Fatalf("canceled callback retained admission / transaction: %v", err)
-			}
 		})
 	}
 }

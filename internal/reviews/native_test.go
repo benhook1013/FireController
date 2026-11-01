@@ -76,7 +76,7 @@ func nativeSnapshotBytes(t *testing.T, f *apiFixture, snapshot string) string {
 	t.Helper()
 	hash := sha256.New()
 	for _, table := range []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
-		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY 1,2,3,4", f.project, snapshot)
+		rows, err := f.store.DB().Query("SELECT * FROM "+table+" WHERE project_id=? AND snapshot_id=? ORDER BY 1,2,3,4,5", f.project, snapshot)
 		if err != nil {
 			t.Fatal(err)
 		}

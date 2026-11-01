@@ -18,13 +18,6 @@ func channelCountsPull(t *testing.T, f *apiFixture, snapshot string) PullRespons
 	nativeRead(t, f, route, &p)
 	return p
 }
-func mixedChannelPull() PullInput {
-	p := nativePull(1)
-	for i := 0; i < 24; i++ {
-		p.Runs = append(p.Runs, RunInput{SourceRunID: fmt.Sprintf("channel-%02d", i), Channel: []string{"hosted", "cli", "subagent", "manual"}[i%4], Scope: "retained mixed outcome", Outcome: []string{"unknown", "active", "failed", "cancelled"}[i%4]})
-	}
-	return p
-}
 func completedChannelPull() PullInput {
 	p := nativePull(1)
 	for i := 0; i < 24; i++ {
