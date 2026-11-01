@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,5 +146,49 @@ func TestCIObservationRecoversMovingHeadInventory(t *testing.T) {
 	got, err := f.g.ObserveRequiredCI(t.Context(), ciObservationTarget())
 	if err != nil || got.State != "satisfied" || got.Selection != "head" || got.Results == nil || len(got.Results.Checks) != 1 || got.Results.Checks[0].ID != 1070 || hits != 4 {
 		t.Fatal("same-comparison recovery bypassed final CI proof", got.State, got.Selection, hits, err)
+	}
+}
+
+func TestCIResultsCountMovementErrorsAreIndependent(t *testing.T) {
+	var suites, requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case ciSuitesPath:
+			total := 1
+			if suites.Add(1)%2 == 0 {
+				total = 2
+			}
+			_ = json.NewEncoder(w).Encode(ciSuiteCountFixture(total))
+		case ciChecksPath:
+			_ = json.NewEncoder(w).Encode(ciEnvelope([]map[string]any{ciCheckFixture(1)}, 1))
+		case ciStatusesPath:
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Error("unexpected selector")
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	firstInventory, firstErr := testGitHub(server, "").CIResults(t.Context(), "owner/repo", ciHead)
+	assertNoCIInventory(t, firstInventory, firstErr)
+	var first *Error
+	if !errors.As(firstErr, &first) || first.Code != "provider_observation_changed" || requests.Load() != 8 || suites.Load() != 4 {
+		t.Fatal("count movement changed classification or bounded retry", firstErr, requests.Load(), suites.Load())
+	}
+	original := *first
+	t.Cleanup(func() { *first = original })
+	first.Code, first.Message = "caller_changed", "caller-owned diagnostic"
+	first.Status, first.RetryAfterSeconds, first.OutcomeUnknown = 503, 99, true
+
+	secondInventory, secondErr := testGitHub(server, "").CIResults(t.Context(), "owner/repo", ciHead)
+	assertNoCIInventory(t, secondInventory, secondErr)
+	var second *Error
+	if !errors.As(secondErr, &second) || second == first || second.Code != "provider_observation_changed" || second.Message != "CI result counts changed during collection." || second.Status != http.StatusOK || second.RetryAfterSeconds != 0 || second.OutcomeUnknown {
+		t.Fatal("independent collection inherited caller-mutated error", secondErr)
+	}
+	if requests.Load() != 16 || suites.Load() != 8 {
+		t.Fatal("independent collection exceeded one bounded recollection", requests.Load(), suites.Load())
 	}
 }
