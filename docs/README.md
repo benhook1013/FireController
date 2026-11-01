@@ -45,6 +45,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Public review checkpoints](review-publication.md): automatically queued finalized source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.
 - [Required CI observations](review-ci.md): explicit collection, current workflow identity and compact stored assessment.
+- [Provider observations](provider-observations.md): bounded raw reads, parent/history lookup and Hosted format decoding, separate from native persistence.
 - [Waiting for CI](ci-wait.md): quiet multi-PR waits for pinned comparisons, final-branch gates and shared webhook observation.
 - [Subagent reviews](subagent-reviews.md): normal worker recording, guarded findings/fix updates and shared review history without provider execution.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
