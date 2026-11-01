@@ -77,7 +77,7 @@ func TestHostedAdditionalRejectsMalformedAndUnprovenInventory(t *testing.T) {
 func additionalOnlyFixture(t *testing.T) (hfFixture, string) {
 	t.Helper()
 	icon := standingTestPicture(false)
-	item := strings.Replace(hfAdditionalItem("24-26", "Preserve the optional annotation."), "**Trivial**", "**"+icon+" Trivial**", 1)
+	item := strings.Replace(hfAdditionalItem("24-26", "Preserve the `*Sample` annotation."), "**Trivial**", "**"+icon+" Trivial**", 1)
 	item = strings.Replace(item, "⚠️ **Unverified finding**", icon+" **Unverified finding**", 1)
 	body := hfAdditionalCategory(1, hfAdditionalGroup("source/sample-file.go", "24-26", 1, item))
 	body = strings.Replace(body, "🔇 Additional comments:", icon+" Additional comments:", 1)
@@ -95,7 +95,7 @@ func TestHostedAdditionalOnlyOmittedInlineCount(t *testing.T) {
 		t.Fatalf("completed additional-only inventory blocked: state=%s reason=%s complete=%t findings=%d", got.Publication.State, got.Reason, got.Complete, len(got.Findings))
 	}
 	finding := got.Findings[0]
-	if finding.Kind != "additional" || finding.ReviewID != 401 || finding.CommentID != 0 || finding.Path != "source/sample-file.go" || finding.StartLine == nil || *finding.StartLine != 24 || finding.EndLine == nil || *finding.EndLine != 26 || finding.Severity != "info" || finding.Title != "Preserve the optional annotation." || finding.Detail != item || !strings.Contains(finding.Detail, "Unverified finding") || finding.Fingerprint == "" {
+	if finding.Kind != "additional" || finding.ReviewID != 401 || finding.CommentID != 0 || finding.Path != "source/sample-file.go" || finding.StartLine == nil || *finding.StartLine != 24 || finding.EndLine == nil || *finding.EndLine != 26 || finding.Severity != "info" || finding.Title != "Preserve the `*Sample` annotation." || finding.Detail != item || !strings.Contains(finding.Detail, "Unverified finding") || finding.Fingerprint == "" {
 		t.Fatal("additional source or unverified qualification changed", finding)
 	}
 	after, _ := json.Marshal(f.snapshot)
@@ -173,5 +173,23 @@ func TestHostedSummaryOnlyMixedAdditionalAndOutside(t *testing.T) {
 	got := hfWant(t, f, true, 2)
 	if len(got.Publication.Roots) != 0 || got.Findings[0].Kind != "outside_diff" || got.Findings[1].Kind != "additional" {
 		t.Fatal("supported summary-only categories lost original inventory", got)
+	}
+}
+
+func TestHostedAdditionalTitleRequiresClosedCodeAndBoldEnvelope(t *testing.T) {
+	for name, title := range map[string]string{
+		"pointer outside code":                               "Preserve *Sample literally.",
+		"unclosed pointer code":                              "Preserve `*Sample literally.",
+		"repaired delimiters cannot quote external emphasis": "Preserve `Sample` *outside `Other`.",
+		"empty code is not a pointer span":                   "Preserve ``*Sample`` literally.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := additionalOnlyFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Preserve the `*Sample` annotation.", title, 1)
+			got := f.extract(t)
+			if got.Complete || len(got.Findings) != 0 {
+				t.Fatal("malformed title supplied a complete inventory", got.Reason, got.Findings)
+			}
+		})
 	}
 }

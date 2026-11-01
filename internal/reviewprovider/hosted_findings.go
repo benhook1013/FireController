@@ -38,7 +38,10 @@ var findingPromptIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Pr
 var findingReviewInfoIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Review info</summary>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
-var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)
+
+// Bold titles may contain literal asterisks inside closed inline-code spans.
+// Asterisks outside code and unbalanced delimiters cannot supply title metadata.
+var findingTitle = regexp.MustCompile("^\\*\\*((?:[^*`\\r\\n]|`[^`\\r\\n]+`)+)\\*\\*$")
 var findingHTML = regexp.MustCompile(`</?(?:details|blockquote)>`)
 var findingPre = regexp.MustCompile(`(?i)</?pre(?:[ \t/>]|$)`)
 var findingQuotedHTML = regexp.MustCompile(`(?i)</?blockquote(?:[ \t][^<>]*)?>`)
