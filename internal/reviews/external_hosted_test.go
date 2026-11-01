@@ -13,6 +13,14 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+func mixedChannelPull() PullInput {
+	p := nativePull(1)
+	for i := 0; i < 24; i++ {
+		p.Runs = append(p.Runs, RunInput{SourceRunID: fmt.Sprintf("channel-%02d", i), Channel: []string{"hosted", "cli", "subagent", "manual"}[i%4], Scope: "retained mixed outcome", Outcome: []string{"unknown", "active", "failed", "cancelled"}[i%4]})
+	}
+	return p
+}
+
 func externalRun(n int) RunInput {
 	return RunInput{SourceRunID: fmt.Sprintf("run:00000000-0000-0000-0000-%012x", n), Channel: "hosted", HeadSHA: strings.Repeat("d", 40), Reviewer: "Configured CodeRabbit", Scope: "Original provider comparison", Outcome: "completed", Attributable: true, Complete: true, StartedAt: "2026-10-20T00:00:00Z", FinishedAt: "2026-10-20T00:01:00Z", Found: 1, Findings: []Finding{{SourceFindingID: fmt.Sprintf("provider-comment-%d", n), Title: "Original provider finding", Detail: "Retained literal provider detail", Severity: "medium", Disposition: "unadjudicated"}}}
 }

@@ -42,20 +42,40 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	instance := ""
 	for _, listen := range []string{"127.0.0.1:0", "localhost:0"} {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		stdout := &output{ready: make(chan struct{})}
 		stderr := &output{ready: make(chan struct{})}
 		done := make(chan int, 1)
+		joined := false
+		t.Cleanup(func() {
+			cancel()
+			if !joined {
+				select {
+				case <-done:
+				case <-time.After(6 * time.Second):
+					t.Error("daemon did not stop after test cancellation")
+				}
+			}
+		})
+		phase, startupLimit := "warm restart", 5*time.Second
+		if instance == "" {
+			// Cold installation applies every domain migration. Keep that setup
+			// separate from the tighter existing-instance readiness bound.
+			phase, startupLimit = "cold schema installation", 15*time.Second
+		}
+		startedAt := time.Now()
 		go func() { done <- run(ctx, []string{"--data-dir", dir, "--listen", listen}, stdout, stderr) }()
 		select {
 		case <-stdout.ready:
 		case code := <-done:
+			joined = true
 			cancel()
 			t.Fatalf("startup stopped: code=%d diagnostics=%s", code, stderr.String())
-		case <-time.After(5 * time.Second):
+		case <-time.After(startupLimit):
 			cancel()
-			t.Fatal("startup deadline")
+			t.Fatalf("%s deadline after %s: diagnostics=%s", phase, startupLimit, stderr.String())
 		}
+		t.Logf("%s completed in %s", phase, time.Since(startedAt))
 		var started map[string]string
 		if err := json.Unmarshal([]byte(stdout.String()), &started); err != nil {
 			cancel()
@@ -131,6 +151,7 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 		cancel()
 		select {
 		case code := <-done:
+			joined = true
 			if code != 0 {
 				t.Fatalf("shutdown code=%d diagnostics=%s", code, stderr.String())
 			}

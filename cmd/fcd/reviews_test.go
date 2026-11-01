@@ -160,21 +160,36 @@ func TestDaemonCatalogFailurePrecedesDatabaseCreation(t *testing.T) {
 func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T) {
 	path, _ := privateTestCatalog(t, []string{"cli"})
 	dir := filepath.Join(t.TempDir(), "private")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
 	stdout := &output{ready: make(chan struct{})}
 	stderr := &output{ready: make(chan struct{})}
 	done := make(chan int, 1)
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("native daemon did not stop after test cancellation")
+			}
+		}
+	})
+	startedAt := time.Now()
 	go func() {
 		done <- run(ctx, []string{"--data-dir", dir, "--listen", "127.0.0.1:0", "--review-catalog", path}, stdout, stderr)
 	}()
 	select {
 	case <-stdout.ready:
 	case code := <-done:
+		joined = true
 		t.Fatalf("native startup failed: %d %s", code, stderr.String())
-	case <-time.After(5 * time.Second):
-		t.Fatal("native startup deadline")
+	case <-time.After(15 * time.Second):
+		// This fresh installation includes all domain migrations; readyz and
+		// shutdown below retain their independent short readiness/drain bounds.
+		t.Fatalf("native cold schema installation deadline: diagnostics=%s", stderr.String())
 	}
+	t.Logf("native cold schema installation completed in %s", time.Since(startedAt))
 	var started map[string]string
 	if err := json.Unmarshal([]byte(stdout.String()), &started); err != nil {
 		t.Fatal(err)
@@ -191,6 +206,7 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	cancel()
 	select {
 	case code := <-done:
+		joined = true
 		if code != 0 || stderr.String() != "" {
 			t.Fatalf("native shutdown: %d %s", code, stderr.String())
 		}

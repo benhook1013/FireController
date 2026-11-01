@@ -117,7 +117,9 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	}
 }
 
-func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
+type pendingCandidateID struct{ project, operation string }
+
+func (e *Engine) pendingCandidates(ctx context.Context) ([]pendingCandidateID, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Snapshot candidates and reservations together, without entering writer
@@ -150,10 +152,9 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 	if err != nil {
 		return nil, err
 	}
-	type id struct{ project, operation string }
-	var ids []id
+	var ids []pendingCandidateID
 	for rows.Next() {
-		var i id
+		var i pendingCandidateID
 		if err = rows.Scan(&i.project, &i.operation); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -165,44 +166,51 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Operation, 0, len(ids))
-	for _, i := range ids {
-		o, err := readOperation(ctx, tx, i.project, i.operation)
+	return ids, nil
+}
+
+// Expand only the reached candidate in a fresh short snapshot. Actual claim
+// still revalidates its complete authority and reservations transactionally.
+func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (Operation, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	tx, err := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Operation{}, false, err
+	}
+	defer tx.Rollback()
+	o, err := readOperation(ctx, tx, id.project, id.operation)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	if o.State != "queued" {
+		return Operation{}, false, nil
+	}
+	if validChannel(o.Channel) {
+		c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 		if err != nil {
-			return nil, err
+			return Operation{}, false, err
 		}
-		if o.State == "queued" {
-			if validChannel(o.Channel) {
-				// Native admission caps all pending work at 256 (32 per
-				// project), so this within-project filter sees the entire
-				// eligible candidate set under the SQL limit above.
-				c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		if earlier != nil {
+			return Operation{}, false, nil
+		}
+		if o.Channel == "cli" {
+			if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
+				due, err := cliAccountRetryDeadline(ctx, tx, capability)
 				if err != nil {
-					return nil, err
+					return Operation{}, false, err
 				}
-				earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
-				if err != nil {
-					return nil, err
-				}
-				if earlier != nil {
-					continue
-				}
-				if o.Channel == "cli" {
-					if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
-						due, err := cliAccountRetryDeadline(ctx, tx, capability)
-						if err != nil {
-							return nil, err
-						}
-						if e.sampleExecutionTime().Before(due) {
-							continue
-						}
-					}
+				if e.sampleExecutionTime().Before(due) {
+					return Operation{}, false, nil
 				}
 			}
-			out = append(out, o)
 		}
 	}
-	return out, nil
+	return o, true, nil
 }
 
 // preparationReason exposes only selected stable classifications, never adapter
@@ -232,7 +240,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		return nil
 	}
 	defer e.endDispatchWork()
-	operations, err := e.pending(ctx)
+	candidates, err := e.pendingCandidates(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -246,9 +254,23 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		}
 		return persistenceFailureAt("pending_read", err, "", "")
 	}
-	for _, o := range operations {
+	for _, candidate := range candidates {
 		if ctx.Err() != nil {
 			return nil
+		}
+		o, eligible, err := e.pendingCandidate(ctx, candidate)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			var failure *core.Error
+			if errors.As(core.NormalizeStorageError(err), &failure) && failure.Code == "overloaded" {
+				continue
+			}
+			return persistenceFailureAt("pending_candidate_read", err, candidate.operation, "")
+		}
+		if !eligible {
+			continue
 		}
 		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
 		if err != nil {

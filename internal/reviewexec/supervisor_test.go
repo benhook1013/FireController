@@ -22,6 +22,65 @@ import (
 	"github.com/benhook1013/FireController/internal/server"
 )
 
+// Tests inspecting all small eligible sets use the production selection and
+// expansion primitives; the supervisor itself stops at its first claimed work.
+func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
+	candidates, err := e.pendingCandidates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Operation, 0, len(candidates))
+	for _, id := range candidates {
+		op, eligible, err := e.pendingCandidate(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if eligible {
+			out = append(out, op)
+		}
+	}
+	return out, nil
+}
+
+func TestSupervisorClaimsFirstCandidateBeforeReadingLaterDependency(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	first := f.enqueue(t, attemptProject, "first-lazy-candidate", "cli", 2, 1)
+	later := f.enqueue(t, otherAttemptProject, "later-corrupt-candidate", "cli", 2, 1)
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET created_at=? WHERE id=?`, "2026-01-01T00:00:00Z", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET created_at=? WHERE id=?`, "2026-01-01T00:00:01Z", later.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A later record's real configuration read fails, while its lightweight
+	// candidate identity remains selectable. It must not stop earlier work.
+	if _, err := f.store.DB().Exec(`UPDATE review_execution_config SET body_json='{' WHERE project_id=?`, otherAttemptProject); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := f.e.pendingCandidates(t.Context())
+	if err != nil || len(ids) != 2 || ids[0].operation != first.ID || ids[1].operation != later.ID {
+		t.Fatal("fixture lost exact candidate order", ids, err)
+	}
+	driver := &controlledDriver{}
+	drivers := map[string]Driver{"test-capability": driver, "other-account": driver}
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal("later dependency blocked first eligible work", err)
+	}
+	if driver.prepares.Load() != 1 || driver.calls.Load() != 1 || supervisorOperationState(t, f, first.ID) != "completed" || supervisorOperationState(t, f, later.ID) != "queued" {
+		t.Fatal("first work did not complete independently of later candidate")
+	}
+	if _, _, err := f.e.pendingCandidate(t.Context(), ids[1]); err == nil {
+		t.Fatal("later candidate lost its normal configuration guard")
+	}
+	if err := f.e.processNext(t.Context(), drivers); err == nil {
+		t.Fatal("reached corrupt dependency was silently ignored")
+	}
+	if driver.prepares.Load() != 1 || driver.calls.Load() != 1 || supervisorOperationState(t, f, later.ID) != "queued" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 {
+		t.Fatal("corrupt later candidate started work or changed prior outcome")
+	}
+}
+
 func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T) {
 	f := supervisorFixture(t)
 	f.configure(t, otherAttemptProject, "other-account", 0, false)
@@ -51,9 +110,59 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 	if _, err := f.e.Advance(context.Background(), attemptProject, busy.ID, busy.Revision, "cancelled", "synthetic_release", ""); err != nil {
 		t.Fatal(err)
 	}
-	operations, err = f.e.pending(context.Background())
-	if err != nil || len(operations) != 256 {
-		t.Fatalf("released reservation did not make bounded queued work eligible: %d %v", len(operations), err)
+	// The synthetic prefix deliberately exceeds native admission. Preserve the
+	// SQL selection ceiling without eagerly expanding 256 unadmitted records.
+	candidates, err := f.e.pendingCandidates(context.Background())
+	if err != nil || len(candidates) != 256 {
+		t.Fatalf("released reservation did not expose bounded queued candidates: %d %v", len(candidates), err)
+	}
+}
+
+// Priority needs full applicability only when an earlier queued intent exists.
+// The selected target still faces the ordinary claim/admission guards later.
+func TestSupervisorPrioritySkipsAdmissionOnlyWhenNoEarlierQueuedIntent(t *testing.T) {
+	for _, earlierQueued := range []bool{false, true} {
+		t.Run(fmt.Sprint("earlier-", earlierQueued), func(t *testing.T) {
+			f := supervisorFixture(t)
+			if earlierQueued {
+				f.enqueue(t, attemptProject, "earlier-priority", "cli", 2, 1)
+			}
+			selected := f.enqueue(t, attemptProject, "selected-priority", "cli", 4, 1)
+			// A real current-admission dependency is unavailable. Priority's
+			// empty-earlier fast path must not read it, but actual claim must.
+			if _, err := f.store.DB().Exec(`DROP TABLE review_pull_scheduling`); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			op, err := readOperation(t.Context(), tx, attemptProject, selected.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config, revision, err := readConfiguration(t.Context(), tx, attemptProject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.e.hostedPriorityBinding(t.Context(), tx, op); err == nil {
+				t.Fatal("fixture did not refuse full current-admission reads")
+			}
+			prior, err := f.e.earlierQueuedReviewIntent(t.Context(), tx, op, config, revision)
+			if earlierQueued && err == nil || !earlierQueued && (err != nil || prior != nil) {
+				t.Fatalf("priority did not restrict full admission to an existing earlier intent: earlier%t prior%v err%v", earlierQueued, prior, err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.e.StartAttempt(t.Context(), attemptProject, selected.ID); err == nil {
+				t.Fatal("priority fast path bypassed actual target admission")
+			}
+			if supervisorOperationState(t, f, selected.ID) != "queued" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+				t.Fatal("refused actual claim changed the operation or created an attempt")
+			}
+		})
 	}
 }
 

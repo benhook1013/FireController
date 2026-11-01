@@ -19,12 +19,6 @@ func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Op
 	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
 		return nil, nil
 	}
-	// Inapplicable requests must still reach normal StartAttempt hold handling,
-	// rather than being hidden behind another intent indefinitely.
-	valid, err := e.hostedPriorityBinding(ctx, tx, o)
-	if err != nil || !valid {
-		return nil, err
-	}
 	queue, err := json.Marshal(c.Queue)
 	if err != nil {
 		return nil, err
@@ -49,6 +43,17 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 	err = rows.Err()
 	_ = rows.Close()
 	if err != nil {
+		return nil, err
+	}
+	// An exact empty predecessor set needs no applicability decision. The
+	// selected operation still faces all normal guards at actual claim.
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// Inapplicable requests must still reach normal StartAttempt hold handling,
+	// rather than being hidden behind another intent indefinitely.
+	valid, err := e.hostedPriorityBinding(ctx, tx, o)
+	if err != nil || !valid {
 		return nil, err
 	}
 	for _, id := range ids {
