@@ -31,6 +31,7 @@ func TestSourceCIFailureDiagnosticsRemainBoundedAndUnproven(t *testing.T) {
 		{name: "missing", code: "provider_not_found", status: 404, want: "ci_provider_not_found"},
 		{name: "observation_changed", code: "provider_observation_changed", status: 200, want: "ci_provider_observation_changed"},
 		{name: "invalid_response", code: "provider_invalid_response", status: 200, want: "ci_provider_invalid_response"},
+		{name: "inventory_incomplete", code: "provider_inventory_incomplete", status: 200, want: "ci_provider_inventory_incomplete"},
 		{name: "http_timeout", code: "provider_unavailable", status: 408, want: "ci_provider_timeout"},
 		{name: "server", code: "provider_unavailable", status: 503, want: "ci_provider_server_error"},
 		{name: "redirect", code: "provider_unavailable", status: 302, want: "ci_provider_redirect"},
@@ -73,7 +74,7 @@ func TestSourceCIFailureDiagnosticsRemainBoundedAndUnproven(t *testing.T) {
 }
 
 func TestSourceCIFailureDiagnosticsPersistWithoutRecollection(t *testing.T) {
-	for _, code := range []string{"provider_rate_limited", "provider_unavailable"} {
+	for _, code := range []string{"provider_rate_limited", "provider_unavailable", "provider_inventory_incomplete"} {
 		t.Run(code, func(t *testing.T) {
 			f := newAttemptFixture(t)
 			f.configure(t, attemptProject, "test-capability", 0, false)

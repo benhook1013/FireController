@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+func TestAgentCIInventoryIncompletePreservesUnknownGate(t *testing.T) {
+	for _, stage := range []string{"", "_head_results", "_merge_results", "_results_recheck", "_merge_results_recheck"} {
+		value := ReviewSourceCIAssessment{State: "unproven", Reason: "ci_provider_inventory_incomplete" + stage}
+		out := AgentReviewCI(value)
+		if out.State != value.State || out.Reason != value.Reason || out.Required != 0 || out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "inventory-completeness refusal") || !strings.Contains(out.Diagnostic.Explanation, "not proof of a provider outage") || !strings.Contains(out.Diagnostic.NextAction, "Do not rerun") {
+			t.Fatal("inventory refusal lost its safe cause or credited CI", out)
+		}
+	}
+	if out := AgentReviewCI(ReviewSourceCIAssessment{State: "satisfied", Reason: "ci_provider_inventory_incomplete"}); out.Diagnostic != nil {
+		t.Fatal("diagnostic changed an unrelated result", out)
+	}
+}
+
 func TestAgentRunOutputKeepsRunDatesAndCursor(t *testing.T) {
 	v := ReviewRuns{ProjectID: "p", Revision: 7, SnapshotID: "s", Source: "old source", ObservedAt: "old origin", RecordedAt: "old save", Items: []ReviewRunSummary{{StartedAt: "new start", FinishedAt: "new finish"}}, Cursor: "next", HasMore: true}
 	out := AgentReviewRuns(v)
