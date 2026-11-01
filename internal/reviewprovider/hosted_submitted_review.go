@@ -15,8 +15,14 @@ type HostedSubmittedReview struct {
 	Acknowledgement IssueComment
 }
 
-var submittedSelected = regexp.MustCompile(`^<summary>📒 Files selected for processing: (0|[1-9][0-9]{0,4})</summary>$`)
-var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> 🪄 Fix comments: Fix CodeRabbit comments on this PR$`)
+var submittedSelected = regexp.MustCompile(`^<summary>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</summary>$`)
+var submittedNoReviewable = regexp.MustCompile(`^<summary>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</summary>$`)
+var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (?:🪄 )?Fix comments: Fix CodeRabbit comments on this PR$`)
+var submittedDecorated = map[string]*regexp.Regexp{
+	"ℹ️ Review info":       findingReviewInfoIcon,
+	"⚙️ Run configuration": regexp.MustCompile(`^<summary>` + standingPicture + ` Run configuration</summary>$`),
+	"📥 Commits":            regexp.MustCompile(`^<summary>` + standingPicture + ` Commits</summary>$`),
+}
 
 // Only the observed submitted-review envelope is recognized. In particular,
 // prompt text and examples cannot supply any inventory or run metadata.
@@ -51,7 +57,52 @@ func (p *submittedReviewParser) text() (string, bool) {
 	return line.text, true
 }
 func (p *submittedReviewParser) block(label string) bool {
-	return p.take("<details>", false) && p.take("<summary>"+label+"</summary>", false)
+	if !p.take("<details>", false) {
+		return false
+	}
+	line, ok := p.next()
+	if !ok || line.quote != 0 || line.hidden || line.text != "<summary>"+label+"</summary>" && (submittedDecorated[label] == nil || !submittedDecorated[label].MatchString(line.text)) {
+		return false
+	}
+	p.at++
+	return true
+}
+
+// Only the observed optional dl/dd wrapper is accepted, with a matching close.
+func (p *submittedReviewParser) wrap() (wrapped, ok bool) {
+	if line, _ := p.next(); line.text == "<dl>" {
+		return true, p.take("<dl>", false) && p.take("<dd>", false)
+	}
+	return false, true
+}
+func (p *submittedReviewParser) close(wrapped bool) bool {
+	return (!wrapped || p.take("</dd>", false) && p.take("</dl>", false)) && p.take("</details>", false)
+}
+
+// The caution contains real counted outside findings. Validate it through the
+// ordinary finding decoder; it is never discarded as presentation or metadata.
+func (p *submittedReviewParser) caution(body string) bool {
+	line, present := p.next()
+	if !present || line.quote != 1 || line.text != "[!CAUTION]" {
+		return true
+	}
+	if line.hidden {
+		return false
+	}
+	p.at++
+	line, ok := p.next()
+	if !ok || line.hidden || line.quote != 1 || line.text != "Some comments are outside the diff and can’t be posted inline due to GitHub limitations." {
+		return false
+	}
+	p.at++
+	line, ok = p.next()
+	if !ok || line.hidden || line.quote != 1 || !findingOutsideHeader.MatchString(line.text) {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	p.at = decoder.outside(body, p.lines, p.at, 0) + 1
+	return inventory.Complete
 }
 
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
@@ -72,7 +123,7 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 		return
 	}
 	count, _ = strconv.Atoi(match[1])
-	if count < 1 || count > 200 || !p.take("---", false) {
+	if count < 1 || count > 200 || !p.caution(body) || !p.take("---", false) {
 		return
 	}
 	if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
@@ -93,21 +144,46 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 	if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
 		end, complete := findingBlock(lines, p.at, 0)
 		label := submittedReviewParser{lines: lines, at: p.at + 1}
-		if complete && label.take("<summary>🤖 Prompt to fix review comments</summary>", false) {
+		header, visible := label.next()
+		if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
 			p.at = end + 1
 			if !p.take("---", false) {
 				return
 			}
 		}
 	}
-	if !p.block("ℹ️ Review info") || !p.block("⚙️ Run configuration") {
+	if !p.block("ℹ️ Review info") {
 		return
 	}
-	for _, prefix := range []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "} {
+	infoWrapped, valid := p.wrap()
+	if !valid || !p.block("⚙️ Run configuration") {
+		return
+	}
+	configWrapped, valid := p.wrap()
+	if !valid {
+		return
+	}
+	prefixes := []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "}
+	if line, _ := p.next(); strings.HasPrefix(line.text, "- **Source mode**: ") {
+		if !p.take("- **Source mode**: Auto", false) {
+			return
+		}
+		prefixes = []string{"- **Repository**: ", "- **Branch**: ", "- **File**: ", "- **Commit**: ", "- **Layers**: ", "- **Review profile**: ", "- **Plan**: "}
+	}
+	for _, prefix := range prefixes {
 		line, valid := p.text()
 		value, found := strings.CutPrefix(line, prefix)
 		if !valid || !found || !validPlainText(value, 1000) || strings.TrimSpace(value) == "" {
 			return
+		}
+		if prefix == "- **Commit**: " || prefix == "- **File**: " {
+			kind := "commit"
+			if prefix == "- **File**: " {
+				kind = "blob"
+			}
+			if selectedHead, proven := standingConfigurationHead(value, kind); !proven || selectedHead != head {
+				return
+			}
 		}
 	}
 	line, valid := p.text()
@@ -116,12 +192,16 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 		return
 	}
 	run = uuid[1]
-	if !p.take("</details>", false) || !p.block("📥 Commits") {
+	if !p.close(configWrapped) || !p.block("📥 Commits") {
+		return
+	}
+	commitsWrapped, valid := p.wrap()
+	if !valid {
 		return
 	}
 	line, valid = p.text()
 	comparison := hostedComparisonLine.FindStringSubmatch(line)
-	if !valid || comparison == nil || strings.Trim(comparison[2], "`") != head || !p.take("</details>", false) || !p.take("<details>", false) {
+	if !valid || comparison == nil || strings.Trim(comparison[2], "`") != head || !p.close(commitsWrapped) || !p.take("<details>", false) {
 		return
 	}
 	line, valid = p.text()
@@ -133,14 +213,18 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 	if total < 1 || total > 10000 {
 		return
 	}
+	filesWrapped, valid := p.wrap()
+	if !valid {
+		return
+	}
 	selected = map[string]bool{}
 	for {
+		if line, _ := p.next(); line.text == "</details>" || filesWrapped && line.text == "</dd>" {
+			break
+		}
 		line, valid = p.text()
 		if !valid {
 			return
-		}
-		if line == "</details>" {
-			break
 		}
 		path := standingFile.FindStringSubmatch(line)
 		if path == nil || !validRepoPath(path[1]) || selected[path[1]] || len(selected) >= total {
@@ -148,15 +232,45 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 		}
 		selected[path[1]] = true
 	}
-	if len(selected) != total {
+	if len(selected) != total || !p.close(filesWrapped) {
 		return
+	}
+	if line, _ := p.next(); line.text == "<details>" {
+		if !p.take("<details>", false) {
+			return
+		}
+		header, valid := p.text()
+		match := submittedNoReviewable.FindStringSubmatch(header)
+		if !valid || match == nil {
+			return
+		}
+		expected, _ := strconv.Atoi(match[1])
+		wrapped, sound := p.wrap()
+		if !sound || !wrapped || expected > len(selected) {
+			return
+		}
+		seen := map[string]bool{}
+		for {
+			if line, _ := p.next(); line.text == "</dd>" {
+				break
+			}
+			text, valid := p.text()
+			path, plain := strings.CutPrefix(text, "* ")
+			if !valid || !plain || !validRepoPath(path) || strings.TrimSpace(path) != path || strings.ContainsAny(path, "`<>[]*") || !selected[path] || seen[path] || len(seen) >= expected {
+				return
+			}
+			seen[path] = true
+		}
+		if len(seen) != expected || !p.close(true) {
+			return
+		}
 	}
 	if line, _ := p.next(); standingAvailability.MatchString(line.text) {
 		if _, valid = p.text(); !valid {
 			return
 		}
 	}
-	if !p.take("</details>", false) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
+	if !p.close(infoWrapped) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
 		return
 	}
 	_, extra := p.next()
