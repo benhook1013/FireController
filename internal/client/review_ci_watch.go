@@ -30,27 +30,28 @@ type CIWorkflowFailure struct {
 }
 
 type CIWatchTargetResult struct {
-	PullNumber       int64               `json:"pull_number"`
-	HeadSHA          string              `json:"head_sha"`
-	BaseSHA          string              `json:"base_sha,omitempty"`
-	State            string              `json:"state"`
-	Reason           string              `json:"reason"`
-	BaseRef          string              `json:"base_ref,omitempty"`
-	GateRef          string              `json:"gate_ref,omitempty"`
-	ObservedHeadSHA  string              `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA  string              `json:"observed_base_sha,omitempty"`
-	ObservedAt       string              `json:"observed_at,omitempty"`
-	CICommitSHA      string              `json:"ci_commit_sha,omitempty"`
-	Selection        string              `json:"selection,omitempty"`
-	Required         int64               `json:"required"`
-	Satisfied        int64               `json:"satisfied"`
-	Failed           int64               `json:"failed"`
-	Pending          int64               `json:"pending"`
-	Unproven         int64               `json:"unproven"`
-	Checks           []ReviewCIContext   `json:"checks"`
-	ObservationKey   string              `json:"observation_key,omitempty"`
-	WaitingForChange bool                `json:"waiting_for_change,omitempty"`
-	WorkflowFailures []CIWorkflowFailure `json:"workflow_failures,omitempty"`
+	PullNumber           int64                   `json:"pull_number"`
+	HeadSHA              string                  `json:"head_sha"`
+	BaseSHA              string                  `json:"base_sha,omitempty"`
+	State                string                  `json:"state"`
+	Reason               string                  `json:"reason"`
+	BaseRef              string                  `json:"base_ref,omitempty"`
+	GateRef              string                  `json:"gate_ref,omitempty"`
+	ObservedHeadSHA      string                  `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA      string                  `json:"observed_base_sha,omitempty"`
+	ObservedAt           string                  `json:"observed_at,omitempty"`
+	CICommitSHA          string                  `json:"ci_commit_sha,omitempty"`
+	Selection            string                  `json:"selection,omitempty"`
+	Required             int64                   `json:"required"`
+	Satisfied            int64                   `json:"satisfied"`
+	Failed               int64                   `json:"failed"`
+	Pending              int64                   `json:"pending"`
+	Unproven             int64                   `json:"unproven"`
+	Checks               []ReviewCIContext       `json:"checks"`
+	ObservationKey       string                  `json:"observation_key,omitempty"`
+	WaitingForChange     bool                    `json:"waiting_for_change,omitempty"`
+	WorkflowFailures     []CIWorkflowFailure     `json:"workflow_failures,omitempty"`
+	WorkflowObservations []CIWorkflowObservation `json:"workflow_observations,omitempty"`
 }
 
 type CIWatchResult struct {
@@ -106,11 +107,15 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 		available := max(0, time.Until(deadline)-5*time.Second) / time.Second
 		seconds = min(seconds, int(available))
 	}
+	workflowDetails := false
+	for _, target := range targets {
+		workflowDetails = workflowDetails || len(target.FailureWorkflowIDs) > 0
+	}
 	var value CIWatchResult
 	var status int
 	err = resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
-		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true})
+		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciWorkflowDetails: workflowDetails})
 	})
 	if err != nil {
 		return CIWatchResult{}, reviewWaitTargetError(ciWatchReadError(err), "", targets)
@@ -144,7 +149,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
-		if !validCIWatchWorkflowFailures(item, pin) {
+		if !validCIWatchWorkflowFailures(item, pin) || !validCIWatchWorkflowObservations(item, pin) {
 			return false
 		}
 		attention := item.State == "pending" && len(item.WorkflowFailures) > 0

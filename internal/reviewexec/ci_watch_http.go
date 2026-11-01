@@ -15,6 +15,7 @@ func (e *Engine) registerCIWatchHTTP(mux *http.ServeMux) {
 func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-CI-Watch")
+	w.Header().Add("Vary", "X-FC-CI-Workflow-Details")
 	changeAware := len(r.Header.Values("X-FC-CI-Watch")) == 1 && r.Header.Get("X-FC-CI-Watch") == "change-v1"
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
@@ -80,6 +81,11 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 		for i := range result.Targets {
 			result.Targets[i].ObservationKey = ""
 			result.Targets[i].WaitingForChange = false
+		}
+	}
+	if len(r.Header.Values("X-FC-CI-Workflow-Details")) != 1 || r.Header.Get("X-FC-CI-Workflow-Details") != "1" {
+		for i := range result.Targets {
+			result.Targets[i].WorkflowObservations = nil
 		}
 	}
 	core.WriteJSON(w, http.StatusOK, result)

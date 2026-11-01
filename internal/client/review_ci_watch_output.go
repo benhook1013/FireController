@@ -19,6 +19,14 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 	for _, item := range value.Targets {
 		out.AllTargetsPassed = out.AllTargetsPassed && item.State == "passed"
 		phase, diagnostic := ciWatchDiagnostic(item)
+		if len(item.WorkflowObservations) > 0 || len(item.WorkflowFailures) > 0 {
+			const limit = " Selected workflow observations cover only the latest run/current attempt, not older runs or all jobs; absent failure rows do not certify that jobs were checked."
+			if diagnostic != nil {
+				copy := *diagnostic
+				copy.Explanation += limit
+				diagnostic = &copy
+			}
+		}
 		out.Targets = append(out.Targets, CIWatchTargetOutput{item, phase, diagnostic})
 	}
 	return out
@@ -43,7 +51,8 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 		phase, explanation = "not_observed", "The controller has not completed a fresh CI observation for this watch. Zero counts and an empty checks list mean unknown, not that no checks are required."
 	case item.Reason == "ci_watch_refresh_pending":
 		phase, explanation = "refreshing", "A newer controller check has been requested but has not completed. Any earlier counts and checks are informational until that refresh completes."
-	case oneReviewOf(item.Reason, "ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending"):
+	case oneReviewOf(item.Reason, "ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending",
+		"ci_provider_invalid_response_check_run_time_order", "ci_provider_invalid_response_head_results_check_run_time_order", "ci_provider_invalid_response_merge_results_check_run_time_order", "ci_provider_invalid_response_results_recheck_check_run_time_order", "ci_provider_invalid_response_merge_results_recheck_check_run_time_order"):
 		if diagnostic := AgentReviewCI(ReviewSourceCIAssessment{State: "unproven", Reason: item.Reason}).Diagnostic; diagnostic != nil {
 			return "observation_unproven", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction}
 		}

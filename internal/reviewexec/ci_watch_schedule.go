@@ -146,8 +146,17 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 		item.CIWatchTarget = target
 		item.FailureWorkflowIDs = append([]int64(nil), target.FailureWorkflowIDs...)
 		rows := item.WorkflowFailures
-		item.WorkflowFailures = nil
+		observations := item.WorkflowObservations
+		item.WorkflowFailures, item.WorkflowObservations = nil, nil
 		if item.State == "pending" && item.Reason != "ci_watch_refresh_pending" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) && sha.MatchString(item.CICommitSHA) && (item.Selection == "head" || item.Selection == "test_merge") && len(target.FailureWorkflowIDs) > 0 {
+			for _, row := range observations {
+				for _, id := range target.FailureWorkflowIDs {
+					if row.WorkflowID == id {
+						item.WorkflowObservations = append(item.WorkflowObservations, row)
+						break
+					}
+				}
+			}
 			for _, row := range rows {
 				for _, id := range target.FailureWorkflowIDs {
 					if row.WorkflowID == id {
@@ -370,6 +379,7 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	item.ObservationKey = ciWatchObservationKey(target.project, observation, item)
 	if item.State == "pending" {
 		item.WorkflowFailures = ciWatchValidatedWorkflowFailures(observation, claim.workflowIDs, workflowFailures)
+		item.WorkflowObservations = ciWatchWorkflowObservations(observation, claim.workflowIDs)
 	}
 	return nil
 }

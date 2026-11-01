@@ -222,12 +222,15 @@ func (g *GitHub) ciChecks(ctx context.Context, path, head string, budget *action
 		total = envelope.Total
 		pageSeen := make(map[int64]bool, len(envelope.Checks))
 		for _, raw := range envelope.Checks {
-			row, ok := normalizeCICheck(raw, head)
+			row, ok, issue := normalizeCICheckWithIssue(raw, head)
 			// New checks can shift an earlier page's last rows onto this page.
 			// Only an independently changed count permits discarding that overlap
 			// through the existing bounded recollection. Malformed rows and
 			// repeats within one page are still invalid, even during movement.
 			if !ok || pageSeen[row.ID] || seen[row.ID] && !changed {
+				if issue != "" {
+					return nil, &ciResultIssueError{cause: invalidResponse(false, http.StatusOK), issue: issue}
+				}
 				return nil, invalidResponse(false, http.StatusOK)
 			}
 			pageSeen[row.ID] = true
@@ -287,27 +290,35 @@ func (g *GitHub) ciStatuses(ctx context.Context, path string, budget *actionsBud
 }
 
 func normalizeCICheck(raw githubCICheck, head string) (CICheckRun, bool) {
+	row, ok, _ := normalizeCICheckWithIssue(raw, head)
+	return row, ok
+}
+
+func normalizeCICheckWithIssue(raw githubCICheck, head string) (CICheckRun, bool, string) {
 	conclusion, ok := actionsState(raw.Status, raw.Conclusion)
 	if !ok || raw.ID <= 0 || raw.Suite.ID <= 0 || raw.App.ID <= 0 || raw.HeadSHA != head || !validRequiredContext(raw.Name) {
-		return CICheckRun{}, false
+		return CICheckRun{}, false, ""
 	}
 	row := CICheckRun{ID: raw.ID, SuiteID: raw.Suite.ID, AppID: raw.App.ID, Name: raw.Name, HeadSHA: raw.HeadSHA, Status: raw.Status, Conclusion: conclusion}
 	if raw.StartedAt != nil {
 		row.StartedAt, ok = actionsTime(*raw.StartedAt)
 		if !ok {
-			return CICheckRun{}, false
+			return CICheckRun{}, false, ""
 		}
 	}
 	if raw.CompletedAt != nil {
 		row.CompletedAt, ok = actionsTime(*raw.CompletedAt)
-		if !ok || !validCIInterval(raw.Status, conclusion, row.StartedAt, row.CompletedAt) {
-			return CICheckRun{}, false
+		if !ok {
+			return CICheckRun{}, false, ""
+		}
+		if !validCIInterval(raw.Status, conclusion, row.StartedAt, row.CompletedAt) {
+			return CICheckRun{}, false, "check_run_time_order"
 		}
 	}
 	if (raw.Status == "completed") != (raw.CompletedAt != nil) || raw.Status == "in_progress" && raw.StartedAt == nil {
-		return CICheckRun{}, false
+		return CICheckRun{}, false, ""
 	}
-	return row, true
+	return row, true, ""
 }
 
 func normalizeCIStatus(raw githubCIStatus) (CICommitStatus, bool) {

@@ -342,6 +342,7 @@ type sourceWaitOptions struct {
 	hostedObserver     bool
 	sourceRefusalV4    bool
 	ciWatchChange      bool
+	ciWorkflowDetails  bool
 	seconds            int
 	status             *int
 	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
@@ -390,6 +391,10 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		if wait.ciWatchChange {
 			r.Header.Set("X-FC-CI-Watch", "change-v1")
 		}
+		if wait.ciWorkflowDetails {
+			r.Header.Set("X-FC-CI-Workflow-Details", "1")
+		}
+
 		if wait.reviewBlockers {
 			r.Header.Set("X-FC-Review-Blockers", "true")
 		}
