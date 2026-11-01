@@ -61,7 +61,7 @@ Each command accepts `--timeout DURATION`, defaults to five minutes and permits 
 
 Commands use explicit local filesystem authority, bounded execution and compact JSON; they never load a provider catalog or make network calls. A caller may retain a long local command in its host background. These are operator actions, not per-worker coordination calls or a reason to return pending receipts for quick local mutations.
 
-Use a short private destination path. The bundled SQLite VFS imposes a smaller database-path limit than the filesystem; generated bundle and database names also consume that space. An unsupported destination remains a reported backup failure rather than a successful backup.
+Use a short private destination path. The bundled SQLite VFS imposes a smaller database-path limit than the filesystem; the hidden staging directory, database filename and SQLite journal suffix all consume that space. Bundle creation and new managed configuration validate the complete staging pathname against the compiled default VFS before creating the destination, including any longer resolved directory alias. Stored backup history remains readable independently of that local path limit. An unsupported destination cannot produce a successful backup.
 
 ## Managed scheduling and retention
 

@@ -213,6 +213,9 @@ func (s *session) publishLatest(ctx context.Context, r Receipt) error {
 }
 
 func (s *session) verifyRemote(ctx context.Context, r Receipt) error {
+	if err := receiptTransferSize(ctx, r, s.c); err != nil {
+		return err
+	}
 	download := filepath.Join(s.work, "verify.tar.gz")
 	if err := s.transport.get(ctx, s.object(r, "archive.tar.gz"), download); err != nil {
 		return err
@@ -387,6 +390,9 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 			if s.state.LastSuccess == nil {
 				return result, failure("offsite_state_invalid")
 			}
+			if err := receiptTransferSize(ctx, *s.state.LastSuccess, c); err != nil {
+				return result, err
+			}
 			h, n, e := fileHash(ctx, archive, c.MaxBundleBytes)
 			if e != nil || h != s.state.LastSuccess.ArchiveSHA256 || n != s.state.LastSuccess.ArchiveBytes {
 				return result, cancelOrFailure(ctx, "offsite_state_invalid")
@@ -470,6 +476,9 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		return result, failure("offsite_retention_limit")
 	}
 	r := *s.state.Pending
+	if err := receiptTransferSize(ctx, r, c); err != nil {
+		return result, err
+	}
 	if _, e := os.Lstat(archive); errors.Is(e, os.ErrNotExist) {
 		prepared := filepath.Join(c.StateDir, "prepare.tar.gz")
 		h, n, e := fileHash(ctx, prepared, c.MaxBundleBytes)
@@ -603,6 +612,9 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 			return failure("offsite_remote_conflict")
 		}
 		// Matching ownership alone is insufficient if an archive was replaced.
+		if err := receiptTransferSize(ctx, r, s.c); err != nil {
+			return err
+		}
 		archive := filepath.Join(s.work, "prune.tar.gz")
 		e = s.transport.get(ctx, s.object(r, "archive.tar.gz"), archive)
 		if e != nil && !errors.Is(e, notFound) {
@@ -689,6 +701,9 @@ func (s *session) fetch(ctx context.Context, id, destination string) (result bac
 	}
 	if latest != nil && *latest != r {
 		return result, failure("offsite_remote_conflict")
+	}
+	if err = receiptTransferSize(ctx, r, s.c); err != nil {
+		return result, err
 	}
 	if err = os.Mkdir(destination, 0700); err != nil {
 		if errors.Is(err, os.ErrExist) {
