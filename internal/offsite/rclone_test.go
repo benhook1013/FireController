@@ -84,3 +84,38 @@ func TestOffsiteConfigAndStatusRejectMalformedPrivateState(t *testing.T) {
 		wantCode(t, err, "offsite_state_invalid")
 	}
 }
+
+func TestOffsiteProcessPreservesProxyCasesWithoutProviderEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix child-environment fixture")
+	}
+	f := newFixture(t)
+	values := map[string]string{
+		"HTTP_PROXY": "http://upper-http.invalid:8080", "HTTPS_PROXY": "http://upper-https.invalid:8080", "NO_PROXY": "upper.invalid",
+		"http_proxy": "http://lower-http.invalid:8080", "https_proxy": "http://lower-https.invalid:8080", "no_proxy": "lower.invalid",
+	}
+	script := "#!/bin/sh\n"
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		t.Setenv(key, values[key])
+		script += "[ \"${" + key + "-}\" = \"" + values[key] + "\" ] || exit 2\n"
+	}
+	for _, key := range []string{"RCLONE_CONFIG_PASS", "RCLONE_CONFIG_OTHER_TYPE", "FIRECONTROLLER_TOKEN"} {
+		t.Setenv(key, "PRIVATE_ENV_SENTINEL")
+		script += "[ \"${" + key + "+present}\" != present ] || exit 3\n"
+	}
+	script += "printf verified\n"
+	if err := os.WriteFile(f.c.RcloneBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.c.RcloneConfig, []byte("private fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := newTransport(f.c, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := tr.(*rclone).run(t.Context(), "version")
+	if err != nil || string(out) != "verified" {
+		t.Fatal("child lost proxy settings or inherited provider environment", err)
+	}
+}
