@@ -89,9 +89,9 @@ func publicationVisibleLines(body string) []string {
 			if !strings.Contains(line[start+4:], "-->") {
 				hiddenComment = true
 			}
-			// An explicit malformed protocol line remains conflicting evidence;
+			// An unquoted malformed protocol line remains conflicting evidence;
 			// unrelated HTML comments cannot make nested lines into markers.
-			if strings.Contains(strings.ToLower(line), "coderabbit-review-publication") {
+			if pre == 0 && quote == 0 && !publicationHTMLBlockTag.MatchString(line[:start]) && strings.Contains(strings.ToLower(line), "coderabbit-review-publication") {
 				lines = append(lines, line)
 			}
 			continue
