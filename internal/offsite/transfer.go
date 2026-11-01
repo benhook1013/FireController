@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backup"
@@ -67,23 +68,27 @@ func openSession(c Config, t transport) (*session, error) {
 	return s, nil
 }
 
-// A single reserved workspace bounds disk use across hard kills. Only a
-// directory carrying this connection's marker may be reclaimed after a crash.
+// A single reserved workspace bounds disk use across hard kills. Reclaim only
+// this connection's published marker or its narrowly recognized creation remnant.
 func prepareWork(c Config) (string, error) {
 	dir := filepath.Join(c.StateDir, "work")
 	if _, err := os.Lstat(dir); err == nil {
 		if err = privateDir(dir, false); err != nil {
 			return "", err
 		}
-		b, err := privateRead(filepath.Join(dir, ".owner"), 128)
-		if err != nil || string(b) != binding(c) {
-			// A kill between mkdir and the ownership write can leave an empty
-			// directory. Remove handles only that empty case, never its contents.
-			if os.Remove(dir) != nil {
+		marker := filepath.Join(dir, ".owner")
+		if _, err := os.Lstat(marker); errors.Is(err, os.ErrNotExist) {
+			if err := removeUnpublishedMarkerWork(dir, binding(c)); err != nil {
+				return "", err
+			}
+		} else {
+			b, err := privateRead(marker, 128)
+			if err != nil || string(b) != binding(c) {
 				return "", failure("offsite_state_invalid")
 			}
-		} else if os.RemoveAll(dir) != nil {
-			return "", failure("offsite_storage_unavailable")
+			if os.RemoveAll(dir) != nil {
+				return "", failure("offsite_storage_unavailable")
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", failure("offsite_storage_unavailable")
@@ -92,17 +97,53 @@ func prepareWork(c Config) (string, error) {
 		return "", failure("offsite_storage_unavailable")
 	}
 	marker := filepath.Join(dir, ".owner")
-	f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	pending := filepath.Join(dir, ".owner.pending")
+	f, err := os.OpenFile(pending, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return "", failure("offsite_storage_unavailable")
 	}
 	_, writeErr := f.Write([]byte(binding(c)))
 	syncErr := f.Sync()
 	closeErr := f.Close()
-	if writeErr != nil || syncErr != nil || closeErr != nil || syncDir(dir) != nil {
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		return "", failure("offsite_storage_unavailable")
+	}
+	// Publish only the synced complete binding, without replacing any marker.
+	if os.Link(pending, marker) != nil || os.Remove(pending) != nil || syncDir(dir) != nil {
 		return "", failure("offsite_storage_unavailable")
 	}
 	return dir, nil
+}
+
+func removeUnpublishedMarkerWork(dir, owner string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return failure("offsite_state_invalid")
+	}
+	entries, err := f.ReadDir(2)
+	closeErr := f.Close()
+	if err != nil && !errors.Is(err, io.EOF) || closeErr != nil || len(entries) > 1 {
+		return failure("offsite_state_invalid")
+	}
+	if len(entries) == 1 {
+		if entries[0].Name() != ".owner.pending" {
+			return failure("offsite_state_invalid")
+		}
+		pending := filepath.Join(dir, ".owner.pending")
+		b, err := privateRead(pending, int64(len(owner)))
+		if err != nil || !strings.HasPrefix(owner, string(b)) {
+			return failure("offsite_state_invalid")
+		}
+		if os.Remove(pending) != nil {
+			return failure("offsite_storage_unavailable")
+		}
+	}
+	// Never recursively remove an unpublished directory, even after validating
+	// its one reserved temporary marker. Unexpected contents remain untouched.
+	if os.Remove(dir) != nil {
+		return failure("offsite_state_invalid")
+	}
+	return nil
 }
 
 func (s *session) close() {
