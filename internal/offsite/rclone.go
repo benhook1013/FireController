@@ -130,6 +130,9 @@ func (r *rclone) read(ctx context.Context, name string) ([]byte, error) {
 }
 func (r *rclone) put(ctx context.Context, source, name string) error {
 	_, err := r.run(ctx, "copyto", source, name, "--ignore-times")
+	if errors.Is(err, notFound) {
+		return failure("offsite_transport_failed")
+	}
 	return err
 }
 func (r *rclone) get(ctx context.Context, name, destination string) error {

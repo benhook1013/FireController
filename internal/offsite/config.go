@@ -27,6 +27,7 @@ var remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*:[A-Za-z0-9][A-Za
 
 const maxStateBytes = 1 << 20
 const maxOwned = 128
+const maxBundleBytes int64 = 1 << 40
 
 type Config struct {
 	Version        int    `json:"version"`
@@ -92,7 +93,7 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	if strictjson.Decode(b, &c) != nil || c.Version != 1 || !instanceID.MatchString(c.InstanceID) || !absolute(c.SourceRoot) || !absolute(c.StateDir) || !absolute(c.RcloneBinary) || !absolute(c.RcloneConfig) || !remoteName.MatchString(c.Remote) || strings.Contains(c.Remote, "//") || c.Keep < 1 || c.Keep > 100 || c.MaxBundleBytes < 1024 || c.MaxBundleBytes > 1<<40 {
+	if strictjson.Decode(b, &c) != nil || c.Version != 1 || !instanceID.MatchString(c.InstanceID) || !absolute(c.SourceRoot) || !absolute(c.StateDir) || !absolute(c.RcloneBinary) || !absolute(c.RcloneConfig) || !remoteName.MatchString(c.Remote) || strings.Contains(c.Remote, "//") || c.Keep < 1 || c.Keep > 100 || c.MaxBundleBytes < 1024 || c.MaxBundleBytes > maxBundleBytes {
 		return c, failure("offsite_configuration_invalid")
 	}
 	d, err := time.ParseDuration(c.Timeout)
@@ -224,7 +225,9 @@ type Receipt struct {
 
 func validReceipt(r Receipt, c Config) bool {
 	t, err := time.Parse(time.RFC3339Nano, r.SnapshotFinishedAt)
-	return r.Version == 1 && bundleID.MatchString(r.ID) && r.InstanceID == c.InstanceID && err == nil && !t.IsZero() && r.SnapshotFinishedAt == t.UTC().Format(time.RFC3339Nano) && r.EventSequence >= 0 && hashID.MatchString(r.ArchiveSHA256) && r.ArchiveBytes > 0 && r.ArchiveBytes <= c.MaxBundleBytes
+	// A mutable transfer budget cannot invalidate retained ownership/history.
+	// Actual packing, hashing and expansion still enforce the configured cap.
+	return r.Version == 1 && bundleID.MatchString(r.ID) && r.InstanceID == c.InstanceID && err == nil && !t.IsZero() && r.SnapshotFinishedAt == t.UTC().Format(time.RFC3339Nano) && r.EventSequence >= 0 && hashID.MatchString(r.ArchiveSHA256) && r.ArchiveBytes > 0 && r.ArchiveBytes <= maxBundleBytes
 }
 
 type Attempt struct {

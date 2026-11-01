@@ -138,9 +138,8 @@ func TestOffsiteWorkspaceMarkerRecoveryPreservesUnknownData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := prepareWork(f.c); err == nil {
-				t.Fatal("claimed unknown or foreign workspace data")
-			}
+			_, err = openSession(f.c, memory())
+			wantCode(t, err, "offsite_state_invalid")
 			after, err := os.ReadDir(dir)
 			if err != nil || len(after) != len(before) {
 				t.Fatal("refusal removed unknown entries", err)
