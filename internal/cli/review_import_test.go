@@ -90,7 +90,7 @@ func TestReviewImportCLIPublicPreviewLostResultAndExactRecovery(t *testing.T) {
 	}
 	code, out, stderr := mutationInvoke(t, profiles, "admin", "reviews", "import-preview", "--file", file)
 	var preview client.ReviewImportPreview
-	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &preview) != nil || preview.ProjectID != project || preview.Counts != (client.ReviewImportCounts{Pulls: 6, Runs: 6, Attempts: 1, Findings: 1}) || !preview.ImportedHistory || preview.NativeCoverage || strings.Contains(out, "PRIVATE_FINDING_DETAIL") || requests.Load() != 2 {
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &preview) != nil || preview.ProjectID != project || preview.Counts != (client.ReviewImportCounts{Pulls: 6, Runs: 6, Attempts: 6, Findings: 1}) || !preview.ImportedHistory || preview.NativeCoverage || strings.Contains(out, "PRIVATE_FINDING_DETAIL") || requests.Load() != 2 {
 		t.Fatal(code, out, stderr)
 	}
 	var receipts, events int

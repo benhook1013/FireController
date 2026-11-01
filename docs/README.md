@@ -6,7 +6,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
-- [Retained review history](review-history-growth.md): immutable versions, compact current summaries, bounded archives and backup integrity.
+- [Retained review history](review-history-growth.md): immutable versions, compact summaries, bounded archives and backup integrity.
 
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
@@ -43,7 +43,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Architecture](architecture.md) owns service boundaries, project isolation, storage, and provider observation rules.
 - [Agent and client contract](agent-client.md) owns profiles, tool calls, subscriptions, cancellation and reconnect semantics.
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
-- [Prepared review import](review-import.md): scoped administrator preview/apply of a prepared historical review export, with explicit implementation and proof status.
+- [Prepared review import](review-import.md): administrator replacement import and additive original-producer transfer, with explicit scope and proof limits.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.
 - [Acceptance and performance](acceptance.md) defines observable proof requirements.

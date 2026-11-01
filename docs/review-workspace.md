@@ -15,6 +15,9 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
+| `POST /reviews/transfer/preview` | Read-only administrator preview of bounded additive original-producer history. |
+| `POST /reviews/transfer/apply` | Exact preview-bound administrator additive history apply. |
+| `POST /reviews/queue/edits` | Administrator selected metadata/order edits, retirement and reactivation. |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
@@ -64,6 +67,30 @@ The empty and populated browser sessions made eight and twelve GETs respectively
 The 98-file Go/browser/module/config/asset manifest stayed unchanged: SHA-256 `b0f440033d41aae6639c6ac9bc0aff267b0afd6a32c3d0755c243fb804ee9d02`. The actual service executable and its private copy retained SHA-256 `3e9c1d45478cd5b48adcdc001f266ea6c62b24da1d0a12282475ee189fbe0bc0`. These identify the exact runtime source tested, excluding documentation-only changes. Disposable state and owned processes were cleaned.
 
 These checks use synthetic observations on Linux/WSL Chromium. They do not establish native execution, a complete migration product, populated multi-project browser coverage, remote deployment, fleet throughput or installed-agent behavior. Existing authentication/revocation and strict-parser tests provide separate focused evidence.
+
+## Selected queue edits
+
+Administrator queue edits maintain selected stored metadata, relative ordering and explicit retirement/reactivation without resubmitting a complete retained workspace. They are an administrator maintenance boundary, not another ordinary worker enrollment step.
+
+Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses additive transfer for selected history and `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Neither operation requires a complete project export or a lifetime PR ceiling.
+
+Queue edits require administrator access, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for administrator provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
+
+Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` as defined above. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
+
+Optional `order` names one to one hundred unique positive 32-bit PR numbers in the desired relative order. After this request's metadata upserts and retirements, those visible PRs exchange only the positions they occupy; unnamed PR positions remain unchanged. For example, queue `[1,2,3,4]` with `order: [3,1]` becomes `[3,2,1,4]`. A newly upserted or explicitly reactivated PR may be selected. Unknown PRs, currently retired PRs without reactivation, and PRs retired by the same request are refused. An empty or null order is refused. Order-only requests use the same endpoint and CLI file; omitting `order` preserves the original normalized request bytes and replay semantics. Ordering changes no retained metadata, findings, counts, completeness, execution policy or review budget.
+
+Each `retired` entry names a currently visible PR and its `superseded` or `defunct` reason. Retirement changes queue visibility, preserving retained parent records and review histories. Later native publication can update retained facts without making the PR reappear. If complete observations have removed its current parent and retirement marker, native reintroduction preserves the latest retained retirement reason; unrelated replacement observations do not authorize reactivation. Historical transfer refuses a marked PR until explicit reactivation. Explicit retirement also governs a retained snapshot containing both a pull record and its retirement; the presence of the pull record alone cannot make it visible. Retirement does not cancel review operations, change execution policy or unpublish an explicitly enrolled public PR.
+
+Omitted PRs and records remain unchanged. Revision admission, the new snapshot, history references, compact summaries, receipt, event and public projection refresh commit together. A queue edit inherits the prior observation time and does no provider work; it cannot claim freshly collected source facts. Exact original-key replay returns its original receipt after later changes or restart, subject to current authorization. A changed request under the same key conflicts. Successful HTTP 201 returns only the snapshot `id`, new `revision` and `outcome: queue_edited`.
+
+The bound administrator CLI is:
+
+```sh
+fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key
+```
+
+It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. This administrator maintenance action is not a worker MCP tool.
 
 ## Retained history and bounded archives
 

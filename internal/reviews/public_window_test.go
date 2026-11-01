@@ -282,10 +282,19 @@ func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
 	if len(before.Content.Reviews) != 1 || len(before.Content.Reviews[0].Hosted) != 0 || len(before.Content.Reviews[0].CLI) != 100 || !before.Content.Reviews[0].CLIHasMore {
 		t.Fatal("initial sparse public window", before.Content.Reviews)
 	}
-	// Transfer finalization and its replay remain with the later transfer slice.
-	// This foundation exercises the real native write over the large retained graph.
-	after := before
+	// Finalization is a supported transition and must reach the sparse channel
+	// while keeping the independent CLI window and its older private tail.
+	hosted.Finalized = true
+	selected := pull
+	selected.Runs = []RunInput{hosted}
 	started := time.Now()
+	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: publicWindowSource, Pulls: []PullInput{selected}}), "finalize-sparse-hosted")
+	t.Logf("admitted transfer and preview on 4097 current runs: %s", time.Since(started))
+	after := read()
+	if after.Revision != before.Revision+1 || len(after.Content.Reviews[0].Hosted) != 1 || !reflect.DeepEqual(after.Content.Reviews[0].CLI, before.Content.Reviews[0].CLI) || !after.Content.Reviews[0].CLIHasMore {
+		t.Fatal("sparse finalization missed public refresh or changed other channel")
+	}
+	started = time.Now()
 	run := nativeRun("native-after-sparse-history")
 	// Make the new round newer than the retained public window; older rounds
 	// legitimately leave its bytes and revision unchanged.

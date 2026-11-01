@@ -200,17 +200,22 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 	omitted.Diff = nil
 	omitted.IsDraft = nil
 	omitted.MergedAt = ""
-	attempt := nativeAttempt("metadata-native-preserve", "prepared")
-	mustNativePublish(t, f, NativePublication{Pull: omitted, Attempt: &attempt})
+	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: "added-producer", Pulls: []PullInput{omitted}}), "metadata-transfer")
+	q := QueuePullInput{Number: p.Number, Title: p.Title, State: p.State, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef, CIState: p.CIState, Mergeability: p.Mergeability}
+	w := queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{q}, nil), "metadata-queue-edit")
+	if w.Code != 201 {
+		t.Fatal(w.Code, w.Body.String())
+	}
 	kept := metadataRead(t, f, 1, "")
-	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || kept.Pull.MergedAt != p.MergedAt {
+	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || *kept.Pull.IsDraft != draft || kept.Pull.MergedAt != p.MergedAt {
 		t.Fatal("additive/edit discarded metadata")
 	}
-	omitted.HeadSHA = strings.Repeat("d", 40)
-	omitted.State = "open"
-	next := nativeAttempt("metadata-native-move", "prepared")
-	next.HeadSHA = omitted.HeadSHA
-	mustNativePublish(t, f, NativePublication{Pull: omitted, Attempt: &next})
+	q.HeadSHA = strings.Repeat("d", 40)
+	q.State = "open"
+	w = queueEditHTTP(f, queueEditRequest(3, []QueuePullInput{q}, nil), "metadata-queue-move")
+	if w.Code != 201 {
+		t.Fatal(w.Code, w.Body.String())
+	}
 	moved := metadataRead(t, f, 1, "")
 	if moved.Pull.Diff != nil || moved.Pull.IsDraft != nil || moved.Pull.MergedAt != "" {
 		t.Fatal("metadata followed old head")
@@ -275,4 +280,34 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 		result[table] = mustJSON(retained)
 	}
 	return result
+}
+
+// Native publication is an independent metadata writer from administrator transfer and queue edits.
+func TestPullMetadataNativePublicationPreservesOptionalFactsAndClearsOnHeadChange(t *testing.T) {
+	f := newAPIFixture(t)
+	p := nativePull(1)
+	draft := false
+	p.Diff = &PullDiff{2, 3, 4}
+	p.IsDraft = &draft
+	p.MergedAt = "2026-01-01T00:00:00Z"
+	f.observe(t, reviewRequest(0, []PullInput{p}), "metadata-additive")
+	omitted := p
+	omitted.Diff = nil
+	omitted.IsDraft = nil
+	omitted.MergedAt = ""
+	attempt := nativeAttempt("metadata-native-preserve", "prepared")
+	mustNativePublish(t, f, NativePublication{Pull: omitted, Attempt: &attempt})
+	kept := metadataRead(t, f, 1, "")
+	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || *kept.Pull.IsDraft != draft || kept.Pull.MergedAt != p.MergedAt {
+		t.Fatal("native publication discarded metadata")
+	}
+	omitted.HeadSHA = strings.Repeat("d", 40)
+	omitted.State = "open"
+	next := nativeAttempt("metadata-native-move", "prepared")
+	next.HeadSHA = omitted.HeadSHA
+	mustNativePublish(t, f, NativePublication{Pull: omitted, Attempt: &next})
+	moved := metadataRead(t, f, 1, "")
+	if moved.Pull.Diff != nil || moved.Pull.IsDraft != nil || moved.Pull.MergedAt != "" {
+		t.Fatal("metadata followed old head")
+	}
 }
