@@ -83,10 +83,8 @@ func (g *GitHub) ObserveHostedActivity(ctx context.Context, repository, head str
 		var selected *githubActivityStatus
 		for i := range rows {
 			r := &rows[i]
-			created, ok := activityTime(r.CreatedAt, observed)
-			updated, updatedOK := activityTime(r.UpdatedAt, observed)
 			_, actorErr := normalizeActor(r.Creator)
-			if r.ID <= 0 || !validPlainText(r.Context, 255) || strings.TrimSpace(r.Context) == "" || !validIdentifierText(r.State, 64) || actorErr != nil || !ok || !updatedOK || updated.Before(created) {
+			if r.ID <= 0 || !validPlainText(r.Context, 255) || strings.TrimSpace(r.Context) == "" || !validIdentifierText(r.State, 64) || actorErr != nil {
 				return result, invalidResponse(false, http.StatusOK)
 			}
 			if seen[r.ID] {
@@ -96,6 +94,13 @@ func (g *GitHub) ObserveHostedActivity(ctx context.Context, repository, head str
 			seen[r.ID] = true
 			if r.Creator.ID != selector.ProviderActorID || r.Creator.Type != "Bot" || !strings.EqualFold(r.Context, "CodeRabbit") {
 				continue
+			}
+			// Timing belongs to the selected provider surface. Other actors or
+			// contexts cannot establish or invalidate its activity state.
+			created, ok := activityTime(r.CreatedAt, observed)
+			updated, updatedOK := activityTime(r.UpdatedAt, observed)
+			if !ok || !updatedOK || updated.Before(created) {
+				return result, invalidResponse(false, http.StatusOK)
 			}
 			if selected == nil || created.After(result.CreatedAt) || created.Equal(result.CreatedAt) && r.ID > selected.ID {
 				selected = r
@@ -131,6 +136,18 @@ func (g *GitHub) ObserveHostedActivity(ctx context.Context, repository, head str
 		if r.ID <= 0 || r.App.ID <= 0 || !validPlainText(r.Name, 255) || strings.TrimSpace(r.Name) == "" || !validIdentifierText(r.Status, 64) || !validSHA(r.HeadSHA) || strings.ToLower(r.HeadSHA) != r.HeadSHA {
 			return HostedActivity{State: "unproven", Reason: "activity_not_proven"}, invalidResponse(false, http.StatusOK)
 		}
+		if prior, exists := seen[r.ID]; exists {
+			if !sameActivityCheck(prior, r) {
+				return HostedActivity{State: "unproven", Reason: "activity_ambiguous", ObservedAt: observed}, nil
+			}
+			continue
+		}
+		seen[r.ID] = r
+		if r.App.ID != selector.AppID || r.HeadSHA != head || !strings.EqualFold(r.Name, "CodeRabbit") {
+			continue
+		}
+		// A complete inventory still validates identities and contradictions
+		// above; lifecycle detail applies only to this exact selected surface.
 		var start, finish time.Time
 		var ok bool
 		if r.StartedAt != nil {
@@ -142,16 +159,6 @@ func (g *GitHub) ObserveHostedActivity(ctx context.Context, repository, head str
 			if finish, ok = activityTime(*r.CompletedAt, observed); !ok || !start.IsZero() && finish.Before(start) {
 				return HostedActivity{State: "unproven", Reason: "activity_not_proven"}, invalidResponse(false, http.StatusOK)
 			}
-		}
-		if prior, exists := seen[r.ID]; exists {
-			if !sameActivityCheck(prior, r) {
-				return HostedActivity{State: "unproven", Reason: "activity_ambiguous", ObservedAt: observed}, nil
-			}
-			continue
-		}
-		seen[r.ID] = r
-		if r.App.ID != selector.AppID || r.HeadSHA != head || !strings.EqualFold(r.Name, "CodeRabbit") {
-			continue
 		}
 		isActive := false
 		switch r.Status {
