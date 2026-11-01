@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiError } from './api';
-import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow, ReviewRunsView, ReviewAcceptedCounts, reviewDuration } from './review-workspace';
+import { InlineReviewFindings, ReviewHistoryGroups, ReviewHistoryRow, ReviewRunsView, ReviewAcceptedCounts, ReviewRunView, reviewDuration } from './review-workspace';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewRunDetail, ReviewRunSummary } from './types';
 
@@ -11,17 +11,18 @@ const key = ['fc', 'connection', 'instance', 'project', 'actor'];
 const snapshot = 'snapshot-one';
 const run = (id: string, channel: ReviewRunSummary['channel'] = 'cli'): ReviewRunSummary => ({ id, channel, source: 'producer-a', pull_number: 27, source_run_id: `original-${id}`, head_sha: 'head', reviewer: 'Reviewer', scope: 'Selected comparison', outcome: 'completed', complete: true, attributable: true, finalized: true, found: 2, accepted: 1, routed: 1, fixed: 0, started_at: '2026-10-18T00:00:00Z', finished_at: '2026-10-18T00:01:00Z', coverage_limits: [] });
 const detail = (value: ReviewRunSummary): ReviewRunDetail => ({ project_id: 'project', revision: 1, snapshot_id: snapshot, source: 'publisher', observed_at: '2026-10-18T00:02:00Z', recorded_at: '2026-10-18T00:02:01Z', pull_number: 27, run: value, findings: [{ source_finding_id: 'finding', title: '**Literal title**', detail: 'Private **finding**\n\n- Useful step\n\n[unsafe](javascript:alert(1)) ![remote](https://outside.invalid/pixel)', severity: 'low', disposition: 'accepted', decision_reason: 'Verified *reason*.', actor: 'Builder', decided_at: '2026-10-18T00:03:00Z', fix_sha: '', proof_note: '`proof`', resolved_at: '2026-10-18T00:04:00Z' }] });
-function markup(node: React.ReactNode, seed?: { value: ReviewRunDetail; error?: ApiError; selectedKey?: readonly string[] }) {
+function markup(node: React.ReactNode, seed?: { value: ReviewRunDetail; error?: ApiError; selectedKey?: readonly string[]; runView?: boolean }) {
   const read = vi.fn();
   const session = { project: { id: 'project', repository: 'example/project' }, controller: new AbortController(), api: { reviewRun: read } } as unknown as Session;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (seed) {
-    const queryKey = [...(seed.selectedKey ?? key), 'reviews', seed.value.snapshot_id, 'inline-run', seed.value.run.id];
+    const queryKey = [...(seed.selectedKey ?? key), 'reviews', seed.value.snapshot_id, seed.runView ? 'run' : 'inline-run', seed.value.run.id];
     client.setQueryData(queryKey, seed.value);
+    if (seed.runView) client.setQueryData([...key, 'reviews', snapshot, 'pull', 27], { pull: { head_sha: 'head' } });
     if (seed.error) client.getQueryCache().find({ queryKey })!.setState({ status: 'error', error: seed.error });
   }
   try {
-    const html = renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}>{node}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={seed?.runView ? [`/runs/${seed.value.run.id}?snapshot=${snapshot}`] : undefined}><QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project', ready: true, fail: () => {}, selectWorker: () => {} }}>{seed?.runView ? <Routes><Route path="/runs/:runId" element={node} /></Routes> : node}</WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
     expect(read).not.toHaveBeenCalled();
     return html;
   } finally { client.clear(); }
@@ -74,6 +75,39 @@ describe('per-PR inline retained review history', () => {
     expect(incomplete).toContain('Accepted: <strong>4</strong>');
     expect(incomplete).not.toContain('Major');
   });
+  it('withholds interim accepted totals and severity partitions until finalization while preserving found counts', () => {
+    const value = { ...run('interim'), finalized: false, found: 7, accepted: 4, routed: 3, accepted_severity: { critical: 1, major: 1, minor: 1, trivial: 0, unknown: 1, complete: true } };
+    const before = JSON.stringify(value);
+    const counts = markup(<ReviewAcceptedCounts run={value} />);
+    const row = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />);
+    const page = markup(<ReviewRunView />, { value: detail(value), runView: true });
+    for (const html of [counts, row]) expect(html).toContain('Accepted: <strong>?</strong>');
+    expect(row).toContain('Found: <strong>7</strong>');
+    expect(row).toContain('Routed: <strong>?</strong>');
+    expect(page).toContain('Accepted: ? · Routed: ?');
+    expect(page).toContain('>7<small>found</small>');
+    for (const html of [counts, row, page]) {
+      expect(html).not.toContain('Counts not finalized');
+      expect(html).not.toContain('4 accepted findings');
+      expect(html).not.toContain('Major / Minor / Trivial');
+      expect(html).not.toContain('severity unknown');
+    }
+    expect(page).not.toContain('class="notice"');
+    expect(page).toContain('<h3>Findings</h3>');
+    expect(page).not.toContain('recorded /');
+    expect(JSON.stringify(value)).toBe(before);
+    const finalized = { ...value, finalized: true };
+    const finalRow = markup(<ReviewHistoryRow number={27} run={finalized} snapshot={snapshot} head="head" />);
+    const finalPage = markup(<ReviewRunView />, { value: detail(finalized), runView: true });
+    expect(finalRow).toContain('Accepted: <strong>1/1/0</strong>');
+    expect(finalRow).toContain('Routed: <strong>3</strong>');
+    expect(finalPage).toContain('Accepted: 4 · Routed: 3');
+    for (const changes of [{ complete: false }, { attributable: false }]) {
+      const qualified = markup(<ReviewRunView />, { value: detail({ ...value, ...changes }), runView: true });
+      expect(qualified).toContain('This run has incomplete or unattributed source evidence.');
+      expect(qualified).not.toContain('unfinalized source evidence');
+    }
+  });
   it('shows review duration only when original timing is known and ordered', () => {
     expect(reviewDuration(run('timed'))).toBe('1m 0s');
     expect(reviewDuration({...run('unknown'), started_at:''})).toBeUndefined();
@@ -82,7 +116,7 @@ describe('per-PR inline retained review history', () => {
   it('keeps evidence qualification without treating later Git changes as lost progress', () => {
     const value = { ...run('pending'), outcome: 'failed' as const, complete: false, attributable: false, finalized: false, finished_at: '' };
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="other-head" />);
-    for (const text of ['Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Started']) expect(html).toContain(text);
+    for (const text of ['Incomplete record', 'Attribution unconfirmed', 'Started']) expect(html).toContain(text);
     expect(html).not.toContain('Different observed head');
     const missing = markup(<ReviewHistoryRow number={27} run={{ ...value, started_at: '', head_sha: '' }} snapshot={snapshot} head="head" />);
     expect(missing).toContain('Date unknown'); expect(missing).toContain('Head association unknown');
@@ -97,7 +131,7 @@ describe('per-PR inline retained review history', () => {
   it('renders actual inline finding, decision and proof Markdown through the safe renderer', () => {
     const value = { ...run('expanded'), found: 1, accepted: 1, routed: 0 };
     const html = markup(<InlineReviewFindings number={27} run={value} snapshot={snapshot} />, { value: detail(value) });
-    expect(html).toContain('1 recorded / 1 reported findings'); expect(html).toContain('**Literal title**');
+    expect(html).not.toContain('recorded /'); expect(html).not.toContain('reported findings'); expect(html).toContain('**Literal title**');
     expect(html).toContain('<strong>finding</strong>'); expect(html).toContain('<li>Useful step</li>');
     expect(html).toContain('<em>reason</em>'); expect(html).toContain('<code>proof</code>');
     expect(html).not.toContain('<img'); expect(html).not.toContain('href="javascript:');

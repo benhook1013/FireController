@@ -47,7 +47,7 @@ describe('project appearance and metadata boundary', () => {
     // PR headings now use one uniformly styled number-and-title link.
     const original = base.replace(/var\(--fc-[a-z_]+,([^()]+)\)/gu, '$1');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original));
-    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('79c398c876bc33ea2ab36a9924f3b50336b8ebbb046b7103c071f29cfce530b3');
+    expect(Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')).toBe('eb22c401b6771a69257de6c81352d3a4bfd286ce6097ad741745841bda1d1d11');
     const modularStyles = styles + fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
     const tokens = new Set(Array.from(modularStyles.matchAll(/--fc-([a-z_]+)/gu), match => match[1]));
     expect([...tokens].sort()).toEqual(Object.keys(presentationDefaults.theme).sort());

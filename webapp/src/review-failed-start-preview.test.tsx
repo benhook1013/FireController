@@ -39,7 +39,7 @@ describe('completed round previews retain failed-start history separately', () =
     expect(compact).toContain('6 runs · latest 3'); expect(compact).not.toContain('8 runs');
     expect(pills(compact)).toEqual(['completed_4', 'completed_5', 'completed_6']);
     expect(pills(queue)).toEqual(['completed_1', 'completed_2', 'completed_3', 'completed_4', 'completed_5', 'completed_6']);
-    expect(queue).toContain('review-pill-zero'); expect(queue).toContain('Counts not finalized');
+    expect(queue).toContain('review-pill-zero'); expect(queue).not.toContain('Counts not finalized'); expect(queue).toContain('<strong>0/?/?</strong>');
     for (const html of [compact, queue]) { expect(html).not.toMatch(/failed_7|failed_8|review-pill-failed/u); }
   });
   it('retains failed capture diagnostics in full history without consuming completed-round ordinals', () => {

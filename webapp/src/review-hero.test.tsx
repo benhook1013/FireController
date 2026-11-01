@@ -101,7 +101,7 @@ describe('merge-head recent review rounds', () => {
         expect(html).toContain(`<strong>${value.found}/?/?</strong>`);
         expect(html).toContain(`title="${value.found}/?/? (found / accepted / routed).`);
         expect(html).toContain(`aria-label="Open hosted run ${value.source_run_id}: ${value.found}/?/?`);
-        expect(html).toContain('Counts not finalized');
+        expect(html).not.toContain('Counts not finalized');
         expect(html).not.toContain('review-pill-zero');
       }
       expect(JSON.stringify(value)).toBe(original);
@@ -143,7 +143,9 @@ describe('merge-head recent review rounds', () => {
     const html = markup();
     expect(links(html)).toEqual(['h2', 'h3', 'unknown']);
     expect(html).toContain('4 runs · latest 3'); expect(html).not.toContain(' loaded</span>'); expect(html).not.toContain('No rounds recorded. Coverage is unknown.');
-    for (const text of ['Date unknown', 'Incomplete record', 'Counts not finalized', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
+    for (const text of ['Date unknown', 'Incomplete record', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
+    expect(html).not.toContain('Counts not finalized');
+    expect(html).toContain('<strong>5/?/?</strong>');
     expect(html).not.toContain('Current cli round limits'); expect(html).not.toContain('Load more');
   });
 });
