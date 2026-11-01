@@ -24,8 +24,13 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs help", "jobs read", "jobs revision", "inbox read", "inbox thread", "notes read", "notes revision", "jobs history", "jobs progress-history", "jobs create", "jobs update", "jobs status", "jobs checklist-set", "jobs checklist-item", "inbox send", "inbox ack", "inbox seen", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
-		for _, spelling := range [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)} {
+	for _, operation := range []string{"jobs help", "inbox help", "notes help", "jobs read", "jobs revision", "inbox read", "inbox thread", "notes read", "notes revision", "jobs history", "jobs progress-history", "jobs create", "jobs update", "jobs status", "jobs checklist-set", "jobs checklist-item", "inbox send", "inbox ack", "inbox seen", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
+		spellings := [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)}
+		if operation == "inbox help" || operation == "notes help" {
+			group := strings.Fields(operation)[0]
+			spellings = append(spellings, []string{group, "help"}, []string{group, "--help"}, []string{"help", group})
+		}
+		for _, spelling := range spellings {
 			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "missing.json")} {
 				args := append([]string{"--profile=bound-role", "--profiles-file", profilePath}, spelling...)
 				ctx, cancel := context.WithCancel(t.Context())
@@ -62,6 +67,8 @@ func TestOperationHelpRequiresExactGrammarAndValidGlobalFlags(t *testing.T) {
 		{"notes", "update", "NOTE_ID", "--help"},
 		{"notes", "list", "--help", "extra"}, {"notes", "list", "--help=true"},
 		{"publication", "prepare", "--file", "/private/not-read", "--help"},
+		{"inbox", "help", "extra"}, {"help", "inbox", "extra"}, {"inbox", "--help=true"}, {"inbox", "--help", "--unknown"},
+		{"notes", "help", "extra"}, {"help", "notes", "extra"}, {"notes", "--help=true"}, {"notes", "--help", "--profiles-file="},
 		{"reviews", "help", "extra"}, {"help", "reviews", "extra"},
 		{"reviews", "--help", "--unknown"}, {"reviews", "help", "--profile= padded "},
 		{"reviews", "rounds", "grant", "--help", "--pr", "42"},
@@ -224,6 +231,8 @@ func TestHelpLookingFieldValuesAreStillData(t *testing.T) {
 	for _, args := range [][]string{
 		{"jobs", "update", id, "--expect-revision", "1", "--key", "test", "--brief", "--help"},
 		{"jobs", "update", id, "--expect-revision=1", "--key=test", "--next=--help"},
+		{"inbox", "send", "--to", "worker_0123456789abcdef0123456789abcdef", "--key", "test", "--body", "--help"},
+		{"inbox", "send", "--to", "worker_0123456789abcdef0123456789abcdef", "--key=test", "--body=--help"},
 		{"notes", "add", "--key", "test", "--body", "--help"},
 		{"notes", "update", note, "--expect-revision", "1", "--key", "test", "--body", "--help"},
 	} {

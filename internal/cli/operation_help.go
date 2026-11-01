@@ -411,6 +411,18 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Reads the full current brief/progress, remaining checklist and bounded pending job-note previews. Does not read worker inbox or job archives.", "Use jobs revision JOB_ID REVISION for a known historical full state. Use jobs history for one explicit oldest-first archive page; progress-history contains progress only."}
 		out.Example = "<bound launcher> jobs read job_0123456789abcdef0123456789abcdef"
 		out.Documentation = "docs/job-state.md"
+	case "inbox help":
+		out.Usage = "<bound launcher> inbox help"
+		out.Optional = []string{"inbox list --help", "inbox snapshot --help", "inbox wait --help", "inbox sent --help", "inbox delivery --help", "inbox read --help", "inbox thread --help", "inbox send --help", "inbox seen --help", "inbox ack --help"}
+		out.Semantics = []string{"Discover pending incoming messages with inbox list, or capture its event_cursor with inbox snapshot before a bounded inbox wait. Use inbox sent and delivery to inspect outgoing handoffs.", "Read selected bodies and conversation pages explicitly. Reads never mark messages seen or acknowledged; those changes require explicit keyed commands.", "All help is local; no profile, credential, file or network reads."}
+		out.Example = "<bound launcher> inbox list --help"
+		out.Documentation = "docs/message-events.md"
+	case "notes help":
+		out.Usage = "<bound launcher> notes help"
+		out.Optional = []string{"notes list --help", "notes read --help", "notes add --help", "notes update --help", "notes history NOTE_ID [--limit N] [--cursor CURSOR]", "notes revision --help"}
+		out.Semantics = []string{"Discover pending note previews with notes list, then read only selected full notes. Listing and reading never consume or dismiss notes.", "Use notes add or update for explicit keyed changes. History reads one bounded archive page; revision reads one exact retained note revision.", "All help is local; no profile, credential, file or network reads."}
+		out.Example = "<bound launcher> notes list --help"
+		out.Documentation = "docs/notes.md"
 	case "inbox delivery":
 		out.Usage = "<bound launcher> inbox delivery MESSAGE_ID"
 		out.Required = []string{"MESSAGE_ID"}

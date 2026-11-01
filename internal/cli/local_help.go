@@ -40,6 +40,7 @@ func localHelp() helpResponse {
 				{"jobs summary JOB_ID", "Authored summary, separate from private brief and publication."},
 			}},
 			{"notes and messages", []helpCommand{
+				{"notes help / inbox help", "Local command discovery and exact operation --help; no I/O."},
 				{"notes list", "Pending-note previews; read selected full notes."},
 				{"notes read NOTE_ID", "Full current note body; history requires an explicit notes history read."},
 				{"inbox list / sent", "Pending incoming or sent previews; --all includes handled history."},
