@@ -38,7 +38,10 @@ var findingPromptIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Pr
 var findingReviewInfoIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Review info</summary>$`)
 var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
 var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
-var findingTitle = regexp.MustCompile(`^\*\*([^*]+)\*\*$`)
+
+// Bold titles may contain literal asterisks inside closed inline-code spans.
+// Asterisks outside code and unbalanced delimiters cannot supply title metadata.
+var findingTitle = regexp.MustCompile("^\\*\\*((?:[^*`\\r\\n]|`[^`\\r\\n]+`)+)\\*\\*$")
 var findingHTML = regexp.MustCompile(`</?(?:details|blockquote)>`)
 var findingPre = regexp.MustCompile(`(?i)</?pre(?:[ \t/>]|$)`)
 var findingQuotedHTML = regexp.MustCompile(`(?i)</?blockquote(?:[ \t][^<>]*)?>`)
@@ -820,10 +823,11 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	}
 }
 
-// publicationOutsideOnly recognizes the narrow omitted-inline-count variant
-// through the same strict decoder used for final extraction. It is nonrecursive
-// and does not rewrite the original provider body or infer an empty inventory.
-func publicationOutsideOnly(publication HostedPublication) bool {
+// publicationSummaryOnly proves a nonempty summary-only inventory when the
+// inline-root count is omitted. Additional and outside-diff categories use the
+// same strict decoder as final extraction; duplicate-only or empty summaries
+// cannot establish this proof. It never rewrites bodies or invents findings.
+func publicationSummaryOnly(publication HostedPublication) bool {
 	if len(publication.Batches) != 1 {
 		return false
 	}
@@ -848,7 +852,7 @@ func publicationOutsideOnly(publication HostedPublication) bool {
 		return false
 	}
 	for _, finding := range inventory.Findings {
-		if finding.Kind != "outside_diff" {
+		if finding.Kind != "outside_diff" && finding.Kind != "additional" {
 			return false
 		}
 	}
