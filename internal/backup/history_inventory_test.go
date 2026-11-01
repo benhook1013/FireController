@@ -35,8 +35,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
-		t.Fatal("owning startup must install reviews v10", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
+		t.Fatal("owning startup must install reviews v6", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +45,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 10 {
+	if err != nil || versions["reviews"] != 6 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -176,7 +176,7 @@ func historyInventorySeedPull(t *testing.T, store *core.Store) {
 	if _, err := store.DB().Exec(`INSERT INTO projects VALUES('history-private','Private sentinel',701,'owner/history');
  INSERT INTO review_snapshots VALUES('history-private','review_snapshot_11111111111111111111111111111111',1,701,'synthetic-import','','','');
  INSERT INTO review_workspace VALUES('history-private',1,'review_snapshot_11111111111111111111111111111111');
- INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]','{}');
+ INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]');
  INSERT INTO review_pull_memberships VALUES('history-private',7,1,NULL,1,0);
  INSERT INTO review_current_pulls VALUES('history-private',7,1,0);
  INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) VALUES('history-private',7,0,0,0)`); err != nil {
@@ -545,7 +545,6 @@ func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T
 	for _, version := range []int{4, 5, 6} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
-			removeChannelRunCountsForLegacyFixture(t, f.store)
 			if version < 6 {
 				if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 					t.Fatal(err)
@@ -556,11 +555,7 @@ func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T
 					t.Fatal(err)
 				}
 			}
-			for _, statement := range []string{`DROP VIEW review_attempts`, `ALTER TABLE review_attempt_versions DROP COLUMN reason`, reviews.HistoryReadViewSQLV7()["review_attempts"], `DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN metadata_json`, reviews.HistoryReadViewSQLV6()["review_pulls"]} {
-				if _, err := f.store.DB().Exec(statement); err != nil {
-					t.Fatal(err)
-				}
-			}
+
 			if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:reviews'`, fmt.Sprint(version)); err != nil {
 				t.Fatal(err)
 			}
@@ -633,7 +628,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 10 {
+			if err != nil || versions["reviews"] != 6 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
@@ -866,13 +861,4 @@ func installLegacyReviewInventorySchema(ctx context.Context, store *core.Store, 
 		`ALTER TABLE review_findings ADD COLUMN route_json TEXT NOT NULL DEFAULT 'null'`,
 	}}
 	return store.EnsureSchema(ctx, "reviews", migrations[:version]...)
-}
-
-func removeChannelRunCountsForLegacyFixture(t *testing.T, store *core.Store) {
-	t.Helper()
-	for _, name := range []string{"hosted_run_count", "cli_run_count", "subagent_run_count", "manual_run_count"} {
-		if _, err := store.DB().Exec(`ALTER TABLE review_current_totals DROP COLUMN ` + name); err != nil {
-			t.Fatal(err)
-		}
-	}
 }

@@ -42,7 +42,7 @@ const reviewAttempt = {
 };
 const reviewPull = {
   number: 1, title: 'Retained merged work', state: 'merged', head_sha: reviewRun.head_sha, base_ref: 'main', base_sha: 'e'.repeat(40),
-  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, run_counts:{hosted:1,cli:0,manual:0,subagent:0}, attempt_count: 1,
+  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, attempt_count: 1,
   recent_runs: [reviewRun], latest_attempts: [reviewAttempt],
 };
 const reviewQueue = { ...reviewSnapshot, configured: true, items: [reviewPull], has_more: false };
@@ -445,7 +445,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pull = { ...reviewPull, run_count: 0, run_counts:{hosted:0,cli:0,manual:0,subagent:0}, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
@@ -506,7 +506,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, run_counts:{hosted:0,cli:0,manual:0,subagent:0}, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
     const runs = Array.from({ length: 21 }, (_, index) => ({ ...reviewRun, id: `review_run_${index.toString(16).padStart(32, '0')}`, source_run_id: `run-${index}` }));
     for (const kind of ['queue', 'runs']) {
       const page = { ...reviewSnapshot, ...(kind === 'queue' ? { configured: true } : {}), items: kind === 'queue' ? pulls : runs, has_more: false };
@@ -1258,8 +1258,8 @@ describe('captured comparison policy assessment', () => {
 describe('bounded retained review history', () => {
   it('accepts growing compact summaries and reads one explicitly selected archive page at a time', async () => {
     setupLocation(); const client = api(); await connect(client);
-    const pull = { ...reviewPull, run_count: 225, run_counts:{hosted:125,cli:100,subagent:0,manual:0}, attempt_count:230, diff:{files:83,additions:1024,deletions:8}, is_draft:false, merged_at:reviewRun.finished_at };
-    const item = {...reviewAttempt, source:'original-review-producer', state:'held', reason:'provider_cooldown'};
+    const pull = { ...reviewPull, run_count: 225, attempt_count:230 };
+    const item = {...reviewAttempt, source:'original-review-producer', state:'held'};
     const fetchMock = vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull}))
       .mockResolvedValueOnce(json({...reviewSnapshot,items:[item],has_more:true,cursor:'signed_attempt_cursor'}))
       .mockResolvedValueOnce(json({...reviewSnapshot,items:[{...item,source:'second-producer'}],has_more:false}));
@@ -1275,21 +1275,19 @@ describe('bounded retained review history', () => {
     expect(urls[2].searchParams.get('cursor')).toBe('signed_attempt_cursor');
     expect(urls.every(url => !url.searchParams.has('include_observation'))).toBe(true);
   });
-  it('rejects ambiguous archives, invalid diagnostics, counters and display facts', async () => {
+  it('rejects ambiguous archives, foreign snapshots and malformed lifetime totals', async () => {
     setupLocation(); const client=api(); await connect(client);
     const item={...reviewAttempt,source:'producer'};
     for (const body of [
       {...reviewSnapshot,items:[item,item],has_more:false},
       {...reviewSnapshot,items:[{...item,source:''}],has_more:false},
-      {...reviewSnapshot,items:[{...item,reason:'provider_cooldown'}],has_more:false},
-      {...reviewSnapshot,items:[{...item,state:'held',reason:'provider prose'}],has_more:false},
       {...reviewSnapshot,items:[item],has_more:true},
       {...reviewSnapshot,snapshot_id:`review_snapshot_${'f'.repeat(32)}`,items:[item],has_more:false},
     ]) {
       vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(body)));
       await expect(client.reviewAttempts(1,{snapshot:reviewSnapshot.snapshot_id})).rejects.toMatchObject({code:'invalid_response'});
     }
-    for (const change of [ {run_counts:{hosted:2,cli:0,subagent:0,manual:0}}, {run_counts:{hosted:0}}, {diff:{files:3}}, {diff:null}, {is_draft:null}, {state:'open',merged_at:reviewRun.finished_at} ]) {
+    for (const change of [ {run_count:-1}, {run_count:Number.MAX_SAFE_INTEGER+1}, {attempt_count:-1}, {attempt_count:Number.MAX_SAFE_INTEGER+1}  ]) {
       vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull:{...reviewPull,...change}})));
       await expect(client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
     }

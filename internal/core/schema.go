@@ -25,7 +25,7 @@ func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[
 // migration deadline and atomic rollback, including schema version metadata.
 // It must perform only bounded database work, with no filesystem, network or
 // provider calls, and must not commit or roll back the connection itself.
-func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) error {
+func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
 	if domain == "" || len(migrations) == 0 {
 		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
 	}
@@ -48,7 +48,17 @@ func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, mig
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+			_, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK")
+			// Admission and lock contention retain the ordinary overload error.
+			// Once exclusive startup work began, an expired deadline instead
+			// needs operator investigation before another startup attempt.
+			if resultErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				message := "Startup schema migration exceeded its deadline and was rolled back; operator investigation is required before restarting."
+				if rollbackErr != nil {
+					message = "Startup schema migration exceeded its deadline and rollback could not be confirmed; operator investigation is required before restarting."
+				}
+				resultErr = Fail("schema_migration_timeout", message, 500)
+			}
 		}
 	}()
 	key := "schema:" + domain

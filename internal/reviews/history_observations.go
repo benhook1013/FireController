@@ -33,11 +33,6 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 	for position, pull := range req.Queue {
 		total := summaryTotals{runs: int64(len(pull.Runs)), attempts: int64(len(pull.Attempts))}
 		for _, run := range pull.Runs {
-			if run.Outcome == "completed" {
-				if err := total.channels.add(run.Channel, 1); err != nil {
-					return err
-				}
-			}
 			if !run.Complete {
 				total.incomplete++
 			}
@@ -47,7 +42,7 @@ func (w *historySnapshotWrite) observation(ctx context.Context, tx *sql.Tx, req 
 		for i := len(pull.Runs) - 1; i >= 0 && len(recent) < 3; i-- {
 			recent = append(recent, summarizeRun(w.project, req.Source, pull.Number, pull.Runs[i]))
 		}
-		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, len(pull.Runs), len(pull.Attempts), mustJSON(recent), mustJSON(latestAttempts(pull.Attempts)), mustJSON(pullMetadata(pull))}
+		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, len(pull.Runs), len(pull.Attempts), mustJSON(recent), mustJSON(latestAttempts(pull.Attempts))}
 		if err := w.pull(ctx, tx, pull.Number, position, body); err != nil {
 			return err
 		}

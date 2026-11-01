@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,19 +24,123 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Track wire responses rather than SDK calls: cancellation eagerly retires a
+// client call while the server can still be preparing or writing its response.
+type reviewControlsRPCDrain struct {
+	mu                  sync.Mutex
+	pending             map[string]struct{}
+	changed             chan struct{}
+	requests, responses []byte
+}
+
+func newReviewControlsRPCDrain() *reviewControlsRPCDrain {
+	return &reviewControlsRPCDrain{pending: make(map[string]struct{}), changed: make(chan struct{})}
+}
+
+func (d *reviewControlsRPCDrain) observe(p []byte, request bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	buffer := &d.responses
+	if request {
+		buffer = &d.requests
+	}
+	*buffer = append(*buffer, p...)
+	for {
+		i := bytes.IndexByte(*buffer, '\n')
+		if i < 0 {
+			return
+		}
+		line := (*buffer)[:i]
+		*buffer = (*buffer)[i+1:]
+		var message struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(line, &message) != nil || len(message.ID) == 0 || bytes.Equal(message.ID, []byte("null")) || request != (message.Method != "") {
+			continue
+		}
+		var id bytes.Buffer
+		if json.Compact(&id, message.ID) != nil {
+			continue
+		}
+		if request {
+			d.pending[id.String()] = struct{}{}
+		} else {
+			delete(d.pending, id.String())
+		}
+		close(d.changed)
+		d.changed = make(chan struct{})
+	}
+}
+
+func (d *reviewControlsRPCDrain) wait(ctx context.Context) error {
+	for {
+		d.mu.Lock()
+		empty, changed := len(d.pending) == 0, d.changed
+		d.mu.Unlock()
+		if empty {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+type reviewControlsRPCWriter struct {
+	io.Writer
+	mu      sync.Mutex
+	drain   *reviewControlsRPCDrain
+	request bool
+}
+
+func (w *reviewControlsRPCWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.request {
+		w.drain.observe(p, true)
+	}
+	written := 0
+	for written < len(p) {
+		n, err := w.Writer.Write(p[written:])
+		if n > 0 && err == nil && !w.request {
+			w.drain.observe(p[written:written+n], false)
+		}
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			return written, io.ErrShortWrite
+		}
+	}
+	return written, nil
+}
+
+func (w *reviewControlsRPCWriter) Close() error {
+	if closer, ok := w.Writer.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 func reviewControlsStdio(t *testing.T, path, name string) *mcp.ClientSession {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
+	drain := newReviewControlsRPCDrain()
 	var stderr bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	done := make(chan int, 1)
 	go func() {
-		done <- mcpadapter.Run(ctx, []string{"--profile", name, "--profiles-file", path}, nil, inR, outW, &stderr)
+		code := mcpadapter.Run(ctx, []string{"--profile", name, "--profiles-file", path}, nil, inR, &reviewControlsRPCWriter{Writer: outW, drain: drain}, &stderr)
 		outW.Close()
+		done <- code
 	}()
 	sdk := mcp.NewClient(&mcp.Implementation{Name: "review-controls-stdio-fixture", Version: "1"}, nil)
-	session, err := sdk.Connect(ctx, &mcp.IOTransport{Reader: outR, Writer: inW}, nil)
+	session, err := sdk.Connect(ctx, &mcp.IOTransport{Reader: outR, Writer: &reviewControlsRPCWriter{Writer: inW, drain: drain, request: true}}, nil)
 	if err != nil {
 		cancel()
 		inW.Close()
@@ -42,17 +148,24 @@ func reviewControlsStdio(t *testing.T, path, name string) *mcp.ClientSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		session.Close()
+		// Await every response before EOF, including canceled calls no longer
+		// tracked by the SDK. Keep both pipe directions alive while draining.
+		drainCtx, stop := context.WithTimeout(context.Background(), time.Second)
+		if err := drain.wait(drainCtx); err != nil {
+			t.Error("stdio request responses did not drain")
+		}
+		stop()
+		inW.Close()
 		select {
 		case code := <-done:
 			if code != 0 || stderr.Len() != 0 {
-				t.Error("stdio session did not exit cleanly")
+				t.Errorf("stdio session did not exit cleanly: code=%d diagnostic=%q", code, stderr.String())
 			}
 		case <-time.After(time.Second):
 			t.Error("stdio session leaked")
 		}
+		session.Close()
 		cancel()
-		inW.Close()
 		outR.Close()
 	})
 	return session
@@ -438,5 +551,174 @@ func TestReviewControlsCanceledContextStopsBeforeCredentialAndHTTP(t *testing.T)
 	}
 	if requests.Load() != 0 {
 		t.Fatal("canceled operation opened credential or contacted HTTP")
+	}
+}
+
+// A canceled SDK call is retired locally before its response is received. Keep
+// one real adapter response in flight to make the fixture shutdown order exact.
+type reviewControlsBlockedResultWriter struct {
+	io.Writer
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *reviewControlsBlockedResultWriter) Write(p []byte) (int, error) {
+	var message struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(p, &message); err == nil && message.Result.IsError {
+		close(w.entered)
+		<-w.release
+	}
+	return w.Writer.Write(p)
+}
+
+func TestReviewControlsStdioDrainsCanceledResponseBeforeClosingReader(t *testing.T) {
+	binding := localContext()
+	entered, released := make(chan struct{}), make(chan struct{})
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": binding.InstanceID})
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		<-r.Context().Done()
+		close(released)
+	}))
+	defer service.Close()
+	binding.ServerURL = service.URL
+	path := profiles(t, map[string]profile.Context{"chosen": binding}, credential(t))
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	defer inW.Close()
+	defer outR.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	drain := newReviewControlsRPCDrain()
+	blocked := &reviewControlsBlockedResultWriter{Writer: outW, entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-blocked.release:
+		default:
+			close(blocked.release)
+		}
+	}()
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		code := mcpadapter.Run(ctx, []string{"--profile", "chosen", "--profiles-file", path}, nil, inR, &reviewControlsRPCWriter{Writer: blocked, drain: drain}, &stderr)
+		outW.Close()
+		done <- code
+	}()
+	sdk := mcp.NewClient(&mcp.Implementation{Name: "review-controls-drain-fixture", Version: "1"}, nil)
+	session, err := sdk.Connect(ctx, &mcp.IOTransport{Reader: outR, Writer: &reviewControlsRPCWriter{Writer: inW, drain: drain, request: true}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	callCtx, callCancel := context.WithCancel(ctx)
+	defer callCancel()
+	callDone := make(chan error, 1)
+	go func() {
+		args := sourceMCPArguments()
+		args["wait_seconds"] = 50
+		_, err := session.CallTool(callCtx, &mcp.CallToolParams{Name: "review_source_refresh", Arguments: args})
+		callDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("canceled request did not enter owned HTTP fixture")
+	}
+	callCancel()
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled call returned %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("canceled SDK call did not return")
+	}
+	select {
+	case <-released:
+	case <-ctx.Done():
+		t.Fatal("cancellation retained owned HTTP call")
+	}
+	select {
+	case <-blocked.entered:
+	case <-ctx.Done():
+		t.Fatal("canceled response did not reach fixture writer")
+	}
+	// The canceled call remains outstanding even though CallTool returned.
+	// A blocked server write cannot be treated as a completed wire response.
+	drain.mu.Lock()
+	pending := len(drain.pending)
+	drain.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("canceled response lost its outstanding ID: %d", pending)
+	}
+	close(blocked.release)
+	drainCtx, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if err := drain.wait(drainCtx); err != nil {
+		t.Fatal("canceled response did not drain", err)
+	}
+	if err := inW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("stdio session did not drain cleanly: code=%d diagnostic=%q", code, stderr.String())
+		}
+	case <-ctx.Done():
+		t.Fatal("stdio session leaked")
+	}
+}
+
+// Exercise split newline frames and successful partial transport writes without
+// treating notifications, null IDs, or undelivered response tails as completion.
+type reviewControlsPartialWriter struct{ bytes.Buffer }
+
+func (w *reviewControlsPartialWriter) Write(p []byte) (int, error) {
+	if len(p) > 3 {
+		p = p[:3]
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestReviewControlsRPCDrainWaitsForCompleteDeliveredResponses(t *testing.T) {
+	drain := newReviewControlsRPCDrain()
+	var requests, responses reviewControlsPartialWriter
+	request := &reviewControlsRPCWriter{Writer: &requests, drain: drain, request: true}
+	response := &reviewControlsRPCWriter{Writer: &responses, drain: drain}
+	for _, chunk := range []string{`{"id":"first","met`, "hod\":\"tools/call\"}\n{\"id\":null,\"method\":\"notifications/initialized\"}\n{\"id\":2,\"method\":\"tools/call\"}\n"} {
+		if _, err := request.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drain.mu.Lock()
+	pending := len(drain.pending)
+	drain.mu.Unlock()
+	if pending != 2 {
+		t.Fatalf("split requests or notification IDs miscounted: %d", pending)
+	}
+	if _, err := response.Write([]byte("{\"id\":\"first\",\"result\":{}}\n{\"id\":2,\"result\":{}")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if !errors.Is(drain.wait(ctx), context.Canceled) {
+		t.Fatal("partial response was treated as drained")
+	}
+	if _, err := response.Write([]byte("}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain.wait(ctx); err != nil {
+		t.Fatal("complete responses did not drain", err)
 	}
 }

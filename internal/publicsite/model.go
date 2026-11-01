@@ -31,7 +31,3 @@ func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	return publicsitemodel.BuildContent(manifest, facts)
 }
 func ValidSlug(slug string) bool { return publicsitemodel.ValidSlug(slug) }
-
-func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
-	return publicsitemodel.BuildWindowContent(manifest, facts)
-}

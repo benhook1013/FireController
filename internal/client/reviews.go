@@ -79,44 +79,19 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
-	Diff           *ReviewPullDiff        `json:"diff,omitempty"`
-	IsDraft        *bool                  `json:"is_draft,omitempty"`
-	MergedAt       string                 `json:"merged_at,omitempty"`
-	Number         int64                  `json:"number"`
-	Title          string                 `json:"title"`
-	State          string                 `json:"state"`
-	HeadSHA        string                 `json:"head_sha"`
-	BaseRef        string                 `json:"base_ref"`
-	BaseSHA        string                 `json:"base_sha"`
-	CIState        string                 `json:"ci_state"`
-	Mergeability   string                 `json:"mergeability"`
-	Complete       bool                   `json:"complete"`
-	RunCount       int64                  `json:"run_count"`
-	RunCounts      ReviewChannelRunCounts `json:"run_counts"`
-	AttemptCount   int64                  `json:"attempt_count"`
-	RecentRuns     []ReviewRunSummary     `json:"recent_runs"`
-	LatestAttempts []ReviewAttempt        `json:"latest_attempts"`
-}
-
-// Completed review outcomes only; RunCount retains the full history inventory.
-type ReviewChannelRunCounts struct {
-	Hosted   int64 `json:"hosted"`
-	CLI      int64 `json:"cli"`
-	Subagent int64 `json:"subagent"`
-	Manual   int64 `json:"manual"`
-}
-
-func (v ReviewChannelRunCounts) valid(total int64) bool {
-	if total < 0 {
-		return false
-	}
-	for _, n := range []int64{v.Hosted, v.CLI, v.Subagent, v.Manual} {
-		if n < 0 || n > total {
-			return false
-		}
-		total -= n
-	}
-	return true
+	Number         int64              `json:"number"`
+	Title          string             `json:"title"`
+	State          string             `json:"state"`
+	HeadSHA        string             `json:"head_sha"`
+	BaseRef        string             `json:"base_ref"`
+	BaseSHA        string             `json:"base_sha"`
+	CIState        string             `json:"ci_state"`
+	Mergeability   string             `json:"mergeability"`
+	Complete       bool               `json:"complete"`
+	RunCount       int64              `json:"run_count"`
+	AttemptCount   int64              `json:"attempt_count"`
+	RecentRuns     []ReviewRunSummary `json:"recent_runs"`
+	LatestAttempts []ReviewAttempt    `json:"latest_attempts"`
 }
 
 type ReviewRunSummary struct {
@@ -152,7 +127,6 @@ type ReviewAttempt struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
-	Reason           string `json:"reason,omitempty"`
 }
 
 type ReviewFinding struct {
@@ -303,7 +277,7 @@ func (c *Client) validReviewPull(value ReviewPullSummary) bool {
 	if !validPullNumber(value.Number) || !cleanReviewText(value.Title, 500, true) || !oneReviewOf(value.State, "open", "merged", "closed", "unknown") ||
 		!validReviewSHA(value.HeadSHA) || !cleanReviewText(value.BaseRef, 256, false) || !validReviewSHA(value.BaseSHA) ||
 		!oneReviewOf(value.CIState, "unknown", "pending", "success", "failure", "not_required") || !oneReviewOf(value.Mergeability, "unknown", "mergeable", "conflicting") ||
-		!validReviewPullMetadata(value) || value.RunCount < 0 || !value.RunCounts.valid(value.RunCount) || value.AttemptCount < 0 ||
+		value.RunCount < 0 || value.AttemptCount < 0 ||
 		value.RecentRuns == nil || len(value.RecentRuns) > 3 || int64(len(value.RecentRuns)) > value.RunCount || value.RunCount > 0 && len(value.RecentRuns) == 0 ||
 		value.LatestAttempts == nil || len(value.LatestAttempts) > 4 || int64(len(value.LatestAttempts)) > value.AttemptCount || value.AttemptCount > 0 && len(value.LatestAttempts) == 0 {
 		return false
@@ -371,7 +345,7 @@ func validReviewRunSummary(value ReviewRunSummary) bool {
 func validReviewAttempt(value ReviewAttempt) bool {
 	if !cleanReviewText(value.SourceAttemptID, 256, true) || !oneReviewOf(value.Channel, "cli", "hosted", "manual", "subagent") ||
 		!validReviewSHA(value.HeadSHA) || !oneReviewOf(value.State, "prepared", "preparing", "held", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "unknown") ||
-		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) || !validReviewAttemptReason(value.State, value.Reason) {
+		!cleanReviewText(value.SourceRunID, 256, false) || !cleanReviewText(value.TriggerID, 128, false) || !cleanReviewText(value.ProviderReviewID, 128, false) {
 		return false
 	}
 	if value.StartedAt != "" && !validTimestamp(value.StartedAt) || value.FinishedAt != "" && !validTimestamp(value.FinishedAt) {
@@ -388,21 +362,6 @@ func validReviewAttempt(value ReviewAttempt) bool {
 		}
 	}
 	return value.DurationSeconds == nil || *value.DurationSeconds >= 0
-}
-
-func validReviewAttemptReason(state, reason string) bool {
-	if reason == "" {
-		return true
-	}
-	if len(reason) > 128 || !oneReviewOf(state, "held", "uncertain", "rate_limited", "failed") || reason[0] < 'a' || reason[0] > 'z' {
-		return false
-	}
-	for i := 1; i < len(reason); i++ {
-		if c := reason[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
-			return false
-		}
-	}
-	return true
 }
 
 func validReviewFinding(value ReviewFinding) bool {

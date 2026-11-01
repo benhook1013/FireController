@@ -10,17 +10,17 @@ Current references, aggregate counters, attempt ordering and run ordering advanc
 
 ## Reads and growth
 
-Queue and PR detail contain bounded summaries: three recent runs, one latest attempt per channel, aggregate retained run/attempt totals and completed-run counts per channel. Completed-channel counts exclude failed, cancelled and unfinished run records; they include completed unfinalized reviews and therefore do not establish final counts or current coverage. Native publication and preparation do not count the lifetime archive to decide whether another bounded operation fits.
+Queue and PR detail contain bounded summaries: three recent runs, one latest attempt per channel, aggregate retained run/attempt totals. These totals include retained failed or unfinished records and do not establish completed review counts, final finding counts or current coverage. Native publication and preparation do not count the lifetime archive to decide whether another bounded operation fits.
 
 Run and attempt archives use explicit newest-first pages tied to a retained snapshot. Attempt identities include their original producer. PR detail never embeds the lifetime attempt archive. The browser opens one attempt page when its archive is expanded and requests another only through explicit pagination. Cached pages survive collapse and expansion. Individual run detail still loads findings deliberately. Signed cursors remain project, filter and snapshot bound.
 
-[Public review windows](public-site.md#bounded-review-windows) independently bound CLI and Hosted summaries and mark omitted older rounds. They do not delete private history or imply exhaustive coverage.
+The public website retains its existing complete channel-capacity contract. If an enrolled channel grows beyond that capacity, publication refuses the oversized projection, retains the last-good public snapshot and records a projection error; private native/history work remains valid. Public per-channel windows, optional PR display metadata, attempt reasons and completed-channel counters belong to the next presentation slice.
 
 ## Migration and backup integrity
 
 Startup converts supported original review tables into immutable versions, interval membership and current references without changing IDs, producers, counts, decisions, proof, receipts or historical HTTP responses. Exclusive backfill validates retained facts before deriving current indexes. A failed migration rolls back schema, metadata and derived rows together. Already-current startup does not repeat the backfill.
 
-Backup inspection is read-only. It checks exact supported table/view/index definitions, grouped foreign keys, interval ordering and overlap, owning PR visibility, current-reference completeness, derived counters/order and optional metadata/attempt reasons. Missing parents, foreign-project references, forged caches and malformed historical metadata refuse before restore writes. Restore preserves retained snapshots while rotating instance/signing identity, so predecessor credentials and signed cursors are invalid; newly authorized reads can resume from the same retained snapshot.
+Backup inspection is read-only. It checks exact supported table/view/index definitions, grouped foreign keys, interval ordering and overlap, owning PR visibility, current-reference completeness, derived totals and ordering. Missing parents, foreign-project references, forged caches and malformed retained bodies refuse before restore writes. Restore preserves retained snapshots while rotating instance/signing identity, so predecessor credentials and signed cursors are invalid; newly authorized reads can resume from the same retained snapshot.
 
 ## Focused proof
 

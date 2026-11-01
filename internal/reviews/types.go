@@ -15,21 +15,17 @@ type ObservationRequest struct {
 }
 
 type PullInput struct {
-	MergeStateStatus string     `json:"merge_state_status,omitempty"`
-	Diff             *PullDiff  `json:"diff,omitempty"`
-	IsDraft          *bool      `json:"is_draft,omitempty"`
-	MergedAt         string     `json:"merged_at,omitempty"`
-	Number           int64      `json:"number"`
-	Title            string     `json:"title"`
-	State            string     `json:"state"`
-	HeadSHA          string     `json:"head_sha"`
-	BaseRef          string     `json:"base_ref"`
-	BaseSHA          string     `json:"base_sha"`
-	CIState          string     `json:"ci_state"`
-	Mergeability     string     `json:"mergeability"`
-	Complete         bool       `json:"complete"`
-	Runs             []RunInput `json:"runs"`
-	Attempts         []Attempt  `json:"attempts"`
+	Number       int64      `json:"number"`
+	Title        string     `json:"title"`
+	State        string     `json:"state"`
+	HeadSHA      string     `json:"head_sha"`
+	BaseRef      string     `json:"base_ref"`
+	BaseSHA      string     `json:"base_sha"`
+	CIState      string     `json:"ci_state"`
+	Mergeability string     `json:"mergeability"`
+	Complete     bool       `json:"complete"`
+	Runs         []RunInput `json:"runs"`
+	Attempts     []Attempt  `json:"attempts"`
 }
 
 type RetiredPull struct {
@@ -67,7 +63,6 @@ type Attempt struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
-	Reason           string `json:"reason,omitempty"`
 }
 
 // FindingRoute is the retained receiving-side state of a same-project route.
@@ -118,7 +113,6 @@ type AttemptSummary struct {
 	SourceRunID      string `json:"source_run_id"`
 	TriggerID        string `json:"trigger_id"`
 	ProviderReviewID string `json:"provider_review_id"`
-	Reason           string `json:"reason,omitempty"`
 }
 
 // AcceptedSeverity is a read-only breakdown of the authoritative accepted scalar.
@@ -165,9 +159,6 @@ type PullSummary struct {
 	mergeStateStatus string
 	// QueuePosition is the original zero-based position, only on selected views.
 	QueuePosition  *int             `json:"queue_position,omitempty"`
-	Diff           *PullDiff        `json:"diff,omitempty"`
-	IsDraft        *bool            `json:"is_draft,omitempty"`
-	MergedAt       string           `json:"merged_at,omitempty"`
 	Number         int64            `json:"number"`
 	Title          string           `json:"title"`
 	State          string           `json:"state"`
@@ -178,7 +169,6 @@ type PullSummary struct {
 	Mergeability   string           `json:"mergeability"`
 	Complete       bool             `json:"complete"`
 	RunCount       int64            `json:"run_count"`
-	RunCounts      ChannelRunCounts `json:"run_counts"`
 	AttemptCount   int64            `json:"attempt_count"`
 	RecentRuns     []RunSummary     `json:"recent_runs"`
 	LatestAttempts []AttemptSummary `json:"latest_attempts"`

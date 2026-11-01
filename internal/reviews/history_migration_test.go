@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -31,9 +30,9 @@ func historyMigrationRead(t *testing.T, f *apiFixture, route string) historyMigr
 	req.Header.Set("Authorization", "Bearer "+f.readToken)
 	out := httptest.NewRecorder()
 	out.Header().Set("X-Request-ID", "migration-wire-proof")
-	metadataFixtureReaders(f.store, f.mux).ServeHTTP(out, req)
-	// Compare the preexisting wire contract; schema nine adds independently tested channel totals.
-	body := regexp.MustCompile(`,"run_counts":\{[^}]*\}`).ReplaceAllString(out.Body.String(), "")
+	f.mux.ServeHTTP(out, req)
+	// Compare the actual foundation wire contract without presentation enrichment.
+	body := out.Body.String()
 	return historyMigrationWire{out.Code, out.Header().Clone(), body}
 }
 func historyMigrationExec(t *testing.T, tx *sql.Tx, statement string, args ...any) {

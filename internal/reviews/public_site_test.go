@@ -168,7 +168,6 @@ func TestPublicSiteActualReviewHooksPreservePrivacyAndHistory(t *testing.T) {
 	mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &attempt})
 	unchanged(secondBytes)
 	diagnostic := nativeAttempt("PRIVATE_UNCERTAIN_ATTEMPT", "uncertain")
-	diagnostic.Reason = "private_diagnostic_sentinel"
 	mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &diagnostic})
 	unchanged(secondBytes)
 	decision := nativeAdjudicationInput(native)

@@ -38,13 +38,17 @@ func PublicSiteReviewFacts(ctx context.Context, tx *sql.Tx, project string, mani
 		if err != nil {
 			return nil, err
 		}
-		fact.CLI, fact.CLIHasMore, err = publicSiteChannelRounds(ctx, tx, project, enrolled.Number, "cli", key)
+		var cliMore, hostedMore bool
+		fact.CLI, cliMore, err = publicSiteChannelRounds(ctx, tx, project, enrolled.Number, "cli", key)
 		if err != nil {
 			return nil, err
 		}
-		fact.Hosted, fact.HostedHasMore, err = publicSiteChannelRounds(ctx, tx, project, enrolled.Number, "hosted", key)
+		fact.Hosted, hostedMore, err = publicSiteChannelRounds(ctx, tx, project, enrolled.Number, "hosted", key)
 		if err != nil {
 			return nil, err
+		}
+		if cliMore || hostedMore {
+			return nil, errors.New("public review history exceeds selected capacity")
 		}
 		facts = append(facts, fact)
 	}
