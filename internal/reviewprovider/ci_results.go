@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -74,7 +75,10 @@ func (g *GitHub) CIResults(ctx context.Context, repository, head string) (CIResu
 	budget := &actionsBudget{}
 	for attempt := 0; ; attempt++ {
 		out, err := g.ciResultsOnce(ctx, repository, head, budget)
-		if err != errCIInventoryChanged || attempt == 1 || ctx.Err() != nil {
+		if !errors.Is(err, errCIInventoryChanged) || attempt == 1 || ctx.Err() != nil {
+			if errors.Is(err, errCIInventoryChanged) {
+				err = providerError("provider_observation_changed", "CI result counts changed during collection.", http.StatusOK, 0, false)
+			}
 			return out, err
 		}
 		// A newly published check can move the finite inventory between reads.
@@ -83,7 +87,7 @@ func (g *GitHub) CIResults(ctx context.Context, repository, head string) (CIResu
 	}
 }
 
-var errCIInventoryChanged = providerError("provider_observation_changed", "CI result counts changed during collection.", http.StatusOK, 0, false)
+var errCIInventoryChanged = errors.New("CI result inventory changed")
 
 func (g *GitHub) ciResultsOnce(ctx context.Context, repository, head string, budget *actionsBudget) (CIResultInventory, error) {
 	path := "/repos/" + repository + "/commits/" + head

@@ -177,7 +177,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			if g.total > 0 && len(pub.Batches) > 0 && g.reason == "" {
 				count, valid := publicationRootCount(g.batches[1].Body)
 				if !valid {
-					if len(pub.Roots) == 0 && publicationOutsideOnly(*pub) {
+					if len(pub.Roots) == 0 && publicationSummaryOnly(*pub) {
 						count, valid = 0, true
 					}
 				}
