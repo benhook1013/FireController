@@ -93,37 +93,47 @@ func (r *rclone) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	return out.buffer.Bytes(), nil
 }
-func (r *rclone) read(ctx context.Context, name string) ([]byte, error) {
+func (r *rclone) exactFileSize(ctx context.Context, name string) (int64, error) {
 	// S3 can report an absent key as a virtual directory to --stat, and cat
 	// can succeed with no files. A filtered parent listing distinguishes that
 	// absence from a corrupt zero-byte receipt without listing archive bodies.
 	i := strings.LastIndexByte(name, '/')
 	if i < 0 {
-		return nil, failure("offsite_configuration_invalid")
+		return 0, failure("offsite_configuration_invalid")
 	}
 	b, err := r.run(ctx, "lsjson", name[:i], "--files-only", "--max-depth", "1", "--include", name[i+1:])
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	var matches []struct {
 		Name  string
 		Size  int64
 		IsDir bool
 	}
-	if json.Unmarshal(b, &matches) != nil {
-		return nil, failure("offsite_remote_conflict")
+	if json.Unmarshal(b, &matches) != nil || matches == nil {
+		return 0, failure("offsite_remote_conflict")
 	}
 	if len(matches) == 0 {
-		return nil, notFound
+		return 0, notFound
 	}
-	if len(matches) != 1 || matches[0].Name != name[i+1:] || matches[0].IsDir || matches[0].Size <= 0 || matches[0].Size > 4096 {
-		return nil, failure("offsite_remote_conflict")
+	if len(matches) != 1 || matches[0].Name != name[i+1:] || matches[0].IsDir || matches[0].Size < 0 {
+		return 0, failure("offsite_remote_conflict")
 	}
-	b, err = r.run(ctx, "cat", name)
+	return matches[0].Size, nil
+}
+func (r *rclone) read(ctx context.Context, name string) ([]byte, error) {
+	size, err := r.exactFileSize(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) != matches[0].Size {
+	if size <= 0 || size > 4096 {
+		return nil, failure("offsite_remote_conflict")
+	}
+	b, err := r.run(ctx, "cat", name)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) != size {
 		return nil, failure("offsite_remote_conflict")
 	}
 	return b, nil
@@ -140,8 +150,18 @@ func (r *rclone) get(ctx context.Context, name, destination string) error {
 		return failure("offsite_configuration_invalid")
 	}
 	_, err := r.run(ctx, "copyto", name, destination, "--ignore-times")
-	if err == nil && os.Chmod(destination, 0600) != nil {
-		return failure("offsite_storage_unavailable")
+	if err == nil {
+		if chmodErr := os.Chmod(destination, 0600); chmodErr != nil {
+			// S3 can resolve an absent key as a virtual directory: copyto
+			// succeeds but creates no file. Probe that exact remote key before
+			// blaming local storage; a present source still means local failure.
+			if errors.Is(chmodErr, os.ErrNotExist) {
+				if _, probeErr := r.exactFileSize(ctx, name); probeErr != nil {
+					return probeErr
+				}
+			}
+			return failure("offsite_storage_unavailable")
+		}
 	}
 	return err
 }
