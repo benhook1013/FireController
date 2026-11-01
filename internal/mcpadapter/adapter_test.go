@@ -193,6 +193,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["outbox_list"], expected["inbox_delivery_read"] = true, true
 			expected["wait_for_messages"] = true
 			expected["wait_for_ci"] = true
+			expected["review_activity_read"] = true
 			expected["job_revision_read"] = true
 			expected["inbox_message_read"], expected["job_checklist_item_update"] = true, true
 			expected["presentation_read"] = true

@@ -345,8 +345,13 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		if e != nil {
 			return result, failure("offsite_storage_unavailable")
 		}
-		if _, e = unpack(ctx, prepared, check, r, c); e != nil {
+		_, e = unpack(ctx, prepared, check, r, c)
+		cleanupErr := os.RemoveAll(check)
+		if e != nil {
 			return result, e
+		}
+		if cleanupErr != nil {
+			return result, failure("offsite_storage_unavailable")
 		}
 		// Persist the intent before moving the complete spool. Recovery can
 		// finish either side of that rename without needing the source bundle.

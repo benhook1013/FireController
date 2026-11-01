@@ -39,6 +39,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Project management](local-api.md): explicit project-scoped management grants, bound credential administration and supported operation discovery; [architecture](architecture.md#projects-and-actors) keeps instance administration separate.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Retained review history](review-history-growth.md): lifetime growth, original producers, immutable versions and bounded transfer/read requirements.
+- [Project review activity](review-activity.md): one provider-free read of hourly Hosted/CLI totals, ended-attempt diagnostics and retained-history coverage.
 - [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
 - [Public review checkpoints](review-publication.md): automatically queued finalized source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.

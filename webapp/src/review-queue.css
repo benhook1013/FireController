@@ -43,6 +43,8 @@
 .review-queue>li.review-row-without-order{grid-template-columns:minmax(0,1fr)}
 .review-queue .review-pull-heading,.review-queue .review-pull-heading h3 a,.review-queue .review-pull-heading h3 a:hover{color:var(--fc-surface_text,#242832)}
 .review-pull-facts>.review-fact-pill{background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:999px;padding:3px 8px;text-transform:none;font-size:inherit;letter-spacing:normal;font-weight:600}
+/* Balance the system font's visible ink without changing the pill height. */
+.review-pull-facts>.review-ci,.review-pull-facts>.review-mergeability{padding-top:2.5px;padding-bottom:3.5px}
 
 .review-queue-content>.review-pull-heading{margin-bottom:4px}
 .review-queue-content>.review-details-link{margin-top:4px;padding:0;font-size:.78rem}

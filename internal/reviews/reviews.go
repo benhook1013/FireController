@@ -12,6 +12,7 @@ import (
 // project-scoped read routes.
 func Register(mux *http.ServeMux, store *core.Store, health ...ObservationHealthReader) {
 	registerSubagentReports(mux, store)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/activity", activity(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/preview", previewTransfer(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/apply", applyTransfer(store))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/preview", previewImport(store))

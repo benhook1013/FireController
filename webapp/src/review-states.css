@@ -13,3 +13,4 @@
 .review-fact-pill.review-fact-failure,.review-fact-pill.review-fact-conflicting{background:var(--fc-blocked_background,#ecd9dc);color:var(--fc-blocked_text,#a32234)}
 .review-fact-pill.review-fact-unknown{background:var(--fc-canvas_background,#e8e7e4);color:var(--fc-canvas_muted,#666874)}
 .review-channel-position{margin-left:7px;background:var(--fc-accent_soft_background,#f0dfd8);color:var(--fc-accent_background,#a51e28);font-size:.6rem;white-space:nowrap}
+.review-channel-position,.review-attempt-state{box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 45%,transparent)}

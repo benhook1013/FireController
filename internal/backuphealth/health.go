@@ -35,16 +35,17 @@ type Snapshot struct {
 // Mirror is an operator-authored projection of retained transfer facts. ObservedAt
 // means the local ledger was read; it never means remote bytes were reverified.
 type Mirror struct {
-	Version          int    `json:"version"`
-	InstanceID       string `json:"instance_id"`
-	ObservedAt       string `json:"observed_at"`
-	Label            string `json:"label"`
-	MaxAgeSeconds    int64  `json:"max_age_seconds"`
-	LastSnapshotAt   string `json:"last_snapshot_at,omitempty"`
-	LastAttemptAt    string `json:"last_attempt_at,omitempty"`
-	AttemptState     string `json:"attempt_state,omitempty"`
-	AttemptReason    string `json:"attempt_reason,omitempty"`
-	RetentionWarning bool   `json:"retention_warning,omitempty"`
+	Version               int    `json:"version"`
+	InstanceID            string `json:"instance_id"`
+	ObservedAt            string `json:"observed_at"`
+	Label                 string `json:"label"`
+	MaxAgeSeconds         int64  `json:"max_age_seconds"`
+	LastSnapshotAt        string `json:"last_snapshot_at,omitempty"`
+	LastAttemptAt         string `json:"last_attempt_at,omitempty"`
+	AttemptState          string `json:"attempt_state,omitempty"`
+	AttemptReason         string `json:"attempt_reason,omitempty"`
+	AttemptTimeoutSeconds int64  `json:"attempt_timeout_seconds,omitempty"`
+	RetentionWarning      bool   `json:"retention_warning,omitempty"`
 }
 
 func ValidLabel(label string) bool {
@@ -58,7 +59,7 @@ func timestamp(value string) (time.Time, bool) {
 
 func (m Mirror) Valid() bool {
 	observed, ok := timestamp(m.ObservedAt)
-	if m.Version != 1 || !instancePattern.MatchString(m.InstanceID) || !ok || !ValidLabel(m.Label) || m.MaxAgeSeconds < 60 || m.MaxAgeSeconds > int64((30*24*time.Hour)/time.Second) {
+	if m.Version != 1 || !instancePattern.MatchString(m.InstanceID) || !ok || !ValidLabel(m.Label) || m.MaxAgeSeconds < 60 || m.MaxAgeSeconds > int64((30*24*time.Hour)/time.Second) || m.AttemptTimeoutSeconds < 0 || m.AttemptTimeoutSeconds > 86400 {
 		return false
 	}
 	for _, value := range []string{m.LastSnapshotAt, m.LastAttemptAt} {
@@ -115,7 +116,7 @@ func Offsite(m Mirror, instance string, now time.Time) Row {
 	}
 	if m.AttemptState == "running" {
 		attempt, _ := timestamp(m.LastAttemptAt)
-		if now.Sub(attempt) <= ReporterMaxAge {
+		if now.Sub(attempt) <= time.Duration(m.AttemptTimeoutSeconds)*time.Second+ReporterMaxAge {
 			r.State = "running"
 		} else {
 			r.Reason = "attempt_stale"

@@ -2,14 +2,71 @@ package offsite
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backuphealth"
 )
+
+func TestOffsiteHealthPublishesConfiguredAttemptTimeoutWithoutChangingStatus(t *testing.T) {
+	f := newFixture(t)
+	config := filepath.Join(t.TempDir(), "config.json")
+	if err := os.MkdirAll(f.c.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	state := Status{Version: 1, Binding: binding(f.c), Owned: []Receipt{}, LastAttempt: &Attempt{State: "running", StartedAt: started}}
+	statePath := filepath.Join(f.c.StateDir, "offsite.json")
+	if err := writeJSON(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "health.json")
+	for _, tc := range []struct {
+		timeout string
+		seconds int64
+	}{{"15m", 900}, {"1500ms", 2}, {"24h", 86400}} {
+		f.c.Timeout = tc.timeout
+		if err := writeJSON(config, f.c); err != nil {
+			t.Fatal(err)
+		}
+		ordinary, err := ReadStatus(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := ReadStatusAndWriteHealth(t.Context(), config, output, "Cloud", 3*time.Hour)
+		if err != nil || !reflect.DeepEqual(ordinary, report) {
+			t.Fatal("health publication changed ordinary raw status", ordinary, report, err)
+		}
+		mirror, err := backuphealth.ReadMirror(output)
+		if err != nil || mirror.AttemptTimeoutSeconds != tc.seconds || mirror.AttemptState != "running" || mirror.LastAttemptAt != started {
+			t.Fatal("configured timeout or original attempt not projected", mirror, err)
+		}
+		if tc.timeout == "15m" && backuphealth.Offsite(mirror, f.c.InstanceID, time.Now().UTC()).State != "running" {
+			t.Fatal("ten-minute running attempt falsely stale", mirror)
+		}
+		body, _ := json.Marshal(report)
+		if bytes.Contains(body, []byte("attempt_timeout_seconds")) {
+			t.Fatal("mirror-only field changed raw status output")
+		}
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("status publication rewrote transfer ledger", err)
+	}
+}
 
 func TestOffsiteHealthExportsRetainedFactsWithoutProviderOrBundleAccess(t *testing.T) {
 	f := newFixture(t)

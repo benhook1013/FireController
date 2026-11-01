@@ -47,7 +47,10 @@ func ReadStatusAndWriteHealth(ctx context.Context, configPath, output, label str
 	if err != nil {
 		return Report{}, err
 	}
-	m := backuphealth.Mirror{Version: 1, InstanceID: c.InstanceID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Label: label, MaxAgeSeconds: int64(maxAge / time.Second), RetentionWarning: s.RetentionReason != ""}
+	timeout, _ := time.ParseDuration(c.Timeout) // loadConfig validated the bound.
+	// Round a fractional second upward so reporting never shortens the deadline.
+	timeoutSeconds := int64((timeout + time.Second - 1) / time.Second)
+	m := backuphealth.Mirror{Version: 1, InstanceID: c.InstanceID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Label: label, MaxAgeSeconds: int64(maxAge / time.Second), AttemptTimeoutSeconds: timeoutSeconds, RetentionWarning: s.RetentionReason != ""}
 	if s.LastSuccess != nil {
 		m.LastSnapshotAt = s.LastSuccess.SnapshotFinishedAt
 	}

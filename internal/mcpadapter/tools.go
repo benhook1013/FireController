@@ -66,6 +66,7 @@ type arguments struct {
 	reviewSourceWait           int
 	reviewCIDiagnostics        bool
 	ciWatchTargets             []client.CIWatchTarget
+	reviewActivity             client.ReviewActivityOptions
 	reviewOperations           client.ReviewOperationsOptions
 }
 type definition struct {
@@ -87,6 +88,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, projectMapDefinitions()...)
 	definitions = append(definitions, messageWaitDefinition())
 	definitions = append(definitions, ciWatchDefinition())
+	definitions = append(definitions, reviewActivityDefinition())
 	definitions = append(definitions, operationListDefinition())
 	definitions = append(definitions, jobStatusDefinitions()...)
 	definitions = append(definitions, reviewBatchDefinitions()...)
@@ -221,6 +223,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 						assessment, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
 					}
 					value = client.AgentReviewCI(assessment)
+				case "review_activity_read":
+					value, err = service.ReviewActivity(ctx, args.reviewActivity)
 				case "wait_for_ci":
 					var watch client.CIWatchResult
 					watch, err = service.WatchCI(ctx, args.ciWatchTargets, args.reviewSourceWait)
