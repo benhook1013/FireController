@@ -84,7 +84,7 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 		out.Reason = "ci_source_unavailable"
 		return out, err
 	}
-	if !matchesCITarget(candidate, target) {
+	if !matchesCITarget(candidate, target) && !NonstrictHeadCICandidate(candidate, target, out.Authority) {
 		out.Reason = "ci_target_unproven"
 		// Keep a known candidate diagnostic visible in the compact result. A
 		// mergeable PR can still expose a stale, unverified test merge.
@@ -178,7 +178,7 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 	}
 	stage = "candidate_recheck"
 	finalCandidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
-	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) {
+	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) && !NonstrictHeadCICandidate(finalCandidate, target, out.Authority) {
 		return out, err
 	}
 	if out.Results != nil {
@@ -208,6 +208,21 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 		out.State = "not_required"
 	}
 	return out, nil
+}
+
+// NonstrictHeadCICandidate permits only head CI under complete non-strict
+// authority when a stable cached PR comparison trails the live base. It does
+// not verify or select that stale test merge, or establish merge readiness.
+func NonstrictHeadCICandidate(candidate CICandidate, target CITarget, authority RequiredCheckAuthority) bool {
+	if authority.State != "complete" || authority.Reason != "" || authority.Strict || authority.Checks == nil || authority.ObservedAt.IsZero() || !strings.EqualFold(authority.Repository, target.Repository) || !validRequiredBranch(authority.Branch) ||
+		candidate.State != "unproven" || candidate.Reason != "ci_merge_base_mismatch" || candidate.MergeState != "unproven" || candidate.MergeSHA != "" || candidate.MergeBaseParentSHA != "" || candidate.ObservedAt.IsZero() ||
+		candidate.RepositoryID != target.RepositoryID || !strings.EqualFold(candidate.Repository, target.Repository) || candidate.PullNumber != target.PullNumber || candidate.HeadSHA != target.HeadSHA || candidate.BaseSHA != target.BaseSHA || candidate.BaseRef != target.BaseRef ||
+		!validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) {
+		return false
+	}
+	m := candidate.MergeBaseMismatch
+	return m != nil && lowerCISHA(m.PRBaseSHA) && lowerCISHA(m.LiveBaseSHA) && lowerCISHA(m.MergeSHA) && lowerCISHA(m.MergeBaseParentSHA) &&
+		m.PRBaseSHA == candidate.BaseSHA && m.MergeBaseParentSHA == m.PRBaseSHA && m.LiveBaseSHA != m.MergeBaseParentSHA && m.MergeBaseParentSHA != candidate.HeadSHA && m.MergeSHA != candidate.HeadSHA && m.MergeSHA != m.MergeBaseParentSHA
 }
 
 func matchesCITarget(candidate CICandidate, target CITarget) bool {

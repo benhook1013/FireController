@@ -175,6 +175,18 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
 	}
+	// A coherent stable mismatch can retain head CI when the actual required
+	// checks do not require an up-to-date base. The merge comparison stays
+	// unproven; the helper supplies no result or assessment credit.
+	nonstrictCandidate := o.Candidate != nil && o.MergeState == "unproven" && reviewprovider.NonstrictHeadCICandidate(*o.Candidate, o.Target, o.Authority)
+	nonstrictHead := nonstrictCandidate && o.Selection == "head" && o.SelectedCommitSHA == source.HeadSHA && o.TestMergeResults == nil
+	nonstrictAbsent := nonstrictCandidate && o.State == "not_required" && o.Selection == "" && o.SelectedCommitSHA == "" && o.Results == nil && o.Actions == nil && o.Attempts == nil && o.TestMergeResults == nil
+	if o.Candidate != nil && o.Candidate.MergeBaseMismatch != nil && !nonstrictHead && !nonstrictAbsent {
+		c, m := o.Candidate, o.Candidate.MergeBaseMismatch
+		if o.State != "unproven" || o.Reason != "ci_merge_base_mismatch" || o.Selection != "" || o.SelectedCommitSHA != "" || o.MergeState != "unproven" || c.State != "unproven" || c.Reason != o.Reason || c.MergeState != o.MergeState || c.RepositoryID != source.RepositoryID || !strings.EqualFold(c.Repository, source.RepositoryName) || c.PullNumber != source.PullNumber || c.HeadSHA != source.HeadSHA || c.BaseSHA != source.BaseSHA || c.BaseRef != source.BaseRef || c.MergeSHA != "" || c.MergeBaseParentSHA != "" || c.ObservedAt.IsZero() || !sha.MatchString(m.PRBaseSHA) || !sha.MatchString(m.LiveBaseSHA) || !sha.MatchString(m.MergeSHA) || !sha.MatchString(m.MergeBaseParentSHA) || m.PRBaseSHA != c.BaseSHA || m.LiveBaseSHA == m.MergeBaseParentSHA || m.MergeBaseParentSHA == c.HeadSHA || m.MergeSHA == c.HeadSHA || m.MergeSHA == m.MergeBaseParentSHA {
+			return false
+		}
+	}
 	switch o.State {
 	case "satisfied", "failed", "pending", "unproven", "not_required":
 	default:
@@ -211,7 +223,7 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 		return false
 	}
 	if o.State != "unproven" {
-		if o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != source.RepositoryID || !strings.EqualFold(o.Candidate.Repository, source.RepositoryName) || o.Candidate.PullNumber != source.PullNumber || o.Candidate.HeadSHA != source.HeadSHA || o.Candidate.BaseSHA != source.BaseSHA || o.Candidate.BaseRef != source.BaseRef || o.MergeState != o.Candidate.MergeState {
+		if o.Candidate == nil || o.Candidate.State != "complete" && !nonstrictHead && !nonstrictAbsent || o.Candidate.RepositoryID != source.RepositoryID || !strings.EqualFold(o.Candidate.Repository, source.RepositoryName) || o.Candidate.PullNumber != source.PullNumber || o.Candidate.HeadSHA != source.HeadSHA || o.Candidate.BaseSHA != source.BaseSHA || o.Candidate.BaseRef != source.BaseRef || o.MergeState != o.Candidate.MergeState {
 			return false
 		}
 	}
