@@ -45,7 +45,8 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	// body stay untouched. Unrelated bot reports can be revised without
 	// becoming request authorities; provider finding records remain. Existing
 	// reports require both retained bodies to lack even a hidden provider command
-	// mention; newly created reports must lack a current mention.
+	// mention. An edited comment absent from the baseline has no original-body
+	// proof and retains the strict attribution guard.
 	projected := snapshot
 	trigger := original.Publication.Trigger.CreatedAt
 	oldComments := make(map[int64]IssueComment, len(baseline.IssueComments))
@@ -61,12 +62,6 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		}
 		if present && baselineBotReportRefresh(comment, old, baseline.ObservedAt, trigger) {
 			projected.IssueComments[position].UpdatedAt = old.UpdatedAt
-			botProjected = true
-		} else if !present && baseline.ObservedAt.Before(trigger) && comment.Author.Kind == "Bot" && comment.CreatedAt.After(trigger) && comment.UpdatedAt.After(comment.CreatedAt) && !strings.Contains(strings.ToLower(comment.Body), "coderabbit") {
-			// A complete pre-trigger baseline cannot contain a report created
-			// later. Its unrelated Bot identity supplies the same non-command
-			// report trust as an existing report refresh; retain all raw source.
-			projected.IssueComments[position].UpdatedAt = comment.CreatedAt
 			botProjected = true
 		}
 	}
