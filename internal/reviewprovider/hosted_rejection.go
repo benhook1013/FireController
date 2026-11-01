@@ -31,7 +31,8 @@ func publicationRateLimited(snapshot HostedPublicationSnapshot, result HostedPub
 			}
 			continue
 		}
-		if !standingCommandReply(comment.Body, "⚠️ Action not completed", "Review rate limited.") {
+		if !standingCommandReply(comment.Body, "⚠️ Action not completed", "Review rate limited.") &&
+			!standingCommandReply(comment.Body, "Action not completed", "Review rate limited.") {
 			return false
 		}
 		count++
