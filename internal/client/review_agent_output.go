@@ -60,6 +60,9 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.State == "held" && (value.Reason == "parent_moved" || value.Reason == "predecessor_parent_moved") && value.SourceRefusal != nil {
 		hint = parentComparisonDiagnostic(value.SourceRefusal, value.Reason)
 	}
+	if value.State == "held" && value.Reason == "predecessor_parent_moved" {
+		hint = predecessorParentRecoveryDiagnostic(value.PullNumber, hint)
+	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 		value.NextAction = "resolve_pending_evidence"
@@ -118,6 +121,9 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	}
 	if value.State == "held" && (value.Reason == "parent_moved" || value.Reason == "predecessor_parent_moved") && value.SourceRefusal != nil {
 		hint = parentComparisonDiagnostic(value.SourceRefusal, value.Reason)
+	}
+	if value.State == "held" && value.Reason == "predecessor_parent_moved" {
+		hint = predecessorParentRecoveryDiagnostic(value.PullNumber, hint)
 	}
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
@@ -454,4 +460,17 @@ func parentComparisonDiagnostic(v *ReviewSourceRefusal, reason string) *ReviewOp
 	explanation := fmt.Sprintf("%s%s #%d against parent PR #%d: original observed base %s differs from direct-parent head %s recorded at the check. These are retained facts, not a current observation.", prefix, checked, v.PullNumber, v.ParentPullNumber, v.ObservedBaseSHA, v.ExpectedParentSHA)
 	action := fmt.Sprintf("Check current PR #%d, its live named base, direct parent PR #%d and ancestry. Align an actually mismatched link through its owning workflow. If the named base already matches the parent and the child includes it, GitHub PR metadata may be stale: the owning GitHub workflow may reapply that same existing base branch, then verify the returned head is unchanged and base matches the parent. Qualify the stable comparison afresh under current review authorization; this terminal held operation does not resume. Out-of-order selection still checks the selected PR's own source. This diagnostic performs no mutation or retry. Use existing workflow authorization; do not reset review progress or temporarily retarget, force-push or create a no-op commit merely to refresh metadata.", v.PullNumber, v.ParentPullNumber)
 	return &ReviewOperationDiagnostic{explanation, action}
+}
+
+// The selected request identity is distinct from a retained mismatched ancestor.
+func predecessorParentRecoveryDiagnostic(selected int64, hint *ReviewOperationDiagnostic) *ReviewOperationDiagnostic {
+	if hint == nil {
+		return nil
+	}
+	target := "SELECTED_PR"
+	if selected > 0 {
+		target = fmt.Sprint(selected)
+	}
+	action := fmt.Sprintf("For a currently verified stable selected comparison under current review authorization, use a fresh key/current head and configuration: CLI reviews request %s --out-of-order, or MCP review_request with pull_number:%s and allow_out_of_order:true. Ancestor republishing is not required merely to review that unchanged target. This skips predecessor progression only; the selected target's own source/direct parent, findings/routes, policy and provider guards still apply. To reconcile the ancestor instead: ", target, target)
+	return &ReviewOperationDiagnostic{hint.Explanation, action + hint.NextAction}
 }
