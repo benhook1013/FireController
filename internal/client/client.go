@@ -579,6 +579,18 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	if status == http.StatusConflict {
 		switch result.Code {
+		case "review_round_capacity":
+			result.Message = "No unreserved review capacity is available for this PR/channel; existing work may already occupy the remaining allocation."
+			result.Action = "Use review_operations_list filtered by pull_number and channel (CLI: reviews operations --pr NUMBER --channel CHANNEL) to find existing queued, active or completed-unfinalized work, then read its original operation. Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) separately for configured limits and completed counts. Do not submit duplicate reviews, cancel existing work or change grants automatically."
+		case "review_round_closed":
+			result.Message = "This PR review channel is explicitly closed."
+			result.Action = "Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) and finish any existing evidence/finding obligations. Reopening requires an authorized deliberate grant; do not retry the review request or reset taper automatically."
+		case "review_round_complete":
+			result.Message = "This PR review channel has reached its configured discovery stop."
+			result.Action = "Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) to distinguish maximum usage from taper completion, and collect unfinished results with review_operations_list. More reviews require an authorized deliberate additional grant; changed commits do not reset earned progress."
+		case "review_round_changed":
+			result.Message = "This review request is bound to a different round allocation."
+			result.Action = "Read the original review operation and current review_rounds_read controls (CLI: reviews rounds read --pr NUMBER --channel CHANNEL). Preserve the original identity and resolve its actual stop before requesting replacement work; do not duplicate active reviews or reset taper."
 		case "worker_retirement_blocked":
 			result.Message = "The worker still owns unfinished work or unacknowledged messages."
 			result.Action = "Read workers retirement WORKER_ID (MCP worker_retirement_read) for blockers. Reassign or finish jobs, reassign or resolve pending direct/assigned-job notes, and explicitly acknowledge messages before retrying retirement with a new key. Nothing is reassigned or acknowledged automatically."
