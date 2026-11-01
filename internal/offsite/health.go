@@ -80,8 +80,30 @@ func ReadStatusAndWriteHealth(ctx context.Context, configPath, output, label str
 	}
 	// Receipts retain snapshot time, not an independent remote verification
 	// timestamp. In particular, an unchanged run does no remote verification.
-	if !m.Valid() {
+	// Validate retained timestamps and shape independently of a backward wall
+	// clock step. This copy is only for diagnosis; a future-dated report is never
+	// published and the original ledger and previous report remain untouched.
+	observed, _ := time.Parse(time.RFC3339Nano, m.ObservedAt)
+	latest := observed
+	for _, value := range []string{m.LastSnapshotAt, m.LastAttemptAt} {
+		if value == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || at.IsZero() || value != at.UTC().Format(time.RFC3339Nano) {
+			return Report{}, failure("offsite_state_invalid")
+		}
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	validation := m
+	validation.ObservedAt = latest.UTC().Format(time.RFC3339Nano)
+	if !validation.Valid() {
 		return Report{}, failure("offsite_state_invalid")
+	}
+	if latest.After(observed) {
+		return Report{}, failure("offsite_health_clock_ahead")
 	}
 	if ctx.Err() != nil {
 		return Report{}, failure("offsite_cancelled")
