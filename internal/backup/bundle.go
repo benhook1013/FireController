@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,10 +18,45 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
+	"modernc.org/libc"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// SQLite's default VFS bounds full database names independently of the host
+// filesystem. Read the compiled VFS so Unix and Windows retain their actual
+// limits; SQLite's pager also reserves the eight bytes in "-journal".
+func backupSQLitePathLimit() int {
+	tls := libc.NewTLS()
+	defer tls.Close()
+	vfs := sqlite3.Xsqlite3_vfs_find(tls, 0)
+	if vfs == 0 {
+		return 0
+	}
+	field := vfs + unsafe.Offsetof(sqlite3.Tsqlite3_vfs{}.FmxPathname)
+	maximum := int32(binary.NativeEndian.Uint32(libc.GoBytes(field, 4)))
+	return int(maximum) - len("-journal")
+}
+
+// All backup IDs have this fixed width. Budget the longer hidden staging name
+// before creating directories, including resolved higher directory aliases.
+func validateBundleDestination(destination string) error {
+	limit := backupSQLitePathLimit()
+	resolved, err := resolveBackupPath(destination)
+	if err != nil || limit <= 0 {
+		return invalid()
+	}
+	const id = "backup_00000000000000000000000000000000"
+	for _, root := range []string{destination, resolved} {
+		if len(filepath.Join(root, "."+id+".pending", "firecontroller.sqlite")) > limit {
+			return core.Fail("configuration_invalid", "The backup destination leaves insufficient SQLite pathname space for its staged database and journal.", 400)
+		}
+	}
+	return nil
+}
 
 // privateDirectory requires a real private selected directory and real newly
 // created directories. Existing higher ancestors may resolve through directory
@@ -462,6 +498,9 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	destination, err := filepath.Abs(destinationRoot)
 	if err != nil || within(destination, source) || within(source, destination) {
 		return out, invalid()
+	}
+	if err = validateBundleDestination(destination); err != nil {
+		return out, err
 	}
 	if err = privateDirectory(destination, true); err != nil {
 		return out, err
