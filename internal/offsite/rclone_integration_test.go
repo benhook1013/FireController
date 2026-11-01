@@ -84,6 +84,7 @@ func TestOffsiteRealRcloneS3AndCryptRecovery(t *testing.T) {
 	for _, encrypted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("encrypted=%t", encrypted), func(t *testing.T) {
 			f := newFixture(t)
+			f.c.Keep = 2
 			f.c.RcloneBinary = binary
 			f.c.Timeout = "60s"
 			f.c.RcloneConfig = filepath.Join(t.TempDir(), "rclone.conf")
@@ -141,11 +142,28 @@ func TestOffsiteRealRcloneS3AndCryptRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("second transfer: %#v", err)
 			}
-			if result.BackupID != latest.ID || result.Retained != 1 {
+			if result.BackupID != latest.ID || result.Retained != 2 {
 				t.Fatal(result)
 			}
-			if _, err = cycle(); err != nil {
+			// Model interruption between exact archive and receipt deletions.
+			// The next unchanged-source push must finish that owned cleanup,
+			// including S3's missing-key/virtual-directory behavior.
+			partial, err := openSession(f.c, nil)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if err := partial.transport.remove(t.Context(), partial.object(Receipt{ID: first.ID}, "archive.tar.gz")); err != nil {
+				partial.close()
+				t.Fatal(err)
+			}
+			if _, err := partial.remoteReceipt(t.Context(), Receipt{ID: first.ID}); err != nil {
+				partial.close()
+				t.Fatal("partial deletion lost its retained receipt", err)
+			}
+			partial.close()
+			f.c.Keep = 1
+			if result, err = cycle(); err != nil || result.Retained != 1 || result.BackupID != latest.ID || state(t, f.c).RetentionReason != "" {
+				t.Fatalf("partial archive deletion did not finish on the next push: result=%+v error=%#v", result, err)
 			}
 			if operator != "" {
 				var report Report
