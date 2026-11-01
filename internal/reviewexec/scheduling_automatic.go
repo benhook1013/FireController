@@ -230,6 +230,13 @@ func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c C
 		if p.Paused {
 			continue
 		}
+		pending, err := automaticHostedPendingPull(ctx, tx, project, pull)
+		if err != nil {
+			return "", false, err
+		}
+		if pending {
+			continue
+		}
 		var seen bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, project, ignoreSelection, pull, basis).Scan(&seen); err != nil {
 			return "", false, err
@@ -251,8 +258,16 @@ func automaticHostedQueuedPrefix(ctx context.Context, tx *sql.Tx, project string
 		return 0, err
 	}
 	var limit int
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='hosted' AND o.state='queued'`, len(c.Queue), string(queue), project).Scan(&limit)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='hosted' AND o.state='queued'
+AND NOT EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
+AND NOT EXISTS(SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)`, len(c.Queue), string(queue), project).Scan(&limit)
 	return limit, err
+}
+
+func automaticHostedPendingPull(ctx context.Context, tx *sql.Tx, project string, pull int64) (bool, error) {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel='hosted' AND state IN('queued','preparing','posting','active','uncertain'))`, project, pull).Scan(&pending)
+	return pending, err
 }
 
 func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run, pull int64) (bool, error) {
@@ -262,6 +277,10 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	}
 	if !automatic {
 		return false, nil
+	}
+	pending, err := automaticHostedPendingPull(ctx, tx, r.ProjectID, pull)
+	if err != nil || pending {
+		return pending, err
 	}
 	c, _, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {

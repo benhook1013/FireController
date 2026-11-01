@@ -157,8 +157,10 @@ func TestRoundCumulativeAcceptedAfterClosureResetsEffectiveTaper(t *testing.T) {
 func TestRoundCumulativeCapacityRefusalAndOriginalKeyReplay(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 4, "first")
+	// An unfinalized completion and one queued request both occupy the grant.
+	// Duplicate queued CLI requests are rejected at acceptance.
+	roundCapture(t, f, 650, false)
 	f.enqueue(t, attemptProject, "pending-one", "cli", 2, 1)
-	f.enqueue(t, attemptProject, "pending-two", "cli", 2, 1)
 	before := roundTables(t, f)
 	revision, min, max := int64(1), int64(0), int64(1)
 	scope := f.scope(t, attemptProject, f.writer, false)

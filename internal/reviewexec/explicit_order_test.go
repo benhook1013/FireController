@@ -113,6 +113,11 @@ func TestExplicitOrderHTTPStrictBooleanAndRetainedChoice(t *testing.T) {
 		if detail.Code != 200 || json.Unmarshal(detail.Body.Bytes(), &operation) != nil || operation.AllowOutOfOrder != (i == 2) || (i < 2 && strings.Contains(detail.Body.String(), "allow_out_of_order")) {
 			t.Fatal("choice not faithfully retained", detail.Code, detail.Body.String())
 		}
+		// These are independent flag cases, not concurrent requests for one PR.
+		cancelled := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+receipt.ID+"/control", f.writer, fmt.Sprintf("cancel-order-%d", i), fmt.Sprintf(`{"expected_revision":%d,"action":"cancel"}`, operation.Revision))
+		if cancelled.Code != 200 {
+			t.Fatal("failed to retire previous undispatched flag case", cancelled.Code, cancelled.Body.String())
+		}
 	}
 	for _, token := range []string{f.reader, f.other, ""} {
 		before := policyState(t, f)

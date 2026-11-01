@@ -215,8 +215,10 @@ func TestAttemptReservationsSerializeAccountAndExactTarget(t *testing.T) {
 	f.configure(t, attemptProject, "test-capability", 0, false)
 	f.configure(t, otherAttemptProject, "test-capability", 0, false)
 	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "first", "cli", 2, 1))
+	blocked := map[string]Receipt{}
 	for _, project := range []string{attemptProject, otherAttemptProject} {
 		r := f.enqueue(t, project, "account-busy-"+project, "cli", 4, 1)
+		blocked[project] = r
 		_, err := f.e.StartAttempt(context.Background(), project, r.ID)
 		attemptCode(t, err, "review_busy")
 		if strings.Contains(err.Error(), first.ID) || strings.Contains(err.Error(), first.ProjectID) {
@@ -233,12 +235,18 @@ func TestAttemptReservationsSerializeAccountAndExactTarget(t *testing.T) {
 	}
 	// Changing configured accounts does not bypass an already occupied target.
 	f.configure(t, attemptProject, "other-account", 1, false)
-	r := f.enqueue(t, attemptProject, "same-target-other-account", "cli", 2, 2)
-	_, err := f.e.StartAttempt(context.Background(), attemptProject, r.ID)
-	attemptCode(t, err, "review_busy")
+	reservations := snapshotTable(t, f, "review_execution_reservations")
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "same-target-other-account", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
+	if snapshotTable(t, f, "review_execution_reservations") != reservations {
+		t.Fatal("duplicate-target admission changed an original reservation")
+	}
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 2 {
 		t.Fatal("busy calls created attempts")
 	}
+	// Replace the old undispatched request deliberately; account switching must
+	// not silently change its original binding or accumulate a duplicate round.
+	timerControl(t, f, blocked[attemptProject].ID, "cancel", "cancel-original-account-intent")
 	// A different target with the new account is independent.
 	f.start(t, attemptProject, f.enqueue(t, attemptProject, "different-target-other-account", "cli", 4, 2))
 }

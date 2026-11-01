@@ -61,13 +61,17 @@ func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 	f := supervisorFixture(t)
 	f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
 	f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
-	f.configure(t, attemptProject, "other-account", 1, false)
-	f.enqueue(t, attemptProject, "reserved-target-other-account", "cli", 2, 2)
-	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 4, 2)
+	previous := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "next-account-and-distinct-target", Configuration{ExpectedRevision: &previous, CapabilityID: "other-account", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 6, 2)
 	hosted := f.enqueue(t, attemptProject, "independent-channel", "hosted", 2, 2)
 	if _, err := f.store.DB().Exec(`UPDATE projects SET repository='renamed/repository' WHERE id=?`, attemptProject); err != nil {
 		t.Fatal(err)
 	}
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "reserved-target-other-account", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
 	operations, err := f.e.pending(context.Background())
 	if err != nil || len(operations) != 2 {
 		t.Fatalf("retained account/target filtering failed: %d %v", len(operations), err)
@@ -84,7 +88,7 @@ func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, err = withoutCapabilities.pending(context.Background())
-	if err != nil || len(operations) != 4 {
+	if err != nil || len(operations) != 3 {
 		t.Fatalf("unavailable capabilities were silently hidden: %d %v", len(operations), err)
 	}
 }
@@ -100,17 +104,32 @@ func TestSupervisorBusyQueueDoesNotEnterWriterAndCoordinationStaysUsable(t *test
 			t.Fatal(err)
 		}
 	}
-	r := f.enqueue(t, attemptProject, "reserved", "cli", 2, 1)
+	queue := []int64{2}
+	for i := range 31 {
+		queue = append(queue, int64(100+i))
+	}
+	previous := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "busy-distinct-targets", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := f.enqueue(t, attemptProject, "reserved", "cli", 2, 2)
 	busy := f.start(t, attemptProject, r)
 	if _, err := f.e.Admit(context.Background(), attemptProject, busy.ID, busy.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 31 {
-		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", 4, 1)
+		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", int64(100+i), 2)
 	}
-	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	otherQueue := []int64{}
 	for i := range 8 {
-		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", 2, 1)
+		otherQueue = append(otherQueue, int64(200+i))
+	}
+	zero := int64(0)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, otherAttemptProject, f.admin, true), "other-busy-distinct-targets", Configuration{ExpectedRevision: &zero, CapabilityID: "test-capability", Mode: "independent", Queue: otherQueue, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 8 {
+		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", int64(200+i), 1)
 	}
 	// Occupy the real writer admission slot. A read-only busy scan must finish
 	// without waiting for it; a failed StartAttempt would still wait here.
@@ -361,9 +380,15 @@ func TestSupervisorReceiptsAndCoordinationRemainFastDuringProviderWait(t *testin
 		t.Fatal("dispatch did not begin")
 	}
 	proveOrdinaryCoordination(t, f, "write-during-dispatch", receipt.ID)
-	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-dispatch", "cli", 4)
-	if supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
-		t.Fatal("new receipt waited for or bypassed occupied account during dispatch")
+	// A second key for the already queued target must return its original
+	// operation reference promptly rather than buy another future CLI round.
+	started := time.Now()
+	duplicate := f.request(http.MethodPost, "/api/v1/projects/"+attemptProject+"/reviews/requests", f.writer, "new-during-dispatch", `{"expected_configuration_revision":1,"pull_number":4,"channel":"cli","head_sha":"`+strings.Repeat("a", 40)+`"}`)
+	if time.Since(started) > time.Second || duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), "review_inflight") || !strings.Contains(duplicate.Body.String(), queuedDuringPrepare.ID) {
+		t.Fatal("duplicate queued request was slow or lost original recovery reference", duplicate.Code, duplicate.Body.String())
+	}
+	if supervisorOperationState(t, f, queuedDuringPrepare.ID) != "queued" {
+		t.Fatal("duplicate receipt changed the original queued request")
 	}
 	_, replay = supervisorRequest(t, f, "fast-receipt", "cli", 2)
 	if !bytes.Equal(original, replay) || driver.calls.Load() != 1 {

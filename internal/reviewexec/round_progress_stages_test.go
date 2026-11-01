@@ -33,7 +33,6 @@ func TestRoundProgressStagesExecutionAdjudicationAndFinalization(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "grant-stages")
 	a, evidence := roundCapture(t, f, 600, true)
-	f.enqueue(t, attemptProject, "queued-stages", "cli", 2, 1)
 	active := f.enqueue(t, attemptProject, "active-stages", "cli", 2, 1)
 	attempt := f.start(t, attemptProject, active)
 	if _, err := f.e.Admit(t.Context(), attemptProject, attempt.ID, attempt.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
@@ -50,9 +49,9 @@ func TestRoundProgressStagesExecutionAdjudicationAndFinalization(t *testing.T) {
 	f.handler = mux
 	before := roundTables(t, f) + policyState(t, f) + attemptState(t, f, a)
 	staged := progressStageChannel(t, f, "view=stages", 1)
-	assertProgressStages(t, staged, 2, 1)
+	assertProgressStages(t, staged, 1, 1)
 	read, err := f.e.ReadRoundProgressStages(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), []int64{2})
-	if err != nil || len(read.Items) != 1 || read.Items[0].Channels[1].PendingExecution == nil || read.Items[0].Channels[1].PendingAdjudication == nil || *read.Items[0].Channels[1].PendingExecution != 2 || *read.Items[0].Channels[1].PendingAdjudication != 1 {
+	if err != nil || len(read.Items) != 1 || read.Items[0].Channels[1].PendingExecution == nil || read.Items[0].Channels[1].PendingAdjudication == nil || *read.Items[0].Channels[1].PendingExecution != 1 || *read.Items[0].Channels[1].PendingAdjudication != 1 {
 		t.Fatal("staged engine read disagrees", read, err)
 	}
 	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 0), 0, 0)
@@ -69,7 +68,7 @@ func TestRoundProgressStagesExecutionAdjudicationAndFinalization(t *testing.T) {
 		t.Fatal("read changed accounting or legacy fields")
 	}
 	roundFinalize(t, f, a, evidence, 600, true)
-	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 1), 2, 0)
+	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 1), 1, 0)
 }
 
 func TestRoundProgressStagesLegacyEpochAndStrictReadScope(t *testing.T) {

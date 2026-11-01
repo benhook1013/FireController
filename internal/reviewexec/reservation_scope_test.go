@@ -80,6 +80,11 @@ func TestReservationScopeCLIStillGlobalAcrossRepositories(t *testing.T) {
 		t.Fatal("CLI account scope changed", pending, err)
 	}
 	f.configure(t, otherAttemptProject, "other-account", 1, false)
+	otherScope := f.scope(t, otherAttemptProject, f.other, false)
+	original := bindingOperation(t, f, otherScope, queued.ID)
+	if _, err := f.e.ControlOperation(t.Context(), otherScope, "replace-original-account-intent", queued.ID, OperationControl{ExpectedRevision: original.Revision, Action: "cancel"}); err != nil {
+		t.Fatal(err)
+	}
 	second := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "cli-other-account", "cli", 4, 2))
 	beforeRows := snapshotTable(t, f, "review_execution_reservations")
 	if _, err := f.store.DB().Exec(`UPDATE review_execution_reservations SET account=? WHERE attempt_id=?`, first.Account, second.ID); err == nil || snapshotTable(t, f, "review_execution_reservations") != beforeRows {

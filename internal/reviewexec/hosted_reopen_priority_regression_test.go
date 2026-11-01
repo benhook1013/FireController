@@ -94,3 +94,38 @@ func TestHostedAutomaticReconsiderationPreservesExplicitAndActiveWork(t *testing
 		}
 	})
 }
+
+func TestHostedAutomaticPausedQueuedFrontAllowsIndependentSuccessor(t *testing.T) {
+	for _, kind := range []string{"operation", "pull"} {
+		t.Run(kind, func(t *testing.T) {
+			f := schedulingFixture(t)
+			first := f.enqueue(t, attemptProject, "explicit-front-pause", "hosted", 2, 1)
+			if kind == "operation" {
+				timerControl(t, f, first.ID, "pause", "pause-front-operation")
+			} else {
+				schedulingPause(t, f, 2, 0, true)
+			}
+			scope := selectionScope(t, f, attemptProject, f.writer, "read")
+			before, err := f.e.ReadOperation(t.Context(), scope, first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			schedulingEnable(t, f, 0, true)
+			schedulingGenerate(t, f, true)
+			selectionNext(t, f, &refreshTestReader{})
+			selected := schedulingLatest(t, f)
+			op, err := f.e.ReadOperation(t.Context(), scope, selected.OperationID)
+			if err != nil || selected.State != "selected" || op.PullNumber != 4 {
+				t.Fatal("paused queued front blocked independent successor", selected, op, err)
+			}
+			after, err := f.e.ReadOperation(t.Context(), scope, first.ID)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("independent selection rewrote original paused intent", before, after, err)
+			}
+			schedulingGenerate(t, f, false)
+			if got := attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE pull_number=2`); got != 1 {
+				t.Fatal("automatic selection duplicated paused PR request", got)
+			}
+		})
+	}
+}

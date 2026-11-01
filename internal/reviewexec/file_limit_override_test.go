@@ -33,6 +33,11 @@ func TestFileLimitOverrideHTTPStrictBooleanAndRetainedChoice(t *testing.T) {
 		if detail.Code != 200 || json.Unmarshal(detail.Body.Bytes(), &operation) != nil || operation.OverrideFileLimit != (i == 2) || (i < 2 && strings.Contains(detail.Body.String(), "override_file_limit")) {
 			t.Fatal("choice not faithfully retained", detail.Code, detail.Body.String())
 		}
+		// These are independent flag cases, not concurrent requests for one PR.
+		cancelled := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+receipt.ID+"/control", f.writer, fmt.Sprintf("cancel-override-%d", i), fmt.Sprintf(`{"expected_revision":%d,"action":"cancel"}`, operation.Revision))
+		if cancelled.Code != 200 {
+			t.Fatal("failed to retire previous undispatched flag case", cancelled.Code, cancelled.Body.String())
+		}
 	}
 	for _, token := range []string{f.reader, f.other, ""} {
 		before := policyState(t, f)
@@ -80,6 +85,11 @@ func TestFileLimitOverrideReplayRestartAndPredecessorUpgrade(t *testing.T) {
 	request.OverrideFileLimit = true
 	_, err = f.e.Enqueue(t.Context(), scope, "original", request)
 	attemptCode(t, err, "idempotency_conflict")
+	// The original request proved migration and replay; cancel its undispatched
+	// intent before creating the independent explicit-override request.
+	if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-original-override", r.ID, OperationControl{ExpectedRevision: old.Revision, Action: "cancel"}); err != nil {
+		t.Fatal("failed to cancel original request", err)
+	}
 	r, request = fileOverrideEnqueue(t, f, "explicit", "cli", true)
 	a := f.start(t, attemptProject, r)
 	before := attemptState(t, f, a)

@@ -97,11 +97,11 @@ func mustWaitTime(value string) time.Time {
 // history reads only. Live query/admission/action checks still require the real
 // operation's current attempt. Only proven unused cooldown attempts qualify.
 func historicalCooldownOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, error) {
-	if o.Channel == "cli" {
-		return historicalCLIExhaustionOperation(ctx, q, o, a)
-	}
 	if o.AttemptID == a.ID {
 		return o, nil
+	}
+	if o.Channel == "cli" {
+		return historicalCLIExhaustionOperation(ctx, q, o, a)
 	}
 	if o.Channel != "hosted" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.State != "held" || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, waitUnavailable()
