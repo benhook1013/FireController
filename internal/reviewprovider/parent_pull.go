@@ -30,6 +30,9 @@ func (g *GitHub) ParentPull(ctx context.Context, repository, baseRef string) (Pu
 	if !validRepositorySelector(repository) || !validRequiredBranch(baseRef) {
 		return Pull{}, invalidSelector()
 	}
+	if g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) {
+		return Pull{}, providerError("provider_unavailable", "The provider adapter is unavailable.", 0, 0, false)
+	}
 	owner := strings.SplitN(repository, "/", 2)[0]
 	query := url.Values{"state": {"open"}, "head": {owner + ":" + baseRef}, "per_page": {"2"}, "page": {"1"}}
 	path := "/repos/" + repository + "/pulls"
