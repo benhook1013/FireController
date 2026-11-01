@@ -180,7 +180,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 					g.count = count
 				}
 			}
-			if len(pub.Roots) != g.count && g.reason == "" {
+			if g.reason == "" && !hostedInlineCountMatches(pub.Roots, g.count) {
 				g.reason = "root_count_mismatch"
 			}
 			if g.reason == "" {

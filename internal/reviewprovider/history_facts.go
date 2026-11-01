@@ -140,6 +140,16 @@ func historyFactShape(data []byte, t reflect.Type) bool {
 }
 
 func validPullDisplayMetadata(p Pull) bool {
+	switch p.Mergeability {
+	case "", "unknown", "mergeable", "conflicting":
+	default:
+		return false
+	}
+	switch p.MergeStateStatus {
+	case "", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE":
+	default:
+		return false
+	}
 	if (p.Additions == nil) != (p.Deletions == nil) {
 		return false
 	}
