@@ -111,16 +111,34 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 		}
 		return Receipt{}, failure("offsite_storage_unavailable")
 	}
-	if gz.Close() != nil || f.Sync() != nil || f.Close() != nil {
+	if gz.Close() != nil {
 		return Receipt{}, failure("offsite_storage_unavailable")
 	}
-	h, n, err := fileHash(ctx, destination, c.MaxBundleBytes)
+	h, n, err := finishPackedArchive(ctx, f, c.MaxBundleBytes)
 	if err != nil {
 		return Receipt{}, err
 	}
 	r := Receipt{Version: 1, ID: s.ID, InstanceID: s.SourceInstanceID, SnapshotFinishedAt: s.SnapshotFinishedAt, EventSequence: s.EventSequence, ArchiveSHA256: h, ArchiveBytes: n}
 	complete = true
 	return r, nil
+}
+
+// Gzip framing can exceed the expanded-stream bound for incompressible input.
+// Check the synced owned file before hashing treats an oversized input as bad.
+func finishPackedArchive(ctx context.Context, f *os.File, limit int64) (string, int64, error) {
+	syncErr := f.Sync()
+	compressed, statErr := f.Stat()
+	closeErr := f.Close()
+	if syncErr != nil || statErr != nil || closeErr != nil {
+		return "", 0, failure("offsite_storage_unavailable")
+	}
+	if ctx.Err() != nil {
+		return "", 0, failure("offsite_cancelled")
+	}
+	if compressed.Size() > limit {
+		return "", 0, failure("offsite_size_limit")
+	}
+	return fileHash(ctx, f.Name(), limit)
 }
 
 func unpack(ctx context.Context, archive, destination string, r Receipt, c Config) (backup.Summary, error) {

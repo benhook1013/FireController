@@ -149,12 +149,10 @@ func (s *session) publishLatest(ctx context.Context, r Receipt) error {
 	if err == nil && old == r {
 		return nil
 	}
-	if err == nil {
-		at, _ := time.Parse(time.RFC3339Nano, old.SnapshotFinishedAt)
-		next, _ := time.Parse(time.RFC3339Nano, r.SnapshotFinishedAt)
-		if old.EventSequence > r.EventSequence || old.EventSequence == r.EventSequence && at.After(next) {
-			return failure("offsite_source_rollback")
-		}
+	// Equal sequences retain the same committed history; wall-clock order
+	// cannot establish rollback when the source clock has moved backwards.
+	if err == nil && old.EventSequence > r.EventSequence {
+		return failure("offsite_source_rollback")
 	}
 	file := filepath.Join(s.work, "latest.json")
 	if err = writeJSON(file, r); err != nil {
@@ -465,8 +463,27 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 		s.state.RetentionReason = ""
 		return nil
 	}
+	if s.state.LastSuccess == nil {
+		return failure("offsite_retention_conflict")
+	}
+	keeper := *s.state.LastSuccess
+	found := false
+	for _, r := range s.state.Owned {
+		if r.EventSequence > keeper.EventSequence {
+			return failure("offsite_retention_conflict")
+		}
+		found = found || r == keeper
+	}
+	if !found {
+		return failure("offsite_retention_conflict")
+	}
 	sort.Slice(s.state.Owned, func(i, j int) bool {
 		a, b := s.state.Owned[i], s.state.Owned[j]
+		// Protect the exact successful publication, including after equal-
+		// sequence clock rollback. Older owned copies still use stable order.
+		if a == keeper || b == keeper {
+			return a == keeper && b != keeper
+		}
 		if a.EventSequence != b.EventSequence {
 			return a.EventSequence > b.EventSequence
 		}
@@ -477,9 +494,6 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 		}
 		return at.After(bt)
 	})
-	if s.state.LastSuccess == nil || s.state.LastSuccess.ID != s.state.Owned[0].ID {
-		return failure("offsite_retention_conflict")
-	}
 	if !newestVerified {
 		r := *s.state.LastSuccess
 		actual, e := s.remoteReceipt(ctx, r)
