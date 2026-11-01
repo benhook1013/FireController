@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 )
 
@@ -23,6 +24,7 @@ type ReviewSourceCISummary struct {
 }
 
 type ReviewSourceCIAssessment struct {
+	Checks                *[]ReviewCIContext      `json:"checks,omitempty"`
 	ProjectID             string                  `json:"project_id"`
 	RefreshID             string                  `json:"refresh_id"`
 	Source                string                  `json:"source"`
@@ -98,14 +100,32 @@ func validSourceOperationCI(value ReviewSourceOperation) bool {
 
 // ReviewSourceCIAssessment reads retained facts; it never refreshes GitHub.
 func (c *Client) ReviewSourceCIAssessment(ctx context.Context, number int64) (ReviewSourceCIAssessment, error) {
+	return c.reviewSourceCIAssessment(ctx, number, false)
+}
+
+// ReviewSourceCIDiagnostics adds only required-context facts from retained CI.
+func (c *Client) ReviewSourceCIDiagnostics(ctx context.Context, number int64) (ReviewSourceCIAssessment, error) {
+	return c.reviewSourceCIAssessment(ctx, number, true)
+}
+
+func (c *Client) reviewSourceCIAssessment(ctx context.Context, number int64, diagnostics bool) (ReviewSourceCIAssessment, error) {
 	if !validPullNumber(number) {
 		return ReviewSourceCIAssessment{}, validation()
 	}
 	var value ReviewSourceCIAssessment
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "ci"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse); err != nil {
+	var query url.Values
+	budget := 16 << 10
+	if diagnostics {
+		query = url.Values{"diagnostics": {"true"}}
+		budget = 512 << 10
+	}
+	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "ci"), query, true, "", nil, http.StatusOK, false, &value, budget, decodeReviewResponse); err != nil {
 		return ReviewSourceCIAssessment{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_ci" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && (value.State != "held" || value.Reason != "source_configuration_changed") || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || !validCISummary(value.summary(), true) || value.Selection == "head" && value.SelectedCommitSHA != value.Target.HeadSHA {
+		return ReviewSourceCIAssessment{}, invalidResponse()
+	}
+	if diagnostics != (value.Checks != nil) || !validCIContextDetails(value) {
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
 	return value, nil

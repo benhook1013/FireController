@@ -162,6 +162,12 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 			mergeBaseParent = before.Commit.SHA
 			mergeVerified = branchMatches && after.Commit.SHA == before.Commit.SHA && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA && ((merge.Parents[0].SHA == mergeBaseParent && merge.Parents[1].SHA == first.Pull.Head.SHA) || (merge.Parents[1].SHA == mergeBaseParent && merge.Parents[0].SHA == first.Pull.Head.SHA))
 			result.MergeState, result.Reason = "unproven", "ci_merge_identity_unproven"
+			if !mergeVerified && branchMatches && after.Commit.SHA == before.Commit.SHA && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA && (merge.Parents[0].SHA == first.Pull.Head.SHA || merge.Parents[1].SHA == first.Pull.Head.SHA) {
+				// The head and merge object are attributable, but their other
+				// parent differs from the independently observed live base tip.
+				// Matching the cached PR base.sha is not sufficient proof.
+				result.Reason = "ci_merge_base_mismatch"
+			}
 		}
 	}
 	var final githubCIPull

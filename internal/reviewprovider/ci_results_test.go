@@ -196,7 +196,7 @@ func TestCIResultsSuiteCountDriftAndMoreDistinctResultSuitesFailClosed(t *testin
 					if mode == "zero_count_with_check" {
 						total = 0
 					}
-					if n == 2 {
+					if n%2 == 0 {
 						switch mode {
 						case "increase":
 							total = 2
@@ -225,7 +225,14 @@ func TestCIResultsSuiteCountDriftAndMoreDistinctResultSuitesFailClosed(t *testin
 			defer server.Close()
 			got, err := testGitHub(server, "").CIResults(t.Context(), "owner/repo", ciHead)
 			assertNoCIInventory(t, got, err)
-			if suiteCalls.Load() != 2 {
+			want := int64(2)
+			if mode == "increase" || mode == "decrease" {
+				want = 4
+				if !hasCode(err, "provider_observation_changed") {
+					t.Fatal("movement lost its diagnostic", err)
+				}
+			}
+			if suiteCalls.Load() != want {
 				t.Fatal("final count not observed", suiteCalls.Load())
 			}
 		})
@@ -734,7 +741,14 @@ func TestCIResultsPaginationDriftDuplicatesAndScopeFailClosed(t *testing.T) {
 			origin = server.URL
 			got, err := testGitHub(server, "").CIResults(t.Context(), "owner/repo", ciHead)
 			assertNoCIInventory(t, got, err)
-			if requests.Load() > 5 {
+			limit := int64(5)
+			if mode == "total_drift" {
+				limit = 6
+				if !hasCode(err, "provider_observation_changed") {
+					t.Fatal("movement lost its diagnostic", err)
+				}
+			}
+			if requests.Load() > limit {
 				t.Fatal("pagination retried", requests.Load())
 			}
 		})

@@ -12,6 +12,10 @@ Parent lookup requires a unique open same-repository PR whose head branch is the
 
 Required-check rule decoding preserves the distinction between documented rules and unavailable or unsupported authority. Decoding a requirement set does not establish current workflow success; CI selection and assessment remain with their existing owner.
 
+## Required CI collection
+
+CI reads bind explicit source and selected commit identities, recheck passing candidates and authority, and use exact numbered workflow-attempt jobs to distinguish same-suite reruns. Same-name commit statuses remain independent barriers rather than App identity. Count movement gets one bounded same-commit recollection; unsupported or incomplete observations remain unproven. Native retained decoding preserves exact earlier conservative origin and rerun assessments without rewriting their source facts or granting fresh credit. The [CI contract](review-ci.md) owns explicit provider-free diagnostics and the collection/retention boundary.
+
 ## Hosted review parsing
 
 CodeRabbit decoding recognizes closed generated envelopes and presentation variants while retaining original bodies and identities. Publication attribution, exact comparison, provider run identity, finished acknowledgment and counted finding inventory remain separate checks. Inline, outside-diff, duplicate and additional findings retain their own source references. Quoted prompts and examples cannot supply authoritative metadata. Baseline-qualified projections distinguish narrowly supported unrelated bot edits and old finding annotations without rewriting either capture.
