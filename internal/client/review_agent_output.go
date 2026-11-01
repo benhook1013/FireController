@@ -180,9 +180,16 @@ func AgentReviewSelection(value ReviewRunState) ReviewSelectionOutput {
 	return out
 }
 
+func draftReadinessDiagnostic() *ReviewOperationDiagnostic {
+	return &ReviewOperationDiagnostic{"A source check observed the PR as a GitHub Draft. Draft marks initial review readiness; it does not erase earned review progress.", "After marking the PR ready for review, if this review remains authorized, use one fresh request with a new key and current configuration/head. The old key replays this terminal hold. Do not reset rounds, grant extra reviews or retry automatically; normal admission and provider checks still apply."}
+}
+
 // A terminal source hold has no linked review action. Unknown historical
 // failures remain unknown; these static explanations never echo provider text.
 func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if reason == "pull_draft" {
+		return draftReadinessDiagnostic()
+	}
 	var explanation string
 	switch reason {
 	case "source_budget_exhausted":
@@ -232,6 +239,8 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	}
 	var explanation string
 	switch reason {
+	case "pull_draft":
+		return draftReadinessDiagnostic()
 	case "target_changed":
 		if channel != "hosted" {
 			return nil

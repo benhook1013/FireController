@@ -7,7 +7,7 @@ fc reviews activity --hours 24 --timezone Pacific/Auckland
 fc reviews activity --since 2026-10-01T00:00:00Z --until 2026-10-02T00:00:00Z --timezone UTC --pr 42
 ```
 
-The MCP equivalent is `review_activity_read`. The HTTP endpoint is `GET /projects/{project_id}/reviews/activity`, with optional `hours`, `since`, `until`, `timezone` and `pull_number` query parameters. These are ordinary authenticated project reads and require no review operation or provider credentials.
+The MCP equivalent is `review_activity_read`. The HTTP endpoint is `GET /api/v1/projects/{project_id}/reviews/activity`, with optional `hours`, `since`, `until`, `timezone` and `pull_number` query parameters. These are ordinary authenticated project reads and require no review operation or provider credentials.
 
 ## Window and output
 

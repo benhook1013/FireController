@@ -30,6 +30,8 @@ Read-only review pages and status commands show stored evidence, operation state
 
 Starting a review requires sufficiently current PR identity and lifecycle, exact selected anchor, relevant active-provider activity, admission policy, and applicable account quota facts. The action records which observations and revisions supported that decision. Freshness is a predicate over required facts, not one whole-repository cache TTL.
 
+A PR currently marked Draft on GitHub is not ready for a new Hosted or CLI review. Fresh preparation, selection and final dispatch checks enforce that boundary, including timer retries. Mark it ready before making a still-authorized fresh request after a terminal Draft hold. Draft remains separate from temporary fix work and does not cancel an already issued review or alter retained results, limits or taper.
+
 Recheck exact identity at the last provider-action boundary. GitHub offers no transaction with the local service: the head can still move after that check. Capture the admitted identity and classify later results against it; a moved head cannot turn into evidence for the new head silently.
 
 Review completion establishes attributable PR/channel progress and finding disposition; it does not itself establish mergeability. A separate merge-readiness assessment combines earned native review completion, required CI, unresolved current and outdated threads, accepted finding obligations, explicit stops, and current mergeability. Unknown or conflicting mergeability cannot produce a ready verdict. A cached dashboard can show its last result but cannot present it as a fresh verified merge gate. Humans perform merges.

@@ -13,7 +13,7 @@ import { PageSkeleton, ReviewRoundsSkeleton } from './loading';
 import { useRetainedRead } from './retained-read';
 import { RestoringReadingPosition, scrollToReadingTarget } from './reading-position';
 import { RelativeTime } from './relative-time';
-import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay } from './review-display';
+import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay, reviewRoundCountText } from './review-display';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
 import './review-queue.css';
@@ -329,14 +329,16 @@ export function ReviewPullView() {
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
   const date = run.finished_at || run.started_at;
+  const accepted = run.finalized === true ? run.accepted : '?';
+  const routed = run.finalized === true ? run.routed : '?';
   const highlight = useSemanticHighlight(runDisplayFingerprint(run, head), highlights, JSON.stringify([run.source, run.source_run_id]));
   const warnings = [
     !run.complete && 'Incomplete record', !run.finalized && 'Counts not finalized',
     !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
-  const description = `${run.found}/${run.accepted}/${run.routed} (found / accepted / routed). ${reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
-  return <ReviewRoundPillDisplay found={run.found} accepted={run.accepted} routed={run.routed} className={`review-pill-${run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
+  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
+  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
 }
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, progress, total, positionHint, readingAnchor, updateFailed, notice }: { notice?: ReactNode; updateFailed?: boolean; readingAnchor?: string; channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition }) {
   const laneRuns = runs.filter(run => run.channel === channel && run.outcome === 'completed');

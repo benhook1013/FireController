@@ -43,7 +43,7 @@ func runReason(err error) string {
 	if errors.As(err, &failure) && failure.Code == "review_held" {
 		if details, ok := failure.Details.(map[string]string); ok {
 			switch reason := details["reason"]; reason {
-			case "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "default_base_changed", "parent_moved", "observation_incomplete", "comparison_changed":
+			case "pull_draft", "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "default_base_changed", "parent_moved", "observation_incomplete", "comparison_changed":
 				return reason
 			}
 		}

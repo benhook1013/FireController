@@ -87,6 +87,33 @@ describe('merge-head recent review rounds', () => {
       expect(markup(false)).not.toContain('review-pill-zero');
     }
   });
+  it('shows pending decision counts consistently in the queue, hero, tooltips and accessible names', () => {
+    for (const value of [
+      run('positive-pending', 'hosted', { found: 4, accepted: 0, routed: 0, finalized: false }),
+      run('zero-pending', 'hosted', { found: 0, accepted: 0, routed: 0, finalized: false }),
+      run('partial-decisions', 'hosted', { found: 4, accepted: 2, routed: 1, finalized: false }),
+      { ...run('unknown-finalization', 'hosted', { found: 4, accepted: 2, routed: 1 }), finalized: undefined } as unknown as ReviewRunSummary,
+    ]) {
+      archive.items = [value]; archive.hasMore = false;
+      const original = JSON.stringify(value);
+      for (const hero of [false, true]) {
+        const html = markup(hero);
+        expect(html).toContain(`<strong>${value.found}/?/?</strong>`);
+        expect(html).toContain(`title="${value.found}/?/? (found / accepted / routed).`);
+        expect(html).toContain(`aria-label="Open hosted run ${value.source_run_id}: ${value.found}/?/?`);
+        expect(html).toContain('Counts not finalized');
+        expect(html).not.toContain('review-pill-zero');
+      }
+      expect(JSON.stringify(value)).toBe(original);
+    }
+    archive.items = [run('confirmed-clean', 'hosted', { found: 0, accepted: 0, routed: 0, finalized: true })];
+    for (const hero of [false, true]) {
+      const html = markup(hero);
+      expect(html).toContain('<strong>0/0/0</strong>');
+      expect(html).not.toContain('Counts not finalized');
+      expect(html).toContain('review-pill-zero');
+    }
+  });
   it('caps queue previews independently at the newest six without losing producer order or totals', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
     archive.hasMore = false;

@@ -85,6 +85,9 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 	if !sameTarget(pull, repositoryID, request.PullNumber) || pull.State != "open" || pull.Merged || pull.HeadSHA != request.HeadSHA || pull.ChangedFiles < 1 {
 		return SourcePlan{}, sourceHold("target_changed")
 	}
+	if execution && pull.IsDraft != nil && *pull.IsDraft {
+		return SourcePlan{}, sourceHold("pull_draft")
+	}
 	plan := SourcePlan{Repository: repo, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: observed}
 	if c.Mode == "stacked" && pull.BaseRef != repo.DefaultBranch {
 		parents, ok := reader.(ParentReader)

@@ -60,10 +60,13 @@ export function ReviewLaneDisplay({ title, label = typeof title === 'string' ? t
 }
 
 type RoundPillContent = { className: string; title: string; 'aria-label': string; children: ReactNode };
+export function reviewRoundCountText(found: number, accepted: number | '?', routed: number | '?'): string {
+  return `${found}/${accepted}/${routed}`;
+}
 export function ReviewRoundPillDisplay({ found, accepted, routed, className = '', zeroAccepted = false, title, label, wrap, children }: {
   found: number;
-  accepted: number;
-  routed: number;
+  accepted: number | '?';
+  routed: number | '?';
   className?: string;
   zeroAccepted?: boolean;
   title: string;
@@ -74,7 +77,7 @@ export function ReviewRoundPillDisplay({ found, accepted, routed, className = ''
   const content: RoundPillContent = {
     className: ['review-round-pill', className.trim(), zeroAccepted ? 'review-pill-zero' : ''].filter(Boolean).join(' '),
     title, 'aria-label': label,
-    children: <><strong>{found}/{accepted}/{routed}</strong>{children}</>,
+    children: <><strong>{reviewRoundCountText(found, accepted, routed)}</strong>{children}</>,
   };
   return wrap ? <>{wrap(content)}</> : <span {...content} />;
 }
