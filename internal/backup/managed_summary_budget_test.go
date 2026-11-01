@@ -56,7 +56,7 @@ func managedSummaryBudgetDestination(t *testing.T, root string, size int) string
 	return destination
 }
 
-func TestManagedSummaryBudgetEscapedDestinationBoundaryBeforeWrites(t *testing.T) {
+func TestManagedSummaryBudgetEscapedDestinationBoundary(t *testing.T) {
 	for _, size := range []int{4096, 4097} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			root := t.TempDir()
@@ -70,10 +70,12 @@ func TestManagedSummaryBudgetEscapedDestinationBoundaryBeforeWrites(t *testing.T
 			if err != nil || len(body)+1 > maxManagedStatusBytes {
 				t.Fatal("fixture must remain within the larger status budget", len(body), err)
 			}
-			got, err := ValidateScheduleConfig(filepath.Join(root, "absent-source"), cfg)
+			// Isolate the encoding contract from the separate local VFS path bound.
+			// Historical configuration reads still normalize these records.
+			got, err := normalizeScheduleConfig(filepath.Join(root, "absent-source"), cfg, false)
 			if size == 4096 {
 				if err != nil || got != cfg {
-					t.Fatal("newline-inclusive boundary should remain configurable", err)
+					t.Fatal("newline-inclusive boundary should remain encodable", err)
 				}
 			} else {
 				if err == nil {

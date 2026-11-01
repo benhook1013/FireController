@@ -141,7 +141,23 @@ func finishPackedArchive(ctx context.Context, f *os.File, limit int64) (string, 
 	return fileHash(ctx, f.Name(), limit)
 }
 
+// A retained receipt remains historical ownership evidence when an operator
+// lowers the transfer cap. Refuse work under the current budget without
+// misreporting that valid history as a corrupt archive or pending publication.
+func receiptTransferSize(ctx context.Context, r Receipt, c Config) error {
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
+	if r.ArchiveBytes > c.MaxBundleBytes {
+		return failure("offsite_size_limit")
+	}
+	return nil
+}
+
 func unpack(ctx context.Context, archive, destination string, r Receipt, c Config) (backup.Summary, error) {
+	if err := receiptTransferSize(ctx, r, c); err != nil {
+		return backup.Summary{}, err
+	}
 	h, n, err := fileHash(ctx, archive, c.MaxBundleBytes)
 	if err != nil {
 		return backup.Summary{}, cancelOrFailure(ctx, "offsite_archive_invalid")
