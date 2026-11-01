@@ -275,8 +275,15 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 2 || !reflect.DeepEqual(providerBefore, map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}) {
 		t.Fatal("request did not stop at the bounded source/Git fixture")
 	}
-	if !jsonEqual(defaultBody, tool("review_request", arguments("default-order", false), "")) || !jsonEqual(explicitBody, call(requestArgs("explicit-order", true)...)) {
-		t.Fatal("cross-client original-key replay changed receipt")
+	defaultReplay := tool("review_request", arguments("default-order", false), "")
+	explicitReplay := call(requestArgs("explicit-order", true)...)
+	// Queued diagnostics describe current scheduling, not the immutable receipt
+	// (docs/review-operations.md, Current queued scheduling hint). The held
+	// operations no longer supply that hint when their original key is replayed.
+	defaultDurable := explicitOrderDurableReceipt(t, defaultBody)
+	explicitDurable := explicitOrderDurableReceipt(t, explicitBody)
+	if !bytes.Equal(defaultDurable, explicitOrderDurableReceipt(t, defaultReplay)) || !bytes.Equal(explicitDurable, explicitOrderDurableReceipt(t, explicitReplay)) {
+		t.Fatal("cross-client original-key replay changed durable receipt")
 	}
 	tool("review_request", arguments("explicit-order", false), "idempotency_conflict")
 	// Actual CLI parse refusal must happen before reading even a nonexistent profile.
@@ -317,7 +324,7 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	targetMu.Lock()
 	target = next
 	targetMu.Unlock()
-	if restarted.instance != bootstrap.instance || read(defaultReceipt, false) != defaultOperation || read(explicitReceipt, true) != explicitOperation || !bytes.Equal(defaultBody, call(requestArgs("default-order", false)...)) || !jsonEqual(explicitBody, call(requestArgs("explicit-order", true)...)) {
+	if restarted.instance != bootstrap.instance || read(defaultReceipt, false) != defaultOperation || read(explicitReceipt, true) != explicitOperation || !bytes.Equal(defaultDurable, explicitOrderDurableReceipt(t, call(requestArgs("default-order", false)...))) || !bytes.Equal(explicitDurable, explicitOrderDurableReceipt(t, call(requestArgs("explicit-order", true)...))) {
 		t.Fatal("restart changed retained intent or original replay")
 	}
 	restarted.stop(t)
@@ -341,4 +348,29 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 		}
 	}
 	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=8 selected_source_gets=4 held_observer_gets=4 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
+}
+
+// The client adds only diagnostic from current queued-response headers. Keep
+// every other JSON field/value in the byte-stable durable comparison, while
+// validating that optional decoration rather than accepting arbitrary output.
+func explicitOrderDurableReceipt(t *testing.T, body json.RawMessage) json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		t.Fatal("invalid packaged receipt object")
+	}
+	if raw, present := fields["diagnostic"]; present {
+		var hint client.ReviewOperationDiagnostic
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&hint) != nil || hint.Explanation == "" || hint.NextAction == "" {
+			t.Fatal("invalid current queued diagnostic")
+		}
+		delete(fields, "diagnostic")
+	}
+	durable, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal("durable receipt could not be encoded")
+	}
+	return durable
 }
