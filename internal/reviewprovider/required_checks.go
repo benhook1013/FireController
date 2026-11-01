@@ -48,12 +48,56 @@ type githubClassicCheck struct {
 	AppID   *int64 `json:"app_id"`
 }
 type githubBranchRule struct {
-	Type       string                      `json:"type,required"`
-	Parameters *githubStatusRuleParameters `json:"parameters"`
-	RulesetID  *int64                      `json:"ruleset_id"`
-	SourceType *string                     `json:"ruleset_source_type"`
-	Source     *string                     `json:"ruleset_source"`
+	parametersPresent bool
+	Type              string                      `json:"type,required"`
+	Parameters        *githubStatusRuleParameters `json:"parameters"`
+	RulesetID         *int64                      `json:"ruleset_id"`
+	SourceType        *string                     `json:"ruleset_source_type"`
+	Source            *string                     `json:"ruleset_source"`
 }
+
+// Preserve omission separately from explicit null for optional rule parameters.
+func (r *githubBranchRule) UnmarshalJSON(data []byte) error {
+	type wire githubBranchRule
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*r = githubBranchRule(value)
+	_, r.parametersPresent = fields["parameters"]
+	return nil
+}
+
+// Copilot review rules request feedback; they do not define required CI gates.
+// The published rule schema permits omitted parameters and optional booleans.
+// https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch
+func validCopilotReviewRule(r githubBranchRule) bool {
+	if !r.parametersPresent {
+		return true
+	}
+	if r.Parameters == nil {
+		return false
+	}
+	var parameters map[string]json.RawMessage
+	if strictjson.Decode(r.Parameters.raw, &parameters) != nil || parameters == nil {
+		return false
+	}
+	for name, raw := range parameters {
+		if name != "review_draft_pull_requests" && name != "review_on_push" {
+			return false
+		}
+		var flag *bool
+		if json.Unmarshal(raw, &flag) != nil || flag == nil {
+			return false
+		}
+	}
+	return true
+}
+
 type githubStatusRuleParameters struct {
 	raw                  []byte
 	DoNotEnforceOnCreate *bool             `json:"do_not_enforce_on_create"`
@@ -298,6 +342,10 @@ func (g *GitHub) RequiredCheckAuthority(ctx context.Context, repository, branch 
 		// human review, not required check origins/results. Ignoring them asserts
 		// nothing about their satisfaction or full merge gates. Integration gates
 		// (workflows, scanning, deployments, merge queue, etc.) stay unsupported.
+		case "copilot_code_review":
+			if !validCopilotReviewRule(rule) {
+				return unproven("required_checks_malformed")
+			}
 		case "creation", "update", "deletion", "required_linear_history", "required_signatures", "pull_request", "non_fast_forward", "commit_message_pattern", "commit_author_email_pattern", "committer_email_pattern", "branch_name_pattern", "tag_name_pattern", "file_path_restriction", "max_file_path_length", "file_extension_restriction", "max_file_size":
 		default:
 			return unproven("unsupported_rule")
