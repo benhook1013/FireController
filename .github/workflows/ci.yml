@@ -53,7 +53,7 @@ jobs:
           RCLONE_VERSION: v1.75.2
           RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
         run: |
-          curl --fail --silent --show-error --location --max-time 90 "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip" --output "$RUNNER_TEMP/rclone.zip"
+          curl --fail --silent --show-error --location --retry 2 --retry-delay 2 --retry-max-time 90 --max-time 90 "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip" --output "$RUNNER_TEMP/rclone.zip"
           python3 - <<'PY'
           import hashlib, os, pathlib, zipfile
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
