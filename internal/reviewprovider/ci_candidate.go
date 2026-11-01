@@ -23,11 +23,21 @@ type CICandidate struct {
 	// BaseSHA is the observed PR base.sha, not an independently read branch tip.
 	BaseSHA string `json:"base_sha"`
 	// MergeBaseParentSHA is populated only after the live base branch and merge parents bind.
-	MergeBaseParentSHA string    `json:"merge_base_parent_sha"`
-	BaseRef            string    `json:"base_ref"`
-	MergeSHA           string    `json:"merge_sha"`
-	MergeState         string    `json:"merge_state"`
-	ObservedAt         time.Time `json:"observed_at"`
+	MergeBaseParentSHA string               `json:"merge_base_parent_sha"`
+	BaseRef            string               `json:"base_ref"`
+	MergeSHA           string               `json:"merge_sha"`
+	MergeState         string               `json:"merge_state"`
+	ObservedAt         time.Time            `json:"observed_at"`
+	MergeBaseMismatch  *CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
+}
+
+// CIMergeBaseMismatch records the distinct as-of identities already read for
+// a refused candidate. None is a selected CI commit or permission to merge.
+type CIMergeBaseMismatch struct {
+	PRBaseSHA          string `json:"pr_base_sha"`
+	LiveBaseSHA        string `json:"live_base_sha"`
+	MergeSHA           string `json:"merge_sha"`
+	MergeBaseParentSHA string `json:"merge_base_parent_sha"`
 }
 
 type githubCIPull struct {
@@ -113,6 +123,7 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 	result.Reason, result.MergeState = "ci_merge_pending", "pending"
 	mergeVerified := false
 	mergeBaseParent := ""
+	var mismatch *CIMergeBaseMismatch
 	if first.Mergeable != nil {
 		if !*first.Mergeable {
 			result.MergeState, result.Reason = "conflicting", ""
@@ -167,6 +178,11 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 				// parent differs from the independently observed live base tip.
 				// Matching the cached PR base.sha is not sufficient proof.
 				result.Reason = "ci_merge_base_mismatch"
+				parent := merge.Parents[0].SHA
+				if parent == first.Pull.Head.SHA {
+					parent = merge.Parents[1].SHA
+				}
+				mismatch = &CIMergeBaseMismatch{PRBaseSHA: first.Pull.Base.SHA, LiveBaseSHA: before.Commit.SHA, MergeSHA: merge.SHA, MergeBaseParentSHA: parent}
 			}
 		}
 	}
@@ -188,6 +204,8 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 		result.State, result.Reason, result.MergeState, result.MergeSHA, result.MergeBaseParentSHA = "complete", "", "verified", *first.MergeCommitSHA, mergeBaseParent
 	} else if result.MergeState == "conflicting" {
 		result.State = "complete"
+	} else if result.Reason == "ci_merge_base_mismatch" {
+		result.MergeBaseMismatch = mismatch
 	}
 	return result, nil
 }
