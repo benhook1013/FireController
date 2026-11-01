@@ -1,10 +1,83 @@
 package backuphealth
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestOffsiteHealthRunningUsesConfiguredTimeoutAndIndependentReporterAge(t *testing.T) {
+	base, now := healthFixture()
+	base.ObservedAt = now.Format(time.RFC3339Nano)
+	base.AttemptState = "running"
+	base.AttemptTimeoutSeconds = 900
+	for _, tc := range []struct {
+		name          string
+		age           time.Duration
+		reporterAge   time.Duration
+		state, reason string
+	}{
+		{"ten-minute-push", 10 * time.Minute, 0, "running", ""},
+		{"timeout-plus-grace-boundary", 20 * time.Minute, 0, "running", ""},
+		{"fresh-publisher-expired-attempt", 20*time.Minute + time.Nanosecond, 0, "unknown", "attempt_stale"},
+		{"stale-publisher-live-deadline", 10 * time.Minute, ReporterMaxAge + time.Nanosecond, "unknown", "report_stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := base
+			m.LastAttemptAt = now.Add(-tc.age).Format(time.RFC3339Nano)
+			m.ObservedAt = now.Add(-tc.reporterAge).Format(time.RFC3339Nano)
+			got := Offsite(m, m.InstanceID, now)
+			if got.State != tc.state || got.Reason != tc.reason || got.LastSuccessAt != m.LastSnapshotAt {
+				t.Fatal(got)
+			}
+		})
+	}
+	for _, state := range []string{"complete", "unchanged", "failed", "interrupted"} {
+		m := base
+		m.AttemptState = state
+		before := Offsite(m, m.InstanceID, now)
+		m.AttemptTimeoutSeconds = 0
+		if after := Offsite(m, m.InstanceID, now); after != before {
+			t.Fatal("timeout altered nonrunning health", state, before, after)
+		}
+	}
+}
+
+func TestOffsiteHealthOptionalAttemptTimeoutBoundsAndLegacyMirror(t *testing.T) {
+	m, now := healthFixture()
+	for _, seconds := range []int64{-1, 86401} {
+		m.AttemptTimeoutSeconds = seconds
+		if m.Valid() || Offsite(m, m.InstanceID, now).Reason != "report_unavailable" {
+			t.Fatal("invalid timeout accepted", seconds)
+		}
+	}
+	for _, seconds := range []int64{0, 1, 86400} {
+		m.AttemptTimeoutSeconds = seconds
+		if !m.Valid() {
+			t.Fatal("valid timeout rejected", seconds)
+		}
+	}
+	m.AttemptTimeoutSeconds = 0
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "legacy.json")
+	if err := WriteMirror(path, m); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || bytes.Contains(body, []byte("attempt_timeout_seconds")) {
+		t.Fatal("legacy optional field not omitted", err)
+	}
+	got, err := ReadMirror(path)
+	if err != nil || got != m || Offsite(got, m.InstanceID, now).State != "healthy" {
+		t.Fatal("old absent-field mirror no longer readable", got, err)
+	}
+}
 
 func healthFixture() (Mirror, time.Time) {
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
