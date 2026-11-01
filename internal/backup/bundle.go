@@ -613,9 +613,6 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if err = syncDirectory(destination); err != nil {
 		return out, err
 	}
-	if checkContext(ctx) != nil {
-		return out, unavailable()
-	}
 	committed = true
 	out = createdBundle{Summary: completed, manifest: m, hash: hex.EncodeToString(checksum[:]), owned: owned}
 	return out, nil

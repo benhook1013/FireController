@@ -66,3 +66,5 @@ fcd backup-offsite-status --config /private/offsite.json --health-file /private/
 `--health-file` is accepted only by the status command. The optional label defaults to `Offsite backup`; the maximum snapshot age defaults to three hours and can be selected from one minute through thirty days. These reporting options never start an upload, download or remote verification. Existing status output and transfer ownership remain unchanged.
 
 Publish into a dedicated existing private directory. The resulting owner-private report is a redacted local output for external monitoring; the daemon does not consume these reports. It must never expose the rclone configuration or transfer state. A new report does not reverify remote bytes or update the successful snapshot time.
+
+If a valid retained snapshot or attempt timestamp is ahead of the current reporting clock, status publication returns `offsite_health_clock_ahead` and preserves the previous report. This distinguishes a possible clock rollback from an invalid ledger without rewriting retained timestamps or publishing a fresh healthy report. Malformed timestamps and ledger corruption still return `offsite_state_invalid`.
