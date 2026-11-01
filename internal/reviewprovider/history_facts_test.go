@@ -293,3 +293,47 @@ func TestValidateHistoryFactsPageAndTextBounds(t *testing.T) {
 		t.Fatal("source identity lost precision", err)
 	}
 }
+
+func TestValidateHistoryFactsPullMergeDisplayEnums(t *testing.T) {
+	pull := historyFactsCases(t)[0]
+	for field, values := range map[string][]string{
+		"Mergeability":     {"", "unknown", "mergeable", "conflicting"},
+		"MergeStateStatus": {"", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"},
+	} {
+		t.Run(field, func(t *testing.T) {
+			for _, value := range values {
+				facts := historyFactsMutate(t, pull, func(o map[string]any) { o[field] = value })
+				before := string(facts)
+				ids, err := ValidateHistoryFacts("pull", facts)
+				if err != nil || !reflect.DeepEqual(ids, pull.ids) || string(facts) != before {
+					t.Fatal("normalized or explicitly unknown display metadata refused or rewritten", value, err)
+				}
+			}
+			for name, value := range map[string]any{
+				"unknown token": "not_a_normalized_state",
+				"control text":  "unknown\x00PRIVATE_SOURCE",
+				"unbounded":     strings.Repeat("x", 4096),
+				"null":          nil,
+			} {
+				t.Run(name, func(t *testing.T) {
+					facts := historyFactsMutate(t, pull, func(o map[string]any) { o[field] = value })
+					before := string(facts)
+					historyFactsRefused(t, "pull", facts)
+					if string(facts) != before {
+						t.Fatal("validation changed refused retained source")
+					}
+				})
+			}
+		})
+	}
+	for field, value := range map[string]string{"Mergeability": "MERGEABLE", "MergeStateStatus": "clean"} {
+		facts := historyFactsMutate(t, pull, func(o map[string]any) { o[field] = value })
+		historyFactsRefused(t, "pull", facts)
+	}
+	// Older captures omit both optional fields; validation must preserve that
+	// absence instead of replacing it with a fabricated normalized state.
+	before := string(pull.facts)
+	if ids, err := ValidateHistoryFacts("pull", pull.facts); err != nil || !reflect.DeepEqual(ids, pull.ids) || string(pull.facts) != before {
+		t.Fatal("omitted legacy display facts were refused or changed", err)
+	}
+}

@@ -60,3 +60,65 @@ func TestHostedGroupedCountRequiresCompleteUniqueInlineInventory(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalHostedGroupedInlineDiscoveryPreservesCompleteInventory(t *testing.T) {
+	for _, kind := range []string{"publication", "submitted"} {
+		t.Run(kind, func(t *testing.T) {
+			f := hfNew(t, []string{hfInline(1) + "\n\n---\n\n" + hfInline(3), hfInline(2)}, "")
+			if kind == "submitted" {
+				f = submittedTestFixture(t)
+				f.snapshot.ReviewComments[0].Body += "\n\n---\n\n" + hfInline(3)
+			}
+			f.snapshot.IssueComments = []IssueComment{}
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Actionable comments posted: 2", "Actionable comments posted: 3", 1)
+			before := fixtureJSON(t, f)
+			runs := externalDiscover(t, f)
+			if len(runs) != 1 {
+				t.Fatal("external discovery lost grouped source", len(runs))
+			}
+			if !runs[0].Inventory.Complete || len(runs[0].Inventory.Publication.Roots) != 2 || len(runs[0].Inventory.Findings) != 3 {
+				t.Fatal("external discovery disagreed with grouped inline inventory", runs[0].Inventory.Reason)
+			}
+			run := runs[0]
+			wantID := "publication:11111111-1111-1111-1111-111111111111"
+			if kind == "submitted" {
+				wantID = "run:" + submittedTestRun
+			}
+			if run.SourceID != wantID || run.HeadSHA != f.intent.HeadSHA || !reflect.DeepEqual(run.ReviewIDs, []int64{401}) || run.TriggerCommentID != 0 || run.NativeOperationID != "" || run.Inventory.Publication.Trigger.CommentID != 0 || run.Inventory.Publication.SubmittedReview != nil {
+				t.Fatal("external grouped source lost identity or invented native attribution", run.SourceID)
+			}
+			findings := run.Inventory.Findings
+			if findings[0].CommentID != 501 || findings[1].CommentID != 501 || findings[2].CommentID != 502 || findings[0].SourceKey == findings[1].SourceKey {
+				t.Fatal("grouped real comment identities were not preserved")
+			}
+			if !reflect.DeepEqual(before, fixtureJSON(t, f)) || !reflect.DeepEqual(runs, externalDiscover(t, f)) {
+				t.Fatal("discovery changed raw source or repeat identities")
+			}
+			for _, mode := range []string{"missing", "duplicate", "quoted", "unsupported", "excess"} {
+				t.Run(mode, func(t *testing.T) {
+					bad := f
+					bad.snapshot.ReviewComments = append([]ReviewComment(nil), f.snapshot.ReviewComments...)
+					first := hfInline(1) + "\n\n---\n\n" + hfInline(3)
+					switch mode {
+					case "missing":
+						first = hfInline(1)
+					case "duplicate":
+						first = hfInline(1) + "\n\n---\n\n" + hfInline(2)
+					case "quoted":
+						first = hfInline(1) + "\n\n> " + hfMarker(3)
+					case "unsupported":
+						first += "\n\nUnsupported finding trailer."
+					case "excess":
+						first += "\n\n---\n\n" + hfInline(4)
+					}
+					bad.snapshot.ReviewComments[0].Body = first
+					before := fixtureJSON(t, bad)
+					got := externalDiscover(t, bad)
+					if len(got) != 1 || got[0].Inventory.Complete || got[0].Inventory.Reason != "root_count_mismatch" || len(got[0].Inventory.Findings) != 0 || !reflect.DeepEqual(before, fixtureJSON(t, bad)) {
+						t.Fatal("invalid grouped source gained a complete inventory or changed", mode)
+					}
+				})
+			}
+		})
+	}
+}
