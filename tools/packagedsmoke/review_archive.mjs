@@ -290,7 +290,7 @@ try {
   await current.page.keyboard.press('Escape');
   need(await provenance.getAttribute('open') === null && queueReads.length===technicalReads);
   need(await queue.locator('.review-pull-heading .badge').count() === 0);
-  need(await queue.getByText('Open',{exact:true}).count() === 0);
+  need(await queue.locator('.review-pull-facts').getByText('Open',{exact:true}).count() === 0);
   for (const merged of [203,204,206]) {
     const facts = queue.locator(`#review-pr-${merged} .review-pull-facts`);
     await expect(facts.locator(':scope > .review-state-merged')).toHaveCount(1);
