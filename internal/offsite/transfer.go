@@ -425,6 +425,12 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		}
 		for _, r := range s.state.Owned {
 			if selected.ID == r.ID {
+				// Raising Keep can remove the need for earlier refused cleanup.
+				// Clear that warning only after successful source selection;
+				// failed or canceled work retains its original diagnostics.
+				if len(s.state.Owned) <= c.Keep {
+					s.state.RetentionReason = ""
+				}
 				return Result{State: "unchanged", BackupID: selected.ID, SourceInstanceID: c.InstanceID, Retained: len(s.state.Owned)}, retentionErr
 			}
 		}
