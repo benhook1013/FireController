@@ -99,7 +99,7 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	if strictjson.Decode(b, &c) != nil || c.Version != 1 || !instanceID.MatchString(c.InstanceID) || !absolute(c.SourceRoot) || !absolute(c.StateDir) || !absolute(c.RcloneBinary) || !absolute(c.RcloneConfig) || !remoteName.MatchString(c.Remote) || strings.Contains(c.Remote, "//") || c.Keep < 1 || c.Keep > 100 || c.MaxBundleBytes < 1024 || c.MaxBundleBytes > maxBundleBytes {
+	if strictjson.Decode(b, &c) != nil || c.Version != 1 || !instanceID.MatchString(c.InstanceID) || !absolute(c.SourceRoot) || !absolute(c.StateDir) || !absolute(c.RcloneBinary) || !absolute(c.RcloneConfig) || !remoteName.MatchString(c.Remote) || strings.Contains(c.Remote, "//") || strings.HasSuffix(c.Remote, "/") || c.Keep < 1 || c.Keep > 100 || c.MaxBundleBytes < 1024 || c.MaxBundleBytes > maxBundleBytes {
 		return c, failure("offsite_configuration_invalid")
 	}
 	d, err := time.ParseDuration(c.Timeout)

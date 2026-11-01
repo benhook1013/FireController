@@ -174,6 +174,26 @@ func TestOffsiteArchiveRefusesTraversalLinksDuplicatesAndExpansion(t *testing.T)
 	}
 }
 
+func TestOffsiteConfigRequiresCanonicalRemoteDestination(t *testing.T) {
+	f := newFixture(t)
+	for _, remote := range []string{"cloud:backups", "cloud:bucket/backups", "cloud:nested/path-1/backups_2", "cloud:backups/", "cloud:bucket/backups/", "cloud:bucket//backups"} {
+		t.Run(remote, func(t *testing.T) {
+			c := f.c
+			c.Remote = remote
+			file := filepath.Join(t.TempDir(), "config.json")
+			if err := writeJSON(file, c); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadConfig(file)
+			if strings.HasSuffix(remote, "/") || strings.Contains(remote, "//") {
+				wantCode(t, err, "offsite_configuration_invalid")
+			} else if err != nil || got.Remote != remote {
+				t.Fatal("canonical destination was rejected or normalized", got.Remote, err)
+			}
+		})
+	}
+}
+
 func TestOffsiteConfigRefusesAliasedSourceContainmentAndStateRebinding(t *testing.T) {
 	f := newFixture(t)
 	f.bundle(t)
