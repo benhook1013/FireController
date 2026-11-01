@@ -87,14 +87,6 @@ func historyPredicate(columns []string) string {
 	return strings.Join(parts, " AND ")
 }
 
-func historyInsert(ctx context.Context, tx *sql.Tx, table string, columns []string, values []any) error {
-	if len(columns) != len(values) || len(columns) == 0 {
-		return historyInconsistent()
-	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO "+table+"("+strings.Join(columns, ",")+") VALUES("+strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",")+")", values...)
-	return err
-}
-
 // Reuse only repository-owned SQL shapes within this one snapshot transaction.
 // The transaction closes its prepared statements on commit or rollback.
 func (w *historySnapshotWrite) statement(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {

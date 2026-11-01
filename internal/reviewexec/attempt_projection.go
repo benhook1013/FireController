@@ -10,12 +10,12 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func attemptProjectionCapacity(ctx context.Context, tx *sql.Tx, operation Operation) (bool, error) {
+func probeAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // Only the named absent-row result permits automatic ledger-only operation.

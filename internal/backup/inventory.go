@@ -809,40 +809,20 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if bad || err != nil {
 		return invalid()
 	}
-	if versions["reviews"] >= 4 {
-		if err = reviews.ValidateHistoryReferences(ctx, tx); err != nil {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
+	for _, check := range []struct {
+		since    int
+		validate func(context.Context, reviews.HistoryQuery) error
+	}{
+		{4, reviews.ValidateHistoryReferences},
+		{5, reviews.ValidateCurrentSummaries},
+		{6, reviews.ValidateCurrentRunOrder},
+		{7, reviews.ValidatePullMetadataHistory},
+		{8, reviews.ValidateAttemptReasonsHistory},
+	} {
+		if versions["reviews"] < check.since {
+			continue
 		}
-	}
-	if versions["reviews"] >= 5 {
-		if err = reviews.ValidateCurrentSummaries(ctx, tx); err != nil {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
-		}
-	}
-	if versions["reviews"] >= 6 {
-		if err = reviews.ValidateCurrentRunOrder(ctx, tx); err != nil {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
-		}
-	}
-	if versions["reviews"] >= 7 {
-		if err = reviews.ValidatePullMetadataHistory(ctx, tx); err != nil {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
-		}
-	}
-	if versions["reviews"] >= 8 {
-		if err = reviews.ValidateAttemptReasonsHistory(ctx, tx); err != nil {
+		if err = check.validate(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}

@@ -3,6 +3,7 @@ package reviews
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http/httptest"
 	"reflect"
 	"testing"
@@ -123,4 +124,88 @@ func nativeCurrentRevision(t *testing.T, f *apiFixture) int64 {
 		t.Fatal(err)
 	}
 	return revision
+}
+
+func TestNativePublicOverflowRetainsPrivateWorkAndRefreshesBoundedWindow(t *testing.T) {
+	f := newAPIFixture(t)
+	if err := publicsite.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	pull := nativePull(1)
+	for i := 0; i < 100; i++ {
+		pull.Runs = append(pull.Runs, nativeRun(fmt.Sprintf("public-boundary-%d", i)))
+	}
+	f.observe(t, reviewRequest(0, []PullInput{pull}), "public-capacity-100")
+	site := publicsite.New(f.store, PublicSiteReviewFacts)
+	request := httptest.NewRequest("PUT", "/", nil)
+	request.SetPathValue("project_id", f.project)
+	request.Header.Set("Authorization", "Bearer "+f.admin)
+	request.Header.Set("X-FC-Instance", f.store.InstanceID())
+	scope, err := f.store.AdminScope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := publicsite.NormalizeManifest(publicsite.Manifest{Slug: "native-public-overflow", Presentation: presentationmodel.Config{Name: "Public boundary"}, Reviews: []publicsite.EnrolledReview{{Number: 1, Title: "Retained PR", URL: "https://github.com/owner/reviews/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := publicsite.Approved{ExpectedRevision: 0, Enabled: true, Manifest: manifest}
+	preview, err := site.Preview(t.Context(), scope, approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = site.Apply(t.Context(), scope, "enable-public-boundary", approved, preview.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	before, err := site.Current(t.Context(), manifest.Slug)
+	if err != nil || len(before.Content.Reviews) != 1 || len(before.Content.Reviews[0].CLI) != 100 {
+		t.Fatal("exact capacity did not publish normally", before, err)
+	}
+	pull.Runs = nil
+	run := nativeRun("native-beyond-public-capacity")
+	receipt := mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run})
+	var current PullResponse
+	nativeRead(t, f, "/pulls/1", &current)
+	if current.SnapshotID != receipt.ID || current.Pull.RunCount != 101 {
+		t.Fatal("public overflow erased native history", current, receipt)
+	}
+	var detail RunDetailResponse
+	nativeRead(t, f, "/runs/"+runOpaqueID(f.project, nativeSource, run.SourceRunID), &detail)
+	if detail.Run.Source != nativeSource || detail.Run.SourceRunID != run.SourceRunID || !detail.Run.Finalized || len(detail.Findings) != 1 || !reflect.DeepEqual(detail.Findings[0].Finding, run.Findings[0]) {
+		t.Fatal("native result, finding detail or fix proof not retained", detail)
+	}
+	after, err := site.Current(t.Context(), manifest.Slug)
+	if err != nil || after.Revision != before.Revision+1 || len(after.Content.Reviews) != 1 {
+		t.Fatal("native result did not refresh public history", after, err)
+	}
+	window := after.Content.Reviews[0]
+	if len(window.CLI) != 100 || !window.CLIHasMore || len(window.Hosted) != 0 || window.HostedHasMore {
+		t.Fatalf("native result did not advance the bounded public window: CLI%d more%t Hosted%d more%t", len(window.CLI), window.CLIHasMore, len(window.Hosted), window.HostedHasMore)
+	}
+	// Published content sorts by opaque identity, independently of source
+	// position. Exactly one new native result replaces one older public round.
+	oldRounds := make(map[string]publicsite.PublicRound)
+	for _, old := range before.Content.Reviews[0].CLI {
+		oldRounds[old.Key] = old
+	}
+	introduced := 0
+	for _, round := range window.CLI {
+		if old, exists := oldRounds[round.Key]; exists {
+			if !reflect.DeepEqual(round, old) {
+				t.Fatal("native publication changed an existing public round")
+			}
+		} else {
+			introduced++
+			if round.Found != run.Found || round.Accepted != run.Accepted || round.Routed != run.Routed || round.Complete != run.Complete {
+				t.Fatal("new public round lost native counts", round)
+			}
+		}
+	}
+	if introduced != 1 {
+		t.Fatalf("native publication introduced %d public rounds, want1", introduced)
+	}
+	var reason string
+	if err = f.store.DB().QueryRow(`SELECT refresh_error FROM project_publications WHERE project_id=?`, f.project).Scan(&reason); err != nil || reason != "" {
+		t.Fatal("bounded native public refresh reported a projection error", reason, err)
+	}
 }

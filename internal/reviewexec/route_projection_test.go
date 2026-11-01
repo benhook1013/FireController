@@ -176,7 +176,8 @@ func TestRouteProjectionReceiverFailureRollsBackWholeMutation(t *testing.T) {
 	}
 	// A genuine projection identity conflict occurs after the receiving ledger
 	// write in the same transaction; every staged effect must roll back.
-	if _, err := f.store.DB().Exec(`UPDATE review_findings SET source_finding_id='synthetic-wrong-identity' WHERE project_id=? AND snapshot_id=? AND position=0 AND run_id IN (SELECT id FROM review_runs WHERE project_id=? AND snapshot_id=? AND source='native-executor')`, attemptProject, snapshot, attemptProject, snapshot); err != nil {
+	runID, version := projectionNativeVersion(t, f, snapshot, evidence.ID)
+	if _, err := f.store.DB().Exec(`UPDATE review_finding_versions SET source_finding_id='synthetic-wrong-identity' WHERE project_id=? AND run_id=? AND run_version_revision=? AND position=0`, attemptProject, runID, version); err != nil {
 		t.Fatal(err)
 	}
 	before := routeProjectionDurableState(t, f, a)
@@ -210,7 +211,8 @@ func TestRouteProjectionLedgerOnlyInitialPublicationUsesLatestReceiverProof(t *t
 		t.Fatal("initial publication lost preexisting receiver state", detail)
 	}
 	// Corrupt a valid-looking compact row; exact replay must compare route too.
-	if _, err = f.store.DB().Exec(`UPDATE review_findings SET route_json=replace(route_json,'Resolved at receiving PR','Changed compact route') WHERE project_id=? AND snapshot_id=?`, attemptProject, detail.SnapshotID); err != nil {
+	runID, version := projectionNativeVersion(t, f, detail.SnapshotID, evidence.ID)
+	if _, err = f.store.DB().Exec(`UPDATE review_finding_versions SET route_json=replace(route_json,'Resolved at receiving PR','Changed compact route') WHERE project_id=? AND run_id=? AND run_version_revision=?`, attemptProject, runID, version); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.e.PublishEvidence(t.Context(), attemptProject, evidence.ID, nil)
