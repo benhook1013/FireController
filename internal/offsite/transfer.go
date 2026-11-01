@@ -204,6 +204,10 @@ func newest(ctx context.Context, c Config) (backup.Summary, error) {
 	if len(entries) > 1000 {
 		return backup.Summary{}, failure("offsite_source_limit")
 	}
+	return newestEntries(ctx, c, entries)
+}
+
+func newestEntries(ctx context.Context, c Config, entries []os.DirEntry) (backup.Summary, error) {
 	var selected backup.Manifest
 	for _, entry := range entries {
 		if !bundleID.MatchString(entry.Name()) {
@@ -212,8 +216,14 @@ func newest(ctx context.Context, c Config) (backup.Summary, error) {
 		if ctx.Err() != nil || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return backup.Summary{}, failure("offsite_source_invalid")
 		}
-		b, err := privateRead(filepath.Join(c.SourceRoot, entry.Name(), "manifest.json"), 64<<20)
+		path := filepath.Join(c.SourceRoot, entry.Name())
+		b, err := privateRead(filepath.Join(path, "manifest.json"), 64<<20)
 		if err != nil {
+			// Local retention can remove an enumerated bundle. An existing
+			// candidate with a missing or invalid manifest must still fail.
+			if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
 			return backup.Summary{}, failure("offsite_source_invalid")
 		}
 		var m backup.Manifest

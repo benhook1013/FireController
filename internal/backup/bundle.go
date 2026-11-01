@@ -395,8 +395,8 @@ func resolveBackupPath(path string) (string, error) {
 }
 
 // Create snapshots the supplied Store and inventories recognized immutable raw
-// capture files. The final directory is exclusively reserved; its durable
-// checksum marker is written last, making incomplete reservations unusable.
+// capture files. An exclusive hidden sibling reservation is validated and
+// sealed before its directory is atomically published under the final name.
 func Create(ctx context.Context, store *core.Store, dataDir, destinationRoot string) (Summary, error) {
 	if checkContext(ctx) != nil || store == nil {
 		return Summary{}, unavailable()
@@ -500,21 +500,28 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	}
 	id := core.NewID("backup")
 	final := filepath.Join(destination, id)
-	if err = os.Mkdir(final, 0700); errors.Is(err, os.ErrExist) {
+	stage := filepath.Join(destination, "."+id+".pending")
+	if _, statErr := os.Lstat(final); statErr == nil {
+		return out, exists()
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return out, unavailable()
+	}
+	if err = os.Mkdir(stage, 0700); errors.Is(err, os.ErrExist) {
 		return out, exists()
 	} else if err != nil {
 		return out, unavailable()
 	}
-	owned, err := os.Lstat(final)
+	owned, err := os.Lstat(stage)
 	if err != nil {
 		return out, unavailable()
 	}
 	committed := false
+	cleanupPath := stage
 	defer func() {
 		if !committed {
-			current, e := os.Lstat(final)
+			current, e := os.Lstat(cleanupPath)
 			if e == nil && os.SameFile(owned, current) {
-				os.RemoveAll(final)
+				os.RemoveAll(cleanupPath)
 			}
 		}
 	}()
@@ -522,20 +529,20 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	// A wall-clock adjustment cannot reverse or inflate the snapshot window.
 	started := now()
 	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: started.UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
-	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(final, "firecontroller.sqlite")); err != nil {
+	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(stage, "firecontroller.sqlite")); err != nil {
 		return out, unavailable()
 	}
 	m.SnapshotFinishedAt = started.Add(since(started)).UTC().Format(time.RFC3339Nano)
-	m.Database, err = hashPrivate(ctx, filepath.Join(final, "firecontroller.sqlite"), maxDatabaseBytes)
+	m.Database, err = hashPrivate(ctx, filepath.Join(stage, "firecontroller.sqlite"), maxDatabaseBytes)
 	if err != nil {
 		return out, err
 	}
-	m.Artifacts, err = copyInventory(ctx, source, final)
+	m.Artifacts, err = copyInventory(ctx, source, stage)
 	if err != nil {
 		return out, err
 	}
 	sort.Slice(m.Artifacts, func(i, j int) bool { return m.Artifacts[i].Path < m.Artifacts[j].Path })
-	db, err := openSnapshot(ctx, filepath.Join(final, "firecontroller.sqlite"))
+	db, err := openSnapshot(ctx, filepath.Join(stage, "firecontroller.sqlite"))
 	if err != nil {
 		return out, err
 	}
@@ -547,25 +554,25 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if !validManifest(m) {
 		return out, invalid()
 	}
-	if err = validateSnapshot(ctx, final, m); err != nil {
+	if err = validateSnapshot(ctx, stage, m); err != nil {
 		return out, err
 	}
 	body, err := canonicalManifest(m)
 	if err != nil {
 		return out, err
 	}
-	if err = writePrivate(filepath.Join(final, "manifest.json"), body); err != nil {
+	if err = writePrivate(filepath.Join(stage, "manifest.json"), body); err != nil {
 		return out, err
 	}
-	if err = syncDirectory(final); err != nil {
+	if err = syncDirectory(stage); err != nil {
 		return out, err
 	}
 	checksum := sha256.Sum256(body)
-	pendingChecksum := filepath.Join(final, ".manifest.sha256.pending")
+	pendingChecksum := filepath.Join(stage, ".manifest.sha256.pending")
 	if err = writePrivate(pendingChecksum, []byte(hex.EncodeToString(checksum[:])+"\n")); err != nil {
 		return out, err
 	}
-	if err = os.Link(pendingChecksum, filepath.Join(final, "manifest.sha256")); err != nil {
+	if err = os.Link(pendingChecksum, filepath.Join(stage, "manifest.sha256")); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return out, exists()
 		}
@@ -574,10 +581,7 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if err = os.Remove(pendingChecksum); err != nil {
 		return out, unavailable()
 	}
-	if err = syncDirectory(final); err != nil {
-		return out, err
-	}
-	if err = syncDirectory(destination); err != nil {
+	if err = syncDirectory(stage); err != nil {
 		return out, err
 	}
 	if checkContext(ctx) != nil {
@@ -586,6 +590,31 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	completed, err := summary(m, final, "complete")
 	if err != nil {
 		return out, err
+	}
+	// All cooperating publishers of this ID reserve the same hidden directory.
+	// The private root is trusted; hostile same-user rename races are out of
+	// scope. Never overlay an existing final path, even an empty directory or
+	// a dangling symlink.
+	if _, statErr := os.Lstat(final); statErr == nil {
+		return out, exists()
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return out, unavailable()
+	}
+	if current, statErr := os.Lstat(stage); statErr != nil || !os.SameFile(owned, current) {
+		return out, unavailable()
+	}
+	if err = os.Rename(stage, final); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return out, exists()
+		}
+		return out, unavailable()
+	}
+	cleanupPath = final
+	if err = syncDirectory(destination); err != nil {
+		return out, err
+	}
+	if checkContext(ctx) != nil {
+		return out, unavailable()
 	}
 	committed = true
 	out = createdBundle{Summary: completed, manifest: m, hash: hex.EncodeToString(checksum[:]), owned: owned}
