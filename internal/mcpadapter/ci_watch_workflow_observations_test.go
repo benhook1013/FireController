@@ -43,7 +43,7 @@ func ciWatchWorkflowProjection(t *testing.T, fallback bool) {
 		var body struct {
 			Targets []client.CIWatchTarget `json:"targets"`
 		}
-		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("X-FC-CI-Watch") != "change-v1" || r.Header.Get("X-FC-CI-Workflow-Details") != "1" || r.Header.Get("X-FC-Worker") != identity.WorkerID || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Idempotency-Key") != "" || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("X-FC-CI-Watch") != "change-v2" || r.Header.Get("X-FC-CI-Workflow-Details") != "2" || r.Header.Get("X-FC-Worker") != identity.WorkerID || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Idempotency-Key") != "" || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
 			t.Error("visibility changed read scope or workflow selection")
 		}
 		jsonResponse(w, response)

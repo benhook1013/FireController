@@ -18,6 +18,8 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "X-FC-CI-Workflow-Details")
 	watchVersion := r.Header.Get("X-FC-CI-Watch")
 	changeAware := len(r.Header.Values("X-FC-CI-Watch")) == 1 && (watchVersion == "change-v1" || watchVersion == "change-v2")
+	workflowVersion := r.Header.Get("X-FC-CI-Workflow-Details")
+	headAttention := changeAware && watchVersion == "change-v2" && len(r.Header.Values("X-FC-CI-Workflow-Details")) == 1 && workflowVersion == "2"
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -62,7 +64,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			core.WriteError(w, invalid())
 			return
 		}
-		targets = append(targets, CIWatchTarget{PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows})
+		targets = append(targets, CIWatchTarget{PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows, AllowHeadAttention: headAttention && len(workflows) > 0})
 	}
 	if !validCIWatchTargets(targets) {
 		core.WriteError(w, invalid())
@@ -89,7 +91,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			result.Targets[i].MergeBaseMismatch = nil
 		}
 	}
-	if len(r.Header.Values("X-FC-CI-Workflow-Details")) != 1 || r.Header.Get("X-FC-CI-Workflow-Details") != "1" {
+	if len(r.Header.Values("X-FC-CI-Workflow-Details")) != 1 || workflowVersion != "1" && workflowVersion != "2" {
 		for i := range result.Targets {
 			result.Targets[i].WorkflowObservations = nil
 		}

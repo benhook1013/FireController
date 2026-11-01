@@ -11,6 +11,7 @@ import (
 )
 
 type CIWatchTarget struct {
+	AllowHeadAttention  bool    `json:"-"`
 	PullNumber          int64   `json:"pull_number"`
 	HeadSHA             string  `json:"head_sha"`
 	BaseSHA             string  `json:"base_sha,omitempty"`
@@ -20,26 +21,27 @@ type CIWatchTarget struct {
 
 type CIWatchItem struct {
 	CIWatchTarget
-	MergeBaseMismatch    *reviewprovider.CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
-	State                string                              `json:"state"`
-	Reason               string                              `json:"reason"`
-	BaseRef              string                              `json:"base_ref,omitempty"`
-	GateRef              string                              `json:"gate_ref,omitempty"`
-	ObservedHeadSHA      string                              `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA      string                              `json:"observed_base_sha,omitempty"`
-	ObservedAt           string                              `json:"observed_at,omitempty"`
-	CICommitSHA          string                              `json:"ci_commit_sha,omitempty"`
-	Selection            string                              `json:"selection,omitempty"`
-	Required             int64                               `json:"required"`
-	Satisfied            int64                               `json:"satisfied"`
-	Failed               int64                               `json:"failed"`
-	Pending              int64                               `json:"pending"`
-	Unproven             int64                               `json:"unproven"`
-	Checks               []SourceCIContext                   `json:"checks"`
-	ObservationKey       string                              `json:"observation_key,omitempty"`
-	WaitingForChange     bool                                `json:"waiting_for_change,omitempty"`
-	WorkflowFailures     []reviewprovider.CIWorkflowFailure  `json:"workflow_failures,omitempty"`
-	WorkflowObservations []CIWorkflowObservation             `json:"workflow_observations,omitempty"`
+	WorkflowAttentionBasis string                              `json:"workflow_attention_basis,omitempty"`
+	MergeBaseMismatch      *reviewprovider.CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
+	State                  string                              `json:"state"`
+	Reason                 string                              `json:"reason"`
+	BaseRef                string                              `json:"base_ref,omitempty"`
+	GateRef                string                              `json:"gate_ref,omitempty"`
+	ObservedHeadSHA        string                              `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA        string                              `json:"observed_base_sha,omitempty"`
+	ObservedAt             string                              `json:"observed_at,omitempty"`
+	CICommitSHA            string                              `json:"ci_commit_sha,omitempty"`
+	Selection              string                              `json:"selection,omitempty"`
+	Required               int64                               `json:"required"`
+	Satisfied              int64                               `json:"satisfied"`
+	Failed                 int64                               `json:"failed"`
+	Pending                int64                               `json:"pending"`
+	Unproven               int64                               `json:"unproven"`
+	Checks                 []SourceCIContext                   `json:"checks"`
+	ObservationKey         string                              `json:"observation_key,omitempty"`
+	WaitingForChange       bool                                `json:"waiting_for_change,omitempty"`
+	WorkflowFailures       []reviewprovider.CIWorkflowFailure  `json:"workflow_failures,omitempty"`
+	WorkflowObservations   []CIWorkflowObservation             `json:"workflow_observations,omitempty"`
 }
 
 type CIWatchResult struct {

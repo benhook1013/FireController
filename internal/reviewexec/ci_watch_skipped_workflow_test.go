@@ -89,7 +89,7 @@ func TestCIWatchSkippedFailureHTTPAcceptedByStrictClient(t *testing.T) {
 			core.WriteJSON(w, 200, map[string]string{"instance_id": f.store.InstanceID()})
 			return
 		}
-		if r.Header.Get("X-FC-CI-Workflow-Details") != "1" {
+		if r.Header.Get("X-FC-CI-Workflow-Details") != "2" {
 			t.Error("typed client did not negotiate existing optional details")
 		}
 		recorder := httptest.NewRecorder()

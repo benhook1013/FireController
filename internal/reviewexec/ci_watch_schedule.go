@@ -23,14 +23,19 @@ type ciGateWorkflowReader interface {
 	ObserveCIGateWithWorkflows(context.Context, reviewprovider.CITarget, string, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
 }
 
+type ciGateHeadWorkflowReader interface {
+	ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+}
+
 const ciWatchFallbackInterval = time.Minute
 
 type ciWatchClaim struct {
-	entry       *ciWatchEntry
-	generation  uint64
-	version     uint64
-	ctx         context.Context
-	workflowIDs []int64
+	entry           *ciWatchEntry
+	generation      uint64
+	version         uint64
+	ctx             context.Context
+	workflowIDs     []int64
+	headWorkflowIDs []int64
 }
 
 func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBinding, targets []CIWatchTarget) (*ciWatchSubscription, error) {
@@ -154,8 +159,12 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 		item.FailureWorkflowIDs = append([]int64(nil), target.FailureWorkflowIDs...)
 		rows := item.WorkflowFailures
 		observations := item.WorkflowObservations
+		basis := item.WorkflowAttentionBasis
+		item.WorkflowAttentionBasis = ""
 		item.WorkflowFailures, item.WorkflowObservations = nil, nil
-		if item.State == "pending" && item.Reason != "ci_watch_refresh_pending" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) && sha.MatchString(item.CICommitSHA) && (item.Selection == "head" || item.Selection == "test_merge") && len(target.FailureWorkflowIDs) > 0 {
+		headOnly := target.AllowHeadAttention && basis == reviewprovider.CIWorkflowHeadOnlyBasis && item.Reason == "ci_merge_base_mismatch" && item.MergeBaseMismatch != nil && item.Selection == "" && item.CICommitSHA == ""
+		applicable := basis == "" && sha.MatchString(item.CICommitSHA) && (item.Selection == "head" || item.Selection == "test_merge")
+		if item.State == "pending" && item.Reason != "ci_watch_refresh_pending" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) && (applicable || headOnly) && len(target.FailureWorkflowIDs) > 0 {
 			for _, row := range observations {
 				for _, id := range target.FailureWorkflowIDs {
 					if row.WorkflowID == id {
@@ -171,6 +180,9 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 						break
 					}
 				}
+			}
+			if headOnly && len(item.WorkflowFailures) > 0 {
+				item.WorkflowAttentionBasis = basis
 			}
 			// Latest-run details cannot describe an earlier substantive execution.
 			// Omit this optional group rather than pair conflicting run identities;
@@ -259,7 +271,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		entry.inflight, entry.lastAttempt = true, now
 		readCtx, cancel := context.WithCancel(ctx)
 		entry.cancel = cancel
-		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil)}
+		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchHeadWorkflowUnion(entry)}
 		lane.projects[b.project], lane.accounts[b.account] = true, true
 		s.mu.Unlock()
 		return &lifecycleTarget{project: b.project, account: b.account, repository: b.repository, number: entry.key.number, fingerprint: b.fingerprint, reader: reader, lane: lifecycleEnrichment, watch: claim}, nil
@@ -341,7 +353,11 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	var observation reviewprovider.CIObservation
 	var workflowFailures []reviewprovider.CIWorkflowFailure
 	if len(claim.workflowIDs) > 0 {
-		observation, workflowFailures, err = target.reader.(ciGateWorkflowReader).ObserveCIGateWithWorkflows(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs)
+		if reader, ok := target.reader.(ciGateHeadWorkflowReader); ok && len(claim.headWorkflowIDs) > 0 {
+			observation, workflowFailures, err = reader.ObserveCIGateWithWorkflowAttention(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs, claim.headWorkflowIDs)
+		} else {
+			observation, workflowFailures, err = target.reader.(ciGateWorkflowReader).ObserveCIGateWithWorkflows(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs)
+		}
 	} else {
 		observation, err = target.reader.(ciGateReader).ObserveCIGate(readCtx, sourceCITarget(source), repo.DefaultBranch)
 	}
@@ -401,9 +417,32 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	item.ObservationKey = ciWatchObservationKey(target.project, observation, item)
 	if item.State == "pending" {
 		item.WorkflowFailures = ciWatchValidatedWorkflowFailures(observation, claim.workflowIDs, workflowFailures)
+		if len(item.WorkflowFailures) > 0 {
+			item.WorkflowAttentionBasis = reviewprovider.CIWorkflowAttentionBasis(observation)
+		}
 		item.WorkflowObservations = ciWatchWorkflowObservations(observation, claim.workflowIDs)
 	}
 	return nil
+}
+
+// Called under the scheduler lock; only explicit capable subscribers opt in.
+func ciWatchHeadWorkflowUnion(entry *ciWatchEntry) []int64 {
+	wanted := map[int64]bool{}
+	for owner := range entry.owners {
+		for _, target := range owner.targets {
+			if target.PullNumber == entry.key.number && target.AllowHeadAttention {
+				for _, id := range target.FailureWorkflowIDs {
+					wanted[id] = true
+				}
+			}
+		}
+	}
+	ids := make([]int64, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 func ciWatchWorkflowUnsupported() error {
@@ -450,7 +489,10 @@ func ciWatchWorkflowKey(base string, ids []int64, failures []reviewprovider.CIWo
 }
 
 func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int64, rows []reviewprovider.CIWorkflowFailure) []reviewprovider.CIWorkflowFailure {
-	if len(rows) == 0 || len(rows) > 16 || o.Results == nil || o.Actions == nil || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason {
+	if len(rows) == 0 || len(rows) > 16 {
+		return nil
+	}
+	if reviewprovider.CIWorkflowAttentionBasis(o) != reviewprovider.CIWorkflowHeadOnlyBasis && (o.Results == nil || o.Actions == nil || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
 		return nil
 	}
 	wanted := map[int64]bool{}

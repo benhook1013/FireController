@@ -30,29 +30,30 @@ type CIWorkflowFailure struct {
 }
 
 type CIWatchTargetResult struct {
-	MergeBaseMismatch    *CIMergeBaseMismatch    `json:"merge_base_mismatch,omitempty"`
-	PullNumber           int64                   `json:"pull_number"`
-	HeadSHA              string                  `json:"head_sha"`
-	BaseSHA              string                  `json:"base_sha,omitempty"`
-	State                string                  `json:"state"`
-	Reason               string                  `json:"reason"`
-	BaseRef              string                  `json:"base_ref,omitempty"`
-	GateRef              string                  `json:"gate_ref,omitempty"`
-	ObservedHeadSHA      string                  `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA      string                  `json:"observed_base_sha,omitempty"`
-	ObservedAt           string                  `json:"observed_at,omitempty"`
-	CICommitSHA          string                  `json:"ci_commit_sha,omitempty"`
-	Selection            string                  `json:"selection,omitempty"`
-	Required             int64                   `json:"required"`
-	Satisfied            int64                   `json:"satisfied"`
-	Failed               int64                   `json:"failed"`
-	Pending              int64                   `json:"pending"`
-	Unproven             int64                   `json:"unproven"`
-	Checks               []ReviewCIContext       `json:"checks"`
-	ObservationKey       string                  `json:"observation_key,omitempty"`
-	WaitingForChange     bool                    `json:"waiting_for_change,omitempty"`
-	WorkflowFailures     []CIWorkflowFailure     `json:"workflow_failures,omitempty"`
-	WorkflowObservations []CIWorkflowObservation `json:"workflow_observations,omitempty"`
+	WorkflowAttentionBasis string                  `json:"workflow_attention_basis,omitempty"`
+	MergeBaseMismatch      *CIMergeBaseMismatch    `json:"merge_base_mismatch,omitempty"`
+	PullNumber             int64                   `json:"pull_number"`
+	HeadSHA                string                  `json:"head_sha"`
+	BaseSHA                string                  `json:"base_sha,omitempty"`
+	State                  string                  `json:"state"`
+	Reason                 string                  `json:"reason"`
+	BaseRef                string                  `json:"base_ref,omitempty"`
+	GateRef                string                  `json:"gate_ref,omitempty"`
+	ObservedHeadSHA        string                  `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA        string                  `json:"observed_base_sha,omitempty"`
+	ObservedAt             string                  `json:"observed_at,omitempty"`
+	CICommitSHA            string                  `json:"ci_commit_sha,omitempty"`
+	Selection              string                  `json:"selection,omitempty"`
+	Required               int64                   `json:"required"`
+	Satisfied              int64                   `json:"satisfied"`
+	Failed                 int64                   `json:"failed"`
+	Pending                int64                   `json:"pending"`
+	Unproven               int64                   `json:"unproven"`
+	Checks                 []ReviewCIContext       `json:"checks"`
+	ObservationKey         string                  `json:"observation_key,omitempty"`
+	WaitingForChange       bool                    `json:"waiting_for_change,omitempty"`
+	WorkflowFailures       []CIWorkflowFailure     `json:"workflow_failures,omitempty"`
+	WorkflowObservations   []CIWorkflowObservation `json:"workflow_observations,omitempty"`
 }
 
 type CIWatchResult struct {
@@ -196,10 +197,14 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 }
 
 func validCIWatchWorkflowFailures(item CIWatchTargetResult, pin CIWatchTarget) bool {
+	headOnly := item.WorkflowAttentionBasis == "head_only_current_comparison_unproven"
+	if item.WorkflowAttentionBasis != "" && (!headOnly || len(item.WorkflowFailures) == 0 || item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.MergeBaseMismatch == nil || item.Selection != "" || item.CICommitSHA != "" || item.Required != 0 || item.Satisfied != 0 || item.Failed != 0 || item.Pending != 0 || item.Unproven != 0 || len(item.Checks) != 0) {
+		return false
+	}
 	if len(item.WorkflowFailures) == 0 {
 		return true
 	}
-	if item.State != "pending" || len(item.WorkflowFailures) > 16 || item.ObservationKey == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "" || item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA || item.Reason == "ci_watch_refresh_pending" {
+	if item.State != "pending" || len(item.WorkflowFailures) > 16 || item.ObservationKey == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "" || !headOnly && item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA || item.Reason == "ci_watch_refresh_pending" {
 		return false
 	}
 	selected, workflows, jobs, checks := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}, map[int64]bool{}

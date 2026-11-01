@@ -19,6 +19,25 @@ type CIWorkflowFailure struct {
 	Conclusion string `json:"conclusion"`
 }
 
+const CIWorkflowHeadOnlyBasis = "head_only_current_comparison_unproven"
+
+// CIWorkflowAttentionBasis names optional source scope, never CI applicability.
+func CIWorkflowAttentionBasis(o CIObservation) string {
+	if o.WorkflowHeadActions != nil && ciHeadWorkflowCandidate(o) {
+		return CIWorkflowHeadOnlyBasis
+	}
+	return ""
+}
+
+func ciHeadWorkflowCandidate(o CIObservation) bool {
+	c := o.Candidate
+	if o.State != "unproven" || o.Reason != "ci_merge_base_mismatch" || o.MergeState != "unproven" || o.SelectedCommitSHA != "" || o.Selection != "" || o.Actions != nil || o.Results != nil || o.Assessment.State != "" || len(o.Assessment.Checks) != 0 || c == nil || c.State != "unproven" || c.Reason != o.Reason || c.MergeState != o.MergeState || c.RepositoryID != o.Target.RepositoryID || !strings.EqualFold(c.Repository, o.Target.Repository) || c.PullNumber != o.Target.PullNumber || c.HeadSHA != o.Target.HeadSHA || c.BaseSHA != o.Target.BaseSHA || c.BaseRef != o.Target.BaseRef || c.MergeSHA != "" || c.MergeBaseParentSHA != "" || c.ObservedAt.IsZero() || c.MergeBaseMismatch == nil {
+		return false
+	}
+	m := c.MergeBaseMismatch
+	return lowerCISHA(m.PRBaseSHA) && lowerCISHA(m.LiveBaseSHA) && lowerCISHA(m.MergeSHA) && lowerCISHA(m.MergeBaseParentSHA) && m.PRBaseSHA == c.BaseSHA && m.LiveBaseSHA != m.MergeBaseParentSHA && m.MergeBaseParentSHA != c.HeadSHA && m.MergeSHA != c.HeadSHA && m.MergeSHA != m.MergeBaseParentSHA
+}
+
 // CIWorkflowAttentionError preserves provider backoff without invalidating the
 // separately completed required-gate observation returned alongside it.
 type CIWorkflowAttentionError struct{ Cause error }
@@ -31,6 +50,16 @@ func (e *CIWorkflowAttentionError) Unwrap() error { return e.Cause }
 // ObserveCIGateWithWorkflows shares the ordinary thirty-second collection
 // budget. Optional failures never replace, invalidate or upgrade gate facts.
 func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget, gateRef string, workflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
+	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, nil)
+}
+
+// ObserveCIGateWithWorkflowAttention additionally permits selected head-only
+// failure attention after a positively bound stable test-merge mismatch.
+func (g *GitHub) ObserveCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
+	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, headWorkflowIDs)
+}
+
+func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target CITarget, gateRef string, workflowIDs, headWorkflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
 	failures := []CIWorkflowFailure{}
 	wanted := make(map[int64]bool, len(workflowIDs))
 	if ctx == nil || len(workflowIDs) > 16 {
@@ -42,11 +71,31 @@ func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget
 		}
 		wanted[id] = true
 	}
+	headWanted := map[int64]bool{}
+	for _, id := range headWorkflowIDs {
+		if !wanted[id] || headWanted[id] {
+			return CIObservation{}, failures, invalidSelector()
+		}
+		headWanted[id] = true
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	observation, err := g.observeCI(ctx, target, gateRef)
-	if err != nil || len(wanted) == 0 || observation.Actions == nil || observation.Candidate == nil || !matchesCITarget(*observation.Candidate, target) || observation.State != observation.Assessment.State || observation.Reason != observation.Assessment.Reason {
+	if err != nil || len(wanted) == 0 {
 		return observation, failures, err
+	}
+	headOnly := len(headWanted) > 0 && ciHeadWorkflowCandidate(observation)
+	actionsSource := observation.Actions
+	attentionHead := observation.SelectedCommitSHA
+	if headOnly {
+		wanted, attentionHead = headWanted, target.HeadSHA
+		actions, readErr := g.ActionsRunsForHead(ctx, target.Repository, target.RepositoryID, target.HeadSHA)
+		if readErr != nil {
+			return observation, failures, &CIWorkflowAttentionError{Cause: readErr}
+		}
+		observation.WorkflowHeadActions, actionsSource = &actions, &actions
+	} else if actionsSource == nil || observation.Candidate == nil || !matchesCITarget(*observation.Candidate, target) || observation.State != observation.Assessment.State || observation.Reason != observation.Assessment.Reason {
+		return observation, failures, nil
 	}
 	if observation.State == "satisfied" || observation.State == "not_required" || observation.State == "failed" {
 		return observation, failures, nil
@@ -56,8 +105,8 @@ func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget
 			return observation, failures, nil
 		}
 	}
-	actions := *observation.Actions
-	if actions.RepositoryID != target.RepositoryID || !strings.EqualFold(actions.Repository, target.Repository) || actions.HeadSHA != observation.SelectedCommitSHA {
+	actions := *actionsSource
+	if actions.RepositoryID != target.RepositoryID || !strings.EqualFold(actions.Repository, target.Repository) || actions.HeadSHA != attentionHead {
 		return observation, failures, nil
 	}
 	latest, latestErr := LatestActionsRuns(actions)
@@ -69,7 +118,7 @@ func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget
 	withoutUnrecheckedFallback := func() []CIWorkflowFailure {
 		kept := failures[:0]
 		for _, failure := range failures {
-			if !fallback[failure.WorkflowID] {
+			if !headOnly && !fallback[failure.WorkflowID] {
 				kept = append(kept, failure)
 			}
 		}
@@ -116,7 +165,7 @@ func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget
 			}
 		}
 	}
-	needsRecheck := false
+	needsRecheck := headOnly && len(failures) > 0
 	for _, older := range fallback {
 		needsRecheck = needsRecheck || older
 	}
@@ -124,7 +173,7 @@ func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget
 		current, readErr := g.ActionsRunsForHead(ctx, actions.Repository, actions.RepositoryID, actions.HeadSHA)
 		kept := failures[:0]
 		for _, failure := range failures {
-			if !fallback[failure.WorkflowID] || readErr == nil && sameCIWorkflowChain(actions, current, failure) {
+			if !headOnly && !fallback[failure.WorkflowID] || readErr == nil && sameCIWorkflowChain(actions, current, failure) {
 				kept = append(kept, failure)
 			}
 		}
@@ -253,23 +302,28 @@ func sameCIWorkflowChain(original, current ActionsHeadInventory, failure CIWorkf
 // CIWorkflowFailureApplies validates optional current-attempt attention. An
 // older run additionally needs a complete skipped-job bridge and final run recheck.
 func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailure) bool {
-	if observation.Actions == nil || observation.Actions.RepositoryID != observation.Target.RepositoryID || !strings.EqualFold(observation.Actions.Repository, observation.Target.Repository) || observation.Actions.HeadSHA != observation.SelectedCommitSHA {
+	actions, head := observation.Actions, observation.SelectedCommitSHA
+	headOnly := CIWorkflowAttentionBasis(observation) == CIWorkflowHeadOnlyBasis
+	if headOnly {
+		actions, head = observation.WorkflowHeadActions, observation.Target.HeadSHA
+	}
+	if actions == nil || actions.RepositoryID != observation.Target.RepositoryID || !strings.EqualFold(actions.Repository, observation.Target.Repository) || actions.HeadSHA != head {
 		return false
 	}
-	latest, err := LatestActionsRuns(*observation.Actions)
+	latest, err := LatestActionsRuns(*actions)
 	if err != nil {
 		return false
 	}
 	for _, run := range latest.Runs {
-		if run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
+		if !headOnly && run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
 			return run.RepositoryID == observation.Target.RepositoryID && run.HeadSHA == observation.SelectedCommitSHA
 		}
 	}
-	if observation.WorkflowActions == nil || !sameCIWorkflowChain(*observation.Actions, *observation.WorkflowActions, failure) {
+	if observation.WorkflowActions == nil || !sameCIWorkflowChain(*actions, *observation.WorkflowActions, failure) {
 		return false
 	}
 	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
-	actual, proven, _ := ciWorkflowFailureThroughSkips(ciWorkflowRuns(*observation.Actions, failure.WorkflowID), attempts)
+	actual, proven, _ := ciWorkflowFailureThroughSkips(ciWorkflowRuns(*actions, failure.WorkflowID), attempts)
 	return proven && actual == failure
 }
 
