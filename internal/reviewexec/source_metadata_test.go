@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -15,7 +16,15 @@ func TestSourceMetadataRefreshAndSelectionReuseBoundedReads(t *testing.T) {
 			f := attemptProjectionFixture(t, true)
 			// Source resolution requires at least one changed file for a selected
 			// open review. Zero display counts are proved at the publisher boundary.
+			var selectedReads, lookaheadReads atomic.Int64
 			reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+				if n == 2 {
+					selectedReads.Add(1)
+				} else if n == 4 {
+					lookaheadReads.Add(1)
+				} else {
+					t.Errorf("unexpected source PR %d", n)
+				}
 				z := int64(0)
 				d := false
 				return reviewprovider.Pull{Number: n, RepositoryID: 801, Title: "Fresh observed title", State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1, Additions: &z, Deletions: &z, IsDraft: &d}, nil
@@ -30,17 +39,19 @@ func TestSourceMetadataRefreshAndSelectionReuseBoundedReads(t *testing.T) {
 				admissionSQL(t, f, `INSERT INTO workers(project_id,id,name) VALUES(?,'selection-worker','Selector')`, attemptProject)
 				r, _ := selectionEnqueue(t, f, "source-project-selection", "cli", nil)
 				selectionNext(t, f, reader)
-				if selectionRead(t, f, r.ID).State != "selected" {
-					t.Fatal("selection changed")
-				}
+				assertMetadataSelectionChild(t, f, r.ID)
 			}
 			var got reviews.PullResponse
 			projectionRead(t, f, "/pulls/2", &got)
 			if got.Pull.Title != "Fresh observed title" || got.Pull.Diff == nil || got.Pull.Diff.Files != 1 || got.Pull.Diff.Additions != 0 || got.Pull.IsDraft == nil || *got.Pull.IsDraft {
 				t.Fatal("fresh metadata did not reach ordinary stored read", got.Pull)
 			}
-			if reader.calls.Load() != 2 {
-				t.Fatal("metadata publication added provider calls", reader.calls.Load())
+			wantCalls, wantLookahead := int64(2), int64(0)
+			if mode == "selection" {
+				wantCalls, wantLookahead = 3, 1
+			}
+			if reader.calls.Load() != wantCalls || selectedReads.Load() != 1 || lookaheadReads.Load() != wantLookahead {
+				t.Fatal("metadata publication repeated source reads beyond the bounded selection window", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
 			}
 			var unchanged reviews.PullResponse
 			projectionRead(t, f, "/pulls/4", &unchanged)
@@ -58,7 +69,15 @@ func TestSourceMetadataInvalidDisplayDoesNotStrandWorkers(t *testing.T) {
 		for _, field := range []string{"title", "merged_at", "diff"} {
 			t.Run(mode+"/"+field, func(t *testing.T) {
 				f := attemptProjectionFixture(t, true)
+				var selectedReads, lookaheadReads atomic.Int64
 				reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					if n == 2 {
+						selectedReads.Add(1)
+					} else if n == 4 {
+						lookaheadReads.Add(1)
+					} else {
+						t.Errorf("unexpected source PR %d", n)
+					}
 					z := int64(0)
 					p := reviewprovider.Pull{Number: n, RepositoryID: 801, Title: "Fresh title", State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1, Additions: &z, Deletions: &z}
 					switch field {
@@ -85,17 +104,24 @@ func TestSourceMetadataInvalidDisplayDoesNotStrandWorkers(t *testing.T) {
 					admissionSQL(t, f, `INSERT INTO workers(project_id,id,name) VALUES(?,'selection-worker','Selector')`, attemptProject)
 					r, _ := selectionEnqueue(t, f, "invalid-display-selection", "cli", nil)
 					selectionNext(t, f, reader)
-					if got := selectionRead(t, f, r.ID); got.State != "selected" || got.OperationID == "" {
-						t.Fatalf("selection did not settle: %+v", got)
-					}
+					assertMetadataSelectionChild(t, f, r.ID)
 				}
 				var got reviews.PullResponse
 				projectionRead(t, f, "/pulls/2", &got)
 				if got.Pull.Title != "Synthetic PR 2" || got.Pull.Diff != nil || got.Pull.MergedAt != "" {
 					t.Fatal("invalid display replaced retained facts", got.Pull)
 				}
-				if reader.calls.Load() != 2 {
-					t.Fatal("display refusal caused extra provider reads", reader.calls.Load())
+				wantCalls, wantLookahead := int64(2), int64(0)
+				if mode == "selection" {
+					wantCalls, wantLookahead = 3, 1
+				}
+				if reader.calls.Load() != wantCalls || selectedReads.Load() != 1 || lookaheadReads.Load() != wantLookahead {
+					t.Fatal("display refusal repeated source reads beyond the bounded selection window", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
+				}
+				var suffix reviews.PullResponse
+				projectionRead(t, f, "/pulls/4", &suffix)
+				if suffix.Pull.Title != "Synthetic PR 4" || suffix.Pull.Diff != nil {
+					t.Fatal("discarded lookahead changed stored suffix", suffix.Pull)
 				}
 			})
 		}
@@ -142,5 +168,15 @@ func TestSourceMetadataDoesNotOverrideMandatorySourceHold(t *testing.T) {
 	}
 	if got := refreshRead(t, f, r.ID); got.State != "held" || got.Reason != "target_changed" || got.Observation != nil {
 		t.Fatal("optional refusal bypassed mandatory source identity", got)
+	}
+}
+
+// A metadata-only lookahead cannot change the chosen child or issue provider work.
+func assertMetadataSelectionChild(t *testing.T, f *attemptFixture, selectionID string) {
+	t.Helper()
+	selected := selectionRead(t, f, selectionID)
+	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), selected.OperationID)
+	if err != nil || selected.State != "selected" || selected.OperationID == "" || op.PullNumber != 2 || op.HeadSHA != strings.Repeat("a", 40) || op.Channel != "cli" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatal("metadata selection changed target or issued provider work", selected, op, err)
 	}
 }
