@@ -38,6 +38,9 @@ type CIObservation struct {
 	Actions           *ActionsHeadInventory  `json:"actions,omitempty"`
 	Attempts          []ActionsAttempt       `json:"attempts"`
 	TestMergeResults  *CIResultInventory     `json:"test_merge_results,omitempty"`
+	// Optional attention proof is ephemeral and never joins required CI credit.
+	WorkflowAttempts []ActionsAttempt      `json:"-"`
+	WorkflowActions  *ActionsHeadInventory `json:"-"`
 }
 
 // ObserveRequiredCI performs bounded read-only collection for one exact target.

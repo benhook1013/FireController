@@ -431,10 +431,6 @@ func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int6
 	if len(rows) == 0 || len(rows) > 16 || o.Results == nil || o.Actions == nil || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason {
 		return nil
 	}
-	latest, err := reviewprovider.LatestActionsRuns(*o.Actions)
-	if err != nil {
-		return nil
-	}
 	wanted := map[int64]bool{}
 	for _, id := range ids {
 		wanted[id] = true
@@ -449,14 +445,7 @@ func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int6
 		default:
 			return nil
 		}
-		found := false
-		for _, run := range latest.Runs {
-			if run.WorkflowID == row.WorkflowID && run.ID == row.RunID && run.RunAttempt == row.RunAttempt && run.RepositoryID == o.Target.RepositoryID && run.HeadSHA == o.SelectedCommitSHA {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !reviewprovider.CIWorkflowFailureApplies(o, row) {
 			return nil
 		}
 		seen[row.WorkflowID] = true
