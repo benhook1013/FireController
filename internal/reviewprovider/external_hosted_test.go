@@ -120,8 +120,8 @@ func TestExternalHostedUnsupportedRecognizedInventoryStaysIncomplete(t *testing.
 	f := submittedTestFixture(t)
 	f.snapshot.IssueComments = []IssueComment{}
 	f.snapshot.Reviews[0].Body += "\nUnsupported trailing metadata"
-	if got := externalDiscover(t, f); len(got) != 1 || got[0].Inventory.Complete {
-		t.Fatal("recognized unsupported submitted source discarded or credited")
+	if got := externalDiscover(t, f); len(got) != 1 || got[0].Inventory.Complete || got[0].Inventory.Reason != "submitted_review_inventory_unproven" || got[0].Inventory.Publication.State != "attributed" {
+		t.Fatal("recognized unsupported submitted source discarded, credited or made ambiguous")
 	}
 }
 func TestExternalHostedTrustedIdentityVisibilityAndChatter(t *testing.T) {
@@ -353,6 +353,45 @@ func TestExternalHostedConflictsRetainSourcesAsAmbiguous(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, externalDiscover(t, f)) {
 				t.Fatal("conflict changed across repeat discovery")
+			}
+		})
+	}
+}
+
+func TestExternalHostedSubmittedConflictPrecedesUnsupportedInventoryInEitherOrder(t *testing.T) {
+	for _, unsupportedFirst := range []bool{false, true} {
+		name := "valid-first"
+		if unsupportedFirst {
+			name = "unsupported-first"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := submittedTestFixture(t)
+			f.snapshot.IssueComments = []IssueComment{}
+			valid := f.snapshot.Reviews[0]
+			unsupported := valid
+			unsupported.ID++
+			unsupported.Body += "\nUnsupported trailing metadata"
+			if run, _, _, validBody := parseSubmittedReview(unsupported.Body, unsupported.HeadSHA); run != submittedTestRun || validBody {
+				t.Fatal("fixture did not retain recognized run with unsupported inventory")
+			}
+			f.snapshot.Reviews = []HostedReview{valid, unsupported}
+			if unsupportedFirst {
+				f.snapshot.Reviews = []HostedReview{unsupported, valid}
+			}
+			got := externalDiscover(t, f)
+			if len(got) != 1 {
+				t.Fatalf("same-run conflict dropped/split actual sources: %d", len(got))
+			}
+			run := got[0]
+			pub := run.Inventory.Publication
+			if run.SourceID != "run:"+submittedTestRun || run.ProviderRunID != submittedTestRun || run.HeadSHA != valid.HeadSHA || run.Inventory.Complete || run.Inventory.Reason != "conflicting_submitted_review_evidence" || pub.Reason != run.Inventory.Reason || pub.State != "ambiguous" || len(run.Inventory.Findings) != 0 {
+				t.Fatalf("unsupported inventory erased recognized conflict: state=%s reason=%s complete=%t", pub.State, run.Inventory.Reason, run.Inventory.Complete)
+			}
+			if !reflect.DeepEqual(run.ReviewIDs, []int64{valid.ID, unsupported.ID}) || !reflect.DeepEqual(pub.EligibleReviews, []HostedReview{valid, unsupported}) || len(pub.Roots) != len(f.snapshot.ReviewComments) {
+				t.Fatal("same-run conflict lost raw source identities or bodies")
+			}
+			if !reflect.DeepEqual(got, externalDiscover(t, f)) {
+				t.Fatal("repeat discovery changed retained conflict")
 			}
 		})
 	}
