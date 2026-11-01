@@ -189,7 +189,10 @@ func TestExternalHostedStrictCompleteSnapshotAndCopyIsolation(t *testing.T) {
 }
 func TestExternalHostedNativeMarkerIsOnlyVerifiedByConsumer(t *testing.T) {
 	f := externalFixture(t)
-	body, _ := HostedTriggerBody(f.intent)
+	body, err := HostedTriggerBody(f.intent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := IssueComment{ID: 301, Author: f.poster, Body: body, CreatedAt: f.earliest, UpdatedAt: f.earliest}
 	f.snapshot.IssueComments = []IssueComment{command}
 	got := externalDiscover(t, f)
@@ -209,5 +212,79 @@ func TestExternalHostedNativeMarkerIsOnlyVerifiedByConsumer(t *testing.T) {
 	f.snapshot.IssueComments[0].UpdatedAt = f.snapshot.ObservedAt
 	if got = externalDiscover(t, f); len(got) != 1 || got[0].NativeOperationID != "" {
 		t.Fatal("edited native marker supplied original command identity")
+	}
+}
+
+func TestExternalHostedNativeWindowRejectsUnrelatedEditsAndEqualCommands(t *testing.T) {
+	for _, mode := range []string{"unrelated edited comment", "equal-time unchanged native commands"} {
+		t.Run(mode, func(t *testing.T) {
+			f := externalFixture(t)
+			body, err := HostedTriggerBody(f.intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := IssueComment{ID: 301, Author: f.poster, Body: body, CreatedAt: f.earliest, UpdatedAt: f.earliest}
+			other := IssueComment{ID: 302, Author: f.poster, Body: "Unrelated discussion", CreatedAt: command.CreatedAt.Add(-time.Second), UpdatedAt: f.snapshot.Reviews[0].SubmittedAt}
+			if mode == "equal-time unchanged native commands" {
+				intent := f.intent
+				intent.OperationID = "review_operation_" + strings.Repeat("2", 32)
+				intent.AttemptID = "review_attempt_" + strings.Repeat("2", 32)
+				other.Body, err = HostedTriggerBody(intent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other.CreatedAt, other.UpdatedAt = command.CreatedAt, command.CreatedAt
+			}
+			f.snapshot.IssueComments = []IssueComment{command, other}
+			before := fixtureJSON(t, f.snapshot)
+			runs := externalDiscover(t, f)
+			if len(runs) != 1 || !runs[0].Inventory.Complete || runs[0].TriggerCommentID != 0 || runs[0].NativeOperationID != "" || len(runs[0].Inventory.Findings) != 1 {
+				t.Fatal("ambiguous command supplied native hint or lost source", runs)
+			}
+			if string(fixtureJSON(t, f.snapshot)) != string(before) {
+				t.Fatal("caller snapshot changed")
+			}
+		})
+	}
+}
+
+func TestExternalHostedOneCommandCannotClaimMultipleRunSources(t *testing.T) {
+	f := externalFixture(t)
+	body, err := HostedTriggerBody(f.intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := IssueComment{ID: 301, Author: f.poster, Body: body, CreatedAt: f.earliest, UpdatedAt: f.earliest}
+	f.snapshot.IssueComments = []IssueComment{command}
+	positive := externalDiscover(t, f)
+	if len(positive) != 1 || positive[0].TriggerCommentID != command.ID || positive[0].NativeOperationID != f.intent.OperationID {
+		t.Fatal("unique source did not retain hint", positive)
+	}
+	// A later standing-zero source at the same head cannot share the command
+	// with the independent positive publication. Keep both provider sources.
+	standing := IssueComment{ID: 601, Author: f.bot, Body: standingTestBody(f.intent.HeadSHA, strings.Repeat("b", 40)), CreatedAt: f.earliest.Add(-time.Hour), UpdatedAt: f.snapshot.Reviews[0].SubmittedAt.Add(time.Second)}
+	f.snapshot.IssueComments = append(f.snapshot.IssueComments, standing)
+	f.snapshot.ObservedAt = standing.UpdatedAt.Add(time.Second)
+	before := fixtureJSON(t, f.snapshot)
+	runs := externalDiscover(t, f)
+	if len(runs) != 2 {
+		t.Fatal("provider source suppressed", runs)
+	}
+	for i, run := range runs {
+		if run.TriggerCommentID != 0 || run.NativeOperationID != "" || !run.Inventory.Complete || run.HeadSHA != f.intent.HeadSHA {
+			t.Fatal("one command attributed to multiple results", run)
+		}
+		if i == 0 {
+			expected := positive[0]
+			expected.TriggerCommentID, expected.NativeOperationID = 0, ""
+			if !reflect.DeepEqual(run, expected) {
+				t.Fatal("positive source identity or finding inventory changed")
+			}
+		} else if run.SourceID != "run:"+standingTestRun || run.ProviderRunID != standingTestRun || len(run.Inventory.Findings) != 0 || len(run.ReviewIDs) != 0 || !run.FinishedAt.Equal(standing.UpdatedAt) {
+			t.Fatal("standing source identity changed", run)
+		}
+	}
+	if string(fixtureJSON(t, f.snapshot)) != string(before) || !reflect.DeepEqual(runs, externalDiscover(t, f)) {
+		t.Fatal("source capture changed or repeat unstable")
 	}
 }
