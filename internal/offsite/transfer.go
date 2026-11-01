@@ -302,11 +302,22 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 				return result, failure("offsite_storage_unavailable")
 			}
 		}
-		// Resolve unfinished retention before allowing another upload to expand
-		// the owned inventory. LastSuccess remains independently reportable.
+		// Retry cleanup first, but a refusal to delete verified owned objects
+		// does not block a newer backup below the bounded ownership inventory.
+		var retentionErr error
 		if len(s.state.Owned) > c.Keep {
-			if err = s.prune(ctx, false); err != nil {
-				return result, err
+			retentionErr = s.prune(ctx, false)
+			if retentionErr != nil {
+				if saveErr := s.save(); saveErr != nil {
+					return result, saveErr
+				}
+				var deletion *retentionDeleteError
+				if ctx.Err() != nil {
+					return result, failure("offsite_cancelled")
+				}
+				if !errors.As(retentionErr, &deletion) {
+					return result, retentionErr
+				}
 			}
 		}
 		selected, e := newest(ctx, c)
@@ -315,7 +326,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		}
 		for _, r := range s.state.Owned {
 			if selected.ID == r.ID {
-				return Result{State: "unchanged", BackupID: selected.ID, SourceInstanceID: c.InstanceID, Retained: len(s.state.Owned)}, nil
+				return Result{State: "unchanged", BackupID: selected.ID, SourceInstanceID: c.InstanceID, Retained: len(s.state.Owned)}, retentionErr
 			}
 		}
 		if s.state.LastSuccess != nil && selected.EventSequence < s.state.LastSuccess.EventSequence {
@@ -359,6 +370,11 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 		if err = s.save(); err != nil {
 			return result, err
 		}
+	}
+	// Persisted pending work also keeps this bound: never publish another
+	// receipt that cannot be added to the supported ownership inventory.
+	if len(s.state.Owned) >= maxOwned {
+		return result, failure("offsite_retention_limit")
 	}
 	r := *s.state.Pending
 	if _, e := os.Lstat(archive); errors.Is(e, os.ErrNotExist) {
@@ -425,6 +441,16 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 }
 
 func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
+	defer func() {
+		if err != nil {
+			s.state.RetentionReason = "offsite_retention_failed"
+		} else {
+			s.state.RetentionReason = ""
+		}
+	}()
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
 	if len(s.state.Owned) <= s.c.Keep {
 		s.state.RetentionReason = ""
 		return nil
@@ -448,20 +474,16 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 		r := *s.state.LastSuccess
 		actual, e := s.remoteReceipt(ctx, r)
 		if e != nil || actual != r {
-			return failure("offsite_retention_conflict")
+			return cancelOrFailure(ctx, "offsite_retention_conflict")
 		}
 		if err = s.verifyRemote(ctx, r); err != nil {
 			return err
 		}
 	}
-	defer func() {
-		if err != nil {
-			s.state.RetentionReason = "offsite_retention_failed"
-		} else {
-			s.state.RetentionReason = ""
-		}
-	}()
 	for len(s.state.Owned) > s.c.Keep {
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
+		}
 		index := len(s.state.Owned) - 1
 		r := s.state.Owned[index]
 		actual, e := s.remoteReceipt(ctx, r)
@@ -484,11 +506,17 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 				return cancelOrFailure(ctx, "offsite_remote_conflict")
 			}
 		}
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
+		}
 		if err = s.transport.remove(ctx, s.object(r, "archive.tar.gz")); err != nil {
-			return err
+			return retentionDeleteFailure(ctx, err)
+		}
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
 		}
 		if err = s.transport.remove(ctx, s.object(r, "receipt.json")); err != nil {
-			return err
+			return retentionDeleteFailure(ctx, err)
 		}
 		s.state.Owned = s.state.Owned[:index]
 		if err = s.save(); err != nil {
@@ -496,6 +524,24 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 		}
 	}
 	return nil
+}
+
+// Only delete-origin failures may defer retention; verification and local
+// persistence failures never acquire this marker or broaden destination trust.
+type retentionDeleteError struct{ cause error }
+
+func (e *retentionDeleteError) Error() string { return e.cause.Error() }
+func (e *retentionDeleteError) Unwrap() error { return e.cause }
+
+func retentionDeleteFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
+	var cause *core.Error
+	if errors.As(err, &cause) && (cause.Code == "offsite_cancelled" || cause.Code == "offsite_storage_unavailable" || cause.Code == "offsite_state_invalid") {
+		return err
+	}
+	return &retentionDeleteError{cause: err}
 }
 
 func Fetch(ctx context.Context, configPath, id, destination string) (backup.Summary, error) {
@@ -536,7 +582,10 @@ func (s *session) fetch(ctx context.Context, id, destination string) (result bac
 		return result, failure("offsite_remote_conflict")
 	}
 	if err = os.Mkdir(destination, 0700); err != nil {
-		return result, failure("offsite_destination_exists")
+		if errors.Is(err, os.ErrExist) {
+			return result, failure("offsite_destination_exists")
+		}
+		return result, failure("offsite_storage_unavailable")
 	}
 	complete := false
 	defer func() {
