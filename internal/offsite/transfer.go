@@ -249,7 +249,8 @@ func Push(ctx context.Context, configPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return push(ctx, c, nil)
+	result, err := push(ctx, c, nil)
+	return result, publicFailure(err)
 }
 
 func push(ctx context.Context, c Config, t transport) (result Result, err error) {
@@ -271,6 +272,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 	defer func() {
 		s.state.LastAttempt.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err != nil {
+			err = publicFailure(err)
 			s.state.LastAttempt.State = "failed"
 			s.state.LastAttempt.Reason = "offsite_failed"
 			var e *core.Error
@@ -507,7 +509,8 @@ func Fetch(ctx context.Context, configPath, id, destination string) (backup.Summ
 		return backup.Summary{}, err
 	}
 	defer s.close()
-	return s.fetch(ctx, id, destination)
+	result, err := s.fetch(ctx, id, destination)
+	return result, publicFailure(err)
 }
 
 func (s *session) fetch(ctx context.Context, id, destination string) (result backup.Summary, err error) {
@@ -548,4 +551,12 @@ func (s *session) fetch(ctx context.Context, id, destination string) (result bac
 	}
 	complete = true
 	return result, nil
+}
+
+// Transport absence is an operator recovery result, never a daemon-start error.
+func publicFailure(err error) error {
+	if errors.Is(err, notFound) {
+		return failure("offsite_backup_not_found")
+	}
+	return err
 }

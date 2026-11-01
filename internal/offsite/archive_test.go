@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +16,99 @@ import (
 
 	"github.com/benhook1013/FireController/internal/backup"
 )
+
+func TestOffsiteArchiveActualTarSizeBoundaryIncludesPaddingAndPAX(t *testing.T) {
+	f := newFixture(t)
+	for _, dir := range []string{"review-captures", "hosted-review-captures"} {
+		if err := os.Mkdir(filepath.Join(f.dir, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, size := range []int{1, 513, 1025} {
+		name := fmt.Sprintf("review_attempt_%032x.json", i+1)
+		if err := os.WriteFile(filepath.Join(f.dir, "review-captures", name), bytes.Repeat([]byte("x"), size), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	contents := []byte("synthetic forensic capture")
+	digest := sha256.Sum256(contents)
+	longName := "review_attempt_" + strings.Repeat("a", 32) + "-hosted-" + hex.EncodeToString(digest[:]) + ".json"
+	if err := os.WriteFile(filepath.Join(f.dir, "hosted-review-captures", longName), contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	summary := f.bundle(t)
+	reference := filepath.Join(t.TempDir(), "reference.tar.gz")
+	if _, err := pack(t.Context(), summary.Path, reference, f.c); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := os.Open(reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compressed.Close()
+	gz, err := gzip.NewReader(compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var estimated int64
+	pax := false
+	tr := tar.NewReader(bytes.NewReader(raw))
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		estimated += header.Size + 512
+		pax = pax || strings.HasSuffix(header.Name, longName) && header.PAXRecords["path"] == header.Name
+	}
+	actual := int64(len(raw))
+	if !pax || actual <= estimated+1024 || actual%512 != 0 {
+		t.Fatal("fixture did not exercise real PAX metadata and tar padding", actual, estimated, pax)
+	}
+	exact := f.c
+	exact.MaxBundleBytes = actual
+	archive := filepath.Join(t.TempDir(), "exact.tar.gz")
+	receipt, err := pack(t.Context(), summary.Path, archive, exact)
+	if err != nil {
+		t.Fatal("exact expanded tar limit refused a valid bundle", err)
+	}
+	restored, err := unpack(t.Context(), archive, t.TempDir(), receipt, exact)
+	if err != nil || restored.ID != summary.ID || restored.ArtifactCount != 4 {
+		t.Fatal("pack accepted a bundle its own unpack cannot recover", restored, err)
+	}
+	// Different failure points cover file copying, a later PAX header, and the
+	// final tar end marker. Every rejected partial archive must be removed.
+	firstPadded := 512 + (summary.DatabaseBytes+511)/512*512
+	for _, test := range []struct {
+		name  string
+		limit int64
+	}{
+		{"file copy", 512 + summary.DatabaseBytes - 1},
+		{"PAX header", firstPadded + 100},
+		{"one byte below actual", actual - 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bounded := f.c
+			bounded.MaxBundleBytes = test.limit
+			destination := filepath.Join(t.TempDir(), "rejected.tar.gz")
+			_, err := pack(t.Context(), summary.Path, destination, bounded)
+			wantCode(t, err, "offsite_size_limit")
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatal("size refusal retained an incomplete archive", err)
+			}
+		})
+	}
+}
 
 func TestOffsiteArchiveRefusesTraversalLinksDuplicatesAndExpansion(t *testing.T) {
 	f := newFixture(t)

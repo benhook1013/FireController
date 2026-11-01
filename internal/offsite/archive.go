@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -14,6 +15,24 @@ import (
 
 	"github.com/benhook1013/FireController/internal/backup"
 )
+
+var errTarSizeLimit = errors.New("offsite tar size limit")
+
+// Count the expanded stream itself, including PAX records, padding and end
+// markers, against the same limit enforced when unpacking it.
+type tarSizeWriter struct {
+	w         io.Writer
+	remaining int64
+}
+
+func (w *tarSizeWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		return 0, errTarSizeLimit
+	}
+	n, err := w.w.Write(p)
+	w.remaining -= int64(n)
+	return n, err
+}
 
 func pack(ctx context.Context, source, destination string, c Config) (Receipt, error) {
 	s, err := backup.Inspect(ctx, source)
@@ -35,8 +54,7 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 		}
 	}()
 	gz := gzip.NewWriter(f)
-	tw := tar.NewWriter(gz)
-	var total int64
+	tw := tar.NewWriter(&tarSizeWriter{w: gz, remaining: c.MaxBundleBytes})
 	count := 0
 	err = filepath.WalkDir(source, func(file string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || ctx.Err() != nil {
@@ -50,10 +68,9 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 			return failure("offsite_source_invalid")
 		}
 		count++
-		if count > 100003 || s.Size() < 0 || s.Size() > c.MaxBundleBytes-total-512 {
-			return failure("offsite_size_limit")
+		if count > 100003 || s.Size() < 0 || s.Size() > c.MaxBundleBytes {
+			return errTarSizeLimit
 		}
-		total += s.Size() + 512
 		rel, err := filepath.Rel(source, file)
 		if err != nil {
 			return failure("offsite_source_invalid")
@@ -71,7 +88,10 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 			return failure("offsite_source_invalid")
 		}
 		n, err := io.Copy(tw, &contextReader{ctx: ctx, r: io.LimitReader(in, s.Size()+1)})
-		if err != nil || n != s.Size() {
+		if err != nil {
+			return err
+		}
+		if n != s.Size() {
 			return failure("offsite_source_invalid")
 		}
 		return nil
@@ -79,9 +99,19 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 	if err != nil {
 		tw.Close()
 		gz.Close()
+		if errors.Is(err, errTarSizeLimit) {
+			return Receipt{}, failure("offsite_size_limit")
+		}
 		return Receipt{}, failure("offsite_source_invalid")
 	}
-	if tw.Close() != nil || gz.Close() != nil || f.Sync() != nil || f.Close() != nil {
+	if err = tw.Close(); err != nil {
+		gz.Close()
+		if errors.Is(err, errTarSizeLimit) {
+			return Receipt{}, failure("offsite_size_limit")
+		}
+		return Receipt{}, failure("offsite_storage_unavailable")
+	}
+	if gz.Close() != nil || f.Sync() != nil || f.Close() != nil {
 		return Receipt{}, failure("offsite_storage_unavailable")
 	}
 	h, n, err := fileHash(ctx, destination, c.MaxBundleBytes)

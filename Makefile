@@ -45,4 +45,6 @@ browser-smoke:
 # Requires built fcd and an explicit rclone binary; uses disposable loopback S3.
 .PHONY: offsite-smoke
 offsite-smoke:
+	@test -n "$(RCLONE)" || { printf '%s\n' 'offsite-smoke requires RCLONE=/absolute/path/to/rclone' >&2; exit 1; }
+	@test -x "$(CURDIR)/bin/fcd" || { printf '%s\n' 'offsite-smoke requires bin/fcd from make build' >&2; exit 1; }
 	FC_TEST_RCLONE="$(RCLONE)" FC_TEST_FCD="$(CURDIR)/bin/fcd" $(GO) test -tags=offsite_integration -run '^TestOffsiteRealRcloneS3AndCryptRecovery$$' -count=1 -timeout=180s ./internal/offsite
