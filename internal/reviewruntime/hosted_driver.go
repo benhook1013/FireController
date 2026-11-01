@@ -232,7 +232,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	for pass := 0; pass < 16; pass++ {
 		observed, err = ObserveHostedAllowance(ctx, d.provider, d.captures, d.engine, attempt, anchor, plan.Repository, actor, d.providerActor())
 		if err != nil {
-			return preparation, reviewHold("hosted_allowance_unproven")
+			return preparation, reviewHold(hostedAllowanceFailureReason(observed.Reason, err))
 		}
 		if observed.Observation.State == "available_observed" {
 			break
@@ -369,4 +369,41 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		}
 	}
 	return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_pending", ExternalID: externalID}, nil
+}
+
+// Keep only maintained stage facts and typed failure classes. Provider text,
+// private capture paths and unknown errors never become operation reasons.
+func hostedAllowanceFailureReason(stage string, err error) string {
+	switch stage {
+	case "query_history_incomplete":
+		var provider *reviewprovider.Error
+		if errors.As(err, &provider) {
+			switch provider.Code {
+			case "provider_invalid_response":
+				return "hosted_allowance_history_invalid"
+			case "provider_unavailable", "provider_rate_limited", "provider_unauthorized", "provider_not_found":
+				return "hosted_allowance_history_unavailable"
+			}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "hosted_allowance_history_unavailable"
+		}
+	case "query_capture_unavailable":
+		var local *core.Error
+		if errors.As(err, &local) {
+			switch local.Code {
+			case "validation_failed":
+				return "hosted_allowance_capture_invalid"
+			case "capture_unavailable", "storage_unavailable":
+				return "hosted_allowance_capture_unavailable"
+			}
+		}
+	case "query_post_unproven":
+		return "hosted_allowance_query_post_unproven"
+	case "query_recording_pending":
+		return "hosted_allowance_query_recording_pending"
+	case "query_capture_recording_pending":
+		return "hosted_allowance_capture_recording_pending"
+	}
+	return "hosted_allowance_unproven"
 }

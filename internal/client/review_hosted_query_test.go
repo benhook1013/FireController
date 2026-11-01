@@ -45,7 +45,7 @@ func TestHostedQueryDiagnosticsClientNegotiationAndValidation(t *testing.T) {
 					return
 				}
 				reads++
-				if r.Method != "GET" || r.Header.Get("X-FC-Hosted-Query") != "1" || r.Header.Get("Idempotency-Key") != "" {
+				if r.Method != "GET" || r.Header.Get("X-FC-Hosted-Query") != "2" || r.Header.Get("Idempotency-Key") != "" {
 					t.Error("diagnostic changed explicit read negotiation")
 				}
 				w.Header().Set("Content-Type", "application/json")

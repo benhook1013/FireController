@@ -23,7 +23,7 @@ type HostedQueryDiagnostic struct {
 }
 
 func readHostedQueryDiagnostic(ctx context.Context, tx *sql.Tx, o Operation) (*HostedQueryDiagnostic, error) {
-	if o.Channel != "hosted" || o.State != "held" || o.AttemptID == "" || o.Reason != "hosted_allowance_unproven" && o.Reason != "hosted_allowance_reply_pending" && o.Reason != "hosted_allowance_cooldown" {
+	if o.Channel != "hosted" || o.State != "held" || o.AttemptID == "" || !hostedQueryDiagnosticReason(o.Reason) {
 		return nil, nil
 	}
 	a, err := readAttempt(ctx, tx, o.ProjectID, o.AttemptID)
@@ -65,4 +65,16 @@ func readHostedQueryDiagnostic(ctx context.Context, tx *sql.Tx, o Operation) (*H
 	}
 	result.ObservationID, result.CaptureID, result.CapturedAt = observation.ID, observation.Input.CaptureID, observation.Input.ObservedAt
 	return result, nil
+}
+
+func hostedQueryDiagnosticReason(reason string) bool {
+	switch reason {
+	case "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown",
+		"hosted_allowance_history_invalid", "hosted_allowance_history_unavailable",
+		"hosted_allowance_capture_invalid", "hosted_allowance_capture_unavailable",
+		"hosted_allowance_query_post_unproven", "hosted_allowance_query_recording_pending", "hosted_allowance_capture_recording_pending":
+		return true
+	default:
+		return false
+	}
 }

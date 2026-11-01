@@ -25,7 +25,7 @@ func TestHostedQueryDiagnosticsMCPExplicitFullRead(t *testing.T) {
 			return
 		}
 		reads++
-		if r.Method != "GET" || r.Header.Get("X-FC-Hosted-Query") != "1" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID {
+		if r.Method != "GET" || r.Header.Get("X-FC-Hosted-Query") != "2" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID {
 			t.Error("full MCP diagnostics changed read/worker contract")
 		}
 		_ = json.NewEncoder(w).Encode(value)

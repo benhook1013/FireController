@@ -249,13 +249,19 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) || r.Header.Get(hostedQueryDiagnosticHeader) == "1" {
-		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2" || r.Header.Get("X-FC-Source-Refusal") == "v3" || r.Header.Get("X-FC-Source-Refusal") == "v4", r.Header.Get(hostedQueryDiagnosticHeader) == "1")
+	if r.Header.Get("X-FC-Operation-Evidence") == "true" || sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")) || (r.Header.Get(hostedQueryDiagnosticHeader) == "1" || r.Header.Get(hostedQueryDiagnosticHeader) == "2") {
+		operation, err = e.readOperationProjection(r.Context(), scope, operationID, r.Header.Get("X-FC-Operation-Evidence") == "true", sourceRefusalRequested(r.Header.Get("X-FC-Source-Refusal")), r.Header.Get("X-FC-Source-Refusal") == "v2" || r.Header.Get("X-FC-Source-Refusal") == "v3" || r.Header.Get("X-FC-Source-Refusal") == "v4", (r.Header.Get(hostedQueryDiagnosticHeader) == "1" || r.Header.Get(hostedQueryDiagnosticHeader) == "2"))
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 	}
+	// Header 1 readers know only the original allowance hold bindings. New
+	// clients opt into the additional finite stage causes using header 2.
+	if r.Header.Get(hostedQueryDiagnosticHeader) != "2" && operation.Reason != "hosted_allowance_unproven" && operation.Reason != "hosted_allowance_reply_pending" && operation.Reason != "hosted_allowance_cooldown" {
+		operation.HostedQuery = nil
+	}
+
 	operation.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, operation.ID, operation.State, operation.Reason)
 	if err != nil {
 		core.WriteError(w, err)

@@ -19,7 +19,7 @@ func validReviewHostedQuery(v *ReviewHostedQueryDiagnostic, operation ReviewOper
 	if v == nil {
 		return true
 	}
-	if operation.Channel != "hosted" || operation.State != "held" || operation.AttemptID == "" || !oneReviewOf(operation.Reason, "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown") || !validReviewOpaqueID(v.QueryID, "review_hosted_query_") || v.QueryCommentID < 0 || (v.QueryCommentID == 0) != (v.QueryURL == "") {
+	if operation.Channel != "hosted" || operation.State != "held" || operation.AttemptID == "" || (!oneReviewOf(operation.Reason, "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown") && hostedAllowanceFailureExplanation(operation.Reason) == "") || !validReviewOpaqueID(v.QueryID, "review_hosted_query_") || v.QueryCommentID < 0 || (v.QueryCommentID == 0) != (v.QueryURL == "") {
 		return false
 	}
 	if v.QueryURL != "" {

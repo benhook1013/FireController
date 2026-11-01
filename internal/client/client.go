@@ -400,7 +400,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 			r.Header.Set("X-FC-Operation-Wait", "1")
 		}
 		if wait.hostedQuery {
-			r.Header.Set("X-FC-Hosted-Query", "1")
+			r.Header.Set("X-FC-Hosted-Query", "2")
 		}
 		if wait.hostedObserver && method == http.MethodGet {
 			r.Header.Set("X-FC-Hosted-Observer", "1")
