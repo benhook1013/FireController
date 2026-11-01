@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -46,7 +47,7 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 			t.Error("unexpected watch fields")
 		}
 		var pins []client.CIWatchTarget
-		if json.Unmarshal(body["targets"], &pins) != nil || len(pins) != 2 || pins[0] != ciWatchPins()[0] || pins[1] != ciWatchPins()[1] {
+		if json.Unmarshal(body["targets"], &pins) != nil || len(pins) != 2 || !reflect.DeepEqual(pins, ciWatchPins()) {
 			t.Error("source pins changed")
 		}
 		if lost {

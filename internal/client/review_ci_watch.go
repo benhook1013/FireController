@@ -12,33 +12,45 @@ const CIWatchMaxTargets = 20
 const CIWatchDefaultSeconds = 300
 
 type CIWatchTarget struct {
-	PullNumber          int64  `json:"pull_number"`
-	HeadSHA             string `json:"head_sha"`
-	BaseSHA             string `json:"base_sha,omitempty"`
-	AfterObservationKey string `json:"after_observation_key,omitempty"`
+	PullNumber          int64   `json:"pull_number"`
+	HeadSHA             string  `json:"head_sha"`
+	BaseSHA             string  `json:"base_sha,omitempty"`
+	AfterObservationKey string  `json:"after_observation_key,omitempty"`
+	FailureWorkflowIDs  []int64 `json:"failure_workflow_ids,omitempty"`
+}
+
+type CIWorkflowFailure struct {
+	WorkflowID int64  `json:"workflow_id"`
+	RunID      int64  `json:"run_id"`
+	RunAttempt int64  `json:"run_attempt"`
+	JobID      int64  `json:"job_id"`
+	CheckRunID int64  `json:"check_run_id"`
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
 }
 
 type CIWatchTargetResult struct {
-	PullNumber       int64             `json:"pull_number"`
-	HeadSHA          string            `json:"head_sha"`
-	BaseSHA          string            `json:"base_sha,omitempty"`
-	State            string            `json:"state"`
-	Reason           string            `json:"reason"`
-	BaseRef          string            `json:"base_ref,omitempty"`
-	GateRef          string            `json:"gate_ref,omitempty"`
-	ObservedHeadSHA  string            `json:"observed_head_sha,omitempty"`
-	ObservedBaseSHA  string            `json:"observed_base_sha,omitempty"`
-	ObservedAt       string            `json:"observed_at,omitempty"`
-	CICommitSHA      string            `json:"ci_commit_sha,omitempty"`
-	Selection        string            `json:"selection,omitempty"`
-	Required         int64             `json:"required"`
-	Satisfied        int64             `json:"satisfied"`
-	Failed           int64             `json:"failed"`
-	Pending          int64             `json:"pending"`
-	Unproven         int64             `json:"unproven"`
-	Checks           []ReviewCIContext `json:"checks"`
-	ObservationKey   string            `json:"observation_key,omitempty"`
-	WaitingForChange bool              `json:"waiting_for_change,omitempty"`
+	PullNumber       int64               `json:"pull_number"`
+	HeadSHA          string              `json:"head_sha"`
+	BaseSHA          string              `json:"base_sha,omitempty"`
+	State            string              `json:"state"`
+	Reason           string              `json:"reason"`
+	BaseRef          string              `json:"base_ref,omitempty"`
+	GateRef          string              `json:"gate_ref,omitempty"`
+	ObservedHeadSHA  string              `json:"observed_head_sha,omitempty"`
+	ObservedBaseSHA  string              `json:"observed_base_sha,omitempty"`
+	ObservedAt       string              `json:"observed_at,omitempty"`
+	CICommitSHA      string              `json:"ci_commit_sha,omitempty"`
+	Selection        string              `json:"selection,omitempty"`
+	Required         int64               `json:"required"`
+	Satisfied        int64               `json:"satisfied"`
+	Failed           int64               `json:"failed"`
+	Pending          int64               `json:"pending"`
+	Unproven         int64               `json:"unproven"`
+	Checks           []ReviewCIContext   `json:"checks"`
+	ObservationKey   string              `json:"observation_key,omitempty"`
+	WaitingForChange bool                `json:"waiting_for_change,omitempty"`
+	WorkflowFailures []CIWorkflowFailure `json:"workflow_failures,omitempty"`
 }
 
 type CIWatchResult struct {
@@ -58,6 +70,16 @@ func ValidateCIWatchTargets(targets []CIWatchTarget) error {
 			return validation()
 		}
 		seen[target.PullNumber] = true
+		if target.FailureWorkflowIDs != nil && len(target.FailureWorkflowIDs) == 0 || len(target.FailureWorkflowIDs) > 16 {
+			return validation()
+		}
+		workflows := map[int64]bool{}
+		for _, id := range target.FailureWorkflowIDs {
+			if id <= 0 || workflows[id] {
+				return validation()
+			}
+			workflows[id] = true
+		}
 	}
 	return nil
 }
@@ -69,6 +91,9 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 		return CIWatchResult{}, validation()
 	}
 	targets = append([]CIWatchTarget(nil), targets...)
+	for i := range targets {
+		targets[i].FailureWorkflowIDs = append([]int64(nil), targets[i].FailureWorkflowIDs...)
+	}
 	body, err := json.Marshal(struct {
 		Targets []CIWatchTarget `json:"targets"`
 	}{targets})
@@ -119,7 +144,12 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
-		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (item.State != "failed" || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || item.State == "failed" && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
+		if !validCIWatchWorkflowFailures(item, pin) {
+			return false
+		}
+		attention := item.State == "pending" && len(item.WorkflowFailures) > 0
+		knownFailure := item.State == "failed" || attention
+		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (!knownFailure || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || knownFailure && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
 			return false
 		}
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {
@@ -145,9 +175,33 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.State == "passed" && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
 			return false
 		}
-		if state == "pending" && item.State != "pending" && !item.WaitingForChange {
-			state = item.State
+		if state == "pending" && !item.WaitingForChange {
+			if attention {
+				state = "attention"
+			} else if item.State != "pending" {
+				state = item.State
+			}
 		}
 	}
 	return value.State == state && (state == "pending" || !value.TimedOut)
+}
+
+func validCIWatchWorkflowFailures(item CIWatchTargetResult, pin CIWatchTarget) bool {
+	if len(item.WorkflowFailures) == 0 {
+		return true
+	}
+	if item.State != "pending" || len(item.WorkflowFailures) > 16 || item.ObservationKey == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "" || item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA || item.Reason == "ci_watch_refresh_pending" {
+		return false
+	}
+	selected, workflows, jobs, checks := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}, map[int64]bool{}
+	for _, id := range pin.FailureWorkflowIDs {
+		selected[id] = true
+	}
+	for _, failure := range item.WorkflowFailures {
+		if !selected[failure.WorkflowID] || workflows[failure.WorkflowID] || failure.RunID <= 0 || failure.RunAttempt <= 0 || failure.JobID <= 0 || jobs[failure.JobID] || failure.CheckRunID <= 0 || checks[failure.CheckRunID] || !controlText(failure.Name, 256, true) || !oneReviewOf(failure.Conclusion, "failure", "timed_out", "action_required", "startup_failure") {
+			return false
+		}
+		workflows[failure.WorkflowID], jobs[failure.JobID], checks[failure.CheckRunID] = true, true, true
+	}
+	return true
 }

@@ -213,7 +213,7 @@ func TestCIWatchReadOnlyUnenrolledSharingMissingAndCancellation(t *testing.T) {
 	watchTick(t, f, s)
 	for _, out := range []<-chan ciWatchReply{one, two} {
 		reply := receiveCIWatch(t, out)
-		if reply.err != nil || reply.value.State != "passed" || reply.value.TimedOut || reply.value.Targets[0].CIWatchTarget != target || reply.value.Targets[0].Satisfied != 1 || reply.value.Targets[0].Checks[0].CommitStatus == nil {
+		if reply.err != nil || reply.value.State != "passed" || reply.value.TimedOut || !reflect.DeepEqual(reply.value.Targets[0].CIWatchTarget, target) || reply.value.Targets[0].Satisfied != 1 || reply.value.Targets[0].Checks[0].CommitStatus == nil {
 			t.Fatal("actual required check did not settle original watch", reply)
 		}
 	}

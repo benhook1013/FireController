@@ -55,7 +55,7 @@ func TestCIWatchProvenFailureWakesWithMissingRequiredCheck(t *testing.T) {
 		t.Fatal("batch did not wake on the proven failure", reply)
 	}
 	failed := reply.value.Targets[1]
-	if failed.State != "failed" || failed.Reason != "ci_required_checks_failed" || failed.CIWatchTarget != targets[1] || failed.Required != 5 || failed.Satisfied != 3 || failed.Failed != 1 || failed.Unproven != 1 || failed.Pending != 0 || len(failed.Checks) != 5 || failed.Checks[0].Context != "Smoke Gate" || failed.Checks[0].State != "failed" || failed.Checks[4].Context != "Validation" || failed.Checks[4].State != "unproven" {
+	if failed.State != "failed" || failed.Reason != "ci_required_checks_failed" || !reflect.DeepEqual(failed.CIWatchTarget, targets[1]) || failed.Required != 5 || failed.Satisfied != 3 || failed.Failed != 1 || failed.Unproven != 1 || failed.Pending != 0 || len(failed.Checks) != 5 || failed.Checks[0].Context != "Smoke Gate" || failed.Checks[0].State != "failed" || failed.Checks[4].Context != "Validation" || failed.Checks[4].State != "unproven" {
 		t.Fatal("early failure lost the original pins or partial check facts", failed)
 	}
 	ciWatchRegistered(t, schedule, 0)

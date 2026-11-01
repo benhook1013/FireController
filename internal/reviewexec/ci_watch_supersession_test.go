@@ -32,7 +32,7 @@ func TestCIWatchFreshSupersessionSurvivesPendingGeneration(t *testing.T) {
 			target := CIWatchTarget{PullNumber: 42, HeadSHA: head, BaseSHA: tc.pinBase}
 			sub := &ciWatchSubscription{scope: core.Scope{ProjectID: "test-project"}, targets: []CIWatchTarget{target}, minimum: []uint64{2}, bases: []string{tc.firstBase}, entries: []*ciWatchEntry{{version: tc.version, wanted: 3, done: 2, result: CIWatchItem{State: tc.state, Reason: "ci_watch_check_pending", ObservedHeadSHA: tc.observedHead, ObservedBaseSHA: tc.observedBase, Checks: []SourceCIContext{}}}}}
 			got := s.ciWatchResult(sub)
-			if got.State != tc.want || got.Targets[0].State != tc.want || got.Targets[0].Reason != tc.reason || got.Targets[0].CIWatchTarget != target {
+			if got.State != tc.want || got.Targets[0].State != tc.want || got.Targets[0].Reason != tc.reason || !reflect.DeepEqual(got.Targets[0].CIWatchTarget, target) {
 				t.Fatal("generation masking lost source identity or admitted stale result", got)
 			}
 			if tc.version < 2 && got.Targets[0].ObservedHeadSHA != "" {
@@ -104,7 +104,7 @@ func TestCIWatchObservedSourceMovementEndsOriginalWaitDespiteNewHint(t *testing.
 				t.Fatal(err)
 			}
 			reply := receiveCIWatch(t, out)
-			if reply.err != nil || reply.value.State != "superseded" || reply.value.TimedOut || reply.value.Targets[0].Reason != "ci_watch_source_changed" || reply.value.Targets[0].CIWatchTarget != target || reply.value.Targets[0].ObservedHeadSHA != pull.HeadSHA || reply.value.Targets[0].ObservedBaseSHA != pull.BaseSHA {
+			if reply.err != nil || reply.value.State != "superseded" || reply.value.TimedOut || reply.value.Targets[0].Reason != "ci_watch_source_changed" || !reflect.DeepEqual(reply.value.Targets[0].CIWatchTarget, target) || reply.value.Targets[0].ObservedHeadSHA != pull.HeadSHA || reply.value.Targets[0].ObservedBaseSHA != pull.BaseSHA {
 				t.Fatal("fresh source supersession remained pending", reply)
 			}
 			ciWatchRegistered(t, s, 0)

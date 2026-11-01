@@ -36,6 +36,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			HeadSHA             string          `json:"head_sha"`
 			BaseSHA             json.RawMessage `json:"base_sha,omitempty"`
 			AfterObservationKey json.RawMessage `json:"after_observation_key,omitempty"`
+			FailureWorkflowIDs  json.RawMessage `json:"failure_workflow_ids,omitempty"`
 		} `json:"targets"`
 	}
 	if err = core.ReadJSON(w, r, &input); err != nil {
@@ -54,7 +55,12 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			core.WriteError(w, invalid())
 			return
 		}
-		targets = append(targets, CIWatchTarget{PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after})
+		var workflows []int64
+		if len(value.FailureWorkflowIDs) > 0 && (!changeAware || json.Unmarshal(value.FailureWorkflowIDs, &workflows) != nil || workflows == nil || len(workflows) == 0) {
+			core.WriteError(w, invalid())
+			return
+		}
+		targets = append(targets, CIWatchTarget{PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows})
 	}
 	if !validCIWatchTargets(targets) {
 		core.WriteError(w, invalid())

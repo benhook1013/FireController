@@ -16,9 +16,10 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 	call := &ciWatchInvocation{seconds: client.CIWatchDefaultSeconds}
 	waitSet := false
 	after := map[int64]string{}
+	workflows := map[int64][]int64{}
 	for i := 0; i < len(args); i++ {
 		flag, raw, assigned := strings.Cut(args[i], "=")
-		if flag != "--target" && flag != "--wait-seconds" && flag != "--after-observation" {
+		if flag != "--target" && flag != "--wait-seconds" && flag != "--after-observation" && flag != "--failure-workflow" {
 			return nil, false
 		}
 		if !assigned {
@@ -37,15 +38,26 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 			continue
 		}
 		parts := strings.Split(raw, ":")
-		if flag == "--after-observation" {
+		if flag == "--after-observation" || flag == "--failure-workflow" {
 			if len(parts) != 2 {
 				return nil, false
 			}
 			number, err := strconv.ParseInt(parts[0], 10, 64)
-			if err != nil || strconv.FormatInt(number, 10) != parts[0] || parts[1] == "" || after[number] != "" {
+			if err != nil || strconv.FormatInt(number, 10) != parts[0] || parts[1] == "" {
 				return nil, false
 			}
-			after[number] = parts[1]
+			if flag == "--after-observation" {
+				if after[number] != "" {
+					return nil, false
+				}
+				after[number] = parts[1]
+			} else {
+				id, err := strconv.ParseInt(parts[1], 10, 64)
+				if err != nil || strconv.FormatInt(id, 10) != parts[1] || id <= 0 {
+					return nil, false
+				}
+				workflows[number] = append(workflows[number], id)
+			}
 			continue
 		}
 		if len(parts) != 2 && len(parts) != 3 {
@@ -64,8 +76,10 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 	for i := range call.targets {
 		call.targets[i].AfterObservationKey = after[call.targets[i].PullNumber]
 		delete(after, call.targets[i].PullNumber)
+		call.targets[i].FailureWorkflowIDs = workflows[call.targets[i].PullNumber]
+		delete(workflows, call.targets[i].PullNumber)
 	}
-	if len(after) != 0 {
+	if len(after) != 0 || len(workflows) != 0 {
 		return nil, false
 	}
 	return call, client.ValidateCIWatchTargets(call.targets) == nil

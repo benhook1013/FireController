@@ -51,7 +51,7 @@ func TestCIWatchInitialReadContentionUsesOriginalWaitDeadline(t *testing.T) {
 	ciWatchRegistered(t, s, 0)
 	release()
 	reply := receiveCIWatch(t, out)
-	if reply.err != nil || reply.value.State != "pending" || !reply.value.TimedOut || reply.value.Targets[0].CIWatchTarget != target || reply.value.Targets[0].Reason != "ci_watch_check_pending" {
+	if reply.err != nil || reply.value.State != "pending" || !reply.value.TimedOut || !reflect.DeepEqual(reply.value.Targets[0].CIWatchTarget, target) || reply.value.Targets[0].Reason != "ci_watch_check_pending" {
 		t.Fatal("quiet timeout lost real pending state", reply)
 	}
 	if elapsed := time.Since(started); elapsed < 2800*time.Millisecond || elapsed > 4500*time.Millisecond {
@@ -148,7 +148,7 @@ func TestCIWatchNotifiedReadContentionReauthorizesAndCleansUp(t *testing.T) {
 			}
 			release()
 			if phase == "fresh_result" {
-				if reply.err != nil || reply.value.State != "passed" || reply.value.Targets[0].CIWatchTarget != target {
+				if reply.err != nil || reply.value.State != "passed" || !reflect.DeepEqual(reply.value.Targets[0].CIWatchTarget, target) {
 					t.Fatal("fresh coherent result lost", reply)
 				}
 			} else {

@@ -25,6 +25,12 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 }
 
 func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagnostic) {
+	if len(item.WorkflowFailures) > 0 {
+		if item.WaitingForChange {
+			return "waiting_for_change", &ReviewOperationDiagnostic{"An explicitly selected workflow still has the failed job identified by after_observation_key. The required gate remains pending; this wait is awaiting changed facts.", "Keep the quiet wait pending, or reuse the same source pins, workflow selection and after_observation_key after timeout. No CI rerun or required-check change was requested."}
+		}
+		return "workflow_failure", &ReviewOperationDiagnostic{"A job in an explicitly selected workflow failed while required CI remains pending. This is early repair attention, not proof that the required aggregate gate failed.", "Inspect the supplied workflow, run, attempt and job IDs. To await changed facts after handling this signal, reuse observation_key as after_observation_key with the same pins and workflow selection."}
+	}
 	if item.WaitingForChange {
 		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI still has the failure identified by after_observation_key. This wait is awaiting a changed result; the failed checks remain current facts.", "Keep this quiet wait pending. After a timeout, reuse the same source pins and after_observation_key if still awaiting that retry. A changed failure or a pass will return normally; this never reruns CI."}
 	}

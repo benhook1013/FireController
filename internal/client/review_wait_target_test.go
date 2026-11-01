@@ -22,7 +22,7 @@ func TestReviewWaitInterruptionKeepsImmutableOriginalIdentity(t *testing.T) {
 		}
 		saved := targets[0]
 		targets[0].HeadSHA = strings.Repeat("e", 40)
-		if pinned[0] != saved {
+		if !reflect.DeepEqual(pinned[0], saved) {
 			t.Fatal("reattachment identity shared caller slice")
 		}
 		targets[0] = saved
