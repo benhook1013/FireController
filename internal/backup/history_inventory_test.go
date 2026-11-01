@@ -35,8 +35,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
-		t.Fatal("owning startup must install reviews v11", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+		t.Fatal("owning startup must install reviews v12", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +45,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 11 {
+	if err != nil || versions["reviews"] != 12 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -97,7 +97,7 @@ func TestHistoryInventoryV6RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 		{"wrong-run-order-index", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order ASC) WHERE outcome='completed' AND finalized=1`},
 		{"wrong-run-order-predicate", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order DESC) WHERE outcome='completed'`},
 		{"wrong-version", `UPDATE metadata SET value='3' WHERE key='schema:reviews'`},
-		{"future-version", `UPDATE metadata SET value='12' WHERE key='schema:reviews'`},
+		{"future-version", `UPDATE metadata SET value='13' WHERE key='schema:reviews'`},
 	}
 	for _, test := range []struct{ name, table, old, new string }{
 		{"missing-order-check", "review_current_pulls", "CHECK (position >= 0)", "CHECK (position >= -1)"},
@@ -634,7 +634,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 11 {
+			if err != nil || versions["reviews"] != 12 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
