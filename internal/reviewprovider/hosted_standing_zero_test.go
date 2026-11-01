@@ -214,6 +214,7 @@ func TestHostedStandingZeroOptionalNoReviewableSubset(t *testing.T) {
 				body = strings.Replace(body, availability, section+"\n"+availability, 1)
 			}
 			s.IssueComments[1].Body = body
+			before := append([]IssueComment(nil), s.IssueComments...)
 			inventory, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
 			want := mode == "one" || mode == "all" || mode == "zero" || mode == "omitted_ignored"
 			if err != nil || inventory.Complete != want || (inventory.Publication.StandingZero != nil) != want {
@@ -222,7 +223,7 @@ func TestHostedStandingZeroOptionalNoReviewableSubset(t *testing.T) {
 			if want && (inventory.Publication.StandingZero.SelectedFiles != 2 || len(inventory.Findings) != 0) {
 				t.Fatal("subset changed selected-for-processing count or findings")
 			}
-			if s.IssueComments[1].Body != body {
+			if !reflect.DeepEqual(s.IssueComments, before) {
 				t.Fatal("optional metadata mutated original source")
 			}
 		})
