@@ -21,7 +21,7 @@ func TestOperationListCLILocalHelpAndStrictArguments(t *testing.T) {
 			t.Fatal(code, out.String(), stderr.String())
 		}
 	}
-	for _, flags := range [][]string{{"42"}, {"--pr", "0"}, {"--pr", "01"}, {"--pr", "2147483648"}, {"--channel", "other"}, {"--channel", ""}, {"--all=true"}, {"--all", "--all"}, {"--limit", "0"}, {"--limit", "101"}, {"--limit", "05"}, {"--limit", "5", "--limit", "1"}, {"--cursor", ""}, {"--cursor", " bad"}, {"--status", "all"}, {"--all", "--help"}} {
+	for _, flags := range [][]string{{"42"}, {"--pr", "0"}, {"--pr", "01"}, {"--pr", "2147483648"}, {"--channel", "other"}, {"--channel", ""}, {"--all=true"}, {"--all", "--all"}, {"--limit", "0"}, {"--limit", "101"}, {"--limit", "05"}, {"--limit", "5", "--limit", "1"}, {"--cursor", ""}, {"--cursor", " bad"}, {"--status", "done"}, {"--status", "pending", "--all"}, {"--all", "--status", "attention"}, {"--status", "pending", "--status", "all"}, {"--all", "--help"}} {
 		var out, stderr bytes.Buffer
 		args := append([]string{"--profiles-file", "missing-private-profiles", "reviews", "operations"}, flags...)
 		code := cli.Run(args, nil, &out, &stderr)
@@ -64,7 +64,7 @@ func TestOperationListCLIRealHandlerDefaultsAllFilterAndRecovery(t *testing.T) {
 	if _, err := f.store.DB().Exec(`UPDATE review_operations SET state='completed' WHERE id=?`, id); err != nil {
 		t.Fatal(err)
 	}
-	if page := read(); len(page.Items) != 0 || page.Items == nil {
+	if page := read("--status", "pending"); len(page.Items) != 0 || page.Items == nil {
 		t.Fatal(page)
 	}
 	page = read("--pr", "2", "--channel", "cli", "--all", "--limit", "1")

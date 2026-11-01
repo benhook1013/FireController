@@ -27,7 +27,7 @@ func TestOperationListClientBoundFiltersAndNoAutomaticContinuation(t *testing.T)
 		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/project-one/reviews/operations" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Instance") != "instance-one" {
 			t.Error("list binding changed")
 		}
-		if calls.Load() == 1 && r.URL.RawQuery != "limit=5&status=pending" {
+		if calls.Load() == 1 && r.URL.RawQuery != "limit=5&status=attention" {
 			t.Error("list defaults changed", r.URL.RawQuery)
 		}
 		if calls.Load() == 2 && r.URL.RawQuery != "channel=cli&cursor=signed-cursor&limit=1&pull_number=2&status=all" {
@@ -79,8 +79,37 @@ func TestOperationListClientRejectsMalformedForeignAndBroadenedPages(t *testing.
 			}))
 			defer service.Close()
 			c := newClient(t, service)
-			_, err := c.ReviewOperations(t.Context(), client.ReviewOperationsOptions{PullNumber: 2, Channel: "cli"})
+			_, err := c.ReviewOperations(t.Context(), client.ReviewOperationsOptions{PullNumber: 2, Channel: "cli", Status: "pending"})
 			checkError(t, err, "invalid_response", "PRIVATE_ACTOR")
 		})
+	}
+}
+
+func TestOperationListClientAttentionAllowsCompletedButPendingStaysStrict(t *testing.T) {
+	var state atomic.Value
+	state.Store("completed")
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		item := operationListClientItem()
+		item.State = state.Load().(string)
+		write(w, 200, client.ReviewOperationsPage{ProjectID: "project-one", Items: []client.ReviewOperationSummary{item}})
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	for _, status := range []string{"", "attention", "all"} {
+		page, err := c.ReviewOperations(t.Context(), client.ReviewOperationsOptions{Status: status})
+		if err != nil || len(page.Items) != 1 || page.Items[0].State != "completed" {
+			t.Fatal(status, page, err)
+		}
+	}
+	_, err := c.ReviewOperations(t.Context(), client.ReviewOperationsOptions{Status: "pending"})
+	checkError(t, err, "invalid_response")
+	for _, terminal := range []string{"failed", "cancelled", "rate_limited"} {
+		state.Store(terminal)
+		_, err = c.ReviewOperations(t.Context(), client.ReviewOperationsOptions{Status: "attention"})
+		checkError(t, err, "invalid_response")
 	}
 }

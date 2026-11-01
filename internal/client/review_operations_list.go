@@ -34,7 +34,7 @@ type ReviewOperationsPage struct {
 }
 
 func ValidateReviewOperationsOptions(o ReviewOperationsOptions) error {
-	if o.PullNumber != 0 && !validPullNumber(o.PullNumber) || o.Channel != "" && !oneReviewOf(o.Channel, "cli", "hosted") || !oneReviewOf(o.Status, "", "pending", "all") {
+	if o.PullNumber != 0 && !validPullNumber(o.PullNumber) || o.Channel != "" && !oneReviewOf(o.Channel, "cli", "hosted") || !oneReviewOf(o.Status, "", "attention", "pending", "all") {
 		return validation()
 	}
 	if _, err := pageQuery(o.PageOptions); err != nil {
@@ -56,7 +56,7 @@ func (c *Client) ReviewOperations(ctx context.Context, options ReviewOperationsO
 		options.Limit = 5
 	}
 	if options.Status == "" {
-		options.Status = "pending"
+		options.Status = "attention"
 	}
 	query, _ := pageQuery(options.PageOptions)
 	query.Set("status", options.Status)
@@ -75,7 +75,7 @@ func (c *Client) ReviewOperations(ctx context.Context, options ReviewOperationsO
 	}
 	seen := make(map[string]bool, len(value.Items))
 	for i, item := range value.Items {
-		if !validReviewOperationSummary(item) || seen[item.ID] || options.PullNumber != 0 && item.PullNumber != options.PullNumber || options.Channel != "" && item.Channel != options.Channel || options.Status == "pending" && !oneReviewOf(item.State, "queued", "preparing", "posting", "active", "uncertain", "held") {
+		if !validReviewOperationSummary(item) || seen[item.ID] || options.PullNumber != 0 && item.PullNumber != options.PullNumber || options.Channel != "" && item.Channel != options.Channel || options.Status == "pending" && !oneReviewOf(item.State, "queued", "preparing", "posting", "active", "uncertain", "held") || options.Status == "attention" && !oneReviewOf(item.State, "queued", "preparing", "posting", "active", "uncertain", "held", "completed") {
 			return ReviewOperationsPage{}, invalidResponse()
 		}
 		if i > 0 {

@@ -67,7 +67,7 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 	if options.Status == "" {
 		options.Status = "pending"
 	}
-	if options.Status != "pending" && options.Status != "all" {
+	if options.Status != "attention" && options.Status != "pending" && options.Status != "all" {
 		return OperationsPage{}, invalid()
 	}
 	if options.Limit == 0 {
@@ -97,8 +97,28 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 			query += ` AND o.channel=?`
 			args = append(args, options.Channel)
 		}
-		if options.Status == "pending" {
-			query += ` AND (o.state IN ('queued','preparing','posting','active','uncertain') OR (o.state='held' AND EXISTS (SELECT 1 FROM review_execution_reservations r JOIN review_execution_attempts a ON a.id=r.attempt_id WHERE a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id)))`
+		if options.Status == "pending" || options.Status == "attention" {
+			query += ` AND (o.state IN ('queued','preparing','posting','active','uncertain') OR (o.state='held' AND EXISTS (SELECT 1 FROM review_execution_reservations r JOIN review_execution_attempts a ON a.id=r.attempt_id WHERE a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id))`
+			if options.Status == "attention" {
+				// Provider completion does not settle adjudication or accepted fixes.
+				// Filter these current local obligations before paging, so completed
+				// history cannot crowd an older actionable result out of discovery.
+				query += ` OR (o.state='completed' AND EXISTS (
+ SELECT 1 FROM review_execution_evidence e
+ LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
+ WHERE e.project_id=o.project_id AND e.operation_id=o.id AND e.attempt_id=o.attempt_id
+ AND (s.evidence_id IS NULL OR json_type(s.body_json,'$.finalized') IS NOT 'true'
+ OR json_type(s.body_json,'$.findings') IS NOT 'array' OR EXISTS (
+  SELECT 1 FROM json_each(s.body_json,'$.findings') f
+  WHERE json_extract(f.value,'$.disposition')='accepted' AND (
+   json_type(f.value,'$.fix_sha') IS NOT 'text' OR length(json_extract(f.value,'$.fix_sha'))<>40
+   OR json_extract(f.value,'$.fix_sha') GLOB '*[^0-9a-f]*'
+   OR json_type(f.value,'$.proof_note') IS NOT 'text' OR trim(json_extract(f.value,'$.proof_note'))=''
+   OR json_type(f.value,'$.fixed_at') IS NOT 'text' OR julianday(json_extract(f.value,'$.fixed_at')) IS NULL
+  )
+ ))))`
+			}
+			query += `)`
 		}
 		if position != "" {
 			query += ` AND (o.created_at,o.id)<(?,?)`
@@ -110,23 +130,35 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		var items []OperationSummary
 		for rows.Next() {
 			var item OperationSummary
 			if err := rows.Scan(&item.ID, &item.PullNumber, &item.Channel, &item.HeadSHA, &item.WorkerID, &item.State, &item.Reason, &item.AttemptID, &item.Revision, &item.CreatedAt, &item.UpdatedAt); err != nil {
+				_ = rows.Close()
 				return err
 			}
 			if !validOperationSummary(item) {
+				_ = rows.Close()
 				return core.Fail("storage_unavailable", "Stored review operation summaries are unavailable.", 500)
+			}
+			items = append(items, item)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			if options.Status == "attention" && item.State == "completed" {
+				if err := validateOperationAttention(ctx, tx, scope.ProjectID, item.ID); err != nil {
+					return err
+				}
 			}
 			if len(result.Items) == options.Limit {
 				result.HasMore = true
 				break
 			}
 			result.Items = append(result.Items, item)
-		}
-		if err := rows.Err(); err != nil {
-			return err
 		}
 		if result.HasMore {
 			last := result.Items[len(result.Items)-1]
@@ -138,4 +170,39 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 		return OperationsPage{}, err
 	}
 	return result, nil
+}
+
+// SQL selects local attention candidates, including malformed stop/fix scalars
+// that must not silently erase work. Validate only this bounded page through the
+// existing evidence identity and decision guards; no raw captures are opened.
+func validateOperationAttention(ctx context.Context, tx *sql.Tx, project, id string) error {
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err != nil {
+		return err
+	}
+	facts, err := operationStatusEvidence(ctx, tx, o)
+	if err != nil {
+		return err
+	}
+	if facts.ID == "" {
+		return adjudicationStorageError()
+	}
+	evidence, state, err := loadReviewAdjudication(ctx, tx, project, facts.ID)
+	if err != nil {
+		return err
+	}
+	// Reuse complete finding/fix validation, without broadening this list to
+	// receiving route work or changing any coverage/round accounting.
+	if _, err := coverageProof(ctx, tx, evidence, state, o.Channel); err != nil {
+		return err
+	}
+	if !state.Finalized {
+		return nil
+	}
+	for _, finding := range state.Findings {
+		if finding.Disposition == "accepted" && finding.FixSHA == "" {
+			return nil
+		}
+	}
+	return adjudicationStorageError()
 }

@@ -342,9 +342,9 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews fix review_evidence_0123456789abcdef0123456789abcdef --key fix-1 --expect-revision 4 --finding 0 --expect-sha= --fix-sha 0123456789abcdef0123456789abcdef01234567 --proof 'Verified published fix and focused test'"
 		out.Documentation = "docs/review-controls.md"
 	case "reviews operations":
-		out.Usage = "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
-		out.Optional = []string{"--pr NUMBER (positive PR number)", "--channel cli|hosted", "--all (include terminal and held history)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue with the same filters)"}
-		out.Semantics = []string{"Reads one compact newest-first page of retained project operations without provider work or automatic continuation. Defaults to pending queued/preparing/posting/active/uncertain operations and held operations retaining an execution reservation.", "--all recovers lost operation receipts from history. Mutable state is evaluated on each page; pagination does not promise a historical snapshot. Select reviews operation OPERATION_ID for detail and recovery; listing never requests or retries a review."}
+		out.Usage = "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--status attention|pending|all | --all] [--limit N] [--cursor CURSOR]"
+		out.Optional = []string{"--pr NUMBER (positive PR number)", "--channel cli|hosted", "--status attention|pending|all (default attention)", "--all (shorthand for --status all)", "--limit N (1-100, default 5)", "--cursor CURSOR (continue with the same filters)"}
+		out.Semantics = []string{"Reads one compact newest-first page of retained project operations without provider work or automatic continuation. Defaults to attention: queued/preparing/posting/active/uncertain operations, held operations retaining an execution reservation, and completed native results awaiting adjudication/finalization or accepted fixes.", "--status pending selects provider work only; --all (or --status all) recovers lost operation receipts from history. These selectors are mutually exclusive. Mutable state is evaluated on each page; pagination does not promise a historical snapshot. Select reviews operation OPERATION_ID for detail and recovery; listing never requests or retries a review."}
 		out.Example = "<bound launcher> reviews operations --pr 42 --all --limit 5"
 		out.Documentation = "docs/review-operations.md"
 	case "reviews operation":
