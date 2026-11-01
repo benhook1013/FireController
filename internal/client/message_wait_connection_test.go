@@ -61,7 +61,7 @@ func TestMessageWaitLostHTTPStreamRetainsCallerCursorAndSafeRecovery(t *testing.
 			page, err := c.WaitForMessages(context.Background(), cursor, 1, 1)
 			checkError(t, err, "connection_failed")
 			var failure *client.Error
-			if !errors.As(err, &failure) || failure.Message != "The message connection was lost." || failure.Action != "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged." || failure.OutcomeUnknown || failure.Status != 0 {
+			if !errors.As(err, &failure) || failure.Message != "The message connection was lost. This wait ended; no message subscription remains active." || failure.Action != "Start a new wait using the original saved cursor when the service is available, or read the bound-worker inbox; messages remain unacknowledged. No automatic reconnect occurs." || failure.OutcomeUnknown || failure.Status != 0 {
 				t.Fatal("lost stream diagnostic leaked transport content or lost safe recovery", err)
 			}
 			if page.Items != nil || page.Cursor != "" || page.TimedOut || streams.Load() != 1 {

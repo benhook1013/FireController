@@ -120,7 +120,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		if errors.As(err, &timeout) && timeout.Timeout() {
 			return MessageEventPage{}, contextError(context.DeadlineExceeded)
 		}
-		return MessageEventPage{}, fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
+		return MessageEventPage{}, messageWaitConnectionFailure("The service connection failed.")
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
@@ -160,7 +160,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		if err != nil {
 			var transport net.Error
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
-				return MessageEventPage{}, fail("connection_failed", "The message connection was lost.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", 0)
+				return MessageEventPage{}, messageWaitConnectionFailure("The message connection was lost.")
 			}
 			return MessageEventPage{}, invalidResponse()
 		}
@@ -202,6 +202,10 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			return page, nil
 		}
 	}
+}
+
+func messageWaitConnectionFailure(message string) *Error {
+	return fail("connection_failed", message+" This wait ended; no message subscription remains active.", "Start a new wait using the original saved cursor when the service is available, or read the bound-worker inbox; messages remain unacknowledged. No automatic reconnect occurs.", 0)
 }
 
 func (c *Client) messageWaitError(data []byte, status int) *Error {
