@@ -119,7 +119,7 @@ func TestAdoptionRetargetCanonicalExportInspectInactiveRestore(t *testing.T) {
 	if err != nil || !recovery.ProvidersHeld || recovery.State != "inactive" {
 		t.Fatal("retarget restore released provider work", recovery, err)
 	}
-	invalid := restoreModifiedBundle(t, bundle, `DELETE FROM review_adoption_targets WHERE obligation_id='`+openID+`' AND pull_number=7`)
+	invalid := restoreModifiedBundle(t, bundle, `DROP TRIGGER review_adoption_targets_retain; DELETE FROM review_adoption_targets WHERE obligation_id='`+openID+`' AND pull_number=7; `+adoptionTrigger(t, "review_adoption_targets_retain"))
 	if _, err := Inspect(t.Context(), invalid); err == nil {
 		t.Fatal("rehashed bundle accepted a missing current receiver")
 	}
