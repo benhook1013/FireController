@@ -447,18 +447,19 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	count, ok := publicationRootCount(batches[1].Body)
 	if !ok {
-		// A complete outside-only single batch may omit its inline count. Unknown
-		// collections, attached roots or fresh orphan roots cannot imply zero roots.
-		outsideOnly := total == 1 && len(result.Roots) == 0 && snapshot.ReviewComments != nil
+		// A complete nonempty summary-only single batch may omit its inline count.
+		// Unknown collections, attached roots or fresh orphan roots cannot imply
+		// zero inline roots; decoded summary findings remain nonempty.
+		summaryOnly := total == 1 && len(result.Roots) == 0 && snapshot.ReviewComments != nil
 		inside := func(at time.Time) bool {
 			return !at.Before(trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
 		}
 		for _, comment := range snapshot.ReviewComments {
 			if comment.InReplyToID == 0 && !reviewIDs[comment.ReviewID] && publicationActor(comment.Author, providerAuthor) && (inside(comment.CreatedAt) || inside(comment.UpdatedAt)) {
-				outsideOnly = false
+				summaryOnly = false
 			}
 		}
-		if !outsideOnly || !publicationOutsideOnly(result) {
+		if !summaryOnly || !publicationSummaryOnly(result) {
 			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
 			return result, nil
 		}

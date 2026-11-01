@@ -820,10 +820,11 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	}
 }
 
-// publicationOutsideOnly recognizes the narrow omitted-inline-count variant
-// through the same strict decoder used for final extraction. It is nonrecursive
-// and does not rewrite the original provider body or infer an empty inventory.
-func publicationOutsideOnly(publication HostedPublication) bool {
+// publicationSummaryOnly proves a nonempty summary-only inventory when the
+// inline-root count is omitted. Additional and outside-diff categories use the
+// same strict decoder as final extraction; duplicate-only or empty summaries
+// cannot establish this proof. It never rewrites bodies or invents findings.
+func publicationSummaryOnly(publication HostedPublication) bool {
 	if len(publication.Batches) != 1 {
 		return false
 	}
@@ -848,7 +849,7 @@ func publicationOutsideOnly(publication HostedPublication) bool {
 		return false
 	}
 	for _, finding := range inventory.Findings {
-		if finding.Kind != "outside_diff" {
+		if finding.Kind != "outside_diff" && finding.Kind != "additional" {
 			return false
 		}
 	}
