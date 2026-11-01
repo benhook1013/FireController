@@ -51,7 +51,7 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && destination == "" {
 		return invalid()
 	}
-	if (seen["health-label"] || seen["health-max-age"]) && healthFile == "" {
+	if (seen["health-file"] || seen["health-label"] || seen["health-max-age"]) && healthFile == "" {
 		return invalid()
 	}
 	if healthFile != "" && (backuphealth.ValidateFiles([]string{healthFile}) != nil || !backuphealth.ValidLabel(healthLabel) || healthMaxAge < time.Minute || healthMaxAge > 30*24*time.Hour || healthMaxAge%time.Second != 0) {
