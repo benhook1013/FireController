@@ -18,6 +18,13 @@ func validAllowanceOwners(o Operation, a Attempt) bool {
 
 func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (cliAllowanceRecord, error) {
 	var record cliAllowanceRecord
+	if o.AttemptID != a.ID {
+		var err error
+		o, err = historicalCLIExhaustionOperation(ctx, q, o, a)
+		if err != nil {
+			return record, err
+		}
+	}
 	if !validAllowanceOwners(o, a) {
 		return record, allowanceUnavailable()
 	}

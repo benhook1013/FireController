@@ -29,10 +29,28 @@ describe('retained automatic review waiting', () => {
     const active=renderToStaticMarkup(<ReviewProgressView value={{...progress,wait:undefined}}/>);
     expect(active).toContain('1 awaiting review result');
   });
+  it('shows CLI quota waiting without presenting the server check as a reset ETA', () => {
+    vi.useFakeTimers();vi.setSystemTime('2026-10-30T12:00:00Z');
+    const cliProgress: ReviewRoundProgress = {...progress,channel:'cli'};
+    expect(validRoundProgress(cliProgress,'cli')).toBe(true);
+    expect(operationWaitLabel(wait,Date.now(),'cli')).toBe('Quota wait');
+    const html=renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait} channel="cli"/>);
+    expect(html).toContain('Quota wait');
+    expect(html).toContain('next automatic quota check');
+    expect(html).toContain('not a provider reset or promised start');
+    expect(html).not.toContain('Cooldown');
+    const counts=renderToStaticMarkup(<ReviewProgressView value={cliProgress}/>);
+    expect(counts).toContain('Up to 3 more reviews');
+    expect(counts).not.toContain('awaiting review result');
+    expect(operationWaitLabel({...wait,paused:true},Date.now(),'cli')).toBe('Paused');
+    vi.setSystemTime('2026-10-30T12:30:01Z');
+    expect(operationWaitLabel(wait,Date.now(),'cli')).toBe('Quota wait');
+  });
   it('requires boolean paused and attributable canonical deadline pairs', () => {
     expect(validOperationWait(wait,'hosted')).toBe(true);
     expect(validOperationWait({paused:true},'hosted')).toBe(true);
     for (const bad of [null,{}, {...wait,paused:null},{...wait,retry_not_before:'tomorrow'},{...wait,retry_not_before:null},{...wait,baseline_attempt_id:'other'}, {...wait,private_capture:'secret'}, {paused:false,retry_not_before:wait.retry_not_before}]) expect(validOperationWait(bad,'hosted')).toBe(false);
-    expect(validOperationWait(wait,'cli')).toBe(false);
+    expect(validOperationWait(wait,'cli')).toBe(true);
+    expect(validOperationWait(wait,'other')).toBe(false);
   });
 });

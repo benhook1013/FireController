@@ -172,7 +172,7 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 			return nil, err
 		}
 		if o.State == "queued" {
-			if o.Channel == "hosted" {
+			if validChannel(o.Channel) {
 				// Native admission caps all pending work at 256 (32 per
 				// project), so this within-project filter sees the entire
 				// eligible candidate set under the SQL limit above.
@@ -180,12 +180,23 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 				if err != nil {
 					return nil, err
 				}
-				earlier, err := e.earlierQueuedHostedIntent(ctx, tx, o, c, revision)
+				earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
 				if err != nil {
 					return nil, err
 				}
 				if earlier != nil {
 					continue
+				}
+				if o.Channel == "cli" {
+					if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
+						due, err := cliAccountRetryDeadline(ctx, tx, capability)
+						if err != nil {
+							return nil, err
+						}
+						if e.sampleExecutionTime().Before(due) {
+							continue
+						}
+					}
 				}
 			}
 			out = append(out, o)
@@ -278,13 +289,13 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			state := "held"
 			reason := preparationReason(err)
-			if ctx.Err() == nil && o.Channel == "hosted" && reason == "hosted_allowance_cooldown" {
-				_, scheduleErr := e.persistHostedCooldown(ctx, o, a)
+			if ctx.Err() == nil && (o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted") {
+				_, scheduleErr := e.persistCooldown(ctx, o, a)
 				if scheduleErr == nil {
 					return nil
 				}
 				var refusal *core.Error
-				if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
+				if !(o.Channel == "cli" && errors.Is(scheduleErr, sql.ErrNoRows)) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
 					return scheduleErr
 				}
 			}
@@ -413,7 +424,7 @@ func persistenceFailureAt(stage string, cause error, operationID, attemptID stri
 // A proven unused cooldown is already retained before this call. Retry only
 // refused local writer admission or a callback deadline that rolled back before
 // Commit. An ambiguous commit still requires exact retained-state reconciliation.
-func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, error) {
+func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, error) {
 	local, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var result Attempt
@@ -423,7 +434,11 @@ func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, 
 		writeErr := e.store.BackgroundWrite(local, func(ctx context.Context, tx *sql.Tx) error {
 			entered = true
 			var err error
-			result, err = e.scheduleHostedCooldown(ctx, tx, a.ProjectID, a.ID, a.Revision)
+			if original.Channel == "cli" {
+				result, err = e.scheduleCLICooldown(ctx, tx, a.ProjectID, a.ID, a.Revision)
+			} else {
+				result, err = e.scheduleHostedCooldown(ctx, tx, a.ProjectID, a.ID, a.Revision)
+			}
 			// A nonnil callback error makes BackgroundWrite roll back without
 			// invoking Commit. Only its actual child deadline is retryable; a
 			// domain overload or an expired outer budget is not that proof.
@@ -440,10 +455,13 @@ func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, 
 		}
 		// A failed commit may already be present. Only the exact original timer
 		// and guarded attempt transition reconcile that ambiguity without a write.
-		if recovered, ok := e.recordedHostedCooldown(local, original, a); ok {
+		if recovered, ok := e.recordedCooldown(local, original, a); ok {
 			result = recovered
 			e.notifyOperation(a.OperationID)
 			return nil
+		}
+		if original.Channel == "cli" && errors.Is(writeErr, sql.ErrNoRows) {
+			return writeErr
 		}
 		if errors.As(writeErr, &failure) && failure.Code == "review_cooldown_elapsed" {
 			return writeErr
@@ -451,6 +469,9 @@ func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, 
 		return persistenceFailureAt("cooldown_schedule", writeErr, a.OperationID, a.ID)
 	})
 	if err != nil {
+		if original.Channel == "cli" && errors.Is(err, sql.ErrNoRows) {
+			return Attempt{}, err
+		}
 		var failure *core.Error
 		if errors.As(err, &failure) && (failure.Code == "review_persistence_failed" || failure.Code == "review_cooldown_elapsed") {
 			return Attempt{}, err
@@ -460,7 +481,7 @@ func (e *Engine) persistHostedCooldown(ctx context.Context, original Operation, 
 	return result, nil
 }
 
-func (e *Engine) recordedHostedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, bool) {
+func (e *Engine) recordedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, bool) {
 	var result Attempt
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := readAttempt(ctx, tx, a.ProjectID, a.ID)
@@ -482,12 +503,23 @@ func (e *Engine) recordedHostedCooldown(ctx context.Context, original Operation,
 		if err != nil {
 			return err
 		}
-		record, err := readHostedAllowanceRecord(ctx, tx, historical, current)
-		if err != nil {
-			return err
-		}
-		if record.Input.Observation.State != "cooldown_observed" || o.Wait.RetryNotBefore != record.Input.Observation.RetryNotBefore.UTC().Format(time.RFC3339Nano) {
-			return conflict()
+		if original.Channel == "cli" {
+			record, err := readCLIAllowanceRecord(ctx, tx, historical, current)
+			if err != nil || record.Observation.Remaining != 0 {
+				return waitUnavailable()
+			}
+			due, err := cliExhaustionDeadline(ctx, tx, current)
+			if err != nil || o.Wait.RetryNotBefore != due.UTC().Format(time.RFC3339Nano) {
+				return conflict()
+			}
+		} else {
+			record, err := readHostedAllowanceRecord(ctx, tx, historical, current)
+			if err != nil {
+				return err
+			}
+			if record.Input.Observation.State != "cooldown_observed" || o.Wait.RetryNotBefore != record.Input.Observation.RetryNotBefore.UTC().Format(time.RFC3339Nano) {
+				return conflict()
+			}
 		}
 		var reserved bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=?)`, a.ID).Scan(&reserved); err != nil {

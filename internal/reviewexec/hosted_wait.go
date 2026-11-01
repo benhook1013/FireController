@@ -45,7 +45,7 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		return nil, err
 	}
 	result.BaselineAttemptID, result.Paused = baseline.String, paused == 1
-	if paused != 0 && paused != 1 || baseline.Valid != (result.RetryNotBefore != "") || baseline.Valid && (!hostedObservationID(baseline.String, "review_attempt_") || o.Channel != "hosted") {
+	if paused != 0 && paused != 1 || baseline.Valid != (result.RetryNotBefore != "") || baseline.Valid && (!hostedObservationID(baseline.String, "review_attempt_") || !validChannel(o.Channel)) {
 		return nil, waitUnavailable()
 	}
 	if baseline.Valid {
@@ -60,7 +60,11 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		if err != nil {
 			return nil, err
 		}
-		if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
+		if o.Channel == "cli" {
+			if record, err := readCLIAllowanceRecord(ctx, q, original, a); err != nil || record.Observation.Remaining != 0 {
+				return nil, waitUnavailable()
+			}
+		} else if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
 			return nil, waitUnavailable()
 		}
 	}
@@ -93,6 +97,9 @@ func mustWaitTime(value string) time.Time {
 // history reads only. Live query/admission/action checks still require the real
 // operation's current attempt. Only proven unused cooldown attempts qualify.
 func historicalCooldownOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, error) {
+	if o.Channel == "cli" {
+		return historicalCLIExhaustionOperation(ctx, q, o, a)
+	}
 	if o.AttemptID == a.ID {
 		return o, nil
 	}
@@ -131,6 +138,14 @@ func (e *Engine) RetryBaseline(ctx context.Context, project, operationID string)
 		}
 		original, err := historicalCooldownOperation(ctx, tx, o, a)
 		if err != nil {
+			return err
+		}
+		if o.Channel == "cli" {
+			record, err := readCLIAllowanceRecord(ctx, tx, original, a)
+			if err == nil {
+				anchor := record.Observation.Anchor
+				result = &anchor
+			}
 			return err
 		}
 		record, err := readHostedAllowanceRecord(ctx, tx, original, a)

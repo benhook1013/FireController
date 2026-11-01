@@ -1,6 +1,6 @@
 # Review scheduling
 
-Projects can optionally enable automatic new Hosted requests. The default is off. CLI reviews remain explicitly started. Automatic GitHub observation and automatic retry of an already authorized timer-backed request are independent of this setting; see [observation](github-observation.md) and [timer-backed waiting](review-execution.md#timer-backed-hosted-waiting).
+Projects can optionally enable automatic new Hosted requests. The default is off. CLI reviews remain explicitly requested; a proven quota refusal retains that accepted request through [durable CLI waiting](review-execution.md#durable-cli-quota-waiting), without automatically choosing another PR or round. Automatic GitHub observation and automatic retry of an already authorized timer-backed request are independent of this setting; see [observation](github-observation.md) and [timer-backed waiting](review-execution.md#timer-backed-hosted-waiting).
 
 ## Automatic Hosted requests
 
@@ -8,7 +8,7 @@ A project manager enables scheduling through the queue's **Automatic Hosted** co
 
 The scheduler uses the existing configured queue and ordinary durable selection/operation path. It checks eligible work at most once per five-second coordinator interval; this is not a promised start time or another GitHub polling loop. Source, dependency, publication, findings, routes, imported obligations, round limits, taper and provider guards still apply. Independent PRs can proceed while another awaits fixes; real dependencies retain predecessor guards. Automatic requests never inherit out-of-order or file-limit overrides.
 
-Meaningful source, review or control changes can create another automatic intent. Timer-backed requests retain their original operation and retry deadline. Ticks, restarts, observation timestamps and failed/cancelled operation transitions cannot recreate the same request. A clean CLI completion alone cannot restart a cancelled Hosted request. A dependent PR can become eligible when its actual predecessor completes at the same head. Cancellation stops that intent; use a PR pause to hold new reviews persistently.
+Meaningful source, review or control changes can create another automatic intent. A waiting later PR does not prevent reconsideration of an earlier PR that becomes eligible; the earlier request can take priority while the later request retains its identity and cooldown. Existing queued work on a PR prevents a duplicate intent for that PR, and active provider work is not interrupted. Timer-backed requests retain their original operation and retry deadline. Ticks, restarts, observation timestamps and failed/cancelled operation transitions cannot recreate the same request. A clean CLI completion alone cannot restart a cancelled Hosted request. A dependent PR can become eligible when its actual predecessor completes at the same head. Cancellation stops that intent; use a PR pause to hold new reviews persistently.
 
 Results still require normal adjudication, finalization and fix evidence. Automation does not infer fixes or grant more reviews. Enabling it can spend existing authorized Hosted allowance; it is a deliberate project control, not a prerequisite for routine review use.
 

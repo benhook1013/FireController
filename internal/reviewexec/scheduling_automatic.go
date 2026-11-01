@@ -208,14 +208,21 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 // operation's state transition as a reason to recreate that operation. A
 // selected PR is suppressed by its own semantic basis, independently of peers.
 func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c Configuration, ignoreSelection string) (string, bool, error) {
+	limit, err := automaticHostedQueuedPrefix(ctx, tx, project, c)
+	if err != nil {
+		return "", false, err
+	}
 	values := make([]any, 0, len(c.Queue))
 	remaining := []int64{}
-	for _, pull := range c.Queue {
+	for position, pull := range c.Queue {
 		basis, err := automaticPullBasis(ctx, tx, project, pull)
 		if err != nil {
 			return "", false, err
 		}
 		values = append(values, []any{pull, basis})
+		if position >= limit {
+			continue
+		}
 		p, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
 			return "", false, err
@@ -235,6 +242,19 @@ func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c C
 	return hex.EncodeToString(sum[:]), len(remaining) > 0, nil
 }
 
+// A waiting request keeps its identity and deadline. Automatic selection may
+// reconsider only earlier PRs, rather than duplicate that request or prefetch
+// farther successors merely because the request is not executing yet.
+func automaticHostedQueuedPrefix(ctx context.Context, tx *sql.Tx, project string, c Configuration) (int, error) {
+	queue, err := json.Marshal(c.Queue)
+	if err != nil {
+		return 0, err
+	}
+	var limit int
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='hosted' AND o.state='queued'`, len(c.Queue), string(queue), project).Scan(&limit)
+	return limit, err
+}
+
 func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run, pull int64) (bool, error) {
 	var automatic bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
@@ -242,6 +262,17 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	}
 	if !automatic {
 		return false, nil
+	}
+	c, _, err := readConfiguration(ctx, tx, r.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	limit, err := automaticHostedQueuedPrefix(ctx, tx, r.ProjectID, c)
+	if err != nil {
+		return false, err
+	}
+	if position := slices.Index(c.Queue, pull); position < 0 || position >= limit {
+		return true, nil
 	}
 	basis, err := automaticPullBasis(ctx, tx, r.ProjectID, pull)
 	if err != nil {
@@ -359,7 +390,7 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 				return nil
 			}
 			var busy bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel='hosted' AND state IN('queued','selecting')) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel='hosted' AND state IN('queued','preparing','posting','active','uncertain'))`, project, project).Scan(&busy); err != nil {
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel='hosted' AND state IN('queued','selecting')) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel='hosted' AND state IN('preparing','posting','active','uncertain'))`, project, project).Scan(&busy); err != nil {
 				return err
 			}
 			if busy {

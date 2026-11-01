@@ -100,7 +100,7 @@ func TestAgentHostedAttributionHintKeepsHigherPriorityDiagnostics(t *testing.T) 
 	full := ReviewOperation{Channel: compact.Channel, State: compact.State, Reason: compact.Reason, AttemptID: compact.AttemptID, Observer: compact.Observer}
 	wait := &ReviewOperationWait{Paused: true}
 	compact.Wait, full.Wait = wait, wait
-	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, operationWaitDiagnostic(wait)) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, operationWaitDiagnostic(wait)) || AgentReviewOperationStatus(compact).NextAction != "wait" {
+	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, operationWaitDiagnostic(wait, "hosted")) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, operationWaitDiagnostic(wait, "hosted")) || AgentReviewOperationStatus(compact).NextAction != "wait" {
 		t.Fatal("attribution hint replaced existing operation wait")
 	}
 	pending := &ReviewPendingEvidence{Items: []ReviewPendingEvidenceItem{}}

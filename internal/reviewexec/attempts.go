@@ -124,6 +124,15 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if o.CapabilityFingerprint != capability.Fingerprint {
 			return holdOperation(ctx, tx, o, "capability_changed", at)
 		}
+		if o.Channel == "cli" {
+			due, err := cliAccountRetryDeadline(ctx, tx, capability)
+			if err != nil {
+				return err
+			}
+			if e.sampleExecutionTime().Before(due) {
+				return nil
+			}
+		}
 		allowed, err := actorAllowed(ctx, tx, project, o.ActorID, o.WorkerID)
 		if err != nil {
 			return err
@@ -146,7 +155,7 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			return err
 		}
 		var repositoryID int64
-		if earlier, err := e.earlierQueuedHostedIntent(ctx, tx, o, c, revision); err != nil {
+		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
 			return err
 		} else if earlier != nil {
 			return nil
@@ -479,6 +488,19 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 					if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
 						return scheduleErr
 					}
+				}
+			}
+			if a.State == "preparing" && o.Channel == "cli" {
+				record, readErr := readCLIAllowanceRecord(ctx, tx, o, a)
+				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+					return readErr
+				}
+				if readErr == nil && record.Observation.Remaining == 0 {
+					if _, err := e.scheduleCLICooldown(ctx, tx, x.project, x.id, a.Revision); err != nil {
+						return err
+					}
+					changed = append(changed, a.OperationID)
+					continue
 				}
 			}
 			at, err := attemptRecordingStamp(ctx, tx, o, &a, now)

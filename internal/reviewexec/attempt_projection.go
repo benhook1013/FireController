@@ -73,9 +73,16 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		if err != nil {
 			return reviews.Receipt{}, publicationConflict()
 		}
-		record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
-		if err != nil || record.Input.Observation.State != "cooldown_observed" {
-			return reviews.Receipt{}, publicationConflict()
+		if operation.Channel == "cli" {
+			record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
+			if err != nil || record.Observation.Remaining != 0 {
+				return reviews.Receipt{}, publicationConflict()
+			}
+		} else {
+			record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+			if err != nil || record.Input.Observation.State != "cooldown_observed" {
+				return reviews.Receipt{}, publicationConflict()
+			}
 		}
 		operation = original
 	}

@@ -26,7 +26,7 @@ func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt st
 	if w.BaselineAttemptID == "" {
 		return w.RetryNotBefore == ""
 	}
-	return channel == "hosted" && validReviewOpaqueID(w.BaselineAttemptID, "review_attempt_") && validAllowanceTime(w.RetryNotBefore)
+	return oneReviewOf(channel, "cli", "hosted") && validReviewOpaqueID(w.BaselineAttemptID, "review_attempt_") && validAllowanceTime(w.RetryNotBefore)
 }
 
 type ReviewOperationControl struct {

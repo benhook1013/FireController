@@ -232,7 +232,7 @@ func TestSupervisorCooldownEnteredFailureIsFatalAndExactReplayReconciles(t *test
 		entered.Add(1)
 		return core.Fail("overloaded", "Private callback failure", 503)
 	}
-	_, err := f.e.persistHostedCooldown(t.Context(), o, a)
+	_, err := f.e.persistCooldown(t.Context(), o, a)
 	var failure *core.Error
 	if !errors.As(err, &failure) || failure.Code != "review_persistence_failed" || failure.Details.(map[string]string)["stage"] != "cooldown_schedule" || entered.Load() != 1 {
 		t.Fatal("entered callback error was retried or hidden", err, entered.Load())
@@ -246,12 +246,12 @@ func TestSupervisorCooldownEnteredFailureIsFatalAndExactReplayReconciles(t *test
 		t.Fatal(err)
 	}
 	before := snapshotTable(t, f, "review_execution_transitions") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "events")
-	replayed, err := f.e.persistHostedCooldown(t.Context(), o, a)
+	replayed, err := f.e.persistCooldown(t.Context(), o, a)
 	if err != nil || replayed.ID != committed.ID || replayed.Revision != committed.Revision || before != snapshotTable(t, f, "review_execution_transitions")+snapshotTable(t, f, "review_operation_waits")+snapshotTable(t, f, "events") {
 		t.Fatal("exact committed timer was not reconciled without mutation", err)
 	}
 	o.Revision++
-	if _, err := f.e.persistHostedCooldown(t.Context(), o, a); err == nil {
+	if _, err := f.e.persistCooldown(t.Context(), o, a); err == nil {
 		t.Fatal("wrong original CAS accepted")
 	}
 }

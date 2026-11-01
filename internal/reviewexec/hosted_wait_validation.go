@@ -81,22 +81,31 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 			if err != nil {
 				return err
 			}
-			record, err := readHostedAllowanceRecord(ctx, tx, historical, a)
-			if err != nil {
-				return err
+			var due time.Time
+			if o.Channel == "cli" {
+				record, err := readCLIAllowanceRecord(ctx, tx, historical, a)
+				if err != nil || record.Observation.Remaining != 0 {
+					return waitUnavailable()
+				}
+				due, err = cliExhaustionDeadline(ctx, tx, a)
+				if err != nil {
+					return err
+				}
+			} else {
+				record, err := readHostedAllowanceRecord(ctx, tx, historical, a)
+				if err != nil || record.Input.Observation.State != "cooldown_observed" {
+					return waitUnavailable()
+				}
+				var at string
+				if err := tx.QueryRowContext(ctx, `SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&at); err != nil {
+					return err
+				}
+				ended, valid := attemptRecordedTime(at)
+				if !valid || !record.Input.Observation.RetryNotBefore.After(ended) {
+					return waitUnavailable()
+				}
+				due = record.Input.Observation.RetryNotBefore
 			}
-			if record.Input.Observation.State != "cooldown_observed" {
-				return waitUnavailable()
-			}
-			var at string
-			if err := tx.QueryRowContext(ctx, `SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&at); err != nil {
-				return err
-			}
-			ended, valid := attemptRecordedTime(at)
-			if !valid || !record.Input.Observation.RetryNotBefore.After(ended) {
-				return waitUnavailable()
-			}
-			due := record.Input.Observation.RetryNotBefore
 			if firstDeadline.IsZero() || due.Before(firstDeadline) {
 				firstDeadline = due
 			}

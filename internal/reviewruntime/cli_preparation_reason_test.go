@@ -168,7 +168,7 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if operation.State == "held" {
+				if operation.State == "held" || mode == "exhausted" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
 					break
 				}
 				select {
@@ -178,15 +178,17 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				}
 			}
 			stop()
-			if operation.Reason != expected || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
+			if (mode != "exhausted" && operation.Reason != expected || mode == "exhausted" && operation.Reason != "") || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
 				t.Fatal("safe hold reason missing or review dispatched", operation, reviews.Load())
 			}
 			wantRows := 0
 			if mode == "exhausted" {
 				wantRows = 1
-				v := operation.Allowance
-				if v == nil || v.Kind != "cli_exhausted" || v.Remaining == nil || *v.Remaining != 0 || v.Limit == nil || *v.Limit != 3 || v.FullCapacityInMS == nil || *v.FullCapacityInMS != 0 || v.RollingWindowMS == nil || *v.RollingWindowMS != 60000 {
-					t.Fatal("native exhausted facts lost", v)
+				if operation.Wait == nil || operation.Wait.RetryNotBefore == "" || operation.Wait.Paused || operation.AttemptID != "" {
+					t.Fatal("exhaustion lost durable wait", operation)
+				}
+				if err := reviewexec.ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 10); err != nil {
+					t.Fatal("quota waiting invalidates retained history", err)
 				}
 			} else if operation.Allowance != nil {
 				t.Fatal("unproven failure invented capacity", operation.Allowance)
@@ -198,7 +200,11 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				t.Fatal("failed negative retention left an observation event")
 			}
 			var heldReason string
-			if err := f.store.DB().QueryRow(`SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND state='held'`, operation.AttemptID).Scan(&heldReason); err != nil || heldReason != expected {
+			attemptID := operation.AttemptID
+			if mode == "exhausted" {
+				attemptID = operation.Wait.BaselineAttemptID
+			}
+			if err := f.store.DB().QueryRow(`SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND state='held'`, attemptID).Scan(&heldReason); err != nil || heldReason != expected {
 				t.Fatal("held reason not journaled", heldReason, err)
 			}
 			log, err := os.ReadFile(f.log)

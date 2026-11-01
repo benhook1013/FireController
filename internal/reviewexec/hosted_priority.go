@@ -10,13 +10,13 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// earlierQueuedHostedIntent preserves project queue priority even while the
+// earlierQueuedReviewIntent preserves project queue priority even while the
 // earlier request's timer is not due. It reserves no provider capacity. Both
 // scheduler selection and the serialized attempt claim use this same snapshot
 // check; allow_out_of_order concerns dependencies, not scheduling priority.
-func (e *Engine) earlierQueuedHostedIntent(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64) (*Operation, error) {
+func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64) (*Operation, error) {
 	position := slices.Index(c.Queue, o.PullNumber)
-	if o.Channel != "hosted" || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
+	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
 		return nil, nil
 	}
 	// Inapplicable requests must still reach normal StartAttempt hold handling,
@@ -31,9 +31,9 @@ func (e *Engine) earlierQueuedHostedIntent(ctx context.Context, tx *sql.Tx, o Op
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT o.id FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number AND q.key<?
-WHERE o.project_id=? AND o.channel='hosted' AND o.state='queued'
+WHERE o.project_id=? AND o.channel=? AND o.state='queued'
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
-ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID)
+ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Channel)
 	if err != nil {
 		return nil, err
 	}

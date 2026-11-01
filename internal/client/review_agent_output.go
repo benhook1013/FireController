@@ -49,7 +49,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 		value.NextAction = "inspect_provider_activity"
 	}
 	if value.Wait != nil {
-		hint = operationWaitDiagnostic(value.Wait)
+		hint = operationWaitDiagnostic(value.Wait, value.Channel)
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
 		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
@@ -70,7 +70,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 			value.NextAction = "new_request_if_authorized"
 		}
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && value.Wait != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
@@ -111,7 +111,7 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 		}
 	}
 	if value.Wait != nil {
-		hint = operationWaitDiagnostic(value.Wait)
+		hint = operationWaitDiagnostic(value.Wait, value.Channel)
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
 		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
@@ -128,7 +128,7 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) {
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && value.Wait != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
@@ -423,7 +423,13 @@ func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationD
 	return &ReviewOperationDiagnostic{explanation, "Inspect that base branch in its owning workflow; align or retarget it if its former parent merged. After the source is qualified, use a fresh key and current guards for the still-authorized review. No round reset or extra grant is required. Out-of-order requests still check the target's own parent."}
 }
 
-func operationWaitDiagnostic(w *ReviewOperationWait) *ReviewOperationDiagnostic {
+func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOperationDiagnostic {
+	if channel == "cli" && w.RetryNotBefore != "" {
+		if w.Paused {
+			return &ReviewOperationDiagnostic{"This CLI request is paused before dispatch. Its comparison and quota-recheck schedule are retained; no review is running.", "Resume or cancel this same undispatched request with current revision/key. Resume preserves the comparison and still rechecks shared account quota and admission. It does not grant allowance or interrupt another review."}
+		}
+		return &ReviewOperationDiagnostic{"Included CLI quota was exhausted. This same request remains queued and automatically rechecks at or after retry_not_before, using bounded backoff shared across projects on the provider account. This is a server recheck time, not the provider reset or a promised start; no review is running.", "Keep this original request queued and continue other work. Pause/cancel only the undispatched request if needed; do not submit a duplicate or reset rounds. Before starting, the controller rechecks the pinned comparison, access, findings, publication safety and current allowance. A changed comparison is held for requalification rather than silently followed."}
+	}
 	scope, candidates := "", ""
 	if w.RetryNotBefore != "" {
 		scope = " This deadline schedules this request only; the provider limit’s scope across other PRs, repositories or accounts is unknown."

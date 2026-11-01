@@ -65,6 +65,18 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		if !originalJSON.Valid || !latestJSON.Valid || json.Unmarshal([]byte(originalJSON.String), &original) != nil || json.Unmarshal([]byte(latestJSON.String), &latest) != nil || validateConfigurationShape(original) != nil || validateConfigurationShape(latest) != nil {
 			return adjudicationStorageError()
 		}
+		if op.Channel == "cli" {
+			if capability, ok := e.capabilities[original.CapabilityID]; ok && capability.Fingerprint == op.CapabilityFingerprint {
+				due, err := cliAccountRetryDeadline(ctx, tx, capability)
+				if err != nil {
+					return err
+				}
+				if e.sampleExecutionTime().Before(due) && !(op.Wait != nil && op.Wait.Paused) && !latest.Paused {
+					cause = "cli_quota_wait"
+					return nil
+				}
+			}
+		}
 		switch {
 		case op.Wait != nil && op.Wait.Paused:
 			cause = "operation_paused"
@@ -76,7 +88,7 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			cause = "cooldown"
 			return nil
 		}
-		earlier, err := e.earlierQueuedHostedIntent(ctx, tx, op, latest, latestRevision)
+		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, op, latest, latestRevision)
 		if err != nil {
 			return err
 		}
