@@ -16,7 +16,7 @@ WHERE o.state IN ('uncertain','active') AND o.channel='hosted'
 AND a.provider=? AND a.account=? AND o.capability_fingerprint=?
 AND json_extract(c.body_json,'$.capability_id')=?
 AND (a.state='uncertain' OR EXISTS(
- SELECT 1 FROM review_execution_transitions t WHERE t.attempt_id=a.id AND t.revision=a.revision AND t.state='active' AND t.reason='trigger_recovered' AND t.external_id=a.external_id
+ SELECT 1 FROM review_execution_transitions t WHERE t.attempt_id=a.id AND t.revision=a.revision AND t.state='active' AND t.reason IN ('trigger_recovered','supervisor_resumed') AND t.external_id=a.external_id
 )) LIMIT 257`
 
 // HostedRecoveryCandidate selects originally admitted work for observation.

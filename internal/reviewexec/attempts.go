@@ -437,7 +437,8 @@ func allowedTransition(from, to string) bool {
 
 // RecoverInterrupted runs once before a new supervisor accepts work. It never
 // restarts a possibly dispatched action. Hosted recovery uses its retained
-// marker; interrupted CLI work remains uncertain until evidence settles it.
+// marker; confirmed Hosted work hands off to its observer without changing
+// provider state. Interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -507,7 +508,21 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			state := "uncertain"
+			state, reason := "uncertain", "supervisor_interrupted"
+			if a.State == "active" && o.Channel == "hosted" {
+				confirmed, err := confirmedHostedRestart(ctx, tx, a, o)
+				if err != nil {
+					return err
+				}
+				if confirmed {
+					// This is local observer ownership, not another provider action.
+					// A retained handoff already selects the same observer on restart.
+					if o.Reason == "supervisor_resumed" || o.Reason == "trigger_recovered" {
+						continue
+					}
+					state, reason = "active", "supervisor_resumed"
+				}
+			}
 			if a.State == "preparing" {
 				state = "cancelled"
 			}
@@ -516,7 +531,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=? WHERE id=?`, state, a.Revision, a.ID); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,reason='supervisor_interrupted',revision=revision+1,updated_at=? WHERE id=?`, state, at, a.OperationID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,reason=?,revision=revision+1,updated_at=? WHERE id=?`, state, reason, at, a.OperationID); err != nil {
 				return err
 			}
 			if state == "cancelled" {
@@ -524,7 +539,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 					return err
 				}
 			}
-			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
+			if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 				return err
 			}
 			if state == "cancelled" {
@@ -542,4 +557,48 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// confirmedHostedRestart proves only that the original external trigger was
+// recorded and still owns its reservation. No current policy, capability or
+// provider liveness is inferred: already-issued work must remain observable.
+func confirmedHostedRestart(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (bool, error) {
+	unproven := func(err error) (bool, error) {
+		var failure *core.Error
+		if errors.As(err, &failure) && (failure.Code == "review_conflict" || failure.Code == "storage_unavailable" || failure.Code == "review_settlement_unavailable") {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, _, err := readHostedPostingAttempt(ctx, tx, a.ProjectID, a.ID); err != nil {
+		return unproven(err)
+	}
+	if _, err := readHostedAdmissionTime(ctx, tx, a, o); err != nil {
+		return unproven(err)
+	}
+	if err := validateConfirmedHostedSettlement(ctx, tx, a, o); err != nil {
+		return unproven(err)
+	}
+	var state, reason, external string
+	if err := tx.QueryRowContext(ctx, `SELECT state,reason,external_id FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&state, &reason, &external); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if state != "active" || reason != o.Reason || external != a.ExternalID {
+		return false, nil
+	}
+	switch reason {
+	case "trigger_recorded", "trigger_posted", "trigger_recovered", "supervisor_resumed":
+	default:
+		return false, nil
+	}
+	var provider, account, channel string
+	var repository, pull int64
+	if err := tx.QueryRowContext(ctx, `SELECT provider,account,action_class,repository_id,pull_number FROM review_execution_reservations WHERE attempt_id=?`, a.ID).Scan(&provider, &account, &channel, &repository, &pull); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return provider == a.Provider && account == a.Account && channel == o.Channel && repository == a.Anchor.RepositoryID && pull == a.Anchor.PullNumber, nil
 }

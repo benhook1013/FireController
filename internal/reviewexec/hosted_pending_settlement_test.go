@@ -41,7 +41,6 @@ func TestHostedPendingSettlementActiveAndRestartPreserveOriginalAuthority(t *tes
 				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				a.State = "uncertain"
 				a.Revision++
 			}
 			f.configure(t, otherAttemptProject, "other-account", 0, false)
@@ -255,7 +254,6 @@ func TestHostedPendingSettlementExplicitAbandonActiveAndRestart(t *testing.T) {
 				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				a.State = "uncertain"
 				a.Revision++
 			}
 			sourceBefore, err := f.e.ReadHostedObservations(t.Context(), attemptProject, a.ID)

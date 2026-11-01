@@ -73,7 +73,9 @@ func recoveryRuntimeFixture(t *testing.T, state string) (*cliEvidenceFixture, *H
 			t.Fatal(err)
 		}
 	} else if state == "uncertain" {
-		if err = f.engine.RecoverInterrupted(t.Context()); err != nil {
+		// Exercise genuine ambiguous observation independently of a local restart;
+		// confirmed external Hosted execution survives that restart as active.
+		if _, err = f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, "uncertain", "hosted_observation_pending", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
