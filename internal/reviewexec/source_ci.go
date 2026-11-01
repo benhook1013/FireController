@@ -122,7 +122,7 @@ func sourceCIErrorClass(ctx context.Context, err error) string {
 	var failure *reviewprovider.Error
 	if errors.As(err, &failure) && failure != nil {
 		switch failure.Code {
-		case "provider_rate_limited", "provider_unauthorized", "provider_not_found", "provider_invalid_response", "provider_observation_changed":
+		case "provider_rate_limited", "provider_unauthorized", "provider_not_found", "provider_invalid_response", "provider_observation_changed", "provider_inventory_incomplete":
 			return "ci_" + failure.Code
 		case "provider_unavailable":
 			switch {
