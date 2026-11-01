@@ -149,10 +149,11 @@ function reviewCIReason(pull: ReviewPullSummary): string | undefined {
 export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   if (pull.state === 'merged' || pull.state === 'closed') return null;
   const status=pull.merge_status ?? {state:'unknown' as const,reason:'merge_state_unknown'};
-  const labels={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
+  const labels:Record<string,string>={github_behind:'Behind',github_dirty:'Conflicts',github_draft:'Draft',draft:'Draft',github_unstable:'Checks failing',github_has_hooks:'Hooks'};
+  const states={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
   const colours={ready:'mergeable',blocked:'conflicting',pending:'pending',unknown:'unknown'};
-  const reasons:Record<string,string>={pull_state_unknown:'PR state is unknown.',draft:'Draft PR.',merge_conflicts:'Merge conflicts must be resolved.',required_ci_failed:'Required CI is failing.',github_blocked:'GitHub blocks merging under the current branch requirements.',github_behind:'GitHub reports the branch is behind its required base.',github_draft:'GitHub reports a draft PR.',required_ci_pending:'Required CI is still pending.',required_ci_unknown:'Required CI has not been established for this comparison.',merge_state_unknown:'GitHub merge eligibility has not been established for this comparison.',github_and_required_ci_clear:'GitHub merge requirements and required CI are clear. Review work remains shown separately.'};
-  return <span title={status.reason==='required_ci_unknown' ? reviewCIReason(pull) ?? reasons[status.reason] : reasons[status.reason]} className={`badge review-fact-pill review-mergeability review-fact-${colours[status.state]}`}>Merge: {labels[status.state]}</span>;
+  const reasons:Record<string,string>={pull_state_unknown:'PR state is unknown.',draft:'Draft PR.',github_clean:'GitHub reports this PR is ready to merge. Required CI and controller review work are shown separately.',github_blocked:'GitHub reports merging is blocked.',github_behind:'GitHub reports this PR is behind its base branch.',github_dirty:'GitHub reports merge conflicts.',github_draft:'GitHub reports a draft PR.',github_unstable:'GitHub reports failing checks; this does not establish that an optional failure blocks merging. Required CI is shown separately.',github_has_hooks:'GitHub reports pre-receive hooks; this observation does not establish that those hooks will pass.',merge_state_unknown:'GitHub merge state is unknown for this comparison.'};
+  return <span title={reasons[status.reason]} className={`badge review-fact-pill review-mergeability review-fact-${colours[status.state]}`}>Merge: {labels[status.reason] ?? states[status.state]}</span>;
 }
 function reviewSizeTooltip(pull: ReviewPullSummary): string | undefined {
   const size=pull.review_size;

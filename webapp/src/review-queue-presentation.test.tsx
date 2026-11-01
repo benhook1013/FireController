@@ -110,12 +110,16 @@ describe('truthful stored review presentation', () => {
 	   expect(reopened).not.toContain('review-status-closed');expect(reopened).toContain('>Review front</span>');
 	 });
   it.each([
-    ['success', 'ready', 'mergeable', 'Ready'], ['pending', 'pending', 'pending', 'Waiting'], ['failure', 'blocked', 'conflicting', 'Blocked'], ['unknown', 'unknown', 'unknown', 'Unknown'],
-  ] as const)('colors observed CI %s and the actual %s merge eligibility', (ci_state, state, colour, label) => {
-    const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state, merge_status:{state,reason:state==='ready'?'github_and_required_ci_clear':state==='blocked'?'required_ci_failed':state==='pending'?'required_ci_pending':'required_ci_unknown'} }} />);
-    expect(html).toContain(`review-ci review-fact-${ci_state}`);
-    expect(html).toContain(`review-mergeability review-fact-${colour}`);
-    expect(html).toContain(`Merge: ${label}`);
+    ['ready','github_clean','mergeable','Ready'],['blocked','github_blocked','conflicting','Blocked'],['blocked','github_behind','conflicting','Behind'],['blocked','github_dirty','conflicting','Conflicts'],['blocked','github_draft','conflicting','Draft'],['pending','github_unstable','pending','Checks failing'],['pending','github_has_hooks','pending','Hooks'],['unknown','merge_state_unknown','unknown','Unknown'],
+  ] as const)('renders native merge state %s/%s separately from required CI', (state,reason,colour,label) => {
+    for(const ci_state of ['success','pending','failure','unknown','not_required'] as const){
+      const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state, merge_status:{state,reason} }} />);
+      expect(html).toContain(`review-ci review-fact-${ci_state}`);
+      expect(html).toContain(`review-mergeability review-fact-${colour}`);
+      expect(html).toContain(`Merge: ${label}`);
+      if(reason==='github_unstable') expect(html).toContain('does not establish that an optional failure blocks merging');
+      if(reason==='github_has_hooks') expect(html).toContain('does not establish that those hooks will pass');
+    }
   });
 
   it('renders observed diff size and actual merge time without inventing values for old snapshots', () => {
@@ -325,10 +329,10 @@ describe('compact PR sizing display',()=>{
 
 describe('retained CI explanation',()=>{
   it('explains stale GitHub test-merge bases without inventing current CI success',()=>{
-    const value:ReviewPullSummary={...pull(7),ci_state:'unknown',merge_status:{state:'unknown',reason:'required_ci_unknown'},observation:{state:'current',ci_checked_at:'2026-10-28T12:12:35Z',ci_error:'ci_merge_base_mismatch'}};
+    const value:ReviewPullSummary={...pull(7),ci_state:'unknown',merge_status:{state:'ready',reason:'github_clean'},observation:{state:'current',ci_checked_at:'2026-10-28T12:12:35Z',ci_error:'ci_merge_base_mismatch'}};
     const html=markup(<ReviewPullFacts pull={value}/>);
-    expect(html).toContain('Required CI: Unknown');expect(html).toContain('Merge: Unknown');
-    expect(html.match(/earlier results remain saved/gu)).toHaveLength(2);
+    expect(html).toContain('Required CI: Unknown');expect(html).toContain('Merge: Ready');
+    expect(html.match(/earlier results remain saved/gu)).toHaveLength(1);
     expect(html).not.toContain('Ci merge base mismatch');expect(value.ci_state).toBe('unknown');
   });
 });

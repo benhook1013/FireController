@@ -472,8 +472,11 @@ function validReviewPull(value: unknown): value is ReviewPullSummary {
   if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) > Number(value.run_count)) return false;
   for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel && item.outcome === 'completed').length > Number(value.run_counts[channel])) return false;
   if (Object.hasOwn(value, 'diff') && (!record(value.diff) || !keys(value.diff, ['files', 'additions', 'deletions']) || ![value.diff.files, value.diff.additions, value.diff.deletions].every(count => nonnegative(count) && count <= 2147483647))) return false;
-  if (Object.hasOwn(value,'merge_status') && (!record(value.merge_status) || !keys(value.merge_status,['state','reason']) || !['ready','blocked','pending','unknown'].includes(String(value.merge_status.state)) || !['pull_state_unknown','draft','merge_conflicts','required_ci_failed','github_blocked','github_behind','github_draft','required_ci_pending','required_ci_unknown','merge_state_unknown','github_and_required_ci_clear'].includes(String(value.merge_status.reason)))) return false;
-  if (record(value.merge_status) && value.merge_status.state === 'ready' && (value.state !== 'open' || value.is_draft === true || value.mergeability !== 'mergeable' || !['success','not_required'].includes(String(value.ci_state)))) return false;
+  if (Object.hasOwn(value,'merge_status')) {
+    const states:Record<string,string>={pull_state_unknown:'unknown',draft:'blocked',github_clean:'ready',github_blocked:'blocked',github_behind:'blocked',github_dirty:'blocked',github_draft:'blocked',github_unstable:'pending',github_has_hooks:'pending',merge_state_unknown:'unknown'};
+    if (!record(value.merge_status) || !keys(value.merge_status,['state','reason']) || typeof value.merge_status.reason !== 'string' || !Object.hasOwn(states,value.merge_status.reason) || states[value.merge_status.reason] !== value.merge_status.state || ['merged','closed'].includes(String(value.state))) return false;
+    if (value.merge_status.state === 'ready' && (value.state !== 'open' || value.is_draft === true)) return false;
+  }
   if (Object.hasOwn(value, 'is_draft') && typeof value.is_draft !== 'boolean') return false;
   if (Object.hasOwn(value, 'merged_at') && (value.state !== 'merged' || !timestamp(value.merged_at))) return false;
   if (Object.hasOwn(value, 'queue_position') && (!nonnegative(value.queue_position) || Number(value.queue_position) > 2147483647)) return false;

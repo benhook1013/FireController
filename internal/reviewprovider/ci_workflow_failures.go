@@ -104,7 +104,7 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 			return observation, failures, &CIWorkflowAttentionError{Cause: readErr}
 		}
 		observation.WorkflowHeadActions, actionsSource = &actions, &actions
-	} else if actionsSource == nil || observation.Candidate == nil || !matchesCITarget(*observation.Candidate, target) || observation.State != observation.Assessment.State || observation.Reason != observation.Assessment.Reason {
+	} else if actionsSource == nil || observation.Candidate == nil || (!matchesCITarget(*observation.Candidate, target) && !NonstrictHeadCICandidate(*observation.Candidate, target, observation.Authority)) || observation.State != observation.Assessment.State || observation.Reason != observation.Assessment.Reason {
 		return observation, failures, nil
 	}
 	if observation.State == "satisfied" || observation.State == "not_required" || observation.State == "failed" {

@@ -11,17 +11,24 @@ async function connected() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('bounded recent and merged queue reads', () => {
-	 it('refuses a ready merge claim when required CI or conflict facts contradict it', async () => {
-	   const api=await connected();
-	   const eligible={...pull(3,0,'open'),mergeability:'mergeable',merge_status:{state:'ready',reason:'github_and_required_ci_clear'}};
-	   vi.stubGlobal('fetch',vi.fn(async()=>response(page([eligible],0))));
-	   expect((await api.reviewQueue({view:'recent'})).items[0].merge_status?.state).toBe('ready');
-	   for(const change of [{ci_state:'failure'},{ci_state:'unknown'},{ci_state:'pending'},{mergeability:'unknown'},{is_draft:true}]){
-	     vi.stubGlobal('fetch',vi.fn(async()=>response(page([{...eligible,...change}],0))));
-	     await expect(api.reviewQueue({view:'recent'})).rejects.toMatchObject({code:'invalid_response'});
-	   }
-	   api.close();
-	 });
+  it('decodes native GitHub merge state independently of CI and conflict-only facts', async () => {
+    const api=await connected();
+    const native = [
+      ['ready','github_clean'],['blocked','github_blocked'],['blocked','github_behind'],['blocked','github_dirty'],['blocked','github_draft'],['pending','github_unstable'],['pending','github_has_hooks'],['unknown','merge_state_unknown'],
+    ];
+    for(const ci_state of ['success','failure','unknown','pending','not_required']) for(const [state,reason] of native){
+      const value={...pull(3,0,'open'),ci_state,mergeability:'unknown',merge_status:{state,reason}};
+      vi.stubGlobal('fetch',vi.fn(async()=>response(page([value],0))));
+      expect((await api.reviewQueue({view:'recent'})).items[0].merge_status).toEqual({state,reason});
+    }
+    for(const merge_status of [{state:'ready',reason:'github_blocked'},{state:'blocked',reason:'github_clean'},{state:'ready',reason:'required_ci_unknown'}]){
+      vi.stubGlobal('fetch',vi.fn(async()=>response(page([{...pull(3,0,'open'),merge_status}],0))));
+      await expect(api.reviewQueue({view:'recent'})).rejects.toMatchObject({code:'invalid_response'});
+    }
+    vi.stubGlobal('fetch',vi.fn(async()=>response(page([{...pull(3,0,'open'),is_draft:true,merge_status:{state:'ready',reason:'github_clean'}}],0))));
+    await expect(api.reviewQueue({view:'recent'})).rejects.toMatchObject({code:'invalid_response'});
+    api.close();
+  });
   it('selects local views and preserves original positions and continuation', async () => {
     const api = await connected();
     const recent = page([pull(16, 15), pull(19, 18, 'open')], 18);

@@ -12,39 +12,33 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func TestMergeStatusRequiresMoreThanConflictFreedom(t *testing.T) {
+func TestMergeStatusReflectsGitHubIndependentlyOfRequiredCI(t *testing.T) {
 	for _, ci := range []string{"success", "not_required", "pending", "failure", "unknown"} {
-		for _, github := range []string{"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED", "BEHIND", "DIRTY", "DRAFT", "UNKNOWN", ""} {
-			p := PullSummary{State: "open", CIState: ci, Mergeability: "mergeable", mergeStateStatus: github}
-			got := mergeStatus(p)
-			want := "unknown"
-			switch {
-			case ci == "failure" || github == "BLOCKED" || github == "BEHIND" || github == "DIRTY" || github == "DRAFT":
-				want = "blocked"
-			case ci == "pending":
-				want = "pending"
-			case (ci == "success" || ci == "not_required") && (github == "CLEAN" || github == "HAS_HOOKS" || github == "UNSTABLE"):
-				want = "ready"
-			}
-			if got == nil || got.State != want {
-				t.Fatalf("CI=%s GitHub=%s got=%+v want=%s", ci, github, got, want)
+		for _, conflict := range []string{"mergeable", "conflicting", "unknown"} {
+			for _, native := range []struct{ github, state, reason string }{
+				{"CLEAN", "ready", "github_clean"}, {"BLOCKED", "blocked", "github_blocked"},
+				{"BEHIND", "blocked", "github_behind"}, {"DIRTY", "blocked", "github_dirty"},
+				{"DRAFT", "blocked", "github_draft"}, {"UNSTABLE", "pending", "github_unstable"},
+				{"HAS_HOOKS", "pending", "github_has_hooks"}, {"UNKNOWN", "unknown", "merge_state_unknown"},
+				{"", "unknown", "merge_state_unknown"},
+			} {
+				got := mergeStatus(PullSummary{State: "open", CIState: ci, Mergeability: conflict, mergeStateStatus: native.github})
+				if got == nil || got.State != native.state || got.Reason != native.reason {
+					t.Fatalf("CI=%s conflicts=%s GitHub=%s got=%+v want=%s/%s", ci, conflict, native.github, got, native.state, native.reason)
+				}
 			}
 		}
 	}
-	p := PullSummary{State: "open", CIState: "success", Mergeability: "mergeable", mergeStateStatus: "CLEAN"}
+	p := PullSummary{State: "open", CIState: "unknown", mergeStateStatus: "CLEAN"}
 	draft := true
 	p.IsDraft = &draft
 	if got := mergeStatus(p); got.State != "blocked" || got.Reason != "draft" {
 		t.Fatal(got)
 	}
 	p.IsDraft = nil
-	p.Mergeability = "unknown"
-	if got := mergeStatus(p); got.State != "unknown" {
-		t.Fatal("unknown conflict assessment granted merge readiness", got)
-	}
-	p.Mergeability = "conflicting"
-	if got := mergeStatus(p); got.State != "blocked" {
-		t.Fatal(got)
+	p.State = "unknown"
+	if got := mergeStatus(p); got.State != "unknown" || got.Reason != "pull_state_unknown" {
+		t.Fatal("unknown lifecycle gained eligibility", got)
 	}
 	for _, state := range []string{"merged", "closed"} {
 		p.State = state
@@ -58,7 +52,7 @@ func TestMergeStatusProjectionIsExplicitPinnedAndReadOnly(t *testing.T) {
 	f := newAPIFixture(t)
 	p := nativePull(1)
 	p.State = "open"
-	p.CIState = "success"
+	p.CIState = "unknown"
 	p.Mergeability = "mergeable"
 	p.MergeStateStatus = "CLEAN"
 	old := f.observe(t, reviewRequest(0, []PullInput{p}), "merge-start")["id"].(string)
@@ -93,7 +87,7 @@ func TestMergeStatusProjectionIsExplicitPinnedAndReadOnly(t *testing.T) {
 	}
 	var current PullResponse
 	nativeRead(t, f, "/pulls/1?include_merge_status=true", &current)
-	if current.Pull.MergeStatus.State != "blocked" || current.Pull.MergeStatus.Reason != "required_ci_failed" {
+	if current.Pull.MergeStatus.State != "blocked" || current.Pull.MergeStatus.Reason != "github_blocked" {
 		t.Fatal(current.Pull.MergeStatus)
 	}
 	var pinned PullResponse
