@@ -227,24 +227,53 @@ func (s *session) verifyRemote(ctx context.Context, r Receipt) error {
 	return err
 }
 
-func newest(ctx context.Context, c Config) (backup.Summary, error) {
+const maxSourceRootEntries = 4096
+const maxSourceBundles = 1000
+
+// Discovery has separate bounds for root entries and canonical bundle names.
+// Hidden publication staging and unrelated files do not consume retention's
+// bundle allowance. A matching name alone never establishes backup validity.
+func sourceBundleEntries(ctx context.Context, c Config) ([]os.DirEntry, error) {
 	if ctx.Err() != nil {
-		return backup.Summary{}, failure("offsite_cancelled")
+		return nil, failure("offsite_cancelled")
 	}
 	if err := privateDir(c.SourceRoot, false); err != nil {
-		return backup.Summary{}, err
+		return nil, err
 	}
 	f, err := os.Open(c.SourceRoot)
 	if err != nil {
-		return backup.Summary{}, failure("offsite_source_invalid")
+		return nil, failure("offsite_source_invalid")
 	}
 	defer f.Close()
-	entries, err := f.ReadDir(1001)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return backup.Summary{}, failure("offsite_source_invalid")
+	entries, err := f.ReadDir(maxSourceRootEntries + 1)
+	if ctx.Err() != nil {
+		return nil, failure("offsite_cancelled")
 	}
-	if len(entries) > 1000 {
-		return backup.Summary{}, failure("offsite_source_limit")
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, failure("offsite_source_invalid")
+	}
+	if len(entries) > maxSourceRootEntries {
+		return nil, failure("offsite_source_limit")
+	}
+	bundles := make([]os.DirEntry, 0, min(len(entries), maxSourceBundles))
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil, failure("offsite_cancelled")
+		}
+		if bundleID.MatchString(entry.Name()) {
+			if len(bundles) == maxSourceBundles {
+				return nil, failure("offsite_source_limit")
+			}
+			bundles = append(bundles, entry)
+		}
+	}
+	return bundles, nil
+}
+
+func newest(ctx context.Context, c Config) (backup.Summary, error) {
+	entries, err := sourceBundleEntries(ctx, c)
+	if err != nil {
+		return backup.Summary{}, err
 	}
 	return newestEntries(ctx, c, entries)
 }
