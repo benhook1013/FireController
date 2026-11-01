@@ -12,6 +12,8 @@ Source-only collection retains its fifteen-second provider budget. A refresh inc
 
 Successful source collection remains useful when CI cannot be established. The operation retains its source comparison and an explicit unproven CI outcome. Provider failure, incomplete pagination, unsupported identity or exceeded capacity never becomes an empty passing result. Raw provider errors and full inventories stay out of ordinary agent responses.
 
+A parsed, non-skipped check run whose `completed_at` precedes `started_at` retains the finite `check_run_time_order` issue alongside its existing collection stage. The bounded reason identifies invalid check-run chronology without exposing provider bodies or private details. The observation stays unproven with no partial CI credit; this neither adjusts provider timestamps nor reruns CI. Historical generic failures cannot gain a reconstructed field cause from a later read.
+
 ## Authority and candidate
 
 Required checks come from the selected base branch's complete applicable branch protection and active repository rules. Exact context and expected GitHub App identity matter. An unavailable or ambiguous authority remains unproven. An explicitly complete empty requirement set means `not_required`, without fetching check runs or workflow jobs.

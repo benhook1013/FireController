@@ -28,3 +28,22 @@ func CICollectionStage(err error) string {
 	}
 	return ""
 }
+
+type ciResultIssueError struct {
+	cause error
+	issue string
+}
+
+func (e *ciResultIssueError) Error() string         { return "CI result validation failed." }
+func (e *ciResultIssueError) Unwrap() error         { return e.cause }
+func (e *ciResultIssueError) CIResultIssue() string { return e.issue }
+
+// CIResultIssue exposes a finite validation fact, never provider values or text.
+// The wrapped provider error keeps its original code and retry classification.
+func CIResultIssue(err error) string {
+	var failure interface{ CIResultIssue() string }
+	if errors.As(err, &failure) && failure.CIResultIssue() == "check_run_time_order" {
+		return "check_run_time_order"
+	}
+	return ""
+}

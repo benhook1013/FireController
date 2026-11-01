@@ -100,8 +100,14 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 // are not evidence of a complete CI collection and never enter this outcome.
 func sourceCIErrorReason(ctx context.Context, err error) string {
 	reason := sourceCIErrorClass(ctx, err)
+	invalid := reason == "ci_provider_invalid_response"
 	if stage := reviewprovider.CICollectionStage(err); stage != "" {
-		return reason + "_" + stage
+		reason += "_" + stage
+	}
+	if invalid {
+		if issue := reviewprovider.CIResultIssue(err); issue != "" {
+			reason += "_" + issue
+		}
 	}
 	return reason
 }
