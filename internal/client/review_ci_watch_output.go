@@ -20,7 +20,10 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 		out.AllTargetsPassed = out.AllTargetsPassed && item.State == "passed"
 		phase, diagnostic := ciWatchDiagnostic(item)
 		if len(item.WorkflowObservations) > 0 || len(item.WorkflowFailures) > 0 {
-			const limit = " Selected workflow observations cover only the latest run/current attempt, not older runs or all jobs; absent failure rows do not certify that jobs were checked."
+			limit := " Failure rows identify the exact run/current attempt with a proven failed execution; this may precede newer runs that explicitly skipped that job. Missing workflow details and absent failure rows do not certify that other jobs were checked."
+			if len(item.WorkflowObservations) > 0 {
+				limit = " Selected workflow observations cover only the latest run/current attempt, not older runs or all jobs; absent failure rows do not certify that jobs were checked."
+			}
 			if diagnostic != nil {
 				copy := *diagnostic
 				copy.Explanation += limit

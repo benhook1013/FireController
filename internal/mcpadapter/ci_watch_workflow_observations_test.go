@@ -16,11 +16,23 @@ import (
 )
 
 func TestCIWatchWorkflowObservationsSDKAndCLIKeepGateAndProofLimit(t *testing.T) {
+	t.Run("latest details", func(t *testing.T) { ciWatchWorkflowProjection(t, false) })
+	t.Run("earlier execution attention", func(t *testing.T) { ciWatchWorkflowProjection(t, true) })
+}
+
+func ciWatchWorkflowProjection(t *testing.T, fallback bool) {
 	identity := localContext()
 	pin := client.CIWatchTarget{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), FailureWorkflowIDs: []int64{301}}
 	response := client.CIWatchResult{ProjectID: identity.ProjectID, State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{
 		PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "pending", Reason: "ci_required_checks_pending", BaseRef: "feature", GateRef: "main", ObservedHeadSHA: pin.HeadSHA, ObservedBaseSHA: pin.BaseSHA, ObservedAt: "2026-11-01T00:00:00Z", CICommitSHA: pin.HeadSHA, Selection: "head", Required: 1, Pending: 1, Checks: []client.ReviewCIContext{{Context: "test", State: "pending", Reason: "ci_status_pending"}}, ObservationKey: strings.Repeat("c", 64), WorkflowObservations: []client.CIWorkflowObservation{{WorkflowID: 301, Basis: "latest_run_only", RunID: 401, RunAttempt: 2, Status: "completed", Conclusion: "success"}},
 	}}}
+	proofLimit := "latest run/current attempt"
+	if fallback {
+		response.State, response.TimedOut = "attention", false
+		response.Targets[0].WorkflowObservations = nil
+		response.Targets[0].WorkflowFailures = []client.CIWorkflowFailure{{WorkflowID: 301, RunID: 400, RunAttempt: 1, JobID: 501, CheckRunID: 601, Name: "Selected leaf", Conclusion: "failure"}}
+		proofLimit = "explicitly skipped"
+	}
 	var posts atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {
@@ -42,7 +54,7 @@ func TestCIWatchWorkflowObservationsSDKAndCLIKeepGateAndProofLimit(t *testing.T)
 	session := connect(t, adapter(t, path, "chosen"), "")
 	var got client.CIWatchOutput
 	decodeResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": []client.CIWatchTarget{pin}, "wait_seconds": 0}), &got)
-	if got.AllTargetsPassed || got.State != "pending" || !got.TimedOut || len(got.Targets) != 1 || !reflect.DeepEqual(got.Targets[0].CIWatchTargetResult, response.Targets[0]) || got.Targets[0].Diagnostic == nil || !strings.Contains(got.Targets[0].Diagnostic.Explanation, "latest run/current attempt") || !strings.Contains(got.Targets[0].Diagnostic.Explanation, "do not certify") {
+	if got.AllTargetsPassed || got.State != response.State || got.TimedOut != response.TimedOut || len(got.Targets) != 1 || !reflect.DeepEqual(got.Targets[0].CIWatchTargetResult, response.Targets[0]) || got.Targets[0].Diagnostic == nil || !strings.Contains(got.Targets[0].Diagnostic.Explanation, proofLimit) || !strings.Contains(got.Targets[0].Diagnostic.Explanation, "do not certify") || fallback && strings.Contains(got.Targets[0].Diagnostic.Explanation, "only the latest") {
 		t.Fatal("SDK changed gate facts or omitted latest-only proof limit", got)
 	}
 	var out, diag bytes.Buffer

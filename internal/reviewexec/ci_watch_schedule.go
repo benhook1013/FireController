@@ -165,6 +165,17 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 					}
 				}
 			}
+			// Latest-run details cannot describe an earlier substantive execution.
+			// Omit this optional group rather than pair conflicting run identities;
+			// the failure row retains the exact proven execution for all clients.
+			for _, failure := range item.WorkflowFailures {
+				for _, observation := range item.WorkflowObservations {
+					if failure.WorkflowID == observation.WorkflowID && (failure.RunID != observation.RunID || failure.RunAttempt != observation.RunAttempt) {
+						item.WorkflowObservations = nil
+						break
+					}
+				}
+			}
 		}
 		if len(target.FailureWorkflowIDs) > 0 && item.ObservationKey != "" {
 			item.ObservationKey = ciWatchWorkflowKey(item.ObservationKey, target.FailureWorkflowIDs, item.WorkflowFailures)

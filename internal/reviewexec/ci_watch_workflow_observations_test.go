@@ -118,3 +118,24 @@ func TestCIWatchWorkflowObservationsHTTPOptInAndNoExtraCollection(t *testing.T) 
 		t.Fatal("visibility added collection or mutated project state", base.calls)
 	}
 }
+
+func TestCIWatchFallbackOmitsWholeDetailGroupOnlyForAffectedSubscriber(t *testing.T) {
+	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	entry := &ciWatchEntry{version: 1, wanted: 1, done: 1, result: CIWatchItem{
+		State: "pending", Reason: "ci_required_checks_pending", ObservedHeadSHA: head, ObservedBaseSHA: base, CICommitSHA: head, Selection: "head", ObservationKey: strings.Repeat("d", 64), Checks: []SourceCIContext{},
+		WorkflowObservations: []CIWorkflowObservation{{WorkflowID: 10, Basis: "latest_run_only", RunID: 101, RunAttempt: 1}, {WorkflowID: 20, Basis: "latest_run_only", RunID: 200, RunAttempt: 1}},
+		WorkflowFailures:     []reviewprovider.CIWorkflowFailure{{WorkflowID: 10, RunID: 100, RunAttempt: 1}},
+	}}
+	before := encoded(entry.result)
+	s := newLifecycleSchedule(LifecycleSyncOptions{Now: time.Now})
+	sub := &ciWatchSubscription{scope: core.Scope{ProjectID: "one"}, targets: []CIWatchTarget{{PullNumber: 42, HeadSHA: head, FailureWorkflowIDs: []int64{10, 20}}}, minimum: []uint64{1}, bases: []string{base}, entries: []*ciWatchEntry{entry}}
+	got := s.ciWatchResult(sub)
+	if got.State != "attention" || len(got.Targets[0].WorkflowObservations) != 0 || len(got.Targets[0].WorkflowFailures) != 1 || got.Targets[0].WorkflowFailures[0].RunID != 100 {
+		t.Fatal("fallback must omit the entire optional group, preserving attention", got)
+	}
+	sub.targets[0].FailureWorkflowIDs = []int64{20}
+	other := s.ciWatchResult(sub)
+	if other.State != "pending" || len(other.Targets[0].WorkflowFailures) != 0 || len(other.Targets[0].WorkflowObservations) != 1 || other.Targets[0].WorkflowObservations[0].RunID != 200 || encoded(entry.result) != before {
+		t.Fatal("one subscriber's omission erased another subscriber's latest facts", other)
+	}
+}
