@@ -92,7 +92,7 @@ func TestManagedSummaryBudgetEscapedDestinationBoundary(t *testing.T) {
 	}
 }
 
-func TestManagedSummaryBudgetRefusalPreservesActualSuccess(t *testing.T) {
+func TestManagedStagedPathRefusalPreservesActualSuccess(t *testing.T) {
 	f, manager := newManagedFixture(t, 1)
 	if reports := runManaged(t, manager, 1); len(reports) != 0 {
 		t.Fatal(reports)
@@ -101,17 +101,24 @@ func TestManagedSummaryBudgetRefusalPreservesActualSuccess(t *testing.T) {
 	if err != nil || previous.LastSuccess == nil {
 		t.Fatal("genuine prior success required", err)
 	}
-	root := t.TempDir()
-	cfg := ScheduleConfig{Destination: managedSummaryBudgetDestination(t, root, 4097), Interval: time.Minute, Keep: 1}
+	// This public admission refusal is the active VFS pathname boundary, not
+	// the independent historical/noninspect 4097-byte encoding check above.
+	destination := stagingBoundaryDestination(t, 1)
+	cfg := ScheduleConfig{Destination: destination, Interval: time.Minute, Keep: 1}
+	if _, err := normalizeScheduleConfig(f.dir, cfg, false); err != nil {
+		t.Fatal("VFS control must fit the independent summary/configuration budgets", err)
+	}
 	before := backupRows(t, f.store.DB())
 	_, err = NewManager(f.store, f.dir, cfg)
 	backupCode(t, err, "configuration_invalid")
+	if !strings.Contains(err.Error(), "SQLite pathname") {
+		t.Fatal("public refusal did not identify the active VFS boundary", err)
+	}
 	current, err := ReadStatus(t.Context(), f.dir)
 	if err != nil || !reflect.DeepEqual(current, previous) || !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
 		t.Fatal("refused configuration changed prior status, bundle ledger or source", err)
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 0 {
-		t.Fatal("refused manager created destination state", len(entries), err)
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatal("refused manager created destination state", err)
 	}
 }
