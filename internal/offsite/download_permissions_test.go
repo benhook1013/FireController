@@ -34,9 +34,9 @@ func TestOffsiteDownloadPermissionFailureIsPrivateStorageError(t *testing.T) {
 			case "transport_failure":
 				script += "exit 7\n"
 			default:
-				// A successful transport with no destination exercises the actual
-				// filesystem Chmod failure without hooks or permission assumptions.
-				script += "exit 0\n"
+				// A known remote file with no local destination exercises the
+				// actual Chmod failure rather than ambiguous remote absence.
+				script += "while [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    copyto) exit 0 ;;\n    lsjson) printf '%s\\n' '[{\"Name\":\"archive.tar.gz\",\"Size\":17,\"IsDir\":false}]'; exit 0 ;;\n  esac\n  shift\ndone\nexit 7\n"
 			}
 			if err := os.WriteFile(f.c.RcloneBinary, []byte(script), 0700); err != nil {
 				t.Fatal(err)
