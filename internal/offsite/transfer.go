@@ -451,7 +451,7 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 				return result, failure("offsite_storage_unavailable")
 			}
 		}
-		r, e := pack(ctx, selected.Path, prepared, c)
+		r, e := packVerified(ctx, selected, prepared, c)
 		if e != nil {
 			return result, e
 		}
