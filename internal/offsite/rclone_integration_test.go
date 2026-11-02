@@ -175,7 +175,8 @@ func TestOffsiteRealRcloneS3AndCryptRecovery(t *testing.T) {
 			// and retain the next publication for exact recovery, not reset it.
 			prior := latest
 			latest = f.bundle(t)
-			bad := strings.Replace(config, "secret_access_key = "+secret, "secret_access_key = invalid-fixture-secret", 1)
+			const badSecret = "invalid-fixture-secret"
+			bad := strings.Replace(config, "secret_access_key = "+secret, "secret_access_key = "+badSecret, 1)
 			if err = os.WriteFile(f.c.RcloneConfig, []byte(bad), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +186,7 @@ func TestOffsiteRealRcloneS3AndCryptRecovery(t *testing.T) {
 				}
 				cmd := exec.CommandContext(t.Context(), operator, "backup-push", "--config", configPath)
 				output, e := cmd.CombinedOutput()
-				if e == nil || strings.Contains(string(output), secret) {
+				if e == nil || strings.Contains(string(output), badSecret) || strings.Contains(string(output), access) || strings.Contains(string(output), f.c.RcloneConfig) {
 					t.Fatal("credential failure was hidden or leaked")
 				}
 			} else {
