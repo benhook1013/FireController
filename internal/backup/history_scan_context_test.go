@@ -61,6 +61,7 @@ func TestHistoryScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
 		"reviews.ValidateCurrentSummaries",
 		"reviews.ValidateCurrentRunOrder",
 		"reviews.ValidatePullMetadataHistory",
+		"reviews.ValidateAttemptReasonsHistory",
 	} {
 		for _, operation := range []string{"inspect", "restore"} {
 			t.Run(phase+"/"+operation, func(t *testing.T) {
@@ -89,50 +90,6 @@ func TestHistoryScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
 				}
 			})
 		}
-	}
-	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
-		t.Fatal("transient interruption was mistaken for persistent corruption", err)
-	}
-}
-
-func TestAttemptReasonScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
-	f := newRestoreFixture(t)
-	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	rows := backupRows(t, f.store.DB())
-	bundle := restoreBundle(t, f)
-	before := restoreTree(t, bundle.Path)
-	for _, operation := range []string{"inspect", "restore"} {
-		t.Run(operation, func(t *testing.T) {
-			base, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			ctx := &historyScanCancellation{
-				Context: base,
-				cancel:  cancel,
-				phase:   "github.com/benhook1013/FireController/internal/reviews.ValidateAttemptReasonsHistory",
-			}
-			target := filepath.Join(t.TempDir(), "restored")
-			var err error
-			if operation == "inspect" {
-				_, err = Inspect(ctx, bundle.Path)
-			} else {
-				_, err = Restore(ctx, bundle.Path, target)
-			}
-			if !ctx.fired.Load() || !errors.Is(base.Err(), context.Canceled) {
-				t.Fatal("selected route-policy validator was not interrupted", err)
-			}
-			var failure *core.Error
-			if !errors.As(err, &failure) || failure.Code != "backup_unavailable" || failure.Status != 503 {
-				t.Error("route-policy interruption lost retryable backup classification", err)
-			}
-			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("interrupted verification created restore destination", err)
-			}
-			if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) || !reflect.DeepEqual(rows, backupRows(t, f.store.DB())) {
-				t.Fatal("interrupted verification changed bundle or source rows")
-			}
-		})
 	}
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 		t.Fatal("transient interruption was mistaken for persistent corruption", err)
