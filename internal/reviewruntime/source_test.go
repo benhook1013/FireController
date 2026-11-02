@@ -206,6 +206,58 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 	}
 }
 
+func TestResolveReviewSourceDraftHoldIdentifiesTargetOrAncestor(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, draftSubject := range []string{"target", "ancestor"} {
+			t.Run(channel+"/"+draftSubject, func(t *testing.T) {
+				f := newCLIDriverFixture(t)
+				parent := f.reader.pulls[2]
+				parent.HeadRef = "parent-branch"
+				f.reader.pulls[2] = parent
+				target := f.reader.pulls[4]
+				target.HeadSHA, target.BaseSHA, target.BaseRef = strings.Repeat("9", 40), parent.HeadSHA, parent.HeadRef
+				ready := false
+				target.IsDraft = &ready
+				isDraft := true
+				if draftSubject == "target" {
+					target.IsDraft = &isDraft
+				} else {
+					parent.IsDraft = &isDraft
+					f.reader.pulls[2] = parent
+				}
+				f.reader.pulls[4] = target
+				before := sourceState(t, f)
+				plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", 2, 4), sourceOperation(f, 4, channel))
+				if draftSubject == "target" {
+					sourceHoldReason(t, err, "pull_draft")
+					if plan != (reviewexec.SourcePlan{}) || len(f.reader.calls) != 1 || f.reader.calls[4] != 1 {
+						t.Fatal("target draft inspected ancestors or fabricated a comparison", plan, f.reader.calls)
+					}
+				} else {
+					sourceHoldReason(t, err, "predecessor_unfinished")
+					var failure *core.Error
+					if !errors.As(err, &failure) {
+						t.Fatal(err)
+					}
+					details := failure.Details.(map[string]string)
+					if details["pull_number"] != "2" || details["cause"] != "pull_draft" {
+						t.Fatal("ancestor draft hold lost responsible PR or cause", details)
+					}
+					if plan.Pull != target || plan.Repository != f.reader.repository || plan.ParentPullNumber != 2 || plan.ParentSHA != parent.HeadSHA || plan.ObservedAt == "" {
+						t.Fatal("ancestor draft changed original target comparison", plan)
+					}
+					if len(f.reader.calls) != 2 || f.reader.calls[2] != 1 || f.reader.calls[4] != 1 {
+						t.Fatal("ancestor draft repeated source reads or inspected unrelated PRs", f.reader.calls)
+					}
+				}
+				if predecessors != nil || f.reader.repositoryCalls != 1 || sourceState(t, f) != before || f.fetches.Load() != 0 {
+					t.Fatal("draft hold retained partial dependencies, changed state or materialized work", predecessors, f.reader.repositoryCalls)
+				}
+			})
+		}
+	}
+}
+
 type sourceFaultReader struct {
 	*cliDriverReader
 	failRepository, failPull bool

@@ -48,6 +48,26 @@ class SelectionTests(unittest.TestCase):
                     membership[name] += bool(re.fullmatch(expression, name))
             self.assertEqual(set(membership.values()), {1})
 
+    def test_duplicate_names_share_one_partition_and_order_is_deterministic(self):
+        names = [f"TestCase{i:03}" for i in range(50)] + ["ExampleAPI", "FuzzDecode"]
+        # Go registers internal and external implementations separately even
+        # when their valid top-level names match. One expression selects both.
+        repeated = names + [names[0], "ExampleAPI", "FuzzDecode"]
+        for family, count in SELECT.FAMILIES.items():
+            package = SELECT.PREFIX + "internal/" + family
+            baseline = "\n".join(names) + f"\nok\t{package}\t0.001s\n"
+            inventory = "\n".join(repeated) + f"\nok\t{package}\t0.001s\n"
+            reordered = "\n".join(reversed(repeated)) + f"\nok\t{package}\t0.001s\n"
+            expressions = []
+            for index in range(count):
+                shard = f"{family}-{index}"
+                expression = SELECT.select_tests(shard, package, inventory)
+                self.assertEqual(expression, SELECT.select_tests(shard, package, baseline))
+                self.assertEqual(expression, SELECT.select_tests(shard, package, reordered))
+                expressions.append(expression)
+            for occurrence in repeated:
+                self.assertEqual(sum(bool(re.fullmatch(expr, occurrence)) for expr in expressions), 1)
+
     def test_bad_package_inventories_and_unknown_shards_fail_closed(self):
         for inventory in ["", "bad/package", "\n".join(self.inventory() * 2), self.inventory()[0] + "\n\n"]:
             with self.subTest(inventory=inventory), self.assertRaises(ValueError):
@@ -60,7 +80,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_bad_test_inventories_mismatched_packages_and_empty_slices_fail_closed(self):
         package = SELECT.PREFIX + "internal/reviews"
-        for inventory in ["", "TestOne", "TestOne\nTestOne", "TestOne\nPRIVATE unexpected output", "TestOne\n\n"]:
+        # Repeating a valid name cannot fill otherwise empty partitions.
+        for inventory in ["", "TestOne", "TestOne\nTestOne", "TestOne\nTestOne\nTestTwo\nTestTwo", "TestOne\nPRIVATE unexpected output", "TestOne\n\n"]:
             with self.subTest(inventory=inventory), self.assertRaises(ValueError):
                 SELECT.select_tests("reviews-0", package, inventory)
         with self.assertRaises(ValueError):

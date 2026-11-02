@@ -49,9 +49,10 @@ def select_tests(shard, package, inventory):
             continue
         else:
             raise ValueError("unexpected Go test discovery output")
-    names.sort(key=lambda name: name.encode("utf-8"))
-    if len(names) != len(set(names)):
-        raise ValueError("duplicate Go test name")
+    # Internal and external test packages can register the same top-level name.
+    # Go's -run expression selects every implementation, so keep that name in
+    # one deterministic partition rather than rejecting valid discovery output.
+    names = sorted(set(names), key=lambda name: name.encode("utf-8"))
     partitions = [names[i::FAMILIES[family]] for i in range(FAMILIES[family])]
     sets = [set(part) for part in partitions]
     if any(not part for part in sets) or set().union(*sets) != set(names) or sum(map(len, sets)) != len(names):
