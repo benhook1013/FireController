@@ -123,6 +123,9 @@ func TestWorkerPauseOlderJobsBundlesRemainSupported(t *testing.T) {
 func TestWorkerPauseBackupRejectsNoncanonicalStateAndHistory(t *testing.T) {
 	f := newRestoreFixture(t)
 	f.request(t, "PUT", "/api/v1/projects/"+f.project+"/workers/"+f.worker+"/pause", map[string]any{"expected_revision": 0, "paused": true, "reason": "Retained private reason"})
+	// Every malformed schema is isolated from the same validated bundle.
+	bundle := restoreBundle(t, f)
+	canonical := restoreTree(t, bundle.Path)
 	current := `project_id TEXT NOT NULL,worker_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),paused INTEGER NOT NULL CHECK(paused IN(0,1)),reason TEXT NOT NULL CHECK(paused=1 OR reason=''),PRIMARY KEY(project_id,worker_id)`
 	history := `project_id TEXT NOT NULL,worker_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),paused INTEGER NOT NULL CHECK(paused IN(0,1)),reason TEXT NOT NULL CHECK(paused=1 OR reason=''),actor_id TEXT NOT NULL,actor_worker_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,worker_id,revision)`
 	fk := `,FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id)`
@@ -142,31 +145,32 @@ func TestWorkerPauseBackupRejectsNoncanonicalStateAndHistory(t *testing.T) {
 			{"wrong-foreign-action", columns, fk + " ON DELETE CASCADE"},
 		} {
 			t.Run(table+"/"+test.name, func(t *testing.T) {
-				bundle, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
-				if err != nil {
-					t.Fatal(err)
-				}
+				var query string
 				switch test.name {
 				case "extra-column":
-					mutateBundleSQL(t, bundle.Path, `ALTER TABLE `+table+` ADD COLUMN extra TEXT`)
+					query = `ALTER TABLE ` + table + ` ADD COLUMN extra TEXT`
 				case "missing-table":
-					mutateBundleSQL(t, bundle.Path, `DROP TABLE `+table)
+					query = `DROP TABLE ` + table
 				default:
-					mutateBundleSQL(t, bundle.Path, `CREATE TABLE altered_pause (`+test.columns+test.foreign+`);INSERT INTO altered_pause SELECT `+strings.Join(strings.Fields(tables[table].columns), ",")+` FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_pause RENAME TO `+table)
+					query = `CREATE TABLE altered_pause (` + test.columns + test.foreign + `);INSERT INTO altered_pause SELECT ` + strings.Join(strings.Fields(tables[table].columns), ",") + ` FROM ` + table + `;DROP TABLE ` + table + `;ALTER TABLE altered_pause RENAME TO ` + table
 				}
-				immutable := restoreTree(t, bundle.Path)
-				_, err = Inspect(t.Context(), bundle.Path)
+				path := restoreModifiedBundle(t, bundle, query)
+				immutable := restoreTree(t, path)
+				_, err := Inspect(t.Context(), path)
 				backupCode(t, err, "backup_invalid")
 				destination := filepath.Join(t.TempDir(), "refused")
-				_, err = Restore(t.Context(), bundle.Path, destination)
+				_, err = Restore(t.Context(), path, destination)
 				backupCode(t, err, "backup_invalid")
 				if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("invalid schema created restore destination", err)
 				}
-				if !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
+				if !reflect.DeepEqual(immutable, restoreTree(t, path)) {
 					t.Fatal("refused schema modified bundle")
 				}
 			})
 		}
+	}
+	if !reflect.DeepEqual(canonical, restoreTree(t, bundle.Path)) {
+		t.Fatal("corruption cases modified canonical bundle")
 	}
 }
