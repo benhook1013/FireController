@@ -30,6 +30,7 @@ type ParsedReview struct {
 	Findings         []ParsedFinding
 	ReviewedFiles    []string
 	ReportedFindings int64
+	CoverageLimits   []string `json:"coverage_limits,omitempty"`
 }
 
 const (
