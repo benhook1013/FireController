@@ -95,6 +95,9 @@ func TestNotesBackupOlderJobsOneThroughFiveRemainUnmigrated(t *testing.T) {
 func TestNotesBackupRejectsMalformedSchemaAndHistoricalState(t *testing.T) {
 	f := newRestoreFixture(t)
 	id := seedBackupNotes(t, f)
+	// Keep one valid source, with a separate resealed copy for every defect.
+	bundle := restoreBundle(t, f)
+	canonical := restoreTree(t, bundle.Path)
 	for _, query := range []string{
 		`DROP TABLE note_revisions`,
 		`ALTER TABLE notes ADD COLUMN extra TEXT`,
@@ -106,21 +109,13 @@ func TestNotesBackupRejectsMalformedSchemaAndHistoricalState(t *testing.T) {
 		`UPDATE note_revisions SET created_at='bad' WHERE revision=1`,
 	} {
 		t.Run(query, func(t *testing.T) {
-			bundle, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			mutateBundleSQL(t, bundle.Path, query)
-			assertNotesBundleRejected(t, bundle.Path)
+			path := restoreModifiedBundle(t, bundle, query)
+			assertNotesBundleRejected(t, path)
 		})
 	}
 	for _, table := range []string{"notes", "note_revisions"} {
 		for _, defect := range []string{"key", "type", "nullable", "default", "foreign-action"} {
 			t.Run(table+"/"+defect, func(t *testing.T) {
-				bundle, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
-				if err != nil {
-					t.Fatal(err)
-				}
 				db, err := sql.Open("sqlite", filepath.Join(bundle.Path, "firecontroller.sqlite"))
 				if err != nil {
 					t.Fatal(err)
@@ -152,10 +147,13 @@ func TestNotesBackupRejectsMalformedSchemaAndHistoricalState(t *testing.T) {
 					t.Fatal("fixture did not introduce defect")
 				}
 				columns := strings.Join(strings.Fields(tables[table].columns), ",")
-				mutateBundleSQL(t, bundle.Path, changed+`;INSERT INTO altered_notes SELECT `+columns+` FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_notes RENAME TO `+table)
-				assertNotesBundleRejected(t, bundle.Path)
+				path := restoreModifiedBundle(t, bundle, changed+`;INSERT INTO altered_notes SELECT `+columns+` FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_notes RENAME TO `+table)
+				assertNotesBundleRejected(t, path)
 			})
 		}
+	}
+	if !reflect.DeepEqual(canonical, restoreTree(t, bundle.Path)) {
+		t.Fatal("corruption cases modified canonical bundle")
 	}
 	// A corrupt archive blocks operator backup, not an ordinary current-row read.
 	if _, err := f.store.DB().Exec(`UPDATE note_revisions SET body='corrupt latest' WHERE note_id=? AND revision=4`, id); err != nil {
