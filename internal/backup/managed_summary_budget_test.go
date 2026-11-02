@@ -56,7 +56,7 @@ func managedSummaryBudgetDestination(t *testing.T, root string, size int) string
 	return destination
 }
 
-func TestManagedSummaryBudgetEscapedDestinationBoundaryBeforeWrites(t *testing.T) {
+func TestManagedSummaryBudgetEscapedDestinationBoundary(t *testing.T) {
 	for _, size := range []int{4096, 4097} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			root := t.TempDir()
@@ -70,10 +70,12 @@ func TestManagedSummaryBudgetEscapedDestinationBoundaryBeforeWrites(t *testing.T
 			if err != nil || len(body)+1 > maxManagedStatusBytes {
 				t.Fatal("fixture must remain within the larger status budget", len(body), err)
 			}
-			got, err := ValidateScheduleConfig(filepath.Join(root, "absent-source"), cfg)
+			// Isolate the encoding contract from the separate local VFS path bound.
+			// Historical configuration reads still normalize these records.
+			got, err := normalizeScheduleConfig(filepath.Join(root, "absent-source"), cfg, false)
 			if size == 4096 {
 				if err != nil || got != cfg {
-					t.Fatal("newline-inclusive boundary should remain configurable", err)
+					t.Fatal("newline-inclusive boundary should remain encodable", err)
 				}
 			} else {
 				if err == nil {
@@ -90,7 +92,7 @@ func TestManagedSummaryBudgetEscapedDestinationBoundaryBeforeWrites(t *testing.T
 	}
 }
 
-func TestManagedSummaryBudgetRefusalPreservesActualSuccess(t *testing.T) {
+func TestManagedStagedPathRefusalPreservesActualSuccess(t *testing.T) {
 	f, manager := newManagedFixture(t, 1)
 	if reports := runManaged(t, manager, 1); len(reports) != 0 {
 		t.Fatal(reports)
@@ -99,17 +101,24 @@ func TestManagedSummaryBudgetRefusalPreservesActualSuccess(t *testing.T) {
 	if err != nil || previous.LastSuccess == nil {
 		t.Fatal("genuine prior success required", err)
 	}
-	root := t.TempDir()
-	cfg := ScheduleConfig{Destination: managedSummaryBudgetDestination(t, root, 4097), Interval: time.Minute, Keep: 1}
+	// This public admission refusal is the active VFS pathname boundary, not
+	// the independent historical/noninspect 4097-byte encoding check above.
+	destination := stagingBoundaryDestination(t, 1)
+	cfg := ScheduleConfig{Destination: destination, Interval: time.Minute, Keep: 1}
+	if _, err := normalizeScheduleConfig(f.dir, cfg, false); err != nil {
+		t.Fatal("VFS control must fit the independent summary/configuration budgets", err)
+	}
 	before := backupRows(t, f.store.DB())
 	_, err = NewManager(f.store, f.dir, cfg)
 	backupCode(t, err, "configuration_invalid")
+	if !strings.Contains(err.Error(), "SQLite pathname") {
+		t.Fatal("public refusal did not identify the active VFS boundary", err)
+	}
 	current, err := ReadStatus(t.Context(), f.dir)
 	if err != nil || !reflect.DeepEqual(current, previous) || !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
 		t.Fatal("refused configuration changed prior status, bundle ledger or source", err)
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 0 {
-		t.Fatal("refused manager created destination state", len(entries), err)
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatal("refused manager created destination state", err)
 	}
 }

@@ -1,0 +1,756 @@
+package offsite
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/backup"
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/strictjson"
+)
+
+type Result struct {
+	State            string `json:"state"`
+	BackupID         string `json:"backup_id"`
+	SourceInstanceID string `json:"source_instance_id"`
+	Retained         int    `json:"retained"`
+}
+
+type session struct {
+	c         Config
+	state     Status
+	transport transport
+	lockFile  *os.File
+	work      string
+}
+
+func openSession(c Config, t transport) (*session, error) {
+	if err := privateDir(c.StateDir, true); err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(c.StateDir, "transfer.lock")
+	if info, err := os.Lstat(lockPath); err == nil && !info.Mode().IsRegular() {
+		return nil, failure("offsite_state_invalid")
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, failure("offsite_storage_unavailable")
+	}
+	if lock(f) != nil {
+		f.Close()
+		return nil, failure("offsite_busy")
+	}
+	s := &session{c: c, lockFile: f}
+	s.state, err = readState(c)
+	if err != nil {
+		s.close()
+		return nil, err
+	}
+	s.work, err = prepareWork(c)
+	if err != nil {
+		s.close()
+		return nil, err
+	}
+	if t == nil {
+		t, err = newTransport(c, s.work)
+	}
+	if err != nil {
+		s.close()
+		return nil, err
+	}
+	s.transport = t
+	return s, nil
+}
+
+// A single reserved workspace bounds disk use across hard kills. Reclaim only
+// this connection's published marker or its narrowly recognized creation remnant.
+func prepareWork(c Config) (string, error) {
+	dir := filepath.Join(c.StateDir, "work")
+	if _, err := os.Lstat(dir); err == nil {
+		if err = privateDir(dir, false); err != nil {
+			return "", err
+		}
+		marker := filepath.Join(dir, ".owner")
+		if _, err := os.Lstat(marker); errors.Is(err, os.ErrNotExist) {
+			if err := removeUnpublishedMarkerWork(dir, binding(c)); err != nil {
+				return "", err
+			}
+		} else {
+			b, err := privateRead(marker, 128)
+			if err != nil || string(b) != binding(c) {
+				return "", failure("offsite_state_invalid")
+			}
+			if os.RemoveAll(dir) != nil {
+				return "", failure("offsite_storage_unavailable")
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", failure("offsite_storage_unavailable")
+	}
+	if os.Mkdir(dir, 0700) != nil {
+		return "", failure("offsite_storage_unavailable")
+	}
+	marker := filepath.Join(dir, ".owner")
+	pending := filepath.Join(dir, ".owner.pending")
+	f, err := os.OpenFile(pending, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return "", failure("offsite_storage_unavailable")
+	}
+	_, writeErr := f.Write([]byte(binding(c)))
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		return "", failure("offsite_storage_unavailable")
+	}
+	// Publish only the synced complete binding, without replacing any marker.
+	if os.Link(pending, marker) != nil || os.Remove(pending) != nil || syncDir(dir) != nil {
+		return "", failure("offsite_storage_unavailable")
+	}
+	return dir, nil
+}
+
+func removeUnpublishedMarkerWork(dir, owner string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return failure("offsite_state_invalid")
+	}
+	entries, err := f.ReadDir(2)
+	closeErr := f.Close()
+	if err != nil && !errors.Is(err, io.EOF) || closeErr != nil || len(entries) > 1 {
+		return failure("offsite_state_invalid")
+	}
+	if len(entries) == 1 {
+		if entries[0].Name() != ".owner.pending" {
+			return failure("offsite_state_invalid")
+		}
+		pending := filepath.Join(dir, ".owner.pending")
+		b, err := privateRead(pending, int64(len(owner)))
+		if err != nil || !strings.HasPrefix(owner, string(b)) {
+			return failure("offsite_state_invalid")
+		}
+		if os.Remove(pending) != nil {
+			return failure("offsite_storage_unavailable")
+		}
+	}
+	// Never recursively remove an unpublished directory, even after validating
+	// its one reserved temporary marker. Unexpected contents remain untouched.
+	if os.Remove(dir) != nil {
+		return failure("offsite_state_invalid")
+	}
+	return nil
+}
+
+func (s *session) close() {
+	if s.work != "" {
+		os.RemoveAll(s.work)
+	}
+	if s.lockFile != nil {
+		s.lockFile.Close()
+	}
+}
+func (s *session) save() error {
+	return writeJSON(filepath.Join(s.c.StateDir, "offsite.json"), s.state)
+}
+func (s *session) object(r Receipt, file string) string {
+	return s.c.Remote + "/" + s.c.InstanceID + "/" + r.ID + "/" + file
+}
+
+func (s *session) remoteReceipt(ctx context.Context, r Receipt) (Receipt, error) {
+	value, err := s.receiptAt(ctx, s.object(r, "receipt.json"))
+	if err == nil && value.ID != r.ID {
+		return value, failure("offsite_remote_conflict")
+	}
+	return value, err
+}
+
+func (s *session) receiptAt(ctx context.Context, name string) (Receipt, error) {
+	b, err := s.transport.read(ctx, name)
+	if err != nil {
+		return Receipt{}, err
+	}
+	var value Receipt
+	if len(b) > 4096 || strictjson.Decode(b, &value) != nil || !validReceipt(value, s.c) {
+		return value, failure("offsite_remote_conflict")
+	}
+	return value, nil
+}
+
+func (s *session) publishLatest(ctx context.Context, r Receipt) error {
+	name := s.c.Remote + "/" + s.c.InstanceID + "/latest.json"
+	old, err := s.receiptAt(ctx, name)
+	if err != nil && !errors.Is(err, notFound) {
+		return err
+	}
+	if err == nil && old == r {
+		return nil
+	}
+	// Equal sequences retain the same committed history; wall-clock order
+	// cannot establish rollback when the source clock has moved backwards.
+	if err == nil && old.EventSequence > r.EventSequence {
+		return failure("offsite_source_rollback")
+	}
+	file := filepath.Join(s.work, "latest.json")
+	if err = writeJSON(file, r); err != nil {
+		return err
+	}
+	if err = s.transport.put(ctx, file, name); err != nil {
+		return err
+	}
+	actual, err := s.receiptAt(ctx, name)
+	if err != nil {
+		return err
+	}
+	if actual != r {
+		return failure("offsite_remote_conflict")
+	}
+	return nil
+}
+
+func (s *session) verifyRemote(ctx context.Context, r Receipt) error {
+	if err := receiptTransferSize(ctx, r, s.c); err != nil {
+		return err
+	}
+	download := filepath.Join(s.work, "verify.tar.gz")
+	if err := s.transport.get(ctx, s.object(r, "archive.tar.gz"), download); err != nil {
+		return err
+	}
+	defer os.Remove(download)
+	stage, err := os.MkdirTemp(s.work, "verify-")
+	if err != nil {
+		return failure("offsite_storage_unavailable")
+	}
+	defer os.RemoveAll(stage)
+	_, err = unpack(ctx, download, stage, r, s.c)
+	return err
+}
+
+const maxSourceRootEntries = 4096
+const maxSourceBundles = 1000
+
+// Discovery has separate bounds for root entries and canonical bundle names.
+// Hidden publication staging and unrelated files do not consume retention's
+// bundle allowance. A matching name alone never establishes backup validity.
+func sourceBundleEntries(ctx context.Context, c Config) ([]os.DirEntry, error) {
+	if ctx.Err() != nil {
+		return nil, failure("offsite_cancelled")
+	}
+	if err := privateDir(c.SourceRoot, false); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(c.SourceRoot)
+	if err != nil {
+		return nil, failure("offsite_source_invalid")
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(maxSourceRootEntries + 1)
+	if ctx.Err() != nil {
+		return nil, failure("offsite_cancelled")
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, failure("offsite_source_invalid")
+	}
+	if len(entries) > maxSourceRootEntries {
+		return nil, failure("offsite_source_limit")
+	}
+	bundles := make([]os.DirEntry, 0, min(len(entries), maxSourceBundles))
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil, failure("offsite_cancelled")
+		}
+		if bundleID.MatchString(entry.Name()) {
+			if len(bundles) == maxSourceBundles {
+				return nil, failure("offsite_source_limit")
+			}
+			bundles = append(bundles, entry)
+		}
+	}
+	return bundles, nil
+}
+
+func newest(ctx context.Context, c Config) (backup.Summary, error) {
+	entries, err := sourceBundleEntries(ctx, c)
+	if err != nil {
+		return backup.Summary{}, err
+	}
+	return newestEntries(ctx, c, entries)
+}
+
+func newestEntries(ctx context.Context, c Config, entries []os.DirEntry) (backup.Summary, error) {
+	if ctx.Err() != nil {
+		return backup.Summary{}, failure("offsite_cancelled")
+	}
+	var selected backup.Manifest
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return backup.Summary{}, failure("offsite_cancelled")
+		}
+		if !bundleID.MatchString(entry.Name()) {
+			continue
+		}
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return backup.Summary{}, failure("offsite_source_invalid")
+		}
+		path := filepath.Join(c.SourceRoot, entry.Name())
+		b, err := privateRead(filepath.Join(path, "manifest.json"), 64<<20)
+		if err != nil {
+			// Local retention can remove an enumerated bundle. An existing
+			// candidate with a missing or invalid manifest must still fail.
+			if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return backup.Summary{}, failure("offsite_source_invalid")
+		}
+		var m backup.Manifest
+		if strictjson.Decode(b, &m) != nil || m.ID != entry.Name() {
+			return backup.Summary{}, failure("offsite_source_invalid")
+		}
+		if m.SourceInstanceID != c.InstanceID {
+			continue
+		}
+		at, e := time.Parse(time.RFC3339Nano, m.SnapshotFinishedAt)
+		if e != nil {
+			return backup.Summary{}, failure("offsite_source_invalid")
+		}
+		previous, _ := time.Parse(time.RFC3339Nano, selected.SnapshotFinishedAt)
+		if selected.ID == "" || m.EventSequence > selected.EventSequence || m.EventSequence == selected.EventSequence && (at.After(previous) || at.Equal(previous) && m.ID > selected.ID) {
+			selected = m
+		}
+	}
+	if ctx.Err() != nil {
+		return backup.Summary{}, failure("offsite_cancelled")
+	}
+	if selected.ID == "" {
+		return backup.Summary{}, failure("offsite_source_empty")
+	}
+	s, err := backup.Inspect(ctx, filepath.Join(c.SourceRoot, selected.ID))
+	if err != nil {
+		return s, cancelOrFailure(ctx, "offsite_source_invalid")
+	}
+	if s.SourceInstanceID != c.InstanceID {
+		return s, failure("offsite_source_invalid")
+	}
+	return s, nil
+}
+
+// Push performs one finite operator cycle. A deployment timer owns cadence;
+// no serving process, per-agent read or provider review path calls it.
+func Push(ctx context.Context, configPath string) (Result, error) {
+	c, err := loadConfig(configPath)
+	if err != nil {
+		return Result{}, err
+	}
+	result, err := push(ctx, c, nil)
+	return result, publicFailure(err)
+}
+
+func push(ctx context.Context, c Config, t transport) (result Result, err error) {
+	if ctx == nil || ctx.Err() != nil {
+		return result, failure("offsite_cancelled")
+	}
+	duration, _ := time.ParseDuration(c.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	s, err := openSession(c, t)
+	if err != nil {
+		return result, err
+	}
+	defer s.close()
+	s.state.LastAttempt = &Attempt{State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err = s.save(); err != nil {
+		return result, err
+	}
+	defer func() {
+		s.state.LastAttempt.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err != nil {
+			err = publicFailure(err)
+			s.state.LastAttempt.State = "failed"
+			s.state.LastAttempt.Reason = "offsite_failed"
+			var e *core.Error
+			if errors.As(err, &e) {
+				s.state.LastAttempt.Reason = e.Code
+			}
+		} else {
+			s.state.LastAttempt.State = result.State
+		}
+		if saveErr := s.save(); saveErr != nil {
+			err = saveErr
+		}
+	}()
+	archive := filepath.Join(c.StateDir, "pending.tar.gz")
+	if s.state.Pending == nil {
+		// A crash after committing success but before deleting its spool leaves
+		// only this exact, verifiable last-success archive eligible for cleanup.
+		if _, e := os.Lstat(archive); e == nil {
+			if s.state.LastSuccess == nil {
+				return result, failure("offsite_state_invalid")
+			}
+			if err := receiptTransferSize(ctx, *s.state.LastSuccess, c); err != nil {
+				return result, err
+			}
+			h, n, e := fileHash(ctx, archive, c.MaxBundleBytes)
+			if e != nil || h != s.state.LastSuccess.ArchiveSHA256 || n != s.state.LastSuccess.ArchiveBytes {
+				return result, cancelOrFailure(ctx, "offsite_state_invalid")
+			}
+			if os.Remove(archive) != nil {
+				return result, failure("offsite_storage_unavailable")
+			}
+		}
+		// Retry cleanup first, but a refusal to delete verified owned objects
+		// does not block a newer backup below the bounded ownership inventory.
+		var retentionErr error
+		if len(s.state.Owned) > c.Keep {
+			retentionErr = s.prune(ctx, false)
+			if retentionErr != nil {
+				if saveErr := s.save(); saveErr != nil {
+					return result, saveErr
+				}
+				var deletion *retentionDeleteError
+				if ctx.Err() != nil {
+					return result, failure("offsite_cancelled")
+				}
+				if !errors.As(retentionErr, &deletion) {
+					return result, retentionErr
+				}
+			}
+		}
+		selected, e := newest(ctx, c)
+		if e != nil {
+			return result, e
+		}
+		for _, r := range s.state.Owned {
+			if selected.ID == r.ID {
+				// Raising Keep can remove the need for earlier refused cleanup.
+				// Clear that warning only after successful source selection;
+				// failed or canceled work retains its original diagnostics.
+				if len(s.state.Owned) <= c.Keep {
+					s.state.RetentionReason = ""
+				}
+				return Result{State: "unchanged", BackupID: selected.ID, SourceInstanceID: c.InstanceID, Retained: len(s.state.Owned)}, retentionErr
+			}
+		}
+		if s.state.LastSuccess != nil && selected.EventSequence < s.state.LastSuccess.EventSequence {
+			return result, failure("offsite_source_rollback")
+		}
+		if len(s.state.Owned) >= maxOwned {
+			return result, failure("offsite_retention_limit")
+		}
+		// Preparation uses a stable, separately owned path. No remote effect is
+		// possible before its receipt and complete archive are durable locally.
+		prepared := filepath.Join(c.StateDir, "prepare.tar.gz")
+		if info, e := os.Lstat(prepared); e == nil {
+			if !info.Mode().IsRegular() {
+				return result, failure("offsite_state_invalid")
+			}
+			if os.Remove(prepared) != nil {
+				return result, failure("offsite_storage_unavailable")
+			}
+		}
+		r, e := packVerified(ctx, selected, prepared, c)
+		if e != nil {
+			return result, e
+		}
+		// Inspect the captured archive, not the source again: local retention
+		// can remove the original after it was selected.
+		check, e := os.MkdirTemp(s.work, "prepared-")
+		if e != nil {
+			return result, failure("offsite_storage_unavailable")
+		}
+		_, e = unpack(ctx, prepared, check, r, c)
+		cleanupErr := os.RemoveAll(check)
+		if e != nil {
+			return result, e
+		}
+		if cleanupErr != nil {
+			return result, failure("offsite_storage_unavailable")
+		}
+		// Persist the intent before moving the complete spool. Recovery can
+		// finish either side of that rename without needing the source bundle.
+		s.state.Pending = &r
+		if err = s.save(); err != nil {
+			return result, err
+		}
+	}
+	// Persisted pending work also keeps this bound: never publish another
+	// receipt that cannot be added to the supported ownership inventory.
+	if len(s.state.Owned) >= maxOwned {
+		return result, failure("offsite_retention_limit")
+	}
+	r := *s.state.Pending
+	if err := receiptTransferSize(ctx, r, c); err != nil {
+		return result, err
+	}
+	if _, e := os.Lstat(archive); errors.Is(e, os.ErrNotExist) {
+		prepared := filepath.Join(c.StateDir, "prepare.tar.gz")
+		h, n, e := fileHash(ctx, prepared, c.MaxBundleBytes)
+		if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
+			return result, cancelOrFailure(ctx, "offsite_pending_invalid")
+		}
+		if os.Rename(prepared, archive) != nil || syncDir(c.StateDir) != nil {
+			return result, failure("offsite_storage_unavailable")
+		}
+	}
+	h, n, e := fileHash(ctx, archive, c.MaxBundleBytes)
+	if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
+		return result, cancelOrFailure(ctx, "offsite_pending_invalid")
+	}
+	remote, e := s.remoteReceipt(ctx, r)
+	if e != nil && !errors.Is(e, notFound) {
+		return result, e
+	}
+	if e == nil && remote != r {
+		return result, failure("offsite_remote_conflict")
+	}
+	if errors.Is(e, notFound) {
+		if err = s.transport.put(ctx, archive, s.object(r, "archive.tar.gz")); err != nil {
+			return result, err
+		}
+	}
+	if err = s.verifyRemote(ctx, r); err != nil {
+		return result, err
+	}
+	if errors.Is(e, notFound) {
+		receiptPath := filepath.Join(s.work, "receipt.json")
+		if err = writeJSON(receiptPath, r); err != nil {
+			return result, err
+		}
+		if err = s.transport.put(ctx, receiptPath, s.object(r, "receipt.json")); err != nil {
+			return result, err
+		}
+	}
+	remote, e = s.remoteReceipt(ctx, r)
+	if e != nil || remote != r {
+		if e != nil {
+			return result, e
+		}
+		return result, failure("offsite_remote_conflict")
+	}
+	if err = s.publishLatest(ctx, r); err != nil {
+		return result, err
+	}
+	s.state.LastSuccess = &r
+	s.state.Pending = nil
+	s.state.Owned = append(s.state.Owned, r)
+	if err = s.save(); err != nil {
+		return result, err
+	}
+	if os.Remove(archive) != nil || syncDir(c.StateDir) != nil {
+		return result, failure("offsite_storage_unavailable")
+	}
+	if err = s.prune(ctx, true); err != nil {
+		return result, err
+	}
+	return Result{State: "complete", BackupID: r.ID, SourceInstanceID: c.InstanceID, Retained: len(s.state.Owned)}, nil
+}
+
+func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
+	defer func() {
+		if err != nil {
+			s.state.RetentionReason = "offsite_retention_failed"
+		} else {
+			s.state.RetentionReason = ""
+		}
+	}()
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
+	if len(s.state.Owned) <= s.c.Keep {
+		s.state.RetentionReason = ""
+		return nil
+	}
+	if s.state.LastSuccess == nil {
+		return failure("offsite_retention_conflict")
+	}
+	keeper := *s.state.LastSuccess
+	found := false
+	for _, r := range s.state.Owned {
+		if r.EventSequence > keeper.EventSequence {
+			return failure("offsite_retention_conflict")
+		}
+		found = found || r == keeper
+	}
+	if !found {
+		return failure("offsite_retention_conflict")
+	}
+	sort.Slice(s.state.Owned, func(i, j int) bool {
+		a, b := s.state.Owned[i], s.state.Owned[j]
+		// Protect the exact successful publication, including after equal-
+		// sequence clock rollback. Older owned copies still use stable order.
+		if a == keeper || b == keeper {
+			return a == keeper && b != keeper
+		}
+		if a.EventSequence != b.EventSequence {
+			return a.EventSequence > b.EventSequence
+		}
+		at, _ := time.Parse(time.RFC3339Nano, a.SnapshotFinishedAt)
+		bt, _ := time.Parse(time.RFC3339Nano, b.SnapshotFinishedAt)
+		if at.Equal(bt) {
+			return a.ID > b.ID
+		}
+		return at.After(bt)
+	})
+	if !newestVerified {
+		r := *s.state.LastSuccess
+		actual, e := s.remoteReceipt(ctx, r)
+		if e != nil || actual != r {
+			return cancelOrFailure(ctx, "offsite_retention_conflict")
+		}
+		if err = s.verifyRemote(ctx, r); err != nil {
+			return err
+		}
+	}
+	for len(s.state.Owned) > s.c.Keep {
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
+		}
+		index := len(s.state.Owned) - 1
+		r := s.state.Owned[index]
+		actual, e := s.remoteReceipt(ctx, r)
+		if e != nil && !errors.Is(e, notFound) {
+			return e
+		}
+		if e == nil && actual != r {
+			return failure("offsite_remote_conflict")
+		}
+		// Matching ownership alone is insufficient if an archive was replaced.
+		if err := receiptTransferSize(ctx, r, s.c); err != nil {
+			return err
+		}
+		archive := filepath.Join(s.work, "prune.tar.gz")
+		e = s.transport.get(ctx, s.object(r, "archive.tar.gz"), archive)
+		if e != nil && !errors.Is(e, notFound) {
+			return e
+		}
+		if e == nil {
+			h, n, e := fileHash(ctx, archive, s.c.MaxBundleBytes)
+			os.Remove(archive)
+			if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
+				return cancelOrFailure(ctx, "offsite_remote_conflict")
+			}
+		}
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
+		}
+		if err = s.transport.remove(ctx, s.object(r, "archive.tar.gz")); err != nil {
+			return retentionDeleteFailure(ctx, err)
+		}
+		if ctx.Err() != nil {
+			return failure("offsite_cancelled")
+		}
+		if err = s.transport.remove(ctx, s.object(r, "receipt.json")); err != nil {
+			return retentionDeleteFailure(ctx, err)
+		}
+		s.state.Owned = s.state.Owned[:index]
+		if err = s.save(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Only delete-origin failures may defer retention; verification and local
+// persistence failures never acquire this marker or broaden destination trust.
+type retentionDeleteError struct{ cause error }
+
+func (e *retentionDeleteError) Error() string { return e.cause.Error() }
+func (e *retentionDeleteError) Unwrap() error { return e.cause }
+
+func retentionDeleteFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return failure("offsite_cancelled")
+	}
+	var cause *core.Error
+	if errors.As(err, &cause) && (cause.Code == "offsite_cancelled" || cause.Code == "offsite_storage_unavailable" || cause.Code == "offsite_state_invalid") {
+		return err
+	}
+	return &retentionDeleteError{cause: err}
+}
+
+func Fetch(ctx context.Context, configPath, id, destination string) (backup.Summary, error) {
+	if ctx == nil || !ValidFetchTarget(id, destination) {
+		return backup.Summary{}, failure("offsite_configuration_invalid")
+	}
+	c, err := loadConfig(configPath)
+	if err != nil {
+		return backup.Summary{}, err
+	}
+	// Session startup reclaims its workspace and close removes it. Recovery
+	// output must be independent of that owned state, including prefix aliases.
+	resolved, state := resolvePrefix(destination), resolvePrefix(c.StateDir)
+	if resolved == state || strings.HasPrefix(resolved, state+string(filepath.Separator)) {
+		return backup.Summary{}, failure("offsite_configuration_invalid")
+	}
+	duration, _ := time.ParseDuration(c.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	s, err := openSession(c, nil)
+	if err != nil {
+		return backup.Summary{}, err
+	}
+	defer s.close()
+	result, err := s.fetch(ctx, id, destination)
+	return result, publicFailure(err)
+}
+
+func (s *session) fetch(ctx context.Context, id, destination string) (result backup.Summary, err error) {
+	var latest *Receipt
+	if id == "" {
+		r, e := s.receiptAt(ctx, s.c.Remote+"/"+s.c.InstanceID+"/latest.json")
+		if e != nil {
+			return result, e
+		}
+		latest = &r
+		id = r.ID
+	}
+	r, err := s.remoteReceipt(ctx, Receipt{ID: id})
+	if err != nil {
+		return result, err
+	}
+	if latest != nil && *latest != r {
+		return result, failure("offsite_remote_conflict")
+	}
+	if err = receiptTransferSize(ctx, r, s.c); err != nil {
+		return result, err
+	}
+	if err = os.Mkdir(destination, 0700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return result, failure("offsite_destination_exists")
+		}
+		return result, failure("offsite_storage_unavailable")
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			os.RemoveAll(destination)
+		}
+	}()
+	archive := filepath.Join(s.work, "fetch.tar.gz")
+	if err = s.transport.get(ctx, s.object(r, "archive.tar.gz"), archive); err != nil {
+		return result, err
+	}
+	if result, err = unpack(ctx, archive, destination, r, s.c); err != nil {
+		return result, err
+	}
+	if err = syncDir(destination); err != nil {
+		return result, err
+	}
+	// Persist the new destination's directory entry as well as its contents.
+	if err = syncDir(filepath.Dir(destination)); err != nil {
+		return result, err
+	}
+	complete = true
+	return result, nil
+}
+
+// Transport absence is an operator recovery result, never a daemon-start error.
+func publicFailure(err error) error {
+	if errors.Is(err, notFound) {
+		return failure("offsite_backup_not_found")
+	}
+	return err
+}

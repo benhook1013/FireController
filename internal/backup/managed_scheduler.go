@@ -43,6 +43,13 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 	if err != nil || len(destination) > 2048 {
 		return ScheduleConfig{}, invalid()
 	}
+	// Stored history remains readable independently of this machine's VFS and
+	// destination filesystem. Only new active configuration needs this preflight.
+	if inspect {
+		if err = validateBundleDestination(destination); err != nil {
+			return ScheduleConfig{}, err
+		}
+	}
 	cfg.Destination = destination
 	if !scheduleStatusFits(cfg) {
 		return ScheduleConfig{}, core.Fail("configuration_invalid", "The backup configuration cannot fit the bounded operator status with retained history.", 400)

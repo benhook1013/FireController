@@ -163,3 +163,7 @@ These small samples use one small checkpoint on one developer machine. They esta
 ## Public website administration
 
 The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` commands configure opt-in anonymous project content under an administrator profile. The [public website contract](public-site.md#agent-setup-commands) owns the input format, preview hash, exact retry and private/public field boundary. Routine worker commands do not load publication manifests or expose private records to the public site.
+
+## Optional offsite backup qualification
+
+After building `bin/fcd`, run `make offsite-smoke RCLONE=/absolute/path/to/rclone` to exercise operator push/status/fetch against disposable loopback S3, encrypted recovery, independent retention and failure paths. CI installs a pinned, checksum-verified transport and runs this check. Ordinary tests need no external binary or cloud account. See [offsite backups](offsite-backups.md) for isolation and proof limits.
