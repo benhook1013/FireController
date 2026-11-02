@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -187,11 +188,18 @@ func TestOwnerClientLocalValidation(t *testing.T) {
 }
 
 func TestOwnerSettlementClientPreservesExactOriginalAssertions(t *testing.T) {
-	for _, stopped := range []bool{true, false} {
-		t.Run(map[bool]string{true: "verified_stop", false: "operator_abandonment"}[stopped], func(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		stopped     bool
+	}{
+		{"hosted_verified_stop", "cancelled", true},
+		{"hosted_operator_abandonment", "cancelled", false},
+		{"cli_partial_verified_stop", "failed", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			attempt := "review_attempt_" + strings.Repeat("a", 32)
-			input := client.SettleReviewAttemptRequest{ExpectedRevision: 7, ExpectedRepositoryID: 42, ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedExternalID: "retained-original", ExternalActionStopped: stopped, Reason: "External action independently stopped.", EvidenceReference: "private-proof-handle"}
-			if !stopped {
+			input := client.SettleReviewAttemptRequest{ExpectedRevision: 7, ExpectedRepositoryID: 42, ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedExternalID: "retained-original", ExternalActionStopped: test.stopped, Reason: "External action independently stopped.", EvidenceReference: "private-proof-handle"}
+			if !test.stopped {
 				input.Reason = "Explicitly abandon original pending request without claiming it stopped."
 			}
 			calls := 0
@@ -208,15 +216,67 @@ func TestOwnerSettlementClientPreservesExactOriginalAssertions(t *testing.T) {
 				if json.NewDecoder(r.Body).Decode(&got) != nil || got != input {
 					t.Error("original guard changed", got)
 				}
-				write(w, 200, client.ReviewAttemptSettlementReceipt{AttemptID: attempt, OperationID: executionOperationID, Revision: 8, State: "failed", Outcome: "settled"})
+				write(w, 200, client.ReviewAttemptSettlementReceipt{AttemptID: attempt, OperationID: executionOperationID, Revision: 8, State: test.state, Outcome: "settled"})
 			}))
 			defer server.Close()
 			c := newClient(t, server)
 			receipt, err := c.SettleReviewAttempt(t.Context(), "settle-original", attempt, input)
-			if err != nil || receipt.Revision != 8 || calls != 1 {
+			if err != nil || receipt.Revision != 8 || receipt.State != test.state || calls != 1 {
 				t.Fatal(receipt, err, calls)
 			}
 
+		})
+	}
+}
+
+func TestOwnerSettlementClientRejectsCorruptReceiptsAndRecoversOriginalKey(t *testing.T) {
+	attempt := "review_attempt_" + strings.Repeat("a", 32)
+	input := client.SettleReviewAttemptRequest{ExpectedRevision: 5, ExpectedRepositoryID: 42, ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedExternalID: "retained-original", ExternalActionStopped: false, Reason: "Abandon this original issued request.", EvidenceReference: "private-proof-handle"}
+	valid := client.ReviewAttemptSettlementReceipt{AttemptID: attempt, OperationID: executionOperationID, Revision: 6, State: "cancelled", Outcome: "settled"}
+	for name, corrupt := range map[string]func(*client.ReviewAttemptSettlementReceipt){
+		"foreign attempt": func(v *client.ReviewAttemptSettlementReceipt) {
+			v.AttemptID = "review_attempt_" + strings.Repeat("c", 32)
+		},
+		"invalid operation":                     func(v *client.ReviewAttemptSettlementReceipt) { v.OperationID = "not-an-operation" },
+		"stale attempt revision":                func(v *client.ReviewAttemptSettlementReceipt) { v.Revision = 5 },
+		"operation revision instead of attempt": func(v *client.ReviewAttemptSettlementReceipt) { v.Revision = 7 },
+		"active":                                func(v *client.ReviewAttemptSettlementReceipt) { v.State = "active" },
+		"completed":                             func(v *client.ReviewAttemptSettlementReceipt) { v.State = "completed" },
+		"held":                                  func(v *client.ReviewAttemptSettlementReceipt) { v.State = "held" },
+		"unknown state":                         func(v *client.ReviewAttemptSettlementReceipt) { v.State = "unknown" },
+		"wrong outcome":                         func(v *client.ReviewAttemptSettlementReceipt) { v.Outcome = "completed" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls, commits atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				var got client.SettleReviewAttemptRequest
+				if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/attempts/"+attempt+"/settlement") || r.Header.Get("Idempotency-Key") != "settle-once" || json.NewDecoder(r.Body).Decode(&got) != nil || got != input {
+					t.Error("recovery changed original target, body or key", got)
+				}
+				receipt := valid
+				if calls.Add(1) == 1 {
+					// The effect committed, but its first response was damaged. The
+					// original key replays the same attempt-revision receipt.
+					commits.Add(1)
+					corrupt(&receipt)
+				}
+				write(w, 200, receipt)
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			_, err := c.SettleReviewAttempt(t.Context(), "settle-once", attempt, input)
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Code != "invalid_response" || failure.Status != 200 || !failure.OutcomeUnknown || !strings.Contains(failure.Action, "same idempotency key") || calls.Load() != 1 || commits.Load() != 1 {
+				t.Fatal("corrupt receipt accepted, retried or lost exact recovery", err, calls.Load(), commits.Load())
+			}
+			replay, err := c.SettleReviewAttempt(t.Context(), "settle-once", attempt, input)
+			if err != nil || replay != valid || calls.Load() != 2 || commits.Load() != 1 {
+				t.Fatal("original-key recovery changed result or committed twice", replay, err, calls.Load(), commits.Load())
+			}
 		})
 	}
 }

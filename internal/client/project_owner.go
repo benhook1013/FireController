@@ -206,7 +206,7 @@ func (c *Client) SettleReviewAttempt(ctx context.Context, key, id string, r Sett
 	if err := c.mutate(ctx, http.MethodPost, c.projectPath("reviews", "attempts", id, "settlement"), key, r, http.StatusOK, &v); err != nil {
 		return v, err
 	}
-	if v.AttemptID != id || ValidateReviewOperationID(v.OperationID) != nil || v.Revision != r.ExpectedRevision+1 || v.State != "failed" || v.Outcome != "settled" {
+	if v.AttemptID != id || ValidateReviewOperationID(v.OperationID) != nil || v.Revision != r.ExpectedRevision+1 || !oneReviewOf(v.State, "cancelled", "failed") || v.Outcome != "settled" {
 		return ReviewAttemptSettlementReceipt{}, unknownMutation("invalid_response", "The settlement receipt was invalid; retain original attempt and request.", 200)
 	}
 	return v, nil
