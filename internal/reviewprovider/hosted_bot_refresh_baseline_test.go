@@ -74,8 +74,8 @@ func TestHostedBaselineBotRefreshPreservesCompleteInventory(t *testing.T) {
 				}
 				before := append([]IssueComment(nil), s.IssueComments...)
 				strict, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
-				if err != nil || strict.Complete || strict.Reason != "attribution_window_closed" {
-					t.Fatal("strict guard changed", strict.Reason, err)
+				if err != nil || !strict.Complete || !reflect.DeepEqual(strict.Findings, want.Findings) {
+					t.Fatal("unrelated Bot report changed direct inventory", strict.Reason, err)
 				}
 				got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
 				if err != nil || !got.Complete || !reflect.DeepEqual(got.Findings, want.Findings) || !reflect.DeepEqual(got.Publication.Roots, want.Publication.Roots) || !reflect.DeepEqual(got.Publication.Batches, want.Publication.Batches) || !got.Publication.FinishedAt.Equal(want.Publication.FinishedAt) {
@@ -89,8 +89,8 @@ func TestHostedBaselineBotRefreshPreservesCompleteInventory(t *testing.T) {
 	}
 }
 
-func TestHostedBaselineBotRefreshRefusesUnprovenEdits(t *testing.T) {
-	for _, mode := range []string{"hidden_command", "removed_command", "fenced_command", "human", "human_same_body", "posting_bot", "author_id", "author_login", "author_kind", "comment_id", "created", "new_bot", "newly_created_bot", "stale_baseline", "old_updated_after_baseline", "incomplete_baseline", "missing_baseline_collection", "missing_current_collection", "future_update", "unknown_inventory", "later_human_command"} {
+func TestHostedBaselineBotRefreshKeepsRelevantEditAndInventoryGuards(t *testing.T) {
+	for _, mode := range []string{"hidden_command", "removed_command", "fenced_command", "human", "human_same_body", "posting_bot", "author_id", "author_login", "author_kind", "comment_id", "created", "new_bot", "newly_created_bot", "stale_baseline", "old_updated_after_baseline", "incomplete_baseline", "missing_baseline_collection", "incomplete_current_collection", "future_update", "unknown_inventory", "later_human_command"} {
 		t.Run(mode, func(t *testing.T) {
 			s, intent, poster, bot, earliest := standingTestFixture(t)
 			s, baseline := botRefreshFixture(s)
@@ -138,8 +138,9 @@ func TestHostedBaselineBotRefreshRefusesUnprovenEdits(t *testing.T) {
 				baseline.Complete = false
 			case "missing_baseline_collection":
 				baseline.Reviews = nil
-			case "missing_current_collection":
+			case "incomplete_current_collection":
 				s.Reviews = nil
+				s.Complete = false
 			case "future_update":
 				current.UpdatedAt = s.ObservedAt.Add(time.Second)
 			case "unknown_inventory":
@@ -152,16 +153,17 @@ func TestHostedBaselineBotRefreshRefusesUnprovenEdits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Complete {
-				t.Fatalf("unproven edit completed: %s", got.Reason)
+			wantComplete := mode == "removed_command" || mode == "author_id" || mode == "author_login" || mode == "comment_id" || mode == "created" || mode == "new_bot" || mode == "newly_created_bot" || mode == "stale_baseline" || mode == "old_updated_after_baseline" || mode == "incomplete_baseline" || mode == "missing_baseline_collection"
+			if got.Complete != wantComplete {
+				t.Fatalf("complete=%v want=%v reason=%s", got.Complete, wantComplete, got.Reason)
 			}
 		})
 	}
 }
 
-func TestHostedBaselineNewBotReportRequiresUneditedSource(t *testing.T) {
+func TestHostedForeignBotReportDoesNotBecomeInferredCommandAuthority(t *testing.T) {
 	for _, kind := range []string{"standing_zero", "submitted_positive", "batched_five"} {
-		for _, mode := range []string{"report", "unedited", "before_trigger", "at_trigger", "human", "posting_actor", "provider_actor", "provider_mention", "hidden_command", "late_baseline", "missing_baseline"} {
+		for _, mode := range []string{"report", "unedited", "before_trigger", "at_trigger", "human", "posting_actor", "provider_actor", "provider_mention", "hidden_command", "quoted_mention", "fenced_mention", "visible_command", "unknown_kind", "spoofed_bot_login", "spoofed_actor_kind", "late_baseline", "missing_baseline"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
 				s, intent, poster, bot, earliest := standingTestFixture(t)
 				if kind != "standing_zero" {
@@ -195,6 +197,20 @@ func TestHostedBaselineNewBotReportRequiresUneditedSource(t *testing.T) {
 					report.Body += " CoDeRaBbIt"
 				case "hidden_command":
 					report.Body += "\n<!-- @coderabbitai full review -->"
+				case "quoted_mention":
+					report.Body += "\n> CoDeRaBbIt review details"
+				case "fenced_mention":
+					report.Body += "\n```\n@coderabbitai full review\n```"
+				case "visible_command":
+					report.Body += "\n@coderabbitai full review"
+					report.UpdatedAt = report.CreatedAt
+				case "unknown_kind":
+					report.Author.Kind = "Other"
+				case "spoofed_bot_login":
+					report.Author.Kind = "User"
+				case "spoofed_actor_kind":
+					report.Author = poster
+					report.Author.Kind = "Bot"
 				case "late_baseline":
 					baseline.ObservedAt = trigger
 				case "missing_baseline":
@@ -206,13 +222,13 @@ func TestHostedBaselineNewBotReportRequiresUneditedSource(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "unedited" {
+				if mode == "report" || mode == "unedited" || mode == "before_trigger" || mode == "at_trigger" || mode == "late_baseline" || mode == "missing_baseline" {
 					if !got.Complete || !reflect.DeepEqual(got.Findings, want.Findings) || !got.Publication.FinishedAt.Equal(want.Publication.FinishedAt) {
 						t.Fatal("original inventory lost", got.Reason)
 					}
 				} else {
 					strict, strictErr := ExtractHostedFindings(s, intent, poster, bot, earliest)
-					if strictErr != nil || got.Complete != strict.Complete || got.Reason != strict.Reason {
+					if strictErr != nil || got.Complete != strict.Complete || got.Reason != strict.Reason || mode != "provider_actor" && got.Complete {
 						t.Fatal("unproven edit changed strict attribution", mode, got.Reason, strict.Reason, strictErr)
 					}
 				}
@@ -224,25 +240,21 @@ func TestHostedBaselineNewBotReportRequiresUneditedSource(t *testing.T) {
 	}
 }
 
-func TestHostedBaselineNewBotRemovedUnobservedCommandCannotCreditTrigger(t *testing.T) {
+func TestHostedForeignBotReportPolicyDoesNotClaimOriginalBodyProof(t *testing.T) {
 	s, intent, poster, bot, earliest := standingTestFixture(t)
 	trigger := s.IssueComments[0].CreatedAt
 	baseline := HostedPublicationSnapshot{Complete: true, ObservedAt: trigger.Add(-time.Second), IssueComments: []IssueComment{}, Reviews: []HostedReview{}, ReviewComments: []ReviewComment{}}
-	// This later edit may have removed an earlier review command. Neither
-	// retained snapshot observes its original body, so a Bot author and safe
-	// current prose cannot establish the absence of a competing trigger.
+	// No original body is available. This intentionally treats the foreign Bot
+	// report as a non-request authority, rather than proving what it used to say.
 	s.IssueComments = append(s.IssueComments, IssueComment{ID: 901, Author: Author{ID: 902, Login: "synthetic-other[bot]", Kind: "Bot"}, CreatedAt: trigger.Add(time.Second), UpdatedAt: s.ObservedAt, Body: "Updated independent report."})
 	before := append([]IssueComment(nil), s.IssueComments...)
 	strict, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
-	if err != nil || strict.Complete || strict.Reason != "attribution_window_closed" {
-		t.Fatal("fixture does not preserve the competing-command guard", strict.Reason, err)
+	if err != nil || !strict.Complete {
+		t.Fatal("foreign Bot edit became an inferred command", strict.Reason, err)
 	}
 	got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
-	if err != nil || !reflect.DeepEqual(got, strict) {
-		t.Fatal("unobserved original Bot body granted attribution", got.Reason, err)
-	}
-	if !reflect.DeepEqual(s.IssueComments, before) {
-		t.Fatal("raw source mutated")
+	if err != nil || !reflect.DeepEqual(got, strict) || !reflect.DeepEqual(s.IssueComments, before) {
+		t.Fatal("current-source policy changed original source", got.Reason, err)
 	}
 }
 
@@ -275,7 +287,7 @@ func TestHostedBaselineBotRefreshPreservesPendingAttribution(t *testing.T) {
 			before := append([]IssueComment(nil), s.IssueComments...)
 			got, err := ExtractHostedFindingsWithBaseline(s, baseline, f.intent, f.poster, f.bot, f.earliest)
 			want := "attribution_window_closed"
-			if mode == "pending" {
+			if mode == "pending" || mode == "missing_baseline" || mode == "changed_identity" {
 				want = "publication_not_proven"
 			}
 			if mode == "missing_batch" {

@@ -85,10 +85,10 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 		if comment.ID == query.CommentID || publicationActor(comment.Author, providerAuthor) {
 			continue
 		}
-		// Current prose cannot prove an edited comment never contained a
-		// competing command. Close before its possible original reply, even
-		// when that command was removed or hidden by the edit.
-		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(query.CreatedAt) {
+		// Relevant edits may have removed a competing command. Foreign Bot
+		// reports without any current provider mention are non-request
+		// authorities under the same policy as review publication.
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(query.CreatedAt) && !publicationUnrelatedBotReport(comment, postingAuthor) {
 			when := comment.CreatedAt
 			if when.Before(query.CreatedAt) {
 				when = query.CreatedAt

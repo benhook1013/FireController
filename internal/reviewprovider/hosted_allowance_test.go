@@ -685,3 +685,51 @@ func TestHostedAllowanceGeneratedEnvelopePreservesCausalGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedAllowanceForeignBotEditPolicyPreservesRelevantCommands(t *testing.T) {
+	for _, mode := range []string{"report", "human", "posting_bot", "unknown_kind", "spoofed_bot_login", "spoofed_actor_kind", "provider_mention", "hidden_mention", "quoted_mention", "visible_command", "visible_unedited_command"} {
+		t.Run(mode, func(t *testing.T) {
+			s, intent, poster, bot, earliest := allowanceFixture(t)
+			expected := resolveAllowance(t, s, intent, poster, bot, earliest)
+			query := s.IssueComments[0].CreatedAt
+			report := IssueComment{ID: 990, Author: Author{ID: 991, Login: "synthetic-review[bot]", Kind: "Bot"}, CreatedAt: query.Add(time.Second), UpdatedAt: s.ObservedAt, Body: "Updated independent review report."}
+			switch mode {
+			case "human", "spoofed_bot_login":
+				report.Author.Kind = "User"
+			case "posting_bot":
+				poster.Kind = "Bot"
+				s.IssueComments[0].Author = poster
+				report.Author = poster
+			case "unknown_kind":
+				report.Author.Kind = "Other"
+			case "spoofed_actor_kind":
+				report.Author = poster
+				report.Author.Kind = "Bot"
+			case "provider_mention":
+				report.Body += " CoDeRaBbIt"
+			case "hidden_mention":
+				report.Body += "\n<!-- @coderabbitai rate limit -->"
+			case "quoted_mention":
+				report.Body += "\n> coderabbit"
+			case "visible_command", "visible_unedited_command":
+				report.Body += "\n@coderabbitai rate limit"
+				if mode == "visible_unedited_command" {
+					report.UpdatedAt = report.CreatedAt
+				}
+			}
+			s.IssueComments = append(s.IssueComments, report)
+			before := append([]IssueComment(nil), s.IssueComments...)
+			got := resolveAllowance(t, s, intent, poster, bot, earliest)
+			if mode == "report" {
+				if got != expected {
+					t.Fatalf("unrelated report lost original allowance: %+v", got)
+				}
+			} else if got.State != "unproven" || got.Reason != "query_window_closed" || !got.RetryNotBefore.IsZero() {
+				t.Fatalf("relevant barrier lost: %+v", got)
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("source mutated")
+			}
+		})
+	}
+}
