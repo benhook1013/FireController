@@ -15,15 +15,30 @@ import (
 	"github.com/benhook1013/FireController/internal/profile"
 )
 
-func TestCIWatchChangeSDKAndCLIKeepKnownFailurePending(t *testing.T) {
+func TestCIWatchChangeSDKAndCLIKeepKnownVerdictsPending(t *testing.T) {
+	for _, state := range []string{"failed", "passed"} {
+		t.Run(state, func(t *testing.T) {
+			testCIWatchKnownVerdict(t, state)
+		})
+	}
+}
+
+func testCIWatchKnownVerdict(t *testing.T, state string) {
 	identity := localContext()
 	pin := client.CIWatchTarget{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), AfterObservationKey: strings.Repeat("c", 64)}
 	response := client.CIWatchResult{ProjectID: identity.ProjectID, State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{
 		PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "failed", Reason: "ci_required_checks_failed", BaseRef: "feature", GateRef: "main", ObservedHeadSHA: pin.HeadSHA, ObservedBaseSHA: pin.BaseSHA, ObservedAt: "2026-11-01T00:00:00Z", CICommitSHA: pin.HeadSHA, Selection: "head", Required: 1, Failed: 1,
 		Checks: []client.ReviewCIContext{{Context: "build", State: "failed", Reason: "ci_failed", CheckRun: &client.ReviewCICheckRun{ID: 81, Status: "completed", Conclusion: "failure"}}}, ObservationKey: pin.AfterObservationKey, WaitingForChange: true,
 	}}}
+	if state == "passed" {
+		item := &response.Targets[0]
+		item.State, item.Reason, item.Failed, item.Satisfied = "passed", "ci_satisfied", 0, 1
+		item.Checks[0].State, item.Checks[0].Reason = "satisfied", ""
+		item.Checks[0].CheckRun.Conclusion = "success"
+	}
 	var posts atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			jsonResponse(w, map[string]string{"instance_id": identity.InstanceID})
 			return
@@ -32,7 +47,7 @@ func TestCIWatchChangeSDKAndCLIKeepKnownFailurePending(t *testing.T) {
 		var body struct {
 			Targets []client.CIWatchTarget `json:"targets"`
 		}
-		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("X-FC-CI-Watch") != "change-v2" || r.Header.Get("X-FC-Worker") != identity.WorkerID || r.Header.Get("X-FC-Instance") != identity.InstanceID || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Idempotency-Key") != "" || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("X-FC-CI-Watch") != "change-v3" || r.Header.Get("X-FC-Worker") != identity.WorkerID || r.Header.Get("X-FC-Instance") != identity.InstanceID || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Idempotency-Key") != "" || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
 			t.Error("SDK/CLI changed the known-failure read binding or baseline")
 		}
 		jsonResponse(w, response)
@@ -52,7 +67,7 @@ func TestCIWatchChangeSDKAndCLIKeepKnownFailurePending(t *testing.T) {
 		}
 		found = true
 		encoded, err := json.Marshal(tool.InputSchema)
-		if err != nil || !bytes.Contains(encoded, []byte(`"after_observation_key"`)) || !bytes.Contains(encoded, []byte(`^[a-f0-9]{64}$`)) {
+		if err != nil || !bytes.Contains(encoded, []byte(`"after_observation_key"`)) || !bytes.Contains(encoded, []byte(`^[a-f0-9]{64}$`)) || !bytes.Contains(encoded, []byte("passed or failed")) || !strings.Contains(tool.Description, "Pending checks alone") {
 			t.Fatal("discovery does not advertise the exact optional baseline", string(encoded), err)
 		}
 	}
@@ -61,7 +76,7 @@ func TestCIWatchChangeSDKAndCLIKeepKnownFailurePending(t *testing.T) {
 	}
 	var got client.CIWatchOutput
 	decodeResult(t, call(t, session, "wait_for_ci", map[string]any{"targets": []client.CIWatchTarget{pin}, "wait_seconds": 0}), &got)
-	if got.State != "pending" || !got.TimedOut || got.AllTargetsPassed || len(got.Targets) != 1 || !reflect.DeepEqual(got.Targets[0].CIWatchTargetResult, response.Targets[0]) || got.Targets[0].Phase != "waiting_for_change" || got.Targets[0].Diagnostic == nil {
+	if got.State != "pending" || !got.TimedOut || got.AllTargetsPassed != (state == "passed") || len(got.Targets) != 1 || !reflect.DeepEqual(got.Targets[0].CIWatchTargetResult, response.Targets[0]) || got.Targets[0].Phase != "waiting_for_change" || got.Targets[0].Diagnostic == nil {
 		t.Fatal("known failure was hidden or incorrectly credited", got)
 	}
 	var out, diag bytes.Buffer

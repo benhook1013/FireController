@@ -26,6 +26,7 @@ func TestCIWatchWorkflowFailuresClientAttentionAndKnownChangeWait(t *testing.T) 
 	var mu sync.Mutex
 	posts := 0
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return
@@ -36,7 +37,7 @@ func TestCIWatchWorkflowFailuresClientAttentionAndKnownChangeWait(t *testing.T) 
 		var body struct {
 			Targets []client.CIWatchTarget `json:"targets"`
 		}
-		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("X-FC-CI-Watch") != "change-v2" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("X-FC-CI-Watch") != "change-v3" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
 			t.Error("workflow attention changed exact read selection or binding")
 		}
 		write(w, 200, response)
@@ -134,6 +135,7 @@ func TestCIWatchWorkflowFailuresClientRejectsForgedRows(t *testing.T) {
 			pin, response := ciWorkflowFailureSample()
 			corrupt(&pin, &response)
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
@@ -153,6 +155,7 @@ func TestCIWatchWorkflowFailuresClientConclusionsAndNormalTerminalStates(t *test
 			pin, response := ciWorkflowFailureSample()
 			response.Targets[0].WorkflowFailures[0].Conclusion = conclusion
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
@@ -183,6 +186,7 @@ func TestCIWatchWorkflowFailuresClientConclusionsAndNormalTerminalStates(t *test
 				response.Targets[0].Checks[1].Reason = ""
 			}
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return

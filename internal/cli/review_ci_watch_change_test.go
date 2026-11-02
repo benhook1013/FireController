@@ -38,7 +38,7 @@ func TestCIWatchChangeCLIRejectsInvalidBaselineBeforeProfile(t *testing.T) {
 		}
 	}
 	var out, diag bytes.Buffer
-	if code := RunContext(t.Context(), []string{"reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "--after-observation") {
-		t.Fatal("offline help does not expose known-failure wait", code, out.String(), diag.String())
+	if code := RunContext(t.Context(), []string{"reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "--after-observation") || !strings.Contains(out.String(), "passed or failed") || !strings.Contains(out.String(), "pending checks alone") {
+		t.Fatal("offline help does not expose passed/failed rearm and terminal-wait limits", code, out.String(), diag.String())
 	}
 }

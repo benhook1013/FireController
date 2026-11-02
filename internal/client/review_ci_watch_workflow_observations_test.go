@@ -34,6 +34,7 @@ func TestCIWatchWorkflowObservationsClientWireAndProofLimit(t *testing.T) {
 			}
 			posts := 0
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
@@ -46,7 +47,7 @@ func TestCIWatchWorkflowObservationsClientWireAndProofLimit(t *testing.T) {
 				if mode == "ordinary" {
 					wantHeader = ""
 				}
-				if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("X-FC-CI-Watch") != "change-v2" || r.Header.Get("X-FC-CI-Workflow-Details") != wantHeader || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
+				if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("X-FC-CI-Watch") != "change-v3" || r.Header.Get("X-FC-CI-Workflow-Details") != wantHeader || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Authorization") != "Bearer "+testToken || json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, []client.CIWatchTarget{pin}) {
 					t.Error("workflow visibility changed read identity, selection, or negotiation")
 				}
 				write(w, 200, value)
@@ -128,6 +129,7 @@ func TestCIWatchWorkflowObservationsClientRejectsUnboundFacts(t *testing.T) {
 			pin, value := ciWorkflowObservationSample()
 			damage(&pin, &value)
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
@@ -157,6 +159,7 @@ func TestCIWatchWorkflowObservationsClientStrictNestedJSON(t *testing.T) {
 				t.Fatal("fixture replacement missed")
 			}
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return

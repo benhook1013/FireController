@@ -22,6 +22,7 @@ func TestCIWatchFiniteRefusalStagesSurviveClientWithoutAutomaticRetry(t *testing
 		t.Run(reason, func(t *testing.T) {
 			posts := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
@@ -51,6 +52,7 @@ func TestCIWatchFiniteRefusalStagesSurviveClientWithoutAutomaticRetry(t *testing
 func TestCIWatchUnknownRefusalReasonCannotAcquireShutdownRecovery(t *testing.T) {
 	posts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return

@@ -120,6 +120,7 @@ func TestAgentCIWatchUsesUnchangedValidatedReadTransport(t *testing.T) {
 	raw := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{PullNumber: pins[0].PullNumber, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_merge_base_mismatch", Checks: []client.ReviewCIContext{}}}}
 	posts := 0
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return

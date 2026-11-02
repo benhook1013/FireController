@@ -75,6 +75,7 @@ func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
 				case "selection":
 					write(w, 200, selection)
 				case "ci":
+					w.Header().Set("X-FC-CI-Watch", "change-v3")
 					write(w, 200, ci)
 				}
 			}))

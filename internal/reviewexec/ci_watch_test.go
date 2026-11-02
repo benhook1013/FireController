@@ -318,6 +318,17 @@ func TestCIWatchFreshPinsFirstTerminalAndWebhookSupersession(t *testing.T) {
 		t.Fatal("new head inherited an old mismatch or missing check passed", reply)
 	default:
 	}
+	// Deliver the first fresh view to the remaining subscriber before moving
+	// its base. Registration alone does not prove it consumed the notification.
+	s.mu.Lock()
+	var remaining *ciWatchSubscription
+	for sub := range s.watchers {
+		remaining = sub
+	}
+	s.mu.Unlock()
+	if v := s.ciWatchResult(remaining); v.Targets[0].ObservedBaseSHA != p.BaseSHA {
+		t.Fatal("first fresh base was not pinned before movement", v)
+	}
 	// The first fresh base is private subscription state, not an invented request pin.
 	p.BaseSHA = strings.Repeat("d", 40)
 	r.mu.Lock()

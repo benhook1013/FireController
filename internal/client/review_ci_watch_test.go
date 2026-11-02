@@ -32,6 +32,7 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 	lost := false
 	posts := 0
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return
@@ -39,7 +40,11 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		posts++
-		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != "wait=900" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" {
+		wantPreference := "wait=900"
+		if lost {
+			wantPreference = "wait=0"
+		}
+		if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/ci/watch" || r.URL.RawQuery != "" || r.Header.Get("Prefer") != wantPreference || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != "worker-one" {
 			t.Error("CI read lost route/binding/preference or gained a mutation key")
 		}
 		var body map[string]json.RawMessage
@@ -92,7 +97,9 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 	mu.Lock()
 	lost = true
 	mu.Unlock()
-	_, err = c.WatchCI(t.Context(), ciWatchPins(), 900)
+	// An immediate read has no reconnect window. Positive-wait reconnection
+	// keeps its independent restart/deadline proof in review_wait_reconnect_test.go.
+	_, err = c.WatchCI(t.Context(), ciWatchPins(), 0)
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.OutcomeUnknown {
 		t.Fatal("lost read response was treated as an uncertain mutation", err)

@@ -12,6 +12,7 @@ import (
 )
 
 type CIWatchTarget struct {
+	AllowPassedRearm         bool    `json:"-"`
 	AllowHeadAttention       bool    `json:"-"`
 	AllowHistoricalAttention bool    `json:"-"`
 	PullNumber               int64   `json:"pull_number"`

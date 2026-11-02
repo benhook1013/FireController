@@ -41,6 +41,7 @@ func TestCIWatchFitsRemainingBudgetAfterSetupWithoutChangingResults(t *testing.T
 			}
 			var identities, posts atomic.Int64
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					identities.Add(1)
 					// Setup consumes the same caller budget as the subsequent wait.
@@ -91,6 +92,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 				entered := make(chan struct{})
 				var posts atomic.Int64
 				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-FC-CI-Watch", "change-v3")
 					if r.URL.Path == "/api/v1/instance" {
 						handshake(w)
 						return

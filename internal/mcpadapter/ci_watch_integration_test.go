@@ -24,6 +24,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	entered, closed := make(chan struct{}, 1), make(chan struct{}, 1)
 	var posts atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			jsonResponse(w, map[string]string{"instance_id": identity.InstanceID})
 			return

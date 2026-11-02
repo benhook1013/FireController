@@ -67,6 +67,7 @@ func TestResultWaitRestartCompletesOriginalInvocationThroughSDKAndCLI(t *testing
 		if operation {
 			jsonResponse(w, status)
 		} else {
+			w.Header().Set("X-FC-CI-Watch", "change-v3")
 			jsonResponse(w, ci)
 		}
 	}))

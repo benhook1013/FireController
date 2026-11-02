@@ -206,7 +206,7 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 		if len(target.FailureWorkflowIDs) > 0 && item.ObservationKey != "" {
 			item.ObservationKey = ciWatchWorkflowKey(item.ObservationKey, target.FailureWorkflowIDs, item.WorkflowFailures)
 		}
-		item.WaitingForChange = (item.State == "failed" || len(item.WorkflowFailures) > 0) && item.ObservationKey != "" && item.ObservationKey == target.AfterObservationKey
+		item.WaitingForChange = (item.State == "failed" || target.AllowPassedRearm && item.State == "passed" || len(item.WorkflowFailures) > 0) && item.ObservationKey != "" && item.ObservationKey == target.AfterObservationKey
 		if result.State == "pending" && item.State != "pending" && !item.WaitingForChange {
 			result.State = item.State
 		}
@@ -527,8 +527,8 @@ func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int6
 }
 
 // A change key describes relevant proof, not its collection time or scheduling.
-// It cannot authorize CI or provider work; an equal failure only keeps a reader
-// subscribed to the same shared observer while preserving the failed facts.
+// It cannot authorize CI or provider work; an equal eligible verdict only keeps
+// a reader subscribed to the same shared observer while preserving its facts.
 func ciWatchObservationKey(project string, observation reviewprovider.CIObservation, item CIWatchItem) string {
 	type check struct {
 		SourceCIContext

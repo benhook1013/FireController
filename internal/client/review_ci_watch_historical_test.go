@@ -51,6 +51,7 @@ func TestCIWatchHistoricalBasisStrictDecodeAndTruthfulMixedOutput(t *testing.T) 
 				row.WorkflowID++
 			}
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return

@@ -396,7 +396,7 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	if wait != nil {
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 		if wait.ciWatchChange {
-			r.Header.Set("X-FC-CI-Watch", "change-v2")
+			r.Header.Set("X-FC-CI-Watch", "change-v3")
 		}
 		if wait.ciWorkflowDetails {
 			r.Header.Set("X-FC-CI-Workflow-Details", "3")
@@ -552,6 +552,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 			return unknownRequest("invalid_response", operation, "receipt was invalid", response.StatusCode)
 		}
 		return invalidResponse()
+	}
+	if wait != nil && wait.ciWatchChange && (len(response.Header.Values("X-FC-CI-Watch")) != 1 || response.Header.Get("X-FC-CI-Watch") != "change-v3") {
+		return fail("unsupported_operation", "The service did not acknowledge CI watch change-v3.", "Use matching deployed server and client releases; deploy the backend before installing this client. Passed-result rearming is unconfirmed. No automatic retry or fallback was attempted.", response.StatusCode)
 	}
 	return nil
 }

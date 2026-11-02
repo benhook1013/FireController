@@ -129,11 +129,19 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	return value, nil
 }
 
-// Only local interruption errors receive this read-specific explanation. A
-// service refusal or connection failure keeps its existing diagnostic.
+// Keep CI wait validation and interruption guidance local to this read.
+// Refusals retain their original code, message, request ID and status.
 func ciWatchReadError(err error) error {
 	var failure *Error
-	if !errors.As(err, &failure) || failure.Status != 0 || !oneReviewOf(failure.Code, "canceled", "deadline_exceeded") {
+	if !errors.As(err, &failure) {
+		return err
+	}
+	if failure.Status == http.StatusBadRequest && failure.Code == "validation_failed" {
+		result := *failure
+		result.Action = "Check the CI wait target fields and original PR/head/base pins, including any observation key or workflow selection. Also verify matching client and server CI watch capabilities; an older server can refuse a newer baseline. No automatic retry or fallback was attempted."
+		return &result
+	}
+	if failure.Status != 0 || !oneReviewOf(failure.Code, "canceled", "deadline_exceeded") {
 		return err
 	}
 	result := *failure
@@ -159,8 +167,8 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 			return false
 		}
 		attention := item.State == "pending" && len(item.WorkflowFailures) > 0
-		knownFailure := item.State == "failed" || attention
-		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (!knownFailure || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || knownFailure && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
+		rearmable := item.State == "passed" || item.State == "failed" || attention
+		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (!rearmable || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || rearmable && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
 			return false
 		}
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {
