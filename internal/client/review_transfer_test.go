@@ -521,3 +521,96 @@ func TestReviewTransferClientMalformedMetadataRefusedBeforeHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewTransferClientCIStateAdmissionMatchesService(t *testing.T) {
+	for _, state := range []string{"unknown", "pending", "success", "failure", "not_required", "NOT_REQUIRED", "not-required", "unsupported"} {
+		t.Run(state, func(t *testing.T) {
+			raw := json.RawMessage(strings.ReplaceAll(string(transferDocument()), `"ci_state":"unknown"`, `"ci_state":"`+state+`"`))
+			accepted := state == "unknown" || state == "pending" || state == "success" || state == "failure" || state == "not_required"
+			if err := client.ValidateReviewTransferDocument(raw); (err == nil) != accepted {
+				t.Fatal("CI admission differs from supported service state", state, err)
+			}
+			if err := client.ValidateReviewTransferApply("ci-state-transfer", strings.Repeat("b", 64), raw); (err == nil) != accepted {
+				t.Fatal("apply admission differs from document admission", state, err)
+			}
+		})
+	}
+}
+
+func TestReviewTransferClientNotRequiredCurrentMetadataPreviewApplyReplay(t *testing.T) {
+	f := newReviewClientFixture(t)
+	if _, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=1 WHERE id='review-client-credential'`); err != nil {
+		t.Fatal(err)
+	}
+	var batch domain.TransferRequest
+	if err := json.Unmarshal(transferDocument(), &batch); err != nil {
+		t.Fatal(err)
+	}
+	*batch.ExpectedRevision = 1
+	for i := range batch.Groups {
+		pull := &batch.Groups[i].Pulls[0]
+		pull.CIState, pull.Mergeability = "not_required", "mergeable"
+		pull.HeadSHA, pull.BaseSHA, pull.BaseRef = strings.Repeat("a", 40), strings.Repeat("b", 40), "main"
+	}
+	original := batch.Groups[0].Pulls[0]
+	seed := f.importSnapshot(t, func(req *domain.ObservationRequest) {
+		pull := original
+		pull.Runs, pull.Attempts = []domain.RunInput{}, []domain.Attempt{}
+		req.Queue = []domain.PullInput{pull}
+	})
+	seeded, err := f.client.ReviewPull(t.Context(), original.Number, seed)
+	if err != nil || seeded.Pull.CIState != "not_required" {
+		t.Fatal("fixture lost observed CI state", err)
+	}
+	counts := func() string {
+		var value string
+		if err := f.store.DB().QueryRow(`SELECT (SELECT count(*) FROM review_snapshots)||':'||(SELECT count(*) FROM receipts)||':'||(SELECT count(*) FROM events)`).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	raw, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedRaw, before := string(raw), counts()
+	preview, err := f.client.PreviewReviewTransfer(t.Context(), raw)
+	if err != nil {
+		t.Fatal("matching current not_required metadata refused", err)
+	}
+	if counts() != before || preview.ExpectedRevision != 1 || preview.Counts != transferPreview().Counts || preview.NativeCoverage || !preview.ImportedHistory || preview.Coverage != "partial" {
+		t.Fatal("preview changed state, selected records or coverage", preview)
+	}
+	receipt, err := f.client.ApplyReviewTransfer(t.Context(), "not-required-once", preview.PreviewSHA256, raw)
+	if err != nil || receipt.Revision != 2 || receipt.Outcome != "transferred" {
+		t.Fatal(receipt, err)
+	}
+	retained, err := f.client.ReviewPull(t.Context(), original.Number, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull := retained.Pull
+	if pull.CIState != original.CIState || pull.Number != original.Number || pull.Title != original.Title || pull.State != original.State || pull.HeadSHA != original.HeadSHA || pull.BaseRef != original.BaseRef || pull.Mergeability != original.Mergeability || pull.RunCount != 2 {
+		t.Fatal("transfer changed current identity or lost original producers", pull)
+	}
+	after := counts()
+	replay, err := f.client.ApplyReviewTransfer(t.Context(), "not-required-once", preview.PreviewSHA256, raw)
+	if err != nil || replay != receipt || counts() != after || string(raw) != savedRaw {
+		t.Fatal("exact replay changed receipt, retained state or input", replay, err)
+	}
+	// Replacing this observed state with unknown must still fail the service's
+	// current metadata equality guard; client acceptance grants no overwrite.
+	*batch.ExpectedRevision = 2
+	for i := range batch.Groups {
+		batch.Groups[i].Pulls[0].CIState = "unknown"
+	}
+	mismatched, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.client.PreviewReviewTransfer(t.Context(), mismatched)
+	checkError(t, err, "observation_conflict")
+	if counts() != after {
+		t.Fatal("mismatched metadata preview changed retained state")
+	}
+}
