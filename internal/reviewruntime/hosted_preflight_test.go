@@ -234,6 +234,21 @@ func TestRetainHostedAllowanceCurrentEligibilityStillRequired(t *testing.T) {
 	}
 }
 
+func indexHostedBridgeSource(t *testing.T, f *runtimeAllowanceFixture, ref CaptureReference, source HostedCaptureRecord) {
+	t.Helper()
+	query, err := f.f.engine.ReadHostedAllowanceQuery(t.Context(), f.f.project, f.a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.f.engine.RecordHostedObservation(t.Context(), f.f.project, f.a.ID, reviewexec.HostedObservationInput{
+		Kind: "allowance_query", CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes,
+		StartedAt: source.StartedAt.Format(time.RFC3339Nano), FinishedAt: source.FinishedAt.Format(time.RFC3339Nano), ObservedAt: source.Snapshot.ObservedAt.Format(time.RFC3339Nano), ExpectedAnchor: query.Anchor, Intent: query.Intent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRetainHostedAllowanceFreshFetchCannotRefreshOldProviderResponse(t *testing.T) {
 	f, got, source := hostedBridgeObserved(t)
 	query, err := f.f.engine.ReadHostedAllowanceQuery(t.Context(), f.f.project, f.a.ID)
@@ -279,6 +294,12 @@ func TestRetainHostedAllowanceFreshFetchCannotRefreshOldProviderResponse(t *test
 	if err != nil || resolved.State != "available_observed" || time.Since(resolved.ResponseCreatedAt) < time.Minute || time.Since(source.Snapshot.ObservedAt) > time.Minute {
 		t.Fatal("fixture did not distinguish response age from fetch age", resolved, err)
 	}
+	// Reconstruct the owned journal under the same historical query binding.
+	// Otherwise an unrelated stale-index refusal would mask response freshness.
+	if _, err = f.f.store.DB().Exec(`DELETE FROM review_hosted_observations WHERE attempt_id=?`, f.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	indexHostedBridgeSource(t, f, ref, source)
 	before := hostedBridgeState(t, f)
 	raw := hostedBridgeBytes(t, f, ref)
 	err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, ref)
@@ -330,6 +351,7 @@ func TestRetainHostedAllowanceDifferentValidReferenceCannotRefreshOriginalLedger
 	if ref == got.Capture {
 		t.Fatal("fixture did not create distinct observation")
 	}
+	indexHostedBridgeSource(t, f, ref, source)
 	current := hostedBridgeBytes(t, f, ref)
 	before := hostedBridgeState(t, f)
 	err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, ref)

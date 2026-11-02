@@ -438,3 +438,103 @@ func TestHostedActivityAggregateAndPageLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedActivityUnselectedDetailsCannotBlockSelectedSurface(t *testing.T) {
+	for _, mode := range []string{"commit_status", "check_run"} {
+		for _, binding := range []string{"actor or app", "name", "kind or head"} {
+			for _, detail := range []string{"future", "reversed", "malformed", "missing completion"} {
+				for _, selectedState := range []string{"absent", "idle", "active"} {
+					t.Run(mode+"/"+binding+"/"+detail+"/"+selectedState, func(t *testing.T) {
+						unrelated := activityStatus(1, "success")
+						if mode == "check_run" {
+							unrelated = activityCheck(1, "completed")
+						}
+						switch binding {
+						case "actor or app":
+							if mode == "check_run" {
+								unrelated["app"].(map[string]any)["id"] = 43
+							} else {
+								unrelated["creator"].(map[string]any)["id"] = 31
+							}
+						case "name":
+							if mode == "check_run" {
+								unrelated["name"] = "Other check"
+							} else {
+								unrelated["context"] = "Other status"
+							}
+						case "kind or head":
+							if mode == "check_run" {
+								unrelated["head_sha"] = strings.Repeat("b", 40)
+							} else {
+								unrelated["creator"].(map[string]any)["type"] = "User"
+							}
+						}
+						field := "updated_at"
+						if mode == "check_run" {
+							field = "completed_at"
+						}
+						switch detail {
+						case "future":
+							unrelated[field] = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+						case "reversed":
+							unrelated[field] = "2025-12-31T23:59:59Z"
+						case "malformed":
+							unrelated[field] = "not-a-timestamp"
+						case "missing completion":
+							if mode == "check_run" {
+								unrelated[field] = nil
+							} else {
+								unrelated[field] = ""
+							}
+						}
+						rows := []map[string]any{unrelated}
+						if selectedState != "absent" {
+							state := "success"
+							if selectedState == "active" {
+								state = "pending"
+							}
+							selected := activityStatus(2, state)
+							if mode == "check_run" {
+								state = "completed"
+								if selectedState == "active" {
+									state = "queued"
+								}
+								selected = activityCheck(2, state)
+							}
+							rows = append(rows, selected)
+						}
+						before, err := json.Marshal(rows)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var calls atomic.Int64
+						server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							calls.Add(1)
+							if r.Method != "GET" {
+								t.Error("activity made a mutation")
+							}
+							_ = json.NewEncoder(w).Encode(activityPayload(mode, rows, len(rows)))
+						}))
+						defer server.Close()
+						got, err := testGitHub(server, "").ObserveHostedActivity(t.Context(), "owner/repo", activityHead, activitySelector(mode))
+						want := "idle"
+						if selectedState == "active" {
+							want = "active"
+						}
+						source := int64(2)
+						if selectedState == "absent" {
+							source = 0
+						}
+						if err != nil || got.State != want || got.SourceID != source || got.ObservedAt.IsZero() || calls.Load() != 1 {
+							t.Fatal("unrelated details poisoned selected activity", got, err, calls.Load())
+						}
+						after, err := json.Marshal(rows)
+						if err != nil || string(before) != string(after) {
+							t.Fatal("source facts changed", err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
