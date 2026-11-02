@@ -153,12 +153,12 @@ func TestIdentityPreflightTemporaryFailureDoesNotBlameBindingOrSendOperation(t *
 			t.Fatal(failure.Message)
 		}
 	}
-	for _, phrase := range []string{"earlier uncertain write", "exact same request body, idempotency key and binding", "does not establish its outcome"} {
+	for _, phrase := range []string{"earlier uncertain write", "exact same request body, idempotency key and binding", "this failed identity check does not establish its outcome"} {
 		if !strings.Contains(failure.Action, phrase) {
 			t.Fatal(failure.Action)
 		}
 	}
-	for _, word := range []string{"maintainer", "profile change", "credential change"} {
+	for _, word := range []string{"maintainer", "profile change", "credential change", "this failed read"} {
 		if strings.Contains(failure.Action, word) {
 			t.Fatal("transient failure required unrelated repair", failure.Action)
 		}
