@@ -90,10 +90,12 @@ func publicationVisibleLines(body string) []string {
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, ">") {
+		// Inside an ordinary HTML comment these are comment bytes, not
+		// Markdown quoting/code. Its terminator must still end that scope.
+		if !hiddenComment && strings.HasPrefix(trimmed, ">") {
 			continue
 		}
-		if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+		if !hiddenComment && (indent > 3 || strings.HasPrefix(trimmed, "\t")) {
 			continue
 		}
 		if !hiddenComment && publicationMarker.MatchString(line) {
