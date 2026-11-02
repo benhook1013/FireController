@@ -28,10 +28,23 @@ describe('public project browser', () => {
   });
 });
 
-it('labels truncated public channels without implying complete private history', () => {
-  const snapshot=fixture(); snapshot.content.reviews[0].cli_has_more=true;
+it.each([
+  { count: 0, hasMore: true, message: 'Finalized rounds are retained privately, but none fit this public window.' },
+  { count: 0, hasMore: false, message: 'No finalized rounds published.' },
+  { count: 1, hasMore: true, message: 'Showing the latest 1 published round; earlier rounds are retained privately.' },
+  { count: 2, hasMore: true, message: 'Showing the latest 2 published rounds; earlier rounds are retained privately.' },
+])('describes $count public CLI rounds with retained history $hasMore honestly', ({count, hasMore, message}) => {
+  const snapshot=fixture();
+  snapshot.content.reviews[0].cli=Array.from({length:count},(_,index)=>({...snapshot.content.reviews[0].cli[0],key:`public_round_${index.toString(16).padStart(32,'0')}`}));
+  if(hasMore) snapshot.content.reviews[0].cli_has_more=true;
+  else delete snapshot.content.reviews[0].cli_has_more;
   const html=renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={snapshot} /></MemoryRouter>);
-  expect(html).toContain('earlier rounds are retained privately');
-  expect(html.match(/earlier rounds are retained privately/gu)).toHaveLength(1);
+  const lane=html.split('aria-label="CLI review rounds"')[1].split('</section>')[0];
+  expect(lane).toContain(message);
+  expect(lane).toContain(`${count} published ${count === 1 ? 'round' : 'rounds'}`);
+  if(hasMore) expect(lane).not.toContain('No finalized rounds published.');
+  else expect(lane).not.toContain('retained privately');
+  if(!count) expect(lane).not.toContain('Showing the latest 0');
+  else { expect(lane).toContain('1 / 1 / 0'); expect(lane).not.toContain('latest 1 published rounds'); }
   expect(html).not.toContain('/attempts');
 });
