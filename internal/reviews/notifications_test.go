@@ -55,6 +55,45 @@ func noticeCount(t *testing.T, f *apiFixture) int {
 	}
 	return n
 }
+
+func TestFollowerNoticesShareScopedPagedDeliveryAndImmutableReplay(t *testing.T) {
+	f := noticeFixture(t, "open")
+	// Exceed one recipient page, without including muted, retired or merely
+	// acting workers. The same worker identity in another project stays isolated.
+	for index := range 70 {
+		worker := fmt.Sprintf("paged-%02d", index)
+		if _, err := f.store.DB().Exec(`INSERT INTO workers VALUES(?,?,?)`, f.project, worker, worker); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			return AutoFollow(ctx, tx, core.Scope{ProjectID: f.project, WorkerID: worker}, 1)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.DB().Exec(`INSERT INTO projects VALUES('other-notice-project','Other',702,'owner/other'); INSERT INTO workers VALUES('other-notice-project','participant','Other participant'); INSERT INTO review_pr_followers VALUES('other-notice-project',1,'participant','follow',1,'2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	publish := func(body string) error {
+		return f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			return PublishFollowerNotice(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "original-actor", WorkerID: "uninvolved"}, 1, "immutable-ready-evidence", body)
+		})
+	}
+	if err := publish("Review results ready. Immutable evidence."); err != nil || noticeCount(t, f) != 71 {
+		t.Fatal("paged participant delivery incomplete", noticeCount(t, f), err)
+	}
+	before := historyMigrationDatabaseDigest(t, f)
+	if err := publish("Review results ready. Immutable evidence."); err != nil || historyMigrationDatabaseDigest(t, f) != before {
+		t.Fatal("exact notice replay changed state", err)
+	}
+	if err := publish("Changed content for the same evidence."); err == nil || historyMigrationDatabaseDigest(t, f) != before {
+		t.Fatal("changed-body deduplication conflict caused partial delivery", err)
+	}
+	var excluded int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM inbox_messages WHERE project_id<>? OR recipient_worker_id IN ('muted','retired','uninvolved')`, f.project).Scan(&excluded); err != nil || excluded != 0 {
+		t.Fatal("notification crossed recipient or project boundary", excluded, err)
+	}
+}
 func noticeState(t *testing.T, f *apiFixture, state string) {
 	t.Helper()
 	p := sourcePull(1, "Selected PR title")

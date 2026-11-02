@@ -406,6 +406,9 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
 				return err
 			}
+			if err = e.publishCompletionNotice(ctx, tx, o); err != nil {
+				return err
+			}
 		}
 		if state != "posting" && state != "active" && state != "uncertain" {
 			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
