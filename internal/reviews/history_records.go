@@ -97,7 +97,8 @@ func retainedAttemptState(ctx context.Context, tx HistoryQuery, project, source 
 		return err
 	}
 	if err == nil {
-		if oldNumber != number || channel != attempt.Channel || head != attempt.HeadSHA || started != attempt.StartedAt {
+		// Unknown metadata may be learned once; known source facts remain fixed.
+		if oldNumber != number || channel != attempt.Channel || head != "" && head != attempt.HeadSHA || started != "" && started != attempt.StartedAt {
 			return core.Fail("observation_conflict", "A retained attempt's source identity and owning PR cannot change.", 409)
 		}
 		for _, identity := range [][2]string{{run, attempt.SourceRunID}, {trigger, attempt.TriggerID}, {provider, attempt.ProviderReviewID}} {
