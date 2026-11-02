@@ -57,12 +57,7 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 		var candidate Attempt
 		var key, cachedChannel string
 		var cachedNumber, cachedPosition, currentNumber, currentPosition, memberNumber, memberPosition, bodyNumber int64
-		err := tx.QueryRowContext(ctx, `SELECT `+columns+`,o.sort_key,o.channel,o.pull_number,o.position,c.pull_number,c.position,m.pull_number,m.position,v.pull_number
- FROM review_current_attempt_order o
- CROSS JOIN review_current_attempts c ON c.project_id=o.project_id AND c.source=o.source AND c.source_attempt_id=o.source_attempt_id
- CROSS JOIN review_attempt_memberships m ON m.project_id=c.project_id AND m.source=c.source AND m.source_attempt_id=c.source_attempt_id AND m.start_revision=c.start_revision
- CROSS JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision
- WHERE o.project_id=? AND o.pull_number=? AND o.channel=? ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, project, number, channel).Scan(&candidate.SourceAttemptID, &candidate.Channel, &candidate.HeadSHA, &candidate.State, &candidate.StartedAt, &candidate.FinishedAt, &candidate.DurationSeconds, &candidate.SourceRunID, &candidate.TriggerID, &candidate.ProviderReviewID, &candidate.Reason, &key, &cachedChannel, &cachedNumber, &cachedPosition, &currentNumber, &currentPosition, &memberNumber, &memberPosition, &bodyNumber)
+		err := tx.QueryRowContext(ctx, currentSummaryAttemptQuery(columns), project, number, channel).Scan(&candidate.SourceAttemptID, &candidate.Channel, &candidate.HeadSHA, &candidate.State, &candidate.StartedAt, &candidate.FinishedAt, &candidate.DurationSeconds, &candidate.SourceRunID, &candidate.TriggerID, &candidate.ProviderReviewID, &candidate.Reason, &key, &cachedChannel, &cachedNumber, &cachedPosition, &currentNumber, &currentPosition, &memberNumber, &memberPosition, &bodyNumber)
 		prior, exists := expected[channel]
 		if errors.Is(err, sql.ErrNoRows) {
 			if exists {
@@ -86,4 +81,19 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 		return historyInconsistent()
 	}
 	return nil
+}
+
+// Unary + preserves each stored key value while stopping SQLite from enumerating
+// transitive equivalents across these composite identity indexes. Both sides
+// have matching declared TEXT (BINARY) or INTEGER affinity. Left-hand indexed
+// lookup keys, original identity binding and winner ordering remain unchanged.
+const currentSummaryAttemptJoins = ` FROM review_current_attempt_order o
+ CROSS JOIN review_current_attempts c ON c.project_id=+o.project_id AND c.source=+o.source AND c.source_attempt_id=+o.source_attempt_id
+ CROSS JOIN review_attempt_memberships m ON m.project_id=+c.project_id AND m.source=+c.source AND m.source_attempt_id=+c.source_attempt_id AND m.start_revision=+c.start_revision
+ CROSS JOIN review_attempt_versions v ON v.project_id=+m.project_id AND v.source=+m.source AND v.source_attempt_id=+m.source_attempt_id AND v.version_revision=+m.version_revision`
+
+func currentSummaryAttemptQuery(columns string) string {
+	return `SELECT ` + columns + `,o.sort_key,o.channel,o.pull_number,o.position,c.pull_number,c.position,m.pull_number,m.position,v.pull_number
+` + currentSummaryAttemptJoins + `
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel=? ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`
 }
