@@ -121,17 +121,6 @@ type AttemptSummary struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
-// AcceptedSeverity is a read-only breakdown of the authoritative accepted scalar.
-// Incomplete inventories return complete=false and zero buckets for scalar fallback.
-type AcceptedSeverity struct {
-	Critical int64 `json:"critical"`
-	Major    int64 `json:"major"`
-	Minor    int64 `json:"minor"`
-	Trivial  int64 `json:"trivial"`
-	Unknown  int64 `json:"unknown"`
-	Complete bool  `json:"complete"`
-}
-
 // FindingView preserves the original finding and adds presentation-only evidence.
 type FindingView struct {
 	Finding
@@ -139,31 +128,28 @@ type FindingView struct {
 }
 
 type RunSummary struct {
-	AcceptedSeverity *AcceptedSeverity `json:"accepted_severity,omitempty"`
-	Source           string            `json:"source"`
-	ID               string            `json:"id"`
-	PullNumber       int64             `json:"pull_number"`
-	SourceRunID      string            `json:"source_run_id"`
-	Channel          string            `json:"channel"`
-	HeadSHA          string            `json:"head_sha"`
-	Reviewer         string            `json:"reviewer"`
-	Scope            string            `json:"scope"`
-	Outcome          string            `json:"outcome"`
-	Attributable     bool              `json:"attributable"`
-	Complete         bool              `json:"complete"`
-	StartedAt        string            `json:"started_at"`
-	FinishedAt       string            `json:"finished_at"`
-	Found            int64             `json:"found"`
-	Accepted         int64             `json:"accepted"`
-	Routed           int64             `json:"routed"`
-	Finalized        bool              `json:"finalized"`
-	Fixed            int64             `json:"fixed"`
-	CoverageLimits   []string          `json:"coverage_limits"`
+	Source         string   `json:"source"`
+	ID             string   `json:"id"`
+	PullNumber     int64    `json:"pull_number"`
+	SourceRunID    string   `json:"source_run_id"`
+	Channel        string   `json:"channel"`
+	HeadSHA        string   `json:"head_sha"`
+	Reviewer       string   `json:"reviewer"`
+	Scope          string   `json:"scope"`
+	Outcome        string   `json:"outcome"`
+	Attributable   bool     `json:"attributable"`
+	Complete       bool     `json:"complete"`
+	StartedAt      string   `json:"started_at"`
+	FinishedAt     string   `json:"finished_at"`
+	Found          int64    `json:"found"`
+	Accepted       int64    `json:"accepted"`
+	Routed         int64    `json:"routed"`
+	Finalized      bool     `json:"finalized"`
+	Fixed          int64    `json:"fixed"`
+	CoverageLimits []string `json:"coverage_limits"`
 }
 
 type PullSummary struct {
-	// QueuePosition is the original zero-based position, only on selected views.
-	QueuePosition  *int             `json:"queue_position,omitempty"`
 	Diff           *PullDiff        `json:"diff,omitempty"`
 	IsDraft        *bool            `json:"is_draft,omitempty"`
 	MergedAt       string           `json:"merged_at,omitempty"`
@@ -184,19 +170,16 @@ type PullSummary struct {
 }
 
 type QueueResponse struct {
-	// HeadPosition is set only on selected views whose first nonmerged/nonclosed
-	// entry is known open. Unknown predecessors cannot establish an open head.
-	HeadPosition *int          `json:"head_position,omitempty"`
-	ProjectID    string        `json:"project_id"`
-	Configured   bool          `json:"configured"`
-	Revision     int64         `json:"revision"`
-	SnapshotID   string        `json:"snapshot_id"`
-	Source       string        `json:"source"`
-	ObservedAt   string        `json:"observed_at"`
-	RecordedAt   string        `json:"recorded_at"`
-	Items        []PullSummary `json:"items"`
-	Cursor       string        `json:"cursor,omitempty"`
-	HasMore      bool          `json:"has_more"`
+	ProjectID  string        `json:"project_id"`
+	Configured bool          `json:"configured"`
+	Revision   int64         `json:"revision"`
+	SnapshotID string        `json:"snapshot_id"`
+	Source     string        `json:"source"`
+	ObservedAt string        `json:"observed_at"`
+	RecordedAt string        `json:"recorded_at"`
+	Items      []PullSummary `json:"items"`
+	Cursor     string        `json:"cursor,omitempty"`
+	HasMore    bool          `json:"has_more"`
 }
 
 type PullResponse struct {
