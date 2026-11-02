@@ -18,7 +18,7 @@ function PublicReviewLane({ title, rounds, hasMore, url, browseHistory }: { titl
   const recent = rounds.slice(-6), outside = hasMore || rounds.length > recent.length;
   const metadata = `${rounds.length} published ${rounds.length === 1 ? 'round' : 'rounds'}`;
   return <ReviewLaneDisplay title={title} label={`${title} review rounds`} metadata={metadata} metadataTitle="Published historical rounds; not current-head coverage">
-    {outside && <p className="notice">More published {title} rounds are outside this view. <a href="#published-history" onClick={browseHistory}>Browse retained published revisions</a>; these snapshots may not contain every round.</p>}
+    {outside && <p className="notice">Other finalized {title} rounds are outside this view. <a href="#published-history" onClick={browseHistory}>Browse retained published revisions</a>; these snapshots may not contain every round.</p>}
     {recent.length ? <div className="review-round-pills review-recent-rounds">{recent.map(round => <PublicRoundPill key={round.key} round={round} channel={title} url={url} />)}</div> : <p className="review-lane-empty">{hasMore ? 'No finalized rounds fit in this view.' : 'No finalized rounds published.'}</p>}
   </ReviewLaneDisplay>;
 }

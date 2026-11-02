@@ -25,7 +25,7 @@ describe('public project browser', () => {
     const hosted = html.match(/<section class="review-lane" aria-label="Hosted review rounds">([\s\S]*?)<\/section>/u)![1];
     const cli = html.match(/<section class="review-lane" aria-label="CLI review rounds">([\s\S]*?)<\/section>/u)![1];
     expect(hosted).toContain('100 published rounds'); expect(hosted.match(/class="review-round-pill /gu)).toHaveLength(6);
-    expect(hosted).toContain('More published Hosted rounds are outside this view');
+    expect(hosted).toContain('Other finalized Hosted rounds are outside this view');
     expect(hosted).toContain('href="#published-history"'); expect(html).toContain('id="published-history"');
     expect(hosted).toContain('these snapshots may not contain every round'); expect(hosted).not.toMatch(/>Round \d|all rounds|complete archive/iu);
     expect(cli).toContain('<strong>1/1/0</strong>'); expect(cli).not.toContain('outside this view');
@@ -50,7 +50,7 @@ describe('public project browser', () => {
   it('does not imply no published history when the byte window contains no rounds', () => {
     const value = fixture(); value.content.reviews[0].cli = []; value.content.reviews[0].cli_has_more = true;
     const html = renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={value} historical /></MemoryRouter>);
-    expect(html).toContain('No finalized rounds fit in this view.'); expect(html).toContain('More published CLI rounds are outside this view.');
+    expect(html).toContain('No finalized rounds fit in this view.'); expect(html).toContain('Other finalized CLI rounds are outside this view.');
     expect(html).toContain('approved revision is frozen');
   });
   it('selects anonymous routes before private session/profile or query-cache setup', () => {
