@@ -284,7 +284,13 @@ func TestCLIDriverInitialProjectionPrefersCurrentFactsAndDoesNotHideConflict(t *
 				t.Fatal(err)
 			}
 			if conflict {
-				if _, err := f.store.DB().Exec(`UPDATE review_attempts SET head_sha=? WHERE project_id=?`, strings.Repeat("f", 40), f.project); err != nil {
+				if _, err := f.store.DB().Exec(`UPDATE review_attempt_versions SET head_sha=?
+WHERE (project_id,source,source_attempt_id,version_revision) IN (
+ SELECT c.project_id,c.source,c.source_attempt_id,m.version_revision
+ FROM review_current_attempts c JOIN review_attempt_memberships m
+ USING(project_id,source,source_attempt_id,start_revision,pull_number,position)
+ WHERE c.project_id=?
+)`, strings.Repeat("f", 40), f.project); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -802,7 +808,7 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 					return capture, err
 				}
 				if mode == "publication_storage_failure" {
-					_, err = f.store.DB().Exec(`CREATE TRIGGER fail_cli_native_publication BEFORE INSERT ON review_runs WHEN NEW.source='native-executor' BEGIN SELECT RAISE(ABORT,'synthetic publication storage failure'); END`)
+					_, err = f.store.DB().Exec(`CREATE TRIGGER fail_cli_native_publication BEFORE INSERT ON review_run_versions WHEN NEW.source='native-executor' BEGIN SELECT RAISE(ABORT,'synthetic publication storage failure'); END`)
 				} else {
 					// Replace only the current browser observation using the public importer;
 					// historical preparation metadata and the authoritative ledger survive.
