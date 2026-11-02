@@ -8,7 +8,7 @@ This slice provides the read model for the [review engine](reviews.md). Optional
 
 ## Optional PR display facts
 
-PR observations, additive transfers and queue/detail reads retain optional `diff`, `is_draft`, `merged_at` and `merge_state_status`. Queue edits accept the first three fields, but not `merge_state_status`: they are not fresh provider observations. These facts describe the PR, not review coverage, policy, CI readiness or permission to request work.
+PR observations and additive transfers retain optional `diff`, `is_draft`, `merged_at` and `merge_state_status`. Compact queue/detail reads expose the first three display fields; raw `merge_state_status` remains internal input to the explicit [browser merge projection](#browser-merge-eligibility), rather than an additional compact summary field. Queue edits accept the first three fields, but not `merge_state_status`: they are not fresh provider observations. These facts describe the PR, not review coverage, policy, CI readiness or permission to request work.
 
 `diff` is one atomic object containing exactly `files`, `additions` and `deletions`, each an integer from zero through 2147483647. A partial object or null count is invalid; a known zero remains zero. `is_draft` is an optional boolean, so known `false` differs from unknown. A nonempty `merged_at` is an RFC3339 instant of at most 64 characters, valid only when `state` is `merged`; it never falls back to review or observation time. Queue edits refuse explicit null optional metadata; observations also refuse a null or incomplete `diff` object. Omit unknown facts rather than inventing values.
 
