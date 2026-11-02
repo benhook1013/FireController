@@ -102,7 +102,7 @@ func TestHostedRateLimitedRecoveryUsesRetainedPreTriggerBotBaseline(t *testing.T
 	old.Body, old.UpdatedAt = "CI finished", record.Snapshot.ObservedAt
 	record.Snapshot.IssueComments = []reviewprovider.IssueComment{trigger, reply, old}
 	result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
-	if err != nil || !result.rateLimited || result.Complete || result.Reason != "hosted_review_rate_limited" || result.Receipt.ID != "" {
+	if err != nil || result.rejectionState != "rate_limited" || result.Complete || result.Reason != "hosted_review_rate_limited" || result.Receipt.ID != "" {
 		t.Fatal("qualified bot update hid rejection or manufactured completion", result, err)
 	}
 }

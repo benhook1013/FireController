@@ -128,6 +128,10 @@ func TestHostedOutsideOnlyOmissionNeverHidesUnknownInventory(t *testing.T) {
 			root := ReviewComment{ID: 501, ReviewID: 401, Body: hfInline(2), Author: f.bot, Path: "engine/events.go", HeadSHA: f.intent.HeadSHA, OriginalHeadSHA: f.intent.HeadSHA, CreatedAt: f.snapshot.Reviews[0].SubmittedAt, UpdatedAt: f.snapshot.Reviews[0].SubmittedAt}
 			if orphan {
 				root.ReviewID = 499
+			} else {
+				// A fully decoded attached finding is supported by the positive
+				// omitted-count path. Keep this negative fixture genuinely unknown.
+				root.Body = "Unsupported attached inline inventory."
 			}
 			f.snapshot.ReviewComments = append(f.snapshot.ReviewComments, root)
 		}
@@ -150,6 +154,30 @@ func TestHostedOutsideOnlyOmissionNeverHidesUnknownInventory(t *testing.T) {
 				t.Fatal("rejection rewrote raw source")
 			}
 		})
+	}
+}
+
+func TestHostedOmittedCountRetainsPositiveMixedInlineAndOutsideInventory(t *testing.T) {
+	f := outsideOnlyFixture(t, true)
+	f.snapshot.ReviewComments = []ReviewComment{{ID: 501, ReviewID: 401, Body: hfInline(2), Author: f.bot, Path: "engine/events.go", HeadSHA: f.intent.HeadSHA, OriginalHeadSHA: f.intent.HeadSHA, CreatedAt: f.snapshot.Reviews[0].SubmittedAt, UpdatedAt: f.snapshot.Reviews[0].SubmittedAt}}
+	before, _ := json.Marshal(f.snapshot)
+	got := f.extract(t)
+	if !got.Complete || got.Publication.State != "attributed" || len(got.Findings) != 2 || len(got.Publication.Roots) != 1 || len(got.Publication.Batches) != 1 {
+		t.Fatal("bound mixed positive inventory was lost", got.Publication.State, got.Reason, got.Findings)
+	}
+	kinds := map[string]int{}
+	for _, finding := range got.Findings {
+		kinds[finding.Kind]++
+		if finding.ReviewID != 401 || finding.Kind == "inline" && finding.CommentID != 501 || finding.Kind == "outside_diff" && finding.CommentID != 0 {
+			t.Fatal("mixed finding source attribution changed", finding)
+		}
+	}
+	if kinds["inline"] != 1 || kinds["outside_diff"] != 1 {
+		t.Fatal("mixed source findings were conflated", kinds)
+	}
+	after, _ := json.Marshal(f.snapshot)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("mixed positive decoding rewrote source")
 	}
 }
 

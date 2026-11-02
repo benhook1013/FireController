@@ -54,7 +54,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "already_completed"
 		return result, nil
 	}
-	if attempt.State == "rate_limited" {
+	if attempt.State == "rate_limited" || attempt.State == "failed" && bound.Operation.Reason == "hosted_review_skipped" {
 		result.Reason = bound.Operation.Reason
 		return result, nil
 	}
@@ -62,7 +62,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	var sourceAt time.Time
 	defer func() {
 		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, result.Reason, hostedObserverFailure(result.Reason, failure))
-		if failure == nil && (result.State == "completed" || result.State == "rate_limited") {
+		if failure == nil && (result.State == "completed" || result.State == "rate_limited" || result.State == "failed") {
 			engine.ForgetHostedObserver(check)
 		}
 	}()
@@ -175,8 +175,8 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	captured, err := RetainHosted(ctx, captures, engine, attempt, retained)
 	if err != nil || !captured.Complete {
 		result.Reason = captured.Reason
-		if err == nil && captured.rateLimited {
-			result.State = "rate_limited"
+		if err == nil && captured.rejectionState != "" {
+			result.State = captured.rejectionState
 			if settle {
 				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, result.State, result.Reason, externalID)
 			}

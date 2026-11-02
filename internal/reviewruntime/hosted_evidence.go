@@ -22,7 +22,7 @@ type CapturedHosted struct {
 
 	// Internal attribution fact, never final evidence or completion credit.
 	publicationFinished bool
-	rateLimited         bool
+	rejectionState      string
 }
 
 // RetainHosted saves a private observation before deriving final evidence. A
@@ -63,13 +63,15 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 				return result, err
 			}
 			fallback, err := reviewprovider.ExtractHostedFindingsWithBaseline(projected, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
-			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven" || fallback.Publication.State == "rate_limited" || fallback.Publication.State == "ambiguous" || fallback.Publication.State == "active" && (fallback.Reason == "publication_not_proven" || fallback.Reason == "missing_publication_batches")) {
+			if err == nil && (fallback.Complete || fallback.Reason == "hosted_finished_inventory_unproven" || fallback.Publication.State == "rate_limited" || fallback.Publication.State == "failed" || fallback.Publication.State == "ambiguous" || fallback.Publication.State == "active" && (fallback.Reason == "publication_not_proven" || fallback.Reason == "missing_publication_batches")) {
 				inventory = fallback
 			}
 		}
 	}
 	if !inventory.Complete || inventory.Publication.State != "attributed" {
-		result.rateLimited = inventory.Publication.State == "rate_limited"
+		if inventory.Publication.State == "rate_limited" || inventory.Publication.State == "failed" {
+			result.rejectionState = inventory.Publication.State
+		}
 		result.publicationFinished = inventory.Publication.State == "attributed" && !inventory.Publication.FinishedAt.IsZero()
 		result.Reason = inventory.Reason
 		if result.Reason == "" {
