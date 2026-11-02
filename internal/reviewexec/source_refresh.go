@@ -699,7 +699,6 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			return nil
 		}
 		result.State = "sufficient"
-		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
 		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
 		if err != nil {
 			return err
@@ -710,7 +709,7 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			result.State, result.Reason = "held", "routed_findings_pending"
 		}
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}

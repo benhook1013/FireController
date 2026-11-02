@@ -220,7 +220,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
 	"review_run_versions":              {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
@@ -270,6 +270,9 @@ var tables = map[string]tableVersion{
 	"review_adjudication_state": {"review_adjudication", 1, "evidence_id project_id revision body_json"}, "review_adjudication_changes": {"review_adjudication", 1, "evidence_id revision project_id actor_id kind finding_index input_json created_at"}, "review_finding_routes": {"review_adjudication", 2, "id project_id repository_id source_evidence_id finding_index source_pull_number source_head_sha target_pull_number state revision disposition has_fix created_at body_json"}, "review_finding_route_revisions": {"review_adjudication", 2, "route_id project_id revision actor_id kind created_at body_json"},
 	"review_source_refreshes":        {"review_source_refresh", 1, "id project_id repository_id actor_id worker_id configuration_revision capability_id capability_fingerprint pull_number head_sha state revision reason created_at updated_at observation_json"},
 	"review_checkpoint_publications": {"review_checkpoint_publication", 1, "id project_id evidence_id state revision created_at body_json"}, "review_checkpoint_revisions": {"review_checkpoint_publication", 1, "publication_id revision actor_id created_at body_json"}, "review_checkpoint_intents": {"review_checkpoint_publication", 1, "publication_id revision body_json"},
+	"review_comparison_proofs":          {"review_comparison", 1, "operation_id project_id pull_number channel state repository_id candidate_sha base_sha parent_sha parent_pull_number base_ref evidence_id"},
+	"review_route_policy_facts":         {"review_route_policy", 1, "route_id project_id target_pull_number revision active pending"},
+	"review_route_policy_invalidations": {"review_route_policy", 1, "project_id target_pull_number route_id"},
 }
 
 // workerStateColumn preserves the composite identities and explicit values
@@ -553,7 +556,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err != nil {
 		return nil, invalid()
 	}
-	if err = validateTriggers(ctx, db, versions["reviews"]); err != nil {
+	if err = validateTriggers(ctx, db, versions["reviews"], versions["review_comparison"], versions["review_route_policy"]); err != nil {
 		return nil, err
 	}
 	if err = validateHistoryViews(ctx, db, versions["reviews"]); err != nil {
@@ -561,6 +564,16 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	if versions["reviews"] >= 4 {
 		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
+			return nil, err
+		}
+	}
+	if versions["review_comparison"] > 0 {
+		if err = validateComparisonPhysicalSchema(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	if versions["review_route_policy"] > 0 {
+		if err = validateRoutePolicyPhysicalSchema(ctx, db); err != nil {
 			return nil, err
 		}
 	}
@@ -875,6 +888,22 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return err
 		}
 	}
+	if versions["review_comparison"] > 0 {
+		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_route_policy"] > 0 {
+		if err = reviewexec.ValidateRoutePolicyFacts(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	return checkContext(ctx)
 }
 func reference(refs map[string]Artifact, attempt, captureID, hash string, size int64, hosted bool) bool {
@@ -972,16 +1001,40 @@ func validateObservationReferences(ctx context.Context, db sqlReader, refs map[s
 	return nil
 }
 
-// The only application triggers are defined by reviews schema version two.
+// Historical reviews and the two native derived domains own exact triggers.
 // Exact text and table binding are required; inspection never executes custom
 // trigger programs, and restore must reject them before rotating credentials.
-func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) error {
+func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparisonVersion, routePolicyVersion int) error {
 	expected := map[string]string{}
+	expectedTables := map[string]string{}
 	if reviewVersion >= 2 && reviewVersion <= 3 {
 		expected["review_runs_snapshot_revision_insert"] = "CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
 		expected["review_runs_snapshot_revision_update"] = "CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END"
+		for name := range expected {
+			expectedTables[name] = "review_runs"
+		}
 	}
-	rows, err := db.QueryContext(ctx, `SELECT name,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=2048 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT 3`)
+	var nativeDefinitions []string
+	if comparisonVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, reviewexec.ComparisonSchemaSQL()...)
+	}
+	if routePolicyVersion > 0 {
+		nativeDefinitions = append(nativeDefinitions, reviewexec.RoutePolicySchemaSQL()...)
+	}
+	for _, statement := range nativeDefinitions {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 || fields[1] != "TRIGGER" {
+			continue
+		}
+		expected[fields[2]] = historyDefinitionSQL(statement)
+		for i, field := range fields {
+			if field == "ON" && i+1 < len(fields) {
+				expectedTables[fields[2]] = fields[i+1]
+				break
+			}
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,tbl_name,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='trigger' LIMIT `+strconv.Itoa(len(expected)+1))
 	if err != nil {
 		return invalid()
 	}
@@ -994,7 +1047,7 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion int) erro
 			return invalid()
 		}
 		want, known := expected[name]
-		if !known || table != "review_runs" || want != strings.TrimSpace(definition.String) {
+		if !known || table != expectedTables[name] || want != historyDefinitionSQL(definition.String) {
 			return invalid()
 		}
 		count++
@@ -1042,51 +1095,54 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"job_workstreams":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 	"job_workstream_history":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 
-	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
-	"note_revisions":                  {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
-	"worker_pause_state":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
-	"worker_pause_history":            {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
-	"worker_primary_jobs":             {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
-	"worker_primary_job_history":      {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
-	"job_updates":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
-	"job_checklists":                  {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
-	"job_checklist_history":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
-	"restore_history":                 {},
-	"workers":                         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"grants":                          {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"events":                          {canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"jobs":                            {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
-	"job_history":                     {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
-	"job_checkpoints":                 {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
-	"inbox_conversations":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("inbox_messages", "project_id,root_message_id", "project_id,id", "NO ACTION")},
-	"inbox_messages":                  {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("inbox_conversations", "project_id,conversation_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,sender_worker_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,recipient_worker_id", "project_id,id", "NO ACTION"), canonicalFK("inbox_messages", "project_id,reply_to_message_id", "project_id,id", "NO ACTION")},
-	"inbox_recipient_state":           {canonicalFK("inbox_messages", "project_id,message_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
-	"review_snapshots":                {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"review_workspace":                {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "NO ACTION")},
-	"review_pulls":                    {canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "CASCADE")},
-	"review_runs":                     {canonicalFK("review_pulls", "project_id,snapshot_id,pull_number", "project_id,snapshot_id,number", "CASCADE")},
-	"review_findings":                 {canonicalFK("review_runs", "project_id,snapshot_id,pull_number,run_id", "project_id,snapshot_id,pull_number,id", "CASCADE")},
-	"review_attempts":                 {canonicalFK("review_pulls", "project_id,snapshot_id,pull_number", "project_id,snapshot_id,number", "CASCADE")},
-	"review_retired_pulls":            {canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "CASCADE")},
-	"review_policy_config":            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_execution_config":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_operations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
-	"review_execution_attempts":       {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_execution_reservations":   {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
-	"review_execution_transitions":    {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
-	"review_cli_preflight":            {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_hosted_preflight":         {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_hosted_allowance_queries": {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
-	"review_execution_evidence":       {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
-	"review_hosted_observations":      {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
-	"review_adjudication_state":       {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_adjudication_changes":     {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_finding_routes":           {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_evidence", "source_evidence_id", "id", "NO ACTION")},
-	"review_finding_route_revisions":  {canonicalFK("review_finding_routes", "route_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
-	"review_source_refreshes":         {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
-	"review_checkpoint_publications":  {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION")},
-	"review_checkpoint_revisions":     {canonicalFK("review_checkpoint_publications", "publication_id", "id", "NO ACTION")},
-	"review_checkpoint_intents":       {canonicalFK("review_checkpoint_publications", "publication_id", "id", "NO ACTION")},
+	"notes":                             {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"note_revisions":                    {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"worker_pause_state":                {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"worker_pause_history":              {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"worker_primary_jobs":               {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"worker_primary_job_history":        {canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
+	"job_updates":                       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklists":                    {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checklist_history":             {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"restore_history":                   {},
+	"workers":                           {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"grants":                            {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"events":                            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"jobs":                              {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"job_history":                       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"job_checkpoints":                   {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
+	"inbox_conversations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("inbox_messages", "project_id,root_message_id", "project_id,id", "NO ACTION")},
+	"inbox_messages":                    {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("inbox_conversations", "project_id,conversation_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,sender_worker_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,recipient_worker_id", "project_id,id", "NO ACTION"), canonicalFK("inbox_messages", "project_id,reply_to_message_id", "project_id,id", "NO ACTION")},
+	"inbox_recipient_state":             {canonicalFK("inbox_messages", "project_id,message_id", "project_id,id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
+	"review_snapshots":                  {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"review_workspace":                  {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "NO ACTION")},
+	"review_pulls":                      {canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "CASCADE")},
+	"review_runs":                       {canonicalFK("review_pulls", "project_id,snapshot_id,pull_number", "project_id,snapshot_id,number", "CASCADE")},
+	"review_findings":                   {canonicalFK("review_runs", "project_id,snapshot_id,pull_number,run_id", "project_id,snapshot_id,pull_number,id", "CASCADE")},
+	"review_attempts":                   {canonicalFK("review_pulls", "project_id,snapshot_id,pull_number", "project_id,snapshot_id,number", "CASCADE")},
+	"review_retired_pulls":              {canonicalFK("review_snapshots", "project_id,snapshot_id", "project_id,snapshot_id", "CASCADE")},
+	"review_policy_config":              {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_execution_config":           {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_operations":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
+	"review_execution_attempts":         {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_execution_reservations":     {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
+	"review_execution_transitions":      {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
+	"review_cli_preflight":              {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_hosted_preflight":           {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_hosted_allowance_queries":   {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
+	"review_execution_evidence":         {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
+	"review_hosted_observations":        {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
+	"review_adjudication_state":         {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_adjudication_changes":       {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_finding_routes":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_evidence", "source_evidence_id", "id", "NO ACTION")},
+	"review_finding_route_revisions":    {canonicalFK("review_finding_routes", "route_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_source_refreshes":           {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
+	"review_checkpoint_publications":    {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION")},
+	"review_checkpoint_revisions":       {canonicalFK("review_checkpoint_publications", "publication_id", "id", "NO ACTION")},
+	"review_checkpoint_intents":         {canonicalFK("review_checkpoint_publications", "publication_id", "id", "NO ACTION")},
+	"review_comparison_proofs":          {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_route_policy_facts":         {canonicalFK("review_finding_routes", "route_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_route_policy_invalidations": {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 }
 
 func validateForeignKeys(ctx context.Context, db sqlReader, table string) error {
@@ -1249,6 +1305,84 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		args[i] = name
 	}
 	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(expectedObjects+1), args...)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+func validateComparisonPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.ComparisonSchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 3 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name='review_comparison_proofs' AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 4`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+func validateRoutePolicyPhysicalSchema(ctx context.Context, db sqlReader) error {
+	type object struct{ kind, definition string }
+	expected := map[string]object{}
+	for _, statement := range reviewexec.RoutePolicySchemaSQL() {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 {
+			return invalid()
+		}
+		if fields[1] == "TABLE" || fields[1] == "INDEX" {
+			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+	}
+	if len(expected) != 4 {
+		return invalid()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name IN ('review_route_policy_facts','review_route_policy_invalidations') AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 5`)
 	if err != nil {
 		return invalid()
 	}

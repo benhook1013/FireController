@@ -141,6 +141,10 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 				value.State = "held"
 				value.Reasons = []string{"ci_merge_state_unproven"}
 				value.CI = client.ReviewSourceCISummary{State: "unproven", Reason: "ci_candidate_unproven", MergeState: "unproven", ObservedAt: value.Target.ObservedAt}
+			case 3:
+				value.State = "held"
+				value.Reasons = []string{"routed_findings_pending"}
+				value.IncomingRoutesPending = 103
 			}
 			_ = json.NewEncoder(w).Encode(value)
 		default:
@@ -178,7 +182,7 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 			}
 		}
 	}
-	for i := int64(0); i < 3; i++ {
+	for i := int64(0); i < 4; i++ {
 		mode.Store(i)
 		result := call(t, session, "review_source_readiness", map[string]any{"pull_number": 2})
 		var got client.ReviewSourceReadinessAssessment
@@ -187,11 +191,14 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 		if got.Target != assessment.Target || got.Source != "observed_comparison" || len(data) > 16<<10 || strings.Contains(string(data), `"threads":`) || strings.Contains(string(data), `"checks":`) || (got.State == "ready_as_observed") != (i == 0) {
 			t.Fatal("SDK lost held/observed compact facts", got)
 		}
+		if i == 3 && (got.IncomingRoutesPending != 103 || got.IncomingRoutesCapacity || !got.Channels[0].Covered) {
+			t.Fatal("exact incoming hold lost independent completed channel", got)
+		}
 		if i == 1 && got.ReviewState.UnresolvedOutdated != 1 || i == 2 && got.CI.MergeState != "unproven" {
 			t.Fatal(got)
 		}
 	}
-	if requests.Load() != 12 {
+	if requests.Load() != 14 {
 		t.Fatal("SDK readiness tools polled", requests.Load())
 	}
 }

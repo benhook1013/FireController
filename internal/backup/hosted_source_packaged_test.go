@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,9 @@ import (
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 )
 
 // Following tools/packagedsmoke's supplied-binary/private-fixture pattern, trusted
@@ -55,6 +59,11 @@ func TestPackagedHostedSubmittedSourceRetention(t *testing.T) {
 	}
 	var retainedBody, retainedFingerprint string
 	if err := f.store.DB().QueryRow(`SELECT body_json,fingerprint FROM review_execution_evidence WHERE id=?`, evidence.ID).Scan(&retainedBody, &retainedFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	later := packagedCompletionEvidence(t, f, evidence, original)
+	var originalAdjudication string
+	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_adjudication_state WHERE evidence_id=?`, evidence.ID).Scan(&originalAdjudication); err != nil {
 		t.Fatal(err)
 	}
 	instance := f.store.InstanceID()
@@ -150,6 +159,17 @@ func TestPackagedHostedSubmittedSourceRetention(t *testing.T) {
 			stop()
 			t.Fatal("restart changed exact evidence response")
 		}
+		// The selected evidence has a genuinely different original anchor. A prior
+		// finalized review still supplies channel completion, while this unfinalized
+		// later capture remains pending across the whole PR/channel.
+		assess := exec.CommandContext(ctx, fc, "--profiles-file", profiles, "--profile", "source", "reviews", "assess", later.ID)
+		assess.Env = env
+		assessed, err := assess.Output()
+		var policy client.ReviewPolicyAssessment
+		if err != nil || json.Unmarshal(assessed, &policy) != nil || policy.State != "held" || policy.Anchor.CandidateSHA != later.Anchor.CandidateSHA || policy.Anchor.CandidateSHA == evidence.Anchor.CandidateSHA || len(policy.Channels) != 1 || !policy.Channels[0].Covered || !policy.Channels[0].Pending {
+			stop()
+			t.Fatal("packaged movement lost completed channel or pending original work", err)
+		}
 		stop()
 	}
 	local := func(args ...string) []byte {
@@ -192,6 +212,20 @@ func TestPackagedHostedSubmittedSourceRetention(t *testing.T) {
 			store.Close()
 			t.Fatal("packaged operations changed immutable ledger")
 		}
+		var restoredAdjudication string
+		if err := store.DB().QueryRow(`SELECT body_json FROM review_adjudication_state WHERE evidence_id=?`, evidence.ID).Scan(&restoredAdjudication); err != nil || restoredAdjudication != originalAdjudication {
+			store.Close()
+			t.Fatal("packaged restore changed original frozen counts or decisions", err)
+		}
+		if err := reviewexec.ValidateComparisonProofs(ctx, store.DB()); err != nil {
+			store.Close()
+			t.Fatal("packaged restore lost derived authority", err)
+		}
+		var ready, pending int
+		if err := store.DB().QueryRow(`SELECT sum(state='ready'),sum(state='pending') FROM review_comparison_proofs WHERE project_id=? AND pull_number=2 AND channel='hosted'`, f.project).Scan(&ready, &pending); err != nil || ready != 1 || pending != 1 {
+			store.Close()
+			t.Fatal("restore changed channel completion/pending proof", err)
+		}
 		if dir == destination {
 			backupCode(t, StartupGuard(ctx, store), "restore_inactive")
 			var active int
@@ -206,4 +240,126 @@ func TestPackagedHostedSubmittedSourceRetention(t *testing.T) {
 		t.Fatal("packaged proof contacted provider or changed supplied binaries")
 	}
 	t.Logf("actual fcd/fc submitted retention, restart, backup/inspect/inactive restore passed; fcd=%x fc=%x external_http=0", hashes[0], hashes[1])
+}
+
+// Use the real retainer and native APIs for both heads. No cached proof is seeded.
+func packagedCompletionEvidence(t *testing.T, f *restoreFixture, original reviewexec.ReviewEvidence, raw []byte) reviewexec.ReviewEvidence {
+	t.Helper()
+	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := submittedInventoryScope(t, f)
+	revision := int64(0)
+	if _, err := e.DecideReviewFinding(t.Context(), scope, "packaged-original-reject", original.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: "rejected", Reason: "Explicit synthetic false-positive decision"}); err != nil {
+		t.Fatal(err)
+	}
+	revision = 1
+	if _, err := e.FinalizeReviewEvidence(t.Context(), scope, "packaged-original-finalize", original.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("9", 40)
+	body, err := e.Enqueue(t.Context(), scope, "packaged-later-head", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt reviewexec.Receipt
+	if json.Unmarshal(body, &receipt) != nil {
+		t.Fatal("later receipt")
+	}
+	a, err := e.StartAttempt(t.Context(), f.project, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := original.Anchor
+	anchor.CandidateSHA = head
+	anchor.BaseSHA = strings.Repeat("8", 40)
+	anchor.ParentSHA = anchor.BaseSHA
+	anchor.MergeBaseSHA = anchor.BaseSHA
+	anchor.PatchSHA256 = strings.Repeat("7", 64)
+	anchor.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	query, created, err := e.BeginHostedAllowanceQuery(t.Context(), f.project, a.ID, a.Revision, anchor, reviewprovider.Author{ID: 1, Login: "fixture-user", Kind: "User"}, reviewprovider.Author{ID: 2, Login: "fixture-bot", Kind: "Bot"})
+	if err != nil || !created {
+		t.Fatal("later native allowance intent", err)
+	}
+	intent := reviewprovider.HostedTriggerIntent{OperationID: query.OperationID, AttemptID: a.ID, HeadSHA: head}
+	command, err := reviewprovider.HostedTriggerBody(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = e.Admit(t.Context(), f.project, a.ID, a.Revision, anchor, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = e.Advance(t.Context(), f.project, a.ID, a.Revision, "active", "synthetic_posted", "1100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := e.ReadHostedRecovery(t.Context(), f.project, a.ID, "restore-cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Record reviewruntime.HostedCaptureRecord `json:"record"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		t.Fatal("original raw fixture")
+	}
+	record := envelope.Record
+	record.Intent = intent
+	record.EarliestPosting = recovery.EarliestPosting
+	at := time.Now().UTC()
+	record.StartedAt = at.Add(400 * time.Millisecond)
+	record.FinishedAt = at.Add(600 * time.Millisecond)
+	record.Snapshot.ObservedAt = at.Add(500 * time.Millisecond)
+	for i := range record.Snapshot.IssueComments {
+		c := &record.Snapshot.IssueComments[i]
+		c.ID += 1000
+		c.CreatedAt = at
+		c.UpdatedAt = at
+		if i == 0 {
+			c.Body = command
+		} else {
+			c.CreatedAt = at.Add(300 * time.Millisecond)
+			c.UpdatedAt = c.CreatedAt
+		}
+	}
+	for i := range record.Snapshot.Reviews {
+		r := &record.Snapshot.Reviews[i]
+		r.ID += 1000
+		r.HeadSHA = head
+		r.SubmittedAt = at.Add(200 * time.Millisecond)
+		r.Body = strings.ReplaceAll(r.Body, original.Anchor.CandidateSHA, head)
+		r.Body = strings.ReplaceAll(r.Body, original.Anchor.ParentSHA, anchor.ParentSHA)
+		r.Body = strings.ReplaceAll(r.Body, "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444")
+	}
+	for i := range record.Snapshot.ReviewComments {
+		c := &record.Snapshot.ReviewComments[i]
+		c.ID += 1000
+		c.ReviewID += 1000
+		c.HeadSHA = head
+		c.OriginalHeadSHA = head
+		c.CreatedAt = at.Add(100 * time.Millisecond)
+		c.UpdatedAt = c.CreatedAt
+	}
+	captures, err := reviewruntime.NewHostedCaptureStore(filepath.Join(f.dir, "hosted-review-captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := reviewruntime.RetainHosted(t.Context(), captures, e, a, record)
+	if err != nil || !retained.Complete {
+		t.Fatal("later genuine retained capture", retained, err)
+	}
+	if _, err := e.Advance(t.Context(), f.project, a.ID, a.Revision, "completed", "synthetic_captured", "1100"); err != nil {
+		t.Fatal(err)
+	}
+	later, err := e.ReadReviewEvidence(t.Context(), scope, retained.Receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, original.ID)
+	if err != nil || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{Found: 1}) || later.Anchor == original.Anchor {
+		t.Fatal("original frozen authority changed", err)
+	}
+	return later
 }

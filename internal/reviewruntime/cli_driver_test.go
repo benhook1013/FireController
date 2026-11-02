@@ -735,19 +735,29 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
-	// The same Git objects under a different explicit base comparison have no
-	// current coverage. Correct an older closed finding after Prepare's first
-	// comparison read; Dispatch must still refuse before invoking review.
-	f.reader.repository.DefaultBranch = "new-main"
-	p := f.reader.pulls[2]
-	p.BaseRef = "new-main"
-	f.reader.pulls[2] = p
+	// Review a genuine child of the completed parent. Its own channel has no
+	// credit; the older parent's later correction must stop Dispatch after Prepare.
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "third.txt")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
+	third := gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+	parent := f.reader.pulls[2]
+	parent.HeadRef = "covered-parent"
+	f.reader.pulls[2] = parent
+	child := f.reader.pulls[4]
+	child.HeadSHA, child.BaseSHA, child.BaseRef = third, f.headSHA, "covered-parent"
+	f.reader.pulls[4] = child
+	f.configure(t, "stacked", []int64{2, 4})
 	usage := f.driver.usage
 	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
 		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
 		return usage(ctx, w, repo, org)
 	}
-	op, a := f.prepareAdmit(t, 2, 1, "changed-comparison")
+	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
 	before, _ := os.ReadFile(f.log)
 	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
 	if err != nil || result.State != "failed" || result.Reason != "source_admission_changed" {

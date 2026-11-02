@@ -100,7 +100,7 @@ func TestRoutePolicyReceivingCoverageDoesNotClearIncomingObligation(t *testing.T
 	}
 }
 
-func TestRoutePolicyCapacityCannotReturnSufficient(t *testing.T) {
+func TestRoutePolicyOver100PendingRemainsExactHold(t *testing.T) {
 	f, source, sourceID := routeFixture(t, 100)
 	adjudicationComplete(t, f, source)
 	a, id, reader := routePolicyReceiver(t, f, sourceID)
@@ -130,7 +130,7 @@ func TestRoutePolicyCapacityCannotReturnSufficient(t *testing.T) {
 		t.Fatal(err)
 	}
 	routeCreate(t, f, receipt.ID, "policy-cap-101", routeRequest(0, 0, 4))
-	routePolicyBoth(t, f, a, id, reader, "held", "routed_findings_capacity", 0, true)
+	routePolicyBoth(t, f, a, id, reader, "held", "routed_findings_pending", 101, false)
 }
 
 func TestRoutePolicyCorruptResolvedIncomingRouteFailsClosed(t *testing.T) {

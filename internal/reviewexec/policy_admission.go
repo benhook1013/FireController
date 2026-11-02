@@ -173,7 +173,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if err := verifyPredecessors(ctx, tx, project, current, *attempt.Anchor, predecessors); err != nil {
 		return err
 	}
-	state, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, operation.Channel)
+	state, err := channelProgress(ctx, tx, project, current.RepositoryID, operation.PullNumber, operation.Channel)
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
 	if state.Covered {
-		return &core.Error{Code: "review_held", Message: "The selected native comparison already has completed coverage in this channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
+		return &core.Error{Code: "review_held", Message: "The selected PR/channel already has completed native review progress.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}
 	return nil
 }
@@ -209,8 +209,7 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
-		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		state, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
+		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
 		if err != nil {
 			return err
 		}

@@ -148,6 +148,10 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 				value.State = "held"
 				value.Reasons = []string{"ci_merge_state_unproven"}
 				value.CI = client.ReviewSourceCISummary{State: "unproven", Reason: "ci_candidate_unproven", MergeState: "unproven", ObservedAt: value.Target.ObservedAt}
+			case 3:
+				value.State = "held"
+				value.Reasons = []string{"routed_findings_pending"}
+				value.IncomingRoutesPending = 103
 			}
 			_ = json.NewEncoder(w).Encode(value)
 		default:
@@ -181,18 +185,21 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 			}
 		}
 	}
-	for i := int64(0); i < 3; i++ {
+	for i := int64(0); i < 4; i++ {
 		mode.Store(i)
 		code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "readiness", "--pr", "2")
 		var got client.ReviewSourceReadinessAssessment
 		if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &got) != nil || got.Target != assessment.Target || got.Source != "observed_comparison" || len(out) > 16<<10 || strings.Contains(out, `"threads":`) || strings.Contains(out, `"checks":`) || (got.State == "ready_as_observed") != (i == 0) {
 			t.Fatal("readiness lost held/observed facts", code, out, stderr)
 		}
+		if i == 3 && (got.IncomingRoutesPending != 103 || got.IncomingRoutesCapacity || !got.Channels[0].Covered) {
+			t.Fatal("exact incoming hold lost independent completed channel", got)
+		}
 		if i == 1 && got.ReviewState.UnresolvedOutdated != 1 || i == 2 && got.CI.MergeState != "unproven" {
 			t.Fatal(got)
 		}
 	}
-	if requests.Load() != 12 || f.resolverHit.Load() != providers {
+	if requests.Load() != 14 || f.resolverHit.Load() != providers {
 		t.Fatal("readiness adapter polled or used provider", requests.Load())
 	}
 }

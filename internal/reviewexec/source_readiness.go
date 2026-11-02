@@ -262,10 +262,9 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 		} else if out.IncomingRoutesPending > 0 {
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
 		}
-		anchor := Anchor{RepositoryID: r.repositoryID, PullNumber: number, CandidateSHA: r.Observation.HeadSHA, BaseSHA: r.Observation.BaseSHA, BaseRef: r.Observation.BaseRef, ParentPullNumber: r.Observation.ParentPullNumber, ParentSHA: r.Observation.ParentSHA}
 		missing, pending := false, false
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}

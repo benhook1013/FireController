@@ -30,7 +30,7 @@ The service checks the original actor's access, stable repository binding and op
 
 `GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/policy` requires project read access and accepts no query parameters. It evaluates the latest completed source observation and current policy in one authorized database snapshot. Missing source is explicit rather than an empty passing assessment. A changed repository, capability or source configuration holds the old observation; changing only the execution pause preserves it.
 
-The response identifies the refresh, exact target, current configuration and policy revisions, source observation time and evaluation time. Each required channel reports coverage and pending evidence. All required channels need applicable finalized native captures and satisfied finding obligations; pending evidence dominates coverage. Imported history supplies no native credit. Missing channel policy is unconfigured. None of these states authorizes a merge.
+The response identifies the refresh, exact target, current configuration and policy revisions, source observation time and evaluation time. Each required channel reports [retained native PR/channel completion](reviews.md#retained-native-channel-completion) and pending evidence. All required channels need finalized native captures and satisfied finding obligations; pending evidence across every retained head dominates completion. The observed source can move without erasing earned completion, while captured anchors still identify only the original reviewed code. Imported history supplies no native credit. Missing channel policy is unconfigured. None of these states authorizes a merge.
 
 ## Bound agent tools
 
