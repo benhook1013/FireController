@@ -202,6 +202,16 @@ func publicationRootCount(body string) (int, bool) {
 }
 
 func publicationActor(a, b Author) bool { return a.ID == b.ID && a.Kind == b.Kind }
+
+// Foreign Bot reports are not inferred request authorities merely because
+// they were edited. This is a current-source policy, not proof of their old
+// bodies: any provider mention, even quoted/hidden, retains the edit barrier.
+// Source-owned actor kind is required; a bot-looking login or body is not enough.
+func publicationUnrelatedBotReport(comment IssueComment, postingAuthor Author) bool {
+	return comment.Author.Kind == "Bot" && comment.Author.ID != postingAuthor.ID &&
+		!strings.Contains(strings.ToLower(comment.Body), "coderabbit")
+}
+
 func publicationValidActor(a Author) bool {
 	_, err := normalizeActor(githubActor{ID: a.ID, Login: a.Login, Type: a.Kind})
 	return err == nil
@@ -302,14 +312,15 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		return result, nil
 	}
 	result.State = "active"
-	// A later command closes this trigger's attribution window. Edited comments
-	// may have removed a command, so their original prose cannot prove attribution.
+	// A later command closes this trigger's attribution window. Relevant edited
+	// comments may have removed a command; unrelated foreign Bot reports do not
+	// become inferred request authorities solely through an edit.
 	var closing time.Time
 	for _, comment := range snapshot.IssueComments {
 		if comment.ID == trigger.CommentID || publicationActor(comment.Author, providerAuthor) {
 			continue
 		}
-		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) {
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) && !publicationUnrelatedBotReport(comment, postingAuthor) {
 			// The original command may have acted before this edit. Its
 			// earliest possible effect is the later of creation and our trigger.
 			when := comment.CreatedAt
