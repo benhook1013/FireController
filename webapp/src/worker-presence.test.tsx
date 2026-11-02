@@ -24,8 +24,12 @@ describe('worker client contact',()=>{
   for(const result of [{...value,project_id:'project_other'},{...value,principal_id:'private'},{...value,items:[]},{...value,items:[{...value.items[0],worker_id:other}]},{...value,items:[{...value.items[0],session_id:'private'}]},{...value,items:[{...value.items[0],last_seen_at:null}]},{...value,observed_since:'bad-date'}]){fetch.mockResolvedValue(json(result));await expect(api.workerPresence([worker])).rejects.toMatchObject({code:'invalid_response'});}
  });
  it('keeps unknown, attached and last contact distinct from job progress',()=>{
-  expect(renderToStaticMarkup(<WorkerContactView value={undefined} worker={worker}/>)).toBe('');
-  expect(renderToStaticMarkup(<WorkerContactView value={{...value,items:[{worker_id:worker,attached:false,last_seen_at:null}]}} worker={worker}/>)).toBe('');
+  const unknown=renderToStaticMarkup(<WorkerContactView value={undefined} worker={worker}/>);
+  expect(unknown).toContain('Contact unknown');expect(unknown).toContain('does not mean this worker is stopped or paused');expect(unknown).not.toContain('Invalid Date');
+  const restarted=renderToStaticMarkup(<WorkerContactView value={{...value,items:[{worker_id:worker,attached:false,last_seen_at:null}]}} worker={worker}/>);
+  expect(restarted).toContain('Contact unknown');expect(restarted).toContain('clear when the controller restarts');expect(restarted).not.toContain('Last contact');
+  const outside=renderToStaticMarkup(<WorkerContactView value={{...value,complete:false,items:[]}} worker={worker}/>);
+  expect(outside).toContain('Contact unknown');expect(outside).toContain('Some client contact could not be retained');
   const attached=renderToStaticMarkup(<WorkerContactView value={value} worker={worker}/>);expect(attached).toContain('Client attached');expect(attached).not.toContain('Working');expect(attached).toContain('does not indicate model activity');
   expect(validWorkerPresence({...value,evaluated_at:'2026-10-18T00:00:00Z'},project.id,[worker])).toBe(true); // Server wall-clock rollback is informational, not corrupt contact.
   const recent={...value,complete:false,items:[{...value.items[0],attached:false}]};expect(validWorkerPresence(recent,project.id,[worker])).toBe(true);
