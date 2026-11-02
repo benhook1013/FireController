@@ -14,11 +14,12 @@ func skippedCommandReply() string {
 func TestHostedSkippedCommandReplyStopsWithoutReviewCredit(t *testing.T) {
 	for _, mode := range []string{"observed", "decorated", "crlf", "old seat summary", "wrong actor", "wrong bot ID", "old reply", "root only", "duplicate", "other reply", "later command", "pending review", "submitted review", "fresh finding", "partial", "quoted", "fenced", "unknown outcome", "unknown envelope", "missing invocation", "trailer"} {
 		t.Run(mode, func(t *testing.T) {
-			s, intent, poster, bot, earliest := standingTestFixture(t)
+			s, intent, poster, bot, _ := standingTestFixture(t)
 			s.Reviews, s.ReviewComments = []HostedReview{}, []ReviewComment{}
 			s.IssueComments = []IssueComment{s.IssueComments[0], s.IssueComments[2]}
 			triggerAt := time.Date(2026, 11, 2, 12, 49, 12, 0, time.UTC)
-			earliest, s.ObservedAt = triggerAt, triggerAt.Add(10*time.Second)
+			earliest := triggerAt
+			s.ObservedAt = triggerAt.Add(10 * time.Second)
 			s.IssueComments[0].ID, s.IssueComments[0].CreatedAt, s.IssueComments[0].UpdatedAt = 6577552197, triggerAt, triggerAt
 			reply := &s.IssueComments[1]
 			reply.ID, reply.CreatedAt, reply.UpdatedAt, reply.Body = 6577553918, triggerAt.Add(6*time.Second), triggerAt.Add(6*time.Second), skippedCommandReply()
