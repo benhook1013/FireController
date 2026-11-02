@@ -10,6 +10,12 @@ A verified provider observation changing retained state from open to merged or c
 
 Controller messages use the ordinary inbox pending/unread discovery, selected-message reads and explicit seen/acknowledgment. They are one-way notification roots and have no worker reply destination. Receipt changes do not change PR state, grant authority or mark review work complete. The [incoming feed](message-events.md) owns delivery and wait semantics; host wakeup remains a separate capability.
 
+## Review results ready
+
+When a native CLI or Hosted attempt completes with validated complete evidence, the completion transaction creates one durable Controller inbox notice for each following, non-retired worker. An explicit request already follows its actual requesting worker unless muted; automatic requests use existing PR participants, not their project scheduling authorizer as an inferred owner. The short notice identifies the PR, channel, immutable evidence and original operation. It does not copy mutable PR titles, findings or adjudicated counts, and does not grant permission to start further work.
+
+The attempt transition, completion bookkeeping, notices and inbox events commit together. An immutable evidence-scoped key provides per-recipient deduplication; completion recovery after restart uses the original evidence and cannot duplicate a delivered notice. A message failure rolls back settlement so the same original completion can retry. Raw captures, provider trigger acknowledgments, queued requests, cooldowns, cancellations, incomplete results and other failure diagnostics do not produce a ready notice. Historical imports and enabling the native projection do not scan or notify old completions. Standalone execution journals without the native workspace remain independent of inbox delivery. No new polling, subscription or schema is required. Durable inbox availability does not guarantee that a host wakes an idle agent.
+
 ## Optional preference controls
 
 No subscription step is needed for ordinary explicit work. For deliberate changes, read the preference revision first:
@@ -29,3 +35,5 @@ fc reviews follow 42 --expect-revision 2 --key follow-pr-42
 Current preferences use the separate `review_notifications` schema domain, without changing the immutable review-history version or rerunning its backfill. Backup inspection validates preference ownership, modes, revisions and timestamps; restore retains preferences. The source-status publication and inbox publisher own transition and per-recipient replay deduplication in the same transaction.
 
 Focused tests cover verified transitions, unchanged/stale observations, initial terminal baselines, reopening, concurrent publication, muted/retired/uninvolved workers, atomic failure/retry, acting-worker following, automatic-authorizer exclusion, one-time manual seeding, revision/key/worker isolation and CLI/MCP controls. These local tests do not establish installed rollout, real GitHub delivery latency or idle-chat wakeup.
+
+Completion-notice tests exercise CLI and Hosted transitions, retained CLI recovery across restart, exact replay, message-failure rollback, original-requester following, automatic participant routing, explicit mute/retirement, paginated same-project delivery, historical-import silence and standalone journals. They use authenticated local request paths and synthetic captures, without provider calls or installed-host qualification.

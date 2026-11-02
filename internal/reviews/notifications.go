@@ -110,6 +110,17 @@ func publishTerminalNotices(ctx context.Context, tx *sql.Tx, scope core.Scope, s
 	}
 	body := fmt.Sprintf("PR #%d was %s: %s\nhttps://github.com/%s/pull/%d", number, state, title, repository, number)
 	key := fmt.Sprintf("pr-terminal:%s:%d:%s", snapshot, number, state)
+	return PublishFollowerNotice(ctx, tx, scope, number, key, body)
+}
+
+// PublishFollowerNotice delivers trusted transactional PR notices to actual
+// participants. Explicit mutes and retirement apply to every notice producer;
+// the scope's acting worker never becomes an inferred recipient.
+func PublishFollowerNotice(ctx context.Context, tx *sql.Tx, scope core.Scope, number int64, key, body string) error {
+	if number < 1 || number > 2147483647 {
+		return validationError("Select a positive 32-bit PR number.")
+	}
+	project := scope.ProjectID
 	// Keyset pages keep recipient buffers bounded without truncating delivery.
 	after := ""
 	for {
