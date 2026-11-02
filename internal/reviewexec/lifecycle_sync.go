@@ -242,12 +242,14 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 	s.mu.Lock()
 	last := s.lanes[lane].lastProject
 	watchFirst := lane == lifecycleEnrichment && s.watchTurn
-	if lane == lifecycleEnrichment {
-		s.watchTurn = !s.watchTurn
-	}
 	s.mu.Unlock()
 	if watchFirst {
 		if target, err := e.claimCIWatch(ctx, readers, s); target != nil || err != nil {
+			if target != nil {
+				s.mu.Lock()
+				s.watchTurn = false
+				s.mu.Unlock()
+			}
 			return target, err
 		}
 	}
@@ -405,11 +407,22 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		s.lanes[lane].projects[p.id] = true
 		s.lanes[lane].accounts[account] = true
 		s.lanes[lane].lastPull[p.id] = number
+		if lane == lifecycleEnrichment {
+			// Idle workers cannot spend the next watch's turn while another
+			// claim owns its project/account. Only admitted work advances it.
+			s.watchTurn = true
+		}
 		s.mu.Unlock()
 		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
 	if lane == lifecycleEnrichment && !watchFirst {
-		return e.claimCIWatch(ctx, readers, s)
+		target, err := e.claimCIWatch(ctx, readers, s)
+		if target != nil {
+			s.mu.Lock()
+			s.watchTurn = false
+			s.mu.Unlock()
+		}
+		return target, err
 	}
 	return nil, nil
 }
