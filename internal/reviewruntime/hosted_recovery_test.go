@@ -184,7 +184,7 @@ func TestRecoverHostedRetainedEvidenceRepairsPublicationBeforeNewObservation(t *
 	recoveryRuntimeMetadata(t, f, a)
 	// A genuine non-missing projection failure must retain the final evidence
 	// and reservation for a later local retry, even after the exception below.
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_hosted_publication BEFORE INSERT ON review_runs BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`); err != nil {
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_hosted_publication BEFORE INSERT ON review_run_versions BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	first, err := recoverRuntime(t, f, captures, a, reader)
