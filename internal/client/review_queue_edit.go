@@ -90,7 +90,7 @@ func reviewQueueEditDocumentValue(document json.RawMessage) (reviewQueueEditDocu
 	}
 	seen := make(map[int64]bool, count)
 	for _, pull := range value.Queue {
-		if pull.Number < 1 || pull.Number > 2147483647 || seen[pull.Number] || !cleanReviewText(pull.Title, 500, true) || !oneReviewOf(pull.State, "open", "merged", "closed", "unknown") || !validReviewSHA(pull.HeadSHA) || !cleanReviewText(pull.BaseRef, 256, false) || !validReviewSHA(pull.BaseSHA) || !oneReviewOf(pull.CIState, "unknown", "pending", "success", "failure") || !oneReviewOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
+		if pull.Number < 1 || pull.Number > 2147483647 || seen[pull.Number] || !cleanReviewText(pull.Title, 500, true) || !oneReviewOf(pull.State, "open", "merged", "closed", "unknown") || !validReviewSHA(pull.HeadSHA) || !cleanReviewText(pull.BaseRef, 256, false) || !validReviewSHA(pull.BaseSHA) || !oneReviewOf(pull.CIState, "unknown", "pending", "success", "failure", "not_required") || !oneReviewOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
 			return value, queueEditValidation()
 		}
 		if !validReviewPullMetadata(ReviewPullSummary{State: pull.State, Diff: pull.Diff, IsDraft: pull.IsDraft, MergedAt: pull.MergedAt}) {

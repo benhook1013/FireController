@@ -68,7 +68,9 @@ The 98-file Go/browser/module/config/asset manifest stayed unchanged: SHA-256 `b
 
 These checks use synthetic observations on Linux/WSL Chromium. They do not establish native execution, a complete migration product, populated multi-project browser coverage, remote deployment, fleet throughput or installed-agent behavior. Existing authentication/revocation and strict-parser tests provide separate focused evidence.
 
-## Selected queue edits
+## Bounded queue edits
+
+### Selected queue edits
 
 Administrator queue edits maintain selected stored metadata, relative ordering and explicit retirement/reactivation without resubmitting a complete retained workspace. They are an administrator maintenance boundary, not another ordinary worker enrollment step.
 
@@ -76,7 +78,7 @@ Complete observations replace a small workspace and retain their per-request bou
 
 Queue edits require administrator access, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for administrator provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
 
-Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` as defined above. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
+Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` as defined above. CI permits `unknown`, `pending`, `success`, `failure` and `not_required`. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
 
 Optional `order` names one to one hundred unique positive 32-bit PR numbers in the desired relative order. After this request's metadata upserts and retirements, those visible PRs exchange only the positions they occupy; unnamed PR positions remain unchanged. For example, queue `[1,2,3,4]` with `order: [3,1]` becomes `[3,2,1,4]`. A newly upserted or explicitly reactivated PR may be selected. Unknown PRs, currently retired PRs without reactivation, and PRs retired by the same request are refused. An empty or null order is refused. Order-only requests use the same endpoint and CLI file; omitting `order` preserves the original normalized request bytes and replay semantics. Ordering changes no retained metadata, findings, counts, completeness, execution policy or review budget.
 
@@ -90,7 +92,9 @@ The bound administrator CLI is:
 fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key
 ```
 
-It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. This administrator maintenance action is not a worker MCP tool.
+It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. MCP `review_queue_edit` sends the same native document and explicit `idempotency_key`; service administrator admission still applies. It does not request reviews or change scheduling configuration.
+
+A focused regression grows the workspace through actual native publication to 201 PRs, applies selected edits without dropping omitted merged history, preserves original cursor/detail and evidence bytes, retains retirement through later native publication, and proves exact original-key replay after intervening edits and database reopen. The original transfer, optional-metadata, relative-order, rollback and client tests remain in place. CLI and SDK MCP tests exercise strict/authenticated native calls and lost-receipt recovery. These source checks do not establish live-provider behavior or installed rollout.
 
 ## Retained history and bounded archives
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,150 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 )
+
+func TestQueueEditsManageNativeQueueBeyondTwoHundred(t *testing.T) {
+	f := newAPIFixture(t)
+	pulls := make([]PullInput, 100)
+	for i := range pulls {
+		pulls[i] = nativePull(int64(i + 1))
+		pulls[i].State = "open"
+	}
+	pulls[99].State = "merged"
+	pulls[99].Runs = []RunInput{nativeRun("imported-100")}
+	f.observe(t, reviewRequest(0, pulls), "queue-growth-import")
+	for n := int64(101); n <= 201; n++ {
+		a := nativeAttempt(fmt.Sprintf("retained-%d", n), "prepared")
+		p := nativePull(n)
+		p.State = "open"
+		mustNativePublish(t, f, NativePublication{Pull: p, Attempt: &a})
+	}
+	run := nativeRun("native-100")
+	mustNativePublish(t, f, NativePublication{Pull: nativePull(100), Run: &run})
+	var count int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_current_pulls WHERE project_id=?`, f.project).Scan(&count); err != nil || count != 201 {
+		t.Fatal("growth fixture did not cross full-observation ceiling", count, err)
+	}
+	base := importBase(f)
+	var pinned QueueResponse
+	nativeRead(t, f, "/queue?limit=1", &pinned)
+	pinnedPath := base + "/queue?limit=1&cursor=" + pinned.Cursor
+	pinnedBytes := f.call("GET", pinnedPath, f.readToken, "", nil).Body.String()
+	detailPath := base + "/pulls/100?snapshot=" + pinned.SnapshotID
+	detailBytes := f.call("GET", detailPath, f.readToken, "", nil).Body.String()
+	before := importDatabaseState(t, f)
+	edit := queueEditRequest(pinned.Revision, []QueuePullInput{{Number: 100, Title: "Selected merged title", State: "merged", HeadSHA: strings.Repeat("b", 40), CIState: "not_required", Mergeability: "mergeable"}, {Number: 202, Title: "New partial PR", State: "open", CIState: "unknown", Mergeability: "unknown"}}, []RetiredPull{{Number: 1, Reason: "defunct"}})
+	first := queueEditHTTP(f, edit, "large-queue-edit")
+	if first.Code != 201 {
+		t.Fatal(first.Code, first.Body.String())
+	}
+	var receipt Receipt
+	if json.Unmarshal(first.Body.Bytes(), &receipt) != nil {
+		t.Fatal("invalid edit receipt")
+	}
+	var selected PullResponse
+	nativeRead(t, f, "/pulls/100", &selected)
+	if selected.Pull.Title != "Selected merged title" || selected.Pull.State != "merged" || selected.Pull.CIState != "not_required" || selected.Pull.RunCount != 2 || selected.Pull.Complete {
+		t.Fatal("metadata edit changed evidence or inherited coverage", selected.Pull)
+	}
+	var added PullResponse
+	nativeRead(t, f, "/pulls/202", &added)
+	if added.Pull.Complete || added.Pull.RunCount != 0 || added.Pull.AttemptCount != 0 {
+		t.Fatal("new PR manufactured coverage")
+	}
+	var page QueueResponse
+	nativeRead(t, f, "/queue?limit=100", &page)
+	seen := map[int64]bool{}
+	for {
+		for _, p := range page.Items {
+			if seen[p.Number] {
+				t.Fatal("duplicate queue entry")
+			}
+			seen[p.Number] = true
+		}
+		if !page.HasMore {
+			break
+		}
+		nativeRead(t, f, "/queue?limit=100&cursor="+page.Cursor, &page)
+	}
+	if len(seen) != 201 || seen[1] || !seen[100] || !seen[202] {
+		t.Fatal("omitted merged history or unrelated queue entries changed", len(seen), seen[1], seen[100], seen[202])
+	}
+	after := importDatabaseState(t, f)
+	for table, rows := range before {
+		if strings.HasPrefix(table, "review_run_") || strings.HasPrefix(table, "review_finding_") || strings.HasPrefix(table, "review_attempt_") {
+			if !reflect.DeepEqual(rows, after[table]) {
+				t.Fatal("metadata edit changed retained evidence", table)
+			}
+		}
+	}
+	var observed string
+	if err := f.store.DB().QueryRow(`SELECT observed_at FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, f.project, receipt.ID).Scan(&observed); err != nil || observed != pinned.ObservedAt {
+		t.Fatal("queue edit invented source freshness", observed, err)
+	}
+	if r := f.call("GET", pinnedPath, f.readToken, "", nil); r.Code != 200 || r.Body.String() != pinnedBytes {
+		t.Fatal("old continuation changed")
+	}
+	if r := f.call("GET", detailPath, f.readToken, "", nil); r.Code != 200 || r.Body.String() != detailBytes {
+		t.Fatal("old detail changed")
+	}
+	// Later native capture remains possible without reopening retired visibility.
+	a := nativeAttempt("hidden-after-queue-edit", "unknown")
+	later := mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Attempt: &a})
+	var latest QueueResponse
+	nativeRead(t, f, "/queue?limit=1", &latest)
+	if latest.Items[0].Number == 1 {
+		t.Fatal("native update resurfaced retired PR")
+	}
+	state := importDatabaseState(t, f)
+	if replay := queueEditHTTP(f, edit, "large-queue-edit"); replay.Code != 201 || replay.Body.String() != first.Body.String() || !reflect.DeepEqual(state, importDatabaseState(t, f)) {
+		t.Fatal("original replay after advancement wrote state")
+	}
+	if r := queueEditHTTP(f, queueEditRequest(later.Revision, []QueuePullInput{{Number: 1, Title: "Explicit return", State: "open", CIState: "unknown", Mergeability: "unknown"}}, nil), "explicit-reactivate"); r.Code != 201 {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	nativeRead(t, f, "/queue?limit=1", &latest)
+	if latest.Items[0].Number != 1 {
+		t.Fatal("explicit reactivation failed")
+	}
+	for _, validate := range []func(context.Context, HistoryQuery) error{ValidateHistoryReferences, ValidateCurrentSummaries, ValidateCurrentRunOrder} {
+		if err := validate(t.Context(), f.store.DB()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Reopen the owned fixture and recover the exact original key after all
+	// intervening visibility and native changes, without replaying their effects.
+	var sequence int
+	var name, database string
+	if err := f.store.DB().QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &database); err != nil {
+		t.Fatal(err)
+	}
+	state = importDatabaseState(t, f)
+	instance := f.store.InstanceID()
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := core.Open(t.Context(), filepath.Dir(database))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if err = EnsureSchema(t.Context(), reopened); err != nil {
+		t.Fatal(err)
+	}
+	f.store = reopened
+	mux := http.NewServeMux()
+	Register(mux, reopened)
+	f.mux = mux
+	if reopened.InstanceID() != instance {
+		t.Fatal("restart changed fixture identity")
+	}
+	if replay := queueEditHTTP(f, edit, "large-queue-edit"); replay.Code != 201 || replay.Body.String() != first.Body.String() || !reflect.DeepEqual(state, importDatabaseState(t, f)) {
+		t.Fatal("restart lost original receipt or repeated edit")
+	}
+	if r := f.call("GET", pinnedPath, f.readToken, "", nil); r.Code != 200 || r.Body.String() != pinnedBytes {
+		t.Fatal("restart changed retained queue continuation")
+	}
+}
 
 func queueEditRequest(revision int64, queue []QueuePullInput, retired []RetiredPull) QueueEditRequest {
 	if queue == nil {

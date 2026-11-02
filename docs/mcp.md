@@ -83,6 +83,7 @@ Startup validates configuration without opening the credential or contacting the
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
+| `review_queue_edit` | Administrator-only native `document` plus `idempotency_key`; selected metadata, explicit retirement/reactivation and relative ordering through [bounded queue edits](review-workspace.md#bounded-queue-edits). No provider work or automatic retry. |
 | `review_pull` | Required pull_number, optional snapshot; compact PR summary with latest attempts per channel. |
 | `review_attempts` | Required pull_number, optional snapshot/limit/cursor; default five newest-first attempts with original producer and explicit continuation. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
