@@ -105,3 +105,60 @@ func TestHostedPublicationFenceLanguageCannotExposeProtocolExamples(t *testing.T
 		}
 	}
 }
+
+func TestHostedPublicationCommentTerminatorsIgnoreCommentInternalQuoteAndIndent(t *testing.T) {
+	const malformed = "<!-- coderabbit-review-publication malformed -->"
+	valid := publicationTestMarker(1, 1)
+	for name, closing := range map[string]string{"plain": "-->", "quoted": "> -->", "indented": "    -->", "tabbed": "\t-->"} {
+		for _, following := range []string{valid, malformed} {
+			kind := "valid"
+			if following == malformed {
+				kind = "malformed"
+			}
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				body := "<!-- ordinary provider note\n" + closing + "\n" + following
+				batch, found, bad := publicationBatchMarker(body)
+				if following == valid && (!found || bad || batch.publication != publicationTestID) || following == malformed && (!bad || found) {
+					t.Fatal("comment-internal decoration hid following protocol evidence", found, bad)
+				}
+				if following == malformed {
+					_, found, bad = publicationBatchMarker(valid + "\n" + body)
+					if !bad || found {
+						t.Fatal("comment terminator hid conflict after earlier valid batch")
+					}
+				}
+			})
+		}
+		// Quoting/code begins after the ordinary comment ends. Those examples
+		// remain suppressed; only the later standalone marker is evidence.
+		quoted := "> " + malformed + "\n    " + malformed + "\n```text\n" + malformed + "\n```\n"
+		if batch, found, bad := publicationBatchMarker("<!-- note\n" + closing + "\n" + quoted + valid); !found || bad || batch.publication != publicationTestID {
+			t.Fatal("comment fix exposed quoted/code protocol examples", name, found, bad)
+		}
+		if count, valid := publicationRootCount("<!-- note\n" + closing + "\n**Actionable comments posted: 1**"); !valid || count != 1 {
+			t.Fatal("comment terminator hid actionable count", name, count, valid)
+		}
+	}
+}
+
+func TestHostedPublicationCommentTerminatorSuffixRemainsVisibleWithoutExposingCommentBody(t *testing.T) {
+	const malformed = "coderabbit-review-publication malformed"
+	valid := publicationTestMarker(1, 1)
+	for _, prefix := range []string{"> ", "    ", "\t"} {
+		_, found, bad := publicationBatchMarker("<!-- ordinary note\n" + prefix + "--> " + malformed)
+		if found || !bad {
+			t.Fatal("same-line visible suffix was hidden by comment-internal decoration", prefix, found, bad)
+		}
+		// A protocol-shaped substring still inside the ordinary comment cannot
+		// become evidence merely because its terminator ends that comment.
+		body := "<!-- ordinary note\n" + prefix + valid + "\n" + valid
+		if batch, found, bad := publicationBatchMarker(body); !found || bad || batch.publication != publicationTestID {
+			t.Fatal("comment body supplied an extra protocol marker", prefix, found, bad)
+		}
+		// The same opener outside an existing comment stays ordinary quoted or
+		// indented content and cannot hide the following standalone marker.
+		if batch, found, bad := publicationBatchMarker(prefix + "<!-- note\n" + valid); !found || bad || batch.publication != publicationTestID {
+			t.Fatal("quoted/indented opener changed outer comment state", prefix, found, bad)
+		}
+	}
+}
