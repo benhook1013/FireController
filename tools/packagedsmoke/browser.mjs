@@ -478,7 +478,8 @@ try {
   checkpoint = 'presence-initial';
   await expect.poll(() => presenceFinished, {timeout:5000}).toBe(1);
   need(presenceReads===1 && presenceHeaderErrors===0);
-  await expect(page.locator('.worker-contact')).toHaveCount(0);
+  await expect(builderLane.locator('.worker-contact')).toHaveText('Contact unknown');
+  await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
   const contactReadBoundary={delivery:deliveryReads,brief:jobBriefReads,archive:jobArchiveReads,history:contactHistoryReads};
   const sameContactReadBoundary=()=>deliveryReads===contactReadBoundary.delivery && jobBriefReads===contactReadBoundary.brief && jobArchiveReads===contactReadBoundary.archive && contactHistoryReads===contactReadBoundary.history;
   const restoreContactVisibility=()=>page.evaluate(()=>globalThis.__fcSmokeRestoreContactVisibility?.());
@@ -509,7 +510,8 @@ try {
     const hiddenUntil=hiddenAt+15500;
     while (performance.now()<hiddenUntil) await new Promise(resolve=>setTimeout(resolve,Math.max(1,Math.ceil(hiddenUntil-performance.now()))));
     need(performance.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
-    await expect(page.locator('.worker-contact')).toHaveCount(0);
+    await expect(builderLane.locator('.worker-contact')).toHaveText('Contact unknown');
+    await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
     checkpoint = 'presence-visible';
     await restoreContactVisibility();
     need(await page.evaluate(()=>document.visibilityState==='visible'));
@@ -521,7 +523,7 @@ try {
     checkpoint = 'presence-visible-content';
     await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
     need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
-    need(await inspectorLane.locator('.worker-contact').count()===0);
+    await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
   } finally {
     // Restore the original property even when a contact/timing assertion fails.
     await restoreContactVisibility().catch(()=>{});
