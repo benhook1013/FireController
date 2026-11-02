@@ -480,10 +480,7 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		var best Attempt
 		var bestKey string
 		var bestPosition int64
-		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,o.sort_key,o.position FROM review_current_attempt_order o
- CROSS JOIN review_current_attempts c ON c.project_id=o.project_id AND c.source=o.source AND c.source_attempt_id=o.source_attempt_id
- CROSS JOIN review_attempt_memberships m ON m.project_id=c.project_id AND m.source=c.source AND m.source_attempt_id=c.source_attempt_id AND m.start_revision=c.start_revision
- CROSS JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision
+		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,o.sort_key,o.position`+currentSummaryAttemptJoins+`
  WHERE o.project_id=? AND o.pull_number=? AND o.channel=?`+exclude+` ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, args...).Scan(&best.SourceAttemptID, &best.Channel, &best.HeadSHA, &best.State, &best.StartedAt, &best.FinishedAt, &best.DurationSeconds, &best.SourceRunID, &best.TriggerID, &best.ProviderReviewID, &best.Reason, &bestKey, &bestPosition)
 		found := err == nil
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
