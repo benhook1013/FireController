@@ -393,11 +393,11 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 			return 0, core.Fail("stale_observation", "The observation is older than the current project snapshot.", http.StatusConflict)
 		}
 	}
-	previousPulls, err := pullNumbersForSnapshot(ctx, tx, projectID, currentSnapshot)
+	previousPulls, previouslyRetired, err := queueNumbersForSnapshot(ctx, tx, projectID, currentSnapshot)
 	if err != nil {
 		return 0, err
 	}
-	if err := validateRetirements(previousPulls, req.Queue, req.Retired); err != nil {
+	if err := validateRetirements(previousPulls, previouslyRetired, req.Queue, req.Retired); err != nil {
 		return 0, err
 	}
 	reads := newHistoryReads(tx)
@@ -408,27 +408,37 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	return currentRevision, nil
 }
 
-func pullNumbersForSnapshot(ctx context.Context, tx *sql.Tx, projectID, snapshotID string) ([]int64, error) {
+// Queue edits retain retired parents for detail/history. Full replacement only
+// requires reasons for newly hidden visible entries, while current retirement
+// markers remain valid explicit targets even after their parent was omitted.
+func queueNumbersForSnapshot(ctx context.Context, tx *sql.Tx, projectID, snapshotID string) ([]int64, map[int64]bool, error) {
+	retired := make(map[int64]bool)
 	if snapshotID == "" {
-		return []int64{}, nil
+		return []int64{}, retired, nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT number FROM review_pulls WHERE project_id=? AND snapshot_id=? ORDER BY position", projectID, snapshotID)
+	rows, err := tx.QueryContext(ctx, `SELECT number,0 FROM review_pulls WHERE project_id=? AND snapshot_id=?
+ UNION ALL SELECT number,1 FROM review_retired_pulls WHERE project_id=? AND snapshot_id=?`, projectID, snapshotID, projectID, snapshotID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := make([]int64, 0)
 	for rows.Next() {
 		var number int64
-		if err := rows.Scan(&number); err != nil {
-			return nil, err
+		var isRetired bool
+		if err := rows.Scan(&number, &isRetired); err != nil {
+			return nil, nil, err
 		}
-		out = append(out, number)
+		if isRetired {
+			retired[number] = true
+		} else {
+			out = append(out, number)
+		}
 	}
-	return out, rows.Err()
+	return out, retired, rows.Err()
 }
 
-func validateRetirements(previous []int64, queue []PullInput, retired []RetiredPull) error {
+func validateRetirements(previous []int64, previouslyRetired map[int64]bool, queue []PullInput, retired []RetiredPull) error {
 	queued := make(map[int64]struct{}, len(queue))
 	for _, pull := range queue {
 		queued[pull.Number] = struct{}{}
@@ -438,11 +448,14 @@ func validateRetirements(previous []int64, queue []PullInput, retired []RetiredP
 		retiredSet[item.Number] = item.Reason
 	}
 	previousSet := make(map[int64]struct{}, len(previous))
+	for number := range previouslyRetired {
+		previousSet[number] = struct{}{}
+	}
 	for _, number := range previous {
 		previousSet[number] = struct{}{}
 		_, remains := queued[number]
 		_, noted := retiredSet[number]
-		if !remains && !noted {
+		if !remains && !noted && !previouslyRetired[number] {
 			return validationError("Every removed queue entry requires an explicit retirement reason.")
 		}
 	}

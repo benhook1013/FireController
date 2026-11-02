@@ -186,6 +186,130 @@ func queueEditHTTP(f *apiFixture, req QueueEditRequest, key string) *httptest.Re
 	return f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, req)
 }
 
+func TestQueueEditRetirementCanBeOmittedOrRepeatedByFullObservation(t *testing.T) {
+	for _, repeat := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repeat-%t", repeat), func(t *testing.T) {
+			f := newAPIFixture(t)
+			one, two, merged := nativePull(1), nativePull(2), samplePull(3, "Retained merged history")
+			one.State, two.State = "open", "open"
+			one.Runs = []RunInput{nativeRun("imported-before-retirement")}
+			f.observe(t, reviewRequest(0, []PullInput{one, two, merged}), "retirement-omit-seed")
+			// Historical retirement alone cannot exempt a currently visible PR
+			// from the new observation's explicit-removal requirement.
+			if r := queueEditHTTP(f, queueEditRequest(1, nil, []RetiredPull{{Number: 2, Reason: "defunct"}}), "retire-visible-later"); r.Code != 201 {
+				t.Fatal(r.Code, r.Body.String())
+			}
+			if r := queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{{Number: 2, Title: two.Title, State: two.State, HeadSHA: two.HeadSHA, BaseRef: two.BaseRef, BaseSHA: two.BaseSHA, CIState: two.CIState, Mergeability: two.Mergeability}}, nil), "reactivate-visible"); r.Code != 201 {
+				t.Fatal(r.Code, r.Body.String())
+			}
+			captured := nativeRun("native-before-retirement")
+			publication := mustNativePublish(t, f, NativePublication{Pull: oneWithoutHistory(one), Run: &captured})
+			base := importBase(f)
+			var old QueueResponse
+			nativeRead(t, f, "/queue?limit=1", &old)
+			oldCursorPath := base + "/queue?limit=1&cursor=" + old.Cursor
+			oldCursor := f.call("GET", oldCursorPath, f.readToken, "", nil).Body.String()
+			oldRunPath := base + "/runs/" + runOpaqueID(f.project, nativeSource, captured.SourceRunID) + "?snapshot=" + old.SnapshotID
+			oldRun := f.call("GET", oldRunPath, f.readToken, "", nil)
+			if oldRun.Code != 200 {
+				t.Fatal(oldRun.Code, oldRun.Body.String())
+			}
+			retire := queueEditHTTP(f, queueEditRequest(publication.Revision, nil, []RetiredPull{{Number: 1, Reason: "superseded"}}), "retire-owner")
+			if retire.Code != 201 {
+				t.Fatal(retire.Code, retire.Body.String())
+			}
+			var retired Receipt
+			if json.Unmarshal(retire.Body.Bytes(), &retired) != nil {
+				t.Fatal("invalid retirement receipt")
+			}
+			request := reviewRequest(retired.Revision, []PullInput{two, merged})
+			if repeat {
+				request.Retired = []RetiredPull{{Number: 1, Reason: "superseded"}}
+			}
+			before := importDatabaseState(t, f)
+			for _, test := range []struct {
+				name   string
+				status int
+				change func(*ObservationRequest)
+			}{
+				{"visible-omission", 400, func(r *ObservationRequest) { r.Queue = []PullInput{merged} }},
+				{"unknown-retirement", 400, func(r *ObservationRequest) { r.Retired = append(r.Retired, RetiredPull{Number: 99, Reason: "defunct"}) }},
+				{"stale-revision", 409, func(r *ObservationRequest) { v := retired.Revision - 1; r.ExpectedRevision = &v }},
+				{"wrong-repository", 400, func(r *ObservationRequest) { r.RepositoryID = 702 }},
+			} {
+				bad := request
+				bad.Retired = append([]RetiredPull(nil), request.Retired...)
+				test.change(&bad)
+				r := f.call("POST", base+"/observations", f.admin, test.name, bad)
+				if r.Code != test.status || !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+					t.Fatal(test.name, r.Code, r.Body.String())
+				}
+			}
+			if _, err := f.store.DB().Exec(`CREATE TRIGGER omit_retired_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'synthetic rollback'); END`); err != nil {
+				t.Fatal(err)
+			}
+			failed := f.call("POST", base+"/observations", f.admin, "full-after-retirement", request)
+			if failed.Code != 500 || !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+				t.Fatal("admitted omission did not reach atomic event rollback", failed.Code, failed.Body.String())
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER omit_retired_event_failure`); err != nil {
+				t.Fatal(err)
+			}
+			first := f.call("POST", base+"/observations", f.admin, "full-after-retirement", request)
+			if first.Code != 201 {
+				t.Fatal("already retired owner required another retirement", first.Code, first.Body.String())
+			}
+			var applied Receipt
+			if json.Unmarshal(first.Body.Bytes(), &applied) != nil {
+				t.Fatal("invalid observation receipt")
+			}
+			if repeat {
+				// The parent is now absent, but its current retirement marker still
+				// positively identifies an allowed explicit repeat.
+				next := reviewRequest(applied.Revision, []PullInput{two, merged})
+				next.Retired = []RetiredPull{{Number: 1, Reason: "superseded"}}
+				r := f.call("POST", base+"/observations", f.admin, "repeat-marker-without-owner", next)
+				if r.Code != 201 || json.Unmarshal(r.Body.Bytes(), &applied) != nil {
+					t.Fatal("known retirement marker could not be repeated", r.Code, r.Body.String())
+				}
+			}
+			clear := reviewRequest(applied.Revision, []PullInput{two, merged})
+			f.observe(t, clear, "clear-current-retirement")
+			var markers int
+			if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_current_retired WHERE project_id=? AND number=1`, f.project).Scan(&markers); err != nil || markers != 0 {
+				t.Fatal("full observation did not replace current retirement membership", markers, err)
+			}
+			// Native reintroduction uses immutable retirement history, even after
+			// the complete observation has cleared current parent and marker.
+			attempt := nativeAttempt("after-omitted-retired-owner", "prepared")
+			mustNativePublish(t, f, NativePublication{Pull: oneWithoutHistory(one), Attempt: &attempt})
+			var queue QueueResponse
+			nativeRead(t, f, "/queue?limit=100", &queue)
+			if len(queue.Items) != 2 || queue.Items[0].Number != 2 || queue.Items[1].Number != 3 {
+				t.Fatal("native publication resurfaced retired owner or dropped merged history", queue.Items)
+			}
+			if r := f.call("GET", oldCursorPath, f.readToken, "", nil); r.Code != 200 || r.Body.String() != oldCursor {
+				t.Fatal("old queue cursor changed")
+			}
+			if r := f.call("GET", oldRunPath, f.readToken, "", nil); r.Code != 200 || r.Body.String() != oldRun.Body.String() {
+				t.Fatal("retirement sequence changed original native evidence")
+			}
+			state := importDatabaseState(t, f)
+			replay := f.call("POST", base+"/observations", f.admin, "full-after-retirement", request)
+			if replay.Code != 201 || replay.Body.String() != first.Body.String() || !reflect.DeepEqual(state, importDatabaseState(t, f)) {
+				t.Fatal("original full-observation replay changed state")
+			}
+			for _, validate := range []func(context.Context, HistoryQuery) error{ValidateHistoryReferences, ValidateCurrentSummaries, ValidateCurrentRunOrder} {
+				if err := validate(t.Context(), f.store.DB()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func oneWithoutHistory(p PullInput) PullInput { p.Runs = nil; p.Attempts = nil; return p }
+
 func TestQueueEditsReplayCASLimitsAndEventRollback(t *testing.T) {
 	f := newAPIFixture(t)
 	f.observe(t, reviewRequest(0, []PullInput{samplePull(1, "One"), samplePull(2, "Two")}), "queue-edit-seed")
