@@ -7,9 +7,9 @@
     "main"
   ],
   "schedule": [],
-  "prConcurrentLimit": 0,
+  "prConcurrentLimit": 5,
   "prHourlyLimit": 0,
-  "branchConcurrentLimit": 0,
+  "branchConcurrentLimit": 5,
   "commitHourlyLimit": 0,
   "automerge": false,
   "dependencyDashboard": true,
