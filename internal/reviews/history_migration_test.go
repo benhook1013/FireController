@@ -1,6 +1,7 @@
 package reviews
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -209,9 +210,17 @@ func historyMigrationDatabaseDigest(t *testing.T, f *apiFixture) [32]byte {
 func historyMigrationApply(t *testing.T, f *apiFixture) {
 	t.Helper()
 	groups := append(reviewSchemaMigrations(), historyMigrationSQL())
-	if err := f.store.EnsureSchema(t.Context(), "reviews", groups...); err != nil {
+	if err := historyMigrationEnsure(t, f, groups); err != nil {
 		t.Fatal("manual version-four migration", err)
 	}
+}
+func historyMigrationEnsure(t *testing.T, f *apiFixture, groups [][]string) error {
+	t.Helper()
+	// Standalone v4 fixtures use the same atomic graph-validation boundary as
+	// production startup, without installing the later derived cache schemas.
+	return f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", groups, func(ctx context.Context, conn *sql.Conn) error {
+		return ValidateHistoryReferences(ctx, conn)
+	})
 }
 func historyMigrationNoTemporaryObjects(t *testing.T, f *apiFixture) {
 	t.Helper()
@@ -370,6 +379,63 @@ func TestHistoryMigrationFromSupportedOlderGroups(t *testing.T) {
 	}
 }
 
+func TestHistoryMigrationStartupFromFreshAndSupportedLegacySchemas(t *testing.T) {
+	for version := 0; version <= 3; version++ {
+		t.Run(fmt.Sprintf("version-%d", version), func(t *testing.T) {
+			var f *apiFixture
+			if version == 0 {
+				f = newAPIFixtureWithSchema(t, func(context.Context, *core.Store) error { return nil })
+			} else {
+				f, _, _, _ = historyMigrationLegacyFixture(t)
+				if version < 3 {
+					if _, err := f.store.DB().ExecContext(t.Context(), `UPDATE review_findings SET route_json='null'`); err != nil {
+						t.Fatal(err)
+					}
+					historyMigrationDowngradeFixture(t, f, version)
+				}
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal("production startup migration failed", err)
+			}
+			for _, validate := range []func(context.Context, HistoryQuery) error{ValidateHistoryReferences, ValidateCurrentSummaries, ValidateCurrentRunOrder} {
+				if err := validate(t.Context(), f.store.DB()); err != nil {
+					t.Fatal("startup left invalid history or derived indexes", err)
+				}
+			}
+			before := historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err != nil || historyMigrationDatabaseDigest(t, f) != before {
+				t.Fatal("already-current startup changed retained storage", err)
+			}
+		})
+	}
+}
+
+func TestHistoryMigrationStartupRejectsExistingHistoryReferenceCorruption(t *testing.T) {
+	for _, version := range []int{4, 5} {
+		t.Run(fmt.Sprintf("version-%d", version), func(t *testing.T) {
+			f, _, _, _ := historyMigrationLegacyFixture(t)
+			groups := append(reviewSchemaMigrations(), historyMigrationSQL())
+			if version == 5 {
+				groups = append(groups, CurrentSummarySchemaSQL())
+			}
+			if err := historyMigrationEnsure(t, f, groups); err != nil {
+				t.Fatal(err)
+			}
+			// This is physically valid but omits visible runs from current refs.
+			if _, err := f.store.DB().ExecContext(t.Context(), `DELETE FROM review_current_runs WHERE project_id=?`, f.project); err != nil {
+				t.Fatal(err)
+			}
+			before := historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err == nil {
+				t.Fatal("startup accepted incomplete existing history references")
+			}
+			if historyMigrationDatabaseDigest(t, f) != before {
+				t.Fatal("refused upgrade changed schema, metadata or retained rows")
+			}
+		})
+	}
+}
+
 func TestHistoryMigrationInvalidSourcesRefuseAtomically(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -420,7 +486,7 @@ func TestHistoryMigrationInvalidSourcesRefuseAtomically(t *testing.T) {
 			test.damage(t, f)
 			before := historyMigrationDatabaseDigest(t, f)
 			groups := append(reviewSchemaMigrations(), historyMigrationSQL())
-			if err := f.store.EnsureSchema(t.Context(), "reviews", groups...); err == nil {
+			if err := historyMigrationEnsure(t, f, groups); err == nil {
 				t.Fatal("invalid source migrated")
 			}
 			if before != historyMigrationDatabaseDigest(t, f) {
@@ -453,7 +519,7 @@ func TestHistoryMigrationPartialFaultRollsBackDDLAndRows(t *testing.T) {
 			fault = append(fault, "SELECT definitely_missing_history_migration_function();")
 			fault = append(fault, sqlGroup[cut:]...)
 			groups := append(reviewSchemaMigrations(), fault)
-			if err := f.store.EnsureSchema(t.Context(), "reviews", groups...); err == nil {
+			if err := historyMigrationEnsure(t, f, groups); err == nil {
 				t.Fatal("injected partial migration succeeded")
 			}
 			if before != historyMigrationDatabaseDigest(t, f) {
@@ -531,12 +597,12 @@ func TestHistoryMigrationPostBackfillLogicalCheckRollsBack(t *testing.T) {
 		t.Fatal("canonical views missing")
 	}
 	// This alteration obeys physical foreign keys. The canonical logical graph
-	// assertion must reject an otherwise valid payload omitted from current refs.
+	// callback must reject an otherwise valid payload omitted from current refs.
 	corrupted := append([]string{}, migration[:cut]...)
 	corrupted = append(corrupted, `DELETE FROM review_current_runs WHERE project_id='project-review-test'`)
 	corrupted = append(corrupted, migration[cut:]...)
 	groups := append(reviewSchemaMigrations(), corrupted)
-	if err := f.store.EnsureSchema(t.Context(), "reviews", groups...); err == nil {
+	if err := historyMigrationEnsure(t, f, groups); err == nil {
 		t.Fatal("incomplete current graph passed migration checks")
 	}
 	if before != historyMigrationDatabaseDigest(t, f) {

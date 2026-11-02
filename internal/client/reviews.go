@@ -489,12 +489,6 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 				}
 				return false
 			}
-			if name == "reason" && (typ == reflect.TypeOf(ReviewAttempt{}) || typ == reflect.TypeOf(reviewAttemptWire{})) {
-				var reason string
-				if json.Unmarshal(raw, &reason) != nil || reason == "" || len(reason) > 128 {
-					return false
-				}
-			}
 			if typ == reflect.TypeOf(ReviewSourceReviewStateSummary{}) && name == "review_decision" && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				continue
 			}

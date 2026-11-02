@@ -192,9 +192,7 @@ func TestCurrentSummaryFailedPublicationPreservesCachesCurrentAndWire(t *testing
 
 func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *testing.T) {
 	f, snapshots, id, _ := historyMigrationLegacyFixture(t)
-	if err := f.store.EnsureSchema(t.Context(), "reviews", append(reviewSchemaMigrations(), historyMigrationSQL())...); err != nil {
-		t.Fatal(err)
-	}
+	historyMigrationApply(t, f)
 	var queue QueueResponse
 	nativeRead(t, f, "/queue?limit=1", &queue)
 	if queue.Cursor == "" {

@@ -71,9 +71,8 @@ func historyMigrationSQL() []string {
 	for _, name := range []string{"review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"} {
 		statements = append(statements, views[name])
 	}
-	for _, query := range historyReferenceQueries() {
-		statements = append(statements, check(query))
-	}
+	// The startup backfill validates the complete reference graph once, after
+	// all schema groups and before deriving caches, in this same transaction.
 	statements = append(statements, check("SELECT 1 FROM pragma_foreign_key_check"), "DROP TABLE temp."+assertion+";")
 	return statements
 }
