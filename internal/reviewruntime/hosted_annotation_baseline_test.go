@@ -36,7 +36,20 @@ func runtimeAnnotatedStandingFixture(t *testing.T, edit func(*HostedCaptureRecor
 }
 
 func TestRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T) {
+	testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t, false)
+}
+
+func TestRetainHostedLatestUpdateStandingZeroFinalizationAndReplay(t *testing.T) {
+	testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t, true)
+}
+
+func testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T, latestUpdate bool) {
+	t.Helper()
 	f, record := runtimeAnnotatedStandingFixture(t, nil)
+	if latestUpdate {
+		record.Snapshot.ReviewComments[0].Body = strings.TrimSuffix(record.Snapshot.ReviewComments[0].Body, "\n\n✅ Addressed in commit "+record.Intent.HeadSHA[:7]) + "\n\n✅ Addressed in the latest update"
+	}
+	providerPosts, providerReads := f.provider.posts, f.provider.reads
 	strict, err := reviewprovider.ExtractHostedFindings(record.Snapshot, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
 	if err != nil || strict.Complete || strict.Publication.State != "uncertain" || strict.Reason != "hosted_finished_inventory_unproven" || strict.Publication.Trigger.State != "adopted" {
 		t.Fatal("synthetic old-root annotation must remain strictly incomplete", strict, err)
@@ -83,12 +96,29 @@ func TestRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	if err != nil {
 		t.Fatal(err)
 	}
 	replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	if err != nil || replay != result || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 1 {
 		t.Fatal("exact replay duplicated final evidence", replay, err)
+	}
+	finalizationReplay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	if err != nil || !bytes.Equal(finalized, finalizationReplay) {
+		t.Fatal("finalization replay changed original receipt", err)
+	}
+	adjudication, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("status annotation changed frozen source counts", err)
+	}
+	for table, want := range map[string]int{"review_operations": 1, "review_execution_attempts": 1, "review_execution_evidence": 1, "review_checkpoint_publications": 1, "review_round_completions": 0} {
+		if got := cliCount(t, f.f.store, "SELECT count(*) FROM "+table); got != want {
+			t.Fatal("same-attempt recovery duplicated work or credited status text", table, got, want)
+		}
+	}
+	if f.provider.posts != providerPosts || f.provider.reads != providerReads || record.Intent.AttemptID != f.a.ID || record.Intent.OperationID != f.a.OperationID {
+		t.Fatal("retained recovery requested provider work or replaced original attempt")
 	}
 	journal, err = f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
 	if err != nil || len(journal) != 2 {
@@ -145,61 +175,66 @@ func TestRetainHostedModerateAnnotatedStandingZeroGuards(t *testing.T) {
 }
 
 func TestRetainHostedAnnotatedStandingZeroRefusesUnprovenBaseline(t *testing.T) {
-	for _, mode := range []string{"missing", "late", "wrong_repository", "query_edited", "reused_run", "body_changed", "path_changed", "review_changed", "annotation_after_finish"} {
-		t.Run(mode, func(t *testing.T) {
-			f, record := runtimeAnnotatedStandingFixture(t, func(baseline *HostedCaptureRecord) {
+	for _, latestUpdate := range []bool{false, true} {
+		for _, mode := range []string{"missing", "late", "wrong_repository", "query_edited", "reused_run", "body_changed", "path_changed", "review_changed", "annotation_after_finish"} {
+			t.Run(mode, func(t *testing.T) {
+				f, record := runtimeAnnotatedStandingFixture(t, func(baseline *HostedCaptureRecord) {
+					switch mode {
+					case "wrong_repository":
+						baseline.Repository = "other/repo"
+					case "query_edited":
+						baseline.Snapshot.IssueComments[0].Body += " edited"
+					case "reused_run":
+						baseline.Snapshot.IssueComments[1].Body += " earlier " + strings.ToUpper(runtimeStandingRun)
+					}
+				})
+				if latestUpdate {
+					record.Snapshot.ReviewComments[0].Body = strings.TrimSuffix(record.Snapshot.ReviewComments[0].Body, "\n\n✅ Addressed in commit "+record.Intent.HeadSHA[:7]) + "\n\n✅ Addressed in the latest update"
+				}
 				switch mode {
-				case "wrong_repository":
-					baseline.Repository = "other/repo"
-				case "query_edited":
-					baseline.Snapshot.IssueComments[0].Body += " edited"
-				case "reused_run":
-					baseline.Snapshot.IssueComments[1].Body += " earlier " + strings.ToUpper(runtimeStandingRun)
+				case "missing":
+					if _, err := f.f.store.DB().Exec(`DELETE FROM review_hosted_observations WHERE attempt_id=?`, f.a.ID); err != nil {
+						t.Fatal(err)
+					}
+				case "late":
+					journal, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
+					if err != nil || len(journal) != 1 {
+						t.Fatal(journal, err)
+					}
+					finish, _ := time.Parse(time.RFC3339Nano, journal[0].Input.FinishedAt)
+					if _, err = f.f.store.DB().Exec(`UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, finish.Add(-time.Nanosecond).Format(time.RFC3339Nano), f.a.ID); err != nil {
+						t.Fatal(err)
+					}
+				case "body_changed":
+					record.Snapshot.ReviewComments[0].Body = strings.Replace(record.Snapshot.ReviewComments[0].Body, "Keep", "Rewrite", 1)
+				case "path_changed":
+					record.Snapshot.ReviewComments[0].Path = "engine/moved.go"
+				case "review_changed":
+					record.Snapshot.Reviews[0].Body += " New finding."
+				case "annotation_after_finish":
+					record.Snapshot.ReviewComments[0].UpdatedAt = record.Snapshot.ObservedAt
+				}
+				before := cliAttemptState(t, f.f.store, f.a.ID)
+				strict, strictErr := reviewprovider.ExtractHostedFindings(record.Snapshot, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
+				if strictErr != nil || strict.Complete {
+					t.Fatal("negative fixture must be strict incomplete", strict, strictErr)
+				}
+				result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
+				if err != nil || result.Complete || !validHostedReference(result.Capture) || cliAttemptState(t, f.f.store, f.a.ID) != before || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
+					t.Fatal("unproven annotation gained evidence or lost raw source", result, err)
+				}
+				if mode == "reused_run" && result.Reason != "standing_run_not_new" {
+					t.Fatal("baseline UUID guard bypassed", result)
+				}
+				if mode != "reused_run" && result.Reason != strict.Reason {
+					t.Fatal("optional attribution changed strict hold reason", result, strict)
+				}
+				raw, err := f.captures.Read(t.Context(), f.a.ID, result.Capture)
+				if err != nil || !reflect.DeepEqual(raw, record) {
+					t.Fatal("held original body not retained", err)
 				}
 			})
-			switch mode {
-			case "missing":
-				if _, err := f.f.store.DB().Exec(`DELETE FROM review_hosted_observations WHERE attempt_id=?`, f.a.ID); err != nil {
-					t.Fatal(err)
-				}
-			case "late":
-				journal, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
-				if err != nil || len(journal) != 1 {
-					t.Fatal(journal, err)
-				}
-				finish, _ := time.Parse(time.RFC3339Nano, journal[0].Input.FinishedAt)
-				if _, err = f.f.store.DB().Exec(`UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, finish.Add(-time.Nanosecond).Format(time.RFC3339Nano), f.a.ID); err != nil {
-					t.Fatal(err)
-				}
-			case "body_changed":
-				record.Snapshot.ReviewComments[0].Body = strings.Replace(record.Snapshot.ReviewComments[0].Body, "Keep", "Rewrite", 1)
-			case "path_changed":
-				record.Snapshot.ReviewComments[0].Path = "engine/moved.go"
-			case "review_changed":
-				record.Snapshot.Reviews[0].Body += " New finding."
-			case "annotation_after_finish":
-				record.Snapshot.ReviewComments[0].UpdatedAt = record.Snapshot.ObservedAt
-			}
-			before := cliAttemptState(t, f.f.store, f.a.ID)
-			strict, strictErr := reviewprovider.ExtractHostedFindings(record.Snapshot, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
-			if strictErr != nil || strict.Complete {
-				t.Fatal("negative fixture must be strict incomplete", strict, strictErr)
-			}
-			result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
-			if err != nil || result.Complete || !validHostedReference(result.Capture) || cliAttemptState(t, f.f.store, f.a.ID) != before || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
-				t.Fatal("unproven annotation gained evidence or lost raw source", result, err)
-			}
-			if mode == "reused_run" && result.Reason != "standing_run_not_new" {
-				t.Fatal("baseline UUID guard bypassed", result)
-			}
-			if mode != "reused_run" && result.Reason != strict.Reason {
-				t.Fatal("optional attribution changed strict hold reason", result, strict)
-			}
-			raw, err := f.captures.Read(t.Context(), f.a.ID, result.Capture)
-			if err != nil || !reflect.DeepEqual(raw, record) {
-				t.Fatal("held original body not retained", err)
-			}
-		})
+		}
 	}
 }
 
