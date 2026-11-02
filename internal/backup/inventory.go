@@ -1231,6 +1231,9 @@ func validateEvidenceReferences(ctx context.Context, db sqlReader, refs map[stri
 			return invalid()
 		}
 		capture := evidence.Capture
+		if reviewexec.ValidateRetainedReviewCapture(capture) != nil {
+			return invalid()
+		}
 		owned, e := json.Marshal(capture)
 		if e != nil {
 			return invalid()

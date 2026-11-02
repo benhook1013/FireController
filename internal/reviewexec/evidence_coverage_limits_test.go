@@ -1,6 +1,8 @@
 package reviewexec
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -43,7 +45,7 @@ func TestReviewEvidenceCoverageLimitsBoundsAndAbsentEncoding(t *testing.T) {
 			if tc.incomplete {
 				input.Review.Complete, input.Review.Outcome = false, "failed"
 			}
-			if err := validateReviewEvidence(input); (err == nil) != tc.valid {
+			if err := validateNewCoverageLimits(input); (err == nil) != tc.valid {
 				t.Fatalf("valid=%t, error=%v", tc.valid, err)
 			}
 		})
@@ -143,5 +145,73 @@ func TestIncompleteNativeCoverageLimitsRetainExistingWarning(t *testing.T) {
 	run.CoverageLimits[0] = "Projection edit"
 	if input.Review.CoverageLimits[0] != "Retained source limitation" {
 		t.Fatal("projection aliases immutable source metadata")
+	}
+}
+
+func TestHistoricalCoverageMetadataReadAndReplayPreserveOriginalAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		limits     []string
+		incomplete bool
+	}{
+		{"seventeen", strings.Fields(strings.Repeat("limitation ", 17)), false},
+		{"long", []string{strings.Repeat("a", 1025)}, false},
+		{"incomplete-sixteen", strings.Fields(strings.Repeat("limitation ", 16)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, a, input := evidenceFixture(t, "cli", true)
+			historical := evidenceClone(input)
+			historical.Review.CoverageLimits = tc.limits
+			if tc.incomplete {
+				historical.Review.Complete = false
+				historical.Review.Outcome = "failed"
+			}
+			before := evidenceState(t, f, a)
+			if _, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, historical); err == nil || evidenceState(t, f, a) != before {
+				t.Fatal("new warning admission did not refuse atomically", err)
+			}
+			receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), receipt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Represent a predecessor-admitted capture using its original canonical
+			// input/fingerprint and authentic admission. No attempt is settled or credited.
+			record.Capture = historical
+			canonical, err := json.Marshal(historical)
+			if err != nil || len(canonical) > MaxEvidenceInputBytes {
+				t.Fatal("fixture was not previously admissible", err)
+			}
+			fingerprint := sha256.Sum256(canonical)
+			if _, err = f.store.DB().Exec(`UPDATE review_execution_evidence SET body_json=?,fingerprint=? WHERE id=?`, encoded(record), hex.EncodeToString(fingerprint[:]), receipt.ID); err != nil {
+				t.Fatal(err)
+			}
+			saved := evidenceState(t, f, a)
+			retained, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), receipt.ID)
+			if err != nil || !reflect.DeepEqual(retained.Capture, historical) || ValidateRetainedReviewCapture(retained.Capture) != nil {
+				t.Fatal("retained warning metadata rejected or changed", err)
+			}
+			replay, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, historical)
+			if err != nil || replay != receipt || saved != evidenceState(t, f, a) {
+				t.Fatal("exact historical replay changed retained evidence or journal", err)
+			}
+			changed := evidenceClone(historical)
+			changed.Review.CoverageLimits[0] += "changed"
+			if _, err = f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, changed); err == nil || saved != evidenceState(t, f, a) {
+				t.Fatal("changed historical replay replaced immutable capture", err)
+			}
+		})
+	}
+}
+
+func TestNewCoverageMetadataRejectsOriginalInvalidUTF8BeforeStorage(t *testing.T) {
+	f, a, input := evidenceFixture(t, "cli", true)
+	input.Review.CoverageLimits = []string{string([]byte{0xff})}
+	before := evidenceState(t, f, a)
+	if _, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input); err == nil || evidenceState(t, f, a) != before {
+		t.Fatal("new original invalid UTF-8 metadata was sanitized into stored evidence", err)
 	}
 }

@@ -23,6 +23,7 @@ type sourceReader struct {
 }
 
 var _ reviewexec.TargetReader = (*sourceReader)(nil)
+var _ reviewexec.ParentReader = (*sourceReader)(nil)
 
 func (r *sourceReader) record(ctx context.Context, call string) error {
 	r.calls = append(r.calls, call)
@@ -62,12 +63,9 @@ func (r *sourceReader) ParentPull(ctx context.Context, repository, branch string
 			continue
 		}
 		if found.Number != 0 {
-			return reviewprovider.Pull{}, errors.New("ambiguous explicitly configured parent branch")
+			return reviewprovider.Pull{}, reviewprovider.ErrParentAmbiguous
 		}
 		found = pull
-	}
-	if found.Number == 0 {
-		return found, errors.New("missing explicitly configured parent branch")
 	}
 	return found, nil
 }
@@ -170,6 +168,24 @@ func TestResolveSourceStackedPublishedParentAndDefaultBase(t *testing.T) {
 		}
 		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9")
 	})
+	for _, ambiguous := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing-or-ambiguous-%t", ambiguous), func(t *testing.T) {
+			reader, configuration, request := sourceFixture()
+			configuration.Mode = "stacked"
+			sourceBaseBranch(reader, 9, 2)
+			reason := "parent_unavailable"
+			if ambiguous {
+				reason = "parent_ambiguous"
+				reader.pulls[2] = sourcePull(2, reader.pulls[9].BaseSHA, false)
+				p := sourcePull(3, reader.pulls[9].BaseSHA, false)
+				p.HeadRef = "branch-2"
+				reader.pulls[3] = p
+			}
+			plan, err := reviewexec.ResolveSource(t.Context(), reader, 701, configuration, request)
+			requireSourceError(t, plan, err, "review_held", reason)
+			requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-2")
+		})
+	}
 	t.Run("closed unmerged is a hold with no fallback", func(t *testing.T) {
 		reader, configuration, request := sourceFixture()
 		configuration.Mode, configuration.Queue = "stacked", []int64{1, 2, 9, 42}

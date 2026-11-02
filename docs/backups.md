@@ -14,6 +14,8 @@ After an interrupted backup, inspect hidden `.backup_ID.pending` directories in 
 
 Operator credentials, bootstrap token files, profiles, executables and external catalog/authentication directories are not backup artifacts. Git source caches and derived executor workspaces are operator runtime state rather than retained review evidence. Shared-clone alternates are not copied or represented as self-contained artifacts. Restore does not resume admitted executor work; re-provisioning and exact-source verification are prerequisites to any later executor activation. Missing source stays an explicit hold.
 
+Retained capture validation checks immutable structure, canonical fingerprints and raw-artifact references. New-capture coverage-warning limits are admission policy and do not retroactively invalidate retained metadata. Backup acceptance grants no current review coverage, publication eligibility or provider authority.
+
 ## Inactive restore
 
 Restore accepts a verified bundle and creates a new private destination, never overlays existing data. It preserves canonical records and captured evidence, generates a new instance/signing identity, and revokes every restored API credential before the result can be used. Original grants and credential history remain retained; access is not silently revived. Record the predecessor instance, bundle and recovery window in restored metadata so pending work and receipts keep their originating provenance.

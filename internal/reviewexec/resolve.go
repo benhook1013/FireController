@@ -96,6 +96,9 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		}
 		parent, err := parents.ParentPull(ctx, repo.FullName, pull.BaseRef)
 		if err != nil {
+			if errors.Is(err, reviewprovider.ErrParentAmbiguous) {
+				return SourcePlan{}, sourceHold("parent_ambiguous")
+			}
 			var hold *core.Error
 			if errors.As(err, &hold) && hold.Code == "review_held" {
 				if details, ok := hold.Details.(map[string]string); ok && details["reason"] == "parent_unavailable" {

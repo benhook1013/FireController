@@ -636,11 +636,14 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 	return true, err
 }
 func sourceRefreshReason(err error) string {
+	if errors.Is(err, reviewprovider.ErrParentAmbiguous) {
+		return "parent_ambiguous"
+	}
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "review_held" {
 		if details, ok := failure.Details.(map[string]string); ok {
 			switch reason := details["reason"]; reason {
-			case "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "default_base_changed", "parent_moved", "observation_incomplete":
+			case "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "parent_ambiguous", "default_base_changed", "parent_moved", "observation_incomplete":
 				return reason
 			}
 		}

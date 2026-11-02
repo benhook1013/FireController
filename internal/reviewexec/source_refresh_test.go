@@ -5,8 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -15,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
@@ -754,5 +759,76 @@ func TestSourceRefreshFixedTimestampOrderingAndLatestCompletedSelection(t *testi
 	value, err := f.e.ReadSourcePolicyAssessment(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), 2)
 	if err != nil || value.RefreshID != third.ID {
 		t.Fatal("latest source observation misordered fractional timestamps", value, err)
+	}
+}
+
+// Only parent lookup fails; the worker must retain its specific safe hold without
+// manufacturing a partial source observation or retrying provider work.
+type parentFailureRefreshReader struct {
+	refreshTestReader
+	failure error
+}
+
+func (r *parentFailureRefreshReader) ParentPull(context.Context, string, string) (reviewprovider.Pull, error) {
+	r.calls.Add(1)
+	return reviewprovider.Pull{}, r.failure
+}
+func TestSourceRefreshParentAmbiguityRetainsSafeReasonAndStrictClientRead(t *testing.T) {
+	for _, test := range []struct {
+		name, reason string
+		failure      error
+	}{
+		{"ambiguous", "parent_ambiguous", fmt.Errorf("bounded lookup: %w", reviewprovider.ErrParentAmbiguous)},
+		{"provider invalid", "source_unavailable", &reviewprovider.Error{Code: "provider_invalid_response", Message: "Synthetic malformed provider response"}},
+		{"provider unavailable", "source_unavailable", errors.New("synthetic provider transport failure")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			zero := int64(0)
+			if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "parent-source-config", Configuration{ExpectedRevision: &zero, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+				t.Fatal(err)
+			}
+			reader := &parentFailureRefreshReader{failure: test.failure}
+			reader.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) {
+				return reviewprovider.Pull{Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "published-parent", ChangedFiles: 1}, nil
+			}
+			receipt := refreshEnqueue(t, f, "parent-source-refresh", refreshRequest())
+			cancel, done := refreshStart(t, f, reader)
+			held := refreshWait(t, f, receipt.ID, "held")
+			refreshStop(t, cancel, done)
+			if held.Reason != test.reason || held.Observation != nil || reader.calls.Load() != 3 {
+				t.Fatal("specific parent hold lost or provider retried", held, reader.calls.Load())
+			}
+			before := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+			if _, err := f.store.DB().Exec(`INSERT INTO workers(id,project_id,name) VALUES('parent-reader',?,'Parent reader')`, attemptProject); err != nil {
+				t.Fatal(err)
+			}
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": f.store.InstanceID()})
+					return
+				}
+				f.handler.ServeHTTP(w, r)
+			}))
+			defer service.Close()
+			credential := filepath.Join(t.TempDir(), "credential")
+			if err := os.WriteFile(credential, []byte(f.reader), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := client.New(t.Context(), profile.Binding{Context: profile.Context{Profile: "parent-proof", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: attemptProject, WorkerID: "parent-reader"}, CredentialFile: credential})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			got, err := c.ReviewSourceOperation(t.Context(), receipt.ID)
+			if err != nil || got.State != "held" || got.Reason != test.reason || got.Observation != nil || reader.calls.Load() != 3 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != before {
+				t.Fatal("strict public read lost retained hold or performed provider work/writes", got, err)
+			}
+		})
+	}
+	// Direct provider errors and resolved holds retain the same safe reason.
+	if sourceRefreshReason(reviewprovider.ErrParentAmbiguous) != "parent_ambiguous" || sourceRefreshReason(sourceHold("parent_ambiguous")) != "parent_ambiguous" {
+		t.Fatal("parent ambiguity collapsed to generic source failure")
 	}
 }

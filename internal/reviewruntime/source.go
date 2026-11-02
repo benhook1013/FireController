@@ -14,6 +14,14 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
+// Keep optional parent lookup available through both concrete production readers.
+var (
+	_ reviewexec.TargetReader = (*sourceReads)(nil)
+	_ reviewexec.ParentReader = (*sourceReads)(nil)
+	_ reviewexec.TargetReader = (*reviewprovider.GitHub)(nil)
+	_ reviewexec.ParentReader = (*reviewprovider.GitHub)(nil)
+)
+
 // SourceReader exposes only the operator-bound read adapter for explicit source
 // refresh work. Selecting it does not prepare or execute a review.
 func (d *CLIDriver) SourceReader() reviewexec.TargetReader {
