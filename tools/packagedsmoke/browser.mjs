@@ -275,6 +275,8 @@ try {
   const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
   phase = 'explicit-actions-connect';
   checkpoint = 'connect-history';
+  await page.waitForURL(config.origin + '/');
+  await expect(page.getByLabel('Project ID', {exact:true})).toHaveValue('');
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
   explicitActions = true;
   checkpoint = 'connect-project';
