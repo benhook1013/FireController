@@ -97,7 +97,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		result.Reason = "comparison_unproven"
 		return result, nil
 	}
-	review := reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: int64(len(inventory.Findings)), ReviewedFiles: []string{}, Findings: make([]reviewprovider.ParsedFinding, 0, len(inventory.Findings))}
+	review := reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: int64(len(inventory.Findings)), CoverageLimits: append([]string(nil), inventory.CoverageLimits...), ReviewedFiles: []string{}, Findings: make([]reviewprovider.ParsedFinding, 0, len(inventory.Findings))}
 	metadata := &reviewexec.HostedEvidenceMetadata{PublicationID: publication.PublicationID, ProviderAttemptID: publication.ProviderAttemptID, TriggerCommentID: publication.Trigger.CommentID, ReviewIDs: make([]int64, 0, len(publication.Batches)), ObservedBaseSHA: base, Sources: make([]reviewexec.HostedFindingSource, 0, len(inventory.Findings))}
 	if standing := publication.StandingZero; standing != nil {
 		metadata.StandingSummary = &reviewexec.HostedStandingSummaryMetadata{CommentID: standing.Summary.ID, ProviderRunID: standing.ProviderRunID, UpdatedAt: standing.Summary.UpdatedAt.Format(time.RFC3339Nano)}

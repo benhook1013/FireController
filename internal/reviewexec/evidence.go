@@ -104,6 +104,19 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || in.Hosted == nil && len(r.ReviewedFiles) == 0) {
 		return invalid()
 	}
+	coverageLimitCount := 16
+	if in.Hosted == nil && !r.Complete {
+		// Leave room for the existing incomplete-capture publication warning.
+		coverageLimitCount--
+	}
+	if len(r.CoverageLimits) > coverageLimitCount {
+		return invalid()
+	}
+	for _, limit := range r.CoverageLimits {
+		if !safeText(limit, 1024) || strings.TrimSpace(limit) == "" {
+			return invalid()
+		}
+	}
 	seen := make(map[string]bool, len(r.ReviewedFiles))
 	for _, path := range r.ReviewedFiles {
 		if !validEvidencePath(path) || r.Complete && seen[path] {

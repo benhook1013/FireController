@@ -129,9 +129,9 @@ func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number i
 
 func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt Attempt) (reviews.RunInput, error) {
 	capture := evidence.Capture
-	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: []string{}, Findings: make([]reviews.Finding, 0, len(state.Findings))}
+	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: append([]string{}, capture.Review.CoverageLimits...), Findings: make([]reviews.Finding, 0, len(state.Findings))}
 	if !run.Complete {
-		run.CoverageLimits = []string{"Incomplete CLI capture; retained findings do not establish completed review coverage."}
+		run.CoverageLimits = append(run.CoverageLimits, "Incomplete CLI capture; retained findings do not establish completed review coverage.")
 		if run.Found < int64(len(capture.Review.Findings)) {
 			run.Found = int64(len(capture.Review.Findings))
 		}

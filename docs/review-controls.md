@@ -34,6 +34,8 @@ Known adjudication guard refusals retain HTTP 409 / `review_conflict` and identi
 
 Finalization requires a completed attempt, complete retained capture and a decision for every finding. It freezes the original source counts, including a valid zero-finding run. Later decision/fix corrections append audit records and retain the original capture and frozen counts. An accepted finding with a fix reference cannot be rejected silently. Finalization establishes source counts; policy sufficiency, fixed findings and merge readiness remain separate facts. Humans perform merges.
 
+A completed capture can retain provider-reported file coverage limitations. Read those limitations in the run summary or expanded history; they do not alter adjudicated findings, earned rounds or taper. The [provider observation boundary](provider-observations.md) owns source recognition.
+
 ## Browser consistency
 
 When a native run has already been published to the stored review workspace, a decision, fix reference or finalization updates its browser projection in the same transaction as the authoritative ledger, audit, event and receipt. A failed projection leaves all of them unchanged. Native publication and corrections must fit the browser's encoded 4 MiB run-detail response budget, including JSON escaping and its final newline. An oversized result returns `workspace_capacity` before commit; source text and history are never truncated. Shorter decision or proof text can fit without replacing captured evidence. The browser shows the new observation on refresh; these controls do not make provider requests.
