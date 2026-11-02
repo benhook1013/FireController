@@ -31,7 +31,7 @@ describe('allowlisted public reviews through shared normal presentation', () => 
     expect([...h.matchAll(/<strong>(\d+\/\d+\/\d+)<\/strong>/gu)].map(match => match[1])).toEqual(['3/0/1', '4/0/1', '5/0/1', '6/0/1', '7/0/1', '8/0/1']);
     expect([...c.matchAll(/<strong>(\d+\/\d+\/\d+)<\/strong>/gu)].map(match => match[1])).toEqual(['21/0/1', '22/0/1']);
     expect(h).toContain('8 published rounds'); expect(c).toContain('2 published rounds');
-    expect(h).toContain('More published Hosted rounds are outside this view.'); expect(c).not.toContain('outside this view');
+    expect(h).toContain('Other finalized Hosted rounds are outside this view.'); expect(c).not.toContain('outside this view');
     expect(html).not.toMatch(/Round \d|all rounds|complete archive/u); expect(JSON.stringify(input)).toBe(original);
   });
   it('uses relative ages and approved completeness/counts without fabricating private outcomes or merge times', () => {
@@ -47,7 +47,7 @@ describe('allowlisted public reviews through shared normal presentation', () => 
   it('does not turn an absent bounded channel into an absent-history or coverage claim', () => {
     const html = renderToStaticMarkup(<PublicReviews reviews={[review({ hosted_has_more: true })]} />);
     expect(channel(html, 'Hosted')).toContain('No finalized rounds fit in this view.');
-    expect(channel(html, 'Hosted')).toContain('More published Hosted rounds are outside this view.');
+    expect(channel(html, 'Hosted')).toContain('Other finalized Hosted rounds are outside this view.');
     expect(channel(html, 'CLI')).toContain('No finalized rounds published.');
     expect(html).toContain('href="#published-history"'); expect(html).toContain('these snapshots may not contain every round');
     expect(html).not.toContain('Time unknown');
