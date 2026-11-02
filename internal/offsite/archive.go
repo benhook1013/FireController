@@ -39,9 +39,20 @@ func pack(ctx context.Context, source, destination string, c Config) (Receipt, e
 	if err != nil {
 		return Receipt{}, cancelOrFailure(ctx, "offsite_source_invalid")
 	}
+	return packVerified(ctx, s, destination, c)
+}
+
+// Only callers holding a freshly inspected selection may skip inspecting the
+// source again. The captured archive still requires unpack verification before
+// push records pending intent or performs any remote action.
+func packVerified(ctx context.Context, s backup.Summary, destination string, c Config) (Receipt, error) {
+	if ctx.Err() != nil {
+		return Receipt{}, failure("offsite_cancelled")
+	}
 	if s.SourceInstanceID != c.InstanceID {
 		return Receipt{}, failure("offsite_source_invalid")
 	}
+	source := s.Path
 	f, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return Receipt{}, failure("offsite_storage_unavailable")
