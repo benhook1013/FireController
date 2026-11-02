@@ -11,10 +11,11 @@ import (
 // HostedFindingInventory describes supported source inventory only. Complete
 // grants no coverage, adjudication, allowance, readiness or merge credit.
 type HostedFindingInventory struct {
-	Publication HostedPublication
-	Complete    bool
-	Reason      string
-	Findings    []HostedFinding
+	Publication    HostedPublication
+	Complete       bool
+	Reason         string
+	Findings       []HostedFinding
+	CoverageLimits []string
 }
 
 type HostedFinding struct {
@@ -792,7 +793,11 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 					d.groupedSummary(review.Body, projected, i, end, review.ID, "additional", findingAdditionalHeader)
 				}
 			} else {
-				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
+				reviewInfo := header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
+				if reviewInfo {
+					d.reviewInfoCoverage(review.Body, lines, i, end)
+				}
+				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || reviewInfo
 				if !known && selected {
 					d.fail("summary_format_unsupported")
 				}
