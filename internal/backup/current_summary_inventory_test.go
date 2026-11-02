@@ -139,6 +139,8 @@ func TestCurrentSummaryInventoryV5RehashedDerivedDamageRefused(t *testing.T) {
 		{"compact-run-count", `UPDATE review_pull_versions SET run_count=run_count+1 WHERE number=7`},
 		{"compact-attempt-count", `UPDATE review_pull_versions SET attempt_count=attempt_count+1 WHERE number=7`},
 		{"compact-latest-attempts", `UPDATE review_pull_versions SET latest_attempts_json='[]' WHERE number=7`},
+		{"compact-recent-run-missing", `UPDATE review_pull_versions SET recent_runs_json='[]' WHERE number=7`},
+		{"compact-recent-run-forged", `UPDATE review_pull_versions SET recent_runs_json=json_set(recent_runs_json,'$[0].reviewer','forged reviewer') WHERE number=7`},
 		{"run-count", `UPDATE review_current_totals SET run_count=run_count+1 WHERE pull_number=7`},
 		{"attempt-count", `UPDATE review_current_totals SET attempt_count=attempt_count+1 WHERE pull_number=7`},
 		{"incomplete-count", `UPDATE review_current_totals SET incomplete_run_count=0 WHERE pull_number=7`},
@@ -162,6 +164,24 @@ func TestCurrentSummaryInventoryV5RehashedDerivedDamageRefused(t *testing.T) {
 				t.Fatal("negative proof changed source")
 			}
 		})
+	}
+}
+
+func TestCurrentSummaryInventoryMissingRecentSourceRemainsSupported(t *testing.T) {
+	f := currentSummaryInventoryFixture(t)
+	if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET recent_runs_json=json_remove(recent_runs_json,'$[0].source') WHERE number=7`); err != nil {
+		t.Fatal(err)
+	}
+	before := backupRows(t, f.store.DB())
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal("supported missing recent source refused", err)
+	}
+	if _, err := Restore(t.Context(), bundle.Path, filepath.Join(t.TempDir(), "missing-source-restore")); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("backup validation repaired original source bytes")
 	}
 }
 
