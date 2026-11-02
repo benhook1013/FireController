@@ -67,7 +67,11 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 		if includeAssignments {
 			kinds += ",'job.assigned','job.unassigned'"
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,project_id,event_type,resource_id,revision,actor_id,payload_json,created_at FROM events WHERE project_id=? AND sequence>? AND event_type IN (`+kinds+`) AND json_extract(payload_json,'$.recipient_worker_id')=? ORDER BY sequence LIMIT ?`, scope.ProjectID, after, scope.WorkerID, limit+1)
+		query := `SELECT sequence,project_id,event_type,resource_id,revision,actor_id,payload_json,created_at FROM events WHERE project_id=? AND sequence>? AND event_type IN (` + kinds + `) AND json_extract(payload_json,'$.recipient_worker_id')=?`
+		if !IncludesControllerInbox(ctx) {
+			query += ` AND json_extract(payload_json,'$.origin_kind') IS NULL`
+		}
+		rows, err := tx.QueryContext(ctx, query+` ORDER BY sequence LIMIT ?`, scope.ProjectID, after, scope.WorkerID, limit+1)
 		if err != nil {
 			return err
 		}
@@ -78,7 +82,7 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 			if err := rows.Scan(&event.Sequence, &event.ProjectID, &event.Type, &event.ResourceID, &event.Revision, &event.ActorID, &payload, &event.CreatedAt); err != nil {
 				return err
 			}
-			event.Payload, err = messageFeedPayload(event.Type, payload)
+			event.Payload, err = messageFeedPayload(event.Type, payload, IncludesControllerInbox(ctx))
 			if err != nil {
 				return err
 			}
@@ -99,12 +103,21 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 }
 
 // The incoming feed exposes delivery metadata, never extra durable audit facts.
-func messageFeedPayload(kind, payload string) (json.RawMessage, error) {
+func messageFeedPayload(kind, payload string, controller ...bool) (json.RawMessage, error) {
 	var retained map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &retained); err != nil {
 		return nil, err
 	}
+	if raw, present := retained["origin_kind"]; present {
+		var origin string
+		if len(controller) == 0 || !controller[0] || json.Unmarshal(raw, &origin) != nil || origin != "controller" {
+			return nil, Fail("storage_unavailable", "Stored message origin is unavailable.", 500)
+		}
+	}
 	fields := []string{"recipient_worker_id"}
+	if len(controller) > 0 && controller[0] {
+		fields = append(fields, "origin_kind")
+	}
 	if kind == "message.sent" || kind == "message.seen" || kind == "message.acknowledged" {
 		fields = append(fields, "conversation_id")
 	}

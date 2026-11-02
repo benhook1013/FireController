@@ -20,57 +20,16 @@ const (
 	PreviewRunes = 160
 )
 
-// EnsureSchema is called during exclusive startup, before accepting requests.
-func EnsureSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "inbox", []string{`
-CREATE TABLE IF NOT EXISTS inbox_conversations (
- project_id TEXT NOT NULL REFERENCES projects(id),
- id TEXT NOT NULL,
- root_message_id TEXT NOT NULL,
- PRIMARY KEY(project_id,id),
- FOREIGN KEY(project_id,root_message_id) REFERENCES inbox_messages(project_id,id) DEFERRABLE INITIALLY DEFERRED
-);`, `
-CREATE TABLE IF NOT EXISTS inbox_messages (
- sequence INTEGER PRIMARY KEY AUTOINCREMENT,
- project_id TEXT NOT NULL REFERENCES projects(id),
- id TEXT NOT NULL,
- conversation_id TEXT NOT NULL,
- sender_worker_id TEXT NOT NULL,
- recipient_worker_id TEXT NOT NULL,
- reply_to_message_id TEXT,
- body TEXT NOT NULL CHECK(length(CAST(body AS BLOB)) BETWEEN 1 AND 16384),
- created_at TEXT NOT NULL,
- UNIQUE(project_id,id),
- FOREIGN KEY(project_id,conversation_id) REFERENCES inbox_conversations(project_id,id),
- FOREIGN KEY(project_id,sender_worker_id) REFERENCES workers(project_id,id),
- FOREIGN KEY(project_id,recipient_worker_id) REFERENCES workers(project_id,id),
- FOREIGN KEY(project_id,reply_to_message_id) REFERENCES inbox_messages(project_id,id)
-);`, `
-CREATE TABLE IF NOT EXISTS inbox_recipient_state (
- project_id TEXT NOT NULL,
- message_id TEXT NOT NULL,
- worker_id TEXT NOT NULL,
- seen INTEGER NOT NULL DEFAULT 0 CHECK(seen IN (0,1)),
- acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1) AND acknowledged <= seen),
- revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
- PRIMARY KEY(project_id,message_id,worker_id),
- FOREIGN KEY(project_id,message_id) REFERENCES inbox_messages(project_id,id),
- FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id)
-);`,
-		`CREATE INDEX IF NOT EXISTS inbox_recipient_page ON inbox_messages(project_id,recipient_worker_id,sequence)`,
-		`CREATE INDEX IF NOT EXISTS inbox_conversation_page ON inbox_messages(project_id,conversation_id,sequence)`})
-}
-
 // Register adds the messages API to the shared authenticated application mux.
 func Register(mux *http.ServeMux, store *core.Store) {
 	h := &handler{store: store}
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", h.readMessage)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", h.readDelivery)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", h.list)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", h.listOutbox)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", h.snapshot)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", h.conversation)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", originRead(h.readMessage))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", originRead(h.readDelivery))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", originRead(h.list))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", originRead(h.listOutbox))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", originRead(h.snapshot))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", originRead(h.conversation))
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/ack", h.ack)
 }
@@ -127,8 +86,12 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 		id := core.NewID("msg")
 		conversationID := core.NewID("conv")
 		if request.ReplyToMessageID != "" {
-			if err := tx.QueryRowContext(ctx, "SELECT conversation_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, request.ReplyToMessageID).Scan(&conversationID); err != nil {
+			var origin string
+			if err := tx.QueryRowContext(ctx, "SELECT conversation_id,origin_kind FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, request.ReplyToMessageID).Scan(&conversationID, &origin); err != nil {
 				return nil, missing(err)
+			}
+			if origin == "controller" {
+				return nil, core.Fail("controller_message_one_way", "Controller notifications cannot receive replies; use normal project coordination for follow-up.", 409)
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_conversations(project_id,id,root_message_id) VALUES(?,?,?)", scope.ProjectID, conversationID, id); err != nil {
@@ -158,6 +121,7 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 }
 
 type inboxItem struct {
+	OriginKind        string `json:"origin_kind,omitempty"`
 	ID                string `json:"id"`
 	ConversationID    string `json:"conversation_id"`
 	SenderWorkerID    string `json:"sender_worker_id"`
@@ -211,7 +175,7 @@ func (h *handler) listMessages(w http.ResponseWriter, r *http.Request, direction
 		core.WriteError(w, err)
 		return
 	}
-	filter := inboxOrderFilter(workerID, unread, unacknowledged, newest)
+	filter := originFilter(r.Context(), inboxOrderFilter(workerID, unread, unacknowledged, newest))
 	if direction == outgoingMessages {
 		filter = "outbox:" + strings.TrimPrefix(filter, "inbox:")
 	}
@@ -263,7 +227,7 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	filter := inboxOrderFilter(workerID, unread, unacknowledged, newest)
+	filter := originFilter(r.Context(), inboxOrderFilter(workerID, unread, unacknowledged, newest))
 	limit, after, err := h.page(r, scope, filter)
 	if err != nil {
 		core.WriteError(w, err)
@@ -314,8 +278,11 @@ func (h *handler) messagePage(ctx context.Context, db queryer, scope core.Scope,
 	if direction == outgoingMessages {
 		workerColumn = "m.sender_worker_id"
 	}
-	query := `SELECT m.sequence,m.id,m.conversation_id,m.sender_worker_id,m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged FROM inbox_messages m LEFT JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND ` + workerColumn + `=?`
+	query := `SELECT m.sequence,m.id,m.conversation_id,COALESCE(m.sender_worker_id,''),m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged,m.origin_kind FROM inbox_messages m LEFT JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND ` + workerColumn + `=?`
 	args := []any{scope.ProjectID, workerID}
+	if !core.IncludesControllerInbox(ctx) {
+		query += " AND m.origin_kind='worker'"
+	}
 	if after > 0 {
 		if newest {
 			query += " AND m.sequence<?"
@@ -345,9 +312,10 @@ func (h *handler) messagePage(ctx context.Context, db queryer, scope core.Scope,
 	for rows.Next() {
 		var item inboxItem
 		var body string
-		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &body, &item.CreatedAt, &item.Seen, &item.Acknowledged); err != nil {
+		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &body, &item.CreatedAt, &item.Seen, &item.Acknowledged, &item.OriginKind); err != nil {
 			return inboxPage{}, storedMessagesUnavailable(direction)
 		}
+		item.OriginKind = wireOrigin(item.OriginKind)
 		valid := validStoredInbox(item, body, workerID)
 		if direction == outgoingMessages {
 			valid = item.SenderWorkerID == workerID && cleanID(item.RecipientWorkerID) && utf8.ValidString(item.RecipientWorkerID) && validStoredInbox(item, body, item.RecipientWorkerID)
@@ -370,6 +338,7 @@ func (h *handler) messagePage(ctx context.Context, db queryer, scope core.Scope,
 }
 
 type message struct {
+	OriginKind        string `json:"origin_kind,omitempty"`
 	ID                string `json:"id"`
 	ConversationID    string `json:"conversation_id"`
 	SenderWorkerID    string `json:"sender_worker_id"`
@@ -399,18 +368,18 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("conversation_id")
-	filter := "conversation:" + id
+	filter := originFilter(r.Context(), "conversation:"+id)
 	limit, after, err := h.page(r, scope, filter)
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
 	page := conversationPage{ConversationID: id, Items: make([]message, 0, limit)}
-	if err := h.store.DB().QueryRowContext(r.Context(), "SELECT root_message_id FROM inbox_conversations WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&page.RootMessageID); err != nil {
+	if err := h.store.DB().QueryRowContext(r.Context(), "SELECT c.root_message_id FROM inbox_conversations c JOIN inbox_messages m ON m.project_id=c.project_id AND m.id=c.root_message_id WHERE c.project_id=? AND c.id=?"+originSQL(r.Context(), "m."), scope.ProjectID, id).Scan(&page.RootMessageID); err != nil {
 		core.WriteError(w, missing(err))
 		return
 	}
-	rows, err := h.store.DB().QueryContext(r.Context(), "SELECT sequence,id,conversation_id,sender_worker_id,recipient_worker_id,COALESCE(reply_to_message_id,''),body,created_at FROM inbox_messages WHERE project_id=? AND conversation_id=? AND sequence>? ORDER BY sequence ASC LIMIT ?", scope.ProjectID, id, after, limit+1)
+	rows, err := h.store.DB().QueryContext(r.Context(), "SELECT sequence,id,conversation_id,COALESCE(sender_worker_id,''),recipient_worker_id,COALESCE(reply_to_message_id,''),body,created_at,origin_kind FROM inbox_messages WHERE project_id=? AND conversation_id=?"+originSQL(r.Context(), "")+" AND sequence>? ORDER BY sequence ASC LIMIT ?", scope.ProjectID, id, after, limit+1)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -418,8 +387,13 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	for rows.Next() {
 		var item message
-		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &item.ReplyToMessageID, &item.Body, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &item.ReplyToMessageID, &item.Body, &item.CreatedAt, &item.OriginKind); err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		item.OriginKind = wireOrigin(item.OriginKind)
+		if !validMessageOrigin(item.OriginKind, item.SenderWorkerID) || item.OriginKind == "controller" && (item.ID != page.RootMessageID || item.ReplyToMessageID != "") {
+			core.WriteError(w, core.Fail("storage_unavailable", "Stored conversation origin is unavailable.", 500))
 			return
 		}
 		page.Items = append(page.Items, item)
@@ -495,8 +469,8 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 				return nil, err
 			}
 		}
-		var conversationID, recipient string
-		if err := tx.QueryRowContext(ctx, "SELECT conversation_id,recipient_worker_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient); err != nil {
+		var conversationID, recipient, origin string
+		if err := tx.QueryRowContext(ctx, "SELECT conversation_id,recipient_worker_id,origin_kind FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient, &origin); err != nil {
 			return nil, missing(err)
 		}
 		if recipient != recipientWorker {
@@ -515,6 +489,9 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 			return nil, err
 		}
 		payload := map[string]string{"conversation_id": conversationID, "recipient_worker_id": recipientWorker}
+		if origin == "controller" {
+			payload["origin_kind"] = "controller"
+		}
 		if onBehalf {
 			payload["actor_worker_id"] = scope.WorkerID
 		}

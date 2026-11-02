@@ -59,7 +59,7 @@ func localHelp() helpResponse {
 				{"credentials help", "Project grants and permissions; no raw token arguments."},
 				{"reviews queue / queue-add / queue-move / queue-remove", "Queue reads/add/move/removal; revision/key required for changes. Local --help."},
 				{"reviews operations", "Operations needing attention, including unfinished completed results; --status pending selects provider work, --all includes history. operation ID reads detail."},
-				{"reviews help", "Local review discovery and exact operation --help."},
+				{"reviews help", "Review commands, following and exact --help."},
 				{"reviews evidence | adjudication | decide | fix | decide-batch | fix-batch | finalize", "Native evidence and guarded decisions/fix proof: docs/review-controls.md. reviews publish --help covers GitHub checkpoints."},
 			}},
 		},

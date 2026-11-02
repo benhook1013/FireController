@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
@@ -19,6 +20,9 @@ import (
 // All source/provider records are synthetic; no provider adapter is installed.
 func TestUsageLifecycleSelectionRestartAdjudicationExternalAndMerge(t *testing.T) {
 	f := selectionFixture(t)
+	if err := inbox.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +191,9 @@ func TestUsageLifecycleSelectionRestartAdjudicationExternalAndMerge(t *testing.T
 	projectionRead(t, f, "/pulls/2", &current)
 	if current.Pull.State != "merged" || current.Pull.RunCounts != (reviews.ChannelRunCounts{Hosted: 1, CLI: 1}) || cliPublicationDetail(t, f, 2, captured.ID).Run.Fixed != 1 {
 		t.Fatal("automatic merge observation lost completed review history", current.Pull)
+	}
+	if count := attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE origin_kind='controller' AND recipient_worker_id='selection-worker'`); count != 1 {
+		t.Fatal("joined manual participation/restart/merge did not retain exactly one inbox notice", count)
 	}
 	var queue reviews.QueueResponse
 	projectionRead(t, f, "/queue?view=recent", &queue)

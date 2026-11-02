@@ -6,6 +6,8 @@
 
 The [architecture](architecture.md) owns target behavior. This page describes the current implementation and its limits.
 
+[PR inbox notifications](review-notifications.md) own durable Controller merged/closed messages and the bound-worker `GET`/`PUT /reviews/pulls/{pull_number}/following` preference route. Ordinary explicit PR work follows automatically; explicit unfollow persists without changing queue enrollment or review authority.
+
 ## Start and connect
 
 Build with `make build`, then run:
@@ -88,6 +90,8 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 
 ## Durable messages
 
+Controller notifications are one-way root messages with optional wire `origin_kind:"controller"` and empty `sender_worker_id` (NULL in storage). They use ordinary selected reads and seen/acknowledgment; public replies return `controller_message_one_way` (409). `X-FC-Inbox-Origin: controller-v1` opts readers into Controller data across inbox/context, message/conversation/delivery and event reads. Headerless readers retain the worker-only projection, filtered before paging; inbox cursors bind that selection. After opting in, obtain a fresh snapshot to discover retained unacknowledged notices even if an older worker-only feed cursor already advanced past their events. The [incoming feed](message-events.md) owns transport delivery and acknowledgment semantics.
+
 | Endpoint | Request or result |
 | --- | --- |
 | `POST /messages` | `{recipient_worker_id, body, reply_to_message_id?}`; compact `{id, conversation_id, outcome}` receipt. |
@@ -139,4 +143,4 @@ The [prepared coordination import](legacy-adoption.md) owns administrator previe
 
 ## Sent handoff discovery
 
-`GET /api/v1/projects/{project_id}/outbox/{worker_id}` reads one bounded page of that sender’s messages, including recipient identity and current recipient seen/acknowledged state. It shares inbox status/order selectors and preview bounds, but signed pagination cursors are direction-specific. `GET /api/v1/projects/{project_id}/messages/{message_id}/delivery` reads only `id`, `sender_worker_id`, `recipient_worker_id`, `seen` and `acknowledged`. Both require the existing project read authority and perform no writes or provider work; a missing receipt record is unavailable, never invented as unread. Only the recipient’s existing mutations can mark a message seen or acknowledged. Bound CLI/MCP tools select their own sender for discovery and do not require another worker’s connection.
+`GET /api/v1/projects/{project_id}/outbox/{worker_id}` reads one bounded page of that sender’s messages, including recipient identity and current recipient seen/acknowledged state. It shares inbox status/order selectors and preview bounds, but signed pagination cursors are direction-specific. `GET /api/v1/projects/{project_id}/messages/{message_id}/delivery` reads `id`, `sender_worker_id`, `recipient_worker_id`, `seen`, `acknowledged` and the optional Controller origin described above. Both require the existing project read authority and perform no writes or provider work; a missing receipt record is unavailable, never invented as unread. Only the recipient’s existing mutations can mark a message seen or acknowledged. Bound CLI/MCP tools select their own sender for discovery and do not require another worker’s connection.

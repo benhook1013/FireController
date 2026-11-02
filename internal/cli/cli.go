@@ -47,6 +47,7 @@ type options struct {
 }
 
 type invocation struct {
+	reviewFollowing *reviewFollowingInvocation
 	ownerManagement *ownerManagementInvocation
 	options
 	command               string
@@ -298,6 +299,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.reviewQueueChange != nil {
 		return executeReviewQueueChange(requestCtx, ctx, service, call.reviewQueueChange, stdout, stderr)
 	}
+	if call.reviewFollowing != nil {
+		return executeReviewFollowing(requestCtx, ctx, service, call.reviewFollowing, stdout, stderr)
+	}
 	if call.reviewQueueEdit != nil {
 		return executeReviewQueueEdit(requestCtx, ctx, service, call.reviewQueueEdit, stdout, stderr)
 	}
@@ -475,9 +479,10 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, validHelpOptions(call.options)
 	}
 	if call.command == "version" || call.command == "help" {
-		if remaining[0] == "help" && len(remaining) == 4 && remaining[1] == "reviews" && remaining[2] == "rounds" && (remaining[3] == "read" || remaining[3] == "grant" || remaining[3] == "close") {
-			call.helpOperation = "reviews rounds " + remaining[3]
-			return call, validHelpOptions(call.options)
+		if remaining[0] == "help" && len(remaining) == 4 && remaining[1] == "reviews" {
+			call.helpOperation = strings.Join(remaining[1:], " ")
+			_, exists := operationHelp(call.helpOperation)
+			return call, exists && validHelpOptions(call.options)
 		}
 		if remaining[0] == "help" && len(remaining) == 3 {
 			call.helpOperation = remaining[1] + " " + remaining[2]
@@ -505,9 +510,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	operationArgs := remaining[2:]
 	// Help is an exact grammar, not a scan for help-looking values. In
 	// particular, --body --help remains ordinary submitted text.
-	if call.command == "reviews" && call.subcommand == "rounds" && len(operationArgs) == 2 && (operationArgs[0] == "read" || operationArgs[0] == "grant" || operationArgs[0] == "close") && operationArgs[1] == "--help" {
-		call.command, call.helpOperation = "help", "reviews rounds "+operationArgs[0]
-		return call, validHelpOptions(call.options)
+	if call.command == "reviews" && len(operationArgs) == 2 && operationArgs[1] == "--help" {
+		if _, exists := operationHelp("reviews " + call.subcommand + " " + operationArgs[0]); exists {
+			call.command, call.helpOperation = "help", "reviews "+call.subcommand+" "+operationArgs[0]
+			return call, validHelpOptions(call.options)
+		}
 	}
 	if len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		if _, exists := operationHelp(call.command + " " + call.subcommand); exists {
@@ -562,6 +569,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	if call.command == "reviews" && (call.subcommand == "queue-add" || call.subcommand == "queue-move" || call.subcommand == "queue-remove") {
 		return parseReviewQueueChange(call, operationArgs)
+	}
+	if call.command == "reviews" && (call.subcommand == "following" || call.subcommand == "follow" || call.subcommand == "unfollow") {
+		return parseReviewFollowing(call, operationArgs)
 	}
 	if call.command == "reviews" && call.subcommand == "queue-edit" {
 		return parseReviewQueueEdit(call, operationArgs)

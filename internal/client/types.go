@@ -111,24 +111,26 @@ type JobHistoryEntry struct {
 	CreatedAt string   `json:"created_at"`
 }
 type InboxItem struct {
-	ID                string `json:"id"`
-	ConversationID    string `json:"conversation_id"`
-	SenderWorkerID    string `json:"sender_worker_id"`
-	RecipientWorkerID string `json:"recipient_worker_id"`
-	Preview           string `json:"preview"`
-	PreviewTruncated  bool   `json:"preview_truncated"`
-	Seen              bool   `json:"seen"`
-	Acknowledged      bool   `json:"acknowledged"`
-	CreatedAt         string `json:"created_at"`
+	OriginKind        MessageOrigin `json:"origin_kind,omitempty"`
+	ID                string        `json:"id"`
+	ConversationID    string        `json:"conversation_id"`
+	SenderWorkerID    string        `json:"sender_worker_id"`
+	RecipientWorkerID string        `json:"recipient_worker_id"`
+	Preview           string        `json:"preview"`
+	PreviewTruncated  bool          `json:"preview_truncated"`
+	Seen              bool          `json:"seen"`
+	Acknowledged      bool          `json:"acknowledged"`
+	CreatedAt         string        `json:"created_at"`
 }
 type Message struct {
-	ID                string `json:"id"`
-	ConversationID    string `json:"conversation_id"`
-	SenderWorkerID    string `json:"sender_worker_id"`
-	RecipientWorkerID string `json:"recipient_worker_id"`
-	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
-	Body              string `json:"body"`
-	CreatedAt         string `json:"created_at"`
+	OriginKind        MessageOrigin `json:"origin_kind,omitempty"`
+	ID                string        `json:"id"`
+	ConversationID    string        `json:"conversation_id"`
+	SenderWorkerID    string        `json:"sender_worker_id"`
+	RecipientWorkerID string        `json:"recipient_worker_id"`
+	ReplyToMessageID  string        `json:"reply_to_message_id,omitempty"`
+	Body              string        `json:"body"`
+	CreatedAt         string        `json:"created_at"`
 }
 type ConversationPage struct {
 	ConversationID string    `json:"conversation_id"`

@@ -44,6 +44,10 @@ func registerEventStream(mux *http.ServeMux, store *core.Store, shutdownContext 
 }
 
 func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) {
+	if !project {
+		w.Header().Add("Vary", core.InboxOriginHeader)
+		r = r.WithContext(core.WithControllerInbox(r.Context(), core.RequestsControllerInbox(r)))
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		message := "Use GET for the message event stream."

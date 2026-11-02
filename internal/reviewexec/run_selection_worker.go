@@ -562,6 +562,15 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			if _, err = tx.ExecContext(ctx, `RELEASE review_selection_child`); err != nil {
 				return err
 			}
+			var automatic bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, current.ProjectID, current.ID).Scan(&automatic); err != nil {
+				return err
+			}
+			if !automatic {
+				if err := e.followExplicitWork(ctx, tx, attribution, choice.number); err != nil {
+					return err
+				}
+			}
 			return updateRun(ctx, tx, current, "selected", "", receipt.ID)
 		})
 	})

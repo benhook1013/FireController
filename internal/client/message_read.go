@@ -16,7 +16,10 @@ func (c *Client) Message(ctx context.Context, id string) (Message, error) {
 	if err := c.get(ctx, c.projectPath("messages", id), nil, true, &value); err != nil {
 		return Message{}, err
 	}
-	if value.ID != id || !validID(value.ConversationID) || !validID(value.SenderWorkerID) || !validID(value.RecipientWorkerID) || value.ReplyToMessageID != "" && (!validID(value.ReplyToMessageID) || value.ReplyToMessageID == id) || !utf8.ValidString(value.Body) || strings.TrimSpace(value.Body) == "" || len(value.Body) > 16<<10 || !validTimestamp(value.CreatedAt) {
+	if value.OriginKind == "controller" && value.ReplyToMessageID != "" {
+		return Message{}, invalidResponse()
+	}
+	if value.ID != id || !validID(value.ConversationID) || !validMessageOrigin(value.OriginKind, value.SenderWorkerID) || !validID(value.RecipientWorkerID) || value.ReplyToMessageID != "" && (!validID(value.ReplyToMessageID) || value.ReplyToMessageID == id) || !utf8.ValidString(value.Body) || strings.TrimSpace(value.Body) == "" || len(value.Body) > 16<<10 || !validTimestamp(value.CreatedAt) {
 		return Message{}, invalidResponse()
 	}
 	return value, nil

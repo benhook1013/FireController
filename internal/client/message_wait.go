@@ -99,6 +99,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		return MessageEventPage{}, validation()
 	}
 	r.Header.Set("Accept", "text/event-stream")
+	r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 	r.Header.Set("X-FC-Worker", c.identity.WorkerID)

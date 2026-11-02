@@ -211,6 +211,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"] = true, true, true
 			expected["review_queue_add"], expected["review_queue_move"], expected["review_queue_remove"] = true, true, true
 			expected["review_operations_list"], expected["wait_for_reviews"] = true, true
+			expected["review_following_read"], expected["review_following_update"] = true, true
 			expected["job_status_read"], expected["review_findings_decide"], expected["review_findings_fix"] = true, true, true
 			expected["review_finding_route"], expected["review_route_read"], expected["review_routes_list"], expected["review_route_decide"], expected["review_route_fix"] = true, true, true, true, true
 			expected["review_policy_assess"] = true
@@ -230,6 +231,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			writes["job_primary_replace"], writes["job_checklist_item_update"] = true, true
 			writes["review_queue_add"], writes["review_queue_move"], writes["review_queue_remove"] = true, true, true
 			writes["review_rounds_configure"], writes["review_start"] = true, true
+			writes["review_following_update"] = true
 			writes["map_entry_create"], writes["map_entry_replace"], writes["map_entry_update"], writes["job_workstream_replace"] = true, true, true, true
 			writes["worker_pause_replace"] = true
 			writes["review_scheduling_configure"], writes["review_pull_scheduling_update"] = true, true

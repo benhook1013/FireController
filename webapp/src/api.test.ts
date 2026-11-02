@@ -153,6 +153,9 @@ describe('read-only browser cookie session transport', () => {
       expect(new Headers(init.headers).get('x-fc-instance')).toBe('instance_one');
     }
     expect(new Headers(requests[4].headers).get('x-fc-worker')).toBe('worker_one');
+    expect(requests.slice(0, 3).every(init => !new Headers(init.headers).has('X-FC-Inbox-Origin'))).toBe(true);
+    expect(new Headers(requests[3].headers).get('X-FC-Inbox-Origin')).toBe('controller-v1');
+    expect(new Headers(requests[4].headers).get('X-FC-Inbox-Origin')).toBe('controller-v1');
     client.close();
   });
 

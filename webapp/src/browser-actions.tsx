@@ -104,12 +104,12 @@ export function MessageComposer({ reply }: { reply?: Message }) {
   const [sentConversation, setSentConversation] = useState('');
   const [savedRecipient, setSavedRecipient] = useState('');
   const worker = session.worker?.id ?? '';
-  const replyRecipient = reply ? reply.sender_worker_id === worker ? reply.recipient_worker_id : reply.sender_worker_id : '';
+  const replyRecipient = reply && reply.origin_kind !== 'controller' ? reply.sender_worker_id === worker ? reply.recipient_worker_id : reply.sender_worker_id : '';
   const slot = JSON.stringify([worker, 'send', reply?.id ?? 'new']);
   const action = useBrowserAction<SendInput, { id: string; conversation_id: string; outcome: 'sent' }>(slot,
     (input, actionKey, signal) => session.api.sendMessage(input.worker, input.recipient, input.body, input.replyTo, actionKey, signal),
     async receipt => { setOpen(true); setBody(''); setSavedRecipient(recipient); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
-  if (!worker || !session.api.browserCapabilities.allow_writes || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
+  if (!worker || !session.api.browserCapabilities.allow_writes || reply?.origin_kind === 'controller' || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
   const input = action.retained?.input;
   const submit = (event: FormEvent) => { event.preventDefault(); void action.run({ worker, recipient: replyRecipient || recipient, body, replyTo: reply?.id ?? '' }); };
   return <section className="browser-composer" data-browser-dirty={Boolean(body || recipient !== savedRecipient)} aria-label={reply ? 'Reply composer' : 'New message composer'}>

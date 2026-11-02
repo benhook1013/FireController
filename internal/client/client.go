@@ -378,6 +378,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	if err != nil {
 		return validation()
 	}
+	if method == http.MethodGet && inboxOriginPath(segments) {
+		r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
+	}
 	if mutation {
 		// Go's transport can replay requests carrying Idempotency-Key when
 		// GetBody is available. Only the caller may retry after an uncertain
@@ -573,6 +576,11 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
+	if result.Code == "controller_message_one_way" && status == http.StatusConflict {
+		result.Message = "Controller notifications are one-way."
+		result.Action = "Read or acknowledge the notification normally; use a new worker-to-worker message for any follow-up. Do not reply to the Controller conversation or change sender identity."
+	}
+
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
 	if status == http.StatusConflict && result.Code == "review_conflict" {
 		reviewConflictDiagnostic(result)

@@ -194,6 +194,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
+	if err = reviewexec.SeedNotificationFollowers(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3

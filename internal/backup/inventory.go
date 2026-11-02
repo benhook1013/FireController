@@ -18,6 +18,7 @@ import (
 	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/historycollect"
+	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
@@ -224,7 +225,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 4, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -287,6 +288,7 @@ var tables = map[string]tableVersion{
 	"managed_backup_bundles":     {"managed_backups", 1, "sequence id destination source_instance_id manifest_sha256 created_at state"},
 	"metadata":                   {"", 1, "key value"}, "projects": {"", 1, "id name github_repository_id repository"}, "workers": {"", 1, "project_id id name"}, "credentials": {"", 1, "id principal_id token_sha256 is_admin revoked"}, "grants": {"", 1, "credential_id project_id can_read can_write"}, "receipts": {"", 1, "principal_id project_id operation target key fingerprint response_json"}, "events": {"", 1, "sequence project_id event_type resource_id revision actor_id payload_json created_at"},
 	"jobs": {"jobs", 1, "project_id id title brief worker_id status revision created_at updated_at"}, "job_history": {"jobs", 1, "project_id job_id revision actor_id state_json created_at"}, "job_checkpoints": {"jobs", 2, "sequence id project_id job_id job_revision actor_id worker_id done next blocker evidence_json created_at"},
+	"review_pr_followers": {"review_notifications", 1, "project_id pull_number worker_id mode revision updated_at"},
 	"inbox_conversations": {"inbox", 1, "project_id id root_message_id"}, "inbox_messages": {"inbox", 1, "sequence project_id id conversation_id sender_worker_id recipient_worker_id reply_to_message_id body created_at"}, "inbox_recipient_state": {"inbox", 1, "project_id message_id worker_id seen acknowledged revision"},
 	"review_snapshots": {"reviews", 1, "project_id snapshot_id revision repository_id source observed_at recorded_at payload_sha256"}, "review_workspace": {"reviews", 1, "project_id revision snapshot_id"}, "review_pulls": {"reviews", 1, "project_id snapshot_id position number title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"}, "review_runs": {"reviews", 1, "project_id snapshot_id pull_number run_order id source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"}, "review_findings": {"reviews", 1, "project_id snapshot_id pull_number run_id position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at"}, "review_attempts": {"reviews", 1, "project_id snapshot_id pull_number position source source_attempt_id channel head_sha state started_at finished_at duration_seconds source_run_id trigger_id provider_review_id"}, "review_retired_pulls": {"reviews", 1, "project_id snapshot_id position number reason"},
 	"review_pull_versions":         {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
@@ -633,6 +635,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["review_notifications"] > 0 {
+		var ddl string
+		if db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE type='table' AND name='review_pr_followers'`).Scan(&ddl) != nil || historyDefinitionSQL(ddl) != historyDefinitionSQL(reviews.NotificationSchemaSQL()[0]) {
+			return nil, invalid()
+		}
+	}
 	if versions["review_scheduling"] > 0 {
 		if versions["review_selection"] == 0 || versions["review_execution"] == 0 {
 			return nil, invalid()
@@ -679,6 +687,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "inbox_messages" && versions["inbox"] >= 2 {
+			columns += " origin_kind"
+		}
 		if name == "review_current_totals" && versions["reviews"] >= 9 {
 			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
 		}
@@ -904,6 +915,22 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	versions, err := validateSchema(ctx, tx, allowInactive)
 	if err != nil {
 		return err
+	}
+	if versions["inbox"] > 0 {
+		if err := inbox.ValidateSnapshot(ctx, tx, versions["inbox"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_notifications"] > 0 {
+		if err := reviews.ValidateNotificationPreferences(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	if versions["worker_retirements"] > 0 {
 		if err := core.ValidateWorkerRetirementsSnapshot(ctx, tx); err != nil {
@@ -1590,6 +1617,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_pr_followers":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"review_scheduling":                 {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_pull_scheduling":            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_automatic_selections":       {canonicalFK("review_selections", "selection_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},

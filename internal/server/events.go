@@ -11,6 +11,8 @@ import (
 )
 
 func (a *api) messageEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", core.InboxOriginHeader)
+	r = r.WithContext(core.WithControllerInbox(r.Context(), core.RequestsControllerInbox(r)))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)

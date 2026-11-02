@@ -224,6 +224,9 @@ func recordSubagentReport(store *core.Store) http.HandlerFunc {
 			if err = checkNativeRunDetail(ctx, tx, scope.ProjectID, result.ID, id); err != nil {
 				return nil, err
 			}
+			if err := AutoFollow(ctx, tx, scope, in.PullNumber); err != nil {
+				return nil, err
+			}
 			return SubagentReceipt{ID: id, State: "recorded", Revision: result.Revision}, nil
 		})
 		if err != nil {
@@ -379,6 +382,9 @@ func updateSubagentReportHTTP(store *core.Store) http.HandlerFunc {
 			}
 			updated, err := readSubagentReport(ctx, tx, scope.ProjectID, id)
 			if err != nil {
+				return nil, err
+			}
+			if err := AutoFollow(ctx, tx, scope, updated.Run.PullNumber); err != nil {
 				return nil, err
 			}
 			return SubagentReceipt{ID: id, State: "updated", Revision: updated.Revision}, nil

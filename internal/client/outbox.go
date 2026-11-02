@@ -8,11 +8,12 @@ import (
 // MessageDelivery is the selected message's current recipient receipt, without
 // its body or another worker's inbox. Reading never changes receipt state.
 type MessageDelivery struct {
-	ID                string `json:"id"`
-	SenderWorkerID    string `json:"sender_worker_id"`
-	RecipientWorkerID string `json:"recipient_worker_id"`
-	Seen              bool   `json:"seen"`
-	Acknowledged      bool   `json:"acknowledged"`
+	OriginKind        MessageOrigin `json:"origin_kind,omitempty"`
+	ID                string        `json:"id"`
+	SenderWorkerID    string        `json:"sender_worker_id"`
+	RecipientWorkerID string        `json:"recipient_worker_id"`
+	Seen              bool          `json:"seen"`
+	Acknowledged      bool          `json:"acknowledged"`
 }
 
 // Outbox discovers messages sent by the bound worker. Filters concern their
@@ -43,7 +44,7 @@ func (c *Client) Outbox(ctx context.Context, options PageOptions, filter InboxFi
 		return Page[InboxItem]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || !validID(item.ConversationID) || item.SenderWorkerID != worker || !validID(item.RecipientWorkerID) || !utf8.ValidString(item.Preview) || utf8.RuneCountInString(item.Preview) > 160 || item.PreviewTruncated && utf8.RuneCountInString(item.Preview) != 160 || item.Acknowledged && !item.Seen || !validTimestamp(item.CreatedAt) || filter.Unread && item.Seen || filter.Unacknowledged && item.Acknowledged {
+		if item.OriginKind != "" || !validID(item.ID) || !validID(item.ConversationID) || item.SenderWorkerID != worker || !validID(item.RecipientWorkerID) || !utf8.ValidString(item.Preview) || utf8.RuneCountInString(item.Preview) > 160 || item.PreviewTruncated && utf8.RuneCountInString(item.Preview) != 160 || item.Acknowledged && !item.Seen || !validTimestamp(item.CreatedAt) || filter.Unread && item.Seen || filter.Unacknowledged && item.Acknowledged {
 			return Page[InboxItem]{}, invalidResponse()
 		}
 	}
@@ -60,7 +61,7 @@ func (c *Client) MessageDelivery(ctx context.Context, id string) (MessageDeliver
 	if err := c.get(ctx, c.projectPath("messages", id, "delivery"), nil, true, &value); err != nil {
 		return MessageDelivery{}, err
 	}
-	if value.ID != id || !validID(value.SenderWorkerID) || !validID(value.RecipientWorkerID) || value.Acknowledged && !value.Seen {
+	if value.ID != id || !validMessageOrigin(value.OriginKind, value.SenderWorkerID) || !validID(value.RecipientWorkerID) || value.Acknowledged && !value.Seen {
 		return MessageDelivery{}, invalidResponse()
 	}
 	return value, nil

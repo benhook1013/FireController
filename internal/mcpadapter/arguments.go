@@ -128,6 +128,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" {
 		return queueChangeArguments(name, data)
 	}
+	if name == "review_following_read" || name == "review_following_update" {
+		return followingArguments(name, data)
+	}
 	if name == "review_queue" {
 		options, active, err := reviewActiveQueueArguments(data)
 		args.limit, args.cursor, args.reviewActiveQueue = options.Limit, options.Cursor, active
@@ -278,6 +281,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if name == "review_following_update" {
+		return true
+	}
 	if existingManagementWrite(name) {
 		return true
 	}

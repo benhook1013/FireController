@@ -1,5 +1,7 @@
 # Native Review Execution
 
+[PR inbox notifications](review-notifications.md) retain merged/closed notices for workers participating through ordinary explicit PR work. Following is independent of review execution, scheduling, ownership and merge authority.
+
 ## Checkout retention
 
 The daemon automatically reclaims native review checkouts after their attempt is terminal (completed, held, failed, cancelled or rate-limited), has no execution reservation and has remained terminal for at least five minutes. Active, preparing, posting, uncertain, reserved, unknown and differently bound attempts remain untouched. The maintenance pass runs once a minute in a separate local maintenance worker, with a twenty-second budget and at most sixteen removals. A cleanup failure retries without blocking reviews. Shared Git caches, durable provider captures, review evidence, findings and journal history are retained separately.

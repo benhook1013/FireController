@@ -40,11 +40,11 @@ export interface JobWorkstream {job_id: string; workstream_id: string; workstrea
 export interface JobWorkstreamHistoryEntry {revision: number; workstream_id: string; workstream_title: string; job_revision: number; actor_id: string; created_at: string}
 export interface JobOptions extends PageOptions {worker_id?: string; status?: JobSummary['status']|'open'}
 export interface InboxOptions extends PageOptions {unread?: boolean; unacknowledged?: boolean}
-export interface InboxItem {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; preview: string; preview_truncated: boolean; seen: boolean; acknowledged: boolean; created_at: string}
-export interface Message {id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; reply_to_message_id?: string; body: string; created_at: string}
+export interface InboxItem {origin_kind?: 'controller'; id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; preview: string; preview_truncated: boolean; seen: boolean; acknowledged: boolean; created_at: string}
+export interface Message {origin_kind?: 'controller'; id: string; conversation_id: string; sender_worker_id: string; recipient_worker_id: string; reply_to_message_id?: string; body: string; created_at: string}
 export interface ConversationPage extends Page<Message> {conversation_id: string; root_message_id: string}
 export interface InboxSnapshot {inbox: Page<InboxItem>; event_cursor: string}
-export interface MessageEvent {sequence: number; project_id: string; type: 'message.sent'|'message.seen'|'message.acknowledged'; resource_id: string; revision: number; actor_id: string; payload: {conversation_id: string; recipient_worker_id: string; sender_worker_id?: string}; created_at: string}
+export interface MessageEvent {sequence: number; project_id: string; type: 'message.sent'|'message.seen'|'message.acknowledged'; resource_id: string; revision: number; actor_id: string; payload: {origin_kind?: 'controller'; conversation_id: string; recipient_worker_id: string; sender_worker_id?: string}; created_at: string}
 export interface MessageEventPage extends Page<MessageEvent> {cursor: string; timed_out: boolean}
 export type LiveStatus = 'connecting'|'live'|'reconnecting'|'closed';
 export interface WatchCallbacks {snapshot(value: InboxSnapshot): void|Promise<void>; events(value: MessageEventPage): void|Promise<void>; status(value: LiveStatus): void}

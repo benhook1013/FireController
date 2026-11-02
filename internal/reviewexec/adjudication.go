@@ -177,6 +177,13 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 		if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
 			return nil, err
 		}
+		evidence, _, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, state.EvidenceID)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.followExplicitWork(ctx, tx, scope, evidence.Anchor.PullNumber); err != nil {
+			return nil, err
+		}
 	}
 	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
 		return nil, err

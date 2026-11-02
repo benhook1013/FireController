@@ -35,6 +35,9 @@ func argumentHelpAction(call invocation) string {
 // This selected local reference supplements the real parsers. Only the exact
 // operation-help grammar reaches it, before any profile, file or service work.
 func operationHelp(operation string) (operationHelpResponse, bool) {
+	if help, ok := reviewFollowingHelp(operation); ok {
+		return help, true
+	}
 	if help, ok := ownerManagementHelp(operation); ok {
 		return help, true
 	}
@@ -119,7 +122,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/job-state.md"
 	case "reviews help":
 		out.Usage = "<bound launcher> reviews help"
-		out.Optional = []string{"reviews policy --help", "reviews policy-configure --help", "reviews execution-configure --help", "reviews attempt-settle --help", "reviews queue-add --help", "reviews queue-move --help", "reviews queue-remove --help", "reviews execution --help", "reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews ci-wait --help", "reviews activity --help", "reviews scheduling --help", "reviews readiness --help", "reviews operations --help", "reviews watch --help", "reviews operation-control --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
+		out.Optional = []string{"reviews following --help", "reviews follow --help", "reviews unfollow --help", "reviews policy --help", "reviews policy-configure --help", "reviews execution-configure --help", "reviews attempt-settle --help", "reviews queue-add --help", "reviews queue-move --help", "reviews queue-remove --help", "reviews execution --help", "reviews subagent-record --help", "reviews subagent-read --help", "reviews subagent-update --help", "reviews queue --help", "reviews rounds --help", "reviews evidence --help", "reviews adjudication --help", "reviews route-create --help", "reviews route --help", "reviews routes --help", "reviews route-decide --help", "reviews route-fix --help", "reviews assess --help", "reviews source-assess --help", "reviews ci-assess --help", "reviews ci-wait --help", "reviews activity --help", "reviews scheduling --help", "reviews readiness --help", "reviews operations --help", "reviews watch --help", "reviews operation-control --help", "reviews runs --help", "reviews decide --help", "reviews fix --help", "reviews decide-batch --help", "reviews fix-batch --help", "reviews finalize --help", "reviews publish --help", "reviews publication --help", "reviews publication-recover --help", "reviews source-operation --help", "reviews request --help", "reviews operation --help", "reviews source-refresh --help"}
 		out.Semantics = []string{"queue, rounds read and assessments read retained state. Read findings with reviews evidence EVIDENCE_ID and decisions/revision with reviews adjudication EVIDENCE_ID.", "source-refresh explicitly reads GitHub; request submits review work. finalize records adjudication and automatically queues its GitHub summary; publish repairs historical delivery. decide/fix and their batches change local evidence. Round grants/closure only change local settings.", "Help is local; no profile, credential or service reads. Documentation paths refer to the same installed release."}
 		out.Example = "<bound launcher> reviews decide --help"
 		out.Documentation = "docs/review-controls.md"
@@ -326,7 +329,33 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews scheduling":
 		out.Usage = "<bound launcher> reviews scheduling [--pr N] | configure --automatic-hosted true|false --expect-revision N --key KEY | pause|resume --pr N --expect-revision N --key KEY [--reason TEXT]"
 		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)", "configure --automatic-hosted true|false (project manager; authorizes future automatic Hosted requests)", "pause|resume --pr N (writer; holds new/undispatched reviews without changing rounds)", "--reason TEXT (optional with pause, at most 256 UTF-8 bytes)"}
+		out.Optional = append(out.Optional, "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
 		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI reviews remain explicitly requested; quota waiting preserves accepted requests without selecting extra PRs or rounds.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted selection under all existing comparison, obligation, round and provider guards."}
+		out.Documentation = "docs/review-scheduling.md"
+	case "reviews scheduling read":
+		out.Usage = "<bound launcher> reviews scheduling read [--pr N]"
+		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)"}
+		out.Semantics = []string{"Returns stored scheduling state and its independent revision. Use the project revision for configure, or the selected PR revision for pause/resume. No provider request or writes."}
+		out.Example = "<bound launcher> reviews scheduling read --pr 42"
+		out.Documentation = "docs/review-scheduling.md"
+	case "reviews scheduling configure":
+		out.Usage = "<bound launcher> reviews scheduling configure --automatic-hosted true|false --expect-revision N --key KEY"
+		out.Required = []string{"--automatic-hosted true|false", "--expect-revision N (current project scheduling revision, including 0)", "--key KEY"}
+		out.Semantics = []string{"Requires project-management authority. Read reviews scheduling for the current project scheduling revision. Enabling authorizes future automatic Hosted requests through this connection's active bound worker under the existing review guards; CLI reviews remain explicitly requested.", recovery}
+		out.Example = "<bound launcher> reviews scheduling configure --automatic-hosted true --expect-revision 0 --key automatic-hosted-1"
+		out.Documentation = "docs/review-scheduling.md"
+	case "reviews scheduling pause", "reviews scheduling resume":
+		out.Usage = "<bound launcher> " + operation + " --pr N --expect-revision N --key KEY"
+		out.Required = []string{"--pr N", "--expect-revision N (current PR scheduling revision, including 0)", "--key KEY"}
+		out.Semantics = []string{"Requires project write access. Read reviews scheduling read --pr N for this PR's scheduling revision. Changes new/undispatched review scheduling in both channels; existing provider collection continues. Does not change rounds, channel closure or separate operation pauses.", recovery}
+		if operation == "reviews scheduling pause" {
+			out.Usage += " [--reason TEXT]"
+			out.Optional = []string{"--reason TEXT (optional, at most 256 UTF-8 bytes)"}
+			out.Semantics = append(out.Semantics, "May pause before the first review intent. No live provider request is needed to pause a PR.")
+		} else {
+			out.Semantics = append(out.Semantics, "Clears the PR pause and its reason. Accepts no --reason flag; does not resume separately paused operations or reopen closed channels.")
+		}
+		out.Example = "<bound launcher> " + operation + " --pr 42 --expect-revision 0 --key scheduling-42-1"
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews ci-wait":
 		out.Usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--target PR:HEAD[:BASE] ...] [--after-observation PR:KEY] [--failure-workflow PR:ID] [--wait-seconds N]"

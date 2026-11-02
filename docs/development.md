@@ -124,6 +124,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
 | `fc reviews operation ID` | Explicit retained native operation state and reason. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
+| `fc reviews following NUMBER` | Bound worker's durable notification preference/revision and whether the PR is currently enrolled. |
 | `fc reviews pull NUMBER` | Compact PR summary without loading attempt history; optional `--snapshot`. |
 | `fc reviews attempts NUMBER` | One newest-first retained attempt page with original producer identity, default five; optional `--snapshot`, `--limit` and `--cursor`, without automatic paging. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`, `--limit` and `--cursor`. Local `--help` explains workspace versus run timestamps. |
@@ -181,6 +182,8 @@ A disconnected, timed-out or canceled write can already have committed. Such dia
 This slice does not persist a client retry journal. Callers retain the key, request and originating binding; changing a profile or rebinding to a restored instance is not recovery of that pending action.
 
 Routine queue planning uses `reviews queue-add PR --expect-config N --key KEY` and `reviews queue-move PR --expect-config N --key KEY` with `--before PR`, `--after PR`, `--first` or `--last`; see [queue changes](review-execution.md#routine-queue-changes). These ordinary project-writer calls preserve unrelated configuration and existing controls, updating Delivery in the same transaction without provider work.
+
+Ordinary explicit PR work follows [merged/closed inbox notices](review-notifications.md) for the acting worker automatically. Optional `reviews follow PR` and `reviews unfollow PR` take `--expect-revision N --key KEY` after reading `reviews following PR`; an explicit unfollow survives later work. These controls do not enroll or assign a PR or request provider work.
 
 Administrator [selected queue edits](review-workspace.md#selected-queue-edits) use `reviews queue-edit --file /private/queue-edit.json --key KEY`. They change only selected PR metadata and visibility, preserving omitted work and review history. They keep the same explicit-key recovery and ordinary command budget; they do not request reviews or provider refreshes.
 

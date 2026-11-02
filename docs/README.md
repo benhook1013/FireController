@@ -19,6 +19,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Unfinished adoption obligations](adoption-obligations.md): native source-bound finding, route and unsettled-result holds, explicit resolution and minimum-only policy; source-owner export and installed cutover proof remain separate.
 - [Stored review fronts](review-fronts.md): bounded verified source frames, current local channel assessment and honest browser front/queued/closed labels.
 - [Automatic GitHub observation](github-observation.md): service-owned PR/CI updates and pickup of Hosted reviews started directly on GitHub, independent of review requests.
+- [PR inbox notifications](review-notifications.md): durable Controller merge/close messages and automatic worker following with persistent opt-out.
 - [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
 - [Review scheduling](review-scheduling.md): optional automatic Hosted requests and per-PR pauses over ordinary admission and execution.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.

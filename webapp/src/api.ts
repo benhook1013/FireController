@@ -499,16 +499,26 @@ function reviewQuery(snapshot?: string): URLSearchParams {
 function validReviewPage(value: unknown, options: PageOptions): value is Record<string, unknown> & { items: unknown[]; has_more: boolean; cursor?: string } {
   return validPage(value, defaultLimit(options)) && (value.has_more || !value.cursor);
 }
+function validMessageSender(value: Record<string, unknown>): boolean {
+  return Object.hasOwn(value, 'origin_kind') ? value.origin_kind === 'controller' && value.sender_worker_id === '' : id(value.sender_worker_id);
+}
+// Opt in only to the current project's incoming-message read surfaces. Shared
+// connection headers, writes, public reads and project metadata keep their wire.
+export function inboxOriginReadPath(path: string, projectRoot: string): boolean {
+  const pathname = path.split('?', 1)[0];
+  if (!pathname.startsWith(`${projectRoot}/`)) return false;
+  return /^\/(?:inbox\/[A-Za-z0-9_-]+(?:\/snapshot)?|messages\/[A-Za-z0-9_-]+(?:\/delivery)?|conversations\/[A-Za-z0-9_-]+|message-events(?:\/stream)?)$/u.test(pathname.slice(projectRoot.length));
+}
 function validInboxItem(value: unknown, worker: string): value is InboxItem {
-  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at']) && id(value.id) && id(value.conversation_id) && id(value.sender_worker_id) && value.recipient_worker_id === worker && contentText(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'preview', 'preview_truncated', 'seen', 'acknowledged', 'created_at'], ['origin_kind']) && id(value.id) && id(value.conversation_id) && validMessageSender(value) && value.recipient_worker_id === worker && contentText(value.preview, 1024, true) && [...value.preview].length <= 160 && typeof value.preview_truncated === 'boolean' && typeof value.seen === 'boolean' && typeof value.acknowledged === 'boolean' && (!value.acknowledged || value.seen) && timestamp(value.created_at);
 }
 function validMessage(value: unknown, conversation: string): value is Message {
-  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'body', 'created_at'], ['reply_to_message_id']) && id(value.id) && value.conversation_id === conversation && id(value.sender_worker_id) && id(value.recipient_worker_id) && (value.reply_to_message_id === undefined || id(value.reply_to_message_id)) && contentText(value.body, 16384) && timestamp(value.created_at);
+  return record(value) && keys(value, ['id', 'conversation_id', 'sender_worker_id', 'recipient_worker_id', 'body', 'created_at'], ['reply_to_message_id', 'origin_kind']) && id(value.id) && value.conversation_id === conversation && validMessageSender(value) && id(value.recipient_worker_id) && (value.origin_kind === 'controller' ? !Object.hasOwn(value, 'reply_to_message_id') : value.reply_to_message_id === undefined || id(value.reply_to_message_id)) && contentText(value.body, 16384) && timestamp(value.created_at);
 }
 function validEvent(value: unknown, project: string, worker: string): value is MessageEvent {
   if (!record(value) || !keys(value, ['sequence', 'project_id', 'type', 'resource_id', 'revision', 'actor_id', 'payload', 'created_at']) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || value.project_id !== project || !id(value.resource_id) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || !id(value.actor_id) || !timestamp(value.created_at) || !record(value.payload)) return false;
-  if (value.type === 'message.sent') return keys(value.payload, ['conversation_id', 'recipient_worker_id', 'sender_worker_id']) && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker && id(value.payload.sender_worker_id);
-  if (value.type === 'message.seen' || value.type === 'message.acknowledged') return keys(value.payload, ['conversation_id', 'recipient_worker_id']) && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker;
+  if (value.type === 'message.sent') return keys(value.payload, ['conversation_id', 'recipient_worker_id', 'sender_worker_id'], ['origin_kind']) && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker && validMessageSender(value.payload);
+  if (value.type === 'message.seen' || value.type === 'message.acknowledged') return keys(value.payload, ['conversation_id', 'recipient_worker_id'], ['origin_kind']) && (!Object.hasOwn(value.payload, 'origin_kind') || value.payload.origin_kind === 'controller') && id(value.payload.conversation_id) && value.payload.recipient_worker_id === worker;
   return false;
 }
 export function validateMessageEventPage(value: unknown, project: string, worker: string, limit: number): value is MessageEventPage {
@@ -1165,6 +1175,7 @@ export class Api {
     if (!id(conversationId)) throw new ApiError('invalid_request', 'The conversation identifier is invalid.');
     const value = await this.finiteGet(withQuery(this.projectRoute(`conversations/${encodeURIComponent(conversationId)}`), pageOptions(options)), signal);
     if (!record(value) || !keys(value, ['conversation_id', 'root_message_id', 'items', 'has_more'], ['cursor']) || value.conversation_id !== conversationId || !id(value.root_message_id) || !validPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, defaultLimit(options)) || !Array.isArray(value.items) || !value.items.every((item) => validMessage(item, conversationId))) throw new ApiError('invalid_response', 'The service returned an invalid conversation page.');
+    if (value.items.some(item => item.origin_kind === 'controller') && (value.items.length !== 1 || value.items[0].id !== value.root_message_id || value.has_more || value.cursor !== undefined)) throw new ApiError('invalid_response', 'The service returned an invalid Controller conversation.');
     return value as unknown as ConversationPage;
   }
   async snapshot(worker: string, options: InboxOptions = {}, signal?: AbortSignal): Promise<InboxSnapshot> {
@@ -1258,11 +1269,16 @@ export class Api {
     finally { request.close(); }
   }
   private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse, operationWait = false): Promise<unknown> {
-    const headers = this.headers(instanceId, worker);
+    const headers = this.readHeaders(path, instanceId, worker);
     if (operationWait) headers.set('X-FC-Operation-Wait', '2');
     const response = await fetch(urlFor(path), { method: 'GET', headers, redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
     return readJson(response, signal, responseMaxBytes, decode);
+  }
+  private readHeaders(path: string, instanceId?: string, worker?: string): Headers {
+    const headers = this.headers(instanceId, worker);
+    if (inboxOriginReadPath(path, this.projectRoute(''))) headers.set('X-FC-Inbox-Origin', 'controller-v1');
+    return headers;
   }
   private headers(instanceId?: string, worker?: string): Headers {
     const value = new Headers({ Accept: 'application/json' });
@@ -1283,7 +1299,8 @@ export class Api {
     const timer = setTimeout(() => { expired = true; controller.abort(); }, 5000);
     try {
       const query = new URLSearchParams({ cursor: after, limit: String(limit) });
-      const response = await fetch(urlFor(`${this.projectRoute(`${feed}/stream`)}?${query}`), { method: 'GET', headers: this.headers(this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
+      const path = `${this.projectRoute(`${feed}/stream`)}?${query}`;
+      const response = await fetch(urlFor(path), { method: 'GET', headers: this.readHeaders(path, this.verifiedInstanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal: controller.signal });
       clearTimeout(timer);
       return { response, signal: controller.signal, close: () => { signal.removeEventListener('abort', abort); this.streamConnections.delete(controller); controller.abort(); } };
     } catch (error) {

@@ -123,6 +123,13 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 			return Receipt{}, err
 		}
 	}
+	for _, number := range c.Queue {
+		if !slices.Contains(previous.Queue, number) {
+			if err := e.followExplicitWork(ctx, tx, scope, number); err != nil {
+				return Receipt{}, err
+			}
+		}
+	}
 	revision++
 	if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
 		return Receipt{}, err
@@ -157,7 +164,11 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		return nil, invalid()
 	}
 	result, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.request", Target: "requests", Key: key, Request: r}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		return e.enqueueRequestTx(ctx, tx, scope, r)
+		receipt, err := e.enqueueRequestTx(ctx, tx, scope, r)
+		if err == nil {
+			err = e.followExplicitWork(ctx, tx, scope, r.PullNumber)
+		}
+		return receipt, err
 	})
 	if err == nil {
 		select {

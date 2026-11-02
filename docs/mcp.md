@@ -12,6 +12,8 @@
 
 Execution tool arguments and recovery are owned by [review execution](review-execution.md#bound-execution-tools).
 
+[PR following](review-notifications.md) supplies durable merged/closed inbox notices independently of an active review wait. Ordinary explicit work follows automatically; optional `review_following_read` and `review_following_update` control only the bound worker's preference.
+
 ## Configure one agent binding
 
 Build with `make build`. Configure the host to launch this command with this agent's private profile:
@@ -32,6 +34,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 
 | Tool | Input and result |
 | --- | --- |
+| `review_following_read` | Required pull_number; own worker's preference/revision and current enrolled scope, without provider work. |
+| `review_following_update` | Required pull_number, expected_revision, following and idempotency_key; own worker follow/mute, with persistent explicit opt-out and no ownership or queue change. |
 | `context` | No fields; configured local identity plus running client source revision/state, without service verification. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity plus running client source revision/state. |

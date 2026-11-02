@@ -20,6 +20,7 @@ import (
 const maxToolWaitSeconds = 900
 
 type arguments struct {
+	following                  client.ConfigureReviewFollowingRequest
 	includeRetired             bool
 	ownerManagement            *ownerManagementInvocation
 	existingManagement         *existingManagementArgs
@@ -98,6 +99,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, reviewBatchDefinitions()...)
 	definitions = append(definitions, subagentDefinitions()...)
 	definitions = append(definitions, queueChangeDefinitions()...)
+	definitions = append(definitions, followingDefinitions()...)
 	definitions = append(definitions, ownerManagementDefinitions()...)
 	definitions = append(definitions, existingManagementDefinitions()...)
 	known := make(map[string]bool)
@@ -185,6 +187,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					}
 				case "review_queue_add", "review_queue_move", "review_queue_remove":
 					value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
+				case "review_following_read":
+					value, err = service.ReviewFollowing(ctx, args.pullNumber)
+				case "review_following_update":
+					value, err = service.ConfigureReviewFollowing(ctx, args.key, args.pullNumber, args.following)
 				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
 					value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
 				case "review_execution_read":

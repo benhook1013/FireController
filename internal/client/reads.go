@@ -174,7 +174,7 @@ func (c *Client) validInboxItem(item InboxItem, filter InboxFilter, selectedWork
 	if len(selectedWorker) > 0 {
 		worker = selectedWorker[0]
 	}
-	return validID(item.ID) && validID(item.ConversationID) && validID(item.SenderWorkerID) && item.RecipientWorkerID == worker && utf8.RuneCountInString(item.Preview) <= 160 && !(item.Acknowledged && !item.Seen) && cleanText(item.CreatedAt, 64) && (!filter.Unread || !item.Seen) && (!filter.Unacknowledged || !item.Acknowledged)
+	return validID(item.ID) && validID(item.ConversationID) && validMessageOrigin(item.OriginKind, item.SenderWorkerID) && item.RecipientWorkerID == worker && utf8.RuneCountInString(item.Preview) <= 160 && !(item.Acknowledged && !item.Seen) && cleanText(item.CreatedAt, 64) && (!filter.Unread || !item.Seen) && (!filter.Unacknowledged || !item.Acknowledged)
 }
 func (c *Client) Conversation(ctx context.Context, id string, options PageOptions) (ConversationPage, error) {
 	q, err := pageQuery(options)
@@ -189,7 +189,10 @@ func (c *Client) Conversation(ctx context.Context, id string, options PageOption
 		return ConversationPage{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || item.ConversationID != id || !validID(item.SenderWorkerID) || !validID(item.RecipientWorkerID) || item.ReplyToMessageID != "" && !validID(item.ReplyToMessageID) || strings.TrimSpace(item.Body) == "" || len(item.Body) > 16<<10 || !cleanText(item.CreatedAt, 64) {
+		if item.OriginKind == "controller" && (len(value.Items) != 1 || value.HasMore || item.ID != value.RootMessageID || item.ReplyToMessageID != "") {
+			return ConversationPage{}, invalidResponse()
+		}
+		if !validID(item.ID) || item.ConversationID != id || !validMessageOrigin(item.OriginKind, item.SenderWorkerID) || !validID(item.RecipientWorkerID) || item.ReplyToMessageID != "" && !validID(item.ReplyToMessageID) || strings.TrimSpace(item.Body) == "" || len(item.Body) > 16<<10 || !cleanText(item.CreatedAt, 64) {
 			return ConversationPage{}, invalidResponse()
 		}
 	}

@@ -21,9 +21,10 @@ type InboxSnapshot struct {
 // incoming feed. Assignment changes have no conversation and may have an acting
 // sender worker; message.sent always identifies its sender and conversation.
 type MessageEventPayload struct {
-	ConversationID    string  `json:"conversation_id,omitempty"`
-	RecipientWorkerID string  `json:"recipient_worker_id"`
-	SenderWorkerID    *string `json:"sender_worker_id,omitempty"`
+	OriginKind        MessageOrigin `json:"origin_kind,omitempty"`
+	ConversationID    string        `json:"conversation_id,omitempty"`
+	RecipientWorkerID string        `json:"recipient_worker_id"`
+	SenderWorkerID    *string       `json:"sender_worker_id,omitempty"`
 }
 
 type MessageEvent struct {
@@ -125,11 +126,11 @@ func (c *Client) validMessageEvent(value MessageEvent) bool {
 	}
 	switch value.Type {
 	case "message.sent":
-		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID != nil && validID(*value.Payload.SenderWorkerID)
+		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID != nil && validMessageOrigin(value.Payload.OriginKind, *value.Payload.SenderWorkerID)
 	case "message.seen", "message.acknowledged":
-		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID == nil
+		return validID(value.Payload.ConversationID) && value.Payload.SenderWorkerID == nil && (value.Payload.OriginKind == "" || value.Payload.OriginKind == "controller")
 	case "job.assigned", "job.unassigned":
-		return value.Payload.ConversationID == "" && (value.Payload.SenderWorkerID == nil || validID(*value.Payload.SenderWorkerID) && *value.Payload.SenderWorkerID != c.identity.WorkerID)
+		return value.Payload.OriginKind == "" && value.Payload.ConversationID == "" && (value.Payload.SenderWorkerID == nil || validID(*value.Payload.SenderWorkerID) && *value.Payload.SenderWorkerID != c.identity.WorkerID)
 	default:
 		return false
 	}
