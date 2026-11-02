@@ -54,7 +54,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 			if item.WaitingForChange {
 				phase = "waiting_for_change"
 			}
-			explanation := "Labelled historical rows identify failed jobs in earlier current-numbered attempts on this same pinned head. The latest jobs do not establish their coverage or supersession; these rows do not prove that the latest/current comparison still fails. Their run base is unknown. Required CI keeps its separate pending or unproven result, without coverage credit."
+			explanation := "Confirmed job failure on this pinned PR head. Labelled historical rows identify failed jobs in earlier runs' current numbered attempts. Newer runs have not proven whether they reran or replaced those failed jobs; these rows do not prove that the latest/current comparison still fails. Their run base is unknown. Required CI keeps its separate pending or unproven result, without coverage credit."
 			if historical < len(item.WorkflowFailures) {
 				explanation += " Unlabelled rows retain the ordinary proven failure-attention meaning."
 			}
