@@ -15,6 +15,7 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
+| `POST /reviews/queue/edits` | Administrator-only bounded metadata, retirement, reactivation or relative-order edit; preserves unselected queue entries and evidence. |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
@@ -28,6 +29,22 @@ Cursors bind the principal, project, route, order and retained snapshot. New imp
 ## Administrator observations
 
 The [prepared import contract](review-import.md) owns guided preview/apply and profile-bound administrator CLI commands. These routes share the observation transaction below; preview does not reserve a workspace revision.
+
+## Bounded queue edits
+
+`POST /api/v1/projects/{project_id}/reviews/queue/edits` manages a selected part of the queue without replacing its full current membership. It requires administrator authorization, an explicit idempotency key and a strict JSON document containing `expected_revision`, the project's `repository_id` and a bounded `source` label. Optional `queue` and `retired` arrays select between one and one hundred entries in total, unless a nonempty `order` is supplied. Each request and its normalized JSON are limited to 256 KiB. Omitted arrays normalize to empty; null arrays, duplicate keys, unknown fields and duplicate or overlapping PR selections are refused.
+
+Each `queue` item has `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`. Omitted SHA/base strings become empty. CI permits `unknown`, `pending`, `success`, `failure` and `not_required`. Runs, attempts, findings, counts and completeness cannot be supplied. Existing entries retain their position and evidence; a changed head clears inherited completeness. New entries append with zero history and partial coverage. Selecting a retired PR explicitly reactivates it. Each `retired` item names a currently visible PR and reason `superseded` or `defunct`. Retirement hides it from the queue while preserving its detail, history, controls and native publications; later native evidence cannot silently reactivate it. Merged PRs omitted from an edit remain visible completed history and are never implicitly retired.
+
+Optional `order` selects one to one hundred unique visible positive 32-bit PR numbers. The selected entries exchange only their occupied positions; unselected positions stay unchanged. Thus `[1,2,3,4]` with `order:[3,1]` becomes `[3,2,1,4]`. Metadata upserts and explicit reactivation occur before order selection. Unknown or still-retired PRs, entries retired by the same request and empty/null order arrays are refused. Omitting order preserves the existing normalized edit shape.
+
+The selected changes, immutable snapshot, references, derived summaries, public projection refresh, event and receipt commit together. Edits retain the prior source observation time and perform no provider work or review-policy mutation. Success returns HTTP 201 with only snapshot `id`, new `revision` and `outcome:queue_edited`. Exact-key replay returns that original receipt after later edits or restart under current authorization; changed input with the same key conflicts. The existing complete-observation limits and explicit retirement requirements remain unchanged. Bounded queue edits remain usable when native growth exceeds those full-replacement limits.
+
+Use `fc reviews queue-edit --file ABSOLUTE_PATH --key KEY` with an owner-private regular JSON file, or MCP `review_queue_edit` with `document` and `idempotency_key`. Both validate the document before service I/O, preserve its exact bytes and explicit binding, and never retry automatically. Lost receipts or failed CLI output retain unknown-outcome guidance for exact-key recovery. These are administrator management operations, not review requests or automatic scheduling controls.
+
+Focused source tests exercise actual growth beyond two hundred native PRs, selected metadata and retirement, preserved merged omissions, relative ordering, historical detail/cursor bytes, original-key replay, revision/authentication guards and transaction rollback. Client, CLI and SDK MCP checks exercise the native endpoint, private-file admission, strict inputs and lost receipts. This does not establish live-provider behavior or installed rollout.
+
+## Complete observations
 
 The strict JSON body requires `expected_revision` (zero for the first observation), the configured stable GitHub `repository_id`, a bounded `source`, an RFC3339 `observed_at`, ordered `queue` entries and explicit `retired` entries. Omitted arrays normalize to empty arrays. The body and its normalized form are bounded to 256 KiB. A changed request under an existing idempotency key conflicts; an exact retained replay returns the original receipt before re-evaluating the revision. Replay still requires current authorization.
 
