@@ -651,5 +651,3 @@ func TestNativeDoesNotResurfaceHistoricallyRetiredMissingParent(t *testing.T) {
 		}
 	})
 }
-
-func int64Pointer(value int64) *int64 { return &value }
