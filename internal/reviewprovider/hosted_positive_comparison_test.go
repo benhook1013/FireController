@@ -106,3 +106,22 @@ func TestHostedPositiveStandingComparisonRefusesUnprovenMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedPositiveStandingPreviousReviewLabelRetainsOriginalComparison(t *testing.T) {
+	f, baseline, base := positiveStandingFixture(t)
+	f.snapshot.IssueComments[1].Body = strings.Replace(f.snapshot.IssueComments[1].Body, "· up to <code>", "· previous review <code>", 1)
+	before, _ := json.Marshal(f.snapshot)
+	inventory := hfWant(t, f, true, 1)
+	got, ok := ResolveHostedStandingComparison(f.snapshot, baseline, inventory.Publication, f.poster, f.bot, f.intent.HeadSHA, base, base)
+	if !ok || got != base {
+		t.Fatal("historical label lost original comparison", got, ok)
+	}
+	// Presentation about a previous review cannot establish coverage of a newer head.
+	if _, ok := ResolveHostedStandingComparison(f.snapshot, baseline, inventory.Publication, f.poster, f.bot, strings.Repeat("e", 40), base, base); ok {
+		t.Fatal("historical label credited later head")
+	}
+	after, _ := json.Marshal(f.snapshot)
+	if string(before) != string(after) {
+		t.Fatal("historical presentation proof rewrote source")
+	}
+}

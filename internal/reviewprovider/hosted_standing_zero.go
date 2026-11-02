@@ -35,7 +35,7 @@ var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command 
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
 var standingConfigurationLink = regexp.MustCompile(`^\[([^\[\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^()<>\r\n]+))\)$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
-var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate|` + standingPicture + ` (?:Low|Minimal|Moderate))</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
+var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate|` + standingPicture + ` (?:Low|Minimal|Moderate))</strong> · (?:up to|previous review) <code>([a-f0-9]{5})</code></summary>$`)
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"

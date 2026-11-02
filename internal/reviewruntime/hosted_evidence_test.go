@@ -491,6 +491,7 @@ func TestRetainHostedPositiveStandingComparisonUsesOriginalJournal(t *testing.T)
 			})
 			record.Snapshot.IssueComments[1].CreatedAt = created
 			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "No actionable comments were generated in the recent review. 🎉\n", "", 1)
+			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "· up to <code>", "· previous review <code>", 1)
 			trigger := record.Snapshot.IssueComments[0].CreatedAt
 			record.Snapshot.Reviews = []reviewprovider.HostedReview{{ID: 200, Body: hostedRetainPublicationMarker(), Author: record.ProviderActor, State: "commented", HeadSHA: f.f.headSHA, SubmittedAt: trigger.Add(time.Second)}}
 			record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{{ID: 300, ReviewID: 200, Body: hostedRetainInline(1, "Preserve the original positive source."), Author: record.ProviderActor, Path: "pkg/source.go", HeadSHA: f.f.headSHA, OriginalHeadSHA: f.f.headSHA, CreatedAt: trigger.Add(time.Second), UpdatedAt: trigger.Add(time.Second)}}
