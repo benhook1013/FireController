@@ -188,7 +188,7 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	}
 }
 
-func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
+func TestPullMetadataQueueEditPreservesOptionalFacts(t *testing.T) {
 	f := newAPIFixture(t)
 	p := nativePull(1)
 	draft := false
@@ -196,23 +196,18 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 	p.IsDraft = &draft
 	p.MergedAt = "2026-01-01T00:00:00Z"
 	f.observe(t, reviewRequest(0, []PullInput{p}), "metadata-additive")
-	omitted := p
-	omitted.Diff = nil
-	omitted.IsDraft = nil
-	omitted.MergedAt = ""
-	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: "added-producer", Pulls: []PullInput{omitted}}), "metadata-transfer")
 	q := QueuePullInput{Number: p.Number, Title: p.Title, State: p.State, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef, CIState: p.CIState, Mergeability: p.Mergeability}
-	w := queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{q}, nil), "metadata-queue-edit")
+	w := queueEditHTTP(f, queueEditRequest(1, []QueuePullInput{q}, nil), "metadata-queue-edit")
 	if w.Code != 201 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	kept := metadataRead(t, f, 1, "")
 	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || *kept.Pull.IsDraft != draft || kept.Pull.MergedAt != p.MergedAt {
-		t.Fatal("additive/edit discarded metadata")
+		t.Fatal("queue edit discarded metadata")
 	}
 	q.HeadSHA = strings.Repeat("d", 40)
 	q.State = "open"
-	w = queueEditHTTP(f, queueEditRequest(3, []QueuePullInput{q}, nil), "metadata-queue-move")
+	w = queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{q}, nil), "metadata-queue-move")
 	if w.Code != 201 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -282,7 +277,7 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 	return result
 }
 
-// Native publication is an independent metadata writer from administrator transfer and queue edits.
+// Native publication is an independent metadata writer from administrator queue edits.
 func TestPullMetadataNativePublicationPreservesOptionalFactsAndClearsOnHeadChange(t *testing.T) {
 	f := newAPIFixture(t)
 	p := nativePull(1)

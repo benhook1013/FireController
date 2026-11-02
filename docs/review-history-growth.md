@@ -10,7 +10,7 @@ Current references, aggregate counters, attempt ordering and run ordering advanc
 
 ## Bounded additive writes
 
-[Prepared additive transfer](review-import.md#additive-mixed-producer-transfer) retains omitted history and preserves each original producer separately from transfer provenance. Exact replay, immutable identity and native-journal/capture authority remain protected. [Selected queue edits](review-workspace.md#selected-queue-edits) maintain metadata, relative ordering, explicit retirement and reactivation after a complete-observation document no longer fits. Both paths advance the existing immutable history/current references atomically; they add no schema or provider execution.
+[Selected queue edits](review-workspace.md#selected-queue-edits) maintain metadata, relative ordering, explicit retirement and reactivation after a complete-observation document no longer fits. These edits advance the existing immutable history/current references atomically without provider execution. Prepared additive history transfer remains a separate, unimplemented capability in this slice; complete observations retain their replacement semantics.
 
 ## Reads and growth
 
@@ -28,6 +28,6 @@ Backup inspection is read-only. It checks exact supported table/view/index defin
 
 ## Focused proof
 
-The [migration tests](../internal/reviews/history_migration_test.go) compare historical responses, cursors and receipts across upgrades, restart and injected rollback. [Native growth tests](../internal/reviews/history_native_growth_test.go) retain hundreds of mixed original-producer records through actual preview/apply, independently retain native-seeded growth, and publish new native work without duplicating unchanged finding bodies or imposing a lifetime cap. [Projection tests](../internal/reviewexec/attempt_projection_capacity_test.go) exercise actual controlled driver completion beyond former caps and preserve rollback and reservations. [Backup tests](../internal/backup/history_inventory_test.go) create, inspect, restore and activate canonical retained history, and refuse rehashed schema/reference corruption. These controlled checks do not establish live provider behavior, deployment or fleet capacity.
+The [migration tests](../internal/reviews/history_migration_test.go) compare historical responses, cursors and receipts across upgrades, restart and injected rollback. [Native growth tests](../internal/reviews/history_native_growth_test.go) retain hundreds of native-seeded records alongside original imported history and publish new native work without duplicating unchanged finding bodies or imposing a lifetime cap. [Projection tests](../internal/reviewexec/attempt_projection_capacity_test.go) exercise actual controlled driver completion beyond former caps and preserve rollback and reservations. [Backup tests](../internal/backup/history_inventory_test.go) create, inspect, restore and activate canonical retained history, and refuse rehashed schema/reference corruption. These controlled checks do not establish live provider behavior, deployment or fleet capacity.
 
 Interval checks use ordered overlap and owner-visibility boundary scans, so repeated publications do not require comparing every prior pair of intervals.

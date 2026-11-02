@@ -162,7 +162,6 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
-	mergeStateStatus string
 	// QueuePosition is the original zero-based position, only on selected views.
 	QueuePosition  *int             `json:"queue_position,omitempty"`
 	Diff           *PullDiff        `json:"diff,omitempty"`
