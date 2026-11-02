@@ -163,6 +163,10 @@ func TestNativePublicOverflowRetainsPrivateWorkAndRefreshesBoundedWindow(t *test
 	}
 	pull.Runs = nil
 	run := nativeRun("native-beyond-public-capacity")
+	// Public refresh preserves earlier rounds before bounding the chronological
+	// window. Give this new completion a later time; equal timestamps use
+	// salted opaque keys and do not establish which round is newest.
+	run.StartedAt, run.FinishedAt = "2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z"
 	receipt := mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run})
 	var current PullResponse
 	nativeRead(t, f, "/pulls/1", &current)
@@ -182,8 +186,9 @@ func TestNativePublicOverflowRetainsPrivateWorkAndRefreshesBoundedWindow(t *test
 	if len(window.CLI) != 100 || !window.CLIHasMore || len(window.Hosted) != 0 || window.HostedHasMore {
 		t.Fatalf("native result did not advance the bounded public window: CLI%d more%t Hosted%d more%t", len(window.CLI), window.CLIHasMore, len(window.Hosted), window.HostedHasMore)
 	}
-	// Published content sorts by opaque identity, independently of source
-	// position. Exactly one new native result replaces one older public round.
+	// Published content sorts chronologically, with opaque identity breaking
+	// ties, independently of source position. Exactly one new native result
+	// replaces one older public round.
 	oldRounds := make(map[string]publicsite.PublicRound)
 	for _, old := range before.Content.Reviews[0].CLI {
 		oldRounds[old.Key] = old

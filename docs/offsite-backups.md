@@ -20,6 +20,8 @@ Cloud retention is independent of local retention. It runs only with a verified 
 
 ## Operator commands
 
+The offsite operator implementation currently targets Linux, macOS and Windows. Its platform-specific locking and process helpers do not support other Go operating-system targets. The [native platform gate](../tools/packagedsmoke/README.md#native-platform-gate) records build and runner qualification separately from the provider checks below.
+
 ```sh
 fcd backup-push --config /private/offsite.json
 fcd backup-offsite-status --config /private/offsite.json
