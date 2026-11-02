@@ -679,6 +679,12 @@ func Fetch(ctx context.Context, configPath, id, destination string) (backup.Summ
 	if err != nil {
 		return backup.Summary{}, err
 	}
+	// Session startup reclaims its workspace and close removes it. Recovery
+	// output must be independent of that owned state, including prefix aliases.
+	resolved, state := resolvePrefix(destination), resolvePrefix(c.StateDir)
+	if resolved == state || strings.HasPrefix(resolved, state+string(filepath.Separator)) {
+		return backup.Summary{}, failure("offsite_configuration_invalid")
+	}
 	duration, _ := time.ParseDuration(c.Timeout)
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
