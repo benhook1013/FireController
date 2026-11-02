@@ -94,7 +94,7 @@ func TestReviewReadHelpSeparatesQueuePolicyAndReadiness(t *testing.T) {
 		"queue":         {"default 5", "retained page size", "merged", "channel-front", "--cursor"},
 		"assess":        {"original captured comparison", "completed PR/channel review progress", "current project policy", "CI", "threads"},
 		"source-assess": {"latest retained source identity", "completed PR/channel review progress", "current local review policy", "source-refresh --help"},
-		"ci-assess":     {"required CI", "latest stored source comparison", "Review-channel policy", "selected base branch", "not_required", "optional workflows"},
+		"ci-assess":     {"required CI", "latest stored source comparison", "Review-channel policy", "selected base branch", "not_required", "optional workflows", "completed source refresh", "reviews ci-wait", "final merge branch", "without a separate source refresh"},
 		"readiness":     {"finalized PR/channel review progress", "thread", "merge-state", "ready_as_observed", "source-refresh --help"},
 	} {
 		help, ok := operationHelp("reviews " + operation)

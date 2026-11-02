@@ -6,7 +6,7 @@ The provider collector, pure assessment, durable service storage and bound API/C
 
 ## Explicit collection
 
-For a quiet wait across several current PRs, use [CI waiting](ci-wait.md). It selects the final merge branch's gate explicitly and shares service observation without requiring queue enrollment. The retained assessments below keep their existing selected-base meaning.
+For current CI checking on one or more PRs, use [CI waiting](ci-wait.md). It returns required-check details using the final merge branch's gate and shares service observation without queue enrollment or a separate source refresh. The retained assessments below keep their existing selected-base meaning: `ci-assess` reads a completed source refresh collected with CI or readiness. If none exists, `reviews_ci_unavailable` means that retained observation is absent, not that authentication or CI failed. Only when a retained selected-base assessment is intended, collect an already-pending CI-enabled refresh or request source refresh with `include_ci: true` (CLI `--ci`), wait for that original operation to complete, then reassess. An assessment read does not silently collect GitHub data or substitute a different gate.
 
 Source refresh accepts optional `include_ci: true`; the bound CLI exposes `--ci` and MCP exposes `include_ci`. Readiness collection also requests CI; omitting both options keeps source-only collection. CI collection uses the same durable operation, two-second default result wait and optional longer wait described in [source refresh](review-source.md). Adding CI changes the action identity: source-only work cannot silently fulfill a CI request. Ordinary operation and assessment reads never contact GitHub.
 

@@ -621,6 +621,9 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 		case "worker_retired":
 			result.Message = "This worker is retired."
 			result.Action = "Select an active worker for new assignments or messages; retained historical records remain readable."
+		case "reviews_ci_unavailable":
+			result.Message = "No completed retained source observation with CI is available for this PR."
+			result.Action = "For current CI checking, use wait_for_ci (CLI: reviews ci-wait) with the current PR/head/base pins; it returns required-check details using the final merge branch's gate without a separate source refresh. ci-assess only reads retained selected-base CI. If that assessment is intended, collect an already-pending CI-enabled refresh with review_source_refresh_read (CLI: reviews source-operation), or request review_source_refresh with include_ci:true (CLI: reviews source-refresh --ci) and current configuration/head, then assess after it completes. This read did not contact GitHub or start a review; credentials need no change."
 		case "reviews_source_unavailable":
 			result.Message = "No completed stored source observation is available for this PR."
 			result.Action = "Collect any already-pending original refresh with review_source_refresh_read (CLI: reviews source-operation). Otherwise request review_source_refresh (CLI: reviews source-refresh) using the current configuration/head, then collect its result. Reassess after the refresh completes. Assessment only reads stored data; it does not refresh GitHub or start a review. Do not change credentials or submit duplicate refreshes."
