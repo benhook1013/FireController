@@ -179,7 +179,7 @@ func editQueue(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		core.WriteJSON(w, http.StatusCreated, json.RawMessage(result))
+		core.WriteJSON(w, http.StatusCreated, result)
 	}
 }
 
