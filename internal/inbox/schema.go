@@ -62,6 +62,13 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		"CREATE TEMP TABLE inbox_sequence_before AS SELECT seq FROM sqlite_sequence WHERE name='inbox_messages'",
 		ddl,
 		"INSERT INTO inbox_messages_next(sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at) SELECT sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at FROM inbox_messages",
+		// DROP performs an implicit DELETE and checks every incoming FK. Give
+		// those checks complete child-key indexes instead of rescanning each
+		// project's conversations/replies for every retained message. The copy
+		// still references the old table until the rename, so index it too.
+		"CREATE INDEX inbox_migration_root_fk ON inbox_conversations(project_id,root_message_id)",
+		"CREATE INDEX inbox_migration_old_reply_fk ON inbox_messages(project_id,reply_to_message_id)",
+		"CREATE INDEX inbox_migration_next_reply_fk ON inbox_messages_next(project_id,reply_to_message_id)",
 		"DROP TABLE inbox_messages",
 		"ALTER TABLE inbox_messages_next RENAME TO inbox_messages",
 		"INSERT INTO sqlite_sequence(name,seq) SELECT 'inbox_messages',max(seq) FROM inbox_sequence_before HAVING count(*)>0 AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='inbox_messages')",
@@ -69,6 +76,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		"DELETE FROM sqlite_sequence WHERE name='inbox_messages' AND NOT EXISTS(SELECT 1 FROM inbox_sequence_before)",
 		"DROP TABLE inbox_sequence_before",
 		SchemaSQL(2)[3], SchemaSQL(2)[4],
+		// The old-table index was dropped with that table. Keep the supported
+		// Inbox2 schema unchanged by removing the other migration-only indexes.
+		"DROP INDEX inbox_migration_root_fk",
+		"DROP INDEX inbox_migration_next_reply_fk",
 	}
 	return store.EnsureSchemaWithBackfill(ctx, "inbox", [][]string{schemaOne, migration}, func(ctx context.Context, conn *sql.Conn) error {
 		// DROP/rebuild can leave SQLite's deferred violation counter pending

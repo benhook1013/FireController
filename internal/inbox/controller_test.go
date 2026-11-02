@@ -104,7 +104,7 @@ func TestControllerInboxDurableDedupeOriginProjectionAndOneWay(t *testing.T) {
 }
 
 func TestControllerInboxMigrationPreservesRowsReceiptsAndSequence(t *testing.T) {
-	for _, mode := range []string{"none", "empty_high", "sparse", "bad_reference"} {
+	for _, mode := range []string{"none", "empty_high", "sparse", "bad_reference", "bad_root_reference", "bad_reply_reference"} {
 		t.Run(mode, func(t *testing.T) {
 			store, err := core.Open(t.Context(), filepath.Join(t.TempDir(), "state"))
 			if err != nil {
@@ -136,22 +136,29 @@ func TestControllerInboxMigrationPreservesRowsReceiptsAndSequence(t *testing.T) 
 					}
 				}
 			}
-			if mode == "bad_reference" {
+			if strings.HasPrefix(mode, "bad_") {
 				conn, err := store.DB().Conn(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = conn.ExecContext(t.Context(), `PRAGMA foreign_keys=OFF;UPDATE inbox_messages SET recipient_worker_id='missing';PRAGMA foreign_keys=ON`)
+				corrupt := `UPDATE inbox_messages SET recipient_worker_id='missing'`
+				if mode == "bad_root_reference" {
+					corrupt = `UPDATE inbox_conversations SET root_message_id='missing'`
+				} else if mode == "bad_reply_reference" {
+					corrupt = `UPDATE inbox_messages SET reply_to_message_id='missing'`
+				}
+				_, err = conn.ExecContext(t.Context(), `PRAGMA foreign_keys=OFF;`+corrupt+`;PRAGMA foreign_keys=ON`)
 				_ = conn.Close()
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			before := controllerRows(t, store.DB(), `SELECT sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at FROM inbox_messages`)
+			conversations := controllerRows(t, store.DB(), `SELECT * FROM inbox_conversations`)
 			states := controllerRows(t, store.DB(), `SELECT * FROM inbox_recipient_state`)
 			seq := controllerRows(t, store.DB(), `SELECT seq FROM sqlite_sequence WHERE name='inbox_messages'`)
 			err = inbox.EnsureSchema(t.Context(), store)
-			if mode == "bad_reference" {
+			if strings.HasPrefix(mode, "bad_") {
 				if err == nil {
 					t.Fatal("inconsistent old references migrated")
 				}
@@ -161,15 +168,97 @@ func TestControllerInboxMigrationPreservesRowsReceiptsAndSequence(t *testing.T) 
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(before, controllerRows(t, store.DB(), `SELECT sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at FROM inbox_messages`)) || !reflect.DeepEqual(states, controllerRows(t, store.DB(), `SELECT * FROM inbox_recipient_state`)) || !reflect.DeepEqual(seq, controllerRows(t, store.DB(), `SELECT seq FROM sqlite_sequence WHERE name='inbox_messages'`)) {
+			if !reflect.DeepEqual(before, controllerRows(t, store.DB(), `SELECT sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at FROM inbox_messages`)) || !reflect.DeepEqual(conversations, controllerRows(t, store.DB(), `SELECT * FROM inbox_conversations`)) || !reflect.DeepEqual(states, controllerRows(t, store.DB(), `SELECT * FROM inbox_recipient_state`)) || !reflect.DeepEqual(seq, controllerRows(t, store.DB(), `SELECT seq FROM sqlite_sequence WHERE name='inbox_messages'`)) {
 				t.Fatal("migration changed retained data/receipts/sequence")
 			}
-			if mode != "bad_reference" {
+			if got := controllerRows(t, store.DB(), `SELECT name FROM sqlite_schema WHERE name LIKE 'inbox_migration_%'`); len(got) != 0 {
+				t.Fatal("migration leaked intermediate schema objects", got)
+			}
+			if !strings.HasPrefix(mode, "bad_") {
 				if err = inbox.EnsureSchema(t.Context(), store); err != nil {
 					t.Fatal(err)
 				}
 			}
 		})
+	}
+}
+
+func TestControllerInboxMigrationRetainsPopulatedReplyGraph(t *testing.T) {
+	store, err := core.Open(t.Context(), filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = store.EnsureSchema(t.Context(), "inbox", inbox.SchemaSQL(1)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.DB().Exec(`INSERT INTO projects(id,name,github_repository_id,repository) VALUES('p','Project',1,'example/project');
+INSERT INTO workers(project_id,id,name) VALUES('p','s','Sender'),('p','r','Recipient');
+CREATE INDEX fixture_root_fk ON inbox_conversations(project_id,root_message_id);
+CREATE INDEX fixture_reply_fk ON inbox_messages(project_id,reply_to_message_id)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep several thousand conversations and replies in one project. Without
+	// bounded child-key lookups, the DROP/rebuild scans that entire project for
+	// each message and can exhaust the ordinary startup migration budget.
+	err = store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000)
+INSERT INTO inbox_conversations SELECT 'p',printf('c%05d',x),printf('m%05d',2*x-1) FROM n;
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000)
+INSERT INTO inbox_messages(sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,body,created_at)
+SELECT 2*x-1,'p',printf('m%05d',2*x-1),printf('c%05d',x),'s','r','retained root','2026-11-02T00:00:00Z' FROM n;
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000)
+INSERT INTO inbox_messages(sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at)
+SELECT 2*x,'p',printf('m%05d',2*x),printf('c%05d',x),'r','s',printf('m%05d',2*x-1),'retained reply','2026-11-02T00:00:01Z' FROM n;
+INSERT INTO inbox_recipient_state SELECT project_id,id,recipient_worker_id,1,1,3 FROM inbox_messages;
+UPDATE sqlite_sequence SET seq=10000 WHERE name='inbox_messages';
+INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json)
+SELECT value,'principal','p','message.send','r','retained-key','retained-fingerprint','{"id":"m00001"}' FROM metadata WHERE key='instance_id';
+INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
+VALUES('p','message.sent','m00001',1,'principal','{"id":"m00001"}','2026-11-02T00:00:00Z')`)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().Exec(`DROP INDEX fixture_root_fk;DROP INDEX fixture_reply_fk`); err != nil {
+		t.Fatal(err)
+	}
+	queries := []string{
+		`SELECT sequence,project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at FROM inbox_messages ORDER BY sequence`,
+		`SELECT * FROM inbox_conversations ORDER BY project_id,id`,
+		`SELECT * FROM inbox_recipient_state ORDER BY project_id,message_id,worker_id`,
+		`SELECT * FROM receipts`, `SELECT * FROM events`,
+		`SELECT seq FROM sqlite_sequence WHERE name='inbox_messages'`,
+	}
+	before := make([][][]any, len(queries))
+	for i, query := range queries {
+		before[i] = controllerRows(t, store.DB(), query)
+	}
+	if len(before[0]) != 6000 {
+		t.Fatal("populated fixture incomplete", len(before[0]))
+	}
+	if err = inbox.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	for i, query := range queries {
+		if !reflect.DeepEqual(before[i], controllerRows(t, store.DB(), query)) {
+			t.Fatal("migration changed retained graph, receipts, events or sequence", query)
+		}
+	}
+	if got := controllerRows(t, store.DB(), `PRAGMA foreign_key_check`); len(got) != 0 {
+		t.Fatal("migrated graph has invalid references", got)
+	}
+	if got := controllerRows(t, store.DB(), `SELECT name FROM sqlite_schema WHERE name LIKE 'inbox_migration_%'`); len(got) != 0 {
+		t.Fatal("migration leaked intermediate schema objects", got)
+	}
+	if err = inbox.ValidateSnapshot(t.Context(), store.DB(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if err = inbox.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
 	}
 }
 func controllerRows(t *testing.T, db *sql.DB, q string) [][]any {
