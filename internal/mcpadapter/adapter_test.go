@@ -210,7 +210,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_evidence_read"], expected["review_adjudication_read"], expected["review_finding_decide"], expected["review_finding_fix"], expected["review_source_finalize"] = true, true, true, true, true
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"] = true, true, true
 			expected["review_queue_add"], expected["review_queue_move"], expected["review_queue_remove"] = true, true, true
-			expected["review_operations_list"] = true
+			expected["review_operations_list"], expected["wait_for_reviews"] = true, true
 			expected["job_status_read"], expected["review_findings_decide"], expected["review_findings_fix"] = true, true, true
 			expected["review_finding_route"], expected["review_route_read"], expected["review_routes_list"], expected["review_route_decide"], expected["review_route_fix"] = true, true, true, true, true
 			expected["review_policy_assess"] = true

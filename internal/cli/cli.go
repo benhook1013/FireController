@@ -73,6 +73,7 @@ type invocation struct {
 	helpOperation         string
 	argumentDiagnostic    *diagnostic
 	reviewOperations      client.ReviewOperationsOptions
+	reviewWatch           *reviewWatchInvocation
 	reviewOperationStatus *reviewOperationStatusInvocation
 	reviewActiveQueue     bool
 	reviewCIDiagnostics   bool
@@ -247,6 +248,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.ciWatch != nil {
 		timeout = client.ReviewOperationBudget(call.ciWatch.seconds)
+	}
+	if call.reviewWatch != nil {
+		timeout = client.ReviewOperationBudget(call.reviewWatch.seconds)
 	}
 	if call.reviewRun != nil {
 		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)

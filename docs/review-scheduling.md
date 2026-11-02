@@ -30,6 +30,8 @@ fc reviews scheduling pause --pr 123 --reason 'Preparing fixes' --expect-revisio
 fc reviews scheduling resume --pr 123 --expect-revision 1 --key retained-resume-key
 ```
 
+Normal `reviews execution` / `review_execution_read` output composes execution with this scheduling read, including its independent revision, automatic setting and authorizing worker. The authorizer is permission attribution, not lane ownership. Use [quiet review activity watch](review-operations.md#quiet-review-activity-watch) to discover automatic requests and subsequent native operation changes without manufacturing inbox messages.
+
 MCP equivalents are `review_scheduling_read`, `review_scheduling_configure`, `review_pull_scheduling_read` and `review_pull_scheduling_update`. The update takes explicit PR number, `paused`, expected revision and idempotency key; project configuration takes explicit `automatic_hosted`, expected revision and key. Use tools advertised by the running client. Neither read starts work. Project reads include only currently queued paused PRs; explicit PR reads can inspect pauses outside the queue.
 
 ## HTTP and retention

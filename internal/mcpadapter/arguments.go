@@ -61,6 +61,9 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if name == "wait_for_reviews" {
+		return reviewWatchArguments(data)
+	}
 	if reviewSchedulingTool(name) {
 		return reviewSchedulingArguments(name, data)
 	}

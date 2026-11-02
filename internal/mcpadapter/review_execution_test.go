@@ -216,7 +216,7 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 
 func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testing.T) {
 	f, handler, _ := reviewControlsFixture(t)
-	var posts, reads atomic.Int64
+	var posts, reads, schedulingReads atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/reviews/") {
 			if r.Header.Get("X-FC-Worker") != f.sender || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+token || r.URL.RawQuery != "" {
@@ -226,6 +226,9 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 				posts.Add(1)
 			} else {
 				reads.Add(1)
+				if strings.HasSuffix(r.URL.Path, "/reviews/scheduling") {
+					schedulingReads.Add(1)
+				}
 			}
 		}
 		handler.ServeHTTP(w, r)
@@ -233,9 +236,9 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 	defer service.Close()
 	session := reviewControlsStdio(t, reviewControlsProfile(t, f, service.URL), "chosen")
 	beforeProviders := f.providers.Load()
-	var config client.ReviewExecutionConfiguration
+	var config client.ReviewExecutionOutput
 	decodeResult(t, call(t, session, "review_execution_read", nil), &config)
-	if config.ProjectID != f.project || config.Revision != 1 || config.CapabilityID != "fixture" {
+	if config.ProjectID != f.project || config.Revision != 1 || config.CapabilityID != "fixture" || config.Scheduling.ProjectID != f.project || config.Scheduling.Revision != 0 || config.Scheduling.AutomaticHosted {
 		t.Fatal("configuration read changed scope")
 	}
 	args := executionArguments()
@@ -254,7 +257,7 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 	args["head_sha"] = strings.Repeat("b", 40)
 	diagnosticResult(t, call(t, session, "review_request", args), "idempotency_conflict", false)
 	var count int
-	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE id=?`, first.ID).Scan(&count); err != nil || count != 1 || posts.Load() != 3 || reads.Load() != 2 || f.providers.Load() != beforeProviders {
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE id=?`, first.ID).Scan(&count); err != nil || count != 1 || posts.Load() != 3 || reads.Load() != 3 || schedulingReads.Load() != 1 || f.providers.Load() != beforeProviders {
 		t.Fatal("execution controls polled, repeated effect or called providers", err)
 	}
 }

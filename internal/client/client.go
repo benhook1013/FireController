@@ -332,6 +332,7 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
+	reviewWatch        bool // Recognize only the old router's exact plain 404 for this read.
 	deploymentDraining *bool
 	queuedCause        *string
 	queuedReservation  **queuedReservation
@@ -476,6 +477,13 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		return fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if wait != nil && wait.reviewWatch && response.StatusCode == http.StatusNotFound && err == nil && media == "text/plain" && response.Header.Get("Content-Encoding") == "" {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 64))
+		if readErr == nil && string(body) == "404 page not found\n" {
+			return fail("unsupported_operation", "Review watch is unavailable at this service route.", "Use matching deployed server and client releases; reconnect an older MCP session after installation. No review watch is active. Existing reviews operations and reviews operation reads remain available.", http.StatusNotFound)
+		}
+		return invalidResponse()
+	}
 	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
 		if response.StatusCode >= 500 && response.StatusCode < 600 {
 			if mutation {

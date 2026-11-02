@@ -70,6 +70,7 @@ type arguments struct {
 	reviewScheduling           client.ConfigureReviewSchedulingRequest
 	reviewPullScheduling       client.ConfigureReviewPullSchedulingRequest
 	reviewOperations           client.ReviewOperationsOptions
+	reviewWatch                client.ReviewWatchOptions
 }
 type definition struct {
 	name, description string
@@ -92,7 +93,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, ciWatchDefinition())
 	definitions = append(definitions, reviewActivityDefinition())
 	definitions = append(definitions, reviewSchedulingDefinitions()...)
-	definitions = append(definitions, operationListDefinition())
+	definitions = append(definitions, operationListDefinition(), reviewWatchDefinition())
 	definitions = append(definitions, jobStatusDefinitions()...)
 	definitions = append(definitions, reviewBatchDefinitions()...)
 	definitions = append(definitions, subagentDefinitions()...)
@@ -187,11 +188,13 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
 					value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
 				case "review_execution_read":
-					value, err = service.ReviewExecution(ctx)
+					value, err = service.ReviewExecutionWithScheduling(ctx)
 				case "review_operation_read":
 					value, err = executeOperationStatus(ctx, service, args.operationStatus)
 				case "review_operations_list":
 					value, err = service.ReviewOperations(ctx, args.reviewOperations)
+				case "wait_for_reviews":
+					value, err = service.WatchReviews(ctx, args.reviewWatch, args.reviewSourceWait)
 				case "review_request":
 					var result client.ReviewRequestResult
 					result, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
@@ -400,7 +403,7 @@ func toolCallBudget(name string, args arguments) time.Duration {
 		timeout = client.MessageWaitBudget(args.messageWaitSeconds)
 	case "review_source_refresh", "review_checkpoint_publish", "review_checkpoint_recover":
 		timeout = client.SourceRefreshBudget(args.reviewSourceWait)
-	case "review_start", "review_selection_read", "review_request", "review_operation_read", "wait_for_ci":
+	case "review_start", "review_selection_read", "review_request", "review_operation_read", "wait_for_ci", "wait_for_reviews":
 		timeout = client.ReviewOperationBudget(args.reviewSourceWait)
 	}
 	return max(timeout+10*time.Second, 15*time.Second, existingManagementBudget(args.existingManagement))

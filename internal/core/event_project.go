@@ -43,7 +43,7 @@ func (s *Store) ProjectEventCursor(ctx context.Context, tx *sql.Tx, scope Scope)
 	if err := tx.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM events WHERE project_id=?", scope.ProjectID).Scan(&sequence); err != nil {
 		return "", storageError(err)
 	}
-	return s.Cursor(scope, projectFeed, strconv.FormatInt(sequence, 10)), nil
+	return s.ProjectEventCursorAt(scope, sequence), nil
 }
 
 type ProjectEventItem struct {
@@ -128,4 +128,13 @@ func (s *Store) streamProjectEvents(ctx context.Context, scope Scope, cursor str
 		page, err := s.readProjectEvents(ctx, scope, after, limit)
 		return streamEventPage{page.EventCursor, page.HasMore, len(page.Items), func() error { return deliver(page) }}, err
 	}, heartbeat, interval)
+}
+
+// ProjectEventPosition and ProjectEventCursorAt let a domain read project events
+// in its own authorized snapshot while reusing the existing stream's cursor.
+func (s *Store) ProjectEventPosition(scope Scope, cursor string) (int64, error) {
+	return s.eventPosition(scope, projectFeed, cursor)
+}
+func (s *Store) ProjectEventCursorAt(scope Scope, sequence int64) string {
+	return s.Cursor(scope, projectFeed, strconv.FormatInt(sequence, 10))
 }

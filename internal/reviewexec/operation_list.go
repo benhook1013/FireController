@@ -61,6 +61,11 @@ func validOperationSummary(o OperationSummary) bool {
 // ListOperations reads one authorized page. Mutable states are evaluated anew
 // on every page; a cursor does not promise a historical state snapshot.
 func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options OperationListOptions) (OperationsPage, error) {
+	return e.listOperationsSnapshot(ctx, scope, options, nil)
+}
+
+// Optional event watermark is captured in the exact attention-list snapshot.
+func (e *Engine) listOperationsSnapshot(ctx context.Context, scope core.Scope, options OperationListOptions, eventCursor *string) (OperationsPage, error) {
 	if ctx == nil || e == nil || e.store == nil || options.PullNumber != 0 && !validRoutePull(options.PullNumber) || options.Channel != "" && !validChannel(options.Channel) || options.Limit < 0 || options.Limit > 100 {
 		return OperationsPage{}, invalid()
 	}
@@ -171,6 +176,10 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 		if result.HasMore {
 			last := result.Items[len(result.Items)-1]
 			result.Cursor = e.store.Cursor(scope, filter, last.CreatedAt+"|"+last.ID)
+		}
+		if eventCursor != nil {
+			*eventCursor, err = e.store.ProjectEventCursor(ctx, tx, scope)
+			return err
 		}
 		return nil
 	})

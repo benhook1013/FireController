@@ -12,6 +12,11 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "watch" {
+		var ok bool
+		call.reviewWatch, ok = parseReviewWatch(args)
+		return call, ok
+	}
 	if call.subcommand == "scheduling" {
 		var ok bool
 		call.reviewScheduling, ok = parseReviewScheduling(args)
@@ -202,7 +207,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "routes":
 		return service.ReviewFindingRoutes(ctx, call.pullNumber, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "execution":
-		return service.ReviewExecution(ctx)
+		return service.ReviewExecutionWithScheduling(ctx)
+	case "watch":
+		return service.WatchReviews(ctx, call.reviewWatch.options, call.reviewWatch.seconds)
 	case "operation":
 		return executeReviewOperationStatus(ctx, service, call.reviewOperationStatus)
 	case "source-operation":

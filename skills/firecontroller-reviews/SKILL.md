@@ -9,6 +9,8 @@ Use the supplied worker-bound connection and the project's existing authorizatio
 
 For project-wide hourly Hosted/CLI activity, use `reviews activity` / `review_activity_read`; no per-PR aggregation is needed. See [activity coverage](../../docs/review-activity.md) when interpreting totals or undated history.
 
+For newly created automatic requests or project/PR/channel activity without a known operation ID, use `reviews watch` / `wait_for_reviews`; load [quiet review activity watch](../../docs/review-operations.md#quiet-review-activity-watch) for initial snapshot, separate event cursor and host-delivery limits.
+
 For optional automatic Hosted scheduling or pausing new reviews on a PR, load [scheduling controls](../../docs/review-scheduling.md). These are explicit project/PR controls, separate from ordinary requests and worker pauses.
 
 This skill describes existing tool mechanics. It does not select project priorities, pipeline depth, successor-publication cadence, merge authority or new review-train strategy. Those remain in the human's instructions and project workflow. Tool availability never authorizes a review request, allowance query, new grant or pause change. A project instruction to defer reviews remains in force.
