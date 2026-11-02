@@ -418,13 +418,14 @@ func TestReviewTransferClientSelectedBatchBounds(t *testing.T) {
 func TestReviewTransferClientMetadataRealPreviewApplyReplay(t *testing.T) {
 	for _, tc := range []struct {
 		name, state, mergedAt string
+		mergeState            string
 		diff                  *domain.PullDiff
 		draft                 *bool
 	}{
-		{"known-nonzero", "open", "", &domain.PullDiff{Files: 3, Additions: 12, Deletions: 4}, func() *bool { v := true; return &v }()},
-		{"known-zero-false", "open", "", &domain.PullDiff{}, func() *bool { v := false; return &v }()},
-		{"merged-instant", "merged", "2026-10-19T22:10:11.123Z", &domain.PullDiff{Files: 1}, nil},
-		{"unknown", "open", "", nil, nil},
+		{"known-nonzero", "open", "", "CLEAN", &domain.PullDiff{Files: 3, Additions: 12, Deletions: 4}, func() *bool { v := true; return &v }()},
+		{"known-zero-false", "open", "", "BLOCKED", &domain.PullDiff{}, func() *bool { v := false; return &v }()},
+		{"merged-instant", "merged", "2026-10-19T22:10:11.123Z", "UNKNOWN", &domain.PullDiff{Files: 1}, nil},
+		{"unknown", "open", "", "", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newReviewClientFixture(t)
@@ -432,7 +433,7 @@ func TestReviewTransferClientMetadataRealPreviewApplyReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			zero := int64(0)
-			request := domain.TransferRequest{Version: 1, ExpectedRevision: &zero, RepositoryID: 701, Publisher: "metadata transfer", Groups: []domain.TransferGroup{{Source: "original-metadata", Pulls: []domain.PullInput{{Number: 7, Title: "Observed display facts", State: tc.state, HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Diff: tc.diff, IsDraft: tc.draft, MergedAt: tc.mergedAt, Runs: []domain.RunInput{}, Attempts: []domain.Attempt{}}}}}}
+			request := domain.TransferRequest{Version: 1, ExpectedRevision: &zero, RepositoryID: 701, Publisher: "metadata transfer", Groups: []domain.TransferGroup{{Source: "original-metadata", Pulls: []domain.PullInput{{Number: 7, Title: "Observed display facts", State: tc.state, HeadSHA: strings.Repeat("a", 40), BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "unknown", Mergeability: "unknown", Diff: tc.diff, IsDraft: tc.draft, MergedAt: tc.mergedAt, MergeStateStatus: tc.mergeState, Runs: []domain.RunInput{}, Attempts: []domain.Attempt{}}}}}}
 			raw, err := json.Marshal(request)
 			if err != nil {
 				t.Fatal(err)
@@ -464,6 +465,14 @@ func TestReviewTransferClientMetadataRealPreviewApplyReplay(t *testing.T) {
 			if (pull.Pull.Diff == nil) != (tc.diff == nil) || tc.diff != nil && (pull.Pull.Diff.Files != tc.diff.Files || pull.Pull.Diff.Additions != tc.diff.Additions || pull.Pull.Diff.Deletions != tc.diff.Deletions) || (pull.Pull.IsDraft == nil) != (tc.draft == nil) || tc.draft != nil && *pull.Pull.IsDraft != *tc.draft || pull.Pull.MergedAt != tc.mergedAt {
 				t.Fatal("metadata lost known/unknown values", pull.Pull)
 			}
+			var metadataJSON string
+			if err := f.store.DB().QueryRow(`SELECT metadata_json FROM review_pull_versions WHERE project_id=? AND number=7 ORDER BY version_revision DESC LIMIT 1`, pull.ProjectID).Scan(&metadataJSON); err != nil {
+				t.Fatal(err)
+			}
+			var metadata domain.PullDisplayMetadata
+			if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil || metadata.MergeStateStatus != tc.mergeState {
+				t.Fatal("transfer changed merge state metadata", metadata, err)
+			}
 			saved := counts()
 			replay, err := f.client.ApplyReviewTransfer(t.Context(), "metadata-once", preview.PreviewSHA256, raw)
 			if err != nil || replay != receipt || counts() != saved || string(raw) != original {
@@ -494,7 +503,7 @@ func TestReviewTransferClientMalformedMetadataRefusedBeforeHTTP(t *testing.T) {
 		`"diff":{"files":0,"additions":0,"deletions":0},"diff":{}`,
 		`"is_draft":"false"`, `"is_draft":1`,
 		`"merged_at":"2026-10-19T22:00:00Z"`, `"merged_at":"not-an-instant"`,
-		`"unknown_metadata":false`,
+		`"unknown_metadata":false`, `"merge_state_status":"clean"`, `"merge_state_status":"NEW_STATE"`, `"merge_state_status":1`,
 	} {
 		raw := json.RawMessage(strings.ReplaceAll(string(transferDocument()), `"title":"Selected retained history"`, `"title":"Selected retained history",`+fields))
 		if fields == `"merged_at":"not-an-instant"` {
