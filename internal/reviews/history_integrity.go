@@ -46,24 +46,48 @@ func historyReferenceQueries() []string {
 		return strings.Join(parts, " AND ")
 	}
 	for _, spec := range []historyRecordSpec{historyPullRecord, historyRunRecord, historyAttemptRecord, historyRetiredRecord} {
-		queries = append(queries, "SELECT 1 FROM "+spec.memberships+" a JOIN "+spec.memberships+" b ON "+equal("a", "b", spec.keys)+" AND a.start_revision<b.start_revision WHERE a.end_revision IS NULL OR b.start_revision<a.end_revision LIMIT 1")
-		// Unique current ordering alone cannot detect a collision confined to
-		// older closed intervals. Reject those collisions without enumerating
-		// every snapshot and reconstructing its whole record set.
-		queries = append(queries, "SELECT 1 FROM "+spec.memberships+" a JOIN "+spec.memberships+" b ON "+equal("a", "b", spec.placement)+" WHERE NOT ("+equal("a", "b", spec.keys)+") AND (a.end_revision IS NULL OR b.start_revision<a.end_revision) AND (b.end_revision IS NULL OR a.start_revision<b.end_revision) LIMIT 1")
+		queries = append(queries, historyIntervalOverlapQuery(spec.memberships, spec.keys))
+		// Logical-key overlap is already invalid. Any overlap at one placement
+		// is therefore invalid too, without joining every historical pair.
+		queries = append(queries, historyIntervalOverlapQuery(spec.memberships, spec.placement))
 		membershipKey := append([]string{}, spec.keys...)
 		membershipKey = append(membershipKey, "start_revision")
 		membershipKey = append(membershipKey, spec.placement...)
 		queries = append(queries, "SELECT 1 FROM "+spec.current+" c LEFT JOIN review_workspace w ON w.project_id=c.project_id LEFT JOIN "+spec.memberships+" m ON "+equal("c", "m", membershipKey)+" WHERE w.project_id IS NULL OR m.project_id IS NULL OR m.start_revision>w.revision OR (m.end_revision IS NOT NULL AND w.revision>=m.end_revision) LIMIT 1")
 		queries = append(queries, "SELECT 1 FROM "+spec.memberships+" m JOIN review_workspace w ON w.project_id=m.project_id LEFT JOIN "+spec.current+" c ON "+equal("m", "c", membershipKey)+" WHERE m.start_revision<=w.revision AND (m.end_revision IS NULL OR w.revision<m.end_revision) AND c.project_id IS NULL LIMIT 1")
 	}
-	// Runs and attempts must retain the owning pull throughout visibility,
-	// including old gaps hidden by a currently valid parent. It is enough to
-	// inspect child starts and parent ends: those are the only boundaries where
-	// a previously covered child can lose its owning pull.
+	// Sweep visibility boundaries rather than joining each child to every
+	// parent interval. Aggregate equal revisions first: intervals are half-open,
+	// so adjacent parent versions cover a child without a gap at their boundary.
 	for _, table := range []string{"review_run_memberships", "review_attempt_memberships"} {
-		queries = append(queries, "SELECT 1 FROM "+table+" c WHERE NOT EXISTS(SELECT 1 FROM review_pull_memberships p WHERE p.project_id=c.project_id AND p.number=c.pull_number AND p.start_revision<=c.start_revision AND (p.end_revision IS NULL OR c.start_revision<p.end_revision)) LIMIT 1")
-		queries = append(queries, "SELECT 1 FROM review_pull_memberships p WHERE p.end_revision IS NOT NULL AND EXISTS(SELECT 1 FROM "+table+" c WHERE c.project_id=p.project_id AND c.pull_number=p.number AND c.start_revision<=p.end_revision AND (c.end_revision IS NULL OR p.end_revision<c.end_revision)) AND NOT EXISTS(SELECT 1 FROM review_pull_memberships n WHERE n.project_id=p.project_id AND n.number=p.number AND n.start_revision<=p.end_revision AND (n.end_revision IS NULL OR p.end_revision<n.end_revision)) LIMIT 1")
+		queries = append(queries, historyOwnerCoverageQuery(table))
 	}
 	return queries
+}
+
+func historyIntervalOverlapQuery(table string, keys []string) string {
+	partition := strings.Join(append([]string{"project_id"}, keys...), ",")
+	// ROW_NUMBER distinguishes the first row from a prior open-ended interval;
+	// NULL is never replaced with a finite revision sentinel. If any intervals
+	// overlap, an adjacent ordered pair overlaps, even for nested intervals.
+	return `SELECT 1 FROM (
+ SELECT start_revision,LAG(end_revision) OVER scope AS previous_end,ROW_NUMBER() OVER scope AS ordinal
+ FROM ` + table + ` WINDOW scope AS (PARTITION BY ` + partition + ` ORDER BY start_revision)
+) WHERE ordinal>1 AND (previous_end IS NULL OR start_revision<previous_end) LIMIT 1`
+}
+
+func historyOwnerCoverageQuery(table string) string {
+	return `WITH events AS (
+ SELECT project_id,number AS pull_number,start_revision AS revision,1 AS parent_delta,0 AS child_delta FROM review_pull_memberships
+ UNION ALL SELECT project_id,number,end_revision,-1,0 FROM review_pull_memberships WHERE end_revision IS NOT NULL
+ UNION ALL SELECT project_id,pull_number,start_revision,0,1 FROM ` + table + `
+ UNION ALL SELECT project_id,pull_number,end_revision,0,-1 FROM ` + table + ` WHERE end_revision IS NOT NULL
+), boundaries AS (
+ SELECT project_id,pull_number,revision,SUM(parent_delta) AS parent_delta,SUM(child_delta) AS child_delta
+ FROM events GROUP BY project_id,pull_number,revision
+), visibility AS (
+ SELECT SUM(parent_delta) OVER scope AS parents,SUM(child_delta) OVER scope AS children
+ FROM boundaries WINDOW scope AS (PARTITION BY project_id,pull_number ORDER BY revision ROWS UNBOUNDED PRECEDING)
+)
+SELECT 1 FROM visibility WHERE children>0 AND parents=0 LIMIT 1`
 }

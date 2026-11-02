@@ -20,6 +20,8 @@ The public website retains its existing complete channel-capacity contract. If a
 
 Startup converts supported original review tables into immutable versions, interval membership and current references without changing IDs, producers, counts, decisions, proof, receipts or historical HTTP responses. Exclusive backfill validates retained facts before deriving current indexes. A failed migration rolls back schema, metadata and derived rows together. Already-current startup does not repeat the backfill.
 
+Interval checks use ordered overlap and owner-visibility boundary scans, so repeated publications do not require comparing every prior pair of intervals.
+
 Backup inspection is read-only. It checks exact supported table/view/index definitions, grouped foreign keys, interval ordering and overlap, owning PR visibility, current-reference completeness, derived totals and ordering. Missing parents, foreign-project references, forged caches and malformed retained bodies refuse before restore writes. Restore preserves retained snapshots while rotating instance/signing identity, so predecessor credentials and signed cursors are invalid; newly authorized reads can resume from the same retained snapshot.
 
 ## Focused proof
