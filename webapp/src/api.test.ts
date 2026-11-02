@@ -1282,6 +1282,40 @@ describe('captured comparison policy assessment', () => {
 });
 
 describe('bounded retained review history', () => {
+  it.each(['2026-01-01T00:00:00,123Z', '2026-01-01T13:00:00,123456789+13:00', '2026-01-01T00:00:00.123Z'])('returns browser-renderable retained merge time %s in queue and pull views', async merged_at => {
+    setupLocation(); const client=api(); await connect(client);
+    const pull={...reviewPull,merged_at};
+    const queue={...reviewQueue,items:[pull]}, detail={...reviewSnapshot,pull};
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(queue)).mockResolvedValueOnce(json(detail)));
+    const expected=merged_at.replace(',', '.');
+    const queued=(await client.reviewQueue()).items[0], selected=(await client.reviewPull(1)).pull;
+    for(const result of [queued,selected]) {
+      expect(result).toEqual({...pull,merged_at:expected});
+      expect(Number.isFinite(Date.parse(result.merged_at!))).toBe(true);
+      expect(new Date(result.merged_at!).toISOString()).toBe('2026-01-01T00:00:00.123Z');
+    }
+    expect(queue.items[0].merged_at).toBe(merged_at); expect(detail.pull.merged_at).toBe(merged_at);
+  });
+  it('rejects malformed or misplaced merge times without hiding other invalid metadata', async()=>{
+    setupLocation(); const client=api(); await connect(client);
+    for(const change of [
+      {merged_at:'2026-01-01T00:00:00,Z'}, {merged_at:'2026-01-01T00:00:00,,123Z'},
+      {merged_at:'2026-01-01T00:00:00,noZ'}, {merged_at:'2026-01-01T99:00:00,123Z'},
+      {merged_at:'2026-01-01T00:00:00,123'}, {merged_at:'2026-01-01T00:00:00,'+'1'.repeat(45)+'Z'},
+      {merged_at:null}, {merged_at:12}, {state:'open',merged_at:'2026-01-01T00:00:00,123Z'},
+      {merged_at:'2026-01-01T00:00:00,123Z',unknown_metadata:true},
+    ]) {
+      const pull={...reviewPull,...change};
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewQueue,items:[pull]})).mockResolvedValueOnce(json({...reviewSnapshot,pull})));
+      await expect(client.reviewQueue()).rejects.toMatchObject({code:'invalid_response'});
+      await expect(client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
+    }
+    for(const body of [{...reviewQueue,items:[{...reviewPull,merged_at:'2026-01-01T00:00:00,123Z'}]}, {...reviewSnapshot,pull:{...reviewPull,merged_at:'2026-01-01T00:00:00,123Z'}}]) {
+      const raw=JSON.stringify(body).replace('"merged_at":','"merged_at":"2026-01-01T00:00:00Z","merged_at":');
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(new Response(raw,{headers:{'content-type':'application/json'}})));
+      await expect('items' in body ? client.reviewQueue() : client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
+    }
+  });
   it('accepts growing compact summaries and reads one explicitly selected archive page at a time', async () => {
     setupLocation(); const client = api(); await connect(client);
     const pull = { ...reviewPull, run_count: 225, run_counts:{hosted:125,cli:100,subagent:0,manual:0}, attempt_count:230, diff:{files:83,additions:1024,deletions:8}, is_draft:false, merged_at:reviewRun.finished_at };

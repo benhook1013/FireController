@@ -541,11 +541,25 @@ func TestHistoryInventoryV6RehashedOwningPullVisibilityDamageRefused(t *testing.
 // Reconstruct only the truthful older derived schema in an exclusively owned
 // fixture; no retained source/history bytes or IDs are rewritten or migrated by
 // backup creation, inspection or inactive restore.
-func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T) {
-	for _, version := range []int{4, 5, 6} {
+func TestHistoryInventoryV4ThroughV9RemainSupportedWithoutFutureMetadata(t *testing.T) {
+	for _, version := range []int{4, 5, 6, 7, 8, 9} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
-			removeChannelRunCountsForLegacyFixture(t, f.store)
+			if version < 9 {
+				removeChannelRunCountsForLegacyFixture(t, f.store)
+			} else {
+				// Schema nine counted every retained outcome, including this
+				// fixture's unfinished Hosted round. Reconstruct its original
+				// aggregate rather than retaining schema ten's completed count.
+				if _, err := f.store.DB().Exec(`UPDATE review_current_totals AS t SET (hosted_run_count,cli_run_count,subagent_run_count,manual_run_count)=(
+ SELECT coalesce(sum(v.channel='hosted'),0),coalesce(sum(v.channel='cli'),0),coalesce(sum(v.channel='subagent'),0),coalesce(sum(v.channel='manual'),0)
+ FROM review_current_runs r
+ CROSS JOIN review_run_memberships m ON m.project_id=r.project_id AND m.id=r.id AND m.start_revision=r.start_revision AND m.pull_number=r.pull_number AND m.run_order=r.run_order
+ CROSS JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision AND v.pull_number=m.pull_number
+ WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number)`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if version < 6 {
 				if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 					t.Fatal(err)
@@ -556,7 +570,14 @@ func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T
 					t.Fatal(err)
 				}
 			}
-			for _, statement := range []string{`DROP VIEW review_attempts`, `ALTER TABLE review_attempt_versions DROP COLUMN reason`, reviews.HistoryReadViewSQLV7()["review_attempts"], `DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN metadata_json`, reviews.HistoryReadViewSQLV6()["review_pulls"]} {
+			var changes []string
+			if version < 8 {
+				changes = append(changes, `DROP VIEW review_attempts`, `ALTER TABLE review_attempt_versions DROP COLUMN reason`, reviews.HistoryReadViewSQLV7()["review_attempts"])
+			}
+			if version < 7 {
+				changes = append(changes, `DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN metadata_json`, reviews.HistoryReadViewSQLV6()["review_pulls"])
+			}
+			for _, statement := range changes {
 				if _, err := f.store.DB().Exec(statement); err != nil {
 					t.Fatal(err)
 				}
@@ -582,8 +603,12 @@ func TestHistoryInventoryV4V5V6RemainSupportedWithoutFutureMetadata(t *testing.T
 			after := backupRows(t, db)
 			var installed int
 			err = db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_current_run_order'`).Scan(&installed)
+			var restoredVersion int
+			if err == nil {
+				err = db.QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&restoredVersion)
+			}
 			db.Close()
-			if err != nil || (installed == 1) != (version == 6) {
+			if err != nil || (installed == 1) != (version >= 6) || restoredVersion != version {
 				t.Fatal("inspection/restore installed a future cache", err)
 			}
 			for table, hash := range before {

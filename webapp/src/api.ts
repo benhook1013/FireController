@@ -329,6 +329,21 @@ function assessmentJSON(raw: string): unknown {
   if (position !== tokens.length) throw new Error('Invalid assessment JSON');
   return value;
 }
+function reviewDisplayJSON(raw: string): unknown {
+  const value=assessmentJSON(raw);
+  const normalize=(pull: unknown) => {
+    if (!record(pull) || typeof pull.merged_at !== 'string' || !pull.merged_at.includes(',')) return;
+    const normalized=pull.merged_at.replace(',', '.');
+    // Go accepts a fractional comma; display the same retained instant in the
+    // spelling understood by Date without changing history or other fields.
+    if (timestamp(normalized)) pull.merged_at=normalized;
+  };
+  if (record(value)) {
+    if (Array.isArray(value.items)) value.items.forEach(normalize);
+    normalize(value.pull);
+  }
+  return value;
+}
 function assessmentTime(value: unknown): value is string {
   if (!timestamp(value)) return false;
   const date = value.slice(0, 10).split('-').map(Number);
@@ -773,7 +788,7 @@ export class Api {
     return value as Page<JobWorkstreamHistoryEntry>;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
-    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal, undefined, maxBytes, reviewDisplayJSON);
     if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
@@ -782,7 +797,7 @@ export class Api {
   async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
     const query = reviewQuery(snapshot);
-    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal, undefined, maxBytes, reviewDisplayJSON);
     if (!record(value) || !keys(value, [...reviewMetadata, 'pull']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
     return value as unknown as ReviewPull;
   }
