@@ -16,13 +16,13 @@ func validateCurrentSummaryFront(ctx context.Context, tx HistoryQuery, project s
 func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, project string, number int64, columns string) error {
 	var runs, attempts int64
 	var cachedRuns, cachedAttempts sql.NullInt64
-	var stored string
-	err := tx.QueryRowContext(ctx, `SELECT v.run_count,v.attempt_count,substr(CAST(v.latest_attempts_json AS BLOB),1,32769),t.run_count,t.attempt_count
+	var stored, recent string
+	err := tx.QueryRowContext(ctx, `SELECT v.run_count,v.attempt_count,substr(CAST(v.latest_attempts_json AS BLOB),1,32769),substr(CAST(v.recent_runs_json AS BLOB),1,524289),t.run_count,t.attempt_count
  FROM review_current_pulls c
  CROSS JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision AND m.position=c.position
  CROSS JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision
  LEFT JOIN review_current_totals t ON t.project_id=c.project_id AND t.pull_number=c.number
- WHERE c.project_id=? AND c.number=?`, project, number).Scan(&runs, &attempts, &stored, &cachedRuns, &cachedAttempts)
+ WHERE c.project_id=? AND c.number=?`, project, number).Scan(&runs, &attempts, &stored, &recent, &cachedRuns, &cachedAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -31,6 +31,9 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 	}
 	if !cachedRuns.Valid || !cachedAttempts.Valid || runs != cachedRuns.Int64 || attempts != cachedAttempts.Int64 {
 		return historyInconsistent()
+	}
+	if err := validateCurrentRecentSummary(ctx, tx, project, number, recent); err != nil {
+		return err
 	}
 	// Four admitted summaries, including worst-case JSON escaping of their
 	// bounded string fields, fit below 32 KiB. Refuse malformed retained data
