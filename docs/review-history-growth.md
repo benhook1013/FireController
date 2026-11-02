@@ -29,3 +29,5 @@ Backup inspection is read-only. It checks exact supported table/view/index defin
 ## Focused proof
 
 The [migration tests](../internal/reviews/history_migration_test.go) compare historical responses, cursors and receipts across upgrades, restart and injected rollback. [Native growth tests](../internal/reviews/history_native_growth_test.go) retain hundreds of mixed original-producer records through actual preview/apply, independently retain native-seeded growth, and publish new native work without duplicating unchanged finding bodies or imposing a lifetime cap. [Projection tests](../internal/reviewexec/attempt_projection_capacity_test.go) exercise actual controlled driver completion beyond former caps and preserve rollback and reservations. [Backup tests](../internal/backup/history_inventory_test.go) create, inspect, restore and activate canonical retained history, and refuse rehashed schema/reference corruption. These controlled checks do not establish live provider behavior, deployment or fleet capacity.
+
+Interval checks use ordered overlap and owner-visibility boundary scans, so repeated publications do not require comparing every prior pair of intervals.

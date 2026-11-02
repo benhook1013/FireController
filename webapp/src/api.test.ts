@@ -60,6 +60,32 @@ async function connect(client: Api): Promise<void> {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+describe('stored review CI states', () => {
+  it.each(['unknown', 'pending', 'success', 'failure', 'not_required'])('accepts %s in queue and pull detail', async ci_state => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, ci_state };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+    expect((await client.reviewQueue()).items[0].ci_state).toBe(ci_state);
+    expect((await client.reviewPull(1)).pull.ci_state).toBe(ci_state);
+  });
+
+  it.each(['not-required', 'passed', '', null, 1])('rejects invalid CI state %s in queue and pull detail', async ci_state => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, ci_state };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+});
+
 describe('read-only browser cookie session transport', () => {
   it('exchanges verified bearer once, then uses only the selector cookie mode for finite reads and logout', async () => {
     setupLocation();
