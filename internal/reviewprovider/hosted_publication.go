@@ -342,44 +342,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	// A later command closes this trigger's attribution window. Relevant edited
 	// comments may have removed a command; unrelated foreign Bot reports do not
 	// become inferred request authorities solely through an edit.
-	var closing time.Time
-	for _, comment := range snapshot.IssueComments {
-		if comment.ID == trigger.CommentID || publicationActor(comment.Author, providerAuthor) {
-			continue
-		}
-		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) && !publicationUnrelatedBotReport(comment, postingAuthor) {
-			// The original command may have acted before this edit. Its
-			// earliest possible effect is the later of creation and our trigger.
-			when := comment.CreatedAt
-			if when.Before(trigger.CreatedAt) {
-				when = trigger.CreatedAt
-			}
-			if closing.IsZero() || when.Before(closing) {
-				closing = when
-			}
-			continue
-		}
-		command := false
-		for _, line := range publicationVisibleLines(comment.Body) {
-			if publicationCommand.MatchString(line) {
-				command = true
-				break
-			}
-		}
-		if !command {
-			continue
-		}
-		when := comment.CreatedAt
-		if when.Before(trigger.CreatedAt) {
-			if comment.UpdatedAt.Before(trigger.CreatedAt) {
-				continue
-			}
-			when = trigger.CreatedAt
-		}
-		if closing.IsZero() || when.Before(closing) {
-			closing = when
-		}
-	}
+	closing := publicationClosingTime(snapshot, trigger, postingAuthor, providerAuthor)
 	for _, review := range snapshot.Reviews {
 		if !publicationActor(review.Author, providerAuthor) || review.HeadSHA != intent.HeadSHA || review.SubmittedAt.IsZero() || !review.SubmittedAt.After(trigger.CreatedAt) || review.State != "commented" && review.State != "approved" && review.State != "changes_requested" {
 			continue
@@ -460,23 +423,23 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	count, ok := publicationRootCount(batches[1].Body)
 	if !ok {
-		// A complete nonempty summary-only single batch may omit its inline count.
-		// Unknown collections, attached roots or fresh orphan roots cannot imply
-		// zero inline roots; decoded summary findings remain nonempty.
-		summaryOnly := total == 1 && len(result.Roots) == 0 && snapshot.ReviewComments != nil
+		// A complete single batch may omit the count only when strict decoding
+		// proves positive findings. Known inline roots never imply a clean zero.
+		// Unknown collections and fresh orphan roots cannot prove completeness.
+		positiveInventory := total == 1 && snapshot.ReviewComments != nil
 		inside := func(at time.Time) bool {
 			return !at.Before(trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
 		}
 		for _, comment := range snapshot.ReviewComments {
 			if comment.InReplyToID == 0 && !reviewIDs[comment.ReviewID] && publicationActor(comment.Author, providerAuthor) && (inside(comment.CreatedAt) || inside(comment.UpdatedAt)) {
-				summaryOnly = false
+				positiveInventory = false
 			}
 		}
-		if !summaryOnly || !publicationSummaryOnly(result) {
+		if !positiveInventory || !publicationSummaryOnly(result) && !publicationInlineInventory(result) {
 			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
 			return result, nil
 		}
-		count = 0
+		count = len(result.Roots)
 	}
 	for _, review := range result.Batches {
 		if review.SubmittedAt.After(result.FinishedAt) {
@@ -503,4 +466,47 @@ func copyPublicationLine(line *int64) *int64 {
 	}
 	value := *line
 	return &value
+}
+
+// Shared attribution window for published inventory and its separate comparison metadata.
+func publicationClosingTime(snapshot HostedPublicationSnapshot, trigger HostedTriggerRecovery, postingAuthor, providerAuthor Author) time.Time {
+	var closing time.Time
+	for _, comment := range snapshot.IssueComments {
+		if comment.ID == trigger.CommentID || publicationActor(comment.Author, providerAuthor) {
+			continue
+		}
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) && !publicationUnrelatedBotReport(comment, postingAuthor) {
+			// The original command may have acted before this edit. Its
+			// earliest possible effect is the later of creation and our trigger.
+			when := comment.CreatedAt
+			if when.Before(trigger.CreatedAt) {
+				when = trigger.CreatedAt
+			}
+			if closing.IsZero() || when.Before(closing) {
+				closing = when
+			}
+			continue
+		}
+		command := false
+		for _, line := range publicationVisibleLines(comment.Body) {
+			if publicationCommand.MatchString(line) {
+				command = true
+				break
+			}
+		}
+		if !command {
+			continue
+		}
+		when := comment.CreatedAt
+		if when.Before(trigger.CreatedAt) {
+			if comment.UpdatedAt.Before(trigger.CreatedAt) {
+				continue
+			}
+			when = trigger.CreatedAt
+		}
+		if closing.IsZero() || when.Before(closing) {
+			closing = when
+		}
+	}
+	return closing
 }

@@ -185,8 +185,24 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			if g.total > 0 && len(pub.Batches) > 0 && g.reason == "" {
 				count, valid := publicationRootCount(g.batches[1].Body)
 				if !valid {
-					if len(pub.Roots) == 0 && publicationSummaryOnly(*pub) {
+					if publicationSummaryOnly(*pub) {
 						count, valid = 0, true
+					} else if publicationInlineInventory(*pub) {
+						// Complete source inventory must not leave an unattached
+						// provider root on this head outside every known review.
+						knownReviews := map[int64]bool{}
+						for _, review := range snapshot.Reviews {
+							knownReviews[review.ID] = true
+						}
+						orphan := false
+						for _, root := range snapshot.ReviewComments {
+							if root.InReplyToID == 0 && publicationActor(root.Author, provider) && root.OriginalHeadSHA == g.run.HeadSHA && !knownReviews[root.ReviewID] {
+								orphan = true
+							}
+						}
+						if !orphan {
+							count, valid = len(pub.Roots), true
+						}
 					}
 				}
 				if !valid {

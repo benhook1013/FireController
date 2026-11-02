@@ -51,7 +51,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 			baselineLoaded = true
 		}
 	}
-	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "uncertain" && (inventory.Reason == "hosted_finished_inventory_unproven" || inventory.Reason == "attribution_window_closed")) && inventory.Publication.Trigger.State == "adopted" {
+	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "ambiguous" && inventory.Reason == "invalid_actionable_count" || inventory.Publication.State == "uncertain" && (inventory.Reason == "hosted_finished_inventory_unproven" || inventory.Reason == "attribution_window_closed")) && inventory.Publication.Trigger.State == "adopted" {
 		loadBaseline()
 		if baselineErr != nil {
 			result.Reason = "standing_baseline_unproven"
@@ -93,6 +93,15 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		}
 	}
 	base, proven := reviewprovider.ResolveHostedComparison(publication, anchor.CandidateSHA, anchor.ParentSHA, anchor.MergeBaseSHA)
+	if !proven && len(publication.Roots) > 0 && len(publication.Batches) == 1 {
+		loadBaseline()
+		if baselineErr != nil {
+			return result, baselineErr
+		}
+		if baselineReason == "" {
+			base, proven = reviewprovider.ResolveHostedStandingComparison(retained.Snapshot, baseline.Snapshot, publication, retained.PostingActor, retained.ProviderActor, anchor.CandidateSHA, anchor.ParentSHA, anchor.MergeBaseSHA)
+		}
+	}
 	if !proven {
 		result.Reason = "comparison_unproven"
 		return result, nil

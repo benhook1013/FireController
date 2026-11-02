@@ -79,10 +79,10 @@ func TestHostedAnnotationBaselineRejectsUnprovenChanges(t *testing.T) {
 		"uppercase commit": func(s, _ *HostedPublicationSnapshot) {
 			s.ReviewComments[0].Body = strings.ReplaceAll(s.ReviewComments[0].Body, strings.Repeat("c", 7), strings.Repeat("C", 7))
 		},
-		"path moved":          func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Path = "engine/else.go" },
-		"line moved":          func(s, _ *HostedPublicationSnapshot) { v := int64(12); s.ReviewComments[0].Line = &v },
-		"head moved":          func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].HeadSHA = strings.Repeat("e", 40) },
-		"original head moved": func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].OriginalHeadSHA = strings.Repeat("e", 40) },
+		"path moved":           func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Path = "engine/else.go" },
+		"line moved":           func(s, _ *HostedPublicationSnapshot) { v := int64(12); s.ReviewComments[0].Line = &v },
+		"invalid current head": func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].HeadSHA = "invalid" },
+		"original head moved":  func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].OriginalHeadSHA = strings.Repeat("e", 40) },
 		"creation moved": func(s, _ *HostedPublicationSnapshot) {
 			s.ReviewComments[0].CreatedAt = s.ReviewComments[0].CreatedAt.Add(time.Second)
 		},

@@ -16,6 +16,7 @@ type HostedStandingZero struct {
 	Summary, Acknowledgement        IssueComment
 	ProviderRunID, HeadSHA, BaseSHA string
 	SelectedFiles, IgnoredFiles     int64
+	selectedPaths                   map[string]bool
 }
 
 var standingRunID = regexp.MustCompile("^- \\*\\*Run ID\\*\\*: `(" + publicationUUID + ")`$")
@@ -362,7 +363,13 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 	return parts[4], true
 }
 
-func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
+func parseStandingZero(body string) (HostedStandingZero, bool) {
+	return parseStandingMetadata(body, true)
+}
+
+// The same closed Recent-review-info grammar can prove comparison metadata for
+// an independently positive publication. It never supplies zero inventory.
+func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZero, ok bool) {
 	if !validBody(body) {
 		return zero, false
 	}
@@ -371,7 +378,7 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		return zero, false
 	}
 	for _, line := range lines {
-		if !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text)) {
+		if requireZero && !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text)) {
 			return zero, false
 		}
 	}
@@ -389,10 +396,16 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		}
 		p.lines = append(p.lines, line)
 	}
-	if len(p.lines) == 0 || (p.lines[0] != "No actionable comments were generated in the recent review. 🎉" && p.lines[0] != "No actionable comments were generated in the recent review.") {
+	if len(p.lines) == 0 {
 		return zero, false
 	}
-	p.at++
+	zeroClaim := p.lines[0] == "No actionable comments were generated in the recent review. 🎉" || p.lines[0] == "No actionable comments were generated in the recent review."
+	if requireZero != zeroClaim {
+		return zero, false
+	}
+	if zeroClaim {
+		p.at++
+	}
 	if !p.block("ℹ️ Recent review info") {
 		return zero, false
 	}
@@ -468,6 +481,7 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		}
 	}
 	selected := map[string]bool{}
+	zero.selectedPaths = selected
 	if zero.SelectedFiles, valid = p.files(standingSelected, false, selected); !valid {
 		return zero, false
 	}
