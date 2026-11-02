@@ -104,4 +104,5 @@
 /* Pause and client contact occupy the same header slot without raising its baseline. */
 .delivery-worker-heading{align-items:flex-start}
 .delivery-worker-heading>.worker-contact,.delivery-worker-heading>.delivery-worker-pause,.delivery-worker-heading>.badge{align-self:center;flex:none;margin:0;font-size:.7rem;line-height:1.2}
-.delivery-worker-heading>.delivery-worker-pause>summary,.delivery-worker-heading>.badge{padding:2px 6px;line-height:1.2}
+.delivery-worker-heading>.delivery-worker-pause>summary{padding:0;font-size:inherit;line-height:inherit;text-transform:none}
+.delivery-worker-heading>.badge{padding:2px 6px;line-height:1.2}
