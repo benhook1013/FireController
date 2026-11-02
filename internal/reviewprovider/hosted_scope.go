@@ -144,8 +144,14 @@ func (s *hostedComparisonScanner) token(token string) bool {
 	if strings.HasSuffix(token, "/>") && tag != "details" && tag != "blockquote" && tag != "pre" {
 		return true
 	}
-	s.frames = append(s.frames, hostedComparisonFrame{tag: tag})
-	s.blocked++
+	// Observed definition lists only present an already recognized metadata
+	// body. They cannot establish metadata or cross a blocked ancestor; their
+	// ordinary matching closers still own and validate the scope stack.
+	presentation := (tag == "dl" || tag == "dd") && s.blocked == 0 && len(s.frames) > 0 && s.frames[len(s.frames)-1].metadata
+	s.frames = append(s.frames, hostedComparisonFrame{tag: tag, metadata: presentation})
+	if !presentation {
+		s.blocked++
+	}
 	return true
 }
 

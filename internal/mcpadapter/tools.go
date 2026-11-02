@@ -19,6 +19,7 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	reviewCIDiagnostics        bool
 	notes                      *noteToolCall
 	projectMap                 *projectMapToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
@@ -149,7 +150,11 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "review_source_readiness":
 				value, err = service.ReviewSourceReadiness(ctx, args.pullNumber)
 			case "review_source_ci_assess":
-				value, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				if args.reviewCIDiagnostics {
+					value, err = service.ReviewSourceCIDiagnostics(ctx, args.pullNumber)
+				} else {
+					value, err = service.ReviewSourceCIAssessment(ctx, args.pullNumber)
+				}
 			case "review_queue":
 				value, err = service.ReviewQueue(ctx, options)
 			case "review_pull":

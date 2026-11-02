@@ -33,6 +33,7 @@ type HostedPublication struct {
 	EligibleReviews   []HostedReview
 	FinishedAt        time.Time
 	StandingZero      *HostedStandingZero
+	SubmittedReview   *HostedSubmittedReview
 }
 
 const publicationUUID = `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
@@ -56,6 +57,23 @@ func publicationVisibleLines(body string) []string {
 	fenceLength := 0
 	pre, quote := 0, 0
 	hiddenComment := false
+	updateDepth := func(text string) bool {
+		tags := publicationHTMLBlockTag.FindAllStringSubmatch(text, -1)
+		for _, tag := range tags {
+			depth := &pre
+			if strings.EqualFold(tag[1], "blockquote") {
+				depth = &quote
+			}
+			if strings.HasPrefix(tag[0], "</") {
+				if *depth > 0 {
+					*depth--
+				}
+			} else {
+				*depth++
+			}
+		}
+		return len(tags) > 0
+	}
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
@@ -72,45 +90,62 @@ func publicationVisibleLines(body string) []string {
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, ">") {
+		// Inside an ordinary HTML comment these are comment bytes, not
+		// Markdown quoting/code. Its terminator must still end that scope.
+		if !hiddenComment && strings.HasPrefix(trimmed, ">") {
 			continue
 		}
-		if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+		if !hiddenComment && (indent > 3 || strings.HasPrefix(trimmed, "\t")) {
 			continue
 		}
-		if hiddenComment {
-			if strings.Contains(line, "-->") {
-				hiddenComment = false
-			}
-			continue
-		}
-		if start := strings.Index(line, "<!--"); start >= 0 && !publicationMarker.MatchString(line) {
-			if !strings.Contains(line[start+4:], "-->") {
-				hiddenComment = true
-			}
-			// An explicit malformed protocol line remains conflicting evidence;
-			// unrelated HTML comments cannot make nested lines into markers.
-			if strings.Contains(strings.ToLower(line), "coderabbit-review-publication") {
+		if !hiddenComment && publicationMarker.MatchString(line) {
+			if pre == 0 && quote == 0 {
 				lines = append(lines, line)
 			}
 			continue
 		}
-		tags := publicationHTMLBlockTag.FindAllStringSubmatch(line, -1)
-		htmlBlock := pre > 0 || quote > 0 || len(tags) > 0
-		for _, tag := range tags {
-			depth := &pre
-			if strings.EqualFold(tag[1], "blockquote") {
-				depth = &quote
-			}
-			if strings.HasPrefix(tag[0], "</") {
-				if *depth > 0 {
-					*depth--
+		htmlBlock, sawComment, badMarker := pre > 0 || quote > 0, hiddenComment, false
+		for rest := line; rest != ""; {
+			if hiddenComment {
+				end := strings.Index(rest, "-->")
+				if end < 0 {
+					break
 				}
-			} else {
-				*depth++
+				hiddenComment = false
+				rest = rest[end+3:]
+				continue
 			}
+			start := strings.Index(rest, "<!--")
+			outside := rest
+			if start >= 0 {
+				outside = rest[:start]
+			}
+			if (sawComment || start >= 0) && pre == 0 && quote == 0 && !publicationHTMLBlockTag.MatchString(outside) && strings.Contains(strings.ToLower(outside), "coderabbit-review-publication") {
+				badMarker = true
+			}
+			// Tags before/after comments still update quote depth. Tags inside
+			// comments, including multiline comments, never do.
+			if updateDepth(outside) {
+				htmlBlock = true
+			}
+			if start < 0 {
+				break
+			}
+			rest = rest[start+4:]
+			comment := rest
+			if end := strings.Index(comment, "-->"); end >= 0 {
+				comment = comment[:end]
+			}
+			// A visible malformed protocol comment is conflicting evidence;
+			// ordinary comments cannot expose their nested content as markers.
+			badMarker = badMarker || pre == 0 && quote == 0 && strings.Contains(strings.ToLower(comment), "coderabbit-review-publication")
+			hiddenComment, sawComment = true, true
 		}
-		if htmlBlock {
+		if badMarker {
+			lines = append(lines, line)
+			continue
+		}
+		if htmlBlock || sawComment {
 			continue
 		}
 		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
@@ -167,6 +202,16 @@ func publicationRootCount(body string) (int, bool) {
 }
 
 func publicationActor(a, b Author) bool { return a.ID == b.ID && a.Kind == b.Kind }
+
+// Foreign Bot reports are not inferred request authorities merely because
+// they were edited. This is a current-source policy, not proof of their old
+// bodies: any provider mention, even quoted/hidden, retains the edit barrier.
+// Source-owned actor kind is required; a bot-looking login or body is not enough.
+func publicationUnrelatedBotReport(comment IssueComment, postingAuthor Author) bool {
+	return comment.Author.Kind == "Bot" && comment.Author.ID != postingAuthor.ID &&
+		!strings.Contains(strings.ToLower(comment.Body), "coderabbit")
+}
+
 func publicationValidActor(a Author) bool {
 	_, err := normalizeActor(githubActor{ID: a.ID, Login: a.Login, Type: a.Kind})
 	return err == nil
@@ -214,6 +259,38 @@ func validPublicationSnapshot(s HostedPublicationSnapshot) bool {
 	return true
 }
 
+// A strict finished-command reply is diagnostic only. It cannot supply an
+// inventory, comparison, run identity or completion time. The caller has already
+// validated the complete snapshot and original trigger; reuse that resolver's
+// closing boundary rather than independently guessing the command window.
+func publicationFinishedInventoryUnproven(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) bool {
+	inside := func(at time.Time) bool {
+		return at.After(result.Trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
+	}
+	for _, review := range snapshot.Reviews {
+		if publicationActor(review.Author, provider) && review.State == "pending" {
+			return false
+		}
+	}
+	count := 0
+	for _, comment := range snapshot.IssueComments {
+		if !publicationActor(comment.Author, provider) || !inside(comment.UpdatedAt) {
+			continue
+		}
+		if standingFinishedAck(comment.Body) {
+			if !inside(comment.CreatedAt) {
+				return false
+			}
+			count++
+		} else if inside(comment.CreatedAt) {
+			// A different fresh provider reply may be an unknown command outcome.
+			// Older mutable standing comments are allowed to remain unsupported.
+			return false
+		}
+	}
+	return count == 1
+}
+
 // ResolveHostedPublication performs no I/O and does not initiate or retry any
 // provider action. Incomplete/ambiguous evidence never proves absence of a post.
 func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingAuthor, providerAuthor Author, earliestPosting time.Time) (HostedPublication, error) {
@@ -235,14 +312,15 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		return result, nil
 	}
 	result.State = "active"
-	// A later command closes this trigger's attribution window. Edited comments
-	// may have removed a command, so their original prose cannot prove attribution.
+	// A later command closes this trigger's attribution window. Relevant edited
+	// comments may have removed a command; unrelated foreign Bot reports do not
+	// become inferred request authorities solely through an edit.
 	var closing time.Time
 	for _, comment := range snapshot.IssueComments {
 		if comment.ID == trigger.CommentID || publicationActor(comment.Author, providerAuthor) {
 			continue
 		}
-		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) {
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) && !comment.UpdatedAt.Before(trigger.CreatedAt) && !publicationUnrelatedBotReport(comment, postingAuthor) {
 			// The original command may have acted before this edit. Its
 			// earliest possible effect is the later of creation and our trigger.
 			when := comment.CreatedAt
@@ -285,6 +363,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		result.EligibleReviews = append(result.EligibleReviews, review)
 	}
 	sort.Slice(result.EligibleReviews, func(i, j int) bool { return result.EligibleReviews[i].ID < result.EligibleReviews[j].ID })
+	if publicationRateLimited(snapshot, result, providerAuthor, closing) {
+		result.State, result.Reason = "rate_limited", "hosted_review_rate_limited"
+		return result, nil
+	}
 	batches := map[int]HostedReview{}
 	total := 0
 	for _, review := range result.EligibleReviews {
@@ -308,8 +390,15 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		batches[marker.ordinal] = review
 	}
 	if total == 0 {
+		if submitted, proven := resolveSubmittedReview(snapshot, result, intent, providerAuthor, closing); proven {
+			return submitted, nil
+		}
 		result = resolveStandingZero(snapshot, result, intent, providerAuthor, closing)
 		if result.State == "attributed" || result.State == "ambiguous" {
+			return result, nil
+		}
+		if publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			return result, nil
 		}
 		if !closing.IsZero() {
@@ -344,8 +433,23 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	count, ok := publicationRootCount(batches[1].Body)
 	if !ok {
-		result.State, result.Reason = "ambiguous", "invalid_actionable_count"
-		return result, nil
+		// A complete nonempty summary-only single batch may omit its inline count.
+		// Unknown collections, attached roots or fresh orphan roots cannot imply
+		// zero inline roots; decoded summary findings remain nonempty.
+		summaryOnly := total == 1 && len(result.Roots) == 0 && snapshot.ReviewComments != nil
+		inside := func(at time.Time) bool {
+			return !at.Before(trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
+		}
+		for _, comment := range snapshot.ReviewComments {
+			if comment.InReplyToID == 0 && !reviewIDs[comment.ReviewID] && publicationActor(comment.Author, providerAuthor) && (inside(comment.CreatedAt) || inside(comment.UpdatedAt)) {
+				summaryOnly = false
+			}
+		}
+		if !summaryOnly || !publicationSummaryOnly(result) {
+			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
+			return result, nil
+		}
+		count = 0
 	}
 	for _, review := range result.Batches {
 		if review.SubmittedAt.After(result.FinishedAt) {
@@ -358,7 +462,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 			return result, nil
 		}
 	}
-	if len(result.Roots) != count {
+	if !hostedInlineCountMatches(result.Roots, count) {
 		result.State, result.Reason = "ambiguous", "root_count_mismatch"
 		return result, nil
 	}

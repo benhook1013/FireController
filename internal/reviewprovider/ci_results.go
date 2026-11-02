@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -72,6 +73,23 @@ func (g *GitHub) CIResults(ctx context.Context, repository, head string) (CIResu
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	budget := &actionsBudget{}
+	for attempt := 0; ; attempt++ {
+		out, err := g.ciResultsOnce(ctx, repository, head, budget)
+		if !errors.Is(err, errCIInventoryChanged) || attempt == 1 || ctx.Err() != nil {
+			if errors.Is(err, errCIInventoryChanged) {
+				err = providerError("provider_observation_changed", "CI result counts changed during collection.", http.StatusOK, 0, false)
+			}
+			return out, err
+		}
+		// A newly published check can move the finite inventory between reads.
+		// Discard the entire partial collection and try the same immutable
+		// selector once, sharing the original time/page/item/byte budgets.
+	}
+}
+
+var errCIInventoryChanged = errors.New("CI result inventory changed")
+
+func (g *GitHub) ciResultsOnce(ctx context.Context, repository, head string, budget *actionsBudget) (CIResultInventory, error) {
 	path := "/repos/" + repository + "/commits/" + head
 	suites, err := g.ciSuiteCount(ctx, path+"/check-suites", head, budget)
 	if err != nil {
@@ -93,7 +111,10 @@ func (g *GitHub) CIResults(ctx context.Context, repository, head string) (CIResu
 	for _, check := range checks {
 		distinct[check.SuiteID] = true
 	}
-	if finalSuites != suites || int64(len(distinct)) > suites {
+	if finalSuites != suites {
+		return CIResultInventory{}, errCIInventoryChanged
+	}
+	if int64(len(distinct)) > suites {
 		return CIResultInventory{}, ciInventoryIncomplete()
 	}
 	if ctx.Err() != nil {
@@ -198,21 +219,34 @@ func (g *GitHub) ciChecks(ctx context.Context, path, head string, budget *action
 			return nil, err
 		}
 		budget.items += len(envelope.Checks)
-		if envelope.Checks == nil || len(envelope.Checks) > githubPageSize || budget.items > githubMaxItems || envelope.Total < 0 || envelope.Total > githubMaxItems || total >= 0 && total != envelope.Total {
+		if envelope.Checks == nil || len(envelope.Checks) > githubPageSize || budget.items > githubMaxItems || envelope.Total < 0 || envelope.Total > githubMaxItems {
 			return nil, invalidResponse(false, http.StatusOK)
 		}
+		changed := total >= 0 && total != envelope.Total
 		total = envelope.Total
+		pageSeen := make(map[int64]bool, len(envelope.Checks))
 		for _, raw := range envelope.Checks {
-			row, ok := normalizeCICheck(raw, head)
-			if !ok || seen[row.ID] {
+			row, ok, issue := normalizeCICheckWithIssue(raw, head)
+			// New checks can shift an earlier page's last rows onto this page.
+			// Only an independently changed count permits discarding that overlap
+			// through the existing bounded recollection. Malformed rows and
+			// repeats within one page are still invalid, even during movement.
+			if !ok || pageSeen[row.ID] || seen[row.ID] && !changed {
+				if issue != "" {
+					return nil, &ciResultIssueError{cause: invalidResponse(false, http.StatusOK), issue: issue}
+				}
 				return nil, invalidResponse(false, http.StatusOK)
 			}
+			pageSeen[row.ID] = true
 			seen[row.ID] = true
 			rows = append(rows, row)
 		}
 		next, more, err := nextPageWithQuery(headers.Values("Link"), g.baseURL, path, page, fixed)
 		if err != nil || more && (next != page+1 || len(envelope.Checks) == 0 || int64(len(rows)) >= total) {
 			return nil, invalidResponse(false, http.StatusOK)
+		}
+		if changed {
+			return nil, errCIInventoryChanged
 		}
 		if !more {
 			if int64(len(rows)) != total {
@@ -260,27 +294,35 @@ func (g *GitHub) ciStatuses(ctx context.Context, path string, budget *actionsBud
 }
 
 func normalizeCICheck(raw githubCICheck, head string) (CICheckRun, bool) {
+	row, ok, _ := normalizeCICheckWithIssue(raw, head)
+	return row, ok
+}
+
+func normalizeCICheckWithIssue(raw githubCICheck, head string) (CICheckRun, bool, string) {
 	conclusion, ok := actionsState(raw.Status, raw.Conclusion)
 	if !ok || raw.ID <= 0 || raw.Suite.ID <= 0 || raw.App.ID <= 0 || raw.HeadSHA != head || !validRequiredContext(raw.Name) {
-		return CICheckRun{}, false
+		return CICheckRun{}, false, ""
 	}
 	row := CICheckRun{ID: raw.ID, SuiteID: raw.Suite.ID, AppID: raw.App.ID, Name: raw.Name, HeadSHA: raw.HeadSHA, Status: raw.Status, Conclusion: conclusion}
 	if raw.StartedAt != nil {
 		row.StartedAt, ok = actionsTime(*raw.StartedAt)
 		if !ok {
-			return CICheckRun{}, false
+			return CICheckRun{}, false, ""
 		}
 	}
 	if raw.CompletedAt != nil {
 		row.CompletedAt, ok = actionsTime(*raw.CompletedAt)
-		if !ok || !row.StartedAt.IsZero() && row.CompletedAt.Before(row.StartedAt) {
-			return CICheckRun{}, false
+		if !ok {
+			return CICheckRun{}, false, ""
+		}
+		if !validCIInterval(raw.Status, conclusion, row.StartedAt, row.CompletedAt) {
+			return CICheckRun{}, false, "check_run_time_order"
 		}
 	}
 	if (raw.Status == "completed") != (raw.CompletedAt != nil) || raw.Status == "in_progress" && raw.StartedAt == nil {
-		return CICheckRun{}, false
+		return CICheckRun{}, false, ""
 	}
-	return row, true
+	return row, true, ""
 }
 
 func normalizeCIStatus(raw githubCIStatus) (CICommitStatus, bool) {

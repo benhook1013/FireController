@@ -41,17 +41,35 @@ type CIObservation struct {
 }
 
 // ObserveRequiredCI performs bounded read-only collection for one exact target.
-// Required context/app identity determines workflow fanout. No provider retry,
+// Required context/app identity determines workflow fanout. Result-count movement
+// permits one same-commit recollection within CIResults' original budgets. No
 // job carry-forward, optional workflow walk or external mutation is performed.
-func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CIObservation, err error) {
-	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) {
+func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (CIObservation, error) {
+	return g.observeCI(ctx, target, target.BaseRef)
+}
+
+// ObserveCIGate assesses an explicitly selected branch's required checks against
+// this PR's actual source candidate. The caller selects the gate; it never
+// substitutes for the target's base branch, commit or test-merge verification.
+func (g *GitHub) ObserveCIGate(ctx context.Context, target CITarget, gateRef string) (CIObservation, error) {
+	return g.observeCI(ctx, target, gateRef)
+}
+
+func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (out CIObservation, err error) {
+	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) || !validRequiredBranch(gateRef) {
 		return CIObservation{}, invalidSelector()
 	}
 	out = CIObservation{Target: target, State: "unproven", Reason: "ci_authority_unproven", StartedAt: time.Now().UTC()}
-	defer func() { out.ObservedAt = time.Now().UTC() }()
+	stage := "authority"
+	defer func() {
+		out.ObservedAt = time.Now().UTC()
+		if err != nil {
+			err = &ciCollectionError{stage: stage, cause: err}
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
+	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
 	if err != nil || out.Authority.State != "complete" || out.Authority.Checks == nil {
 		return out, err
 	}
@@ -59,14 +77,23 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		out.Reason = "ci_required_context_capacity"
 		return out, nil
 	}
+	stage = "candidate"
 	candidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
 	out.Candidate, out.MergeState = &candidate, candidate.MergeState
 	if err != nil {
 		out.Reason = "ci_source_unavailable"
 		return out, err
 	}
-	if !matchesCITarget(candidate, target) {
+	if !matchesCITarget(candidate, target) && !NonstrictHeadCICandidate(candidate, target, out.Authority) {
 		out.Reason = "ci_target_unproven"
+		// Keep a known candidate diagnostic visible in the compact result. A
+		// mergeable PR can still expose a stale, unverified test merge.
+		if candidate.State == "unproven" {
+			switch candidate.Reason {
+			case "ci_merge_identity_unproven", "ci_merge_base_mismatch", "ci_merge_pending", "ci_candidate_changed", "ci_target_changed":
+				out.Reason = candidate.Reason
+			}
+		}
 		return out, nil
 	}
 	if len(out.Authority.Checks) == 0 {
@@ -79,6 +106,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		out.State, out.Reason = assessment.State, assessment.Reason
 	} else {
 		if candidate.MergeState == "verified" {
+			stage = "merge_results"
 			merge, readErr := g.CIResults(ctx, target.Repository, candidate.MergeSHA)
 			if readErr != nil {
 				out.Reason = "ci_merge_results_unavailable"
@@ -91,6 +119,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		}
 		if out.Results == nil {
 			out.SelectedCommitSHA, out.Selection = target.HeadSHA, "head"
+			stage = "head_results"
 			results, readErr := g.CIResults(ctx, target.Repository, target.HeadSHA)
 			if readErr != nil {
 				out.Reason = "ci_results_unavailable"
@@ -98,12 +127,14 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			}
 			out.Results = &results
 		}
+		stage = "actions"
 		actions, readErr := g.ActionsRunsForHead(ctx, target.Repository, target.RepositoryID, out.SelectedCommitSHA)
 		if readErr != nil {
 			out.Reason = "ci_actions_unavailable"
 			return out, readErr
 		}
 		out.Actions = &actions
+		stage = "workflow_identity"
 		latest, readErr := LatestActionsRuns(actions)
 		if readErr != nil {
 			return out, readErr
@@ -118,6 +149,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			if !relevant[run.WorkflowID] {
 				continue
 			}
+			stage = "attempt"
 			attempt, readErr := g.CurrentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID)
 			if readErr != nil {
 				out.Reason = "ci_attempt_unavailable"
@@ -125,6 +157,7 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 			}
 			out.Attempts = append(out.Attempts, attempt)
 		}
+		stage = "assessment"
 		assessment, assessErr := AssessRequiredCI(out.Authority, *out.Results, actions, out.Attempts)
 		if assessErr != nil {
 			return out, assessErr
@@ -138,24 +171,29 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 	// A green result is provisional until these independently bounded reads
 	// still agree. Status order is semantic: the provider's first context wins.
 	out.State, out.Reason = "unproven", "ci_observation_changed"
-	authority, err := g.RequiredCheckAuthority(ctx, target.Repository, target.BaseRef)
+	stage = "authority_recheck"
+	authority, err := g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
 	if err != nil || !sameCIAuthority(out.Authority, authority) {
 		return out, err
 	}
+	stage = "candidate_recheck"
 	finalCandidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
-	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) {
+	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) && !NonstrictHeadCICandidate(finalCandidate, target, out.Authority) {
 		return out, err
 	}
 	if out.Results != nil {
+		stage = "results_recheck"
 		results, readErr := g.CIResults(ctx, target.Repository, out.SelectedCommitSHA)
 		if readErr != nil || !sameCIResults(*out.Results, results) {
 			return out, readErr
 		}
+		stage = "actions_recheck"
 		actions, readErr := g.ActionsRunsForHead(ctx, target.Repository, target.RepositoryID, out.SelectedCommitSHA)
 		if readErr != nil || !sameCIActions(*out.Actions, actions) {
 			return out, readErr
 		}
 		if out.TestMergeResults != nil && out.Selection == "head" {
+			stage = "merge_results_recheck"
 			merge, readErr := g.CIResults(ctx, target.Repository, candidate.MergeSHA)
 			if readErr != nil || !sameCIResults(*out.TestMergeResults, merge) {
 				return out, readErr
@@ -170,6 +208,21 @@ func (g *GitHub) ObserveRequiredCI(ctx context.Context, target CITarget) (out CI
 		out.State = "not_required"
 	}
 	return out, nil
+}
+
+// NonstrictHeadCICandidate permits only head CI under complete non-strict
+// authority when a stable cached PR comparison trails the live base. It does
+// not verify or select that stale test merge, or establish merge readiness.
+func NonstrictHeadCICandidate(candidate CICandidate, target CITarget, authority RequiredCheckAuthority) bool {
+	if authority.State != "complete" || authority.Reason != "" || authority.Strict || authority.Checks == nil || authority.ObservedAt.IsZero() || !strings.EqualFold(authority.Repository, target.Repository) || !validRequiredBranch(authority.Branch) ||
+		candidate.State != "unproven" || candidate.Reason != "ci_merge_base_mismatch" || candidate.MergeState != "unproven" || candidate.MergeSHA != "" || candidate.MergeBaseParentSHA != "" || candidate.ObservedAt.IsZero() ||
+		candidate.RepositoryID != target.RepositoryID || !strings.EqualFold(candidate.Repository, target.Repository) || candidate.PullNumber != target.PullNumber || candidate.HeadSHA != target.HeadSHA || candidate.BaseSHA != target.BaseSHA || candidate.BaseRef != target.BaseRef ||
+		!validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) {
+		return false
+	}
+	m := candidate.MergeBaseMismatch
+	return m != nil && lowerCISHA(m.PRBaseSHA) && lowerCISHA(m.LiveBaseSHA) && lowerCISHA(m.MergeSHA) && lowerCISHA(m.MergeBaseParentSHA) &&
+		m.PRBaseSHA == candidate.BaseSHA && m.MergeBaseParentSHA == m.PRBaseSHA && m.LiveBaseSHA != m.MergeBaseParentSHA && m.MergeBaseParentSHA != candidate.HeadSHA && m.MergeSHA != candidate.HeadSHA && m.MergeSHA != m.MergeBaseParentSHA
 }
 
 func matchesCITarget(candidate CICandidate, target CITarget) bool {

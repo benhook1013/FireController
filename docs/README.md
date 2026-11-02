@@ -13,6 +13,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
+- [Offsite backups](offsite-backups.md): isolated operator transfers, scoped retention and inactive recovery through rclone.
 - [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.
 - [Hosting and HTTPS](hosting.md): local/remote deployment, infrastructure-owned certificates, persistence and executed hosted proof.
 - [Quiet agent message wait](message-wait.md): selected bounded CLI/MCP subscription behavior, output and host proof limits.
@@ -23,6 +24,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Public review checkpoints](review-publication.md): explicit historical source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.
 - [Required CI observations](review-ci.md): explicit collection, current workflow identity and compact stored assessment.
+- [Provider observations](provider-observations.md): bounded raw reads, parent/history lookup and Hosted format decoding, separate from native persistence.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
 - [Same-project finding routes](review-routes.md): immutable source counts, receiving decisions/fix proof, guarded rerouting and incoming-policy holds.
 - [Hosted capacity settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.

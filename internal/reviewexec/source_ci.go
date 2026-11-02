@@ -35,13 +35,14 @@ type SourceCISummary struct {
 }
 
 type SourceCIAssessment struct {
-	ProjectID             string            `json:"project_id"`
-	RefreshID             string            `json:"refresh_id"`
-	Source                string            `json:"source"`
-	ConfigurationRevision int64             `json:"configuration_revision"`
-	SourceObservedAt      string            `json:"source_observed_at"`
-	EvaluatedAt           string            `json:"evaluated_at"`
-	Target                SourceObservation `json:"target"`
+	Checks                *[]SourceCIContext `json:"checks,omitempty"`
+	ProjectID             string             `json:"project_id"`
+	RefreshID             string             `json:"refresh_id"`
+	Source                string             `json:"source"`
+	ConfigurationRevision int64              `json:"configuration_revision"`
+	SourceObservedAt      string             `json:"source_observed_at"`
+	EvaluatedAt           string             `json:"evaluated_at"`
+	Target                SourceObservation  `json:"target"`
 	SourceCISummary
 }
 
@@ -68,7 +69,7 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 	}
 	observation, err := ciReader.ObserveRequiredCI(ctx, target)
 	if err != nil {
-		return unavailableSourceCI(target, started, "ci_provider_unavailable")
+		return unavailableSourceCI(target, started, sourceCIErrorReason(ctx, err))
 	}
 	body, err := json.Marshal(observation)
 	if err != nil {
@@ -95,6 +96,48 @@ func observeSourceCI(ctx context.Context, reader TargetReader, plan SourcePlan) 
 	return &owned
 }
 
+// Retain only known safe classes. Adapter messages, URLs and partial inventories
+// are not evidence of a complete CI collection and never enter this outcome.
+func sourceCIErrorReason(ctx context.Context, err error) string {
+	reason := sourceCIErrorClass(ctx, err)
+	invalid := reason == "ci_provider_invalid_response"
+	if stage := reviewprovider.CICollectionStage(err); stage != "" {
+		reason += "_" + stage
+	}
+	if invalid {
+		if issue := reviewprovider.CIResultIssue(err); issue != "" {
+			reason += "_" + issue
+		}
+	}
+	return reason
+}
+
+func sourceCIErrorClass(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return "ci_collection_deadline"
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return "ci_collection_canceled"
+	}
+	var failure *reviewprovider.Error
+	if errors.As(err, &failure) && failure != nil {
+		switch failure.Code {
+		case "provider_rate_limited", "provider_unauthorized", "provider_not_found", "provider_invalid_response", "provider_observation_changed", "provider_inventory_incomplete":
+			return "ci_" + failure.Code
+		case "provider_unavailable":
+			switch {
+			case failure.Status == 408:
+				return "ci_provider_timeout"
+			case failure.Status >= 500 && failure.Status <= 599:
+				return "ci_provider_server_error"
+			case failure.Status >= 300 && failure.Status <= 399:
+				return "ci_provider_redirect"
+			}
+		}
+	}
+	return "ci_provider_unavailable"
+}
+
 func decodeSourceCI(body string, r *sourceRefresh) error {
 	if len(body) > sourceCIMaxBytes {
 		return refreshStorageError()
@@ -109,7 +152,7 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 		return refreshStorageError()
 	}
 	var observation reviewprovider.CIObservation
-	if (strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &observation) != nil) || !validSourceCI(observation, *r.Observation) {
+	if (strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &observation) != nil) || !validSourceCIWithRetainedAssessment(observation, *r.Observation, true) {
 		return refreshStorageError()
 	}
 	// Canonical server-owned JSON also rejects removed required keys and nulls
@@ -125,8 +168,24 @@ func decodeSourceCI(body string, r *sourceRefresh) error {
 }
 
 func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) bool {
+	return validSourceCIWithRetainedAssessment(o, source, false)
+}
+
+func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source SourceObservation, retained bool) bool {
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
+	}
+	// A coherent stable mismatch can retain head CI when the actual required
+	// checks do not require an up-to-date base. The merge comparison stays
+	// unproven; the helper supplies no result or assessment credit.
+	nonstrictCandidate := o.Candidate != nil && o.MergeState == "unproven" && reviewprovider.NonstrictHeadCICandidate(*o.Candidate, o.Target, o.Authority)
+	nonstrictHead := nonstrictCandidate && o.Selection == "head" && o.SelectedCommitSHA == source.HeadSHA && o.TestMergeResults == nil
+	nonstrictAbsent := nonstrictCandidate && o.State == "not_required" && o.Selection == "" && o.SelectedCommitSHA == "" && o.Results == nil && o.Actions == nil && o.Attempts == nil && o.TestMergeResults == nil
+	if o.Candidate != nil && o.Candidate.MergeBaseMismatch != nil && !nonstrictHead && !nonstrictAbsent {
+		c, m := o.Candidate, o.Candidate.MergeBaseMismatch
+		if o.State != "unproven" || o.Reason != "ci_merge_base_mismatch" || o.Selection != "" || o.SelectedCommitSHA != "" || o.MergeState != "unproven" || c.State != "unproven" || c.Reason != o.Reason || c.MergeState != o.MergeState || c.RepositoryID != source.RepositoryID || !strings.EqualFold(c.Repository, source.RepositoryName) || c.PullNumber != source.PullNumber || c.HeadSHA != source.HeadSHA || c.BaseSHA != source.BaseSHA || c.BaseRef != source.BaseRef || c.MergeSHA != "" || c.MergeBaseParentSHA != "" || c.ObservedAt.IsZero() || !sha.MatchString(m.PRBaseSHA) || !sha.MatchString(m.LiveBaseSHA) || !sha.MatchString(m.MergeSHA) || !sha.MatchString(m.MergeBaseParentSHA) || m.PRBaseSHA != c.BaseSHA || m.LiveBaseSHA == m.MergeBaseParentSHA || m.MergeBaseParentSHA == c.HeadSHA || m.MergeSHA == c.HeadSHA || m.MergeSHA == m.MergeBaseParentSHA {
+			return false
+		}
 	}
 	switch o.State {
 	case "satisfied", "failed", "pending", "unproven", "not_required":
@@ -164,7 +223,7 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 		return false
 	}
 	if o.State != "unproven" {
-		if o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != source.RepositoryID || !strings.EqualFold(o.Candidate.Repository, source.RepositoryName) || o.Candidate.PullNumber != source.PullNumber || o.Candidate.HeadSHA != source.HeadSHA || o.Candidate.BaseSHA != source.BaseSHA || o.Candidate.BaseRef != source.BaseRef || o.MergeState != o.Candidate.MergeState {
+		if o.Candidate == nil || o.Candidate.State != "complete" && !nonstrictHead && !nonstrictAbsent || o.Candidate.RepositoryID != source.RepositoryID || !strings.EqualFold(o.Candidate.Repository, source.RepositoryName) || o.Candidate.PullNumber != source.PullNumber || o.Candidate.HeadSHA != source.HeadSHA || o.Candidate.BaseSHA != source.BaseSHA || o.Candidate.BaseRef != source.BaseRef || o.MergeState != o.Candidate.MergeState {
 			return false
 		}
 	}
@@ -197,10 +256,17 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 			actions = *o.Actions
 		}
 		assessment, err := reviewprovider.AssessRequiredCI(o.Authority, inventory, actions, o.Attempts)
-		if err != nil || !reflect.DeepEqual(assessment, o.Assessment) {
+		if err != nil {
 			return false
 		}
-		if o.State != "unproven" && (o.State != assessment.State || o.Reason != assessment.Reason) {
+		matches := reflect.DeepEqual(assessment, o.Assessment)
+		if !matches && retained {
+			matches = reviewprovider.ValidRetainedRequiredCIAssessment(o.Authority, inventory, actions, o.Attempts, o.Assessment)
+		}
+		if !matches {
+			return false
+		}
+		if o.State != "unproven" && (o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
 			return false
 		}
 	} else if o.State != "unproven" {
@@ -217,6 +283,8 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 
 func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 	s := SourceCISummary{State: o.State, Reason: o.Reason, Selection: o.Selection, SelectedCommitSHA: o.SelectedCommitSHA, MergeState: o.MergeState, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339Nano)}
+	var unprovenReason string
+	uniformReason := true
 	for _, check := range o.Assessment.Checks {
 		s.Required++
 		switch check.State {
@@ -228,7 +296,18 @@ func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 			s.Pending++
 		default:
 			s.Unproven++
+			if s.Unproven == 1 {
+				unprovenReason = check.Reason
+			} else if check.Reason != unprovenReason {
+				uniformReason = false
+			}
+			if check.State != "unproven" || check.Reason == "" {
+				uniformReason = false
+			}
 		}
+	}
+	if s.State == "unproven" && s.Reason == "ci_required_checks_unproven" && s.Unproven > 0 && uniformReason {
+		s.Reason = unprovenReason
 	}
 	return s
 }
@@ -237,6 +316,14 @@ func summarizeSourceCI(o reviewprovider.CIObservation) SourceCISummary {
 // source configuration and the latest completed comparison govern applicability;
 // old CI counts remain informational when either binding has changed.
 func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, number int64) (SourceCIAssessment, error) {
+	return e.readSourceCIAssessment(ctx, scope, number, false)
+}
+
+func (e *Engine) ReadSourceCIDiagnostics(ctx context.Context, scope core.Scope, number int64) (SourceCIAssessment, error) {
+	return e.readSourceCIAssessment(ctx, scope, number, true)
+}
+
+func (e *Engine) readSourceCIAssessment(ctx context.Context, scope core.Scope, number int64, diagnostics bool) (SourceCIAssessment, error) {
 	if ctx == nil || e == nil || e.store == nil || number < 1 || number > 2147483647 {
 		return SourceCIAssessment{}, invalid()
 	}
@@ -258,6 +345,13 @@ func (e *Engine) ReadSourceCIAssessment(ctx context.Context, scope core.Scope, n
 			return refreshStorageError()
 		}
 		result = SourceCIAssessment{ProjectID: scope.ProjectID, RefreshID: r.ID, Source: "observed_ci", ConfigurationRevision: r.ConfigurationRevision, SourceObservedAt: r.Observation.ObservedAt, EvaluatedAt: stamp(), Target: *r.Observation, SourceCISummary: *r.CI}
+		if diagnostics {
+			checks, err := sourceCIContextDetails(r.ciObservation)
+			if err != nil {
+				return err
+			}
+			result.Checks = &checks
+		}
 		revision, reason, err := e.assessmentSourceBinding(ctx, tx, r)
 		if err != nil {
 			return err

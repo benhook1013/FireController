@@ -13,7 +13,7 @@ fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
 test:
-	$(GO) test -race -p=2 ./...
+	$(GO) test -race -p=2 -timeout=20m ./...
 	$(GO) vet ./...
 
 build: browser-build
@@ -41,3 +41,10 @@ browser-smoke:
 	@test "$$($(GO) env GOOS)" = linux || { printf '%s\n' 'browser-smoke requires Linux' >&2; exit 1; }
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+
+# Requires built fcd and an explicit rclone binary; uses disposable loopback S3.
+.PHONY: offsite-smoke
+offsite-smoke:
+	@test -n "$(RCLONE)" || { printf '%s\n' 'offsite-smoke requires RCLONE=/absolute/path/to/rclone' >&2; exit 1; }
+	@test -x "$(CURDIR)/bin/fcd" || { printf '%s\n' 'offsite-smoke requires bin/fcd from make build' >&2; exit 1; }
+	FC_TEST_RCLONE="$(RCLONE)" FC_TEST_FCD="$(CURDIR)/bin/fcd" $(GO) test -tags=offsite_integration -run '^TestOffsiteRealRcloneS3AndCryptRecovery$$' -count=1 -timeout=180s ./internal/offsite

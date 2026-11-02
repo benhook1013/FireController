@@ -1,7 +1,9 @@
 package reviewprovider
 
 import (
+	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,15 +19,22 @@ type HostedStandingZero struct {
 }
 
 var standingRunID = regexp.MustCompile("^- \\*\\*Run ID\\*\\*: `(" + publicationUUID + ")`$")
-var standingSelected = regexp.MustCompile(`^<summary><strong>📒 Files selected for processing: (0|[1-9][0-9]{0,4})</strong></summary>$`)
-var standingIgnored = regexp.MustCompile(`^<summary><strong>⛔ Files ignored due to path filters: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+
+// Icons are presentation only. Match the two observed closed picture shapes,
+// never generic HTML stripping, and never fetch or trust the asset URL.
+const standingPicture = `<picture>(?:<source media="\(prefers-color-scheme: dark\)" srcset="https://[^"<>\s]+">)?<img src="https://[^"<>\s]+" width="[1-9][0-9]{0,2}" height="[1-9][0-9]{0,2}" align="absmiddle" alt=""></picture>`
+
+var standingSelected = regexp.MustCompile(`^<summary><strong>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+var standingIgnored = regexp.MustCompile(`^<summary><strong>(?:⛔|` + standingPicture + `) Files ignored due to path filters: (0|[1-9][0-9]{0,4})</strong></summary>$`)
+var standingNoReviewable = regexp.MustCompile(`^<summary><strong>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</strong></summary>$`)
 var standingFile = regexp.MustCompile("^\\* `([^`]+)`$")
 var standingIgnoredFile = regexp.MustCompile("^\\* `([^`]+)` is excluded by `[^`\\r\\n]+`(?:, `[^`\\r\\n]+`)*$")
 var standingCoverage = regexp.MustCompile(`^<!-- final_review_risk_coverage:\{"sourceCommitId":"([a-f0-9]{40})","coveredCommitId":"([a-f0-9]{40})","kind":"reviewed"\} -->$`)
 var standingAckInvocation = regexp.MustCompile(`^<!-- CodeRabbit review command invocation: v2:[a-f0-9]{64} -->$`)
 var standingAvailability = regexp.MustCompile(`^\*\*Included review availability:\*\* This review used your included allowance\. Your plan provides up to [1-9][0-9]{0,4} included reviews? per hour; (0|[1-9][0-9]{0,4}) remain after this review\.$`)
+var standingConfigurationLink = regexp.MustCompile(`^\[([^\[\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^()<>\r\n]+))\)$`)
 var standingFindingClaim = regexp.MustCompile(`(?i)\b(?:comments?|findings?)\s*[:(]\s*[0-9]`)
-var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal)</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
+var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</strong> <strong>(?:🔵 Low|⚪ Minimal|🟡 Moderate|` + standingPicture + ` (?:Low|Minimal|Moderate))</strong> · up to <code>([a-f0-9]{5})</code></summary>$`)
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"
@@ -246,8 +255,24 @@ func (p *standingRecentParser) take(want ...string) bool {
 	}
 	return true
 }
+
+var standingDecoratedBlocks = map[string]*regexp.Regexp{
+	"ℹ️ Recent review info": regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Recent review info</strong></summary>$`),
+	"⚙️ Run configuration":  regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Run configuration</strong></summary>$`),
+	"📥 Commits":             regexp.MustCompile(`^<summary><strong>` + standingPicture + ` Commits</strong></summary>$`),
+}
+
 func (p *standingRecentParser) block(label string) bool {
-	return p.take("<details>", "<summary><strong>"+label+"</strong></summary>", "<dl>", "<dd>")
+	if !p.take("<details>") || p.at >= len(p.lines) {
+		return false
+	}
+	line := p.lines[p.at]
+	decorated := standingDecoratedBlocks[label]
+	if line != "<summary><strong>"+label+"</strong></summary>" && (decorated == nil || !decorated.MatchString(line)) {
+		return false
+	}
+	p.at++
+	return p.take("<dl>", "<dd>")
 }
 func (p *standingRecentParser) close() bool { return p.take("</dd>", "</dl>", "</details>") }
 
@@ -281,6 +306,62 @@ func (p *standingRecentParser) files(pattern *regexp.Regexp, ignored bool, seen 
 	return count, found == count && p.close()
 }
 
+// This optional provider metadata is a counted subset of selected paths. It
+// neither reduces SelectedFiles nor claims that every selected file was reviewed.
+func (p *standingRecentParser) noReviewableFiles(selected map[string]bool) bool {
+	if !p.take("<details>") || p.at >= len(p.lines) {
+		return false
+	}
+	match := standingNoReviewable.FindStringSubmatch(p.lines[p.at])
+	if match == nil {
+		return false
+	}
+	p.at++
+	count, err := strconv.ParseInt(match[1], 10, 64)
+	if err != nil || count > 10000 || count > int64(len(selected)) || !p.take("<dl>", "<dd>") {
+		return false
+	}
+	seen := map[string]bool{}
+	for p.at < len(p.lines) && p.lines[p.at] != "</dd>" {
+		path, plain := strings.CutPrefix(p.lines[p.at], "* ")
+		p.at++
+		if !plain || !validRepoPath(path) || strings.TrimSpace(path) != path || strings.ContainsAny(path, "`<>[]*") || !selected[path] || seen[path] || int64(len(seen)) >= count {
+			return false
+		}
+		seen[path] = true
+	}
+	return int64(len(seen)) == count && p.close()
+}
+
+// Structured source metadata cannot contradict the independently declared
+// comparison head. It is not a substitute for comparison or completion proof.
+func standingConfigurationHead(value, kind string) (string, bool) {
+	match := standingConfigurationLink.FindStringSubmatch(value)
+	if match == nil {
+		return "", false
+	}
+	raw := match[2]
+	if raw == "" {
+		raw = match[3]
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return "", false
+	}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) < 5 || parts[0] != "" || !validRepositorySelector(parts[1]+"/"+parts[2]) || parts[3] != kind || !validSHA(parts[4]) || parts[4] != strings.ToLower(parts[4]) {
+		return "", false
+	}
+	if kind == "commit" {
+		if len(parts) != 5 || len(match[1]) < 7 || !strings.HasPrefix(parts[4], match[1]) {
+			return "", false
+		}
+	} else if kind != "blob" || len(parts) < 6 || !validRepoPath(strings.Join(parts[5:], "/")) {
+		return "", false
+	}
+	return parts[4], true
+}
+
 func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	if !validBody(body) {
 		return zero, false
@@ -308,12 +389,48 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 		}
 		p.lines = append(p.lines, line)
 	}
-	if !p.take("No actionable comments were generated in the recent review. 🎉") || !p.block("ℹ️ Recent review info") || !p.block("⚙️ Run configuration") {
+	if len(p.lines) == 0 || (p.lines[0] != "No actionable comments were generated in the recent review. 🎉" && p.lines[0] != "No actionable comments were generated in the recent review.") {
 		return zero, false
 	}
-	for _, prefix := range []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "} {
-		if p.at >= len(p.lines) || !strings.HasPrefix(p.lines[p.at], prefix) || !validPlainText(strings.TrimPrefix(p.lines[p.at], prefix), 1000) || strings.TrimSpace(strings.TrimPrefix(p.lines[p.at], prefix)) == "" {
+	p.at++
+	if !p.block("ℹ️ Recent review info") {
+		return zero, false
+	}
+	// Optional provider presentation marker, accepted once at its observed
+	// position only. It supplies no identity, scope or completion evidence.
+	if p.at < len(p.lines) && p.lines[p.at] == "<!-- review_info_content -->" {
+		p.at++
+	}
+	if !p.block("⚙️ Run configuration") {
+		return zero, false
+	}
+	prefixes := []string{"- **Configuration used**: ", "- **Review profile**: ", "- **Plan**: "}
+	configurationCommit, configurationFile := "", ""
+	if p.at < len(p.lines) && strings.HasPrefix(p.lines[p.at], "- **Source mode**: ") {
+		// A second observed closed metadata grammar; never skip arbitrary lines
+		// or finding sections while searching for the authoritative Run ID.
+		if !p.take("- **Source mode**: Auto") {
 			return zero, false
+		}
+		prefixes = []string{"- **Repository**: ", "- **Branch**: ", "- **File**: ", "- **Commit**: ", "- **Layers**: ", "- **Review profile**: ", "- **Plan**: "}
+	}
+	for _, prefix := range prefixes {
+		if p.at >= len(p.lines) || !strings.HasPrefix(p.lines[p.at], prefix) {
+			return zero, false
+		}
+		value := strings.TrimPrefix(p.lines[p.at], prefix)
+		if !validPlainText(value, 1000) || strings.TrimSpace(value) == "" {
+			return zero, false
+		}
+		switch prefix {
+		case "- **Commit**: ":
+			if configurationCommit, valid = standingConfigurationHead(value, "commit"); !valid {
+				return zero, false
+			}
+		case "- **File**: ":
+			if configurationFile, valid = standingConfigurationHead(value, "blob"); !valid {
+				return zero, false
+			}
 		}
 		p.at++
 	}
@@ -335,20 +452,34 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 	}
 	p.at++
 	zero.BaseSHA, zero.HeadSHA = strings.Trim(comparison[1], "`"), strings.Trim(comparison[2], "`")
+	if configurationCommit != "" && configurationCommit != zero.HeadSHA || configurationFile != "" && configurationFile != zero.HeadSHA {
+		return zero, false
+	}
 	if !p.close() {
 		return zero, false
 	}
-	seen := map[string]bool{}
+	ignored := map[string]bool{}
 	// CodeRabbit omits the ignored-files block when there are no excluded
 	// paths. Only the exact next selected header permits that omission; any
 	// present or malformed ignored block still goes through strict validation.
 	if p.at+1 >= len(p.lines) || p.lines[p.at] != "<details>" || !standingSelected.MatchString(p.lines[p.at+1]) {
-		if zero.IgnoredFiles, valid = p.files(standingIgnored, true, seen); !valid {
+		if zero.IgnoredFiles, valid = p.files(standingIgnored, true, ignored); !valid {
 			return zero, false
 		}
 	}
-	if zero.SelectedFiles, valid = p.files(standingSelected, false, seen); !valid {
+	selected := map[string]bool{}
+	if zero.SelectedFiles, valid = p.files(standingSelected, false, selected); !valid {
 		return zero, false
+	}
+	for path := range selected {
+		if ignored[path] {
+			return zero, false
+		}
+	}
+	if p.at+1 < len(p.lines) && p.lines[p.at] == "<details>" && standingNoReviewable.MatchString(p.lines[p.at+1]) {
+		if !p.noReviewableFiles(selected) {
+			return zero, false
+		}
 	}
 	if p.at < len(p.lines) && standingAvailability.MatchString(p.lines[p.at]) {
 		p.at++
@@ -361,13 +492,38 @@ func parseStandingZero(body string) (zero HostedStandingZero, ok bool) {
 }
 
 func standingFinishedAck(body string) bool {
+	return standingCommandReply(body, "✅ Action performed", "Full review finished.") ||
+		standingCommandReply(body, "Action performed", "Full review finished.")
+}
+
+// Recognize closed provider reply envelopes without stripping arbitrary HTML.
+func standingCommandReply(body, summary, outcome string) bool {
+	if len(body) > githubMaxText {
+		return false
+	}
 	var lines []string
 	for _, line := range strings.Split(body, "\n") {
 		if line = strings.TrimSuffix(line, "\r"); line != "" {
 			lines = append(lines, line)
 		}
 	}
-	return len(lines) == 6 && lines[0] == "<!-- This is an auto-generated reply by CodeRabbit -->" && standingAckInvocation.MatchString(lines[1]) && lines[2] == "<details>" && lines[3] == "<summary>✅ Action performed</summary>" && lines[4] == "Full review finished." && lines[5] == "</details>"
+	if len(lines) > 0 && lines[0] == "<!-- coderabbit-ai-generated:v1 -->" {
+		lines = lines[1:]
+	}
+	if len(lines) < 6 || lines[0] != "<!-- This is an auto-generated reply by CodeRabbit -->" || !standingAckInvocation.MatchString(lines[1]) || lines[2] != "<details>" {
+		return false
+	}
+	lines = lines[3:]
+	if lines[0] == "<summary>"+summary+"</summary>" {
+		lines = lines[1:]
+	} else if len(lines) >= 3 && slices.Equal(lines[:3], []string{"<summary>", summary, "</summary>"}) {
+		lines = lines[3:]
+	} else {
+		return false
+	}
+	// Only the two observed closed envelopes are accepted. Generic HTML
+	// removal could turn quoted examples or unknown outcomes into an ACK.
+	return slices.Equal(lines, []string{outcome, "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", outcome, "</dd>", "</dl>", "</details>"})
 }
 
 // This single-snapshot resolver establishes inventory attribution only. Neither
@@ -414,7 +570,7 @@ func resolveStandingZero(snapshot HostedPublicationSnapshot, result HostedPublic
 			return result
 		}
 	}
-	if summary == nil || ack == nil || ack.UpdatedAt.Before(summary.Summary.UpdatedAt) {
+	if summary == nil || ack == nil {
 		return result
 	}
 	for _, comment := range snapshot.IssueComments {
@@ -429,6 +585,12 @@ func resolveStandingZero(snapshot HostedPublicationSnapshot, result HostedPublic
 	summary.Acknowledgement = *ack
 	result.StandingZero = summary
 	result.State, result.Reason, result.FinishedAt = "attributed", "standing_zero_inventory_attributed", ack.UpdatedAt
+	// CodeRabbit may finish its command reply before updating the standing
+	// inventory. Both must independently fall inside this trigger's window;
+	// their relative edit order does not invalidate the final exact-run proof.
+	if summary.Summary.UpdatedAt.After(result.FinishedAt) {
+		result.FinishedAt = summary.Summary.UpdatedAt
+	}
 	return result
 }
 
@@ -436,7 +598,7 @@ func validStandingZero(z *HostedStandingZero) bool {
 	if z == nil {
 		return false
 	}
-	if z.Summary.ID <= 0 || z.Acknowledgement.ID <= 0 || z.Summary.ID == z.Acknowledgement.ID || !publicationValidActor(z.Summary.Author) || !publicationValidActor(z.Acknowledgement.Author) || !publicationActor(z.Summary.Author, z.Acknowledgement.Author) || !hostedTriggerTime(z.Summary.CreatedAt) || !hostedTriggerTime(z.Summary.UpdatedAt) || !hostedTriggerTime(z.Acknowledgement.CreatedAt) || !hostedTriggerTime(z.Acknowledgement.UpdatedAt) || z.Summary.UpdatedAt.Before(z.Summary.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Acknowledgement.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Summary.UpdatedAt) {
+	if z.Summary.ID <= 0 || z.Acknowledgement.ID <= 0 || z.Summary.ID == z.Acknowledgement.ID || !publicationValidActor(z.Summary.Author) || !publicationValidActor(z.Acknowledgement.Author) || !publicationActor(z.Summary.Author, z.Acknowledgement.Author) || !hostedTriggerTime(z.Summary.CreatedAt) || !hostedTriggerTime(z.Summary.UpdatedAt) || !hostedTriggerTime(z.Acknowledgement.CreatedAt) || !hostedTriggerTime(z.Acknowledgement.UpdatedAt) || z.Summary.UpdatedAt.Before(z.Summary.CreatedAt) || z.Acknowledgement.UpdatedAt.Before(z.Acknowledgement.CreatedAt) {
 		return false
 	}
 	parsed, ok := parseStandingZero(z.Summary.Body)
