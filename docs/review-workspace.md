@@ -15,7 +15,7 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
-| `POST /reviews/queue/edits` | Administrator selected metadata/order edits, retirement and reactivation. |
+| `POST /reviews/queue/edits` | Selected metadata/order edits, retirement and reactivation (administrator). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
@@ -50,7 +50,7 @@ Attempts retain source IDs, channel, head, state, timing, nullable duration and 
 
 ### Optional PR display metadata
 
-PR observations may include `diff`, `is_draft`, `merged_at` and `merge_state_status`. These fields retain observed display facts and grant no review coverage or execution authority. `diff` is one atomic object containing exactly `files`, `additions` and `deletions`, each an integer from zero through 2147483647; a partial object is invalid. `is_draft` is an optional boolean, so known `false` differs from unknown. A nonempty `merged_at` is an RFC3339 instant of at most 64 characters and is valid only when `state` is `merged`. Omit unknown metadata rather than inventing zero, false or a timestamp. Queue edits refuse explicit null optional metadata; observations also refuse a null or incomplete `diff` object.
+PR observations may include `diff`, `is_draft`, `merged_at` and `merge_state_status`. These fields retain observed display facts and grant no review coverage or execution authority. Compact queue/detail summaries expose `diff`, `is_draft` and `merged_at`; raw `merge_state_status` remains retained provider input rather than an additional summary field. Merge-status presentation is outside this slice’s implemented read contract. `diff` is one atomic object containing exactly `files`, `additions` and `deletions`, each an integer from zero through 2147483647; a partial object is invalid. `is_draft` is an optional boolean, so known `false` differs from unknown. A nonempty `merged_at` is an RFC3339 instant of at most 64 characters and is valid only when `state` is `merged`. Omit unknown metadata rather than inventing zero, false or a timestamp. Queue edits refuse explicit null optional metadata; observations also refuse a null or incomplete `diff` object.
 
 Observation `merge_state_status` may be omitted, empty, or one of `BEHIND`, `BLOCKED`, `CLEAN`, `DIRTY`, `DRAFT`, `HAS_HOOKS`, `UNKNOWN` and `UNSTABLE`. Queue edits accept the other optional display fields but do not accept `merge_state_status`; they are not fresh provider observations.
 
