@@ -74,6 +74,12 @@ func validEvidenceAnchor(a Anchor) bool {
 	return err == nil && !t.IsZero() && a.RepositoryID > 0 && repository.MatchString(a.Repository) && a.PullNumber > 0 && a.PullNumber <= 2147483647 && a.ParentPullNumber >= 0 && a.ParentPullNumber <= 2147483647 && a.BaseRef != "" && safeText(a.BaseRef, 256) && sha.MatchString(a.CandidateSHA) && sha.MatchString(a.BaseSHA) && sha.MatchString(a.ParentSHA) && sha.MatchString(a.MergeBaseSHA) && hash.MatchString(a.PatchSHA256)
 }
 
+// ValidateRetainedReviewCapture checks immutable capture structure for backup
+// inspection. It grants no current coverage, admission or completion authority.
+func ValidateRetainedReviewCapture(input ReviewEvidenceInput) error {
+	return validateReviewEvidence(input)
+}
+
 // validateReviewEvidence checks immutable structure, never current wall-clock
 // freshness. Retained captures remain valid after a host clock correction.
 func validateReviewEvidence(in ReviewEvidenceInput) error {
@@ -103,6 +109,19 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	}
 	if r.Complete != (r.Outcome == "completed") || len(r.Findings) > 100 || len(r.ReviewedFiles) > 10000 || r.ReportedFindings < 0 || r.Complete && (r.ReportedFindings != int64(len(r.Findings)) || in.Hosted == nil && len(r.ReviewedFiles) == 0) {
 		return invalid()
+	}
+	coverageLimitCount := 16
+	if in.Hosted == nil && !r.Complete {
+		// Leave room for the existing incomplete-capture publication warning.
+		coverageLimitCount--
+	}
+	if len(r.CoverageLimits) > coverageLimitCount {
+		return invalid()
+	}
+	for _, limit := range r.CoverageLimits {
+		if !safeText(limit, 1024) || strings.TrimSpace(limit) == "" {
+			return invalid()
+		}
 	}
 	seen := make(map[string]bool, len(r.ReviewedFiles))
 	for _, path := range r.ReviewedFiles {

@@ -52,6 +52,32 @@ func (r *sourceReader) Pull(ctx context.Context, repository string, number int64
 	return pull, nil
 }
 
+func (r *sourceReader) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	if err := r.record(ctx, fmt.Sprintf("parent:%s:%s", repository, branch)); err != nil {
+		return reviewprovider.Pull{}, err
+	}
+	var found reviewprovider.Pull
+	for _, pull := range r.pulls {
+		if pull.HeadRef != branch {
+			continue
+		}
+		if found.Number != 0 {
+			return reviewprovider.Pull{}, errors.New("ambiguous explicitly configured parent branch")
+		}
+		found = pull
+	}
+	if found.Number == 0 {
+		return found, errors.New("missing explicitly configured parent branch")
+	}
+	return found, nil
+}
+
+func sourceBaseBranch(r *sourceReader, target, parent int64) {
+	pull := r.pulls[target]
+	pull.BaseRef = fmt.Sprintf("branch-%d", parent)
+	r.pulls[target] = pull
+}
+
 func sourceFixture() (*sourceReader, reviewexec.Configuration, reviewexec.Request) {
 	reader := &sourceReader{
 		repository: reviewprovider.Repository{ID: 701, FullName: "owner/canonical", DefaultBranch: "main"},
@@ -70,7 +96,7 @@ func sourcePull(number int64, head string, merged bool) reviewprovider.Pull {
 	if merged {
 		state = "closed"
 	}
-	return reviewprovider.Pull{Number: number, RepositoryID: 701, State: state, Merged: merged, HeadSHA: head, BaseSHA: strings.Repeat("c", 40), BaseRef: "main", ChangedFiles: 3}
+	return reviewprovider.Pull{Number: number, RepositoryID: 701, State: state, Merged: merged, HeadSHA: head, HeadRef: fmt.Sprintf("branch-%d", number), BaseSHA: strings.Repeat("c", 40), BaseRef: "main", ChangedFiles: 3}
 }
 
 func requireSourceCalls(t *testing.T, reader *sourceReader, want ...string) {
@@ -121,17 +147,18 @@ func TestResolveSourceIndependentReadsOnlyAssertedTargetAndSharesFreshnessBudget
 	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9")
 }
 
-func TestResolveSourceStackedNearestUnmergedAndDefaultBase(t *testing.T) {
-	t.Run("nearest unmerged skips only merged predecessors", func(t *testing.T) {
+func TestResolveSourceStackedPublishedParentAndDefaultBase(t *testing.T) {
+	t.Run("actual parent ignores intervening unrelated queue entries", func(t *testing.T) {
 		reader, configuration, request := sourceFixture()
 		configuration.Mode, configuration.Queue = "stacked", []int64{1, 2, 3, 9, 42}
 		reader.pulls[3] = sourcePull(3, strings.Repeat("d", 40), true)
 		reader.pulls[2] = sourcePull(2, reader.pulls[9].BaseSHA, false)
+		sourceBaseBranch(reader, 9, 2)
 		plan, err := reviewexec.ResolveSource(context.Background(), reader, 701, configuration, request)
 		if err != nil || plan.ParentPullNumber != 2 || plan.ParentSHA != reader.pulls[2].HeadSHA {
 			t.Fatalf("effective parent: %+v %v", plan, err)
 		}
-		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#3", "pull:owner/canonical#2")
+		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-2")
 	})
 	t.Run("first unmerged uses default comparison", func(t *testing.T) {
 		reader, configuration, request := sourceFixture()
@@ -141,7 +168,7 @@ func TestResolveSourceStackedNearestUnmergedAndDefaultBase(t *testing.T) {
 		if err != nil || plan.ParentPullNumber != 0 || plan.ParentSHA != reader.pulls[9].BaseSHA {
 			t.Fatalf("default comparison: %+v %v", plan, err)
 		}
-		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#2", "pull:owner/canonical#1")
+		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9")
 	})
 	t.Run("closed unmerged is a hold with no fallback", func(t *testing.T) {
 		reader, configuration, request := sourceFixture()
@@ -149,9 +176,21 @@ func TestResolveSourceStackedNearestUnmergedAndDefaultBase(t *testing.T) {
 		parent := sourcePull(2, strings.Repeat("b", 40), false)
 		parent.State = "closed"
 		reader.pulls[2] = parent
+		sourceBaseBranch(reader, 9, 2)
 		plan, err := reviewexec.ResolveSource(context.Background(), reader, 701, configuration, request)
 		requireSourceError(t, plan, err, "review_held", "parent_unavailable")
-		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#2")
+		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-2")
+	})
+	t.Run("queue order cannot change published parent identity", func(t *testing.T) {
+		reader, configuration, request := sourceFixture()
+		configuration.Mode, configuration.Queue = "stacked", []int64{9, 42, 2}
+		reader.pulls[2] = sourcePull(2, reader.pulls[9].BaseSHA, false)
+		sourceBaseBranch(reader, 9, 2)
+		plan, err := reviewexec.ResolveSource(t.Context(), reader, 701, configuration, request)
+		if err != nil || plan.ParentPullNumber != 2 {
+			t.Fatal("queue order replaced actual published parent", plan, err)
+		}
+		requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-2")
 	})
 }
 
@@ -260,11 +299,13 @@ func TestResolveSourceHoldsIdentityLifecycleAndComparisonFailures(t *testing.T) 
 			p := sourcePull(1, strings.Repeat("b", 40), false)
 			p.RepositoryID++
 			r.pulls[1] = p
-		}, []string{"repository:701", "pull:owner/canonical#9", "pull:owner/canonical#1"}},
+			sourceBaseBranch(r, 9, 1)
+		}, []string{"repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-1"}},
 		{"parent moved", "parent_moved", func(r *sourceReader, c *reviewexec.Configuration) {
 			c.Mode, c.Queue = "stacked", []int64{1, 9}
 			r.pulls[1] = sourcePull(1, strings.Repeat("d", 40), false)
-		}, []string{"repository:701", "pull:owner/canonical#9", "pull:owner/canonical#1"}},
+			sourceBaseBranch(r, 9, 1)
+		}, []string{"repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reader, configuration, request := sourceFixture()
@@ -281,11 +322,12 @@ func TestResolveSourceHoldsIdentityLifecycleAndComparisonFailures(t *testing.T) 
 }
 
 func TestResolveSourceProviderFailuresAndCancellationReturnNoPartialPlan(t *testing.T) {
-	for _, failCall := range []string{"repository:701", "pull:owner/canonical#9", "pull:owner/canonical#1"} {
+	for _, failCall := range []string{"repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-1"} {
 		t.Run(failCall, func(t *testing.T) {
 			reader, configuration, request := sourceFixture()
 			configuration.Mode, configuration.Queue = "stacked", []int64{1, 9}
 			reader.pulls[1] = sourcePull(1, strings.Repeat("b", 40), false)
+			sourceBaseBranch(reader, 9, 1)
 			sentinel := errors.New("synthetic provider failure")
 			reader.onCall = func(_ context.Context, call string) error {
 				if call == failCall {
@@ -389,6 +431,7 @@ func TestRecheckSourceDetectsFinalBoundaryMovement(t *testing.T) {
 			reader, configuration, request := sourceFixture()
 			configuration.Mode, configuration.Queue = "stacked", []int64{1, 9}
 			reader.pulls[1] = sourcePull(1, strings.Repeat("b", 40), false)
+			sourceBaseBranch(reader, 9, 1)
 			prepared, err := reviewexec.ResolveSource(context.Background(), reader, 701, configuration, request)
 			if err != nil {
 				t.Fatal(err)
@@ -408,7 +451,7 @@ func TestRecheckSourceDetectsFinalBoundaryMovement(t *testing.T) {
 				reason = "comparison_changed"
 			}
 			requireSourceError(t, reviewexec.SourcePlan{}, err, "review_held", reason)
-			requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#1")
+			requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-1")
 		})
 	}
 }
@@ -433,11 +476,12 @@ func TestResolveSourceObservationPreservesStackScopeAndAssertions(t *testing.T) 
 	reader, configuration, request := sourceFixture()
 	configuration.Mode, configuration.Queue, configuration.Paused = "stacked", []int64{1, 2, 9, 42}, true
 	reader.pulls[2] = sourcePull(2, reader.pulls[9].BaseSHA, false)
+	sourceBaseBranch(reader, 9, 2)
 	plan, err := reviewexec.ResolveSourceObservation(context.Background(), reader, 701, configuration, request.PullNumber, request.HeadSHA)
 	if err != nil || plan.ParentPullNumber != 2 {
 		t.Fatal("observed stacked comparison", plan, err)
 	}
-	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "pull:owner/canonical#2")
+	requireSourceCalls(t, reader, "repository:701", "pull:owner/canonical#9", "parent:owner/canonical:branch-2")
 	reader.calls = nil
 	plan, err = reviewexec.ResolveSourceObservation(context.Background(), reader, 701, configuration, request.PullNumber, strings.Repeat("d", 40))
 	requireSourceError(t, plan, err, "review_held", "target_changed")

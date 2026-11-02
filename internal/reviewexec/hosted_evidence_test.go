@@ -225,3 +225,81 @@ func TestHostedEvidenceMetadataJSONFields(t *testing.T) {
 		t.Fatal("hosted source identity changed in round trip", err)
 	}
 }
+
+func TestHostedSubmittedReviewMetadataIsDistinctAndPositive(t *testing.T) {
+	fixture := func() (*HostedEvidenceMetadata, Anchor, reviewprovider.ParsedReview) {
+		h, a, r := hostedEvidenceMetadataFixture()
+		h.PublicationID, h.ProviderAttemptID = "", ""
+		h.ReviewIDs = []int64{201}
+		h.Sources = h.Sources[:1]
+		r.Findings, r.ReportedFindings = r.Findings[:1], 1
+		h.SubmittedReview = &HostedSubmittedReviewMetadata{ProviderRunID: "33333333-3333-3333-3333-333333333333", AcknowledgementCommentID: 102}
+		return h, a, r
+	}
+	h, a, r := fixture()
+	if err := validateHostedEvidenceMetadata(h, a, r); err != nil {
+		t.Fatal("real submitted-review identity rejected", err)
+	}
+	raw, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded HostedEvidenceMetadata
+	if err = json.Unmarshal(raw, &decoded); err != nil || !reflect.DeepEqual(h, &decoded) {
+		t.Fatal("submitted identities lost on retained read", err)
+	}
+	cases := map[string]func(*HostedEvidenceMetadata, *reviewprovider.ParsedReview){
+		"invented publication": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.PublicationID = "11111111-1111-1111-1111-111111111111"
+		},
+		"invented attempt": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.ProviderAttemptID = "22222222-2222-2222-2222-222222222222"
+		},
+		"multiple reviews": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.ReviewIDs = append(h.ReviewIDs, 202)
+		},
+		"missing run": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) { h.SubmittedReview.ProviderRunID = "" },
+		"missing ack": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.SubmittedReview.AcknowledgementCommentID = 0
+		},
+		"ack is trigger": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.SubmittedReview.AcknowledgementCommentID = h.TriggerCommentID
+		},
+		"standing mixed": func(h *HostedEvidenceMetadata, _ *reviewprovider.ParsedReview) {
+			h.StandingSummary = &HostedStandingSummaryMetadata{}
+		},
+		"zero inventory": func(h *HostedEvidenceMetadata, r *reviewprovider.ParsedReview) {
+			h.Sources = []HostedFindingSource{}
+			r.Findings = []reviewprovider.ParsedFinding{}
+			r.ReportedFindings = 0
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, a, r := fixture()
+			change(h, &r)
+			if validateHostedEvidenceMetadata(h, a, r) == nil {
+				t.Fatal("conflicting submitted identity accepted")
+			}
+		})
+	}
+}
+
+func TestHostedAdditionalEvidenceRetainsRealReviewAndCoordinates(t *testing.T) {
+	h, anchor, review := hostedEvidenceMetadataFixture()
+	s := &h.Sources[2]
+	s.Kind = "additional"
+	s.SourceKey = fmt.Sprintf("hosted-review:%d:additional:%s", s.ReviewID, s.Fingerprint)
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err != nil {
+		t.Fatal(err)
+	}
+	s.CommentID = 999
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err == nil {
+		t.Fatal("invented inline comment accepted")
+	}
+	s.CommentID = 0
+	review.Findings[2].StartLine = 0
+	if err := validateHostedEvidenceMetadata(h, anchor, review); err == nil {
+		t.Fatal("unknown additional location accepted")
+	}
+}

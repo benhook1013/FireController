@@ -2,7 +2,9 @@
 
 ## Implemented boundary
 
-An explicit source refresh reads the selected GitHub PR and only the repository and preceding PR facts needed to identify its comparison. It durably queues the operation before provider work starts. A short default wait returns the completed result in the original call when possible; only work that remains pending returns an operation receipt. It does not request a review, invoke the CLI, inspect allowance or download completed review captures. Ordinary operation and assessment reads use stored records without contacting GitHub.
+An explicit source refresh reads the selected GitHub PR and only the repository and actual published base-branch parent needed to identify its comparison. It durably queues the operation before provider work starts. A short default wait returns the completed result in the original call when possible; only work that remains pending returns an operation receipt. It does not request a review, invoke the CLI, inspect allowance or download completed review captures. Ordinary operation and assessment reads use stored records without contacting GitHub.
+
+In stacked mode, parent identity comes from a unique open same-repository PR whose published head branch matches the selected base branch. Queue position supplies no repository dependency identity. Missing, ambiguous or moving parents hold; a parent head different from the observed base holds. Native execution additionally refuses draft PRs; explicit source observation remains available for them.
 
 The observed-policy assessment applies current local channel requirements and finding obligations to that stored source comparison. Its source observation time and policy evaluation time are separate. It is an as-of assessment, not a guarantee that GitHub has remained unchanged, a required-CI result or a merge-readiness verdict. The [captured-comparison assessment](review-controls.md#captured-comparison-assessment) remains available for inspecting a particular historical native capture.
 
@@ -22,7 +24,7 @@ Transient local storage admission overload does not stop the worker. It retries 
 
 Waits subscribe to bounded per-operation completion notifications outside database transactions. Expiry or cancellation releases the subscription without cancelling the queued action or acknowledging anything. The result is reauthorized before it is returned.
 
-The service checks the original actor's access, stable repository binding and operator capability before fetching and before recording its result. Source configuration changes hold in-flight work. Changing only the execution pause leaves the source comparison valid; pausing a review channel does not prevent an explicit source refresh or erase existing review credit.
+The service checks the original actor's access, stable repository binding and operator capability before fetching and before recording its result. Source applicability binds capability, mode, channels, the queue prefix through the selected target, and whether its actual published parent remains enrolled. Unrelated suffix edits and execution pause changes preserve in-flight and completed source observations. Current authorization and relevant binding changes still hold work; these checks grant no review dispatch authority. Original source, CI/readiness observations and timestamps stay retained while assessments apply current local policy.
 
 ## Local assessment
 

@@ -585,3 +585,107 @@ func TestReviewHostedEvidenceStrictWirePresenceAndShape(t *testing.T) {
 		checkError(t, err, "invalid_response")
 	}
 }
+
+func TestReviewSubmittedEvidenceStrictVariantAndAdditionalSources(t *testing.T) {
+	fixture := func() client.ReviewEvidence {
+		v := sampleHostedControlEvidence()
+		h := v.Capture.Hosted
+		h.PublicationID, h.ProviderAttemptID = "", ""
+		h.ReviewIDs = []int64{11}
+		h.SubmittedReview = &client.ReviewHostedSubmittedReview{ProviderRunID: "33333333-3333-4333-8333-333333333333", AcknowledgementCommentID: 102}
+		finding := &v.Capture.Findings[1]
+		finding.Source.Kind = "additional"
+		finding.Source.SourceKey = "hosted-review:11:additional:" + finding.Source.Fingerprint
+		return v
+	}
+	cases := map[string]func(*client.ReviewEvidence){
+		"valid": func(*client.ReviewEvidence) {},
+		"mixed-publication": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.PublicationID = "11111111-1111-4111-8111-111111111111"
+		},
+		"mixed-attempt": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.ProviderAttemptID = "22222222-2222-4222-8222-222222222222"
+		},
+		"mixed-standing": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.StandingSummary = &client.ReviewHostedStandingSummary{}
+		},
+		"missing-run": func(v *client.ReviewEvidence) { v.Capture.Hosted.SubmittedReview.ProviderRunID = "" },
+		"missing-ack": func(v *client.ReviewEvidence) { v.Capture.Hosted.SubmittedReview.AcknowledgementCommentID = 0 },
+		"ack-is-trigger": func(v *client.ReviewEvidence) {
+			v.Capture.Hosted.SubmittedReview.AcknowledgementCommentID = v.Capture.Hosted.TriggerCommentID
+		},
+		"multiple-reviews": func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = append(v.Capture.Hosted.ReviewIDs, 12) },
+		"empty-positive": func(v *client.ReviewEvidence) {
+			v.Capture.Findings = []client.ReviewEvidenceFinding{}
+			v.Capture.ReportedFindings = 0
+		},
+		"invented-additional-comment": func(v *client.ReviewEvidence) { v.Capture.Findings[1].Source.CommentID = 999 },
+		"unknown-additional-line":     func(v *client.ReviewEvidence) { v.Capture.Findings[1].StartLine = 0 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			value := fixture()
+			mutate(&value)
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := readControlEvidenceWire(t, raw)
+			if name == "valid" {
+				if err != nil || !reflect.DeepEqual(got, value) {
+					t.Fatal("submitted source changed", err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid submitted variant accepted")
+			}
+		})
+	}
+}
+
+func TestReviewHostedExtensibleProvenanceLabelRead(t *testing.T) {
+	for _, kind := range []string{"additional", "provider_note_v2"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = kind
+		s.SourceKey = "hosted-review:11:" + kind + ":" + s.Fingerprint
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readControlEvidenceWire(t, data)
+		if err != nil || got.Capture.Findings[1].Source.Kind != kind || got.Capture.Findings[1].Detail != v.Capture.Findings[1].Detail {
+			t.Fatal("compatible provenance label or detail rejected", kind, err)
+		}
+	}
+	for _, kind := range []string{"", "bad:kind", "bad/kind", "bad\nkind", strings.Repeat("x", 129), "inline"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = kind
+		s.SourceKey = "hosted-review:11:" + kind + ":" + s.Fingerprint
+		data, _ := json.Marshal(v)
+		if _, err := readControlEvidenceWire(t, data); err == nil {
+			t.Fatal("invalid provenance identity accepted", kind)
+		}
+	}
+	for _, bad := range []string{"comment", "key", "review", "location"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = "provider_note_v2"
+		s.SourceKey = "hosted-review:11:" + s.Kind + ":" + s.Fingerprint
+		switch bad {
+		case "comment":
+			s.CommentID = 21
+		case "key":
+			s.SourceKey = "hosted-review:11:duplicate:" + s.Fingerprint
+		case "review":
+			s.ReviewID = 99
+			s.SourceKey = "hosted-review:99:" + s.Kind + ":" + s.Fingerprint
+		case "location":
+			v.Capture.Findings[1].StartLine = 0
+		}
+		data, _ := json.Marshal(v)
+		if _, err := readControlEvidenceWire(t, data); err == nil {
+			t.Fatal("new label bypassed source binding", bad)
+		}
+	}
+}

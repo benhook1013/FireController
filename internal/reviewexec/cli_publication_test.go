@@ -202,8 +202,13 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	current.Title, current.HeadSHA = "Newer current title", strings.Repeat("9", 40)
 	current.BaseRef, current.BaseSHA = "current-base", strings.Repeat("8", 40)
 	current.CIState, current.Mergeability = "pending", "conflicting"
+	currentDraft := false
+	current.Diff = &reviews.PullDiff{Files: 3, Additions: 11, Deletions: 7}
+	current.IsDraft = &currentDraft
 	merged := projectionPull(1)
 	merged.State = "merged"
+	merged.Diff = &reviews.PullDiff{}
+	merged.MergedAt = "2026-01-01T00:00:00.123456789Z"
 	imported := projectionRun(evidence)
 	imported.Channel = "manual"
 	merged.Runs = []reviews.RunInput{imported}
@@ -230,8 +235,11 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	var after, afterMerged reviews.PullResponse
 	projectionRead(t, f, "/pulls/2", &after)
 	projectionRead(t, f, "/pulls/1", &afterMerged)
+	if after.Pull.RunCounts.CLI != before.Pull.RunCounts.CLI+1 || after.Pull.RunCounts.Hosted != before.Pull.RunCounts.Hosted || after.Pull.RunCounts.Manual != before.Pull.RunCounts.Manual || after.Pull.RunCounts.Subagent != before.Pull.RunCounts.Subagent {
+		t.Fatal("native publication did not increment only its exact channel count")
+	}
 	facts := after.Pull
-	facts.RunCount, facts.RecentRuns = before.Pull.RunCount, before.Pull.RecentRuns
+	facts.RunCount, facts.RunCounts, facts.RecentRuns = before.Pull.RunCount, before.Pull.RunCounts, before.Pull.RecentRuns
 	if !reflect.DeepEqual(facts, before.Pull) || after.ObservedAt != observed || !reflect.DeepEqual(afterMerged.Pull, beforeMerged.Pull) || projectionDigest(t, f, before.SnapshotID) != oldSnapshot || attemptState(t, f, a) != journal {
 		t.Fatal("nil publication replaced current metadata, history, freshness or journal")
 	}

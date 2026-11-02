@@ -401,3 +401,137 @@ func TestRetainHostedObservationReferencesRecoverPendingAndComplete(t *testing.T
 		t.Fatal("restart lost observation/final evidence distinction", err)
 	}
 }
+
+func TestRetainHostedOutsideOnlyOmittedInlineCount(t *testing.T) {
+	f, captures, attempt, record := hostedRetainFixture(t, false)
+	record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{}
+	record.Snapshot.Reviews[0].Body = "> [!CAUTION]\n> Some comments are outside the diff and are listed below.\n>\n> **⚠️ Outside diff range comments (1)**\n>\n> <details>\n> <summary><strong>🔵 Trivial</strong> · Shared event wording. · <code>events.go:19</code></summary><blockquote>\n>\n> `engine/events.go:19`\n> **📐 Maintainability & Code Quality** | **🔵 Trivial**\n>\n> **Keep shared event wording accurate.**\n>\n> Preserve the full literal detail.\n>\n> <!-- cr-comment:v1:000000000000000000000001 -->\n>\n> </blockquote></details>\n\n" + hostedRetainScope(f.baseSHA, f.headSHA) + "\n\n" + hostedRetainPublicationMarker()
+	before, _ := json.Marshal(record)
+	stateBefore := cliAttemptState(t, f.store, attempt.ID)
+	result, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || !result.Complete || result.Reason != "capture_recorded" {
+		t.Fatalf("outside-only finding not retained: %+v %v", result, err)
+	}
+	loaded, err := captures.Read(t.Context(), attempt.ID, result.Capture)
+	if err != nil || !reflect.DeepEqual(loaded, record) {
+		t.Fatal("raw outside-only observation changed", err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := evidence.Capture
+	if capture.Review.ReportedFindings != 1 || len(capture.Review.Findings) != 1 || capture.Hosted == nil || len(capture.Hosted.Sources) != 1 || capture.Hosted.ObservedBaseSHA != attempt.Anchor.ParentSHA || !reflect.DeepEqual(capture.Hosted.ReviewIDs, []int64{200}) {
+		t.Fatal("outside-only evidence lost exact inventory/comparison")
+	}
+	finding, source := capture.Review.Findings[0], capture.Hosted.Sources[0]
+	if finding.Title != "Keep shared event wording accurate." || finding.Path != "engine/events.go" || finding.StartLine != 19 || finding.EndLine != 19 || finding.Severity != "info" || !strings.Contains(record.Snapshot.Reviews[0].Body, finding.Detail) || !strings.Contains(finding.Detail, "<strong>🔵 Trivial</strong>") || source.Kind != "outside_diff" || source.CommentID != 0 || source.ReviewID != 200 || source.Fingerprint != "000000000000000000000001" {
+		t.Fatal("outside-only literal source fields lost")
+	}
+	replay, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || replay != result {
+		t.Fatal("outside-only exact replay changed evidence", err)
+	}
+	after, _ := json.Marshal(record)
+	if string(before) != string(after) || cliAttemptState(t, f.store, attempt.ID) != stateBefore || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != 0 {
+		t.Fatal("retention changed source, duplicated evidence or dispatched/published work")
+	}
+}
+
+func TestRetainHostedInlineOmittedCountPreservesPositiveSource(t *testing.T) {
+	f, captures, attempt, record := hostedRetainFixture(t, false)
+	record.Snapshot.Reviews[0].Body = strings.TrimPrefix(record.Snapshot.Reviews[0].Body, "**Actionable comments posted: 1**\n\n")
+	before, _ := json.Marshal(record)
+	stateBefore := cliAttemptState(t, f.store, attempt.ID)
+	result, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || !result.Complete || result.Reason != "capture_recorded" {
+		t.Fatalf("positive inline observation not retained: %+v %v", result, err)
+	}
+	loaded, err := captures.Read(t.Context(), attempt.ID, result.Capture)
+	if err != nil || !reflect.DeepEqual(loaded, record) {
+		t.Fatal("raw observation changed", err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := evidence.Capture
+	if capture.Review.ReportedFindings != 1 || len(capture.Review.Findings) != 1 || capture.Hosted == nil || len(capture.Hosted.Sources) != 1 || capture.Hosted.Sources[0].Kind != "inline" || capture.Hosted.Sources[0].CommentID != record.Snapshot.ReviewComments[0].ID || capture.Hosted.Sources[0].ReviewID != record.Snapshot.Reviews[0].ID || capture.Review.Findings[0].Title != "Preserve exact evidence." {
+		t.Fatal("positive source lost original finding identity", capture)
+	}
+	replay, err := RetainHosted(t.Context(), captures, f.engine, attempt, record)
+	if err != nil || replay != result {
+		t.Fatal("exact replay changed evidence", err)
+	}
+	after, _ := json.Marshal(record)
+	if string(before) != string(after) || cliAttemptState(t, f.store, attempt.ID) != stateBefore || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != 0 {
+		t.Fatal("retention changed source, operation or credit")
+	}
+}
+
+func TestRetainHostedPositiveStandingComparisonUsesOriginalJournal(t *testing.T) {
+	for _, badJournal := range []bool{false, true} {
+		t.Run(fmt.Sprint("bad_journal=", badJournal), func(t *testing.T) {
+			var created time.Time
+			var oldReview reviewprovider.HostedReview
+			var oldRoot reviewprovider.ReviewComment
+			f, record := runtimeStandingFixture(t, func(b *HostedCaptureRecord) {
+				created = b.StartedAt.Add(-time.Hour)
+				b.Snapshot.IssueComments = append(b.Snapshot.IssueComments, reviewprovider.IssueComment{ID: 501, Body: "Previous synthetic provider report.", Author: b.ProviderActor, CreatedAt: created, UpdatedAt: created})
+				oldHead := strings.Repeat("d", 40)
+				oldReview = reviewprovider.HostedReview{ID: 801, Body: "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 1**\n\nOriginal synthetic report.", State: "commented", HeadSHA: oldHead, Author: b.ProviderActor, SubmittedAt: created}
+				oldRoot = reviewprovider.ReviewComment{ID: 802, ReviewID: 801, Body: hostedRetainInline(71, "Preserve historical source."), Author: b.ProviderActor, Path: "engine/prior.go", HeadSHA: oldHead, OriginalHeadSHA: oldHead, CreatedAt: created, UpdatedAt: created}
+				b.Snapshot.Reviews = []reviewprovider.HostedReview{oldReview}
+				b.Snapshot.ReviewComments = []reviewprovider.ReviewComment{oldRoot}
+			}, func(in *reviewexec.HostedObservationInput) {
+				if badJournal {
+					at, _ := time.Parse(time.RFC3339Nano, in.StartedAt)
+					in.StartedAt = at.Add(-time.Nanosecond).Format(time.RFC3339Nano)
+				}
+			})
+			record.Snapshot.IssueComments[1].CreatedAt = created
+			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "No actionable comments were generated in the recent review. 🎉\n", "", 1)
+			record.Snapshot.IssueComments[1].Body = strings.Replace(record.Snapshot.IssueComments[1].Body, "· up to <code>", "· previous review <code>", 1)
+			trigger := record.Snapshot.IssueComments[0].CreatedAt
+			record.Snapshot.Reviews = []reviewprovider.HostedReview{{ID: 200, Body: hostedRetainPublicationMarker(), Author: record.ProviderActor, State: "commented", HeadSHA: f.f.headSHA, SubmittedAt: trigger.Add(time.Second)}}
+			record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{{ID: 300, ReviewID: 200, Body: hostedRetainInline(1, "Preserve the original positive source."), Author: record.ProviderActor, Path: "pkg/source.go", HeadSHA: f.f.headSHA, OriginalHeadSHA: f.f.headSHA, CreatedAt: trigger.Add(time.Second), UpdatedAt: trigger.Add(time.Second)}}
+			// Old annotations and mutable current commit mappings are not new findings.
+			oldReview.Body = strings.Replace(oldReview.Body, "\n\n**Actionable comments posted: 1**", "", 1)
+			record.Snapshot.Reviews = append(record.Snapshot.Reviews, oldReview)
+			oldRoot.Body += "\n\n✅ Addressed in commits 1234567 to " + f.f.headSHA[:7]
+			oldRoot.HeadSHA, oldRoot.UpdatedAt = strings.Repeat("c", 40), trigger.Add(time.Second)
+			record.Snapshot.ReviewComments = append(record.Snapshot.ReviewComments, oldRoot)
+			before, _ := json.Marshal(record)
+			state := cliAttemptState(t, f.f.store, f.a.ID)
+			result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if badJournal {
+				if result.Complete || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
+					t.Fatal("unbound baseline supplied comparison", result)
+				}
+				return
+			}
+			if !result.Complete || result.Reason != "capture_recorded" {
+				t.Fatal("positive standing comparison not retained", result)
+			}
+			evidence, err := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), result.Receipt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := evidence.Capture.Hosted
+			if h == nil || h.ObservedBaseSHA != f.anchor.ParentSHA || h.StandingSummary != nil || len(h.Sources) != 1 || h.Sources[0].CommentID != 300 || evidence.Capture.Review.ReportedFindings != 1 {
+				t.Fatal("positive source provenance/zero variant changed", evidence.Capture)
+			}
+			replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
+			if err != nil || replay != result {
+				t.Fatal("positive exact replay changed", err)
+			}
+			after, _ := json.Marshal(record)
+			if string(before) != string(after) || cliAttemptState(t, f.f.store, f.a.ID) != state {
+				t.Fatal("comparison rewrote capture or transitioned attempt")
+			}
+		})
+	}
+}

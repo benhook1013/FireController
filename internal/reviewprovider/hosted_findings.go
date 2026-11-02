@@ -833,7 +833,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 // same strict decoder as final extraction; duplicate-only or empty summaries
 // cannot establish this proof. It never rewrites bodies or invents findings.
 func publicationSummaryOnly(publication HostedPublication) bool {
-	if len(publication.Batches) != 1 {
+	if len(publication.Batches) != 1 || len(publication.Roots) != 0 || !publicationCountAbsent(publication) {
 		return false
 	}
 	primary := publication.Batches[0]
@@ -844,11 +844,6 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 		return false
 	}
 	for _, review := range publication.EligibleReviews {
-		for _, line := range publicationVisibleLines(review.Body) {
-			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
-				return false
-			}
-		}
 		if review.ID != primary.ID {
 			decoder.summary(review, false)
 		}
@@ -862,6 +857,40 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 		}
 	}
 	return true
+}
+
+// A malformed or contradictory visible count is not an omitted count.
+func publicationCountAbsent(publication HostedPublication) bool {
+	for _, review := range publication.EligibleReviews {
+		for _, line := range publicationVisibleLines(review.Body) {
+			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// publicationInlineInventory permits only a positive, fully decoded attached
+// inventory when the one selected batch truly omits numeric count metadata.
+// Final extraction still reuses the same decoder and all source bindings.
+func publicationInlineInventory(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 || len(publication.Roots) == 0 || !publicationCountAbsent(publication) {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	for _, root := range publication.Roots {
+		decoder.inline(root)
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	primary := publication.Batches[0].ID
+	for _, review := range publication.EligibleReviews {
+		decoder.summary(review, review.ID == primary)
+	}
+	return inventory.Complete && len(inventory.Findings) > 0
 }
 
 // ExtractHostedFindings re-establishes attribution before decoding. Unsupported
