@@ -1,4 +1,6 @@
 import { validReviewSize } from './review-size';
+import type { ReviewSourceReadiness } from './review-source-readiness';
+import { githubRepositoryURL } from './github-links';
 import type { AdoptionObligationPage, AdoptionObligationDetail } from './review-obligations';
 import { presenceWorkers, validWorkerPresence, type WorkerPresence } from './worker-presence';
 import type { WorkerOptions, WorkerRetirement, WorkerRetirementReceipt, WorkerPrimary, WorkerPrimaryHistoryEntry, WorkerPause, WorkerPauseHistoryEntry, NoteOptions, NoteSummary, Note, NoteHistorySummary, NoteRevision } from './types';
@@ -30,7 +32,7 @@ const serverErrorCodes = new Set([
   'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
-  'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired', 'review_conflict', 'pull_scheduling_paused',
+  'reviews_readiness_unavailable', 'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired', 'review_conflict', 'pull_scheduling_paused',
 ]);
 
 export class ApiError extends Error {
@@ -440,6 +442,16 @@ function validPolicyAssessment(value: unknown, project: string, evidence: string
   if (!nonnegative(incoming) || typeof capacity !== 'boolean' || (capacity && incoming !== 0) || (capacity ? reason !== 'routed_findings_capacity' : incoming > 0 ? reason !== 'routed_findings_pending' : sourcePending > 0 ? reason !== 'source_obligations_pending' : reason !== '')) return false;
   if (value.state === 'unconfigured') return value.policy_revision === 0 && channels.length === 0 && sourcePending === 0 && incoming === 0 && !capacity;
   return value.policy_revision > 0 && channels.length > 0 && (value.state === 'sufficient' || value.state === 'held') && (sourcePending === 0 && incoming === 0 && !capacity && channels.every(item => (item as Record<string, unknown>).covered && !(item as Record<string, unknown>).pending && (!(item as Record<string, unknown>).rounds_configured || (item as Record<string, unknown>).rounds_complete))) === (value.state === 'sufficient');
+}
+// Validate the exact retained source/thread projection we display. Other
+// assessment fields are deliberately not interpreted as merge readiness.
+function validSourceThreadReadiness(value: unknown, project: string, number: number): value is ReviewSourceReadiness {
+  if (!record(value) || value.project_id !== project || value.source !== 'observed_comparison' || !['ready_as_observed','held','unconfigured'].includes(value.state as string) || typeof value.refresh_id !== 'string' || !/^review_refresh_[a-f0-9]{32}$/u.test(value.refresh_id) || !nonnegative(value.configuration_revision) || !assessmentTime(value.source_observed_at) || !Array.isArray(value.reasons) || value.reasons.length > 16 || !value.reasons.every(reason => id(reason)) || new Set(value.reasons).size !== value.reasons.length || !record(value.target) || !record(value.review_state)) return false;
+  const t = value.target, r = value.review_state;
+  if (!keys(t, ['repository_id','repository_name','pull_number','head_sha','base_sha','base_ref','parent_pull_number','parent_sha','observed_at']) || !positive(t.repository_id) || typeof t.repository_name !== 'string' || !githubRepositoryURL(t.repository_name) || t.pull_number !== number || ![t.head_sha,t.base_sha,t.parent_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !checkpointText(t.base_ref,256,true) || !nonnegative(t.parent_pull_number) || t.parent_pull_number > 2147483647 || !assessmentTime(t.observed_at) || t.observed_at !== value.source_observed_at) return false;
+  if (!keys(r, ['state','reason','observed_at','pull_state','draft','mergeable','merge_state_status','review_decision','total_threads','unresolved_current','unresolved_outdated']) || !assessmentTime(r.observed_at) || !nonnegative(r.total_threads) || r.total_threads > 10000 || !nonnegative(r.unresolved_current) || !nonnegative(r.unresolved_outdated) || r.unresolved_current > r.total_threads-r.unresolved_outdated || typeof r.draft !== 'boolean') return false;
+  if (r.state === 'unproven') return id(r.reason) && r.pull_state === '' && !r.draft && r.mergeable === '' && r.merge_state_status === '' && r.review_decision === null && r.total_threads === 0 && r.unresolved_current === 0 && r.unresolved_outdated === 0;
+  return r.state === 'complete' && r.reason === '' && ['OPEN','CLOSED','MERGED'].includes(r.pull_state as string) && ['MERGEABLE','CONFLICTING','UNKNOWN'].includes(r.mergeable as string) && ['BEHIND','BLOCKED','CLEAN','DIRTY','DRAFT','HAS_HOOKS','UNKNOWN','UNSTABLE'].includes(r.merge_state_status as string) && (r.review_decision === null || ['APPROVED','CHANGES_REQUESTED','REVIEW_REQUIRED'].includes(r.review_decision as string));
 }
 const reviewMetadata = ['project_id', 'revision', 'snapshot_id', 'source', 'observed_at', 'recorded_at'];
 const reviewOutcomes = new Set(['completed', 'active', 'prepared', 'posting', 'failed', 'cancelled', 'rate_limited', 'uncertain', 'unknown']);
@@ -1170,6 +1182,19 @@ export class Api {
     const run = value.run;
     if (value.findings.length > 100 || value.findings.length > run.found || run.complete && value.findings.length !== run.found || !value.findings.every(item => validReviewFinding(item) && (item.route === undefined || item.route.target_pull_number !== value.pull_number) && (run.source !== 'native-executor' || item.disposition !== 'routed' || item.route?.state === 'active')) || new Set(value.findings.map(item => item.source_finding_id)).size !== value.findings.length || value.findings.filter(item => item.fix_sha !== '').length !== value.run.fixed) throw new ApiError('invalid_response', 'The service returned an invalid review run detail.');
     return value as unknown as ReviewRunDetail;
+  }
+  async reviewSourceReadiness(number: number, signal?: AbortSignal): Promise<ReviewSourceReadiness|null> {
+    if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
+    let value: unknown;
+    try { value = await this.finiteGet(this.projectRoute(`reviews/source/${number}/readiness`), signal, undefined, 16 << 10, assessmentJSON); }
+    catch (error) {
+      // Absent retained readiness is an optional empty view, including during
+      // shared metadata invalidation. Preserve real access/storage/data errors.
+      if (error instanceof ApiError && error.code === 'reviews_readiness_unavailable' && error.status === 409) return null;
+      throw error;
+    }
+    if (!validSourceThreadReadiness(value, this.projectId, number)) throw new ApiError('invalid_response', 'The service returned invalid retained GitHub thread facts.');
+    return value;
   }
   async reviewPolicyAssessment(evidenceId: string, signal?: AbortSignal): Promise<ReviewPolicyAssessment> {
     if (!reviewEvidenceID(evidenceId)) throw new ApiError('invalid_request', 'The native evidence identifier is invalid.');

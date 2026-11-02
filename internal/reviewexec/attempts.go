@@ -406,7 +406,7 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
 				return err
 			}
-			if err = e.publishCompletionNotice(ctx, tx, o); err != nil {
+			if err = e.publishCompletionNotice(ctx, tx, o, a.Provider); err != nil {
 				return err
 			}
 		}

@@ -124,6 +124,7 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 }
 
 type operationEvidenceFacts struct {
+	Repository         string
 	SettlementTarget   *SettlementTarget
 	ID                 string
 	Complete           bool
@@ -169,6 +170,7 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 		if json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || encoded(admitted) != attemptAnchor || !validEvidenceAnchor(admitted) || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA || attemptRevision < 1 || attemptRevision == math.MaxInt64 || !externalID.Valid || externalID.String != "" && !identifier.MatchString(externalID.String) {
 			return operationEvidenceFacts{}, adjudicationStorageError()
 		}
+		facts.Repository = admitted.Repository
 		facts.SettlementTarget = &SettlementTarget{AttemptRevision: attemptRevision, RepositoryID: admitted.RepositoryID, HeadSHA: admitted.CandidateSHA, ExternalID: externalID.String}
 	}
 	if !id.Valid {

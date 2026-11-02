@@ -38,6 +38,8 @@ Its compact `SourceReadinessAssessment` identifies `project_id`, `refresh_id`, `
 
 The CLI adds `--readiness` to explicit `reviews source-refresh` and a provider-free `reviews readiness --pr N`. MCP adds optional `include_readiness` to `review_source_refresh` and the read tool `review_source_readiness`. Bound profiles, explicit keys and optional short/immediate/longer waits retain their existing mechanics. No new background polling, generated retry keys, automatic merge or per-command project/worker flags are introduced.
 
+The private PR review-history page may show a positive unresolved GitHub thread total beside Review rounds, with a link to the PR. This combines current and outdated threads from an existing complete readiness observation applicable to the displayed repository, comparison and configuration. Its original observation time is available in the tooltip; unknown, zero or inapplicable observations show no count. This optional context performs no provider refresh and does not change provider-specific findings, accepted counts, taper or merge authority.
+
 CLI and MCP source-refresh results, retained source-operation reads and combined readiness reads add an optional compact `ci_diagnostic` for recognized unproven CI reasons, using the same explanation and next action as `ci-assess`. Facts, zero counts, comparison identity and readiness holds stay unchanged. A moving observation calls for ordinary recollection after CI settles; it does not mean no checks are required or authorize workflow/review reruns. Pending receipts remain flat and do not claim an assessment exists.
 
 ## Executed proof

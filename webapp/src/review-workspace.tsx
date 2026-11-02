@@ -19,6 +19,7 @@ import { RelativeTime } from './relative-time';
 import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay, reviewRoundCountText } from './review-display';
 import { EditorialMarkdown } from './editorial-markdown';
 import { githubRepositoryURL } from './github-links';
+import { githubThreadContext } from './review-source-readiness';
 import './review-queue.css';
 import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
@@ -338,7 +339,7 @@ export function ReviewPullView() {
   return <article className="review-detail-page"><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
     <ul className="review-queue review-detail-overview" aria-label={`PR #${value.pull.number} overview`}><ReviewQueueRow pull={value.pull} snapshot={value.snapshot_id} progress={progress.data?.items.find(item => item.pull_number === value.pull.number)} fronts={currentFronts} channels={channels} footer={queueLink} anchor={false} /></ul>
     <ReviewRoutedFindings number={number} /><ReviewObligations number={number} excludeRoutes />
-    <ReviewRoundHistory key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} />
+    <ReviewRoundHistory key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} context={<ReviewGitHubThreads pull={value.pull} snapshot={value.snapshot_id} fronts={fronts.data} />} />
     <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></footer>
   </>}</ReadState></article>;
 }
@@ -443,14 +444,24 @@ export function ReviewHistoryGroups({ number, runs, snapshot, head, loading, fai
   const total = Object.values(channelTotals).reduce((a, b) => a + b, 0);
   return <div className="review-timeline">{loading ? <PageSkeleton rows={3} label="Loading retained rounds" /> : rows.length ? <ul className="review-history-run-list">{rows.map(({run, ordinal}) => <ReviewHistoryRow key={run.id} number={number} run={run} snapshot={snapshot} head={head} ordinal={ordinal !== undefined && ordinal > 0 ? ordinal : undefined} />)}</ul> : failed || total > 0 ? <p className="review-empty">Round history could not be loaded.</p> : null}</div>;
 }
-export function ReviewRoundHistory({ number, snapshot, head, channelTotals: latestTotals, expected: latestExpected }: { number: number; snapshot: string; head: string; expected: number; channelTotals: ReviewRunCounts }) {
+// This optional detail-page context reads retained facts once; it never starts
+// a provider refresh and stays absent when readiness or applicability is unknown.
+export function ReviewGitHubThreads({ pull, snapshot, fronts }: { pull: ReviewPullSummary; snapshot: string; fronts?: ReviewFronts }) {
+  const { session, key, fail } = useWorkspace();
+  const enabled = !!fronts?.configured && fronts.project_id === session.project.id && fronts.snapshot_id === snapshot && fronts.queue.includes(pull.number) && fronts.repository_id === session.project.github_repository_id;
+  const query = useQuery({ queryKey: [...key, 'reviews', 'current', 'source-readiness', pull.number, snapshot, pull.head_sha, pull.base_sha, pull.base_ref, fronts?.configuration_revision], queryFn: ({ signal }) => session.api.reviewSourceReadiness(pull.number, signalFor(session, signal)), enabled, staleTime: Infinity, retry: false, refetchOnWindowFocus: false });
+  useEffect(() => { if (terminal(query.error)) fail(query.error); }, [query.error, fail]);
+  const context = query.error ? undefined : githubThreadContext(query.data, session.project, pull, snapshot, fronts);
+  return context ? <> · <a href={context.url} target="_blank" rel="noreferrer noopener" title={context.title}>{context.count} unresolved GitHub {context.count === 1 ? 'thread' : 'threads'} ↗</a></> : null;
+}
+export function ReviewRoundHistory({ number, snapshot, head, channelTotals: latestTotals, expected: latestExpected, context }: { number: number; snapshot: string; head: string; expected: number; channelTotals: ReviewRunCounts; context?: ReactNode }) {
   const { key } = useWorkspace();
   const archive = useReviewArchive<ReviewRunSummary>('runs', number, snapshot, latestExpected, undefined, 25, 'timeline');
   const channelTotals = useRetainedRead(JSON.stringify([key, number, 'timeline-counts']), archive.snapshot === snapshot ? latestTotals : undefined) ?? latestTotals;
   const expected = archive.expected;
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
   return <section className="panel review-history review-round-history" aria-label={`PR #${number} review rounds`}>
-    <div className="section-heading"><h3>Review rounds</h3><span className="small-label">{expected} {expected === 1 ? 'run' : 'runs'}</span></div>
+    <div className="section-heading"><h3>Review rounds</h3><span className="small-label">{expected} {expected === 1 ? 'run' : 'runs'}{archive.snapshot === snapshot && context}</span></div>
     {!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}
     {(archive.hasMore || archive.items.length > 0 && archive.items.length !== expected) && <div className="review-timeline-continuation"><span>{archive.items.length} of {expected} rounds{!archive.hasMore && ' · History count changed; refresh to reload.'}</span>{archive.hasMore && <button type="button" disabled={archive.busy} onClick={archive.more}>Load earlier rounds</button>}</div>}
     <ReviewHistoryGroups number={number} runs={archive.items} snapshot={archive.snapshot} head={head} partial={archive.hasMore} loading={archive.loading} failed={!!archive.error} channelTotals={channelTotals} />

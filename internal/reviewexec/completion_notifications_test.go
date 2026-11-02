@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,7 @@ func TestCompletionNoticeCLIAndHostedWaitForUsableCompletion(t *testing.T) {
 			}
 			var body, recipient, origin string
 			var sender sql.NullString
-			if err := f.store.DB().QueryRow(`SELECT body,recipient_worker_id,origin_kind,sender_worker_id FROM inbox_messages`).Scan(&body, &recipient, &origin, &sender); err != nil || recipient != "requester" || origin != "controller" || sender.Valid || !strings.Contains(body, evidence.ID) || !strings.Contains(body, a.OperationID) || !strings.Contains(body, "PR #2") || !strings.Contains(body, map[string]string{"cli": "CLI", "hosted": "Hosted"}[channel]) {
+			if err := f.store.DB().QueryRow(`SELECT body,recipient_worker_id,origin_kind,sender_worker_id FROM inbox_messages`).Scan(&body, &recipient, &origin, &sender); err != nil || recipient != "requester" || origin != "controller" || sender.Valid || !strings.Contains(body, evidence.ID) || !strings.Contains(body, a.OperationID) || !strings.Contains(body, "PR #2") || !strings.HasPrefix(body, "CodeRabbit ") || !strings.Contains(body, "GitHub: https://github.com/owner/repo/pull/2\n") || !strings.Contains(body, map[string]string{"cli": "CLI", "hosted": "Hosted"}[channel]) {
 				t.Fatal("notice lost immutable identity or impersonated a worker", body, err)
 			}
 			if n := attemptCount(t, f.store, `SELECT count(*) FROM inbox_recipient_state WHERE seen<>0 OR acknowledged<>0`); n != 0 {
@@ -299,5 +300,92 @@ func TestCompletionNoticeRequesterMuteAndRetirementStayEffective(t *testing.T) {
 				t.Fatal("completion ignored requester notification preference or retirement", err)
 			}
 		})
+	}
+}
+
+func TestCompletionNoticeUsesOriginalProviderAndRepository(t *testing.T) {
+	f, a, _ := completionNoticeFixture(t, "hosted", true)
+	// Rename current project metadata and change the configured adapter after the
+	// original attempt admitted its immutable comparison.
+	admissionSQL(t, f, `UPDATE projects SET repository='renamed/current' WHERE id=?`, a.ProjectID)
+	capability := f.e.capabilities["test-capability"]
+	capability.Provider = "different-provider"
+	f.e.capabilities["test-capability"] = capability
+	if _, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, "completed", "fixture_completed", ""); err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	if err := f.store.DB().QueryRow(`SELECT body FROM inbox_messages`).Scan(&body); err != nil || !strings.HasPrefix(body, "CodeRabbit Hosted review results ready") || !strings.Contains(body, "https://github.com/owner/repo/pull/2") || strings.Contains(body, "renamed/current") || strings.Contains(body, "different-provider") {
+		t.Fatal("notice substituted current configuration for original identity", body, err)
+	}
+}
+
+func TestCompletedReviewContextValidatesOriginalIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		provider, repository string
+		number               int64
+		valid                bool
+	}{
+		{"coderabbit", "owner/repo", 2, true},
+		{"another-provider", "original-owner/original.repo", 2147483647, true},
+		{"", "owner/repo", 2, false},
+		{"provider\nInjected", "owner/repo", 2, false},
+		{"coderabbit", "https://example.test/repo", 2, false},
+		{"coderabbit", "owner/repo?redirect=elsewhere", 2, false},
+		{"coderabbit", "../repo", 2, false},
+		{"coderabbit", "owner/..", 2, false},
+		{"coderabbit", "./repo", 2, false},
+		{"coderabbit", "owner/repo", 0, false},
+		{"coderabbit", "owner/repo", 2147483648, false},
+	} {
+		label, link, ok := completedReviewContext(tc.provider, tc.repository, tc.number)
+		if ok != tc.valid || !ok && (label != "" || link != "") {
+			t.Fatal(tc, label, link, ok)
+		}
+		if ok && (label != tc.provider && !(tc.provider == "coderabbit" && label == "CodeRabbit") || link != "https://github.com/"+tc.repository+"/pull/"+fmt.Sprint(tc.number)) {
+			t.Fatal("context invented provider or link", tc, label, link)
+		}
+	}
+}
+
+func TestCompletionNoticeOldFormatRemainsImmutableAfterRestartAndReplay(t *testing.T) {
+	f, a, evidence := completionNoticeFixture(t, "cli", true)
+	if _, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, "completed", "fixture_completed", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Represent a notice produced by the predecessor binary, with the same
+	// evidence-scoped key and atomic completed operation.
+	oldBody := fmt.Sprintf("CLI review results ready for PR #2.\nEvidence: %s\nOperation: %s", evidence.ID, a.OperationID)
+	admissionSQL(t, f, `UPDATE inbox_messages SET body=?`, oldBody)
+	var sequence int
+	var name, database string
+	if err := f.store.DB().QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &database); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := core.Open(t.Context(), filepath.Dir(database))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	f.store = reopened
+	f.e, err = New(reopened, attemptCapabilities, WithNativeProjection())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.RecoverRetainedCLI(t.Context(), "test-capability"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Enqueue(t.Context(), followingScope(t, f, "requester"), "explicit-review-request", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.PublishEvidence(t.Context(), a.ProjectID, evidence.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	if err := f.store.DB().QueryRow(`SELECT body FROM inbox_messages`).Scan(&body); err != nil || body != oldBody || completionNoticeCount(t, f) != 1 {
+		t.Fatal("restart or exact replay republished immutable old notice", body, err)
 	}
 }
