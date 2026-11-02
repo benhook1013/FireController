@@ -203,7 +203,7 @@ func TestAssessRequiredCIStatusesUseProviderOrderAndBothKinds(t *testing.T) {
 	}
 	f.Authority.Checks[0].AppID = 400
 	v, err = f.assess()
-	if err != nil || v.State != "unproven" || v.Checks[0].Reason != "ci_status_origin_unproven" {
+	if err != nil || v.State != "pending" || v.Checks[0].Reason != "ci_check_pending" {
 		t.Fatal(v, err)
 	}
 }
@@ -507,5 +507,26 @@ func TestAssessRequiredCIMultipleSupersededWorkflowsDoNotMaskOneMissingCheck(t *
 	got, err := f.assess()
 	if err != nil || got.State != "unproven" || got.Checks[0].Reason != "ci_check_ambiguous" {
 		t.Fatal("current duplicate contexts silently selected a workflow", got, err)
+	}
+}
+
+func TestRequiredCIWorkflowLifecycleMovementIsNotMalformedProviderData(t *testing.T) {
+	for _, tc := range []struct{ before, after, conclusion string }{{"queued", "in_progress", ""}, {"in_progress", "completed", "success"}, {"completed", "completed", "failure"}} {
+		f := requiredCIFixture()
+		f.Actions.Runs[0].Status = tc.before
+		if tc.before != "completed" {
+			f.Actions.Runs[0].Conclusion = ""
+		}
+		f.Attempts[0].Status, f.Attempts[0].Conclusion = tc.after, tc.conclusion
+		before := string(fixtureJSON(t, f))
+		v, err := f.assess()
+		if !hasCode(err, "provider_observation_changed") || v.State != "unproven" || before != string(fixtureJSON(t, f)) {
+			t.Fatalf("movement credited or mislabeled: %+v %v", v, err)
+		}
+	}
+	f := requiredCIFixture()
+	f.Attempts[0].RunAttempt++
+	if _, err := f.assess(); !hasCode(err, "provider_invalid_response") {
+		t.Fatal("different attempt identity treated as lifecycle movement", err)
 	}
 }

@@ -101,7 +101,7 @@ func TestReviewCIMCPControlledDirectTerminalAndStoredAssessment(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": binding.InstanceID})
 			return
 		}
-		if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("X-FC-Instance") != binding.InstanceID || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.URL.RawQuery != "" {
+		if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("X-FC-Instance") != binding.InstanceID || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.URL.RawQuery != "" && !(strings.HasSuffix(r.URL.Path, "/source/2/ci") && r.URL.RawQuery == "diagnostics=true") {
 			t.Error("CI SDK controlled call lost scope")
 		}
 		base := "/api/v1/projects/" + binding.ProjectID + "/reviews/"
@@ -117,6 +117,10 @@ func TestReviewCIMCPControlledDirectTerminalAndStoredAssessment(t *testing.T) {
 				t.Error("SDK CI assessment used mutation")
 			}
 			value := assessment
+			if r.URL.Query().Get("diagnostics") == "true" {
+				checks := []client.ReviewCIContext{{Context: "build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: 300, Status: "completed", Conclusion: "success"}}}
+				value.Checks = &checks
+			}
 			if held.Load() {
 				value.State = "held"
 				value.Reason = "source_comparison_changed"
@@ -147,7 +151,13 @@ func TestReviewCIMCPControlledDirectTerminalAndStoredAssessment(t *testing.T) {
 			t.Fatal("SDK CI assessment lost as-of facts/compactness", got)
 		}
 	}
-	if requests.Load() != 6 {
+	result = call(t, session, "review_source_ci_assess", map[string]any{"pull_number": 2, "diagnostics": true})
+	var details client.ReviewSourceCIAssessment
+	decodeResult(t, result, &details)
+	if details.Checks == nil || len(*details.Checks) != 1 || (*details.Checks)[0].CheckRun == nil || details.State != "held" {
+		t.Fatal("SDK diagnostic projection lost context or applicability", details)
+	}
+	if requests.Load() != 8 {
 		t.Fatal("SDK CI tools polled", requests.Load())
 	}
 }
@@ -171,6 +181,10 @@ func TestReviewCIMCPInvalidBooleanAndReadSelectorsBeforeCredentials(t *testing.T
 	for _, args := range []any{nil, map[string]any{}, map[string]any{"pull_number": nil}, map[string]any{"pull_number": 0}, map[string]any{"pull_number": "2"}, map[string]any{"pull_number": 2, "include_ci": true}, map[string]any{"pull_number": 2, "refresh": true}, map[string]any{"pull_number": 2, "project_id": "other"}} {
 		diagnosticResult(t, call(t, session, "review_source_ci_assess", args), "invalid_arguments", false)
 	}
+	for _, v := range []any{nil, "true", 1, []any{}} {
+		diagnosticResult(t, call(t, session, "review_source_ci_assess", map[string]any{"pull_number": 2, "diagnostics": v}), "invalid_arguments", false)
+	}
+	diagnosticResult(t, call(t, session, "review_source_readiness", map[string]any{"pull_number": 2, "diagnostics": false}), "invalid_arguments", false)
 	if requests.Load() != 0 {
 		t.Fatal("invalid CI SDK arguments reached credentials/HTTP")
 	}

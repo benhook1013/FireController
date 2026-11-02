@@ -335,7 +335,7 @@ func normalizeActionsJob(raw githubActionsJob, repository string, run githubActi
 	if raw.CompletedAt != nil {
 		var ok bool
 		job.CompletedAt, ok = actionsTime(*raw.CompletedAt)
-		if !ok || !job.StartedAt.IsZero() && job.CompletedAt.Before(job.StartedAt) {
+		if !ok || !validCIInterval(raw.Status, conclusion, job.StartedAt, job.CompletedAt) {
 			return ActionsJob{}, false
 		}
 	}

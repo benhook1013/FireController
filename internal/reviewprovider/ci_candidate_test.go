@@ -697,7 +697,11 @@ func TestPullCICandidateBranchIdentityAndShape(t *testing.T) {
 				} else if closing && malformed {
 					wantCalls = 4
 				}
-				if got.State != "unproven" || got.MergeSHA != "" || got.MergeBaseParentSHA != "" || got.Reason != "ci_merge_identity_unproven" || calls.Load() != wantCalls || malformed && !hasCode(err, "provider_invalid_response") || !malformed && err != nil {
+				wantReason := "ci_merge_identity_unproven"
+				if mode == "old_base_parent" {
+					wantReason = "ci_merge_base_mismatch"
+				}
+				if got.State != "unproven" || got.MergeSHA != "" || got.MergeBaseParentSHA != "" || got.Reason != wantReason || calls.Load() != wantCalls || malformed && !hasCode(err, "provider_invalid_response") || !malformed && err != nil {
 					t.Fatal("unbound branch granted proof or malformed branch changed failure", got, err, calls.Load())
 				}
 				if err != nil && strings.Contains(err.Error(), "PRIVATE") {

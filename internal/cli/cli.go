@@ -46,6 +46,7 @@ type options struct {
 }
 
 type invocation struct {
+	reviewCIDiagnostics bool
 	options
 	command      string
 	subcommand   string
