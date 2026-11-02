@@ -310,13 +310,17 @@ func (o *browserOutput) safePhase() string {
 			}
 			if record.Phase == "explicit-actions-connect" {
 				switch record.Checkpoint {
-				case "root-url", "root-form", "history-index", "project-input", "credential-input", "permission-control-check", "submit", "session-response", "session-status", "capabilities-finished", "capabilities-read", "capabilities-check", "no-action-writes", "heading", "inbox-button", "inbox-route":
+				case "root-url", "root-form", "history-index", "project-input", "credential-input", "permission-control-check", "submit", "session-response", "session-status", "capabilities-finished", "capabilities-read", "capabilities-check", "no-action-writes", "heading", "inbox-button", "inbox-route", "incoming-write", "incoming-row", "inbox-sidebar", "incoming-unread", "incoming-seen-submit", "incoming-seen", "incoming-ack-submit", "incoming-ack":
 					valid := record.HTTPStatus >= 0 && record.HTTPStatus <= 599
 					for _, n := range []int{record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes, record.ActionWrites, record.External} {
 						valid = valid && n >= 0 && n <= 1000
 					}
 					if valid {
-						return fmt.Sprintf("explicit-actions-connect/%s http_status=%d allow_writes=%t can_edit_presentation=%t posts=%d deletes=%d renewals=%d refusals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Checkpoint, record.HTTPStatus, record.AllowWrites, record.CanEditPresentation, record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes, record.ActionWrites, record.External)
+						class := "driver"
+						if record.FailureClass == "timeout" || record.FailureClass == "assertion" {
+							class = record.FailureClass
+						}
+						return fmt.Sprintf("explicit-actions-connect/%s class=%s http_status=%d allow_writes=%t can_edit_presentation=%t posts=%d deletes=%d renewals=%d refusals=%d errors=%d forbidden_writes=%d action_writes=%d external=%d", record.Checkpoint, class, record.HTTPStatus, record.AllowWrites, record.CanEditPresentation, record.Posts, record.Deletes, record.Renewals, record.Refusals, record.Errors, record.Writes, record.ActionWrites, record.External)
 					}
 					return record.Phase
 				}
@@ -662,8 +666,18 @@ func TestBrowserExplicitConnectDiagnosticsAllowlist(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{
 			name: "safe status and counters",
-			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"capabilities-check","http_status":200,"allow_writes":true,"can_edit_presentation":true,"session_posts":2,"session_deletes":1,"session_renewals":3,"terminal_responses":0,"errors":0,"forbidden_writes":0,"action_writes":7,"external":0,"url":"PRIVATE_SENTINEL","credential":"PRIVATE_SENTINEL","error":"PRIVATE_SENTINEL"}`,
-			want: "explicit-actions-connect/capabilities-check http_status=200 allow_writes=true can_edit_presentation=true posts=2 deletes=1 renewals=3 refusals=0 errors=0 forbidden_writes=0 action_writes=7 external=0",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"capabilities-check","failure_class":"timeout","http_status":200,"allow_writes":true,"can_edit_presentation":true,"session_posts":2,"session_deletes":1,"session_renewals":3,"terminal_responses":0,"errors":0,"forbidden_writes":0,"action_writes":7,"external":0,"url":"PRIVATE_SENTINEL","credential":"PRIVATE_SENTINEL","error":"PRIVATE_SENTINEL"}`,
+			want: "explicit-actions-connect/capabilities-check class=timeout http_status=200 allow_writes=true can_edit_presentation=true posts=2 deletes=1 renewals=3 refusals=0 errors=0 forbidden_writes=0 action_writes=7 external=0",
+		},
+		{
+			name: "private class is replaced by fixed driver category",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"capabilities-check","failure_class":"PRIVATE_SENTINEL","url":"PRIVATE_SENTINEL","locator":"PRIVATE_SENTINEL","stack":"PRIVATE_SENTINEL","error":"PRIVATE_SENTINEL"}`,
+			want: "explicit-actions-connect/capabilities-check class=driver http_status=0 allow_writes=false can_edit_presentation=false posts=0 deletes=0 renewals=0 refusals=0 errors=0 forbidden_writes=0 action_writes=0 external=0",
+		},
+		{
+			name: "oversized incoming counters fall back to phase",
+			body: `{"state":"FAIL","phase":"explicit-actions-connect","checkpoint":"incoming-row","failure_class":"assertion","action_writes":1001}`,
+			want: "explicit-actions-connect",
 		},
 		{
 			name: "checkpoint is fixed allowlist",
@@ -681,6 +695,20 @@ func TestBrowserExplicitConnectDiagnosticsAllowlist(t *testing.T) {
 			_, _ = output.Write(append([]byte(tc.body), '\n'))
 			if got := output.safePhase(); got != tc.want || strings.Contains(got, "PRIVATE_SENTINEL") {
 				t.Fatalf("unsafe explicit-connect diagnostic: %q", got)
+			}
+		})
+	}
+	for _, checkpoint := range []string{"incoming-write", "incoming-row", "inbox-sidebar", "incoming-unread", "incoming-seen-submit", "incoming-seen", "incoming-ack-submit", "incoming-ack"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "explicit-actions-connect", "checkpoint": checkpoint, "failure_class": "assertion", "url": "PRIVATE_SENTINEL", "locator": "PRIVATE_SENTINEL", "stack": "PRIVATE_SENTINEL", "error": "PRIVATE_SENTINEL"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := &browserOutput{}
+			_, _ = output.Write(append(body, '\n'))
+			want := "explicit-actions-connect/" + checkpoint + " class=assertion http_status=0 allow_writes=false can_edit_presentation=false posts=0 deletes=0 renewals=0 refusals=0 errors=0 forbidden_writes=0 action_writes=0 external=0"
+			if got := output.safePhase(); got != want || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatalf("unsafe incoming-stage diagnostic: %q", got)
 			}
 		})
 	}

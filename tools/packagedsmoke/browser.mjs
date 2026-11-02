@@ -1335,10 +1335,14 @@ try {
   need(adminCapabilities.allow_writes===true && adminCapabilities.can_edit_presentation===true);
   need(actionWrites===0 && forbiddenWrites===0);
 
+  checkpoint = 'inbox-route';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
+  checkpoint = 'inbox-button';
   await page.getByRole('button', {name:'Select worker Builder',exact:true}).click();
+  checkpoint = 'incoming-write';
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
+  checkpoint = 'incoming-row';
   await row.waitFor();
   checkpoint = 'inbox-sidebar';
   await page.getByRole('button',{name:'Select worker Inspector',exact:true}).waitFor();
@@ -1347,10 +1351,15 @@ try {
   await expect(inboxSender).toHaveText(`Inspector (${config.other_worker})`);
   await expect(inboxSender.locator('.visually-hidden')).toHaveText(` (${config.other_worker})`);
   await expect(row.getByRole('link',{name:`Read conversation from Inspector (${config.other_worker})`,exact:true})).toBeVisible();
+  checkpoint = 'incoming-unread';
   need(await row.getByText('Unread',{exact:true}).count() === 1);
+  checkpoint = 'incoming-seen-submit';
   await row.getByRole('button',{name:'Mark seen',exact:true}).click();
+  checkpoint = 'incoming-seen';
   await row.getByText('Seen',{exact:true}).waitFor();
+  checkpoint = 'incoming-ack-submit';
   await row.getByRole('button',{name:'Acknowledge',exact:true}).click();
+  checkpoint = 'incoming-ack';
   await row.getByText('Acknowledged',{exact:true}).waitFor();
 
   phase = 'explicit-actions-send'; checkpoint = 'composer-open';
