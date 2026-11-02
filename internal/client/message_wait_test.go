@@ -201,13 +201,18 @@ func TestMessageWaitMalformedStreamsReturnNoPartialPage(t *testing.T) {
 	}
 }
 
-func TestMessageWaitNonJSONServerErrorsRetainStatusAndCursorRecovery(t *testing.T) {
+func TestMessageWaitNonJSONServerErrorsPreservePrivacyAndReconnect(t *testing.T) {
 	for _, status := range []int{200, 403, 502, 503, 504} {
 		for _, media := range []string{"text/html", "invalid;=", "", "encoded_json"} {
 			t.Run(http.StatusText(status)+"/"+media, func(t *testing.T) {
 				var calls atomic.Int64
 				s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
-					calls.Add(1)
+					n := calls.Add(1)
+					if status >= 500 && n > 1 {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprint(w, waitFrame(waitPage("recovered", waitEvent(7, "message.sent"))))
+						return
+					}
 					if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.RawQuery != "cursor=saved-cursor&include_assignments=true&limit=5" {
 						t.Error("wait selection changed")
 					}
@@ -226,6 +231,12 @@ func TestMessageWaitNonJSONServerErrorsRetainStatusAndCursorRecovery(t *testing.
 				})
 				c := newClient(t, s)
 				page, err := c.WaitForMessages(t.Context(), "saved-cursor", 5, 1)
+				if status >= 500 {
+					if err != nil || calls.Load() != 2 || len(page.Items) != 1 || page.Cursor != "recovered" {
+						t.Fatal("gateway restart did not recover", page, calls.Load(), err)
+					}
+					return
+				}
 				wantCode, wantStatus := "invalid_response", 0
 				if status >= 500 {
 					wantCode, wantStatus = "service_unavailable", status

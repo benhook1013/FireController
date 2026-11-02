@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,6 +157,47 @@ func TestResultWaitReconnectExpiryUsesOneFinalReadAndRetainsIdentity(t *testing.
 			var failure *client.Error
 			if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.RequestID != "request-original-shutdown" || failure.Details.(map[string]any)["operation_id"] != executionOperationID || failure.Details.(map[string]any)["reason"] != "result_wait_lifetime" {
 				t.Fatal("exhaustion lost original targeted shutdown", failure)
+			}
+		})
+	}
+}
+
+func TestReviewWatchReconnectsWhenGatewayMissesShutdownSignal(t *testing.T) {
+	for _, disconnect := range []bool{false, true} {
+		t.Run(strconv.FormatBool(disconnect), func(t *testing.T) {
+			var reads atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				n := reads.Add(1)
+				if r.Method != "GET" || r.URL.Query().Get("after") != "original-event" || r.URL.Query().Get("channel") != "cli" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Worker") != "worker-one" {
+					t.Error("reattached read changed binding/cursor")
+				}
+				if n == 1 {
+					if disconnect {
+						connection, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						_ = connection.Close()
+						return
+					}
+					w.WriteHeader(503)
+					_, _ = w.Write([]byte("PRIVATE_RESTART_BODY"))
+					return
+				}
+				if r.Header.Get("Prefer") == "wait=3" {
+					t.Error("reconnection reset original wait")
+				}
+				write(w, 200, client.ReviewWatchResult{ProjectID: "project-one", Changes: []client.ReviewWatchChange{}, EventCursor: "resumed", TimedOut: true})
+			}))
+			defer service.Close()
+			got, err := newClient(t, service).WatchReviews(t.Context(), client.ReviewWatchOptions{Channel: "cli", Limit: 20, After: "original-event"}, 3)
+			if err != nil || got.EventCursor != "resumed" || !got.TimedOut || reads.Load() != 2 {
+				t.Fatal(got, err, reads.Load())
 			}
 		})
 	}

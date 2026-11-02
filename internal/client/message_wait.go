@@ -41,8 +41,8 @@ func MessageWaitBudget(waitSeconds int) time.Duration {
 var errMessageWaitExpired = errors.New("message wait expired")
 
 // WaitForMessages owns one incoming-message stream until the first page with
-// message.sent or assignment events or a quiet timeout. It neither acknowledges messages nor
-// reconnects; the caller retains its cursor if any error occurs. Typed zero
+// message.sent or assignment events or a quiet timeout. It never acknowledges messages and
+// reconnects within the original call budget; the caller retains its cursor if any error occurs. Typed zero
 // limit/waitSeconds select 20 events and 300 seconds respectively.
 func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, waitSeconds int) (MessageEventPage, error) {
 	if limit == 0 {
@@ -69,8 +69,11 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			waitTimer.Stop()
 		}
 	}()
-	ready := false
+	ready, attached := false, false
 	lastCursor := cursor
+	var previous int64
+	wireTotal := 0
+	var interruption error
 	// A selected timeout is a successful result only after a validated readiness
 	// page. Earlier caller cancellation/deadlines always remain errors.
 	interrupted := func() (MessageEventPage, error) {
@@ -81,132 +84,156 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			return MessageEventPage{}, contextError(err)
 		}
 		if ready && errors.Is(context.Cause(stream), errMessageWaitExpired) {
+			if !attached && interruption != nil {
+				return MessageEventPage{}, interruption
+			}
 			return MessageEventPage{Items: []MessageEvent{}, Cursor: lastCursor, TimedOut: true}, nil
 		}
 		return MessageEventPage{}, contextError(context.Cause(stream))
 	}
 
-	u := *c.base
-	escaped := strings.TrimRight(u.EscapedPath(), "/")
-	for _, segment := range c.projectPath("message-events", "stream") {
-		escaped += "/" + url.PathEscape(segment)
-	}
-	u.Path, _ = url.PathUnescape(escaped)
-	u.RawPath = escaped
-	u.RawQuery = url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}, "include_assignments": {"true"}}.Encode()
-	r, err := http.NewRequestWithContext(stream, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return MessageEventPage{}, validation()
-	}
-	r.Header.Set("Accept", "text/event-stream")
-	r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
-	r.Header.Set("Authorization", "Bearer "+c.token)
-	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
-	r.Header.Set("X-FC-Worker", c.identity.WorkerID)
-	r.Header.Set("X-FC-Session", c.sessionID)
-	// The ordinary five-second whole-response timeout must not cut off an
-	// established stream. This call owns both overrides; concurrent finite reads
-	// retain their original client and transport settings.
+	// One owned transport is reused only by this call's bounded reconnects.
 	ownedTransport := c.transport.Clone()
 	defer ownedTransport.CloseIdleConnections()
 	ownedClient := *c.http
 	ownedClient.Timeout = 0
 	ownedClient.Transport = ownedTransport
-	response, err := ownedClient.Do(r)
-	if err != nil {
-		if stream.Err() != nil {
-			return interrupted()
+
+	readConnection := func() (MessageEventPage, error) {
+		attached = false
+		u := *c.base
+		escaped := strings.TrimRight(u.EscapedPath(), "/")
+		for _, segment := range c.projectPath("message-events", "stream") {
+			escaped += "/" + url.PathEscape(segment)
 		}
-		var timeout net.Error
-		if errors.As(err, &timeout) && timeout.Timeout() {
-			return MessageEventPage{}, contextError(context.DeadlineExceeded)
-		}
-		return MessageEventPage{}, messageWaitConnectionFailure("The service connection failed.")
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= 300 && response.StatusCode < 400 {
-		return MessageEventPage{}, fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
-	}
-	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if response.StatusCode >= 500 && response.StatusCode < 600 && (err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "") {
-		return MessageEventPage{}, fail("service_unavailable", "The service returned an HTTP server error.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", response.StatusCode)
-	}
-	if err != nil || response.Header.Get("Content-Encoding") != "" {
-		return MessageEventPage{}, invalidResponse()
-	}
-	if response.StatusCode != http.StatusOK {
-		if media != "application/json" {
-			return MessageEventPage{}, invalidResponse()
-		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
-		if stream.Err() != nil {
-			return interrupted()
-		}
+		u.Path, _ = url.PathUnescape(escaped)
+		u.RawPath = escaped
+		u.RawQuery = url.Values{"cursor": {lastCursor}, "limit": {strconv.Itoa(limit)}, "include_assignments": {"true"}}.Encode()
+		r, err := http.NewRequestWithContext(stream, http.MethodGet, u.String(), nil)
 		if err != nil {
-			return MessageEventPage{}, invalidResponse()
+			return MessageEventPage{}, validation()
 		}
-		failure := c.messageWaitError(data, response.StatusCode)
-		return MessageEventPage{}, failure
-	}
-	if media != "text/event-stream" {
-		return MessageEventPage{}, invalidResponse()
-	}
-	reader := messageWaitReader{reader: bufio.NewReader(response.Body)}
-	var previous int64
-	for {
-		frame, err := reader.next()
-		if stream.Err() != nil {
-			return interrupted()
-		}
+		r.Header.Set("Accept", "text/event-stream")
+		r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
+		r.Header.Set("Authorization", "Bearer "+c.token)
+		r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+		r.Header.Set("X-FC-Session", c.sessionID)
+		response, err := ownedClient.Do(r)
 		if err != nil {
-			var transport net.Error
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
-				return MessageEventPage{}, messageWaitConnectionFailure("The message connection was lost.")
+			if stream.Err() != nil {
+				return interrupted()
 			}
+			return MessageEventPage{}, messageWaitConnectionFailure("The service connection failed.")
+		}
+		defer response.Body.Close()
+		if response.StatusCode >= 300 && response.StatusCode < 400 {
+			return MessageEventPage{}, fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
+		}
+		media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+		if response.StatusCode >= 500 && response.StatusCode < 600 && (err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "") {
+			return MessageEventPage{}, fail("service_unavailable", "The service returned an HTTP server error.", "Retry the wait using the saved cursor, or read the bound-worker inbox; messages remain unacknowledged.", response.StatusCode)
+		}
+		if err != nil || response.Header.Get("Content-Encoding") != "" {
 			return MessageEventPage{}, invalidResponse()
 		}
-		if frame.event == "error" {
-			if frame.id != "" {
+		if response.StatusCode != http.StatusOK {
+			if media != "application/json" {
 				return MessageEventPage{}, invalidResponse()
 			}
-			failure := c.messageWaitError([]byte(frame.data), 0)
+			// Error responses consume the same call-wide wire budget as SSE
+			// frames; reconnecting cannot reset either bound.
+			data, err := io.ReadAll(io.LimitReader(response.Body, min((64<<10)+1, int64(maxResponseBytes-wireTotal+1))))
+			wireTotal += len(data)
+			if stream.Err() != nil {
+				return interrupted()
+			}
+			if wireTotal > maxResponseBytes || len(data) > 64<<10 {
+				return MessageEventPage{}, invalidResponse()
+			}
+			if err != nil {
+				return MessageEventPage{}, invalidResponse()
+			}
+			failure := c.messageWaitError(data, response.StatusCode)
 			return MessageEventPage{}, failure
 		}
-		if frame.event != "message-events" {
+		if media != "text/event-stream" {
 			return MessageEventPage{}, invalidResponse()
 		}
-		var page MessageEventPage
-		if decodeResponse([]byte(frame.data), &page) != nil || page.Items == nil || len(page.Items) > limit || !validOpaqueCursor(page.Cursor) || page.Cursor != frame.id || page.TimedOut || page.HasMore && len(page.Items) == 0 || c.hasSensitive(&page) {
-			return MessageEventPage{}, invalidResponse()
-		}
-		sent := make([]MessageEvent, 0, len(page.Items))
-		for _, item := range page.Items {
-			if !c.validMessageEvent(item) || item.Sequence <= previous {
+		reader := messageWaitReader{reader: bufio.NewReader(response.Body), total: wireTotal}
+		defer func() { wireTotal = reader.total }()
+		for {
+			frame, err := reader.next()
+			if stream.Err() != nil {
+				return interrupted()
+			}
+			if err != nil {
+				var transport net.Error
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
+					return MessageEventPage{}, messageWaitConnectionFailure("The message connection was lost.")
+				}
 				return MessageEventPage{}, invalidResponse()
 			}
-			previous = item.Sequence
-			if item.Type == "message.sent" || item.Type == "job.assigned" || item.Type == "job.unassigned" {
-				sent = append(sent, item)
+			if frame.event == "error" {
+				if frame.id != "" {
+					return MessageEventPage{}, invalidResponse()
+				}
+				failure := c.messageWaitError([]byte(frame.data), 0)
+				return MessageEventPage{}, failure
+			}
+			if frame.event != "message-events" {
+				return MessageEventPage{}, invalidResponse()
+			}
+			var page MessageEventPage
+			if decodeResponse([]byte(frame.data), &page) != nil || page.Items == nil || len(page.Items) > limit || !validOpaqueCursor(page.Cursor) || page.Cursor != frame.id || page.TimedOut || page.HasMore && len(page.Items) == 0 || c.hasSensitive(&page) {
+				return MessageEventPage{}, invalidResponse()
+			}
+			sent := make([]MessageEvent, 0, len(page.Items))
+			for _, item := range page.Items {
+				if !c.validMessageEvent(item) || item.Sequence <= previous {
+					return MessageEventPage{}, invalidResponse()
+				}
+				previous = item.Sequence
+				if item.Type == "message.sent" || item.Type == "job.assigned" || item.Type == "job.unassigned" {
+					sent = append(sent, item)
+				}
+			}
+			if stream.Err() != nil {
+				return interrupted()
+			}
+			lastCursor = page.Cursor
+			attached = true
+			if !ready {
+				readyTimer.Stop()
+				ready = true
+				waitTimer = time.AfterFunc(time.Duration(waitSeconds)*time.Second, func() { cancelStream(errMessageWaitExpired) })
+			}
+			if len(sent) > 0 {
+				page.Items = sent
+				return page, nil
 			}
 		}
+	}
+	delay := 250 * time.Millisecond
+	for {
+		page, err := readConnection()
+		if err == nil || !resultWaitReconnectFailure(err) {
+			return page, err
+		}
+		interruption = err
+		attached = false
 		if stream.Err() != nil {
 			return interrupted()
 		}
-		lastCursor = page.Cursor
-		if !ready {
-			readyTimer.Stop()
-			ready = true
-			waitTimer = time.AfterFunc(time.Duration(waitSeconds)*time.Second, func() { cancelStream(errMessageWaitExpired) })
+		if err := waitIdentityRetry(stream, delay); err != nil {
+			return interrupted()
 		}
-		if len(sent) > 0 {
-			page.Items = sent
-			return page, nil
-		}
+		delay = min(delay*2, 2*time.Second)
 	}
 }
 
 func messageWaitConnectionFailure(message string) *Error {
-	return fail("connection_failed", message+" This wait ended; no message subscription remains active.", "Start a new wait using the original saved cursor when the service is available, or read the bound-worker inbox; messages remain unacknowledged. No automatic reconnect occurs.", 0)
+	return fail("connection_failed", message+" This bounded wait ended; no message subscription remains active.", "Reconnect could not complete within this call. Resume using the original saved cursor when the service is available, or read the bound-worker inbox; messages remain unacknowledged.", 0)
 }
 
 func (c *Client) messageWaitError(data []byte, status int) *Error {

@@ -25,15 +25,27 @@ func TestResultWaitReconnectPreservesOriginalTransportBudget(t *testing.T) {
 	}
 }
 
-func TestResultWaitReconnectRequiresKnownShutdownAndHonorsCancellation(t *testing.T) {
-	for _, failure := range []*Error{{Code: "connection_failed"}, {Code: "service_unavailable", Status: 502}, {Code: "overloaded", Status: 503}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "capacity"}}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime_extra"}}, {Code: "forbidden", Status: 403}, {Code: "unauthorized", Status: 401}, {Code: "instance_mismatch", Status: 409}, {Code: "invalid_response"}, {Code: "canceled"}, {Code: "deadline_exceeded"}} {
+func TestResultWaitReconnectLimitsFailuresAndHonorsCancellation(t *testing.T) {
+	for _, failure := range []*Error{{Code: "service_unavailable", Status: 500}, {Code: "overloaded", Status: 503}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "capacity"}}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime_extra"}}, {Code: "forbidden", Status: 403}, {Code: "unauthorized", Status: 401}, {Code: "instance_mismatch", Status: 409}, {Code: "invalid_response"}, {Code: "canceled"}, {Code: "deadline_exceeded"}} {
 		calls := 0
 		err := resumeResultWait(t.Context(), 10, func(context.Context, int) error { calls++; return failure })
 		if err != failure || calls != 1 {
-			t.Fatal("unproven shutdown retried", failure, calls)
+			t.Fatal("terminal or nontransport refusal retried", failure, calls)
 		}
 	}
 	shutdown := &Error{Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime"}}
+	for _, transient := range []*Error{{Code: "connection_failed"}, {Code: "service_unavailable", Status: 502}, {Code: "service_unavailable", Status: 503}, {Code: "service_unavailable", Status: 504}, shutdown} {
+		calls := 0
+		if err := resumeResultWait(t.Context(), 2, func(context.Context, int) error {
+			calls++
+			if calls == 1 {
+				return transient
+			}
+			return nil
+		}); err != nil || calls != 2 {
+			t.Fatal("initial transient read did not reconnect", err, calls)
+		}
+	}
 	for _, terminal := range []*Error{{Code: "forbidden", Status: 403}, {Code: "instance_mismatch", Status: 409}, {Code: "overloaded", Status: 503}, {Code: "invalid_response"}} {
 		calls := 0
 		err := resumeResultWait(t.Context(), 3, func(context.Context, int) error {

@@ -2,20 +2,17 @@ package client_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/benhook1013/FireController/internal/client"
 )
 
 // These are controlled HTTP stream closures, not a reproduction of an unknown
 // installed failure. Incomplete transport must not look like invalid JSON.
-func TestMessageWaitLostHTTPStreamRetainsCallerCursorAndSafeRecovery(t *testing.T) {
+func TestMessageWaitLostHTTPStreamReconnectsFromLastValidatedCursor(t *testing.T) {
 	ready := waitFrame(waitPage("locally-validated"))
 	for _, test := range []struct {
 		name, body         string
@@ -33,11 +30,19 @@ func TestMessageWaitLostHTTPStreamRetainsCallerCursorAndSafeRecovery(t *testing.
 			var streams atomic.Int64
 			const cursor = "caller-saved-cursor"
 			s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
-				streams.Add(1)
-				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != cursor || r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("include_assignments") != "true" || len(r.URL.Query()) != 3 {
-					t.Error("stream failure triggered a write, reconnect or changed caller cursor")
+				n := streams.Add(1)
+				wantCursor := cursor
+				if n > 1 && strings.HasPrefix(test.body, ready) {
+					wantCursor = "locally-validated"
+				}
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != wantCursor || r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("include_assignments") != "true" || len(r.URL.Query()) != 3 {
+					t.Error("reconnect changed binding or advanced beyond the last validated frame")
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
+				if n > 1 {
+					_, _ = fmt.Fprint(w, waitFrame(waitPage("recovered", waitEvent(9, "message.sent"))))
+					return
+				}
 				if test.shortLength {
 					w.Header().Set("Content-Length", fmt.Sprint(len(test.body)+100))
 				}
@@ -59,13 +64,8 @@ func TestMessageWaitLostHTTPStreamRetainsCallerCursorAndSafeRecovery(t *testing.
 			})
 			c := newClient(t, s)
 			page, err := c.WaitForMessages(context.Background(), cursor, 1, 1)
-			checkError(t, err, "connection_failed")
-			var failure *client.Error
-			if !errors.As(err, &failure) || failure.Message != "The message connection was lost. This wait ended; no message subscription remains active." || failure.Action != "Start a new wait using the original saved cursor when the service is available, or read the bound-worker inbox; messages remain unacknowledged. No automatic reconnect occurs." || failure.OutcomeUnknown || failure.Status != 0 {
-				t.Fatal("lost stream diagnostic leaked transport content or lost safe recovery", err)
-			}
-			if page.Items != nil || page.Cursor != "" || page.TimedOut || streams.Load() != 1 {
-				t.Fatal("lost stream retried, advanced a cursor or returned partial success", page, streams.Load())
+			if err != nil || len(page.Items) != 1 || page.Items[0].Sequence != 9 || page.Cursor != "recovered" || page.TimedOut || streams.Load() != 2 {
+				t.Fatal("lost stream did not resume original bounded read", page, streams.Load(), err)
 			}
 		})
 	}

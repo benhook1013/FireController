@@ -24,7 +24,7 @@ func resultWaitReconnectFailure(err error) bool {
 	return resultWaitShutdown(err) || failure.Status == 0 && failure.Code == "connection_failed" || failure.Code == "service_unavailable" && (failure.Status == 502 || failure.Status == 503 || failure.Status == 504)
 }
 
-// Only a confirmed shutdown opens this reconnection window. Every callback is
+// A transient connection/gateway failure opens this reconnection window. Every callback is
 // the same authenticated read with a reduced Prefer wait, never a submission.
 // A trailing fractional second permits one final immediate read, not polling.
 func resumeResultWait(ctx context.Context, seconds int, read func(context.Context, int) error) error {
@@ -35,10 +35,10 @@ func resumeResultWait(ctx context.Context, seconds int, read func(context.Contex
 	outer, cancel := context.WithTimeout(ctx, providerWaitBudget(seconds))
 	defer cancel()
 	err := read(outer, seconds)
-	if err == nil || !resultWaitShutdown(err) {
+	if err == nil || !resultWaitReconnectFailure(err) {
 		return err
 	}
-	shutdown := err
+	interruption := err
 	delay := 250 * time.Millisecond
 	for {
 		if err := ctx.Err(); err != nil {
@@ -68,10 +68,10 @@ func resumeResultWait(ctx context.Context, seconds int, read func(context.Contex
 			return err
 		}
 		if resultWaitShutdown(err) {
-			shutdown = err
+			interruption = err
 		}
 		if secondsLeft == 0 {
-			return shutdown
+			return interruption
 		}
 		delay = min(delay*2, 2*time.Second)
 	}
