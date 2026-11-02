@@ -214,6 +214,10 @@ func (o *browserOutput) safePhase() string {
 			State                    string `json:"state"`
 			Phase                    string `json:"phase"`
 			Checkpoint               string `json:"checkpoint"`
+			FailureKind              string `json:"failure_kind"`
+			SessionPosts             int    `json:"session_posts"`
+			SessionDeletes           int    `json:"session_deletes"`
+			ActionWrites             int    `json:"action_writes"`
 			PresentationReads        int    `json:"presentation_reads"`
 			MetadataStreams          int    `json:"metadata_streams"`
 			InboxStreams             int    `json:"inbox_streams"`
@@ -239,8 +243,79 @@ func (o *browserOutput) safePhase() string {
 					}
 				}
 			}
+			if strings.HasPrefix(record.Phase, "explicit-actions-") {
+				validCheckpoint := false
+				switch record.Phase + "/" + record.Checkpoint {
+				case "explicit-actions-connect/connect-history", "explicit-actions-connect/connect-project", "explicit-actions-connect/connect-credential", "explicit-actions-connect/connect-consent", "explicit-actions-connect/connect-submit", "explicit-actions-connect/connect-heading", "explicit-actions-connect/connect-worker", "explicit-actions-connect/connect-inbox", "explicit-actions-connect/incoming-write", "explicit-actions-connect/incoming-row", "explicit-actions-connect/incoming-unread", "explicit-actions-connect/incoming-seen-submit", "explicit-actions-connect/incoming-seen", "explicit-actions-connect/incoming-ack-submit", "explicit-actions-connect/incoming-ack",
+					"explicit-actions-send/send-compose", "explicit-actions-send/reply-compose", "explicit-actions-settings/settings-save", "explicit-actions-settings/settings-reload", "explicit-actions-uncertain/uncertain-compose", "explicit-actions-uncertain/uncertain-commit", "explicit-actions-uncertain/uncertain-return", "explicit-actions-uncertain/uncertain-discard", "explicit-actions-uncertain/uncertain-retry", "explicit-actions-uncertain/uncertain-disconnect":
+					validCheckpoint = true
+				}
+				validKind := record.FailureKind == "timeout" || record.FailureKind == "assertion" || record.FailureKind == "driver"
+				validCounts := true
+				for _, n := range []int{record.PresentationReads, record.MetadataStreams, record.InboxStreams, record.InjectedMetadataFailures, record.InjectedConsoleErrors, record.Errors, record.External, record.SessionPosts, record.SessionDeletes, record.ActionWrites} {
+					validCounts = validCounts && n >= 0 && n <= 1000
+				}
+				if validCheckpoint && validKind && validCounts {
+					return fmt.Sprintf("%s/%s kind=%s session_posts=%d session_deletes=%d action_writes=%d errors=%d external=%d", record.Phase, record.Checkpoint, record.FailureKind, record.SessionPosts, record.SessionDeletes, record.ActionWrites, record.Errors, record.External)
+				}
+			}
 			return record.Phase
 		}
 	}
 	return "driver-start-or-cleanup"
+}
+
+func TestBrowserOutputSafeActionFailureDiagnostics(t *testing.T) {
+	const secret = "PRIVATE_TOKEN_https://private.invalid/secret"
+	base := map[string]any{"state": "FAIL", "phase": "explicit-actions-connect", "checkpoint": "connect-submit", "failure_kind": "timeout", "session_posts": 2, "session_deletes": 1, "action_writes": 0, "errors": 0, "external": 0}
+	for _, test := range []struct {
+		name string
+		edit func(map[string]any)
+		want string
+	}{
+		{"safe timeout", func(map[string]any) {}, "explicit-actions-connect/connect-submit kind=timeout session_posts=2 session_deletes=1 action_writes=0 errors=0 external=0"},
+		{"safe assertion", func(v map[string]any) { v["failure_kind"] = "assertion" }, "explicit-actions-connect/connect-submit kind=assertion session_posts=2 session_deletes=1 action_writes=0 errors=0 external=0"},
+		{"safe driver", func(v map[string]any) {
+			v["failure_kind"] = "driver"
+			v["message"] = secret
+			v["stack"] = secret
+			v["locator"] = secret
+		}, "explicit-actions-connect/connect-submit kind=driver session_posts=2 session_deletes=1 action_writes=0 errors=0 external=0"},
+		{"private checkpoint", func(v map[string]any) { v["checkpoint"] = secret }, "explicit-actions-connect"},
+		{"private kind", func(v map[string]any) { v["failure_kind"] = secret }, "explicit-actions-connect"},
+		{"cross phase checkpoint", func(v map[string]any) { v["checkpoint"] = "uncertain-retry" }, "explicit-actions-connect"},
+		{"private phase", func(v map[string]any) { v["phase"] = secret }, "driver-start-or-cleanup"},
+		{"negative count", func(v map[string]any) { v["session_posts"] = -1 }, "explicit-actions-connect"},
+		{"oversized count", func(v map[string]any) { v["action_writes"] = 1001 }, "explicit-actions-connect"},
+		{"unprinted oversized count", func(v map[string]any) { v["metadata_streams"] = 1001 }, "explicit-actions-connect"},
+		{"private count", func(v map[string]any) { v["errors"] = secret }, "driver-start-or-cleanup"},
+		{"fractional count", func(v map[string]any) { v["external"] = 0.5 }, "driver-start-or-cleanup"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := map[string]any{}
+			for k, v := range base {
+				value[k] = v
+			}
+			test.edit(value)
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := &browserOutput{}
+			_, _ = out.Write(append(raw, '\n'))
+			got := out.safePhase()
+			if got != test.want || strings.Contains(got, secret) {
+				t.Fatal("unsafe or incomplete failure diagnostics", got)
+			}
+		})
+	}
+	for _, phase := range []string{"explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain"} {
+		checkpoint := map[string]string{"explicit-actions-send": "reply-compose", "explicit-actions-settings": "settings-reload", "explicit-actions-uncertain": "uncertain-retry"}[phase]
+		raw, _ := json.Marshal(map[string]any{"state": "FAIL", "phase": phase, "checkpoint": checkpoint, "failure_kind": "assertion"})
+		out := &browserOutput{}
+		_, _ = out.Write(raw)
+		if got := out.safePhase(); !strings.HasPrefix(got, phase+"/"+checkpoint+" kind=assertion ") {
+			t.Fatal("known action stage lost", got)
+		}
+	}
 }

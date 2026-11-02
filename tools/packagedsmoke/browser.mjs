@@ -37,7 +37,7 @@ try {
   let explicitActions = false, controlledMessageFailure = false;
   let presentationReads = 0, metadataStreams = 0, inboxStreams = 0, injectedResponses = 0, injectedConsoleErrors = 0;
   let injectedRequest;
-  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external });
+  diagnostics = () => ({ presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, errors, external, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites });
   page.on('pageerror', () => errors++);
   page.on('console', value => {
     if (value.type() !== 'error') return;
@@ -274,24 +274,40 @@ try {
 
   const metadataCounts = {presentation_reads:presentationReads, metadata_streams:metadataStreams, inbox_streams:inboxStreams};
   phase = 'explicit-actions-connect';
+  checkpoint = 'connect-history';
  const actionRootHistoryIndex=await page.evaluate(()=>history.state.idx);
   explicitActions = true;
+  checkpoint = 'connect-project';
   await page.getByLabel('Project ID', {exact:true}).fill(config.project);
+  checkpoint = 'connect-credential';
   await page.getByLabel('Project credential', {exact:true}).fill(admin);
+  checkpoint = 'connect-consent';
   await page.getByLabel('Enable message and appearance changes', {exact:true}).check();
+  checkpoint = 'connect-submit';
   await page.getByRole('button', {name:'Connect to project',exact:true}).click();
+  checkpoint = 'connect-heading';
   await page.getByRole('heading', {name:title,exact:true}).waitFor();
+  checkpoint = 'connect-worker';
   await page.getByRole('button', {name:'Open Builder inbox',exact:true}).click();
+  checkpoint = 'connect-inbox';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Inbox',exact:true}).click();
+  checkpoint = 'incoming-write';
   const incoming = await write('POST','/messages',{recipient_worker_id:config.worker,body:'Action incoming <literal>',reply_to_message_id:''},201,config.other_worker);
   const row = page.locator('.inbox-list > li').filter({hasText:'Action incoming <literal>'});
+  checkpoint = 'incoming-row';
   await row.waitFor();
+  checkpoint = 'incoming-unread';
   need(await row.getByText('Unread',{exact:true}).count() === 1);
+  checkpoint = 'incoming-seen-submit';
   await row.getByRole('button',{name:'Mark seen',exact:true}).click();
+  checkpoint = 'incoming-seen';
   await row.getByText('Seen',{exact:true}).waitFor();
+  checkpoint = 'incoming-ack-submit';
   await row.getByRole('button',{name:'Acknowledge',exact:true}).click();
+  checkpoint = 'incoming-ack';
   await row.getByText('Acknowledged',{exact:true}).waitFor();
 
+  checkpoint = 'send-compose';
   phase = 'explicit-actions-send';
   await page.getByRole('button',{name:'New message',exact:true}).click();
   await page.getByLabel('Recipient worker ID',{exact:true}).fill(config.other_worker);
@@ -299,6 +315,7 @@ try {
   const sent = page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
   await page.getByRole('button',{name:'Send message',exact:true}).click();
   need((await sent).status()===201);
+  checkpoint = 'reply-compose';
   await row.getByRole('link').click();
   await page.getByText('Action incoming <literal>',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Reply',exact:true}).click();
@@ -309,6 +326,7 @@ try {
   need(replyResponse.status()===201 && (await replyResponse.json()).conversation_id===incoming.conversation_id);
   await page.getByText('Browser reply <literal>',{exact:true}).waitFor();
 
+  checkpoint = 'settings-save';
   phase = 'explicit-actions-settings';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
   await page.getByLabel('Project name',{exact:true}).fill('Browser configured project');
@@ -317,6 +335,7 @@ try {
   await page.getByRole('button',{name:'Save appearance',exact:true}).click();
   need((await settingsSaved).status()===200);
   await expect.poll(async()=>(await appearance()).brand).toBe('Browser configured brand');
+  checkpoint = 'settings-reload';
   await page.reload();
   await page.getByRole('heading',{name:'Browser configured project',exact:true}).waitFor();
   need(new URL(page.url()).pathname===home+'/settings');
@@ -325,6 +344,7 @@ try {
   need(!(await page.evaluate(()=>JSON.stringify(sessionStorage))).includes(admin));
   need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
 
+  checkpoint = 'uncertain-compose';
   phase = 'explicit-actions-uncertain';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   await page.getByRole('button',{name:'New message',exact:true}).click();
@@ -347,15 +367,18 @@ try {
   });
   controlledMessageFailure=true;
   await page.getByRole('button',{name:'Send message',exact:true}).click();
+  checkpoint = 'uncertain-commit';
   await committedSend;
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Workers',exact:true}).click();
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Inbox',exact:true}).click();
   releaseSend();
+  checkpoint = 'uncertain-return';
   const retry = page.getByRole('button',{name:'Retry exact send',exact:true});
   if (!(await retry.count())) await page.getByRole('button',{name:'New message',exact:true}).click();
   await expect(retry).toBeEnabled();
   // Pop to the original root route: canceling the explicit discard prompt must
   // preserve this project and the original pending key/body, without a reload.
+  checkpoint = 'uncertain-discard';
   const rootDelta=await page.evaluate(root=>history.state.idx-root,actionRootHistoryIndex);
   need(rootDelta>0);
   const exitDialog=page.waitForEvent('dialog');
@@ -363,6 +386,7 @@ try {
   await (await exitDialog).dismiss();
   await expect(retry).toBeEnabled();
   need(new URL(page.url()).pathname===home+'/inbox');
+  checkpoint = 'uncertain-retry';
   const retryResponse=page.waitForResponse(r=>r.request().method()==='POST' && new URL(r.url()).pathname===prefix+'/messages');
   await retry.click();
   const recovered=await retryResponse;
@@ -371,6 +395,7 @@ try {
   await page.getByRole('link',{name:'Open sent conversation',exact:true}).click();
   await page.getByText('Uncertain browser message',{exact:true}).waitFor();
   need(await page.getByText('Uncertain browser message',{exact:true}).count()===1);
+  checkpoint = 'uncertain-disconnect';
   controlledMessageFailure=false;
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();
   await page.getByRole('button',{name:'Connect to project',exact:true}).waitFor();
@@ -379,8 +404,10 @@ try {
   await browser.close(); browser = undefined;
   await server.close(); server = undefined;
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
-} catch {
-  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, ...diagnostics()}));
+} catch (error) {
+  // Only fixed categories leave this process; raw exception text may contain credentials.
+  const failure_kind = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_kind, ...diagnostics()}));
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close().catch(() => {});
