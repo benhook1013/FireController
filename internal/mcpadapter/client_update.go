@@ -87,9 +87,10 @@ func (n *clientUpdateNotice) Apply(response *mcp.CallToolResult) {
 		RunningState    string `json:"running_source_state"`
 		LaunchRevision  string `json:"launch_target_source_revision"`
 		LaunchState     string `json:"launch_target_source_state"`
+		Blocking        bool   `json:"blocking"`
 		NextAction      string `json:"next_action"`
 		Message         string `json:"message"`
-	}{n.running.SourceRevision, n.running.SourceState, target.Revision, target.State, "reconnect_mcp", "This MCP process differs from its installed launch target. Reconnect this MCP server through its host using the same private binding. Installing a client does not replace an existing process."})
+	}{n.running.SourceRevision, n.running.SourceState, target.Revision, target.State, false, "reconnect_mcp", "This MCP process differs from its installed launch target. This advisory does not change the tool result or operation status. Reconnect this MCP server through its host using the same private binding when convenient. Installing a client does not replace an existing process."})
 	if err != nil {
 		return
 	}

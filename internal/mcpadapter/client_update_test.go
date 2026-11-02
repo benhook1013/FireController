@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/buildinfo"
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -119,5 +120,38 @@ func TestClientUpdateNoticeConcurrentResultsWarnOnlyOnce(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatal("concurrent responses duplicated notification", count)
+	}
+}
+
+func TestClientUpdateNoticeIsAdvisoryForPreparingAndErrorResults(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response *mcp.CallToolResult
+	}{
+		{"preparing", result(map[string]any{"operation": map[string]any{"id": "original-operation", "state": "preparing"}, "next_action": "wait_for_operation"}, false)},
+		{"actual error", resultFailure(&client.Error{Code: "revision_conflict", Message: "The job changed.", Action: "Read its current revision before editing."})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target, available := buildinfo.Source{Revision: strings.Repeat("b", 40), State: "clean"}, true
+			notice := updateFixture(&target, &available)
+			before, _ := json.Marshal(test.response.StructuredContent)
+			isError := test.response.IsError
+			notice.Apply(test.response)
+			after, _ := json.Marshal(test.response.StructuredContent)
+			if test.response.IsError != isError || test.response.Content[0].(*mcp.TextContent).Text != string(after) {
+				t.Fatal("advisory changed tool success/error or representation")
+			}
+			var fields, original, hint map[string]json.RawMessage
+			if json.Unmarshal(after, &fields) != nil || json.Unmarshal(before, &original) != nil || json.Unmarshal(fields["client_update"], &hint) != nil {
+				t.Fatal("missing advisory result", string(after))
+			}
+			if string(hint["blocking"]) != "false" || string(hint["next_action"]) != `"reconnect_mcp"` || !strings.Contains(string(hint["message"]), "advisory") || !strings.Contains(string(hint["message"]), "does not change the tool result or operation status") {
+				t.Fatal("client update looks like an operation prerequisite", string(fields["client_update"]))
+			}
+			delete(fields, "client_update")
+			if !reflect.DeepEqual(fields, original) {
+				t.Fatal("advisory changed original status, control action or error", string(after))
+			}
+		})
 	}
 }
