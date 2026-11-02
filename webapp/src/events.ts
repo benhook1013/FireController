@@ -1,3 +1,4 @@
+import { requestBrowserBuildCheck } from './browser-build';
 import { ApiError } from './api';
 import type { InboxOptions, InboxSnapshot, MessageEventPage, WatchCallbacks } from './types';
 
@@ -169,6 +170,7 @@ export async function runEventWatch<S, P>(source: EventWatchSource<S, P>, callba
       reader = response.body.getReader();
       attachedAt = performance.now();
       callbacks.status('live');
+      requestBrowserBuildCheck();
       const parser = new SSEParser();
       while (!signal.aborted) {
         const read = await readWithIdle(reader, connectionSignal, connection.close);

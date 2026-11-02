@@ -31,10 +31,10 @@ export function usePaging(scope = '') {
   const [stored, setState] = useState({ scope, trail: [''], index: 0 });
   const state = stored.scope === scope ? stored : { scope, trail: [''], index: 0 };
   if (stored.scope !== scope) setState(state);
-  return { cursor: state.trail[state.index], number: state.index + 1, previous: () => setState(value => ({ ...value, index: Math.max(0, value.index - 1) })), next: (cursor: string) => setState(value => ({ scope, trail: [...value.trail.slice(0, value.index + 1), cursor], index: value.index + 1 })) };
+  return { cursor: state.trail[state.index], number: state.index + 1, reloadRetained: false, previous: () => setState(value => ({ ...value, index: Math.max(0, value.index - 1) })), next: (cursor: string) => setState(value => ({ scope, trail: [...value.trail.slice(0, value.index + 1), cursor], index: value.index + 1 })) };
 }
 export function Pager({ paging, page, label, busy }: { paging: ReturnType<typeof usePaging>; page?: Page<unknown>; label: string; busy: boolean }) {
-  return <div className="pager"><span>Page {paging.number}{page && !page.has_more ? ` of ${paging.number}` : ''}{page ? ` (${page.items.length} ${page.items.length === 1 ? 'item' : 'items'})` : ''}</span><div><button type="button" aria-label={`Previous ${label}`} disabled={paging.number === 1 || busy} onClick={paging.previous}>Previous</button><button type="button" aria-label={`Next ${label}`} disabled={!page?.has_more || !page.cursor || busy} onClick={() => { if (page?.cursor) paging.next(page.cursor); }}>Next</button></div></div>;
+  return <div className="pager" data-browser-window-unsafe={paging.number > 1 && !paging.reloadRetained}><span>Page {paging.number}{page && !page.has_more ? ` of ${paging.number}` : ''}{page ? ` (${page.items.length} ${page.items.length === 1 ? 'item' : 'items'})` : ''}</span><div><button type="button" aria-label={`Previous ${label}`} disabled={paging.number === 1 || busy} onClick={paging.previous}>Previous</button><button type="button" aria-label={`Next ${label}`} disabled={!page?.has_more || !page.cursor || busy} onClick={() => { if (page?.cursor) paging.next(page.cursor); }}>Next</button></div></div>;
 }
 export function ReadState({ error, loading, empty, children, retained = false }: { error: unknown; loading: boolean; empty: boolean; children: ReactNode; retained?: boolean }) {
   const { fail } = useWorkspace();

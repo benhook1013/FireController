@@ -37,6 +37,7 @@ function ProjectSchedulingEditor({value,reload}:{value:ReviewScheduling;reload()
   const [worker,setWorker]=useState('');
   const [desired,setDesired]=useState(value.automatic_hosted);
   const [observedRevision,setObservedRevision]=useState(value.revision);
+  const [savedDraft,setSavedDraft]=useState({automatic:value.automatic_hosted,worker:''});
   const [cursor,setCursor]=useState('');
   const [loaded,setLoaded]=useState<Worker[]>([]);
   const selected=session.worker && !session.worker.retired ? session.worker.id : '';
@@ -44,20 +45,20 @@ function ProjectSchedulingEditor({value,reload}:{value:ReviewScheduling;reload()
   const choices=[...loaded,...(workers.data?.items ?? [])].filter((item,index,items)=>!item.retired && items.findIndex(other=>other.id===item.id)===index);
   const action=useBrowserAction<{worker:string;automatic:boolean;revision:number},SchedulingReceipt>('review-scheduling',
     (input,actionKey,signal)=>session.api.configureReviewScheduling(input.worker,input.automatic,input.revision,actionKey,signal),
-    async()=>{await queryClient.invalidateQueries({queryKey:reviewSchedulingKey(key)});});
+    async()=>{setSavedDraft({automatic:desired,worker});await queryClient.invalidateQueries({queryKey:reviewSchedulingKey(key)});});
   useEffect(()=>{if(action.done){const details=form.current?.closest('details');if(details) details.open=false;}},[action.done]);
   const automatic=action.retained?.input.automatic ?? desired;
   const authorizer=action.retained?.input.worker ?? (selected || worker);
   const submit=(event:FormEvent)=>{event.preventDefault();void action.run({worker:automatic?authorizer:'',automatic,revision:observedRevision});};
-  const current=()=>{setDesired(value.automatic_hosted);setObservedRevision(value.revision);};
-  return <SchedulingDetails label="Scheduling" onOpen={()=>{setChoose(true);if(!action.locked){current();action.clearNotice();}}}><form ref={form} onSubmit={submit}><strong>Review scheduling</strong><label className="review-scheduling-checkbox"><input type="checkbox" checked={automatic} disabled={action.locked} onChange={event=>setDesired(event.target.checked)} />Automatic Hosted reviews</label><p>CLI stays manual. Existing grants and review limits still apply.</p>
+  const current=()=>{setDesired(value.automatic_hosted);setObservedRevision(value.revision);setSavedDraft({automatic:value.automatic_hosted,worker});};
+  return <SchedulingDetails label="Scheduling" onOpen={()=>{setChoose(true);if(!action.locked){current();action.clearNotice();}}}><form ref={form} data-browser-draft data-browser-dirty={desired!==savedDraft.automatic || worker!==savedDraft.worker} onSubmit={submit}><strong>Review scheduling</strong><label className="review-scheduling-checkbox"><input type="checkbox" checked={automatic} disabled={action.locked} onChange={event=>setDesired(event.target.checked)} />Automatic Hosted reviews</label><p>CLI stays manual. Existing grants and review limits still apply.</p>
     {automatic && !selected && <label>Authorizing worker<select aria-label="Authorizing worker" value={action.retained?.input.worker ?? worker} disabled={action.locked} required onChange={event=>setWorker(event.target.value)}><option value="">Choose an active worker</option>{choices.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
     {automatic && selected && <p>Authorizing worker: {session.worker?.name}</p>}
     {automatic && !selected && workers.isFetching && <small>Loading workers…</small>}
     {automatic && !selected && workers.error && <p role="alert">Active workers could not be loaded. <button type="button" onClick={()=>void workers.refetch()}>Retry workers</button></p>}
     {automatic && !selected && workers.data?.has_more && <button type="button" disabled={workers.isFetching} onClick={()=>{setLoaded(choices);setCursor(workers.data?.cursor ?? '');}}>Load more workers</button>}
     <button type="submit" disabled={action.busy || automatic && !authorizer || !action.locked && !automatic && !value.automatic_hosted}>{action.busy?'Saving…':action.locked?'Retry exact scheduling change':automatic===value.automatic_hosted?(automatic?'Save authorization':'Save scheduling'):`${automatic?'Enable':'Disable'} automatic Hosted`}</button>
-    {Boolean(action.error) && !action.locked && <button type="button" onClick={()=>void reload().then(updated=>{if(updated){setObservedRevision(updated.revision);setDesired(updated.automatic_hosted);}})}>Reload current settings</button>}<ActionNotice error={action.error} done={action.done} />
+    {Boolean(action.error) && !action.locked && <button type="button" onClick={()=>void reload().then(updated=>{if(updated){setObservedRevision(updated.revision);setDesired(updated.automatic_hosted);setSavedDraft({automatic:updated.automatic_hosted,worker});}})}>Reload current settings</button>}<ActionNotice error={action.error} done={action.done} />
   </form></SchedulingDetails>;
 }
 
@@ -85,12 +86,12 @@ function PullSchedulingEditor({number,value,loading,error,reload,changed}:{numbe
   const [observed,setObserved]=useState(value);
   useEffect(()=>{if(!observed && value) setObserved(value);},[observed,value]);
   const action=useBrowserAction<{paused:boolean;reason:string;revision:number},SchedulingReceipt>(`pull-scheduling-${number}`,
-    (input,actionKey,signal)=>session.api.configurePullScheduling(number,input.paused,input.reason,input.revision,actionKey,signal),changed);
+    (input,actionKey,signal)=>session.api.configurePullScheduling(number,input.paused,input.reason,input.revision,actionKey,signal),async()=>{setReason('');await changed();});
   useEffect(()=>{if(action.done){const details=form.current?.closest('details');if(details) details.open=false;}},[action.done]);
   const input=action.retained?.input;
   const paused=input?.paused ?? !observed?.paused;
   const submit=(event:FormEvent)=>{event.preventDefault();if(observed) void action.run({paused,reason:paused?reason:'',revision:observed.revision});};
-  return <form ref={form} onSubmit={submit}><strong>{paused?'Pause new reviews':'Resume reviews'}</strong><p>Applies to Hosted and CLI. Issued reviews keep collecting.</p>
+  return <form ref={form} data-browser-draft data-browser-dirty={Boolean(reason)} onSubmit={submit}><strong>{paused?'Pause new reviews':'Resume reviews'}</strong><p>Applies to Hosted and CLI. Issued reviews keep collecting.</p>
     {loading && !value && <small>Loading current settings…</small>}{Boolean(error) && <p role="alert">PR scheduling could not be loaded.</p>}
     {paused && <label>Reason (optional)<input value={input?.reason ?? reason} disabled={action.locked} maxLength={256} onChange={event=>setReason(event.target.value)} /></label>}
     <button type="submit" disabled={action.busy || !observed || new TextEncoder().encode(input?.reason ?? reason).byteLength>256}>{action.busy?'Saving…':action.locked?'Retry exact pause change':paused?'Pause reviews':'Resume reviews'}</button>

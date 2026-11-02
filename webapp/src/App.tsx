@@ -9,6 +9,7 @@ import { canonicalProjectLocation, projectAddress, projectHome, projectMatches }
 import { validPublicAddress, validPublicGeneration } from './public-site-api';
 import { PublicSiteRouter, PublicProjectAddress } from './public-site';
 import { BrowserActionMemory, MessageComposer, RecipientActions } from './browser-actions';
+import { BrowserUpdate, guardBrowserUpdate, notifyBrowserUpdateSafety } from './browser-update';
 import { ProjectSettings } from './project-settings';
 import { ProjectMap, ProjectMapEntryView, ProjectMapRevisionView, JobWorkstreamPanel } from './project-map';
 import { WorkerRetirementPanel } from './worker-retirement';
@@ -46,7 +47,7 @@ export function leavesActionProject(projectId: string, pathname: string, handle?
 
 export default function App() {
   const location = useLocation();
-  return location.pathname === '/public' || location.pathname.startsWith('/public/') ? <PublicSiteRouter /> : <PrivateApp />;
+  return <><BrowserUpdate />{location.pathname === '/public' || location.pathname.startsWith('/public/') ? <PublicSiteRouter /> : <PrivateApp />}</>;
 }
 
 // Presence controls only the initial loading shell. Validation, expiry and
@@ -65,6 +66,7 @@ function PrivateApp() {
   const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const current = useRef<Session | null>(null);
+  useEffect(() => guardBrowserUpdate(() => Boolean(current.current?.actions.unresolved)), []);
   const pending = useRef<{ api: Api; controller: AbortController; projectId: string; routeKey: string } | null>(null);
   const saved = useRef<BrowserSessionBinding | null>(null);
   const [resumable, setResumable] = useState<BrowserSessionBinding | null>(null);
@@ -226,9 +228,11 @@ function PrivateApp() {
   useEffect(() => {
     if (!session) return;
     const memory = session.actions;
+    const stop = memory.subscribe(notifyBrowserUpdateSafety);
+    notifyBrowserUpdateSafety();
     const guard = (event: BeforeUnloadEvent) => { if (memory.unresolved > 0) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', guard);
-    return () => window.removeEventListener('beforeunload', guard);
+    return () => { stop(); window.removeEventListener('beforeunload', guard); notifyBrowserUpdateSafety(); };
   }, [projectLifetime]);
   useEffect(() => {
     const acceptAppearance = appearanceAcceptor.current;
@@ -352,7 +356,7 @@ export function Connect({ projectId, busy, notice, onConnect, cancel, inline = f
   return <main className={inline ? "project-signin" : "connect-layout"}>{!inline && <section className="connect-intro"><h1>Keep work<br /> moving.</h1><p>A clear view of your AI agents, their jobs, and your review queue.</p><div className="intro-rule" /><p className="quiet-light">Connect to a project on this service to begin.</p></section>}
     <section className="connect-card"><h2>{inline ? `Sign in to ${projectId}` : 'Connect to a project'}</h2>
       {notice && <div className="notice" role="alert">{notice}</div>}
-      <form onSubmit={submit} autoComplete="off">{!projectId && <><label htmlFor="project-id">Project</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} /></>}
+      <form data-browser-draft data-browser-dirty={Boolean(token || project !== projectId)} data-browser-busy={busy} onSubmit={submit} autoComplete="off">{!projectId && <><label htmlFor="project-id">Project</label><input id="project-id" name="project-id" value={project} onChange={event => setProject(event.target.value)} required maxLength={128} spellCheck={false} autoCapitalize="none" disabled={busy} /></>}
         <label htmlFor="project-credential">Project credential</label><input id="project-credential" name="project-credential" type="password" value={token} onChange={event => setToken(event.target.value)} required maxLength={4096} autoComplete="off" disabled={busy} />
         <p className="field-note">Stay signed in while you use the site. Sign in again after 24 hours away.</p>
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : 'Connect to project'}</button>{busy && <button type="button" onClick={cancel}>Cancel connection</button>}

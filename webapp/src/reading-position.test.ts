@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { captureReadingPoint, notifyReadingNavigation, readingCorrection, useReadingPosition } from './reading-position';
+import { captureReadingPoint, notifyReadingNavigation, readingCorrection, saveReadingPosition, useReadingPosition } from './reading-position';
 
 const hooks = vi.hoisted(() => ({ effect: undefined as (() => void | (() => void)) | undefined }));
 vi.mock('react', async importOriginal => ({
@@ -52,6 +52,10 @@ describe('reading position across layout changes', () => {
     const cleanup = hooks.effect!();
     try {
       flush(); // Capture the ordinary review reading point.
+      saveReadingPosition(); // Deployment saves synchronously, before navigating.
+      expect(sessionStorage.setItem).toHaveBeenCalledWith('firecontroller.reading-position.v1', expect.stringContaining('review-reading'));
+      const saved = JSON.parse(vi.mocked(sessionStorage.setItem).mock.calls.at(-1)![1]);
+      expect(saved[0].point).toMatchObject({ anchor: 'review-reading', offset: -50, y: 1000 });
       top += 300;
       resize();
       flush();

@@ -56,6 +56,14 @@ After a transient disconnect, the view shows reconnecting and retries stream att
 
 Project, worker and connection nonce scope query keys. Old-context results cannot populate a new view. Editorial prose uses safe Markdown; other returned text is escaped by React. Raw HTML, external images, inline scripts and unrestricted styles are not executed or loaded. Embedded responses set a same-origin content security policy. Unknown API paths and unavailable assets remain JSON errors rather than receiving application HTML.
 
+## Updates after deployment
+
+Tabs detect changed frontend JavaScript or styles on live-feed reconnect, window focus and return to visibility, then reload their current address when safe. Reading positions, signed-in sessions and selected workers restore through the existing tab-local mechanisms. Backend-only deployments do not reload the frontend.
+
+A small **Update available** control appears while editing, sending or recovering an uncertain action. Finish or clear the draft and resolve pending actions before updating. The control observes the same guard as automatic updates and cannot silently discard that work. Checks are event-driven, bounded and tolerant of temporary deployment failures. The [browser contract](browser.md#frontend-deployment-updates) owns detection, storage and loop-prevention details.
+
+Focused Go and browser checks cover deployment detection, write/draft safety, bounded window retention and replay failures. Actual packaged Chromium checks at 1440px and 390px preserve a signed-in session, selected worker, queue page two, expanded Delivery window and exact reading offset after hash navigation, Back navigation and an automatic build-change reload, with no extra login or JavaScript errors. Separate deployment checks cover stale-index loop suppression and deferred drafts. These synthetic loopback checks do not establish installed rollout behavior or physical-phone lifecycle behavior.
+
 ## Build and packaging
 
 The client uses React, TypeScript, React Router’s data router and TanStack Query. Vite builds a client-only application; there is no Node server at runtime. Exact dependency versions and the browser lockfile are committed in `webapp/`.

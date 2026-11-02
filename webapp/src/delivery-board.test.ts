@@ -53,3 +53,29 @@ describe('append-only Delivery continuation', () => {
     await archive.more(); expect(archive.snapshot().error).toBeUndefined(); expect(read).toHaveBeenCalledTimes(2);
   });
 });
+
+it('reconstructs only the retained expansion depth before making the reading window ready', async () => {
+  let finish!: (value: DeliverySnapshot) => void;
+  const read = vi.fn().mockImplementation(() => new Promise<DeliverySnapshot>(resolve => { finish = resolve; }));
+  const board = new DeliveryBoardArchive(read, 1);
+  board.reset(undefined); expect(read).not.toHaveBeenCalled();
+  board.reset(first);
+  expect(board.snapshot()).toMatchObject({ restoring: true, busy: true, depth: 0 });
+  finish(next); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(board.snapshot()).toMatchObject({ restoring: false, busy: false, depth: 1 });
+  expect(board.snapshot().value?.jobs.items.map(item => item.id)).toEqual(['job_one', 'job_two']);
+  board.reset(first); expect(read).toHaveBeenCalledTimes(1); expect(board.snapshot().depth).toBe(0);
+});
+it('stops replay on rejected continuations and bounds invalid saved expansion depths', async () => {
+  const read = vi.fn().mockRejectedValue(new Error('expired cursor'));
+  const board = new DeliveryBoardArchive(read, 3); board.reset(first);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(read).toHaveBeenCalledOnce(); expect(board.snapshot()).toMatchObject({ restoring: false, depth: 0, value: first });
+  const excessive = new DeliveryBoardArchive(read, 21); excessive.reset(first); expect(read).toHaveBeenCalledOnce();
+});
+it('cancels a delayed reconstruction when fresh first-page data replaces its source', async () => {
+  let finish!: (value: DeliverySnapshot) => void;
+  const board = new DeliveryBoardArchive(() => new Promise(resolve => { finish = resolve; }), 1);
+  board.reset(first); board.reset(next); finish(first); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(board.snapshot()).toMatchObject({ value: next, restoring: false, depth: 0 });
+});

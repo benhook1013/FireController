@@ -46,6 +46,10 @@ func handlerFS(files fs.FS) http.Handler {
 			return
 		}
 		name, contentType, cache := "", "", "no-store"
+		if path == "/browser-build.json" {
+			serveBrowserBuild(w, r, files)
+			return
+		}
 		if uiRoute(path) {
 			name, contentType = "index.html", "text/html; charset=utf-8"
 		} else if path == "/third-party-licenses.txt" {

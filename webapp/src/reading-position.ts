@@ -3,6 +3,8 @@ import { createContext, useLayoutEffect, useMemo, type RefObject } from 'react';
 export type ReadingLandmark = { id: string; top: number; bottom: number };
 export type ReadingPoint = { anchor: string; offset: number; y: number; after: string[]; before: string[] };
 const storageKey = 'firecontroller.reading-position.v1';
+const saveEvent = 'firecontroller:save-reading-position';
+export function saveReadingPosition(): void { window.dispatchEvent(new Event(saveEvent)); }
 const navigationEvent = 'firecontroller:reading-navigation';
 const selector = '[data-reading-anchor]';
 
@@ -92,7 +94,13 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
         const region = point.anchor.startsWith('review-') ? 'reviews' : 'delivery';
         if (pendingRestore && element.querySelector(`[data-reading-region="${region}"]`)?.getAttribute('data-reading-ready') !== 'true') return;
         const delta = readingCorrection(point, items, edge());
-        if (delta === undefined && pendingRestore) return; // The selected data is still loading.
+        if (delta === undefined && pendingRestore) {
+          // A completed window can legitimately lose every retained landmark
+          // (expired cursor, removed jobs, changed membership). Release the
+          // restore rather than suppressing reader scroll forever.
+          pendingRestore = false;
+          point = undefined;
+        }
         if (delta !== undefined) {
           if (Math.abs(delta) > .5) {
             ownScroll = true;
@@ -144,6 +152,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     window.addEventListener('pointerdown', scrollbar, { passive: true });
     window.addEventListener('keydown', key);
     window.addEventListener('pagehide', save);
+    window.addEventListener(saveEvent, save);
     window.addEventListener(navigationEvent, navigate);
     schedule();
     return () => {
@@ -154,7 +163,7 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
       history.scrollRestoration = 'auto';
       window.removeEventListener('scroll', scroll); window.removeEventListener('wheel', reader);
       window.removeEventListener('touchmove', reader); window.removeEventListener('pointerdown', scrollbar);
-      window.removeEventListener('keydown', key); window.removeEventListener('pagehide', save);
+      window.removeEventListener('keydown', key); window.removeEventListener('pagehide', save); window.removeEventListener(saveEvent, save);
       window.removeEventListener(navigationEvent, navigate);
     };
   }, [root, scope, initial]);

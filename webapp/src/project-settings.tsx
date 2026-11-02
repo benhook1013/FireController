@@ -55,18 +55,19 @@ function PresentationEditor({ initial, reload }: { initial: Presentation; reload
   const slot = JSON.stringify([worker, 'presentation']);
   const previous = session.actions.get<PresentationAction>(slot)?.input;
   const [draft, setDraft] = useState(() => presentationDraft(previous?.config ?? initial));
+  const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(presentationDraft(previous?.config ?? initial)));
   const [revision, setRevision] = useState(previous?.revision ?? initial.revision);
   const [localError, setLocalError] = useState<unknown>();
   const [reloading, setReloading] = useState(false);
   const action = useBrowserAction<PresentationAction, BrowserPresentationReceipt>(slot,
     (input, actionKey, signal) => session.api.replacePresentation(input.worker, input.config, input.revision, actionKey, signal),
-    async receipt => { setRevision(receipt.revision); await queryClient.invalidateQueries({ queryKey: [...key, 'settings', 'presentation'] }); });
+    async receipt => { setSavedDraft(JSON.stringify(draft)); setRevision(receipt.revision); await queryClient.invalidateQueries({ queryKey: [...key, 'settings', 'presentation'] }); });
   const change = <K extends Exclude<keyof PresentationDraft, 'review_groups'>>(field: K, value: PresentationDraft[K]) => { setDraft(current => ({ ...current, [field]: value })); setLocalError(undefined); action.clearNotice(); };
   const submit = (event: FormEvent) => {
     event.preventDefault(); setLocalError(undefined);
     try { void action.run({ worker, config: decodePresentationDraft(draft), revision }); } catch (error) { setLocalError(error); }
   };
-  return <section className="panel"><form className="browser-action-form appearance-editor" onSubmit={submit}>
+  return <section className="panel"><form className="browser-action-form appearance-editor" data-browser-draft data-browser-dirty={JSON.stringify(draft) !== savedDraft} onSubmit={submit}>
     <p className="field-note">Observed revision {revision}. Saving replaces the complete appearance record.</p>
     {!worker && <p className="notice">Choose a worker before saving appearance changes.</p>}
     <label>Project name<input value={draft.name} maxLength={200} required disabled={action.locked} onChange={event => change('name', event.target.value)} /></label>

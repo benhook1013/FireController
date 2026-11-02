@@ -90,3 +90,6 @@
 .worker-order-editor{padding:14px;border:1px solid var(--fc-surface_border,#d5d0cb);margin:12px 0 18px;min-width:0}
 .worker-order-editor legend{font-weight:700}.worker-order-list{padding-left:24px;list-style:decimal;margin:12px 0}
 .worker-order-list li{padding:5px 0}.worker-order-list li>div{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.worker-order-list strong{overflow-wrap:anywhere}.worker-order-list span{display:flex;gap:5px}.worker-order-list button{padding:4px 8px;font-size:.8rem}
+
+.browser-update { position: fixed; right: 1rem; bottom: 1rem; z-index: 50; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; max-width: min(30rem, calc(100vw - 2rem)); padding: .65rem; background: var(--fc-surface_background, #fff); border: 1px solid var(--fc-surface_border, #ddd); border-radius: .6rem; box-shadow: 0 2px 12px #0002; font-size: .85rem; color: var(--fc-surface_text, #343641); }
+.browser-update button { white-space: nowrap; }

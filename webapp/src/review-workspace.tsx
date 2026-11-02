@@ -1,10 +1,11 @@
+import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
 import { ReviewSchedulingBar, ReviewPullSchedulingControl } from './review-scheduling';
 import { ReviewOperationWaitBadge } from './review-operation-wait';
 import { CompactReviewFinding } from './review-finding-display';
 import { ReviewObligations } from './review-obligations';
 import { ReviewRoutedFindings } from './review-routed-findings';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Link, useLocation, useParams, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigationType, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from './api';
 import { terminalBrowserSession } from './browser-session';
@@ -234,8 +235,14 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
   const restoringPosition = useContext(RestoringReadingPosition);
   const groups = usePresentation()?.review_groups ?? [];
   const { session, key, home } = useWorkspace();
-  const paging = usePaging();
-  const [continuationSnapshot, setContinuationSnapshot] = useState('current');
+  const scope = JSON.stringify([session.instanceId, session.project.id, session.binding?.sessionID ?? session.nonce, session.worker?.id ?? '', history ? 'merged' : 'recent']);
+  const [window, setWindow, windowSaved] = useReloadWindow<QueueWindow>(scope, { trail: [''], index: 0, snapshot: 'current' }, validQueueWindow, location.key, useNavigationType() === 'POP');
+  const paging = { cursor: window.trail[window.index], number: window.index + 1,
+    previous: () => setWindow(value => ({ ...value, index: Math.max(0, value.index - 1) })),
+    next: (cursor: string) => setWindow(value => ({ trail: [...value.trail.slice(0, value.index + 1), cursor], index: value.index + 1, snapshot: page?.snapshot_id ?? value.snapshot })),
+  };
+  const continuationSnapshot = window.snapshot;
+  const [windowNotice, setWindowNotice] = useState('');
   const query = useQuery(reviewQueueQuery(session, key, history ? 'merged' : 'recent', paging.cursor, paging.number === 1 ? 'current' : continuationSnapshot));
   const fronts = useReviewFronts(!history && !!query.data?.configured);
   const frame = useReviewQueueFrame(JSON.stringify([...key, 'review-queue', paging.cursor]), query, fronts, !history);
@@ -256,8 +263,14 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
     });
     return () => cancelAnimationFrame(frame);
   }, [page, location.hash, location.key, restoringPosition]);
-  const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
-  return <section id="review-queue" data-reading-region="reviews" data-reading-ready={!query.isPending} className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading tab-heading"><h2 id="review-queue-title">{history ? 'Queue history' : label}</h2><div className="review-queue-tools">{!history && <ReviewSchedulingBar />}{history ? <Link className="review-details-link review-queue-history-link" to={`${home}/reviews`}>Back to review queue ↗</Link> : <Link className="review-details-link review-queue-history-link" to={`${home}/reviews/history`}>Queue history ↗</Link>}{page?.configured && <ReviewQueueTechnicalDetails value={page} />}</div></div><div className={embedded ? undefined : 'panel review-page-body'}><ReadState error={query.error} loading={query.isPending} empty={false} retained={!!page}>{page && (page.configured ? <>{!history && <ReviewRoutedFindings />}<ReviewNotice history={history} />{!history && fronts.error && <p className="notice">Review position could not be loaded.</p>}{!history && progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className={embedded ? 'panel review-queue-panel' : 'review-queue-panel'}>{sections.map((section, sectionIndex) => <section key={section.key} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} order={{distance: distances[index], index}} progress={history ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} channels={channels} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">{history ? 'No merged pull requests in queue history.' : 'No pull requests in the review queue.'}</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label={history ? 'queue history' : 'review queue'} busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></div></section>;
+  useEffect(() => {
+    if (paging.number > 1 && query.error instanceof ApiError && (query.error.code === 'invalid_cursor' || query.error.status === 404)) {
+      setWindow({ trail: [''], index: 0, snapshot: 'current' });
+      setWindowNotice('The saved queue page is unavailable. Showing the first page.');
+    }
+  }, [query.error, paging.number]);
+  const navigation = { ...paging, reloadRetained: windowSaved && validQueueWindow(window) };
+  return <section id="review-queue" data-reading-region="reviews" data-reading-ready={!query.isPending} className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading tab-heading"><h2 id="review-queue-title">{history ? 'Queue history' : label}</h2><div className="review-queue-tools">{!history && <ReviewSchedulingBar />}{history ? <Link className="review-details-link review-queue-history-link" to={`${home}/reviews`}>Back to review queue ↗</Link> : <Link className="review-details-link review-queue-history-link" to={`${home}/reviews/history`}>Queue history ↗</Link>}{page?.configured && <ReviewQueueTechnicalDetails value={page} />}</div></div><div className={embedded ? undefined : 'panel review-page-body'}><>{windowNotice && <p className="notice" role="status">{windowNotice}</p>}<ReadState error={query.error} loading={query.isPending} empty={false} retained={!!page}>{page && (page.configured ? <>{!history && <ReviewRoutedFindings />}<ReviewNotice history={history} />{!history && fronts.error && <p className="notice">Review position could not be loaded.</p>}{!history && progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className={embedded ? 'panel review-queue-panel' : 'review-queue-panel'}>{sections.map((section, sectionIndex) => <section key={section.key} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} order={{distance: distances[index], index}} progress={history ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} channels={channels} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">{history ? 'No merged pull requests in queue history.' : 'No pull requests in the review queue.'}</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label={history ? 'queue history' : 'review queue'} busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></></div></section>;
 }
 // A normal round preview reads at most eighteen retained summaries. Failed
 // starts remain in the archive, but cannot consume the six completed slots.
