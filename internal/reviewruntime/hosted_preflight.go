@@ -38,7 +38,26 @@ func retainHostedAllowance(ctx context.Context, captures *HostedCaptureStore, en
 		!sameHostedQueryTarget(anchor, query.Anchor) || record.PostingActor.ID != query.PostingActor.ID || record.PostingActor.Kind != query.PostingActor.Kind || record.ProviderActor.ID != query.ProviderActor.ID || record.ProviderActor.Kind != query.ProviderActor.Kind || !record.EarliestPosting.Equal(earliest.Truncate(time.Second)) {
 		return core.Fail("review_held", "The query capture does not match its original hosted source and actors.", 409)
 	}
-	observation, err := resolveRetainedHostedAllowance(ctx, captures, engine, attempt, query, reference, record)
+	// Retention must bind these exact raw bytes to their current indexed query
+	// observation. No older source body or Bot-report baseline is required.
+	observations, err := engine.ReadHostedObservations(ctx, attempt.ProjectID, attempt.ID)
+	if err != nil {
+		return err
+	}
+	matched := false
+	for _, observed := range observations {
+		in := observed.Input
+		if in.CaptureID != reference.ID || in.CaptureSHA256 != reference.SHA256 || in.CaptureBytes != reference.Bytes {
+			continue
+		}
+		matched = in.Kind == "allowance_query" && in.ExpectedAnchor == query.Anchor && in.Intent == query.Intent &&
+			in.StartedAt == record.StartedAt.Format(time.RFC3339Nano) && in.FinishedAt == record.FinishedAt.Format(time.RFC3339Nano) && in.ObservedAt == record.Snapshot.ObservedAt.Format(time.RFC3339Nano)
+		break
+	}
+	if !matched {
+		return core.Fail("review_held", "The query capture does not match its retained source observation.", 409)
+	}
+	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
 	if err != nil {
 		return err
 	}

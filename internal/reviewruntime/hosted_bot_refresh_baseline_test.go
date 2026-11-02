@@ -11,7 +11,7 @@ import (
 )
 
 func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
-	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "grouped_six", "new_bot_report", "new_bot_positive", "missing_baseline"} {
+	for _, mode := range []string{"identifiers", "unchanged", "prose", "command", "removed_command", "human", "identity", "after_ack", "positive_five", "grouped_six", "new_bot_report", "new_bot_positive", "new_bot_human", "new_bot_posting", "new_bot_unknown", "new_bot_mention", "missing_baseline"} {
 		t.Run(mode, func(t *testing.T) {
 			var old reviewprovider.IssueComment
 			f, record := runtimeStandingFixture(t, func(b *HostedCaptureRecord) {
@@ -22,7 +22,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				if mode == "human" {
 					old.Author.Kind = "User"
 				}
-				if mode != "missing_baseline" && mode != "new_bot_report" && mode != "new_bot_positive" {
+				if mode != "missing_baseline" && !strings.HasPrefix(mode, "new_bot_") {
 					b.Snapshot.IssueComments = append(b.Snapshot.IssueComments, old)
 				}
 			}, nil)
@@ -51,9 +51,19 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				current.Body = "An unrelated current report."
 			case "identity":
 				current.Author.ID++
-			case "new_bot_report", "new_bot_positive":
+			case "new_bot_report", "new_bot_positive", "new_bot_human", "new_bot_posting", "new_bot_unknown", "new_bot_mention":
 				current.CreatedAt = record.Snapshot.IssueComments[0].CreatedAt.Add(time.Millisecond)
 				current.UpdatedAt = record.Snapshot.ObservedAt
+				switch mode {
+				case "new_bot_human":
+					current.Author.Kind = "User"
+				case "new_bot_posting":
+					current.Author = record.PostingActor
+				case "new_bot_unknown":
+					current.Author.Kind = "Other"
+				case "new_bot_mention":
+					current.Body += "\n<!-- CoDeRaBbIt -->"
+				}
 			case "after_ack":
 				current.UpdatedAt = record.Snapshot.ObservedAt
 			}
@@ -77,7 +87,7 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six"
+			want := mode == "identifiers" || mode == "unchanged" || mode == "prose" || mode == "after_ack" || mode == "positive_five" || mode == "grouped_six" || mode == "removed_command" || mode == "identity" || mode == "new_bot_report" || mode == "new_bot_positive" || mode == "missing_baseline"
 			if result.Complete != want {
 				t.Fatalf("complete=%v reason=%s want=%v", result.Complete, result.Reason, want)
 			}
@@ -86,9 +96,6 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				t.Fatal("source or attempt changed", err)
 			}
 			if !want {
-				if (mode == "new_bot_report" || mode == "new_bot_positive") && result.Reason != "attribution_window_closed" {
-					t.Fatal("unobserved original Bot body lost its attribution guard", result.Reason)
-				}
 				if cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 0 {
 					t.Fatal("held source credited")
 				}

@@ -62,7 +62,7 @@ func TestHostedRateLimitedReplyIsTerminalWithoutReviewCredit(t *testing.T) {
 			}
 			before := append([]IssueComment(nil), s.IssueComments...)
 			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
-			wantLimited := mode == "current" || mode == "crlf"
+			wantLimited := mode == "current" || mode == "crlf" || mode == "ci_bot_edit"
 			if err != nil || (got.Publication.State == "rate_limited") != wantLimited || got.Complete || len(got.Findings) != 0 || !got.Publication.FinishedAt.IsZero() || !reflect.DeepEqual(before, s.IssueComments) {
 				t.Fatalf("rejection attribution or no-credit boundary: %+v %v", got, err)
 			}
@@ -73,7 +73,7 @@ func TestHostedRateLimitedReplyIsTerminalWithoutReviewCredit(t *testing.T) {
 	}
 }
 
-func TestHostedRateLimitedReplyUsesQualifiedBotRefreshBaseline(t *testing.T) {
+func TestHostedRateLimitedReplyDoesNotRequireBotReportBaseline(t *testing.T) {
 	s, intent, poster, bot, earliest := standingTestFixture(t)
 	s.Reviews, s.ReviewComments = []HostedReview{}, []ReviewComment{}
 	s.IssueComments = []IssueComment{s.IssueComments[0], s.IssueComments[2]}
@@ -84,7 +84,7 @@ func TestHostedRateLimitedReplyUsesQualifiedBotRefreshBaseline(t *testing.T) {
 			baseline.IssueComments[0].Author.Kind = "User"
 		}
 		got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
-		if err != nil || (got.Publication.State == "rate_limited") != qualified || got.Complete || len(got.Findings) != 0 || !got.Publication.FinishedAt.IsZero() {
+		if err != nil || got.Publication.State != "rate_limited" || got.Complete || len(got.Findings) != 0 || !got.Publication.FinishedAt.IsZero() {
 			t.Fatal("baseline rejection attribution or no-credit boundary", got, err)
 		}
 	}

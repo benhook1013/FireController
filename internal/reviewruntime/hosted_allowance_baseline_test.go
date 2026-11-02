@@ -53,7 +53,7 @@ func observeBotRefresh(t *testing.T, f *runtimeAllowanceFixture, p *allowanceBot
 	return got
 }
 
-func TestHostedAllowanceIndexedBotBaselineContinuesPendingThenRetainsReply(t *testing.T) {
+func TestHostedAllowanceBotReportContinuesPendingThenRetainsReply(t *testing.T) {
 	for _, cooldown := range []bool{false, true} {
 		t.Run(map[bool]string{false: "available", true: "cooldown"}[cooldown], func(t *testing.T) {
 			f := newRuntimeAllowanceFixture(t)
@@ -88,7 +88,7 @@ func TestHostedAllowanceIndexedBotBaselineContinuesPendingThenRetainsReply(t *te
 				err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
 			}
 			if err != nil {
-				t.Fatal("bridge did not derive same baseline observation", err)
+				t.Fatal("bridge did not derive same current observation", err)
 			}
 			after := hostedBridgeState(t, f)
 			if before == after {
@@ -119,7 +119,7 @@ func TestHostedAllowanceIndexedBotBaselineContinuesPendingThenRetainsReply(t *te
 			}
 			query, err := f.f.engine.ReadHostedAllowanceQuery(t.Context(), f.f.project, f.a.ID)
 			if err != nil || !reflect.DeepEqual(query, original) || !bytes.Equal(originalBytes, hostedBridgeBytes(t, f, first.Capture)) || p.posts != 1 || p.reads != 3 {
-				t.Fatal("baseline changed original query/capture or performed extra provider work", err, p.posts, p.reads)
+				t.Fatal("Bot report handling changed original query/capture or performed extra provider work", err, p.posts, p.reads)
 			}
 			observations, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
 			if err != nil || len(observations) != 3 {
@@ -130,7 +130,7 @@ func TestHostedAllowanceIndexedBotBaselineContinuesPendingThenRetainsReply(t *te
 	}
 }
 
-func TestHostedAllowanceUnindexedBaselineCannotProveReply(t *testing.T) {
+func TestHostedAllowanceCurrentReplyDoesNotRequireOldBotReportIndex(t *testing.T) {
 	f := newRuntimeAllowanceFixture(t)
 	p := &allowanceBotRefreshProvider{runtimeAllowanceProvider: f.provider, phase: 1}
 	first := observeBotRefresh(t, f, p)
@@ -143,12 +143,12 @@ func TestHostedAllowanceUnindexedBaselineCannotProveReply(t *testing.T) {
 	_ = observeBotRefresh(t, f, p)
 	p.phase = 3
 	third := observeBotRefresh(t, f, p)
-	if third.Reason != "query_window_closed" || third.Observation.ResponseCommentID != 0 {
-		t.Fatal("unindexed bytes supplied a baseline", third)
+	if third.Observation.State != "available_observed" || third.Observation.ResponseCommentID != 101 {
+		t.Fatal("current reply unexpectedly required old Bot report bytes", third)
 	}
 	before := hostedBridgeState(t, f)
-	if err := RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture); err == nil || hostedBridgeState(t, f) != before {
-		t.Fatal("unindexed baseline granted retention", err)
+	if err := RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture); err != nil || hostedBridgeState(t, f) == before {
+		t.Fatal("current indexed reply was not retained", err)
 	}
 	if _, err := f.captures.Read(t.Context(), f.a.ID, first.Capture); err != nil {
 		t.Fatal("fixture lost original unindexed bytes", err)
@@ -156,58 +156,58 @@ func TestHostedAllowanceUnindexedBaselineCannotProveReply(t *testing.T) {
 	f.assertNotAdmitted(t)
 }
 
-func TestHostedAllowanceBaselineRejectsCorruptAndForeignIndexedSources(t *testing.T) {
+func TestHostedAllowanceBotReportStillRejectsCorruptAndForeignCurrentSources(t *testing.T) {
 	for _, mode := range []string{"repository id", "repository name", "pull", "operation", "head", "poster", "provider", "posting window", "query id", "hidden command", "input start", "input finish", "input observed", "input anchor", "input intent", "byte count", "capture checksum"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newRuntimeAllowanceFixture(t)
 			p := &allowanceBotRefreshProvider{runtimeAllowanceProvider: f.provider, phase: 1}
-			first := observeBotRefresh(t, f, p)
-			// Retain a second genuine pre-edit capture. An unusable earliest source
-			// must fail closed rather than search later captures for permissive proof.
+			_ = observeBotRefresh(t, f, p)
+			// Retain another source capture; current source must still satisfy its
+			// exact anchor, actor, query and indexed-reference checks.
 			_ = observeBotRefresh(t, f, p)
 			p.phase = 2
 			_ = observeBotRefresh(t, f, p)
 			p.phase = 3
 			current := observeBotRefresh(t, f, p)
 			if current.Observation.State != "available_observed" {
-				t.Fatal("fixture lacks baseline proof", current)
+				t.Fatal("fixture lacks current reply", current)
 			}
 			observations, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			indexed := observations[0]
-			baseline, err := f.captures.Read(t.Context(), f.a.ID, first.Capture)
+			indexed := observations[len(observations)-1]
+			source, err := f.captures.Read(t.Context(), f.a.ID, current.Capture)
 			if err != nil {
 				t.Fatal(err)
 			}
 			changedRecord := true
 			switch mode {
 			case "repository id":
-				baseline.RepositoryID++
+				source.RepositoryID++
 			case "repository name":
-				baseline.Repository = "foreign/project"
+				source.Repository = "foreign/project"
 			case "pull":
-				baseline.PullNumber++
+				source.PullNumber++
 			case "operation":
-				baseline.Intent.OperationID = "review_operation_" + strings.Repeat("f", 32)
+				source.Intent.OperationID = "review_operation_" + strings.Repeat("f", 32)
 			case "head":
-				baseline.Intent.HeadSHA = strings.Repeat("f", 40)
+				source.Intent.HeadSHA = strings.Repeat("f", 40)
 			case "poster":
-				baseline.PostingActor.ID++
+				source.PostingActor.ID++
 			case "provider":
-				baseline.ProviderActor.ID++
+				source.ProviderActor.ID++
 			case "posting window":
-				baseline.EarliestPosting = baseline.EarliestPosting.Add(-time.Second)
+				source.EarliestPosting = source.EarliestPosting.Add(-time.Second)
 			case "query id":
-				baseline.Snapshot.IssueComments[0].ID++
+				source.Snapshot.IssueComments[0].ID = 200
 			case "hidden command":
-				baseline.Snapshot.IssueComments[1].Body += "<!-- @coderabbitai review -->"
+				source.Snapshot.IssueComments[1].Body += "<!-- @coderabbitai review -->"
 			default:
 				changedRecord = false
 			}
 			if changedRecord {
-				ref, err := f.captures.Save(t.Context(), f.a.ID, baseline)
+				ref, err := f.captures.Save(t.Context(), f.a.ID, source)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -215,11 +215,11 @@ func TestHostedAllowanceBaselineRejectsCorruptAndForeignIndexedSources(t *testin
 			} else {
 				switch mode {
 				case "input start":
-					indexed.Input.StartedAt = baseline.StartedAt.Add(-time.Nanosecond).Format(time.RFC3339Nano)
+					indexed.Input.StartedAt = source.StartedAt.Add(-time.Nanosecond).Format(time.RFC3339Nano)
 				case "input finish":
-					indexed.Input.FinishedAt = baseline.FinishedAt.Add(time.Nanosecond).Format(time.RFC3339Nano)
+					indexed.Input.FinishedAt = source.FinishedAt.Add(time.Nanosecond).Format(time.RFC3339Nano)
 				case "input observed":
-					indexed.Input.ObservedAt = baseline.FinishedAt.Format(time.RFC3339Nano)
+					indexed.Input.ObservedAt = source.FinishedAt.Format(time.RFC3339Nano)
 				case "input anchor":
 					indexed.Input.ExpectedAnchor.PatchSHA256 = strings.Repeat("f", 64)
 				case "input intent":
@@ -227,8 +227,8 @@ func TestHostedAllowanceBaselineRejectsCorruptAndForeignIndexedSources(t *testin
 				case "byte count":
 					indexed.Input.CaptureBytes++
 				case "capture checksum":
-					path := filepath.Join(f.captures.root, hostedCaptureFilename(f.a.ID, first.Capture))
-					data := append(hostedBridgeBytes(t, f, first.Capture), '\n')
+					path := filepath.Join(f.captures.root, hostedCaptureFilename(f.a.ID, current.Capture))
+					data := append(hostedBridgeBytes(t, f, current.Capture), '\n')
 					if err := os.WriteFile(path, data, 0600); err != nil {
 						t.Fatal(err)
 					}
@@ -242,22 +242,18 @@ func TestHostedAllowanceBaselineRejectsCorruptAndForeignIndexedSources(t *testin
 				t.Fatal(err)
 			}
 			before := hostedBridgeState(t, f)
-			if err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, current.Capture); err == nil || hostedBridgeState(t, f) != before {
-				t.Fatal("invalid baseline permitted retention or mutated state", err)
+			if err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, CaptureReference{ID: indexed.Input.CaptureID, SHA256: indexed.Input.CaptureSHA256, Bytes: indexed.Input.CaptureBytes}); err == nil || hostedBridgeState(t, f) != before {
+				t.Fatal("invalid current source permitted retention or mutated state", err)
 			}
-			got, observeErr := ObserveHostedAllowance(t.Context(), p, f.captures, f.f.engine, f.a, f.anchor, f.repo, p.poster, p.bot)
-			if got.Observation.State == "available_observed" || got.Observation.State == "cooldown_observed" || got.Observation.ResponseCommentID != 0 {
-				t.Fatal("invalid baseline granted provider observation", got, observeErr)
-			}
-			if p.posts != 1 || p.reads != 5 {
-				t.Fatal("baseline recovery added provider calls", p.posts, p.reads)
+			if p.posts != 1 || p.reads != 4 {
+				t.Fatal("source validation added provider calls", p.posts, p.reads)
 			}
 			f.assertNotAdmitted(t)
 		})
 	}
 }
 
-func TestHostedAllowanceBaselineReadsOnlyEarliestCandidate(t *testing.T) {
+func TestHostedAllowanceBotReportDoesNotReadSupersededCaptureBodies(t *testing.T) {
 	f := newRuntimeAllowanceFixture(t)
 	p := &allowanceBotRefreshProvider{runtimeAllowanceProvider: f.provider, phase: 1}
 	first := observeBotRefresh(t, f, p)
@@ -270,12 +266,12 @@ func TestHostedAllowanceBaselineReadsOnlyEarliestCandidate(t *testing.T) {
 	}
 	p.phase = 2
 	if got := observeBotRefresh(t, f, p); got.Reason != "allowance_not_proven" {
-		t.Fatal("fallback did not use earliest baseline", got)
+		t.Fatal("current observation depended on obsolete raw capture", got)
 	}
 	p.phase = 3
 	got := observeBotRefresh(t, f, p)
 	if got.Observation.State != "available_observed" || got.QueryID != first.QueryID || p.posts != 1 || p.reads != 4 {
-		t.Fatal("bounded baseline read changed observation/provider work", got, p.posts, p.reads)
+		t.Fatal("current observation changed query identity/provider work", got, p.posts, p.reads)
 	}
 	if err := RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, got.Capture); err != nil {
 		t.Fatal(err)

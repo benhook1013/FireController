@@ -55,7 +55,12 @@ func TestHostedBaselineBotRefreshPreservesFinishedDiagnostic(t *testing.T) {
 	}
 	baseline.IssueComments[0].Author.Kind = "User"
 	again, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
-	if err != nil || again.Complete || again.Reason != "attribution_window_closed" {
-		t.Fatal("unproven bot baseline relaxed attribution", again.Reason, err)
+	if err != nil || again.Complete || again.Reason != got.Reason {
+		t.Fatal("unrelated Bot report unexpectedly required old body proof", again.Reason, err)
+	}
+	s.IssueComments[len(s.IssueComments)-1].Author.Kind = "User"
+	human, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
+	if err != nil || human.Complete || human.Reason != "attribution_window_closed" {
+		t.Fatal("current human edit lost its attribution barrier", human.Reason, err)
 	}
 }

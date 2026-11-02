@@ -111,7 +111,7 @@ func ObserveHostedAllowance(ctx context.Context, provider HostedAllowanceProvide
 		result.Reason = "query_capture_recording_pending"
 		return result, err
 	}
-	result.Observation, err = resolveRetainedHostedAllowance(ctx, captures, engine, attempt, query, result.Capture, retained)
+	result.Observation, err = reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: retained.Snapshot.IssueComments, Complete: retained.Snapshot.Complete, ObservedAt: retained.Snapshot.ObservedAt}, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
 	if err != nil {
 		return result, err
 	}
