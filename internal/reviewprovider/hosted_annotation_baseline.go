@@ -94,7 +94,11 @@ func sameAnnotatedRoot(current, baseline ReviewComment, head string) bool {
 		// first endpoint makes no ancestry, fix, or completion claim here.
 		footer = hostedAddressedRangeFooter.FindStringSubmatch(suffix)
 	}
-	if !ok || footer == nil || !strings.HasPrefix(head, footer[1]) {
+	// This exact provider status is presentation only, not a claim about a fix
+	// commit. The caller still proves the original comparison and independently
+	// complete inventory before it may omit this unchanged historical body.
+	latestUpdate := suffix == "\n\n✅ Addressed in the latest update" || suffix == "\n\n✅ Addressed in the latest update\n"
+	if !ok || !latestUpdate && (footer == nil || !strings.HasPrefix(head, footer[1])) {
 		return false
 	}
 	// GitHub may remap commit_id when later fixes move a historical comment.
