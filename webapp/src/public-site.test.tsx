@@ -31,8 +31,8 @@ describe('public project browser', () => {
 it.each([
   { count: 0, hasMore: true, message: 'Finalized rounds are retained privately, but none fit this public window.' },
   { count: 0, hasMore: false, message: 'No finalized rounds published.' },
-  { count: 1, hasMore: true, message: 'Showing the latest 1 published round; earlier rounds are retained privately.' },
-  { count: 2, hasMore: true, message: 'Showing the latest 2 published rounds; earlier rounds are retained privately.' },
+  { count: 1, hasMore: true, message: 'Showing 1 published round; other finalized rounds are outside this public window.' },
+  { count: 2, hasMore: true, message: 'Showing 2 published rounds; other finalized rounds are outside this public window.' },
 ])('describes $count public CLI rounds with retained history $hasMore honestly', ({count, hasMore, message}) => {
   const snapshot=fixture();
   snapshot.content.reviews[0].cli=Array.from({length:count},(_,index)=>({...snapshot.content.reviews[0].cli[0],key:`public_round_${index.toString(16).padStart(32,'0')}`}));
@@ -44,7 +44,7 @@ it.each([
   expect(lane).toContain(`${count} published ${count === 1 ? 'round' : 'rounds'}`);
   if(hasMore) expect(lane).not.toContain('No finalized rounds published.');
   else expect(lane).not.toContain('retained privately');
-  if(!count) expect(lane).not.toContain('Showing the latest 0');
-  else { expect(lane).toContain('1 / 1 / 0'); expect(lane).not.toContain('latest 1 published rounds'); }
+  if(!count) expect(lane).not.toContain('Showing 0');
+  else { expect(lane).toContain('1 / 1 / 0'); expect(lane).not.toContain('Showing 1 published rounds'); }
   expect(html).not.toContain('/attempts');
 });
