@@ -16,6 +16,9 @@ func TestJobProgressBackupRejectsNoncanonicalSchema(t *testing.T) {
 	base := "/api/v1/projects/" + f.project + "/jobs/" + job
 	f.request(t, "POST", base+"/updates", map[string]any{"expected_job_revision": 1, "body": "Retained update"})
 	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 0, "items": []map[string]any{{"id": "retained", "text": "Retained item", "done": false}}})
+	// Each corruption gets an independent copy of the same validated source.
+	bundle := restoreBundle(t, f)
+	canonical := restoreTree(t, bundle.Path)
 	for _, table := range []string{"job_updates", "job_checklists", "job_checklist_history"} {
 		defects := []string{"missing-primary-key", "wrong-revision-type", "nullable-actor", "unexpected-default"}
 		if table == "job_updates" {
@@ -25,10 +28,6 @@ func TestJobProgressBackupRejectsNoncanonicalSchema(t *testing.T) {
 		}
 		for _, defect := range defects {
 			t.Run(table+"/"+defect, func(t *testing.T) {
-				bundle, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
-				if err != nil {
-					t.Fatal(err)
-				}
 				db, err := sql.Open("sqlite", filepath.Join(bundle.Path, "firecontroller.sqlite"))
 				if err != nil {
 					t.Fatal(err)
@@ -79,20 +78,23 @@ func TestJobProgressBackupRejectsNoncanonicalSchema(t *testing.T) {
 					t.Fatal("fixture did not change schema")
 				}
 				columns := strings.Join(strings.Fields(tables[table].columns), ",")
-				mutateBundleSQL(t, bundle.Path, changed+`;INSERT INTO altered_progress SELECT `+columns+` FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_progress RENAME TO `+table+extra)
-				before := restoreTree(t, bundle.Path)
-				_, err = Inspect(t.Context(), bundle.Path)
+				path := restoreModifiedBundle(t, bundle, changed+`;INSERT INTO altered_progress SELECT `+columns+` FROM `+table+`;DROP TABLE `+table+`;ALTER TABLE altered_progress RENAME TO `+table+extra)
+				before := restoreTree(t, path)
+				_, err = Inspect(t.Context(), path)
 				backupCode(t, err, "backup_invalid")
 				destination := filepath.Join(t.TempDir(), "must-not-exist")
-				_, err = Restore(t.Context(), bundle.Path, destination)
+				_, err = Restore(t.Context(), path, destination)
 				backupCode(t, err, "backup_invalid")
 				if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("invalid schema created restore destination", err)
 				}
-				if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
+				if !reflect.DeepEqual(before, restoreTree(t, path)) {
 					t.Fatal("inspection or restore modified malformed bundle")
 				}
 			})
 		}
+	}
+	if !reflect.DeepEqual(canonical, restoreTree(t, bundle.Path)) {
+		t.Fatal("corruption cases modified canonical bundle")
 	}
 }
