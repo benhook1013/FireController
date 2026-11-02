@@ -93,7 +93,6 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
 | `fc reviews operation ID` | Explicit retained native operation state and reason. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
-| `fc reviews queue-edit --file ABSOLUTE_PATH --key KEY` | Administrator-only [bounded queue edits](review-workspace.md#bounded-queue-edits), including explicit retirement and relative ordering, without a full export or provider work. |
 | `fc reviews pull NUMBER` | Explicit PR summary and attempt history; optional `--snapshot`. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
 | `fc reviews run ID` | Explicit full findings, decisions and fix evidence; optional `--snapshot`. |
