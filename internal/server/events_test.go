@@ -431,15 +431,41 @@ func TestMessageEventWaitCapacityReleasesCanceledPrincipalSlot(t *testing.T) {
 	if rejected.index == 0 {
 		canceledIndex = 1
 	}
+	// Capacity proves all sixteen subscriptions exist, but their initial SQL
+	// reads may still be running. Drain and hold the reader pool so cancellation
+	// tests slot release while idle or waiting for a connection, independently
+	// of driver-specific interruption of an in-flight SQLite statement.
+	gateCtx, gateCancel := context.WithTimeout(context.Background(), time.Second)
+	defer gateCancel()
+	var readers []*sql.Conn
+	releaseReaders := func() {
+		for _, conn := range readers {
+			_ = conn.Close()
+		}
+		readers = nil
+	}
+	defer releaseReaders()
+	slots := f.store.DB().Stats().MaxOpenConnections
+	if slots < 1 {
+		t.Fatal("fixture reader pool must be bounded")
+	}
+	for i := 0; i < slots; i++ {
+		conn, err := f.store.DB().Conn(gateCtx)
+		if err != nil {
+			t.Fatal("reader cancellation gate", err)
+		}
+		readers = append(readers, conn)
+	}
 	cancels[canceledIndex]()
 	select {
 	case released := <-done:
 		if released.index != canceledIndex || released.response.Code != http.StatusServiceUnavailable {
-			t.Fatalf("unexpected canceled wait: %+v", released)
+			t.Fatalf("unexpected canceled wait: index=%d want=%d status=%d body=%s", released.index, canceledIndex, released.response.Code, released.response.Body.String())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancellation did not release the request")
 	}
+	releaseReaders()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	w := httptest.NewRecorder()
