@@ -77,6 +77,35 @@ describe('explicit coordination API reads', () => {
     f.api.close();
   });
 
+  it('continues exact-job notes across worker targets while retaining other scope and page checks', async () => {
+    const f = fixture(); await f.api.connect();
+    const attached = { ...summary, worker_id: 'another_worker', job_id: 'job_one' };
+    for (const include_assigned_jobs of [undefined, false, true]) {
+      f.set(page([attached]));
+      await expect(f.api.notes({ job_id: attached.job_id, worker_id: worker, include_assigned_jobs })).resolves.toMatchObject({ items: [attached] });
+    }
+    const filters = { job_id: attached.job_id, worker_id: worker, include_assigned_jobs: false, phase: summary.phase, kind: summary.kind, status: summary.status, limit: 1 };
+    const before = f.calls.length;
+    f.set(page([attached], { has_more: true, cursor: 'exact_job_next' }));
+    const first = await f.api.notes(filters);
+    const last = { ...attached, id: 'note_older', worker_id: '', created_at: '2098-01-01T00:00:00.000000000Z' };
+    f.set(page([last]));
+    await expect(f.api.notes({ ...filters, cursor: first.cursor })).resolves.toMatchObject({ items: [last], has_more: false });
+    expect(f.calls.length - before).toBe(2);
+    const query = f.calls.at(-1)!.url.searchParams;
+    expect(query.get('cursor')).toBe('exact_job_next'); expect(query.get('job_id')).toBe(attached.job_id);
+    for (const value of [
+      page([{ ...attached, project_id: 'foreign' }]), page([{ ...attached, job_id: 'job_other' }]),
+      page([{ ...attached, status: 'consumed' }]), page([{ ...attached, phase: 'different phase' }]),
+      page([{ ...attached, kind: 'reminder' }]), page([attached], { has_more: true }),
+    ]) {
+      f.set(value); await expect(f.api.notes(filters)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    f.set(page([attached]));
+    await expect(f.api.notes({ worker_id: worker, include_assigned_jobs: false })).rejects.toMatchObject({ code: 'invalid_response' });
+    f.api.close();
+  });
+
   it('preserves exact full note text and immutable revision attribution despite backwards wall timestamps', async () => {
     const f = fixture(); await f.api.connect(); const before = f.calls.length;
     f.set(note); expect(await f.api.note(note.id)).toEqual(note);

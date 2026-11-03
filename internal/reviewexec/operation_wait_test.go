@@ -109,6 +109,24 @@ func TestOperationWaitPreAttemptHoldAndRecovery(t *testing.T) {
 			if recovery {
 				err = f.e.RecoverInterrupted(t.Context())
 			} else {
+				var attempt Attempt
+				attempt, err = f.e.StartAttempt(t.Context(), attemptProject, r.ID)
+				if err != nil || attempt.ID != "" {
+					t.Fatal("paused queue created an attempt", attempt, err)
+				}
+				current, readErr := f.e.ReadOperation(t.Context(), operationReadScope(t, f), r.ID)
+				if readErr != nil || current.State != "queued" || current.Revision != 1 || current.AttemptID != "" {
+					t.Fatal("pause changed retained queued intent", current, readErr)
+				}
+				select {
+				case result := <-done:
+					t.Fatal("pause completed result collection", result)
+				default:
+				}
+				// Resumption preserves this request; a later policy change is a real
+				// pre-attempt hold that must wake its existing result collector.
+				f.configure(t, attemptProject, "test-capability", 2, false)
+				admissionPolicy(t, f, 1)
 				_, err = f.e.StartAttempt(t.Context(), attemptProject, r.ID)
 			}
 			if err != nil {
@@ -250,8 +268,30 @@ func TestOperationHTTPWaitImmediateReplayAndHeaderAdmission(t *testing.T) {
 	if _, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Same action/key with a changed collection preference reads its final result.
-	w = sourceHTTPRequest(f, "POST", path, f.writer, "same-action", body, nil)
+	current, err := f.e.ReadOperation(t.Context(), operationReadScope(t, f), receipt.ID)
+	if err != nil || current.State != "queued" || current.Revision != 1 || current.AttemptID != "" {
+		t.Fatal("pause changed queued receipt", current, err)
+	}
+	// Changing collection preference keeps the same pending action. Resume it
+	// and collect a genuine preparation hold through the existing POST wait.
+	postDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { postDone <- sourceHTTPRequest(f, "POST", path, f.writer, "same-action", body, nil) }()
+	operationWaitRegistered(t, f.e, 1)
+	select {
+	case result := <-postDone:
+		t.Fatal("paused action returned terminal result", result.Code, result.Body.String())
+	default:
+	}
+	f.configure(t, attemptProject, "test-capability", 2, false)
+	attempt := f.start(t, attemptProject, receipt)
+	if _, err := f.e.Advance(t.Context(), attemptProject, attempt.ID, attempt.Revision, "held", "controlled_preparation_hold", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w = <-postDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("committed hold did not wake replay collection")
+	}
 	var operation Operation
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &operation) != nil || operation.ID != receipt.ID || operation.State != "held" {
 		t.Fatal(w.Code, w.Body.String())
@@ -287,6 +327,20 @@ func TestOperationHTTPDefaultWaitAndRetainedGETWake(t *testing.T) {
 	if _, err := f.e.StartAttempt(t.Context(), attemptProject, id); err != nil {
 		t.Fatal(err)
 	}
+	current, err := f.e.ReadOperation(t.Context(), operationReadScope(t, f), id)
+	if err != nil || current.State != "queued" || current.Revision != 1 || current.AttemptID != "" {
+		t.Fatal("pause changed pending POST intent", current, err)
+	}
+	select {
+	case result := <-postDone:
+		t.Fatal("pause completed default POST wait", result.Code, result.Body.String())
+	default:
+	}
+	f.configure(t, attemptProject, "test-capability", 2, false)
+	admissionPolicy(t, f, 1)
+	if _, err := f.e.StartAttempt(t.Context(), attemptProject, id); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case result := <-postDone:
 		if result.Code != http.StatusOK || result.Header().Get("Preference-Applied") != "wait=2" || !strings.Contains(result.Body.String(), `"state":"held"`) {
@@ -297,7 +351,6 @@ func TestOperationHTTPDefaultWaitAndRetainedGETWake(t *testing.T) {
 	}
 	operationWaitRegistered(t, f.e, 0)
 	// A separate operation can be collected by GET without another enqueue.
-	f.configure(t, attemptProject, "test-capability", 2, false)
 	r := f.enqueue(t, attemptProject, "recover-get", "cli", 2, 3)
 	getDone := make(chan *httptest.ResponseRecorder, 1)
 	prefer := "wait=900"

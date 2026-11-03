@@ -119,7 +119,9 @@ func TestPackagedSmoke(t *testing.T) {
 		targetMu.RUnlock()
 	}
 	proxy.FlushInterval = -1
-	var requests, streams atomic.Int64
+	var requests, streams, applicationWrites atomic.Int64
+	var contactMu sync.Mutex
+	var streamClient, jobClient string
 	opened, closed := make(chan struct{}, 1), make(chan struct{}, 1)
 	proxy.ModifyResponse = func(r *http.Response) error {
 		if strings.HasSuffix(r.Request.URL.Path, "/message-events/stream") && r.StatusCode == 200 {
@@ -133,8 +135,19 @@ func TestPackagedSmoke(t *testing.T) {
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) { w.WriteHeader(http.StatusBadGateway) }
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			applicationWrites.Add(1)
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/jobs/") {
+			contactMu.Lock()
+			jobClient = r.Header.Get("X-FC-Session")
+			contactMu.Unlock()
+		}
 		if strings.HasSuffix(r.URL.Path, "/message-events/stream") {
 			streams.Add(1)
+			contactMu.Lock()
+			streamClient = r.Header.Get("X-FC-Session")
+			contactMu.Unlock()
 			defer func() {
 				select {
 				case closed <- struct{}{}:
@@ -151,6 +164,61 @@ func TestPackagedSmoke(t *testing.T) {
 		t.Fatal("private fixture credential became unavailable")
 	}
 	privateToken := bytes.TrimSpace(workerToken)
+	// Observation bypasses the gateway and carries no worker/session attribution,
+	// so it cannot manufacture the very client contact under test.
+	contactTransport := &http.Transport{Proxy: nil}
+	t.Cleanup(contactTransport.CloseIdleConnections)
+	contactHTTP := &http.Client{Transport: contactTransport, Timeout: stepTimeout}
+	contactReads := 0
+	readContact := func(readCtx context.Context) core.WorkerPresence {
+		t.Helper()
+		request, err := http.NewRequestWithContext(readCtx, http.MethodGet, "http://"+daemon.address+"/api/v1/projects/"+project+"/workers/presence?worker_ids="+worker+","+otherWorker, nil)
+		if err != nil {
+			t.Fatal("contact observation request unavailable")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(privateToken))
+		request.Header.Set("X-FC-Instance", daemon.instance)
+		response, err := contactHTTP.Do(request)
+		if err != nil {
+			t.Fatal("packaged contact read unavailable")
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+		response.Body.Close()
+		contactReads++
+		if err != nil || response.StatusCode != http.StatusOK || len(body) > 4096 || bytes.Contains(body, privateToken) || bytes.Contains(body, bytes.TrimSpace(admin)) {
+			t.Fatal("invalid or private packaged contact output")
+		}
+		var value core.WorkerPresence
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || value.ProjectID != project || value.ObservedSince.IsZero() || value.EvaluatedAt.Before(value.ObservedSince) || !value.Complete || len(value.Items) != 2 || value.Items[0].WorkerID != worker || value.Items[1].WorkerID != otherWorker || value.Items[1].Attached {
+			t.Fatal("packaged contact scope/order/coverage invalid")
+		}
+		return value
+	}
+	contactDetached := func() core.WorkerPresence {
+		t.Helper()
+		bounded, stop := context.WithTimeout(ctx, stepTimeout)
+		defer stop()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for attempts := 0; attempts < 100; attempts++ {
+			value := readContact(bounded)
+			if !value.Items[0].Attached {
+				if value.Items[0].LastSeenAt == nil {
+					t.Fatal("joined client lost last contact")
+				}
+				return value
+			}
+			select {
+			case <-bounded.Done():
+				t.Fatal("joined wait contact did not detach within original step budget")
+			case <-tick.C:
+			}
+		}
+		t.Fatal("joined wait exceeded bounded contact observations")
+		return core.WorkerPresence{}
+	}
 	var maxCommand time.Duration
 	cli := func(profilePath, name string, args ...string) json.RawMessage {
 		t.Helper()
@@ -240,40 +308,50 @@ func TestPackagedSmoke(t *testing.T) {
 	defer cancelTools()
 	needed := map[string]bool{"job_read": false, "inbox_snapshot": false, "wait_for_messages": false, "workers_list": false, "worker_pause_read": false, "worker_pause_history": false, "worker_pause_replace": false}
 	params, seen := &mcp.ListToolsParams{}, map[string]bool{}
-	for {
+	seenNames := map[string]bool{}
+	discoveryComplete := false
+	for page := 0; page < 8; page++ {
 		tools, err := session.ListTools(toolCtx, params)
 		if err != nil {
 			t.Fatal("actual fcmcp tool discovery failed")
 		}
-		if params.Cursor == "" {
-			if tools.NextCursor != "" {
-				t.Fatal("actual fcmcp current inventory must fit the first discovery page")
+		for _, tool := range tools.Tools {
+			if tool.Name == "" || seenNames[tool.Name] {
+				t.Fatal("actual fcmcp discovery returned an empty or duplicate tool name")
 			}
-			firstNames := map[string]bool{}
-			for _, tool := range tools.Tools {
-				firstNames[tool.Name] = true
+			seenNames[tool.Name] = true
+			schema, err := json.Marshal(tool.InputSchema)
+			var input struct {
+				Type       string                     `json:"type"`
+				Properties map[string]json.RawMessage `json:"properties"`
 			}
-			for name := range needed {
-				if !firstNames[name] {
-					t.Fatalf("critical packaged tool %s absent from first discovery page", name)
+			if err != nil || json.Unmarshal(schema, &input) != nil || input.Type != "object" {
+				t.Fatalf("actual fcmcp tool %s has an invalid object input schema", tool.Name)
+			}
+			for _, selector := range []string{"profile", "project_id"} {
+				if _, exists := input.Properties[selector]; exists {
+					t.Fatalf("actual fcmcp tool %s advertises a per-call binding selector", tool.Name)
 				}
 			}
-		}
-		for _, tool := range tools.Tools {
 			if _, exists := needed[tool.Name]; exists {
 				needed[tool.Name] = true
 			}
 		}
 		if tools.NextCursor == "" {
+			discoveryComplete = true
+			t.Logf("actual fcmcp discovery: %d tools across %d pages", len(seenNames), page+1)
 			break
 		}
-		if seen[tools.NextCursor] {
-			t.Fatal("actual fcmcp discovery repeated a page cursor")
+		if len(tools.Tools) == 0 || seen[tools.NextCursor] || tools.NextCursor == params.Cursor {
+			t.Fatal("actual fcmcp discovery cursor did not progress")
 		}
 		seen[tools.NextCursor] = true
 		params.Cursor = tools.NextCursor
 	}
 	cancelTools()
+	if !discoveryComplete {
+		t.Fatal("actual fcmcp discovery exceeded bounded pages")
+	}
 	for name, found := range needed {
 		if !found {
 			t.Fatalf("needed packaged tool %s is missing", name)
@@ -324,7 +402,19 @@ func TestPackagedSmoke(t *testing.T) {
 	case <-time.After(stepTimeout):
 		t.Fatal("actual MCP quiet wait did not establish its stream")
 	}
+	mcpContact := readContact(ctx)
+	if !mcpContact.Items[0].Attached || mcpContact.Items[0].LastSeenAt == nil {
+		t.Fatal("actual MCP quiet wait did not retain client contact")
+	}
+	waitWrites := applicationWrites.Load()
 	checkJob(t, callTool(ctx, "job_read", map[string]any{"job_id": created.ID}), created.ID, project, worker)
+	contactMu.Lock()
+	sameClient := streamClient != "" && streamClient == jobClient
+	sessionID := streamClient
+	contactMu.Unlock()
+	if decoded, err := hex.DecodeString(sessionID); !sameClient || err != nil || len(decoded) != 16 || strings.ToLower(sessionID) != sessionID {
+		t.Fatal("concurrent MCP tool did not retain its private client connection")
+	}
 	select {
 	case <-waitDone:
 		t.Fatal("quiet wait completed without an incoming message or cancellation")
@@ -347,7 +437,129 @@ func TestPackagedSmoke(t *testing.T) {
 	if streams.Load() != 1 {
 		t.Fatal("quiet wait silently retried or opened extra streams")
 	}
+	mcpDetached := contactDetached()
+	if mcpDetached.Items[0].LastSeenAt.Before(*mcpContact.Items[0].LastSeenAt) || applicationWrites.Load() != waitWrites {
+		t.Fatal("MCP wait/contact changed write workload or lost contact")
+	}
 	checkJob(t, callTool(ctx, "job_read", map[string]any{"job_id": created.ID}), created.ID, project, worker)
+	cliWaitCtx, stopCLIWait := context.WithCancel(ctx)
+	defer stopCLIWait()
+	cliWait := exec.CommandContext(cliWaitCtx, binaries["fc"], "--profiles-file", profileFile, "--profile", "builder", "inbox", "wait", "--cursor", snapshot.EventCursor, "--wait-seconds", "50")
+	cliWait.Env = env
+	cliWait.WaitDelay = time.Second
+	// Signal cancellation exercises fc's real cancellation path on Unix;
+	// Windows lacks Interrupt and proves abrupt client disconnect instead.
+	if runtime.GOOS != "windows" {
+		cliWait.Cancel = func() error { return cliWait.Process.Signal(os.Interrupt) }
+	}
+	cliOut, cliErr := &boundedOutput{}, &boundedOutput{}
+	cliWait.Stdout, cliWait.Stderr = cliOut, cliErr
+	if err := cliWait.Start(); err != nil {
+		t.Fatal("background packaged CLI wait could not start")
+	}
+	cliJoined := make(chan struct{})
+	var cliWaitErr error
+	go func() { cliWaitErr = cliWait.Wait(); close(cliJoined) }()
+	t.Cleanup(func() {
+		stopCLIWait()
+		select {
+		case <-cliJoined:
+		case <-time.After(stepTimeout):
+			_ = cliWait.Process.Kill()
+			select {
+			case <-cliJoined:
+			case <-time.After(time.Second):
+				t.Error("owned CLI wait failed to join")
+			}
+		}
+	})
+	select {
+	case <-opened:
+	case <-cliJoined:
+		t.Fatal("background CLI wait exited before stream readiness")
+	case <-time.After(stepTimeout):
+		t.Fatal("background CLI wait did not open within original step budget")
+	}
+	cliContact := readContact(ctx)
+	if !cliContact.Items[0].Attached || cliContact.Items[0].LastSeenAt == nil || cliOut.len() != 0 || cliErr.len() != 0 {
+		t.Fatal("actual CLI wait lacked contact or emitted heartbeat noise")
+	}
+	select {
+	case <-cliJoined:
+		t.Fatal("quiet CLI wait completed without messages or cancellation")
+	default:
+	}
+	stopCLIWait()
+	select {
+	case <-cliJoined:
+	case <-time.After(stepTimeout):
+		t.Fatal("CLI wait cancellation did not join within original step budget")
+	}
+	if cliWaitErr == nil || cliOut.len() != 0 || cliErr.len() > 64<<10 || bytes.Contains(cliErr.bytes(), privateToken) || bytes.Contains(cliErr.bytes(), bytes.TrimSpace(admin)) {
+		t.Fatal("CLI cancellation succeeded unexpectedly or exposed private output")
+	}
+	if runtime.GOOS != "windows" && (!json.Valid(cliErr.bytes()) || !bytes.Contains(cliErr.bytes(), []byte(`"code":"canceled"`))) {
+		t.Fatal("actual CLI wait did not return its bounded cancellation diagnostic")
+	}
+	select {
+	case <-closed:
+	case <-time.After(stepTimeout):
+		t.Fatal("cancelled CLI did not release its HTTP stream")
+	}
+	cliDetached := contactDetached()
+	if cliDetached.Items[0].LastSeenAt.Before(*cliContact.Items[0].LastSeenAt) || streams.Load() != 2 || applicationWrites.Load() != waitWrites {
+		t.Fatal("CLI wait/contact changed stream/write workload or lost contact")
+	}
+	// One normal update replaces the old narrative/checkpoint choice. Exercise
+	// actual CLI and MCP partial writes, then recover the original CLI key after
+	// a later MCP revision without creating another history entry.
+	progressArgs := []string{"jobs", "update", created.ID, "--expect-revision", "1", "--status", "blocked", "--progress", "Actual packaged progress", "--next", "Continue through MCP", "--blocker", "Synthetic dependency", "--key", "packaged-unified-progress"}
+	progressReceipt := cli(profileFile, "builder", progressArgs...)
+	var progressResult struct {
+		Revision int64  `json:"revision"`
+		Outcome  string `json:"outcome"`
+	}
+	decode(t, progressReceipt, &progressResult)
+	if progressResult.Revision != 2 || progressResult.Outcome != "updated" || len(progressReceipt) > 512 {
+		t.Fatal("unified CLI update did not return a compact completed result")
+	}
+	callTool(ctx, "job_update", map[string]any{"job_id": created.ID, "expected_revision": 2, "idempotency_key": "packaged-unified-mcp", "status": "active", "progress": map[string]any{"next": "Ready to resume", "blocker": "", "evidence": []string{"test:packaged"}}})
+	if !bytes.Equal(progressReceipt, cli(profileFile, "builder", progressArgs...)) {
+		t.Fatal("original update key did not replay after later progress")
+	}
+	job = cli(profileFile, "builder", "jobs", "read", created.ID)
+	var current struct {
+		Revision int64 `json:"revision"`
+		Progress struct {
+			Summary, Next, Blocker string
+			Evidence               []string
+		} `json:"progress"`
+		Checklist struct {
+			Total int `json:"total"`
+		} `json:"checklist"`
+		Notes struct {
+			Items []json.RawMessage `json:"items"`
+		} `json:"notes"`
+	}
+	decode(t, job, &current)
+	if current.Revision != 3 || current.Progress.Summary != "Actual packaged progress" || current.Progress.Next != "Ready to resume" || current.Progress.Blocker != "" || len(current.Progress.Evidence) != 1 || current.Checklist.Total != 0 || current.Notes.Items == nil {
+		t.Fatal("default job read lost current unified working state")
+	}
+	var fields map[string]json.RawMessage
+	decode(t, job, &fields)
+	for _, name := range []string{"checkpoint", "inbox", "primary", "pause", "updates"} {
+		if _, found := fields[name]; found {
+			t.Fatal("default job read expanded unrelated coordination or duplicate progress", name)
+		}
+	}
+	var archive struct {
+		Items   []json.RawMessage `json:"items"`
+		HasMore bool              `json:"has_more"`
+	}
+	decode(t, callTool(ctx, "job_progress_history", map[string]any{"job_id": created.ID}), &archive)
+	if len(archive.Items) != 2 || archive.HasMore {
+		t.Fatal("unified progress history duplicated a replay or lost a change")
+	}
 	closeMCP()
 	daemon.stop(t)
 
@@ -382,7 +594,7 @@ func TestPackagedSmoke(t *testing.T) {
 			t.Fatalf("smoke modified packaged %s", name)
 		}
 	}
-	t.Logf("packaged smoke passed: total=%s max_cli=%s application_http=%d streams=%d external_http=0 owned_processes=0", time.Since(started).Round(time.Millisecond), maxCommand.Round(time.Millisecond), requests.Load(), streams.Load())
+	t.Logf("packaged smoke passed: total=%s max_cli=%s application_http=%d streams=%d contact_reads=%d cli_mcp_attached_then_detached=true wait_domain_writes=0 external_http=0 owned_processes=0", time.Since(started).Round(time.Millisecond), maxCommand.Round(time.Millisecond), requests.Load(), streams.Load(), contactReads)
 }
 
 // Resolve only our newly allocated fixture root: OS temporary directories may
@@ -545,9 +757,10 @@ type daemonProcess struct {
 	once     sync.Once
 }
 
-func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []string) *daemonProcess {
+func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []string, extra ...string) *daemonProcess {
 	t.Helper()
-	d := &daemonProcess{command: exec.CommandContext(ctx, binary, "--data-dir", data, "--listen", "127.0.0.1:0"), output: &listeningOutput{record: make(chan listeningRecord, 1)}, stderr: &boundedOutput{}, done: make(chan struct{})}
+	args := append([]string{"--data-dir", data, "--listen", "127.0.0.1:0"}, extra...)
+	d := &daemonProcess{command: exec.CommandContext(ctx, binary, args...), output: &listeningOutput{record: make(chan listeningRecord, 1)}, stderr: &boundedOutput{}, done: make(chan struct{})}
 	d.command.Env, d.command.Stdout, d.command.Stderr = env, d.output, d.stderr
 	d.command.WaitDelay = time.Second
 	if err := d.command.Start(); err != nil {

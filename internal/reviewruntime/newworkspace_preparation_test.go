@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,7 +76,7 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 		name, reason string
 		verify       bool
 	}{
-		{"fetch", "source_unavailable", false}, {"missing_commit", "workspace_unavailable", false}, {"repository_binding", "workspace_unavailable", false}, {"verify", "workspace_changed", true}, {"empty_comparison", "comparison_unavailable", true}, {"dirty_after_verify", "comparison_unavailable", true}, {"file_ceiling", "project_file_limit", true},
+		{"fetch", "source_unavailable", false}, {"fetch_timeout", "source_fetch_timeout", false}, {"missing_commit", "workspace_unavailable", false}, {"repository_binding", "workspace_unavailable", false}, {"verify", "workspace_changed", true}, {"empty_comparison", "comparison_unavailable", true}, {"dirty_after_verify", "comparison_unavailable", true}, {"file_ceiling", "project_file_limit", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
@@ -95,6 +96,9 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 				fetches++
 				if tc.name == "fetch" {
 					return errors.New("private transport details")
+				}
+				if tc.name == "fetch_timeout" {
+					return errors.Join(errors.New("private transport details"), context.DeadlineExceeded)
 				}
 				return nil
 			}
@@ -122,6 +126,67 @@ func TestPrepareReviewWorkspaceStopsAtOriginalGuardAndRetainsSafeReason(t *testi
 			}
 			if _, err = os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("failed workspace preparation ran allowance/review", err)
+			}
+		})
+	}
+}
+
+func TestPrepareReviewWorkspaceRenameThresholdHonorsOneHundredFileBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		admitted      bool
+	}{
+		{"exact", "", true},
+		{"similar_changed_content", "candidate\nchanged\n", true},
+		{"below_threshold", "unrelated replacement content\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			current, plan, a := workspacePreparationInputs(t, f)
+			current.Policy.Policy.MaxReviewFiles = 100
+			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+			if err := os.Rename(filepath.Join(source, "reviewed.txt"), filepath.Join(source, "renamed.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if tc.content != "" {
+				if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte(tc.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < 99; i++ {
+				if err := os.WriteFile(filepath.Join(source, fmt.Sprintf("added-%03d", i)), []byte(fmt.Sprintf("new file %d\n", i)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gitTestRun(t, source, "add", "--all")
+			gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "file count boundary")
+			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/file-count")
+			plan.Pull.HeadSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
+			plan.Pull.BaseSHA, plan.ParentSHA = f.headSHA, f.headSHA
+			plan.Pull.ChangedFiles = 100
+			if !tc.admitted {
+				plan.Pull.ChangedFiles = 101
+			}
+			var before, after int
+			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			w, count, err := prepareReviewWorkspace(t.Context(), f.driver.fetch, f.manager.Verify, f.manager, f.capability.GitHubCredential(), current, plan, a.ID)
+			if tc.admitted {
+				if err != nil || count != plan.Pull.ChangedFiles || count != 100 || f.manager.Verify(t.Context(), w) != nil {
+					t.Fatal("detected rename incorrectly exceeded unchanged 100-file budget", count, err)
+				}
+			} else {
+				var failure *core.Error
+				if !errors.As(err, &failure) || failure.Code != "review_held" || failure.Details.(map[string]string)["reason"] != "project_file_limit" || count != 0 || w != (reviewworkspace.Workspace{}) {
+					t.Fatal("below-threshold move bypassed file ceiling", count, err)
+				}
+			}
+			if err := f.store.DB().QueryRow("SELECT count(*) FROM events").Scan(&after); err != nil || after != before || f.reader.repositoryCalls != 0 || len(f.reader.calls) != 0 {
+				t.Fatal("file budget read provider or wrote native ledger", err)
+			}
+			if _, err := os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("file budget check ran allowance or review")
 			}
 		})
 	}
@@ -163,7 +228,13 @@ func TestPublishPreparedAttemptFallbackIsDisplayOnlyAndKeepsCurrentFacts(t *test
 		t.Fatal("replay replaced current facts or created snapshot", first, again)
 	}
 	// A real projection identity conflict is not repaired by fallback metadata.
-	if _, err := f.store.DB().Exec(`UPDATE review_attempts SET head_sha=? WHERE project_id=?`, strings.Repeat("f", 40), f.project); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE review_attempt_versions SET head_sha=?
+WHERE (project_id,source,source_attempt_id,version_revision) IN (
+ SELECT c.project_id,c.source,c.source_attempt_id,m.version_revision
+ FROM review_current_attempts c JOIN review_attempt_memberships m
+ USING(project_id,source,source_attempt_id,start_revision,pull_number,position)
+ WHERE c.project_id=?
+)`, strings.Repeat("f", 40), f.project); err != nil {
 		t.Fatal(err)
 	}
 	assertCoreErrorCode(t, publishPreparedAttempt(t.Context(), f.engine, f.project, a.ID, plan), "observation_conflict")
@@ -190,5 +261,41 @@ func TestPublishPreparedAttemptPropagatesStorageFailure(t *testing.T) {
 	var snapshots int
 	if e := f.store.DB().QueryRow("SELECT count(*) FROM review_snapshots").Scan(&snapshots); e != nil || snapshots != 0 {
 		t.Fatal("storage failure created projection", e)
+	}
+}
+
+func TestPrepareReviewWorkspaceFileLimitOverrideStillVerifiesAndCounts(t *testing.T) {
+	for _, mode := range []string{"ordinary", "override", "dirty", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIDriverFixture(t)
+			current, plan, a := workspacePreparationInputs(t, f)
+			current.Policy.Policy.MaxReviewFiles = 1
+			current.Operation.OverrideFileLimit = mode != "ordinary"
+			if mode == "empty" {
+				plan.Pull.HeadSHA = f.baseSHA
+			}
+			fetch := func(context.Context, int64, string, string, string, string) error { return nil }
+			verify := func(ctx context.Context, w reviewworkspace.Workspace) error {
+				if mode == "dirty" {
+					return os.WriteFile(filepath.Join(w.Directory, "untracked.txt"), []byte("fixture"), 0600)
+				}
+				return f.manager.Verify(ctx, w)
+			}
+			_, count, err := prepareReviewWorkspace(t.Context(), fetch, verify, f.manager, "", current, plan, a.ID)
+			if mode == "override" {
+				if err != nil || count != 2 {
+					t.Fatal("override failed materialized count", count, err)
+				}
+			} else if err == nil {
+				t.Fatal("override skipped validation", mode, count)
+			}
+			if _, err := os.Stat(f.log); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("workspace check invoked review executable", err)
+			}
+		})
+	}
+	op := reviewexec.Operation{OverrideFileLimit: true}
+	if !operationRequest(op).OverrideFileLimit || sameOperation(op, reviewexec.Operation{}) {
+		t.Fatal("source recovery dropped explicit intent")
 	}
 }

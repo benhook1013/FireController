@@ -521,3 +521,42 @@ func TestPresentationExplicitRepairOfRetainedInvalidProjectName(t *testing.T) {
 		t.Fatal("repair replay changed receipt or later state")
 	}
 }
+
+func TestReviewGroupPresentationHistoryReplayAndProjectIsolation(t *testing.T) {
+	f := setup(t)
+	request := map[string]any{"expected_revision": 0, "presentation": map[string]any{"name": "one", "review_groups": []map[string]any{{"title": "Foundation", "pull_numbers": []int64{1, 2}}}}}
+	expect(t, f.call("PUT", f.base(), f.admin, "groups", request), 200)
+	state := f.read().Presentation
+	if state.Revision != 1 || len(state.ReviewGroups) != 1 || state.ReviewGroups[0].Title != "Foundation" {
+		t.Fatal(state)
+	}
+	before := f.counts()
+	expect(t, f.call("PUT", f.base(), f.admin, "groups", request), 200)
+	if !reflect.DeepEqual(before, f.counts()) {
+		t.Fatal("replay added effects")
+	}
+	worker := f.worker
+	f.worker = ""
+	other := f.call("GET", "/api/v1/projects/"+f.other+"/presentation", f.admin, "", nil)
+	f.worker = worker
+	expect(t, other, 200)
+	var isolated presentation.Snapshot
+	decode(t, other, &isolated)
+	if len(isolated.Presentation.ReviewGroups) != 0 {
+		t.Fatal("group leaked between projects")
+	}
+	expect(t, f.replace("clear-groups", 1, "one"), 200)
+	if len(f.read().Presentation.ReviewGroups) != 0 {
+		t.Fatal("replacement did not clear groups")
+	}
+	history := f.call("GET", f.base()+"/history/1", f.reader, "", nil)
+	expect(t, history, 200)
+	var original presentation.Revision
+	decode(t, history, &original)
+	if len(original.State.ReviewGroups) != 1 || !reflect.DeepEqual(original.State.ReviewGroups[0].PullNumbers, []int64{1, 2}) {
+		t.Fatal("group history changed", original)
+	}
+	if err := f.validate(); err != nil {
+		t.Fatal(err)
+	}
+}

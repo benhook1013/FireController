@@ -471,3 +471,114 @@ func TestProjectMapClientPublicAPICommittedReplayHistoryAndIndependentJobReferen
 		t.Fatal("map changed job/provider state", work, err)
 	}
 }
+
+func TestProjectMapEditorialClientBoundedPagesAndStrictResponses(t *testing.T) {
+	first := mapEntry()
+	first.ID = "entry-a"
+	first.Position = 3
+	second := first
+	second.ID = "entry-b"
+	second.Position = 5
+	var calls atomic.Int64
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		if r.URL.Path != "/api/v1/projects/project-one/map/editorial" || r.URL.Query().Get("limit") != "5" {
+			t.Error("editorial default/path", r.URL.Path, r.URL.RawQuery)
+		}
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			write(w, 200, client.Page[client.ProjectMapEntry]{Items: []client.ProjectMapEntry{first}, HasMore: true, Cursor: "second-page"})
+		case "second-page":
+			write(w, 200, client.Page[client.ProjectMapEntry]{Items: []client.ProjectMapEntry{second}})
+		default:
+			t.Error("unexpected continuation")
+		}
+	}))
+	defer s.Close()
+	c := newClient(t, s)
+	page, err := c.ProjectMapEditorial(t.Context(), client.PageOptions{})
+	if err != nil || len(page.Items) != 1 || !page.HasMore || calls.Load() != 1 {
+		t.Fatal(page, err, calls.Load())
+	}
+	next, err := c.ProjectMapEditorial(t.Context(), client.PageOptions{Cursor: page.Cursor})
+	if err != nil || len(next.Items) != 1 || next.Items[0].Position != 5 || next.HasMore || calls.Load() != 2 {
+		t.Fatal(next, err, calls.Load())
+	}
+	for name, mutate := range map[string]func(*client.Page[client.ProjectMapEntry]){
+		"foreign":          func(p *client.Page[client.ProjectMapEntry]) { p.Items[0].ProjectID = "other" },
+		"archived":         func(p *client.Page[client.ProjectMapEntry]) { p.Items[0].Archived = true },
+		"position":         func(p *client.Page[client.ProjectMapEntry]) { p.Items[0].Position = 1000001 },
+		"reverse-position": func(p *client.Page[client.ProjectMapEntry]) { p.Items[0].Position = 6 },
+		"reverse-id":       func(p *client.Page[client.ProjectMapEntry]) { p.Items[0].Position = 5; p.Items[0].ID = "entry-z" },
+		"duplicate":        func(p *client.Page[client.ProjectMapEntry]) { p.Items[1] = p.Items[0] },
+		"null-items":       func(p *client.Page[client.ProjectMapEntry]) { p.Items = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := client.Page[client.ProjectMapEntry]{Items: []client.ProjectMapEntry{first, second}}
+			mutate(&p)
+			raw, _ := json.Marshal(p)
+			malformed, hits := progressResponseClient(t, string(raw))
+			_, err := malformed.ProjectMapEditorial(t.Context(), client.PageOptions{})
+			checkError(t, err, "invalid_response")
+			if hits.Load() != 1 {
+				t.Fatal("unexpected request/retry count", hits.Load())
+			}
+		})
+	}
+	local, hits := progressResponseClient(t, `{}`)
+	for _, options := range []client.PageOptions{{Limit: -1}, {Limit: 11}, {Cursor: " padded"}} {
+		_, err := local.ProjectMapEditorial(t.Context(), options)
+		checkError(t, err, "validation_failed")
+	}
+	if hits.Load() != 0 {
+		t.Fatal("invalid editorial input reached HTTP")
+	}
+}
+
+func TestProjectMapSectionClientActualAPIAndPositionHistory(t *testing.T) {
+	f := newMutationFixture(t)
+	if err := projectmap.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/", f.handler)
+	projectmap.Register(mux, f.store)
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	c := f.newClient(t, f.admin, f.sender, s.URL)
+	content := client.ProjectMapEditable{Kind: "section", Title: "Narrative", Description: "# Heading\n\nLiteral <script>body</script>", Position: 9}
+	created, err := c.CreateProjectMapEntry(t.Context(), "section-create", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := c.ProjectMapEditorial(t.Context(), client.PageOptions{})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != created.ID || page.Items[0].Description != content.Description || page.Items[0].Position != 9 {
+		t.Fatal(page, err)
+	}
+	content.Position = 1
+	changed, err := c.ReplaceProjectMapEntry(t.Context(), "section-position", created.ID, client.ReplaceProjectMapEntryRequest{ExpectedRevision: 1, Entry: content})
+	if err != nil || changed.Revision != 2 {
+		t.Fatal(changed, err)
+	}
+	old, err := c.ProjectMapRevision(t.Context(), created.ID, 1)
+	if err != nil || old.State.Position != 9 {
+		t.Fatal(old, err)
+	}
+	current, err := c.ProjectMapEntry(t.Context(), created.ID)
+	if err != nil || current.Position != 1 {
+		t.Fatal(current, err)
+	}
+	list, err := c.ProjectMapEntries(t.Context(), client.PageOptions{}, client.ProjectMapFilter{Kind: "section"})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatal(list, err)
+	}
+	for _, raw := range []string{`{"kind":"section","title":"x","position":null}`, `{"kind":"section","title":"x","position":-1}`, `{"kind":"section","title":"x","where":"wrong"}`} {
+		if _, err := client.DecodeProjectMapEditable([]byte(raw)); err == nil {
+			t.Fatal("invalid section accepted")
+		}
+	}
+}

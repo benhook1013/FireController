@@ -36,7 +36,7 @@ func TestCheckpointRenderDeterministicHistoricalCountsAndPrivateDigest(t *testin
 		t.Fatal("noncanonical rendering", first, err, secondErr)
 	}
 	lines := strings.Split(first.Body, "\n")
-	if lines[0] != "CLI: Found 3, Accepted 1, Routed 1; head "+p.HeadSHA || lines[1] != "Original source counts; current review coverage and readiness are assessed separately." || lines[len(lines)-1] != "<!-- firecontroller-checkpoint:v1 publication="+p.PublicationID+" semantic="+first.SemanticSHA256+" -->" {
+	if lines[0] != "**CodeRabbit CLI — 3 Found, 1 Accepted, 1 Routed**" || lines[1] != p.HeadSHA || lines[len(lines)-1] != "<!-- firecontroller-checkpoint:v1 publication="+p.PublicationID+" semantic="+first.SemanticSHA256+" -->" {
 		t.Fatal("historical summary/marker changed", first.Body)
 	}
 	for _, private := range []string{p.EvidenceID, p.BaseRef, p.BaseSHA, p.ParentSHA, p.MergeBaseSHA, p.PatchSHA256, p.CaptureSHA256, "4294967296"} {
@@ -69,14 +69,14 @@ func TestCheckpointKnownZeroAndUnboundedNonnegativeOptionalFacts(t *testing.T) {
 	p.ParentPullNumber = 0
 	p.ParentSHA = p.BaseSHA
 	unknown, err := RenderCheckpoint(p)
-	if err != nil || !strings.HasPrefix(unknown.Body, "Hosted: Found 0, Accepted 0, Routed 0;") || strings.Contains(unknown.Body, "; files") || strings.Contains(unknown.Body, "; duration") {
+	if err != nil || !strings.HasPrefix(unknown.Body, "**CodeRabbit Hosted — 0 Found, 0/0/0 Accepted (Major/Minor/Trivial), 0 Routed**") || strings.Contains(unknown.Body, " files") || strings.Contains(unknown.Body, " · ") {
 		t.Fatal(unknown, err)
 	}
 	zero := int64(0)
 	p.Files = &zero
 	p.DurationSeconds = &zero
 	known, err := RenderCheckpoint(p)
-	if err != nil || known.SemanticSHA256 == unknown.SemanticSHA256 || !strings.Contains(known.Body, "; files 0; duration 0 seconds") {
+	if err != nil || known.SemanticSHA256 == unknown.SemanticSHA256 || !strings.Contains(known.Body, "0 files · 0s · ") {
 		t.Fatal("unknown rewritten as zero", known, err)
 	}
 	encoded, _ := json.Marshal(p)
@@ -86,7 +86,7 @@ func TestCheckpointKnownZeroAndUnboundedNonnegativeOptionalFacts(t *testing.T) {
 	max := int64(math.MaxInt64)
 	p.Files = &max
 	p.DurationSeconds = &max
-	if render, err := RenderCheckpoint(p); err != nil || !strings.Contains(render.Body, "9223372036854775807 seconds") {
+	if render, err := RenderCheckpoint(p); err != nil || !strings.Contains(render.Body, "2562047788015215h 30m 07s") {
 		t.Fatal("invented universal duration ceiling", err)
 	}
 	p.Files = nil
@@ -127,7 +127,7 @@ func TestCheckpointMatcherOnlyNeutralWhitespaceAndExactOwnedSemantic(t *testing.
 		}
 	}
 	for _, body := range []string{
-		strings.Replace(render.Body, "Found 3", "Found 2", 1), strings.Replace(render.Body, "Accepted 1", "Accepted 0", 1), strings.Replace(render.Body, "Routed 1", "Routed 0", 1), strings.Replace(render.Body, p.HeadSHA, strings.Repeat("9", 40), 1), strings.Replace(render.Body, render.SemanticSHA256, strings.Repeat("9", 64), 1), strings.Replace(render.Body, "source counts", "current counts", 1), strings.Replace(render.Body, "checkpoint:v1", "checkpoint:v2", 1), strings.Replace(render.Body, "checkpoint:v1", "checkpoint", 1), "<!-- example " + render.Body + " -->", strings.Replace(render.Body, p.PublicationID+" semantic=", p.PublicationID+"semantic=", 1), render.Body + "\n" + render.Body, "```\n" + render.Body + "\n```", "> " + render.Body, "<pre>" + render.Body + "</pre>", strings.Replace(render.Body, " -->", "", 1), strings.Replace(render.Body, "CLI:", "**CLI:**", 1), strings.Replace(render.Body, "Found 3", "Found 03", 1), strings.Replace(render.Body, "head ", "head", 1),
+		strings.Replace(render.Body, "3 Found", "2 Found", 1), strings.Replace(render.Body, "1 Accepted", "0 Accepted", 1), strings.Replace(render.Body, "1 Routed", "0 Routed", 1), strings.Replace(render.Body, p.HeadSHA, strings.Repeat("9", 40), 1), strings.Replace(render.Body, render.SemanticSHA256, strings.Repeat("9", 64), 1), strings.Replace(render.Body, "CodeRabbit", "OtherProvider", 1), strings.Replace(render.Body, "checkpoint:v1", "checkpoint:v2", 1), strings.Replace(render.Body, "checkpoint:v1", "checkpoint", 1), "<!-- example " + render.Body + " -->", strings.Replace(render.Body, p.PublicationID+" semantic=", p.PublicationID+"semantic=", 1), render.Body + "\n" + render.Body, "```\n" + render.Body + "\n```", "> " + render.Body, "<pre>" + render.Body + "</pre>", strings.Replace(render.Body, " -->", "", 1), strings.Replace(render.Body, "**CodeRabbit CLI", "CodeRabbit CLI", 1), strings.Replace(render.Body, "3 Found", "03 Found", 1), strings.Replace(render.Body, "Routed**", "Routed", 1),
 	} {
 		if state, err := MatchCheckpoint(body, p); err != nil || state != CheckpointConflict {
 			t.Fatal("edited semantic/markup adopted or lost owned identity", state, err)
@@ -153,7 +153,7 @@ func TestFindCheckpointStableAuthorCopiesAndNeutralEdits(t *testing.T) {
 	match.UpdatedAt = match.CreatedAt.Add(time.Hour)
 	foreign := checkpointComment(t, 32, p)
 	foreign.Author.ID = 99
-	foreign.Body = strings.Replace(foreign.Body, "Found 3", "Found 99", 1)
+	foreign.Body = strings.Replace(foreign.Body, "3 Found", "99 Found", 1)
 	sameLogin := checkpointComment(t, 33, p)
 	sameLogin.Author.ID = 98
 	sameLogin.Author.Login = checkpointActor().Login
@@ -228,7 +228,7 @@ func TestFindCheckpointAmbiguityConflictAndMalformedInventory(t *testing.T) {
 	if _, found, err := FindCheckpoint(p, checkpointActor(), []IssueComment{a, b}); found || !hasCode(err, "checkpoint_ambiguous") {
 		t.Fatal("multiple matches chose one", found, err)
 	}
-	b.Body = strings.Replace(b.Body, "Found 3", "Found 2", 1)
+	b.Body = strings.Replace(b.Body, "3 Found", "2 Found", 1)
 	for _, comments := range [][]IssueComment{{a, b}, {b, a}} {
 		if _, found, err := FindCheckpoint(p, checkpointActor(), comments); found || !hasCode(err, "checkpoint_conflict") || strings.Contains(fmt.Sprint(err), p.PublicationID) {
 			t.Fatal("attributable conflict ignored/leaked", found, err)
@@ -267,5 +267,29 @@ func TestFindCheckpointAmbiguityConflictAndMalformedInventory(t *testing.T) {
 				t.Fatal("inventory bound ignored", found, err)
 			}
 		})
+	}
+}
+
+func TestCheckpointFrozenSeverityAndHumanDuration(t *testing.T) {
+	p := checkpointFixture()
+	p.Found, p.Accepted, p.Routed = 6, 5, 1
+	p.AcceptedSeverity = &CheckpointAcceptedSeverity{Major: 1, Minor: 1, Trivial: 1, Critical: 1, Unknown: 1}
+	r, err := RenderCheckpoint(p)
+	if err != nil || !strings.Contains(r.Body, "1/1/1 Accepted (Major/Minor/Trivial) + 1 Critical + 1 Unclassified") || strings.Contains(r.Body, "readiness") {
+		t.Fatal(r, err)
+	}
+	if got, err := MatchCheckpoint(r.Body, p); err != nil || got != CheckpointMatch {
+		t.Fatal(got, err)
+	}
+	for _, bad := range []CheckpointAcceptedSeverity{{Major: -1}, {Major: 6}, {Major: 4}, {Major: math.MaxInt64, Minor: math.MaxInt64}} {
+		p.AcceptedSeverity = &bad
+		if _, err := RenderCheckpoint(p); err == nil {
+			t.Fatal("invalid accepted partition", bad)
+		}
+	}
+	for seconds, want := range map[int64]string{0: "0s", 59: "59s", 60: "1m 00s", 260: "4m 20s", 3599: "59m 59s", 3600: "1h 00m 00s", 3661: "1h 01m 01s"} {
+		if got := checkpointDuration(seconds); got != want {
+			t.Fatal(seconds, got, want)
+		}
 	}
 }

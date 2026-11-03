@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -53,7 +54,11 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 					return nil, nil, err
 				}
 			}
-			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment)
+			var processOptions []reviewprocess.Option
+			if capability.CLIAllowanceTimeoutSeconds != 0 {
+				processOptions = append(processOptions, reviewprocess.WithUsageTimeout(time.Duration(capability.CLIAllowanceTimeoutSeconds)*time.Second))
+			}
+			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment, processOptions...)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -139,4 +144,15 @@ func (d *reviewChannelDriver) Dispatch(ctx context.Context, operation reviewexec
 
 func (d *reviewChannelDriver) StartRecovery(ctx context.Context) (<-chan error, error) {
 	return d.hosted.StartRecovery(ctx)
+}
+
+func (d *reviewChannelDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) {
+	return d.cli.StartCLIRecovery(ctx)
+}
+
+func (d *reviewChannelDriver) StartWorkspaceCleanup(ctx context.Context) (<-chan error, error) {
+	if d.cli != nil {
+		return d.cli.StartWorkspaceCleanup(ctx)
+	}
+	return d.hosted.StartWorkspaceCleanup(ctx)
 }

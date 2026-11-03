@@ -7,7 +7,7 @@ export interface PublicLink { key: string; label: string; url: string }
 export interface PublicCard { key: string; title: string; description: string; phase: string; status: string; links: PublicLink[] }
 export interface PublicLane { key: string; label: string; headline: string; status: string; milestones: string[] }
 export interface PublicRound { key: string; found: number; accepted: number; routed: number; complete: boolean; observed_at: string; duration_milliseconds: number | null }
-export interface PublicReview { number: number; title: string; url: string; lifecycle: 'unknown' | 'open' | 'closed' | 'merged'; cli: PublicRound[]; hosted: PublicRound[] }
+export interface PublicReview { number: number; title: string; url: string; lifecycle: 'unknown' | 'open' | 'closed' | 'merged'; cli: PublicRound[]; hosted: PublicRound[]; cli_has_more?: boolean; hosted_has_more?: boolean }
 export interface PublicContent { slug: string; presentation: PublicPresentation; description: string; links: PublicLink[]; project_map: PublicCard[]; progress: PublicCard[]; worker_lanes: PublicLane[]; reviews: PublicReview[] }
 export interface PublicSnapshot { slug: string; generation: string; revision: number; published_at: string; cursor: string; content: PublicContent }
 export interface PublicChange { revision: number; published_at: string; cursor: string }
@@ -53,7 +53,7 @@ function content(v: unknown, slug: string): v is PublicContent {
   const numbers = new Set<number>(), rounds = new Set<string>();
   const validRounds = (items: unknown): items is PublicRound[] => Array.isArray(items) && items.length <= 100 && items.every(item => object(item) && exact(item, ['key', 'found', 'accepted', 'routed', 'complete', 'observed_at', 'duration_milliseconds']) && typeof item.key === 'string' && /^public_round_[a-f0-9]{32}$/u.test(item.key) && !rounds.has(item.key) && !!rounds.add(item.key) && nonnegative(item.found) && nonnegative(item.accepted) && nonnegative(item.routed) && item.accepted + item.routed <= item.found && typeof item.complete === 'boolean' && (item.observed_at === '' || stamp(item.observed_at)) && (item.duration_milliseconds === null || nonnegative(item.duration_milliseconds)));
   return Array.isArray(v.reviews) && v.reviews.length <= 100 && v.reviews.every(item => {
-    if (!object(item) || !exact(item, ['number', 'title', 'url', 'lifecycle', 'cli', 'hosted']) || !positive(item.number) || item.number > 2147483647 || numbers.has(item.number) || !text(item.title, 240, true) || !publicURL(item.url) || !['unknown', 'open', 'closed', 'merged'].includes(String(item.lifecycle)) || !validRounds(item.cli) || !validRounds(item.hosted)) return false;
+    if (!object(item) || !exact(item, ['number', 'title', 'url', 'lifecycle', 'cli', 'hosted'], ['cli_has_more', 'hosted_has_more']) || ['cli_has_more', 'hosted_has_more'].some(field => Object.hasOwn(item, field) && typeof item[field] !== 'boolean') || !positive(item.number) || item.number > 2147483647 || numbers.has(item.number) || !text(item.title, 240, true) || !publicURL(item.url) || !['unknown', 'open', 'closed', 'merged'].includes(String(item.lifecycle)) || !validRounds(item.cli) || !validRounds(item.hosted)) return false;
     const url = new URL(item.url), parts = url.pathname.split('/');
     if (url.protocol !== 'https:' || url.host !== 'github.com' || url.search || url.hash || parts.length !== 5 || parts[3] !== 'pull' || parts[4] !== String(item.number) || !parts.slice(1, 3).every(p => /^[A-Za-z0-9_.-]{1,100}$/u.test(p) && p !== '.' && p !== '..')) return false;
     numbers.add(item.number); return true;
@@ -93,22 +93,30 @@ async function boundedJSON(response: Response, signal: AbortSignal): Promise<unk
   try { return parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw invalid(); }
 }
 function failure(status: number): ApiError { return new ApiError(status === 409 ? 'resync_required' : status === 404 ? 'not_found' : 'public_unavailable', 'This published project is unavailable.', status); }
-export class PublicSiteApi {
-  readonly path: string;
-  constructor(readonly slug: string) { if (!validPublicSlug(slug)) throw invalid(); this.path = `/api/v1/public/projects/${slug}`; }
-  private async read(path: string, signal: AbortSignal): Promise<unknown> {
+async function publicRead(path: string, signal: AbortSignal): Promise<unknown> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000), combined = AbortSignal.any([signal, controller.signal]);
     try { const response = await fetch(path, { method: 'GET', credentials: 'omit', redirect: 'error', cache: 'no-store', headers: { Accept: 'application/json' }, signal: combined }); if (!response.ok) { await response.body?.cancel(); throw failure(response.status); } return await boundedJSON(response, combined); }
     finally { clearTimeout(timer); controller.abort(); }
   }
+export function validPublicAddress(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value); }
+export async function publicProjectLocation(address: string, signal: AbortSignal): Promise<string> {
+  if (!validPublicAddress(address)) throw invalid();
+  const value = await publicRead(`/api/v1/public/project-locations/${encodeURIComponent(address)}`, signal);
+  if (!object(value) || !exact(value, ['slug']) || !validPublicSlug(value.slug)) throw invalid();
+  return value.slug;
+}
+
+export class PublicSiteApi {
+  readonly path: string;
+  constructor(readonly slug: string) { if (!validPublicSlug(slug)) throw invalid(); this.path = `/api/v1/public/projects/${slug}`; }
   async snapshot(signal: AbortSignal, revision?: number, generation?: string): Promise<PublicSnapshot> {
     if (revision !== undefined && (!positive(revision) || !validPublicGeneration(generation))) throw invalid();
-    const value = await this.read(revision === undefined ? this.path : `${this.path}/history/${revision}?generation=${generation}`, signal);
+    const value = await publicRead(revision === undefined ? this.path : `${this.path}/history/${revision}?generation=${generation}`, signal);
     if (!validatePublicSnapshot(value, this.slug, generation, revision)) throw invalid(); return value;
   }
   async history(signal: AbortSignal, generation: string, cursor?: string): Promise<PublicHistory> {
     if (!validPublicGeneration(generation) || cursor !== undefined && (typeof cursor !== 'string' || !positive(Number(cursor.split(':')[1])) || cursor !== cursorFor(generation, Number(cursor.split(':')[1])))) throw invalid();
-    const value = await this.read(`${this.path}/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, signal);
+    const value = await publicRead(`${this.path}/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, signal);
     if (!object(value) || !exact(value, ['slug', 'generation', 'items', 'has_more'], ['cursor']) || value.slug !== this.slug || value.generation !== generation || typeof value.has_more !== 'boolean' || !Array.isArray(value.items) || value.items.length > 20) throw invalid();
     let previous = cursor ? Number(cursor.split(':')[1]) : Infinity;
     for (const item of value.items) { if (!object(item) || !exact(item, ['revision', 'published_at']) || !positive(item.revision) || item.revision >= previous || !stamp(item.published_at)) throw invalid(); previous = item.revision; }

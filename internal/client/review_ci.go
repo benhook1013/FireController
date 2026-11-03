@@ -24,6 +24,7 @@ type ReviewSourceCISummary struct {
 }
 
 type ReviewSourceCIAssessment struct {
+	MergeBaseMismatch     *CIMergeBaseMismatch    `json:"merge_base_mismatch,omitempty"`
 	Checks                *[]ReviewCIContext      `json:"checks,omitempty"`
 	ProjectID             string                  `json:"project_id"`
 	RefreshID             string                  `json:"refresh_id"`
@@ -43,6 +44,17 @@ type ReviewSourceCIAssessment struct {
 	Failed                int64                   `json:"failed"`
 	Pending               int64                   `json:"pending"`
 	Unproven              int64                   `json:"unproven"`
+}
+
+type CIMergeBaseMismatch struct {
+	PRBaseSHA          string `json:"pr_base_sha"`
+	LiveBaseSHA        string `json:"live_base_sha"`
+	MergeSHA           string `json:"merge_sha"`
+	MergeBaseParentSHA string `json:"merge_base_parent_sha"`
+}
+
+func validCIMergeBaseMismatch(value *CIMergeBaseMismatch, head, base string) bool {
+	return value == nil || controlHex(value.PRBaseSHA, 40) && controlHex(value.LiveBaseSHA, 40) && controlHex(value.MergeSHA, 40) && controlHex(value.MergeBaseParentSHA, 40) && value.PRBaseSHA == base && value.LiveBaseSHA != value.MergeBaseParentSHA && value.MergeBaseParentSHA != head && value.MergeSHA != head && value.MergeSHA != value.MergeBaseParentSHA
 }
 
 func validCISummary(value ReviewSourceCISummary, allowHeld bool) bool {
@@ -126,6 +138,9 @@ func (c *Client) reviewSourceCIAssessment(ctx context.Context, number int64, dia
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
 	if diagnostics != (value.Checks != nil) || !validCIContextDetails(value) {
+		return ReviewSourceCIAssessment{}, invalidResponse()
+	}
+	if value.MergeBaseMismatch != nil && (value.State != "unproven" || value.Reason != "ci_merge_base_mismatch" || value.Selection != "" || value.MergeState != "unproven" || !validCIMergeBaseMismatch(value.MergeBaseMismatch, value.Target.HeadSHA, value.Target.BaseSHA)) {
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
 	return value, nil

@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -759,6 +760,102 @@ func (d *findingDecoder) groupedSummary(body string, lines []findingLine, start,
 	}
 }
 
+// The observed follow-up format places each positive outside-diff finding in
+// its own unquoted block, without a category or inline-root count. Its badge,
+// explicit severity/title/range, source link and fingerprint jointly identify
+// the item; absence of this inventory can never establish a clean review.
+const findingFollowupOutsideBadge = `<sub><picture><source media="(prefers-color-scheme: dark)" srcset="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/contrast-v2/outside-diff-dark.svg" /><source media="(prefers-color-scheme: light)" srcset="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/outside-diff.svg" /><img width="120" height="16" alt="Outside diff" src="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/outside-diff.svg" /></picture></sub>`
+
+var findingFollowupOutsideSummary = regexp.MustCompile(`^<summary>` + regexp.QuoteMeta(findingFollowupOutsideBadge) + ` ([^<>\r\n]+)</summary><blockquote>$`)
+var findingFollowupSource = regexp.MustCompile(`^\[Open the source location\]\(https://github\.com/([A-Za-z0-9_-]{1,100})/([A-Za-z0-9_.-]{1,100})/blob/([a-f0-9]{40})/([^?#)]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?\)$`)
+
+func (d *findingDecoder) followupOutside(body string, lines []findingLine, start, end int, review HostedReview) {
+	fields := findingFields{}
+	depth, quotes, markers := 0, 0, 0
+	summaryTitle := ""
+	metadata, title, closed, knownNested := false, false, false, false
+	for i := start; i <= end; i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if l.quote != 0 {
+			d.fail("finding_format_unsupported")
+			continue
+		}
+		if depth == 1 && quotes == 0 {
+			if m := findingFollowupOutsideSummary.FindStringSubmatch(l.text); m != nil && summaryTitle == "" {
+				summaryTitle = m[1]
+			} else {
+				d.fail("finding_format_unsupported")
+			}
+		}
+		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
+			knownNested = findingKnownNested(l.text) || l.text == "<summary>📝 Proposed wording</summary>"
+			if !knownNested {
+				d.fail("finding_format_unsupported")
+			}
+		}
+		if strings.Contains(l.text, "cr-comment") {
+			if depth == 1 && quotes == 1 && !closed && metadata && title && fields.path != "" && summaryTitle == fields.title && !fields.severityConflict {
+				finding := HostedFinding{Kind: "outside_diff", ReviewID: review.ID, Path: fields.path, StartLine: fields.start, EndLine: fields.end}
+				fields.apply(&finding)
+				d.add(body, lines[start].start, l, finding)
+				markers++
+				closed = true
+			} else if !knownNested {
+				d.fail("finding_format_unsupported")
+			}
+		} else if depth == 1 && quotes == 1 && !strings.HasPrefix(l.text, "<") {
+			if closed {
+				if !findingSourceMetadata(l.text) {
+					d.fail("finding_trailer_unsupported")
+				}
+			} else if m := findingRange.FindStringSubmatch(l.text); m != nil {
+				first, last, valid := findingLocation(m[1], m[2])
+				validMetadata, explicitSeverity := fields.metadata(m[3])
+				if metadata || !valid || !validMetadata || !explicitSeverity {
+					d.fail("finding_format_unsupported")
+				}
+				fields.start, fields.end = first, last
+				metadata = true
+			} else if m := findingTitle.FindStringSubmatch(l.text); m != nil {
+				if !metadata || title || m[1] != summaryTitle {
+					d.fail("finding_format_unsupported")
+				}
+				fields.title = m[1]
+				title = true
+			} else if strings.HasPrefix(l.text, "[Open the source location]") {
+				m := findingFollowupSource.FindStringSubmatch(l.text)
+				if m == nil || !metadata || fields.path != "" {
+					d.fail("finding_location_invalid")
+				} else {
+					path, err := url.PathUnescape(m[4])
+					first, last, valid := findingLocation(m[5], m[6])
+					if err != nil || !validRepoPath(path) || m[2] == "." || m[2] == ".." || m[3] != review.HeadSHA || !valid || fields.start == nil || fields.end == nil || *first != *fields.start || *last != *fields.end {
+						d.fail("finding_location_invalid")
+					} else {
+						fields.path = path
+					}
+				}
+			}
+		}
+		if closed && depth == 1 && l.text == "<details>" {
+			d.fail("finding_trailer_unsupported")
+		}
+		findingTags(l.text, &depth, &quotes)
+		if depth <= 1 {
+			knownNested = false
+		}
+		if depth < 0 || quotes < 0 {
+			d.fail("finding_format_unsupported")
+		}
+	}
+	if summaryTitle == "" || !metadata || !title || markers != 1 || depth != 0 || quotes != 0 {
+		d.fail("finding_format_unsupported")
+	}
+}
+
 func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	if !selected && !strings.Contains(review.Body, "cr-comment") && !strings.Contains(review.Body, "Outside diff range comments") && !strings.Contains(review.Body, "Duplicate comments") && !strings.Contains(review.Body, "Additional comments") {
 		return
@@ -767,9 +864,17 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	if !sound {
 		d.fail("summary_format_unsupported")
 	}
+	followup, followupItems := false, 0
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if l.hidden || l.text == "" {
+			continue
+		}
+		if l.quote == 0 && l.text == "## Follow-up Comments" {
+			if followup {
+				d.fail("summary_format_unsupported")
+			}
+			followup = true
 			continue
 		}
 		if l.quote == 1 && findingOutsideHeader.MatchString(l.text) {
@@ -783,7 +888,10 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 				return
 			}
 			header := nextFindingText(lines, i+1, end)
-			if findingDuplicateHeader.MatchString(header) {
+			if followup && findingFollowupOutsideSummary.MatchString(header) {
+				d.followupOutside(review.Body, lines, i, end, review)
+				followupItems++
+			} else if findingDuplicateHeader.MatchString(header) {
 				d.groupedSummary(review.Body, lines, i, end, review.ID, "duplicate", findingDuplicateHeader)
 			} else if findingAdditionalHeader.MatchString(header) {
 				projected, ok := findingAdditionalLayout(lines, i, end)
@@ -826,6 +934,9 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 		}
 		d.fail("summary_format_unsupported")
 	}
+	if followup && followupItems == 0 {
+		d.fail("summary_format_unsupported")
+	}
 }
 
 // publicationSummaryOnly proves a nonempty summary-only inventory when the
@@ -833,7 +944,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 // same strict decoder as final extraction; duplicate-only or empty summaries
 // cannot establish this proof. It never rewrites bodies or invents findings.
 func publicationSummaryOnly(publication HostedPublication) bool {
-	if len(publication.Batches) != 1 {
+	if len(publication.Batches) != 1 || len(publication.Roots) != 0 || !publicationCountAbsent(publication) {
 		return false
 	}
 	primary := publication.Batches[0]
@@ -844,11 +955,6 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 		return false
 	}
 	for _, review := range publication.EligibleReviews {
-		for _, line := range publicationVisibleLines(review.Body) {
-			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
-				return false
-			}
-		}
 		if review.ID != primary.ID {
 			decoder.summary(review, false)
 		}
@@ -862,6 +968,40 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 		}
 	}
 	return true
+}
+
+// A malformed or contradictory visible count is not an omitted count.
+func publicationCountAbsent(publication HostedPublication) bool {
+	for _, review := range publication.EligibleReviews {
+		for _, line := range publicationVisibleLines(review.Body) {
+			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// publicationInlineInventory permits only a positive, fully decoded attached
+// inventory when the one selected batch truly omits numeric count metadata.
+// Final extraction still reuses the same decoder and all source bindings.
+func publicationInlineInventory(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 || len(publication.Roots) == 0 || !publicationCountAbsent(publication) {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	for _, root := range publication.Roots {
+		decoder.inline(root)
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	primary := publication.Batches[0].ID
+	for _, review := range publication.EligibleReviews {
+		decoder.summary(review, review.ID == primary)
+	}
+	return inventory.Complete && len(inventory.Findings) > 0
 }
 
 // ExtractHostedFindings re-establishes attribution before decoding. Unsupported

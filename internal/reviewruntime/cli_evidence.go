@@ -3,7 +3,6 @@ package reviewruntime
 import (
 	"context"
 	"errors"
-	"slices"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -56,15 +55,15 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 	if !sourceMatches {
 		review.Outcome, review.Complete, reason = "uncertain", false, "source_changed"
 	} else {
-		paths, sourceErr := manager.ChangedFiles(ctx, workspace)
-		if sourceErr != nil {
-			review.Outcome, review.Complete, reason = "uncertain", false, "source_unavailable"
-		} else if review.Complete {
-			reviewed := append([]string(nil), review.ReviewedFiles...)
-			slices.Sort(reviewed)
-			if len(paths) == 0 || !slices.Equal(paths, reviewed) {
-				review.Outcome, review.Complete, reason = "uncertain", false, "coverage_incomplete"
+		if review.Complete {
+			covered, sourceErr := manager.CoversChangedFiles(ctx, workspace, review.ReviewedFiles)
+			if sourceErr != nil {
+				review.Outcome, review.Complete, reason = "uncertain", false, "source_unavailable"
+			} else if !covered {
+				review.Outcome, review.Complete, reason = "failed", false, "coverage_incomplete"
 			}
+		} else if _, sourceErr := manager.ChangedFiles(ctx, workspace); sourceErr != nil {
+			review.Outcome, review.Complete, reason = "uncertain", false, "source_unavailable"
 		}
 	}
 	input := reviewexec.ReviewEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}

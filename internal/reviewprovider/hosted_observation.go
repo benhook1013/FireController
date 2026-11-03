@@ -14,6 +14,19 @@ const hostedObservationLimit = 15 * time.Second
 // A failed collection is left nil; earlier fully collected observations remain
 // available for diagnosis but must not be treated as complete evidence.
 func (g *GitHub) ObserveHosted(ctx context.Context, repository string, number int64) (HostedPublicationSnapshot, error) {
+	return g.observeHosted(ctx, repository, number, nil)
+}
+
+// ObserveHostedArchive collects provider-owned history without relaxing native
+// command attribution. Unrelated comment clocks cannot invalidate that history.
+func (g *GitHub) ObserveHostedArchive(ctx context.Context, repository string, number int64, provider Author) (HostedPublicationSnapshot, error) {
+	if !publicationValidActor(provider) || provider.Kind != "Bot" {
+		return HostedPublicationSnapshot{}, invalidSelector()
+	}
+	return g.observeHosted(ctx, repository, number, &provider)
+}
+
+func (g *GitHub) observeHosted(ctx context.Context, repository string, number int64, archiveProvider *Author) (HostedPublicationSnapshot, error) {
 	var snapshot HostedPublicationSnapshot
 	if !validRepositorySelector(repository) || !validPullNumber(number) {
 		return snapshot, invalidSelector()
@@ -32,7 +45,7 @@ func (g *GitHub) ObserveHosted(ctx context.Context, repository string, number in
 	}
 	candidate := snapshot
 	candidate.Reviews, candidate.ObservedAt = reviews, time.Now().UTC()
-	if !validPublicationSnapshot(candidate) {
+	if !validHostedSnapshot(candidate, archiveProvider) {
 		return snapshot, invalidResponse(false, http.StatusOK)
 	}
 	snapshot.Reviews = reviews
@@ -43,7 +56,7 @@ func (g *GitHub) ObserveHosted(ctx context.Context, repository string, number in
 	}
 	candidate = snapshot
 	candidate.ReviewComments, candidate.ObservedAt = inline, time.Now().UTC()
-	if !validPublicationSnapshot(candidate) {
+	if !validHostedSnapshot(candidate, archiveProvider) {
 		return snapshot, invalidResponse(false, http.StatusOK)
 	}
 	snapshot.ReviewComments = inline
@@ -54,7 +67,7 @@ func (g *GitHub) ObserveHosted(ctx context.Context, repository string, number in
 	}
 	candidate = snapshot
 	candidate.IssueComments, candidate.ObservedAt = comments, time.Now().UTC()
-	if !validPublicationSnapshot(candidate) {
+	if !validHostedSnapshot(candidate, archiveProvider) {
 		return snapshot, invalidResponse(false, http.StatusOK)
 	}
 	snapshot.IssueComments = comments

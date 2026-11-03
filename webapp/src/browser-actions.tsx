@@ -102,18 +102,19 @@ export function MessageComposer({ reply }: { reply?: Message }) {
   const [recipient, setRecipient] = useState('');
   const [body, setBody] = useState('');
   const [sentConversation, setSentConversation] = useState('');
+  const [savedRecipient, setSavedRecipient] = useState('');
   const worker = session.worker?.id ?? '';
-  const replyRecipient = reply ? reply.sender_worker_id === worker ? reply.recipient_worker_id : reply.sender_worker_id : '';
+  const replyRecipient = reply && reply.origin_kind !== 'controller' ? reply.sender_worker_id === worker ? reply.recipient_worker_id : reply.sender_worker_id : '';
   const slot = JSON.stringify([worker, 'send', reply?.id ?? 'new']);
   const action = useBrowserAction<SendInput, { id: string; conversation_id: string; outcome: 'sent' }>(slot,
     (input, actionKey, signal) => session.api.sendMessage(input.worker, input.recipient, input.body, input.replyTo, actionKey, signal),
-    async receipt => { setOpen(true); setBody(''); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
-  if (!worker || !session.api.browserCapabilities.allow_writes || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
+    async receipt => { setOpen(true); setBody(''); setSavedRecipient(recipient); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
+  if (!worker || !session.api.browserCapabilities.allow_writes || reply?.origin_kind === 'controller' || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
   const input = action.retained?.input;
   const submit = (event: FormEvent) => { event.preventDefault(); void action.run({ worker, recipient: replyRecipient || recipient, body, replyTo: reply?.id ?? '' }); };
-  return <section className="browser-composer" aria-label={reply ? 'Reply composer' : 'New message composer'}>
+  return <section className="browser-composer" data-browser-dirty={Boolean(body || recipient !== savedRecipient)} aria-label={reply ? 'Reply composer' : 'New message composer'}>
     <button type="button" aria-expanded={open || action.locked} onClick={() => setOpen(value => !value)}>{reply ? 'Reply' : 'New message'}</button>
-    {(open || action.locked) && <form className="browser-action-form" onSubmit={submit}>
+    {(open || action.locked) && <form className="browser-action-form" data-browser-draft onSubmit={submit}>
       <p className="field-note">Send as {worker}.{reply && <> Reply stays in this conversation.</>}</p>
       {!reply && <label>Recipient worker ID<input value={input?.recipient ?? recipient} onChange={event => setRecipient(event.target.value)} disabled={action.locked} required maxLength={128} spellCheck={false} /></label>}
       {reply && <p>To {input?.recipient ?? replyRecipient}</p>}

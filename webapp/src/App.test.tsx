@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CapturedComparisonRefusal } from './App';
+import { CapturedComparisonRefusal } from './review-workspace';
 
 describe('captured comparison refusal presentation', () => {
   it('explains the repository binding refusal without suggesting a refresh', () => {

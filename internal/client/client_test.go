@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -42,7 +43,7 @@ func TestSharedArgumentValidatorBoundaries(t *testing.T) {
 			t.Errorf("valid status refused: %q", status)
 		}
 	}
-	for _, status := range []string{"", "Active", " active", "active ", "unknown", "completed\x00"} {
+	for _, status := range []string{"", "open", "Active", " active", "active ", "unknown", "completed\x00"} {
 		if client.ValidStatus(status) {
 			t.Errorf("invalid status accepted: %q", status)
 		}
@@ -104,7 +105,7 @@ func newClient(t *testing.T, server *httptest.Server) *client.Client {
 
 func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 	var calls atomic.Int64
-	job := client.Job{ID: "job:one", ProjectID: "project-one", Title: "title", Brief: "explicit full brief", WorkerID: "worker-one", Status: "active", Revision: 2, CreatedAt: "2026-10-15T00:00:00Z", UpdatedAt: "2026-10-15T00:01:00Z"}
+	job := client.Job{ID: "job:one", ProjectID: "project-one", Title: "title", Brief: "explicit full brief", WorkerID: "worker-one", Status: "active", Revision: 2, CreatedAt: "2026-10-15T00:00:00Z", UpdatedAt: "2026-10-15T00:01:00Z", Progress: client.Progress{Evidence: []string{}}, Checklist: client.JobChecklistSummary{Remaining: []client.ChecklistItem{}}, Notes: client.Page[client.NoteSummary]{Items: []client.NoteSummary{}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Method != "GET" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Instance") != "instance-one" {
@@ -140,7 +141,7 @@ func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 			}
 			write(w, 200, job)
 		case prefix + "/jobs/job:one/history":
-			write(w, 200, client.Page[client.JobHistoryEntry]{Items: []client.JobHistoryEntry{{Revision: 2, ActorID: "principal-one", State: job, CreatedAt: job.UpdatedAt}}})
+			write(w, 200, client.Page[client.JobHistoryEntry]{Items: []client.JobHistoryEntry{{Revision: 2, ActorID: "principal-one", State: client.JobState{ID: job.ID, ProjectID: job.ProjectID, Title: job.Title, Brief: job.Brief, WorkerID: job.WorkerID, Status: job.Status, Revision: job.Revision, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt}, CreatedAt: job.UpdatedAt}}})
 		case prefix + "/inbox/worker-one":
 			if r.URL.Query().Get("unread") != "true" || r.URL.Query().Get("unacknowledged") != "true" {
 				t.Error("inbox filters changed")
@@ -172,10 +173,10 @@ func TestBoundReadsPreservePrefixHeadersQueriesAndTypedFields(t *testing.T) {
 	if value, err := c.Jobs(context.Background(), client.PageOptions{Limit: 1, Cursor: "cursor&one=two"}, client.JobFilter{WorkerID: "worker-one", Status: "active"}); err != nil || value.Items[0].Revision != 2 || !value.HasMore || value.Cursor != "next-cursor" {
 		t.Fatalf("jobs: %v", err)
 	}
-	if value, err := c.Job(context.Background(), job.ID); err != nil || value != job {
+	if value, err := c.Job(context.Background(), job.ID); err != nil || !reflect.DeepEqual(value, job) {
 		t.Fatalf("job detail: %v", err)
 	}
-	if value, err := c.JobHistory(context.Background(), job.ID, client.PageOptions{}); err != nil || value.Items[0].State != job || value.Items[0].ActorID != "principal-one" {
+	if value, err := c.JobHistory(context.Background(), job.ID, client.PageOptions{}); err != nil || value.Items[0].State.ID != job.ID || value.Items[0].State.Brief != job.Brief || value.Items[0].ActorID != "principal-one" {
 		t.Fatalf("history: %v", err)
 	}
 	if value, err := c.Inbox(context.Background(), client.PageOptions{}, client.InboxFilter{Unread: true, Unacknowledged: true}); err != nil || !value.Items[0].PreviewTruncated || value.Items[0].Seen || value.Items[0].Acknowledged {
@@ -297,6 +298,54 @@ func TestStrictAndBoundedResponsesCannotRepairOrBroadenResults(t *testing.T) {
 }
 
 const maxBodyForTest = 4 << 20
+
+func TestNonJSONServerErrorsRetainStatusAndSafeReadRecovery(t *testing.T) {
+	for _, status := range []int{200, 403, 502, 503, 504} {
+		for _, read := range []string{"worker", "inbox_snapshot"} {
+			t.Run(http.StatusText(status)+"/"+read, func(t *testing.T) {
+				var calls atomic.Int64
+				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					calls.Add(1)
+					if r.Method != http.MethodGet {
+						t.Error("read changed method")
+					}
+					if read == "inbox_snapshot" && (r.URL.Path != "/api/v1/projects/project-one/inbox/worker-one/snapshot" || r.URL.RawQuery != "limit=5&unread=true") {
+						t.Error("snapshot selection changed")
+					}
+					w.Header().Set("Content-Type", "text/html")
+					w.Header().Set("X-Request-ID", "PRIVATE_PROXY_REQUEST")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte("<html>PRIVATE_PROXY_BODY " + testToken + "</html>"))
+				}))
+				defer service.Close()
+				c := newClient(t, service)
+				var err error
+				if read == "inbox_snapshot" {
+					_, err = c.InboxSnapshot(context.Background(), client.PageOptions{Limit: 5}, client.InboxFilter{Unread: true})
+				} else {
+					_, err = c.Worker(context.Background())
+				}
+				wantCode := "invalid_response"
+				wantStatus := 0
+				if status >= 500 {
+					wantCode, wantStatus = "service_unavailable", status
+				}
+				checkError(t, err, wantCode, "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
+				var failure *client.Error
+				if !errors.As(err, &failure) || failure.Status != wantStatus || failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() != 1 {
+					t.Fatalf("read error classification or no-retry changed: %#v calls=%d", failure, calls.Load())
+				}
+				if status >= 500 && (!strings.Contains(failure.Action, "retry the read") || strings.Contains(failure.Action, "compatibility")) {
+					t.Fatal("server outage lost read recovery guidance")
+				}
+			})
+		}
+	}
+}
 
 func TestServiceErrorsStayBoundedSafeAndStructured(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -588,5 +637,64 @@ func TestServerReplacementAfterHandshakeIsRejectedByRealGuard(t *testing.T) {
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.Status != 409 || providers.Load() != calls {
 		t.Fatal("replacement guard lost conflict or performed provider work")
+	}
+}
+
+func TestOpenJobListClientFilterAndContinuation(t *testing.T) {
+	var reads atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		reads.Add(1)
+		if r.Method != "GET" || r.URL.Query().Get("status") != "open" || r.URL.Query().Get("worker_id") != "worker-one" || r.URL.Query().Get("limit") != "1" {
+			t.Error("open filter or read semantics lost")
+		}
+		if r.URL.Query().Get("cursor") == "" {
+			write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-a", Title: "A", Status: "active", WorkerID: "worker-one", Revision: 1}}, HasMore: true, Cursor: "signed-next"})
+		} else {
+			if r.URL.Query().Get("cursor") != "signed-next" {
+				t.Error("continuation changed")
+			}
+			write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-b", Title: "B", Status: "parked", WorkerID: "worker-one", Revision: 1}}})
+		}
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	page, err := c.Jobs(t.Context(), client.PageOptions{Limit: 1}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+	if err != nil || !page.HasMore || len(page.Items) != 1 || page.Items[0].Status != "active" {
+		t.Fatal("first open page", err)
+	}
+	page, err = c.Jobs(t.Context(), client.PageOptions{Limit: 1, Cursor: page.Cursor}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+	if err != nil || page.HasMore || page.Items[0].Status != "parked" || reads.Load() != 2 {
+		t.Fatal("second open page", err)
+	}
+	if !client.ValidJobStatusFilter("open") || client.ValidStatus("open") {
+		t.Fatal("list-only validation changed actual states")
+	}
+	before := reads.Load()
+	_, err = c.CreateJob(t.Context(), "invalid-open", client.CreateJobRequest{Title: "Cannot store filter", Status: "open"})
+	checkError(t, err, "validation_failed")
+	if reads.Load() != before {
+		t.Fatal("open mutation dispatched")
+	}
+}
+
+func TestOpenJobListClientRejectsMismatchedResponses(t *testing.T) {
+	for _, tc := range []struct{ status, worker string }{{"completed", "worker-one"}, {"open", "worker-one"}, {"active", "worker-other"}} {
+		t.Run(tc.status+tc.worker, func(t *testing.T) {
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				write(w, 200, client.Page[client.JobSummary]{Items: []client.JobSummary{{ID: "job-one", Title: "Task", WorkerID: tc.worker, Status: tc.status, Revision: 1}}})
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			_, err := c.Jobs(t.Context(), client.PageOptions{}, client.JobFilter{Status: "open", WorkerID: "worker-one"})
+			checkError(t, err, "invalid_response")
+		})
 	}
 }

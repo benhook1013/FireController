@@ -30,7 +30,7 @@ func policyFixture(t *testing.T) *attemptFixture {
 }
 
 func policyInput(revision int64) PolicyConfiguration {
-	return PolicyConfiguration{ExpectedRevision: &revision, RequiredChannels: []string{"hosted", "cli"}, PausedChannels: []string{}, MaxReviewFiles: 0}
+	return PolicyConfiguration{ExpectedRevision: &revision, RequiredChannels: []string{"hosted", "cli"}, MaxReviewFiles: 0}
 }
 
 func policyConfigure(t *testing.T, f *attemptFixture, scope core.Scope, key string, input PolicyConfiguration) json.RawMessage {
@@ -84,11 +84,11 @@ func TestPolicyExplicitConfigurationReplayAndImmutableVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := policyRead(t, f, attemptProject, f.reader)
-	if got.ProjectID != attemptProject || got.Revision != 1 || got.ActorID != admin.PrincipalID || actor != admin.PrincipalID || got.RecordedAt != recorded || !reflect.DeepEqual(got.Policy.RequiredChannels, []string{"hosted", "cli"}) || got.Policy.PausedChannels == nil || len(got.Policy.PausedChannels) != 0 || got.Policy.MaxReviewFiles != 0 || strings.Contains(encoded(got), "expected_revision") || strings.Contains(originalBody, "expected_revision") {
+	if got.ProjectID != attemptProject || got.Revision != 1 || got.ActorID != admin.PrincipalID || actor != admin.PrincipalID || got.RecordedAt != recorded || !reflect.DeepEqual(got.Policy.RequiredChannels, []string{"hosted", "cli"}) || got.Policy.MaxReviewFiles != 0 || strings.Contains(encoded(got), "expected_revision") || strings.Contains(originalBody, "expected_revision") {
 		t.Fatal("policy state changed order/zero/shape/attribution", got)
 	}
 	var shape map[string]any
-	if json.Unmarshal([]byte(encoded(got)), &shape) != nil || len(shape) != 5 || len(shape["policy"].(map[string]any)) != 3 {
+	if json.Unmarshal([]byte(encoded(got)), &shape) != nil || len(shape) != 5 || len(shape["policy"].(map[string]any)) != 2 {
 		t.Fatal("policy record exposes request-only fields")
 	}
 	if at, err := time.Parse(time.RFC3339Nano, recorded); err != nil || at.IsZero() {
@@ -96,12 +96,11 @@ func TestPolicyExplicitConfigurationReplayAndImmutableVersions(t *testing.T) {
 	}
 	second := policyInput(1)
 	second.RequiredChannels = []string{"cli"}
-	second.PausedChannels = []string{"hosted"}
 	second.MaxReviewFiles = 100000
 	policyConfigure(t, f, admin, "second-policy", second)
 	current := policyRead(t, f, attemptProject, f.writer)
-	if current.Revision != 2 || current.Policy.MaxReviewFiles != 100000 || !reflect.DeepEqual(current.Policy.PausedChannels, []string{"hosted"}) || !reflect.DeepEqual(current.Policy.RequiredChannels, []string{"cli"}) {
-		t.Fatal("optional paused channel or explicit ceiling changed", current)
+	if current.Revision != 2 || current.Policy.MaxReviewFiles != 100000 || !reflect.DeepEqual(current.Policy.RequiredChannels, []string{"cli"}) {
+		t.Fatal("required channels or explicit ceiling changed", current)
 	}
 	before := policyState(t, f)
 	replay, err := f.e.ConfigurePolicy(t.Context(), admin, "first-policy", input)
@@ -158,7 +157,6 @@ func TestPolicyCurrentAuthorizationAndProjectIsolation(t *testing.T) {
 	otherAdmin := f.scope(t, otherAttemptProject, f.admin, true)
 	other := policyInput(0)
 	other.RequiredChannels = []string{"hosted"}
-	other.PausedChannels = []string{"cli"}
 	other.MaxReviewFiles = 1
 	policyConfigure(t, f, otherAdmin, "other-policy", other)
 	if policyRead(t, f, attemptProject, f.reader).Policy.MaxReviewFiles != 0 || policyRead(t, f, otherAttemptProject, f.other).Policy.MaxReviewFiles != 1 {
@@ -209,7 +207,6 @@ func TestPolicyOwnsInputBeforeConcurrentWork(t *testing.T) {
 	var release sync.Once
 	defer release.Do(func() { close(gate.release) })
 	input := policyInput(0)
-	input.PausedChannels = []string{"hosted"}
 	type result struct {
 		body json.RawMessage
 		err  error
@@ -226,7 +223,6 @@ func TestPolicyOwnsInputBeforeConcurrentWork(t *testing.T) {
 	}
 	*input.ExpectedRevision = 9
 	input.RequiredChannels[0] = "cli"
-	input.PausedChannels[0] = "cli"
 	// An independent project's mutation remains usable while this caller waits.
 	policyConfigure(t, f, f.scope(t, otherAttemptProject, f.admin, true), "independent-project", policyInput(0))
 	release.Do(func() { close(gate.release) })
@@ -240,11 +236,10 @@ func TestPolicyOwnsInputBeforeConcurrentWork(t *testing.T) {
 		t.Fatal(got.err)
 	}
 	record := policyRead(t, f, attemptProject, f.reader)
-	if record.Revision != 1 || !reflect.DeepEqual(record.Policy.RequiredChannels, []string{"hosted", "cli"}) || !reflect.DeepEqual(record.Policy.PausedChannels, []string{"hosted"}) {
+	if record.Revision != 1 || !reflect.DeepEqual(record.Policy.RequiredChannels, []string{"hosted", "cli"}) {
 		t.Fatal("caller mutated the journal input", record)
 	}
 	original := policyInput(0)
-	original.PausedChannels = []string{"hosted"}
 	before := policyState(t, f)
 	replay, err := f.e.ConfigurePolicy(t.Context(), admin, "owned-policy", original)
 	if err != nil || !bytes.Equal(replay, got.body) || policyState(t, f) != before {
@@ -305,10 +300,6 @@ func TestPolicyValidationAndNoSilentDefaults(t *testing.T) {
 		"required_padded":    func(c *PolicyConfiguration) { c.RequiredChannels = []string{" cli"} },
 		"required_control":   func(c *PolicyConfiguration) { c.RequiredChannels = []string{"cli\x00"} },
 		"required_utf8":      func(c *PolicyConfiguration) { c.RequiredChannels = []string{"cli\xff"} },
-		"paused_missing":     func(c *PolicyConfiguration) { c.PausedChannels = nil },
-		"paused_duplicate":   func(c *PolicyConfiguration) { c.PausedChannels = []string{"hosted", "hosted"} },
-		"paused_unknown":     func(c *PolicyConfiguration) { c.PausedChannels = []string{"manual"} },
-		"paused_large":       func(c *PolicyConfiguration) { c.PausedChannels = []string{"cli", "hosted", "cli"} },
 		"size_negative":      func(c *PolicyConfiguration) { c.MaxReviewFiles = -1 },
 		"size_large":         func(c *PolicyConfiguration) { c.MaxReviewFiles = 100001 },
 	} {
@@ -332,12 +323,11 @@ func TestPolicyValidationAndNoSilentDefaults(t *testing.T) {
 	}
 	valid := policyInput(0)
 	valid.RequiredChannels = []string{"cli"}
-	valid.PausedChannels = []string{"cli", "hosted"}
 	valid.MaxReviewFiles = 1
 	policyConfigure(t, f, scope, "explicit-overlap", valid)
 	got := policyRead(t, f, attemptProject, f.reader)
-	if !reflect.DeepEqual(got.Policy.RequiredChannels, valid.RequiredChannels) || !reflect.DeepEqual(got.Policy.PausedChannels, valid.PausedChannels) {
-		t.Fatal("valid pause outside requirements was normalized or refused")
+	if !reflect.DeepEqual(got.Policy.RequiredChannels, valid.RequiredChannels) {
+		t.Fatal("valid required channels was normalized or refused")
 	}
 	// A saturated durable row cannot wrap into a negative or reused revision.
 	if _, err := f.store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,?,?,?,?)`, attemptProject, int64(math.MaxInt64), encoded(got.Policy), scope.PrincipalID, stamp()); err != nil {
@@ -358,7 +348,6 @@ func TestPolicyRestartRetainsHistoryAndReceipts(t *testing.T) {
 	first := policyConfigure(t, f, scope, "durable-first", policyInput(0))
 	next := policyInput(1)
 	next.RequiredChannels = []string{"hosted"}
-	next.PausedChannels = []string{"cli"}
 	next.MaxReviewFiles = 300
 	policyConfigure(t, f, scope, "durable-second", next)
 	current := policyRead(t, f, attemptProject, f.reader)

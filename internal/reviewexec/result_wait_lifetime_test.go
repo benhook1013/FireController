@@ -17,11 +17,14 @@ func TestCheckpointWaitUsesResultWaitLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := checkpointSQLState(t, f)
+	if _, _, err := e.WaitCheckpointPublication(t.Context(), scope, receipt.ID, 901); err == nil {
+		t.Fatal("checkpoint accepted wait beyond finite bound")
+	}
 	callerCtx, cancelCaller := context.WithCancel(t.Context())
 	defer cancelCaller()
 	done := make(chan error, 1)
 	go func() {
-		_, _, waitErr := e.WaitCheckpointPublication(callerCtx, scope, receipt.ID, 60)
+		_, _, waitErr := e.WaitCheckpointPublication(callerCtx, scope, receipt.ID, 900)
 		done <- waitErr
 	}()
 	deadline := time.Now().Add(time.Second)
@@ -68,11 +71,14 @@ func TestSourceRefreshWaitUsesResultWaitLifetime(t *testing.T) {
 	}
 	beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 	beforeReceipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.source_refresh'`)
+	if _, err := e.WaitSourceRefresh(t.Context(), scope, receipt.ID, 901*time.Second); err == nil {
+		t.Fatal("source refresh accepted wait beyond finite bound")
+	}
 	callerCtx, cancelCaller := context.WithCancel(t.Context())
 	defer cancelCaller()
 	done := make(chan error, 1)
 	go func() {
-		_, waitErr := e.WaitSourceRefresh(callerCtx, scope, receipt.ID, time.Minute)
+		_, waitErr := e.WaitSourceRefresh(callerCtx, scope, receipt.ID, 900*time.Second)
 		done <- waitErr
 	}()
 	deadline := time.Now().Add(time.Second)

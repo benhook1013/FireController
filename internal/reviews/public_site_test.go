@@ -48,7 +48,7 @@ func TestPublicSiteActualReviewHooksPreservePrivacyAndHistory(t *testing.T) {
 		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil {
 			t.Fatal("anonymous read", response.Code, response.Body.String())
 		}
-		for _, sentinel := range []string{"PRIVATE_", f.project, f.store.InstanceID(), f.admin, f.readToken, "private-publication-worker", "source_run_id", "snapshot_id", "actor_id", "round_salt"} {
+		for _, sentinel := range []string{"PRIVATE_", f.project, f.store.InstanceID(), f.admin, f.readToken, "private-publication-worker", "source_run_id", "snapshot_id", "actor_id", "round_salt", "private_diagnostic_sentinel"} {
 			if bytes.Contains(response.Body.Bytes(), []byte(sentinel)) {
 				t.Fatal("private review facts exposed", sentinel)
 			}
@@ -166,6 +166,10 @@ func TestPublicSiteActualReviewHooksPreservePrivacyAndHistory(t *testing.T) {
 	unchanged(secondBytes)
 	attempt := nativeAttempt("PRIVATE_ACTIVE_ATTEMPT", "active")
 	mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &attempt})
+	unchanged(secondBytes)
+	diagnostic := nativeAttempt("PRIVATE_UNCERTAIN_ATTEMPT", "uncertain")
+	diagnostic.Reason = "private_diagnostic_sentinel"
+	mustNativePublish(t, f, NativePublication{Pull: pull, Attempt: &diagnostic})
 	unchanged(secondBytes)
 	decision := nativeAdjudicationInput(native)
 	decideNativeFinding(&decision.Findings[0], "accepted")

@@ -487,3 +487,36 @@ func TestCatalogCLIOnlyFingerprintUnchangedAndHostedCopiesIndependent(t *testing
 		t.Fatal("input settings changed loaded capability")
 	}
 }
+
+func TestCatalogCLIAllowanceTimeoutDefaultAndBounds(t *testing.T) {
+	dir := t.TempDir()
+	baseline, err := LoadCatalog(writeCatalog(t, dir, publicCatalog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := baseline.Capabilities[0]
+	if old.Fingerprint != "f7e567144adc2fac285e3217d2a81f009581adf2615cd1f228a5a96a9e6fbf0b" {
+		t.Fatal("default capability fingerprint changed")
+	}
+	for _, seconds := range []int{1, 15, 30, 60} {
+		raw := strings.Replace(publicCatalog, `"cli_executable":"coderabbit"`, `"cli_executable":"coderabbit","cli_allowance_timeout_seconds":`+strconv.Itoa(seconds), 1)
+		got, err := LoadCatalog(writeCatalog(t, dir, raw))
+		if err != nil {
+			t.Fatal(seconds, err)
+		}
+		c := got.Capabilities[0]
+		want := seconds
+		if seconds == 15 {
+			want = 0
+		}
+		if c.CLIAllowanceTimeoutSeconds != want || (c.Fingerprint == old.Fingerprint) != (seconds == 15) {
+			t.Fatal("timeout did not bind to effective capability", seconds, c.CLIAllowanceTimeoutSeconds)
+		}
+	}
+	for _, bad := range []string{"0", "-1", "61", "1.5", "null", `"30"`, `true`} {
+		raw := strings.Replace(publicCatalog, `"cli_executable":"coderabbit"`, `"cli_executable":"coderabbit","cli_allowance_timeout_seconds":`+bad, 1)
+		if _, err := LoadCatalog(writeCatalog(t, dir, raw)); err == nil {
+			t.Fatal("invalid timeout accepted", bad)
+		}
+	}
+}

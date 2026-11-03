@@ -82,11 +82,22 @@ func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string
 		if err != nil {
 			return err
 		}
+		scope := core.Scope{ProjectID: project, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+		externalSourceID := nativeHostedExternalSourceID(evidence.Capture.Hosted)
 		if exists {
 			receipt = current
+			if externalSourceID != "" {
+				reconciled, changed, reconcileErr := reviews.ReconcileNativeHostedSource(ctx, tx, scope, pull.Number, run.HeadSHA, evidence.ID, externalSourceID)
+				if reconcileErr != nil {
+					return reconcileErr
+				}
+				if changed {
+					receipt = reconciled
+				}
+			}
 			return nil
 		}
-		receipt, err = reviews.PublishNative(ctx, tx, core.Scope{ProjectID: project, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Run: &run})
+		receipt, err = reviews.PublishNative(ctx, tx, scope, reviews.NativePublication{Pull: pull, Run: &run, ExternalHostedSourceID: externalSourceID})
 		return err
 	})
 	if err != nil {
@@ -99,20 +110,34 @@ func (e *Engine) PublishEvidence(ctx context.Context, project, evidenceID string
 // facts or provider state. Callers must use the same transaction for publication.
 func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number int64) (reviews.PullInput, error) {
 	var pull reviews.PullInput
-	err := tx.QueryRowContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete
+	var metadataJSON string
+	err := tx.QueryRowContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.metadata_json
 		FROM review_workspace w JOIN review_pulls p ON p.project_id=w.project_id AND p.snapshot_id=w.snapshot_id
-		WHERE w.project_id=? AND p.number=?`, project, number).Scan(&pull.Number, &pull.Title, &pull.State, &pull.HeadSHA, &pull.BaseRef, &pull.BaseSHA, &pull.CIState, &pull.Mergeability, &pull.Complete)
+		WHERE w.project_id=? AND p.number=?`, project, number).Scan(&pull.Number, &pull.Title, &pull.State, &pull.HeadSHA, &pull.BaseRef, &pull.BaseSHA, &pull.CIState, &pull.Mergeability, &pull.Complete, &metadataJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return reviews.PullInput{}, core.Fail("review_projection_missing", "The current review workspace has no stored facts for this pull request.", 409)
+	}
+	if err == nil {
+		m, e := reviews.ReadPullMetadata(metadataJSON, pull.State)
+		if e != nil {
+			return pull, e
+		}
+		pull.Diff, pull.IsDraft, pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
 	}
 	return pull, err
 }
 
 func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt Attempt) (reviews.RunInput, error) {
 	capture := evidence.Capture
-	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: []string{}, Findings: make([]reviews.Finding, 0, len(state.Findings))}
+	limits := append([]string{}, capture.Review.CoverageLimits...)
+	if validateNewCoverageLimits(capture) != nil {
+		// Display policy cannot invalidate already-retained source evidence.
+		// Keep the original metadata in the ledger rather than silently clipping it.
+		limits = []string{"Source coverage limitations were omitted from this display; see the original review evidence."}
+	}
+	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: limits, Findings: make([]reviews.Finding, 0, len(state.Findings))}
 	if !run.Complete {
-		run.CoverageLimits = []string{"Incomplete CLI capture; retained findings do not establish completed review coverage."}
+		run.CoverageLimits = append(run.CoverageLimits, "Incomplete CLI capture; retained findings do not establish completed review coverage.")
 		if run.Found < int64(len(capture.Review.Findings)) {
 			run.Found = int64(len(capture.Review.Findings))
 		}
@@ -148,8 +173,10 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 		FROM review_workspace w JOIN review_runs r ON r.project_id=w.project_id AND r.snapshot_id=w.snapshot_id
 		WHERE w.project_id=? AND r.source='native-executor' AND r.source_run_id=?`, project, expected.SourceRunID).Scan(&receipt.ID, &receipt.Revision, &actualNumber, &runID, &actual.SourceRunID, &actual.Channel, &actual.HeadSHA, &actual.Reviewer, &actual.Scope, &actual.Outcome, &actual.Attributable, &actual.Complete, &actual.StartedAt, &actual.FinishedAt, &actual.Found, &actual.Accepted, &actual.Routed, &actual.Finalized, &fixed, &limits)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Source existence is indexed retained authority. Expanding the historical
+		// snapshot view here multiplies an absent capture across every snapshot.
 		var historical bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_runs WHERE project_id=? AND source='native-executor' AND source_run_id=?)`, project, expected.SourceRunID).Scan(&historical); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_run_versions WHERE project_id=? AND source='native-executor' AND source_run_id=?)`, project, expected.SourceRunID).Scan(&historical); err != nil {
 			return reviews.Receipt{}, false, err
 		}
 		if historical {
@@ -198,4 +225,22 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 	}
 	receipt.Outcome = "observed"
 	return receipt, true, nil
+}
+
+// Only validated native capture identity supplies the observer alias. The
+// current pull head/title/ordering and publication times are not identities.
+func nativeHostedExternalSourceID(hosted *HostedEvidenceMetadata) string {
+	if hosted == nil {
+		return ""
+	}
+	if hosted.PublicationID != "" {
+		return "publication:" + hosted.PublicationID
+	}
+	if hosted.SubmittedReview != nil {
+		return "run:" + hosted.SubmittedReview.ProviderRunID
+	}
+	if hosted.StandingSummary != nil {
+		return "run:" + hosted.StandingSummary.ProviderRunID
+	}
+	return ""
 }

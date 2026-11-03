@@ -7,10 +7,10 @@ import (
 )
 
 type policyHTTPRequest struct {
-	ExpectedRevision *int64    `json:"expected_revision"`
-	RequiredChannels *[]string `json:"required_channels"`
-	PausedChannels   *[]string `json:"paused_channels"`
-	MaxReviewFiles   *int64    `json:"max_review_files"`
+	ExpectedRevision *int64         `json:"expected_revision"`
+	RequiredChannels *[]string      `json:"required_channels"`
+	MaxReviewFiles   *int64         `json:"max_review_files"`
+	RoundDefaults    *RoundDefaults `json:"round_defaults,omitempty"`
 }
 
 func (e *Engine) readPolicyHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +46,7 @@ func (e *Engine) configurePolicyHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if wire.ExpectedRevision == nil || wire.RequiredChannels == nil || wire.PausedChannels == nil || wire.MaxReviewFiles == nil {
+	if wire.ExpectedRevision == nil || wire.RequiredChannels == nil || wire.MaxReviewFiles == nil {
 		core.WriteError(w, invalid())
 		return
 	}
@@ -55,7 +55,7 @@ func (e *Engine) configurePolicyHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	input := PolicyConfiguration{ExpectedRevision: wire.ExpectedRevision, RequiredChannels: *wire.RequiredChannels, PausedChannels: *wire.PausedChannels, MaxReviewFiles: *wire.MaxReviewFiles}
+	input := PolicyConfiguration{ExpectedRevision: wire.ExpectedRevision, RequiredChannels: *wire.RequiredChannels, MaxReviewFiles: *wire.MaxReviewFiles, RoundDefaults: wire.RoundDefaults}
 	receipt, err := e.ConfigurePolicy(r.Context(), scope, key, input)
 	if err != nil {
 		core.WriteError(w, err)

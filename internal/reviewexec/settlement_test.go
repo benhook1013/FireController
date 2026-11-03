@@ -128,6 +128,7 @@ func TestSettlementConfigurationReplayAfterCapabilityRemovalOrNarrowing(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
+			initialEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 			var capabilities []Capability
 			if mode == "narrowed" {
 				capabilities = []Capability{{ID: "test-capability", Provider: "coderabbit", Account: "test-account", Channels: []string{"cli"}}}
@@ -150,7 +151,7 @@ func TestSettlementConfigurationReplayAfterCapabilityRemovalOrNarrowing(t *testi
 			malformed.Queue = []int64{0}
 			_, err = f.e.Configure(context.Background(), scope, "recover-configuration", malformed)
 			attemptCode(t, err, "validation_failed")
-			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_config`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != 1 {
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_config`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != initialEvents {
 				t.Fatal("replay or rejected new configuration changed durable effects")
 			}
 			if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE principal_id=?`, scope.PrincipalID); err != nil {

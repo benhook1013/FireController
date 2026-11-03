@@ -31,9 +31,10 @@ func (e *Engine) notifyCheckpoint(id string) {
 // WaitCheckpointPublication observes only committed status and reauthorizes each
 // result. The boolean is true for a terminal result, false for accepted work.
 func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope, id string, waitSeconds int) (CheckpointPublication, bool, error) {
-	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 60 {
+	if ctx == nil || e == nil || e.store == nil || !validPublicationID(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 900 {
 		return CheckpointPublication{}, false, invalid()
 	}
+	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
 	// A driver interrupt can lose the context cause while a read is in flight.
@@ -45,7 +46,12 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 		if waitCtx.Err() != nil {
 			return CheckpointPublication{}, canceled()
 		}
-		v, err := e.ReadCheckpointPublication(waitCtx, scope, id)
+		var v CheckpointPublication
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			v, readErr = e.ReadCheckpointPublication(readCtx, scope, id)
+			return readErr
+		})
 		if waitCtx.Err() != nil {
 			return CheckpointPublication{}, canceled()
 		}
@@ -84,7 +90,7 @@ func (e *Engine) WaitCheckpointPublication(ctx context.Context, scope core.Scope
 			delete(e.checkpointWaiterPrincipals, w.principal)
 		}
 	}()
-	timer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		v, err := read()

@@ -216,7 +216,7 @@ func TestRetainHostedAllowanceCurrentEligibilityStillRequired(t *testing.T) {
 			}
 		},
 		"file ceiling": func(t *testing.T, f *runtimeAllowanceFixture, _ *reviewexec.Anchor) {
-			if _, err := f.f.store.DB().Exec(`UPDATE review_policy_config SET body_json='{"required_channels":["cli","hosted"],"paused_channels":[],"max_review_files":1}' WHERE project_id=? AND revision=1`, f.f.project); err != nil {
+			if _, err := f.f.store.DB().Exec(`UPDATE review_policy_config SET body_json='{"required_channels":["cli","hosted"],"max_review_files":1}' WHERE project_id=? AND revision=1`, f.f.project); err != nil {
 				t.Fatal(err)
 			}
 		},

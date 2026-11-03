@@ -9,6 +9,17 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
+func singleHostedRecovery(t *testing.T, e *Engine, ctx context.Context, capability string) (*HostedRecoveryCandidate, error) {
+	t.Helper()
+	targets, err := e.PendingHostedRecoveries(ctx, capability)
+	if err != nil || len(targets) == 0 {
+		return nil, err
+	}
+	if len(targets) != 1 {
+		t.Fatal("single-target fixture returned multiple candidates", len(targets))
+	}
+	return &targets[0], nil
+}
 func pendingRecoveryAdvance(t *testing.T, f *attemptFixture, a Attempt, state, reason, external string) Attempt {
 	t.Helper()
 	updated, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, state, reason, external)
@@ -16,6 +27,50 @@ func pendingRecoveryAdvance(t *testing.T, f *attemptFixture, a Attempt, state, r
 		t.Fatal(err)
 	}
 	return updated
+}
+
+func TestPendingHostedRecoveriesKeepsBothRepositoriesAcrossRestart(t *testing.T) {
+	f, first, _ := hostedRecoveryFixture(t)
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	second := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "second-repository-issued", "hosted", 2, 1))
+	anchor := attemptAnchor(otherAttemptProject, 2)
+	body, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: second.OperationID, AttemptID: second.ID, HeadSHA: anchor.CandidateSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err = f.e.Admit(t.Context(), otherAttemptProject, second.ID, second.Revision, anchor, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Current admission can change without erasing either issued observation.
+	f.configure(t, attemptProject, "other-account", 1, true)
+	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+	cliAllowanceReopen(t, f)
+	f.e, err = New(f.store, attemptCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := hostedObservationState(t, f, first) + hostedObservationState(t, f, second)
+	targets, err := f.e.PendingHostedRecoveries(t.Context(), "test-capability")
+	if err != nil || len(targets) != 2 || targets[0].AttemptID >= targets[1].AttemptID {
+		t.Fatal("independent repositories lost original recovery ownership", targets, err)
+	}
+	want := map[string]string{first.ID: attemptProject, second.ID: otherAttemptProject}
+	for _, target := range targets {
+		if target.ProjectID != want[target.AttemptID] {
+			t.Fatal("cross-project target", target)
+		}
+		bound, err := f.e.ReadHostedRecovery(t.Context(), target.ProjectID, target.AttemptID, "test-capability")
+		if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.ID != target.OperationID {
+			t.Fatal("original issued binding changed", target, err)
+		}
+	}
+	if before != hostedObservationState(t, f, first)+hostedObservationState(t, f, second) {
+		t.Fatal("multi-target selection mutated retained history")
+	}
 }
 
 func TestPendingHostedRecoverySelectsInterruptedAndAdoptedOnly(t *testing.T) {
@@ -46,7 +101,7 @@ func TestPendingHostedRecoverySelectsInterruptedAndAdoptedOnly(t *testing.T) {
 				admissionSQL(t, f, `UPDATE review_operations SET state='preparing' WHERE id=?`, a.OperationID)
 			}
 			before := hostedObservationState(t, f, a)
-			candidate, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
+			candidate, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 			eligible := state == "uncertain" || state == "recovered-active"
 			if err != nil || (candidate != nil) != eligible {
 				t.Fatal("wrong observation ownership selection", state, candidate, err)
@@ -60,7 +115,7 @@ func TestPendingHostedRecoverySelectsInterruptedAndAdoptedOnly(t *testing.T) {
 					t.Fatal("selected original binding cannot be read", err)
 				}
 				candidate.ProjectID = "caller-owned-copy"
-				again, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
+				again, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 				if err != nil || again.ProjectID != attemptProject {
 					t.Fatal("caller changed retained candidate", err)
 				}
@@ -76,7 +131,7 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 	f, a, _ := hostedRecoveryFixture(t)
 	a = pendingRecoveryAdvance(t, f, a, "uncertain", "interrupted", "")
 	f.configure(t, attemptProject, "other-account", 1, true)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	admissionSQL(t, f, `DELETE FROM grants WHERE credential_id='exec-writer-cred'`)
 	cliAllowanceReopen(t, f)
@@ -86,11 +141,11 @@ func TestPendingHostedRecoveryRetainsOriginalConfigAfterPauseRevocationAndRestar
 		t.Fatal(err)
 	}
 	before := hostedObservationState(t, f, a)
-	got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
-	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, AttemptID: a.ID}) {
+	got, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
+	if err != nil || !reflect.DeepEqual(got, &HostedRecoveryCandidate{ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID}) {
 		t.Fatal("latest admission settings erased issued observation", got, err)
 	}
-	other, err := f.e.PendingHostedRecovery(t.Context(), "other-account")
+	other, err := singleHostedRecovery(t, f.e, t.Context(), "other-account")
 	if err != nil || other != nil {
 		t.Fatal("latest capability adopted another original account", other, err)
 	}
@@ -107,7 +162,7 @@ func TestPendingHostedRecoverySeparatesProjectAccountChannelAndFingerprint(t *te
 	other = pendingRecoveryAdvance(t, f, other, "held", "fixture_stop", "")
 	// A queued operation on another project/account must not be selected.
 	r := f.enqueue(t, otherAttemptProject, "other-queued", "hosted", 4, 1)
-	got, err := f.e.PendingHostedRecovery(t.Context(), "other-account")
+	got, err := singleHostedRecovery(t, f.e, t.Context(), "other-account")
 	if err != nil || got != nil {
 		t.Fatal("unissued work selected", got, err)
 	}
@@ -123,10 +178,10 @@ func TestPendingHostedRecoverySeparatesProjectAccountChannelAndFingerprint(t *te
 	}
 	other = pendingRecoveryAdvance(t, f, other, "uncertain", "interrupted", "")
 	for capability, expected := range map[string]*HostedRecoveryCandidate{
-		"test-capability": {ProjectID: attemptProject, AttemptID: a.ID},
-		"other-account":   {ProjectID: otherAttemptProject, AttemptID: other.ID},
+		"test-capability": {ProjectID: attemptProject, OperationID: a.OperationID, AttemptID: a.ID},
+		"other-account":   {ProjectID: otherAttemptProject, OperationID: other.OperationID, AttemptID: other.ID},
 	} {
-		selected, err := f.e.PendingHostedRecovery(t.Context(), capability)
+		selected, err := singleHostedRecovery(t, f.e, t.Context(), capability)
 		if err != nil || !reflect.DeepEqual(selected, expected) {
 			t.Fatal("account/project selection crossed original binding", selected, err)
 		}
@@ -161,7 +216,7 @@ func TestPendingHostedRecoverySeparatesProjectAccountChannelAndFingerprint(t *te
 				admissionSQL(t, f, `UPDATE review_execution_attempts SET project_id=? WHERE id=?`, otherAttemptProject, a.ID)
 			}
 			before := hostedObservationState(t, f, a)
-			got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
+			got, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 			if err != nil || got != nil || hostedObservationState(t, f, a) != before {
 				t.Fatal("different original binding adopted or mutated", got, err)
 			}
@@ -181,6 +236,7 @@ func TestPendingHostedRecoveryRejectsDuplicateAndMalformedRetainedCandidates(t *
 				r := f.enqueue(t, attemptProject, "synthetic-duplicate", "hosted", 4, 1)
 				second := "review_attempt_" + strings.Repeat("f", 32)
 				admissionSQL(t, f, `INSERT INTO review_execution_attempts(id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id) SELECT ?,?,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE id=?`, second, r.ID, a.ID)
+				admissionSQL(t, f, `UPDATE review_execution_attempts SET anchor_json=json_set(anchor_json,'$.pull_number',4) WHERE id=?`, second)
 				admissionSQL(t, f, `UPDATE review_operations SET state='uncertain',attempt_id=? WHERE id=?`, second, r.ID)
 			case "configuration":
 				admissionSQL(t, f, `UPDATE review_execution_config SET body_json=body_json||' ' WHERE project_id=? AND revision=1`, attemptProject)
@@ -188,7 +244,7 @@ func TestPendingHostedRecoveryRejectsDuplicateAndMalformedRetainedCandidates(t *
 				admissionSQL(t, f, `UPDATE review_execution_attempts SET revision=1 WHERE id=?`, a.ID)
 			}
 			before := hostedObservationState(t, f, a)
-			got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
+			got, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 			attemptCode(t, err, "storage_unavailable")
 			if got != nil || hostedObservationState(t, f, a) != before {
 				t.Fatal("ambiguous/corrupt recovery selected or repaired", got)
@@ -199,7 +255,7 @@ func TestPendingHostedRecoveryRejectsDuplicateAndMalformedRetainedCandidates(t *
 
 func TestPendingHostedRecoveryValidatesBeforeStorageAndHonorsCancellation(t *testing.T) {
 	f := newAttemptFixture(t)
-	got, err := f.e.PendingHostedRecovery(t.Context(), "test-capability")
+	got, err := singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 	if err != nil || got != nil {
 		t.Fatal("empty store not empty", got, err)
 	}
@@ -208,7 +264,7 @@ func TestPendingHostedRecoveryValidatesBeforeStorageAndHonorsCancellation(t *tes
 	before := hostedObservationState(t, f, a)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	got, err = f.e.PendingHostedRecovery(ctx, "test-capability")
+	got, err = singleHostedRecovery(t, f.e, ctx, "test-capability")
 	attemptCode(t, err, "overloaded")
 	if got != nil || hostedObservationState(t, f, a) != before {
 		t.Fatal("cancelled read selected or changed state")
@@ -216,16 +272,16 @@ func TestPendingHostedRecoveryValidatesBeforeStorageAndHonorsCancellation(t *tes
 	if err := f.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.e.PendingHostedRecovery(nil, "test-capability")
+	_, err = singleHostedRecovery(t, f.e, nil, "test-capability")
 	attemptCode(t, err, "validation_failed")
-	_, err = f.e.PendingHostedRecovery(t.Context(), "../invalid")
+	_, err = singleHostedRecovery(t, f.e, t.Context(), "../invalid")
 	attemptCode(t, err, "validation_failed")
-	_, err = f.e.PendingHostedRecovery(t.Context(), "absent")
+	_, err = singleHostedRecovery(t, f.e, t.Context(), "absent")
 	attemptCode(t, err, "review_conflict")
 	capability := f.e.capabilities["test-capability"]
 	capability.Channels = []string{"cli"}
 	f.e.capabilities["test-capability"] = capability
-	_, err = f.e.PendingHostedRecovery(t.Context(), "test-capability")
+	_, err = singleHostedRecovery(t, f.e, t.Context(), "test-capability")
 	attemptCode(t, err, "review_conflict")
 }
 

@@ -14,17 +14,17 @@ import (
 // PolicyConfiguration is an explicit project preference, not a provider quota.
 // A zero MaxReviewFiles adds no project ceiling and asserts no provider limit.
 type PolicyConfiguration struct {
-	ExpectedRevision *int64   `json:"expected_revision"`
-	RequiredChannels []string `json:"required_channels"`
-	PausedChannels   []string `json:"paused_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	ExpectedRevision *int64         `json:"expected_revision"`
+	RequiredChannels []string       `json:"required_channels"`
+	MaxReviewFiles   int64          `json:"max_review_files"`
+	RoundDefaults    *RoundDefaults `json:"round_defaults,omitempty"`
 }
 
 // Policy omits the previous-revision assertion from the current stored values.
 type Policy struct {
-	RequiredChannels []string `json:"required_channels"`
-	PausedChannels   []string `json:"paused_channels"`
-	MaxReviewFiles   int64    `json:"max_review_files"`
+	RequiredChannels []string       `json:"required_channels"`
+	MaxReviewFiles   int64          `json:"max_review_files"`
+	RoundDefaults    *RoundDefaults `json:"round_defaults,omitempty"`
 }
 
 type PolicyRecord struct {
@@ -36,22 +36,24 @@ type PolicyRecord struct {
 }
 
 func validPolicy(policy Policy) bool {
-	if policy.RequiredChannels == nil || len(policy.RequiredChannels) < 1 || len(policy.RequiredChannels) > 2 || policy.PausedChannels == nil || len(policy.PausedChannels) > 2 || policy.MaxReviewFiles < 0 || policy.MaxReviewFiles > 100000 {
+	if policy.RequiredChannels == nil || len(policy.RequiredChannels) < 1 || len(policy.RequiredChannels) > 2 || policy.MaxReviewFiles < 0 || policy.MaxReviewFiles > 100000 {
 		return false
 	}
-	for _, channels := range [][]string{policy.RequiredChannels, policy.PausedChannels} {
-		seen := map[string]bool{}
-		for _, channel := range channels {
-			if !validChannel(channel) || seen[channel] {
-				return false
-			}
-			seen[channel] = true
+	seen := map[string]bool{}
+	for _, channel := range policy.RequiredChannels {
+		if !validChannel(channel) || seen[channel] {
+			return false
 		}
+		seen[channel] = true
 	}
-	return true
+	return validRoundDefaults(policy.RoundDefaults)
 }
 
 func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
+	if value.RoundDefaults != nil {
+		defaults := *value.RoundDefaults
+		value.RoundDefaults = &defaults
+	}
 	if value.ExpectedRevision != nil {
 		revision := *value.ExpectedRevision
 		value.ExpectedRevision = &revision
@@ -61,35 +63,25 @@ func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
 		copy(channels, value.RequiredChannels)
 		value.RequiredChannels = channels
 	}
-	if value.PausedChannels != nil {
-		channels := make([]string, len(value.PausedChannels))
-		copy(channels, value.PausedChannels)
-		value.PausedChannels = channels
-	}
 	return value
 }
 
 // ConfigurePolicy stores one immutable administrator-attributed revision. It
 // performs no admission, provider observation, execution or policy assessment.
 func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key string, input PolicyConfiguration) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	// Bound collection copying even for trusted direct callers.
-	if len(input.RequiredChannels) > 2 || len(input.PausedChannels) > 2 {
+	if len(input.RequiredChannels) > 2 {
 		return nil, invalid()
 	}
 	input = clonePolicyConfiguration(input)
-	policy := Policy{RequiredChannels: input.RequiredChannels, PausedChannels: input.PausedChannels, MaxReviewFiles: input.MaxReviewFiles}
+	policy := Policy{RequiredChannels: input.RequiredChannels, MaxReviewFiles: input.MaxReviewFiles, RoundDefaults: input.RoundDefaults}
 	if !identifier.MatchString(scope.ProjectID) || input.ExpectedRevision == nil || *input.ExpectedRevision < 0 || *input.ExpectedRevision == math.MaxInt64 || !validPolicy(policy) {
 		return nil, invalid()
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.policy.configure", Target: "policy", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// A write-capable scope is insufficient even for direct Go callers.
-		var admin int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0`, scope.PrincipalID).Scan(&admin); err != nil {
-			return nil, err
-		}
-		if admin != 1 {
-			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-		}
+		// Mutate rechecks the pinned administrative requirement on both new
+		// writes and receipt replay, including direct Go callers.
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_policy_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err

@@ -136,8 +136,8 @@ func TestHostedSummaryOnlyOmittedCountKeepsAttributionAndInventoryGuards(t *test
 		"foreign head":   func(f *hfFixture) { f.snapshot.Reviews[0].HeadSHA = strings.Repeat("b", 40) },
 		"partial source": func(f *hfFixture) { f.snapshot.Complete = false },
 		"unknown roots":  func(f *hfFixture) { f.snapshot.ReviewComments = nil },
-		"inline root": func(f *hfFixture) {
-			other := hfNew(t, []string{hfInline(1)}, "")
+		"unsupported inline root": func(f *hfFixture) {
+			other := hfNew(t, []string{"Unsupported root"}, "")
 			f.snapshot.ReviewComments = other.snapshot.ReviewComments
 		},
 		"new orphan root": func(f *hfFixture) {
@@ -191,5 +191,15 @@ func TestHostedAdditionalTitleRequiresClosedCodeAndBoldEnvelope(t *testing.T) {
 				t.Fatal("malformed title supplied a complete inventory", got.Reason, got.Findings)
 			}
 		})
+	}
+}
+
+func TestHostedOmittedCountMixedInlineAndAdditional(t *testing.T) {
+	f, _ := additionalOnlyFixture(t)
+	other := hfNew(t, []string{hfInline(1)}, "")
+	f.snapshot.ReviewComments = other.snapshot.ReviewComments
+	got := hfWant(t, f, true, 2)
+	if got.Findings[0].Kind != "inline" || got.Findings[1].Kind != "additional" {
+		t.Fatal("mixed positive inventory lost original categories", got)
 	}
 }

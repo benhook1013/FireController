@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +41,60 @@ func sampleReviewOperation() client.ReviewOperation {
 	return client.ReviewOperation{ID: executionOperationID, ProjectID: "project-one", ActorID: "principal_one", WorkerID: "other_worker", ConfigurationRevision: 1, PolicyRevision: 1, CapabilityFingerprint: strings.Repeat("a", 64), PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40), State: "queued", Revision: 1, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"}
 }
 
+func TestReviewExecutionOutOfOrderWireAndTerminalIntent(t *testing.T) {
+	for _, requested := range []bool{false, true} {
+		for _, returned := range []bool{false, true} {
+			for _, channel := range []string{"cli", "hosted"} {
+				name := channel + "/default"
+				if requested {
+					name = channel + "/explicit"
+				}
+				if returned != requested {
+					name += "/mismatch"
+				}
+				t.Run(name, func(t *testing.T) {
+					request := client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40), AllowOutOfOrder: requested}
+					want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"` + channel + `","head_sha":"` + request.HeadSHA + `"`
+					if requested {
+						want += `,"allow_out_of_order":true`
+					}
+					want += `}`
+					operation := sampleReviewOperation()
+					operation.WorkerID, operation.State, operation.Channel = "worker-one", "held", channel
+					operation.AllowOutOfOrder = returned
+					var posts atomic.Int64
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/api/v1/instance" {
+							handshake(w)
+							return
+						}
+						posts.Add(1)
+						body, err := io.ReadAll(r.Body)
+						if err != nil || string(body) != want || r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/requests" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "same-intent" || r.Header.Get("Prefer") != "wait=2" {
+							t.Error("request bytes, binding or retained action changed", err, string(body))
+						}
+						write(w, http.StatusOK, operation)
+					}))
+					defer server.Close()
+					c := newClient(t, server)
+					got, err := c.RequestReview(t.Context(), "same-intent", request, 2)
+					if posts.Load() != 1 {
+						t.Fatal("request was retried")
+					}
+					if requested != returned {
+						var failure *client.Error
+						if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown {
+							t.Fatal("different retained bypass intent accepted", got, err)
+						}
+					} else if err != nil || got.Operation == nil || *got.Operation != operation {
+						t.Fatal("matching terminal intent lost", got, err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func executionFixture(t *testing.T) (*mutationFixture, *reviewexec.Engine) {
 	t.Helper()
 	f := newMutationFixture(t)
@@ -55,7 +110,7 @@ func executionFixture(t *testing.T) (*mutationFixture, *reviewexec.Engine) {
 	e.Register(mux)
 	f.handler = mux
 	base := "/api/v1/projects/" + f.project + "/reviews"
-	f.call(t, "POST", base+"/policy", f.admin, f.sender, map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "paused_channels": []string{}, "max_review_files": 0})
+	f.call(t, "POST", base+"/policy", f.admin, f.sender, map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "max_review_files": 0})
 	f.call(t, "POST", base+"/execution/configuration", f.admin, f.sender, map[string]any{"expected_revision": 0, "capability_id": "synthetic-cli", "mode": "independent", "queue": []int64{2, 4}, "channels": []string{"cli"}, "paused": false})
 	return f, e
 }
@@ -107,7 +162,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 	if err != nil || configuration.ProjectID != f.project || configuration.Revision != 1 || configuration.CapabilityID != "synthetic-cli" || configuration.Paused || executionCounts(t, f) != before {
 		t.Fatal("stored configuration read changed facts", configuration, err)
 	}
-	request := client.ReviewRequest{ExpectedConfigurationRevision: configuration.Revision, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: configuration.Revision, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40), AllowOutOfOrder: true}
 	drop.Store(true)
 	_, err = queuedReviewRequest(t, c, t.Context(), "request-once", request)
 	var failure *client.Error
@@ -124,7 +179,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 		t.Fatal("exact retry changed request effect", receipt, err)
 	}
 	operation, err := c.ReviewOperation(t.Context(), id)
-	if err != nil || operation.ID != id || operation.ProjectID != f.project || operation.WorkerID != f.sender || operation.PolicyRevision != 1 || operation.State != "queued" || executionCounts(t, f) != committed {
+	if err != nil || operation.ID != id || operation.ProjectID != f.project || operation.WorkerID != f.sender || operation.PolicyRevision != 1 || operation.State != "queued" || !operation.AllowOutOfOrder || executionCounts(t, f) != committed {
 		t.Fatal("operation read changed state or lost attribution", operation, err)
 	}
 	// Another worker in the same project may inspect this operation.
@@ -157,7 +212,7 @@ func TestReviewExecutionPublicAPIRequestReplayAndLostCommittedResponse(t *testin
 	f.call(t, "POST", "/api/v1/projects/"+f.project+"/reviews/execution/configuration", f.admin, f.sender, map[string]any{"expected_revision": 1, "capability_id": "synthetic-cli", "mode": "independent", "queue": []int64{2}, "channels": []string{"cli"}, "paused": false})
 	before = executionCounts(t, f)
 	_, err = queuedReviewRequest(t, c, t.Context(), "stale-new-key", request)
-	checkError(t, err, "review_conflict")
+	checkError(t, err, "review_configuration_revision_conflict")
 	if replay, err := queuedReviewRequest(t, c, t.Context(), "request-once", request); err != nil || replay != receipt {
 		t.Fatal("later configuration changed original request replay", replay, err)
 	}
@@ -236,7 +291,18 @@ func TestReviewExecutionStrictOperationWireAndLegacyFacts(t *testing.T) {
 		"bad-time": func(s string) string {
 			return strings.Replace(s, `"updated_at":"2026-01-01T00:00:00Z"`, `"updated_at":"now"`, 1)
 		},
-		"null-reason":    func(s string) string { return strings.Replace(s, `"reason":""`, `"reason":null`, 1) },
+		"null-reason":       func(s string) string { return strings.Replace(s, `"reason":""`, `"reason":null`, 1) },
+		"null-file-limit":   func(s string) string { return strings.TrimSuffix(s, "}") + `,"override_file_limit":null}` },
+		"string-file-limit": func(s string) string { return strings.TrimSuffix(s, "}") + `,"override_file_limit":"true"}` },
+		"duplicate-file-limit": func(s string) string {
+			return strings.TrimSuffix(s, "}") + `,"override_file_limit":true,"override_file_limit":false}`
+		},
+		"null-order":   func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":null}` },
+		"string-order": func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":"true"}` },
+		"number-order": func(s string) string { return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":1}` },
+		"duplicate-order": func(s string) string {
+			return strings.TrimSuffix(s, "}") + `,"allow_out_of_order":true,"allow_out_of_order":false}`
+		},
 		"missing-reason": func(s string) string { return strings.Replace(s, `,"reason":""`, "", 1) },
 		"alias": func(s string) string {
 			return strings.Replace(s, `"state":"queued"`, `"state":"queued","State":"completed"`, 1)
@@ -512,5 +578,59 @@ func TestReviewExecutionStoredReadsWorkWithoutProviderCatalog(t *testing.T) {
 	}
 	if executionCounts(t, f) != before || f.providerCalls.Load() != providers {
 		t.Fatal("ordinary reads performed provider work or domain mutation")
+	}
+}
+
+func TestReviewExecutionFileLimitOverrideWireAndTerminalIntent(t *testing.T) {
+	for _, requested := range []bool{false, true} {
+		for _, returned := range []bool{false, true} {
+			for _, channel := range []string{"cli", "hosted"} {
+				name := channel + "/default"
+				if requested {
+					name = channel + "/explicit"
+				}
+				if returned != requested {
+					name += "/mismatch"
+				}
+				t.Run(name, func(t *testing.T) {
+					request := client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: requested}
+					want := `{"expected_configuration_revision":1,"pull_number":2,"channel":"` + channel + `","head_sha":"` + request.HeadSHA + `"`
+					if requested {
+						want += `,"override_file_limit":true`
+					}
+					want += `}`
+					operation := sampleReviewOperation()
+					operation.WorkerID, operation.State, operation.Channel = "worker-one", "held", channel
+					operation.OverrideFileLimit = returned
+					var posts atomic.Int64
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/api/v1/instance" {
+							handshake(w)
+							return
+						}
+						posts.Add(1)
+						body, err := io.ReadAll(r.Body)
+						if err != nil || string(body) != want || r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/requests" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "same-intent" || r.Header.Get("Prefer") != "wait=2" {
+							t.Error("request bytes, binding or retained action changed", err, string(body))
+						}
+						write(w, http.StatusOK, operation)
+					}))
+					defer server.Close()
+					c := newClient(t, server)
+					got, err := c.RequestReview(t.Context(), "same-intent", request, 2)
+					if posts.Load() != 1 {
+						t.Fatal("request was retried")
+					}
+					if requested != returned {
+						var failure *client.Error
+						if !errors.As(err, &failure) || failure.Code != "invalid_response" || !failure.OutcomeUnknown {
+							t.Fatal("different retained bypass intent accepted", got, err)
+						}
+					} else if err != nil || got.Operation == nil || *got.Operation != operation {
+						t.Fatal("matching terminal intent lost", got, err)
+					}
+				})
+			}
+		}
 	}
 }

@@ -40,7 +40,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 	if !publicationValidActor(provider) || provider.Kind != "Bot" {
 		return empty, invalidSelector()
 	}
-	if !snapshot.Complete || snapshot.IssueComments == nil || snapshot.Reviews == nil || snapshot.ReviewComments == nil || !hostedTriggerTime(snapshot.ObservedAt) || !validPublicationSnapshot(snapshot) {
+	if !snapshot.Complete || snapshot.IssueComments == nil || snapshot.Reviews == nil || snapshot.ReviewComments == nil || !hostedTriggerTime(snapshot.ObservedAt) || !validHostedArchiveSnapshot(snapshot, provider) {
 		return empty, invalidResponse(false, http.StatusOK)
 	}
 	groups := map[string]*externalHostedGroup{}
@@ -141,6 +141,14 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		roots[root.ReviewID] = append(roots[root.ReviewID], owned)
 	}
 	windows := externalHostedNativeWindows(snapshot.IssueComments, provider)
+	for _, comment := range snapshot.IssueComments {
+		if !publicationIssueClockValid(comment, snapshot.ObservedAt) {
+			// An edited comment may previously have contained a command. Keep
+			// the provider source, but do not infer any native trigger window.
+			windows = externalNativeWindows{}
+			break
+		}
+	}
 	result := make([]ExternalHostedRun, 0, len(groups))
 	for _, g := range groups {
 		pub := &g.run.Inventory.Publication
@@ -177,8 +185,24 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			if g.total > 0 && len(pub.Batches) > 0 && g.reason == "" {
 				count, valid := publicationRootCount(g.batches[1].Body)
 				if !valid {
-					if len(pub.Roots) == 0 && publicationSummaryOnly(*pub) {
+					if publicationSummaryOnly(*pub) {
 						count, valid = 0, true
+					} else if publicationInlineInventory(*pub) {
+						// Complete source inventory must not leave an unattached
+						// provider root on this head outside every known review.
+						knownReviews := map[int64]bool{}
+						for _, review := range snapshot.Reviews {
+							knownReviews[review.ID] = true
+						}
+						orphan := false
+						for _, root := range snapshot.ReviewComments {
+							if root.InReplyToID == 0 && publicationActor(root.Author, provider) && root.OriginalHeadSHA == g.run.HeadSHA && !knownReviews[root.ReviewID] {
+								orphan = true
+							}
+						}
+						if !orphan {
+							count, valid = len(pub.Roots), true
+						}
 					}
 				}
 				if !valid {

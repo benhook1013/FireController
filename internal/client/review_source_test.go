@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,7 +143,11 @@ func TestReviewSourcePublicHTTPReplayLostResponseAndStoredAssessment(t *testing.
 	changed = request
 	changed.ExpectedConfigurationRevision = 2
 	_, err = c.RefreshReviewSource(t.Context(), "stale-configuration", changed, 0)
-	checkError(t, err, "review_conflict")
+	checkError(t, err, "review_configuration_revision_conflict")
+	var conflict *client.Error
+	if !errors.As(err, &conflict) || !strings.Contains(conflict.Action, "review_execution_read") || strings.Contains(conflict.Action, "Check the selected instance") || !reflect.DeepEqual(conflict.Details, map[string]any{"current_revision": int64(1)}) {
+		t.Fatal("configuration guard lost useful recovery", err)
+	}
 	if sourceCounts(t, f) != before {
 		t.Fatal("refused request changed source or review execution")
 	}
@@ -180,7 +185,7 @@ func TestReviewSourceInvalidArgumentsAreLocal(t *testing.T) {
 		_, err := c.RefreshReviewSource(t.Context(), key, valid, 0)
 		checkError(t, err, "validation_failed")
 	}
-	for _, seconds := range []int{-1, 61} {
+	for _, seconds := range []int{-1, 901} {
 		_, err := c.RefreshReviewSource(t.Context(), "explicit", valid, seconds)
 		checkError(t, err, "validation_failed")
 	}

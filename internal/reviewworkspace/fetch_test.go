@@ -137,6 +137,7 @@ func newFetchFixture(t *testing.T, behavior string) fetchFixture {
 	gitPath := filepath.Join(dir, "fake-git")
 	log := filepath.Join(dir, "args.log")
 	envlog := filepath.Join(dir, "environment.log")
+	provisioned := filepath.Join(dir, "fetch-complete")
 	script := fmt.Sprintf(`printf 'CALL' >> %q
 for arg do printf '|%%s' "$arg" >> %q; done
 printf '\n' >> %q
@@ -144,11 +145,13 @@ printf '%%s|%%s|%%s\n' "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" "
 case "$*" in
   *"init --bare"*) for cache do :; done; mkdir -p "$cache/objects" ;;
   *"rev-parse --is-bare-repository"*) printf 'true\n' ;;
+  *"rev-parse --is-shallow-repository"*) printf 'false\n' ;;
   *"rev-parse --verify %s^{commit}"*) printf '%%s\n' %q ;;
   *"rev-parse --verify %s^{commit}"*) printf '%%s\n' %q ;;
-  *"fetch --no-tags"*) %s ;;
+  *"rev-list --objects"*) test -f %q ;;
+  *"fetch --no-tags"*) %s; touch %q ;;
 esac
-`, log, log, log, envlog, fetchCandidate, fetchCandidate, fetchBase, fetchBase, behavior)
+`, log, log, log, envlog, fetchCandidate, fetchCandidate, fetchBase, fetchBase, provisioned, behavior, provisioned)
 	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nset -eu\n"+script+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +319,7 @@ func TestFetchValidationDoesNotTouchCacheOrRunGit(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := f.fetch(canceled, 70, "owner/repo", f.candidate, f.base, ""); !errors.Is(err, errMaterialize) {
+	if err := f.fetch(canceled, 70, "owner/repo", f.candidate, f.base, ""); !errors.Is(err, errMaterialize) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("pre-canceled fetch result: %v", err)
 	}
 	entries, err = os.ReadDir(filepath.Join(f.root, "repositories"))
@@ -406,7 +409,7 @@ func TestFetchVerifiesExactFetchedCommitsWithoutFallback(t *testing.T) {
 	// candidate verification. Fetch must fail instead of looking up mutable refs.
 	badScript := fmt.Sprintf(`printf 'CALL' >> %q
 for arg do printf '|%%s' "$arg" >> %q; done; printf '\n' >> %q
-case "$*" in *"rev-parse --is-bare-repository"*) echo true;; *"rev-parse --verify %s^{commit}"*) echo %s;; *"rev-parse --verify %s^{commit}"*) echo %s;; esac`, f.log, f.log, f.log, f.candidate, f.base, f.base, f.base)
+case "$*" in *"rev-parse --is-bare-repository"*) echo true;; *"rev-parse --is-shallow-repository"*) echo false;; *"rev-parse --verify %s^{commit}"*) echo %s;; *"rev-parse --verify %s^{commit}"*) echo %s;; esac`, f.log, f.log, f.log, f.candidate, f.base, f.base, f.base)
 	path := filepath.Join(f.root, "fake-replacement")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+badScript+"\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -432,7 +435,7 @@ func TestFetchCancellationBoundsAndCooperativeSerialization(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if err := f.fetch(ctx, 51, "owner/repo", f.candidate, f.base, ""); !errors.Is(err, errMaterialize) {
+	if err := f.fetch(ctx, 51, "owner/repo", f.candidate, f.base, ""); !errors.Is(err, errMaterialize) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("canceled fetch result: %v", err)
 	}
 	if time.Since(started) > 3*time.Second {
@@ -465,7 +468,7 @@ func TestFetchCancellationBoundsAndCooperativeSerialization(t *testing.T) {
 			fetchCount++
 		}
 	}
-	if initCount != 1 || fetchCount != 2 {
+	if initCount != 1 || fetchCount != 1 {
 		t.Fatalf("serialized shared cache operations init=%d fetch=%d calls=%q", initCount, fetchCount, f2.calls(t))
 	}
 }

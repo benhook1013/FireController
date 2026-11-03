@@ -1,5 +1,5 @@
 // Package reviewworkspace materializes pinned local Git objects for one attempt.
-// Cache provisioning and the lifetime of referenced cache objects belong to the caller.
+// Shared cache provisioning belongs to the caller; Prune retires terminal checkouts.
 package reviewworkspace
 
 import (
@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +32,7 @@ var (
 
 // Manager owns its private workspace layout and a resolved operator Git executable.
 type Manager struct {
+	pruning   atomic.Bool
 	root      string
 	git       string
 	env       []string
@@ -89,7 +91,7 @@ func (m *Manager) CachePath(repositoryID int64) (string, error) {
 	return filepath.Join(m.root, "repositories", strconv.FormatInt(repositoryID, 10)+".git"), nil
 }
 
-// Prepare creates one new attempt. Failed attempts remain owned diagnostic state;
+// Prepare creates one new attempt. Terminal attempts are reclaimed by Prune;
 // an existing path is never reused, overwritten or removed.
 func (m *Manager) Prepare(ctx context.Context, repositoryID int64, attemptID, candidateSHA, baseSHA string) (Workspace, error) {
 	if !validID(attemptID) || !validSHA(candidateSHA) || !validSHA(baseSHA) {

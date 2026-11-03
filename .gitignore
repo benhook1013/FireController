@@ -12,3 +12,7 @@
 *.log
 
 /webapp/node_modules/
+
+# Optional source-adapter bytecode caches.
+__pycache__/
+*.py[cod]

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -69,7 +71,7 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 	f.addCredential(t, "runtime-evidence-reader", "runtime-evidence-reader-principal", f.reader, false)
 	// This capture fixture starts with an explicit synthetic administrator policy;
 	// policy configuration events and receipts belong to their dedicated tests.
-	if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-runtime-admin',?)`, f.project, `{"required_channels":["cli","hosted"],"paused_channels":[],"max_review_files":0}`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-runtime-admin',?)`, f.project, `{"required_channels":["cli","hosted"],"max_review_files":0}`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	f.engine, err = reviewexec.New(store, []reviewexec.Capability{{ID: "runtime-capability", Provider: "coderabbit", Account: "runtime-account", Channels: []string{"cli", "hosted"}}})
@@ -95,7 +97,7 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 	}
 	gitTestRun(t, filepath.Join(root, "fixture-source"), "remote", "add", "cache", cache)
 	gitTestRun(t, filepath.Join(root, "fixture-source"), "push", "cache", "main", "candidate")
-	f.seedConfiguration(t)
+	f.seedLegacyConfiguration(t)
 	return f
 }
 
@@ -114,7 +116,9 @@ func (f *cliEvidenceFixture) addCredential(t *testing.T, id, principal, token st
 	}
 }
 
-func (f *cliEvidenceFixture) seedConfiguration(t *testing.T) {
+// Capture/credit fixtures represent a predecessor installation without implicit
+// round grants. Product enrollment defaults have separate real-Configure proof.
+func (f *cliEvidenceFixture) seedLegacyConfiguration(t *testing.T) {
 	t.Helper()
 	queue := make([]int64, 0, 8)
 	for number := int64(2); number <= 9; number++ {
@@ -122,7 +126,20 @@ func (f *cliEvidenceFixture) seedConfiguration(t *testing.T) {
 	}
 	previous := int64(0)
 	configuration := reviewexec.Configuration{ExpectedRevision: &previous, CapabilityID: "runtime-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}
-	if _, err := f.engine.Configure(context.Background(), f.scope(t, f.admin, true), "runtime-config-key", configuration); err != nil {
+	scope := f.scope(t, f.admin, true)
+	body, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: "runtime-config-key", Request: configuration}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,1,?)`, f.project, string(body)); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, 1, map[string]any{"revision": int64(1), "paused": false}); err != nil {
+			return nil, err
+		}
+		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: 1}, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -363,13 +380,13 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 			name: "missing-reviewed-file",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
 				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt"})
-			}, outcome: "uncertain", reason: "coverage_incomplete",
+			}, outcome: "failed", reason: "coverage_incomplete",
 		},
 		{
 			name: "extra-reviewed-file",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
 				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt", "second.txt", "invented.txt"})
-			}, outcome: "uncertain", reason: "coverage_incomplete",
+			}, outcome: "failed", reason: "coverage_incomplete",
 		},
 		{
 			name: "malformed-structured-output",
@@ -704,5 +721,41 @@ func TestRetainCLIDoesNotMaskLedgerConflictOrStorageFailure(t *testing.T) {
 				t.Fatal("nonvalidation failure was masked or changed state", err)
 			}
 		})
+	}
+}
+
+func TestRetainCLIRenameAwareCoveragePreservesExactClaimsAndPatch(t *testing.T) {
+	f := newCLIEvidenceFixture(t)
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	gitTestRun(t, source, "switch", "candidate")
+	gitTestRun(t, source, "mv", "reviewed.txt", "renamed.txt")
+	if err := os.WriteFile(filepath.Join(source, "renamed.txt"), []byte("base\n#x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "--all")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "synthetic similar rename")
+	f.headSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "candidate")
+	a, w := f.startAdmitted(t, 2)
+	if raw := mustChangedFiles(t, f.manager, w); len(raw) != 3 {
+		t.Fatal("fixture lost old/new raw paths", raw)
+	}
+	if count, err := f.manager.ReviewFileCount(t.Context(), w); err != nil || count != 2 {
+		t.Fatal("fixture rename not detected", count, err)
+	}
+	claims := []string{"renamed.txt", "second.txt"}
+	capture := makeCompleteCLICapture(t, w, claims)
+	start, finish := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	got, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, a, w, capture, start, finish)
+	if err != nil || !got.Complete || got.Outcome != "completed" {
+		t.Fatal("proven rename old path blocked complete capture", got, err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), got.Receipt.ID)
+	if err != nil || !reflect.DeepEqual(evidence.Capture.Review.ReviewedFiles, claims) || len(evidence.Capture.Review.Findings) != 1 || evidence.Anchor.PatchSHA256 != w.PatchSHA256 || f.manager.Verify(t.Context(), w) != nil {
+		t.Fatal("rename proof changed capture claims, finding or patch", err)
+	}
+	again, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, a, w, capture, start, finish)
+	if err != nil || again != got {
+		t.Fatal("rename-aware exact replay changed receipt", again, err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/presentation"
 )
 
 type RepositoryIdentity struct {
@@ -21,9 +22,11 @@ type RepositoryIdentity struct {
 type RepositoryResolver func(context.Context, string) (RepositoryIdentity, error)
 type Option func(*api)
 type api struct {
-	store    *core.Store
-	resolver RepositoryResolver
-	browser  http.Handler
+	store              *core.Store
+	resolver           RepositoryResolver
+	browser            http.Handler
+	backupHealthFiles  []string
+	backupHealthReader BackupHealthReader
 }
 
 func WithRepositoryResolver(resolver RepositoryResolver) Option {
@@ -61,14 +64,20 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/projects", a.createProject)
 	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/backup-health", a.backupHealth)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/retirement", a.workerRetirement)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/retire", a.retireWorker)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
 	if a.browser != nil {
 		mux.Handle("/", a.browser)
@@ -106,6 +115,7 @@ func listQuery(r *http.Request) (url.Values, error) {
 
 type projectValue struct {
 	ID           string `json:"id"`
+	Handle       string `json:"handle"`
 	Name         string `json:"name"`
 	RepositoryID int64  `json:"github_repository_id"`
 	Repository   string `json:"repository"`
@@ -114,6 +124,7 @@ type workerValue struct {
 	ID        string `json:"id"`
 	ProjectID string `json:"project_id"`
 	Name      string `json:"name"`
+	Retired   bool   `json:"retired,omitempty"`
 }
 
 func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
@@ -125,13 +136,14 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name       string `json:"name"`
 		Repository string `json:"repository"`
+		Handle     string `json:"handle,omitempty"`
 	}
 	if err = core.ReadJSON(w, r, &request); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	if !boundedText(request.Name, 200) || strings.IndexFunc(request.Name, unicode.IsControl) >= 0 || !validRepository(request.Repository) {
-		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name and an owner/repository GitHub reference.", 400))
+	if !boundedText(request.Name, 200) || strings.IndexFunc(request.Name, unicode.IsControl) >= 0 || !validRepository(request.Repository) || request.Handle != "" && !core.ValidProjectHandle(request.Handle) {
+		core.WriteError(w, core.Fail("validation_failed", "Provide a bounded project name, an owner/repository GitHub reference, and an optional lowercase handle.", 400))
 		return
 	}
 	k, err := key(r)
@@ -143,6 +155,18 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 	if receipt, found, err := a.store.Replay(r.Context(), scope, mutation); err != nil || found {
 		complete(w, receipt, err)
 		return
+	}
+	if request.Handle != "" {
+		var exists int
+		err = a.store.DB().QueryRowContext(r.Context(), `SELECT 1 FROM project_handles WHERE handle=? UNION ALL SELECT 1 FROM projects WHERE id=? LIMIT 1`, request.Handle, request.Handle).Scan(&exists)
+		if err == nil {
+			core.WriteError(w, core.Fail("project_handle_conflict", "This project handle is already in use.", 409))
+			return
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			core.WriteError(w, err)
+			return
+		}
 	}
 	if a.resolver == nil {
 		core.WriteError(w, core.Fail("provider_unavailable", "Repository verification is not configured.", 503))
@@ -176,12 +200,16 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,?,?,?)", id, request.Name, identity.ID, identity.FullName); err != nil {
 			return nil, err
 		}
+		handle, err := core.AssignProjectHandle(ctx, tx, id, request.Name, request.Handle)
+		if err != nil {
+			return nil, err
+		}
 		eventScope := scope
 		eventScope.ProjectID = id
 		if err = core.AppendEvent(ctx, tx, eventScope, "projects.created", id, 1, map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
-		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil
+		return map[string]any{"id": id, "handle": handle, "revision": 1, "outcome": "created"}, nil
 	})
 	complete(w, result, err)
 }
@@ -193,7 +221,7 @@ func (a *api) project(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var value projectValue
-	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id=?", scope.ProjectID).Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository)
+	err = a.store.DB().QueryRowContext(r.Context(), "SELECT p.id,h.handle,p.name,p.github_repository_id,p.repository FROM projects p JOIN project_handles h ON h.project_id=p.id WHERE p.id=?", scope.ProjectID).Scan(&value.ID, &value.Handle, &value.Name, &value.RepositoryID, &value.Repository)
 	complete(w, value, err)
 }
 
@@ -218,7 +246,7 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,name,github_repository_id,repository FROM projects WHERE id>? ORDER BY id LIMIT ?", after, limit+1)
+	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT p.id,h.handle,p.name,p.github_repository_id,p.repository FROM projects p JOIN project_handles h ON h.project_id=p.id WHERE p.id>? ORDER BY p.id LIMIT ?", after, limit+1)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -227,7 +255,7 @@ func (a *api) listProjects(w http.ResponseWriter, r *http.Request) {
 	values := make([]projectValue, 0, limit+1)
 	for rows.Next() {
 		var value projectValue
-		if err = rows.Scan(&value.ID, &value.Name, &value.RepositoryID, &value.Repository); err != nil {
+		if err = rows.Scan(&value.ID, &value.Handle, &value.Name, &value.RepositoryID, &value.Repository); err != nil {
 			core.WriteError(w, err)
 			return
 		}
@@ -299,9 +327,14 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	query, err := listQuery(r)
+	query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "include_retired")
 	if err != nil {
 		core.WriteError(w, err)
+		return
+	}
+	includeRetired := query.Get("include_retired") == "true"
+	if _, exists := query["include_retired"]; exists && !includeRetired {
+		core.WriteError(w, core.Fail("validation_failed", "Use include_retired=true to include archived workers.", 400))
 		return
 	}
 	limit, err := core.PageLimit(r)
@@ -309,28 +342,37 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	filter := "workers"
+	filter := presentation.WorkerOrderCursorKind("workers")
+	if includeRetired {
+		filter += ":include_retired"
+	}
 	after, err := a.store.ParseCursor(scope, filter, query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id>? ORDER BY id LIMIT ?", scope.ProjectID, after, limit+1)
-	if err != nil {
-		core.WriteError(w, err)
-		return
-	}
-	defer rows.Close()
 	values := make([]workerValue, 0, limit+1)
-	for rows.Next() {
-		var value workerValue
-		if err = rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
-			core.WriteError(w, err)
-			return
+	err = a.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		order, err := presentation.WorkerOrderJSON(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return err
 		}
-		values = append(values, value)
-	}
-	if err = rows.Err(); err != nil {
+		tail := strings.Replace(presentation.WorkerOrderTail, " WHERE ", " WHERE (? OR NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)) AND ", 1)
+		rows, err := tx.QueryContext(ctx, presentation.WorkerOrderCTE+`SELECT w.id,w.project_id,w.name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM ordered_workers w`+tail, order, scope.ProjectID, includeRetired, after, after, limit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var value workerValue
+			if err := rows.Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired); err != nil {
+				return err
+			}
+			values = append(values, value)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -354,7 +396,13 @@ func (a *api) worker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var value workerValue
-	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name)
+	err = a.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT id,project_id,name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM workers w WHERE project_id=? AND id=?`, scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired)
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Fail("not_found", "The worker is unavailable in this project.", 404)
+		}
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		err = core.Fail("not_found", "The worker is unavailable in this project.", 404)
 	}

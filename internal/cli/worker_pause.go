@@ -12,7 +12,7 @@ func parseWorkerPause(operation string, args []string) (*mutationInvocation, boo
 	values := map[string]string{}
 	for i := 0; i < len(args); i++ {
 		flag, value, assigned := strings.Cut(args[i], "=")
-		if flag != "--key" && flag != "--expect-revision" && !(operation == "pause" && flag == "--reason") {
+		if flag != "--key" && flag != "--worker" && flag != "--expect-revision" && !(operation == "pause" && flag == "--reason") {
 			return nil, false
 		}
 		if _, duplicate := values[flag]; duplicate {
@@ -39,6 +39,12 @@ func parseWorkerPause(operation string, args []string) (*mutationInvocation, boo
 		return nil, false
 	}
 	call.pause = client.ReplaceWorkerPauseRequest{ExpectedRevision: revision, Paused: operation == "pause", Reason: reason}
+	if worker, ok := values["--worker"]; ok {
+		if !validResourceID(worker) {
+			return nil, false
+		}
+		call.targetWorker = worker
+	}
 	call.key = values["--key"]
 	return call, client.ValidateWorkerPauseRequest(call.pause) == nil
 }

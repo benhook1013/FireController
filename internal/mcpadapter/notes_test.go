@@ -130,14 +130,10 @@ func TestNotesToolsSDKAndCLICrossAdapterOriginalKeyRecovery(t *testing.T) {
 	if revision.Body != body || revision.Status != "pending" || revision.RecordedAt != revision.UpdatedAt {
 		t.Fatal("immutable revision")
 	}
-	var phaseNote client.NoteReceipt
-	decodeResult(t, call(t, session, "note_create", map[string]any{"idempotency_key": "phase-only", "worker_id": "", "phase": "Later", "body": "Phase-only scope"}), &phaseNote)
-	decodeResult(t, call(t, session, "note_read", map[string]any{"note_id": phaseNote.ID}), &current)
-	if current.WorkerID != "" || current.Phase != "Later" {
-		t.Fatal("explicit empty worker defaulted", current)
-	}
+	phaseResult := call(t, session, "note_create", map[string]any{"idempotency_key": "phase-only", "worker_id": "", "phase": "Later", "body": "Phase-only scope"})
+	diagnosticResult(t, phaseResult, "validation_failed", false)
 	var effects int
-	if err = f.store.DB().QueryRow(`SELECT count(*) FROM note_revisions`).Scan(&effects); err != nil || effects != 3 || f.providers.Load() != 1 {
+	if err = f.store.DB().QueryRow(`SELECT count(*) FROM note_revisions`).Scan(&effects); err != nil || effects != 2 || f.providers.Load() != 1 {
 		t.Fatal("duplicate effects/provider", effects, err)
 	}
 }
@@ -187,5 +183,57 @@ func TestNotesToolsBoundedCancellationNoFanout(t *testing.T) {
 	diagnosticResult(t, call(t, session, "note_list", map[string]any{}), "deadline_exceeded", false)
 	if requests.Load() != 1 || time.Since(started) > time.Second {
 		t.Fatal("cancel/retry", requests.Load(), time.Since(started))
+	}
+}
+
+func TestNoteSizeDiagnosticsBeforeCredentialsOrNetwork(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	bound := localContext()
+	bound.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": bound}, "missing-private-credential"), "chosen"), "")
+	for _, tc := range []struct{ body, field, measurement string }{
+		{"PRIVATE_NOTE_BODY" + strings.Repeat("雪", client.MaxNoteBodyBytes/3+1), "body", "16384 decoded UTF-8 bytes"},
+		{strings.Repeat("PRIVATE_NOTE_BODY", 9000), "arguments", "131072 encoded JSON bytes"},
+	} {
+		d := diagnosticResult(t, call(t, session, "note_update", map[string]any{"note_id": "note-one", "idempotency_key": "original-key", "expected_revision": 1, "body": tc.body}), "invalid_arguments", false)
+		raw, _ := json.Marshal(d)
+		if !strings.Contains(d.Message, tc.measurement) || !strings.Contains(d.Action, "No request was sent") || !strings.Contains(string(raw), `"field":"`+tc.field+`"`) || strings.Contains(string(raw), "PRIVATE_NOTE_BODY") || strings.Contains(string(raw), "missing-private-credential") {
+			t.Fatal("unsafe or unhelpful size diagnostic", string(raw))
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("invalid note reached credential/network work")
+	}
+}
+
+func TestNoteByteBoundPatchPreservesBodyAndOmittedFields(t *testing.T) {
+	body := strings.Repeat("雪", client.MaxNoteBodyBytes/3) + "x"
+	var writes atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			jsonResponse(w, map[string]string{"instance_id": "instance-one"})
+			return
+		}
+		writes.Add(1)
+		var fields map[string]json.RawMessage
+		if json.NewDecoder(r.Body).Decode(&fields) != nil || len(fields) != 2 || string(fields["expected_revision"]) != "1" || r.Method != "PATCH" || r.URL.Path != "/api/v1/projects/project-one/notes/note-one" || r.Header.Get("Idempotency-Key") != "original-key" || r.Header.Get("X-FC-Worker") != "worker-one" {
+			t.Error("note patch changed guards, key or omitted fields")
+		}
+		var got string
+		if json.Unmarshal(fields["body"], &got) != nil || got != body {
+			t.Error("valid multibyte note text changed")
+		}
+		jsonResponse(w, client.NoteReceipt{ID: "note-one", Revision: 2, Outcome: "updated"})
+	}))
+	defer service.Close()
+	bound := localContext()
+	bound.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": bound}, credential(t)), "chosen"), "")
+	var receipt client.NoteReceipt
+	decodeResult(t, call(t, session, "note_update", map[string]any{"note_id": "note-one", "idempotency_key": "original-key", "expected_revision": 1, "body": body}), &receipt)
+	if receipt.ID != "note-one" || receipt.Revision != 2 || writes.Load() != 1 {
+		t.Fatal("valid boundary changed or repeated mutation", receipt, writes.Load())
 	}
 }

@@ -55,7 +55,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0})
+	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,5 +583,90 @@ func TestReviewHostedEvidenceStrictWirePresenceAndShape(t *testing.T) {
 		data, _ := json.Marshal(object)
 		_, err := readControlEvidenceWire(t, data)
 		checkError(t, err, "invalid_response")
+	}
+}
+
+func TestReviewAdditionalEvidenceWireRetainsRealSource(t *testing.T) {
+	value := sampleHostedControlEvidence()
+	s := value.Capture.Findings[2].Source
+	s.Kind = "additional"
+	s.SourceKey = "hosted-review:11:additional:" + s.Fingerprint
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := readControlEvidenceWire(t, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Capture.Findings[2].Source.Kind != "additional" || got.Capture.Findings[2].Source.CommentID != 0 {
+		t.Fatal("additional identity lost")
+	}
+	s.CommentID = 21
+	data, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = readControlEvidenceWire(t, data); err == nil {
+		t.Fatal("invented additional comment accepted")
+	}
+}
+
+func TestReviewHostedExtensibleProvenanceLabelRead(t *testing.T) {
+	for _, kind := range []string{"additional", "provider_note_v2"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = kind
+		s.SourceKey = "hosted-review:11:" + kind + ":" + s.Fingerprint
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readControlEvidenceWire(t, data)
+		if err != nil || got.Capture.Findings[1].Source.Kind != kind || got.Capture.Findings[1].Detail != v.Capture.Findings[1].Detail {
+			t.Fatal("compatible provenance label or detail rejected", kind, err)
+		}
+	}
+	for _, kind := range []string{"", "bad:kind", "bad/kind", "bad\nkind", strings.Repeat("x", 129), "inline"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = kind
+		s.SourceKey = "hosted-review:11:" + kind + ":" + s.Fingerprint
+		data, _ := json.Marshal(v)
+		if _, err := readControlEvidenceWire(t, data); err == nil {
+			t.Fatal("invalid provenance identity accepted", kind)
+		}
+	}
+	for _, bad := range []string{"comment", "key", "review", "location"} {
+		v := sampleHostedControlEvidence()
+		s := v.Capture.Findings[1].Source
+		s.Kind = "provider_note_v2"
+		s.SourceKey = "hosted-review:11:" + s.Kind + ":" + s.Fingerprint
+		switch bad {
+		case "comment":
+			s.CommentID = 21
+		case "key":
+			s.SourceKey = "hosted-review:11:duplicate:" + s.Fingerprint
+		case "review":
+			s.ReviewID = 99
+			s.SourceKey = "hosted-review:99:" + s.Kind + ":" + s.Fingerprint
+		case "location":
+			v.Capture.Findings[1].StartLine = 0
+		}
+		data, _ := json.Marshal(v)
+		if _, err := readControlEvidenceWire(t, data); err == nil {
+			t.Fatal("new label bypassed source binding", bad)
+		}
+	}
+}
+
+func TestReviewReadFailureExplainsRunningClientRecovery(t *testing.T) {
+	v := sampleHostedControlEvidence()
+	v.Capture.Findings[0].Source.Fingerprint = "PRIVATE_SENTINEL"
+	data, _ := json.Marshal(v)
+	_, err := readControlEvidenceWire(t, data)
+	var failure *client.Error
+	if !errors.As(err, &failure) || failure.Code != "invalid_response" || !strings.Contains(failure.Action, "client_source_revision") || !strings.Contains(failure.Action, "reconnect") || strings.Contains(failure.Action, "PRIVATE_SENTINEL") {
+		t.Fatal("invalid read lacks safe running-client recovery", err)
 	}
 }

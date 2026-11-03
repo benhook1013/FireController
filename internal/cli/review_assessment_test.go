@@ -48,6 +48,10 @@ func TestReviewPolicyAssessmentCLIBoundReadAndArgumentPrecedence(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || result.State != "held" || result.Source != "captured_comparison" || strings.Count(out, "\n") != 1 || calls.Load() != 2 {
 		t.Fatal("assessment was not one quiet explicit read", code, out, stderr)
 	}
+	var explained client.ReviewPolicyAssessmentOutput
+	if json.Unmarshal([]byte(out), &explained) != nil || len(explained.Channels) != 1 || explained.Channels[0].Reason != "review_work_pending" || explained.Channels[0].NextAction != "finish_retained_review_work" || !strings.Contains(out, `"rounds_complete":false`) {
+		t.Fatal("CLI omitted the channel hold or explicit false", out)
+	}
 	before := calls.Load()
 	for _, args := range [][]string{
 		{"reviews", "assess"}, {"reviews", "assess", "../private"}, {"reviews", "assess", cliEvidenceID, "extra"},
@@ -66,7 +70,7 @@ func TestReviewPolicyAssessmentCLIBoundReadAndArgumentPrecedence(t *testing.T) {
 	}
 }
 
-func TestReviewPolicyAssessmentCLISharesWholeFiveSecondBudget(t *testing.T) {
+func TestReviewPolicyAssessmentCLIRespectsCallerWholeBudget(t *testing.T) {
 	f := setupServiceFixture(t)
 	project := f.project(t, "assessment-budget")
 	worker := f.worker(t, project, "Builder")
@@ -89,9 +93,11 @@ func TestReviewPolicyAssessmentCLISharesWholeFiveSecondBudget(t *testing.T) {
 	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
 	var out, stderr bytes.Buffer
 	start := time.Now()
-	code := cli.RunContext(context.Background(), []string{"--profiles-file", path, "reviews", "assess", cliEvidenceID}, map[string]string{"FC_PROFILE": "builder"}, &out, &stderr)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	code := cli.RunContext(ctx, []string{"--profiles-file", path, "reviews", "assess", cliEvidenceID}, map[string]string{"FC_PROFILE": "builder"}, &out, &stderr)
 	elapsed := time.Since(start)
-	if code != cli.ExitService || out.Len() != 0 || !strings.Contains(stderr.String(), "deadline_exceeded") || elapsed < 4500*time.Millisecond || elapsed > 6*time.Second || calls.Load() != 2 {
+	if code != cli.ExitCancelled || out.Len() != 0 || !strings.Contains(stderr.String(), "deadline_exceeded") || elapsed < 4500*time.Millisecond || elapsed > 6*time.Second || calls.Load() != 2 {
 		t.Fatal("handshake+assessment acquired separate budgets", code, elapsed, stderr.String())
 	}
 }
