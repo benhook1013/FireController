@@ -141,7 +141,7 @@ func build(ctx context.Context, tx *sql.Tx, project string, m Manifest, salt str
 			return Content{}, "", err
 		}
 	}
-	content, err := BuildContent(m, facts)
+	content, err := BuildWindowContent(m, facts)
 	if err != nil {
 		return Content{}, "", unavailable()
 	}
@@ -212,6 +212,8 @@ func preserveReviewFacts(ctx context.Context, tx *sql.Tx, project string, m Mani
 			fact = ReviewFacts{Number: enrolled.Number, Lifecycle: old.Lifecycle}
 		}
 		if retained {
+			fact.CLIHasMore = fact.CLIHasMore || old.CLIHasMore
+			fact.HostedHasMore = fact.HostedHasMore || old.HostedHasMore
 			fact.CLI, err = merge(old.CLI, fact.CLI)
 			if err != nil {
 				return nil, err

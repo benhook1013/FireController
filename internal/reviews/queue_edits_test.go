@@ -186,6 +186,183 @@ func queueEditHTTP(f *apiFixture, req QueueEditRequest, key string) *httptest.Re
 	return f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, req)
 }
 
+func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) {
+	f := newAPIFixture(t)
+	// Seed a bounded observation, then append native PRs without replacing history.
+	pulls := make([]PullInput, 100)
+	for i := range pulls {
+		pulls[i] = nativePull(int64(i + 1))
+		pulls[i].State = "open"
+	}
+	f.observe(t, reviewRequest(0, pulls), "queue-growth-observation")
+	for number := int64(101); number <= 202; number++ {
+		pull := nativePull(number)
+		pull.Title, pull.State, pull.BaseRef = fmt.Sprintf("Selected pull %d", number), "open", "main"
+		if number == 202 {
+			pull.State = "merged"
+		}
+		run := RunInput{SourceRunID: fmt.Sprintf("retained-run-%d", number), Channel: "cli", Scope: "full", Outcome: "unknown"}
+		attempt := Attempt{SourceAttemptID: fmt.Sprintf("retained-attempt-%d", number), Channel: "cli", State: "unknown"}
+		mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run, Attempt: &attempt})
+		if number == 202 {
+			run.SourceRunID, run.Channel = "second-run", "hosted"
+			attempt.SourceAttemptID, attempt.Channel = "second-attempt", "hosted"
+			mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run, Attempt: &attempt})
+		}
+	}
+	var revision int64
+	if err := f.store.DB().QueryRow("SELECT revision FROM review_workspace WHERE project_id=?", f.project).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	base := importBase(f)
+	oldFirst := f.call("GET", base+"/queue?limit=1", f.readToken, "", nil)
+	var pinned QueueResponse
+	if oldFirst.Code != 200 || json.Unmarshal(oldFirst.Body.Bytes(), &pinned) != nil || pinned.Items[0].Number != 1 || pinned.Cursor == "" {
+		t.Fatalf("could not pin prior queue cursor: %d %s", oldFirst.Code, oldFirst.Body.String())
+	}
+	oldContinuationBefore := f.call("GET", base+"/queue?limit=1&cursor="+pinned.Cursor, f.readToken, "", nil)
+	if oldContinuationBefore.Code != 200 {
+		t.Fatalf("could not capture prior queue continuation: %d %s", oldContinuationBefore.Code, oldContinuationBefore.Body.String())
+	}
+	oldPull := f.call("GET", base+"/pulls/202?snapshot="+pinned.SnapshotID, f.readToken, "", nil)
+	if oldPull.Code != 200 {
+		t.Fatalf("prior detail unavailable: %d %s", oldPull.Code, oldPull.Body.String())
+	}
+	var previousObserved string
+	if err := f.store.DB().QueryRow(`SELECT observed_at FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, f.project, pinned.SnapshotID).Scan(&previousObserved); err != nil {
+		t.Fatal(err)
+	}
+
+	beforePull := f.call("GET", base+"/pulls/2", f.readToken, "", nil)
+	var omitted PullResponse
+	if beforePull.Code != 200 || json.Unmarshal(beforePull.Body.Bytes(), &omitted) != nil {
+		t.Fatalf("omitted pull unavailable: %d %s", beforePull.Code, beforePull.Body.String())
+	}
+	selected := QueuePullInput{Number: 202, Title: "Merged but retained", State: "merged", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", CIState: "success", Mergeability: "mergeable"}
+	newPull := QueuePullInput{Number: 203, Title: "New partial entry", State: "open", BaseRef: "main", CIState: "pending", Mergeability: "unknown"}
+	edit := queueEditRequest(revision, []QueuePullInput{selected, newPull}, []RetiredPull{{Number: 1, Reason: "superseded"}})
+	first := queueEditHTTP(f, edit, "queue-edit-first")
+	var receipt Receipt
+	if first.Code != http.StatusCreated || json.Unmarshal(first.Body.Bytes(), &receipt) != nil || receipt.Revision != revision+1 || receipt.Outcome != "queue_edited" {
+		t.Fatalf("selected queue edit: %d %s", first.Code, first.Body.String())
+	}
+	if got := queueEditHTTP(f, edit, "queue-edit-first"); got.Code != 201 || got.Body.String() != first.Body.String() {
+		t.Fatalf("queue edit replay changed receipt: %d %s", got.Code, got.Body.String())
+	}
+	var latestObserved string
+	if err := f.store.DB().QueryRow(`SELECT s.observed_at FROM review_workspace w JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id WHERE w.project_id=?`, f.project).Scan(&latestObserved); err != nil || latestObserved != previousObserved {
+		t.Fatalf("operator edit invented observation freshness: %q %q %v", latestObserved, previousObserved, err)
+	}
+	page := f.call("GET", base+"/queue?limit=100", f.readToken, "", nil)
+	var firstPage QueueResponse
+	if page.Code != 200 || json.Unmarshal(page.Body.Bytes(), &firstPage) != nil || firstPage.Revision != revision+1 || len(firstPage.Items) != 100 {
+		t.Fatalf("edited queue page: %d %s", page.Code, page.Body.String())
+	}
+	if firstPage.Items[0].Number != 2 || firstPage.Items[0].Title != omitted.Pull.Title || !firstPage.HasMore {
+		t.Fatalf("retirement did not hide selected PR or shifted omitted PR: %+v", firstPage)
+	}
+	var added PullResponse
+	addedResp := f.call("GET", base+"/pulls/203", f.readToken, "", nil)
+	if addedResp.Code != 200 || json.Unmarshal(addedResp.Body.Bytes(), &added) != nil || added.Pull.Complete || added.Pull.RunCount != 0 || added.Pull.AttemptCount != 0 {
+		t.Fatalf("new PR claimed unsupported coverage: %d %s", addedResp.Code, addedResp.Body.String())
+	}
+	var changed PullResponse
+	changedResp := f.call("GET", base+"/pulls/202", f.readToken, "", nil)
+	if changedResp.Code != 200 || json.Unmarshal(changedResp.Body.Bytes(), &changed) != nil || changed.Pull.Title != selected.Title || changed.Pull.Complete || changed.Pull.RunCount != 2 || changed.Pull.AttemptCount != 2 || changed.Pull.State != "merged" {
+		t.Fatalf("metadata edit dropped history or merged state: %d %s", changedResp.Code, changedResp.Body.String())
+	}
+	retiredDetail := f.call("GET", base+"/pulls/1", f.readToken, "", nil)
+	if retiredDetail.Code != 200 {
+		t.Fatalf("retirement hid retained detail: %d %s", retiredDetail.Code, retiredDetail.Body.String())
+	}
+	oldContinuation := f.call("GET", base+"/queue?limit=1&cursor="+pinned.Cursor, f.readToken, "", nil)
+	var oldPage QueueResponse
+	if oldContinuation.Code != 200 || json.Unmarshal(oldContinuation.Body.Bytes(), &oldPage) != nil || oldPage.SnapshotID != pinned.SnapshotID || oldPage.Revision != pinned.Revision || len(oldPage.Items) != 1 || oldPage.Items[0].Number != 2 {
+		t.Fatalf("old cursor changed after edit: %d %s", oldContinuation.Code, oldContinuation.Body.String())
+	}
+	oldPullAgain := f.call("GET", base+"/pulls/202?snapshot="+pinned.SnapshotID, f.readToken, "", nil)
+	if oldContinuation.Code != 200 || oldContinuation.Body.String() != oldContinuationBefore.Body.String() {
+		t.Fatal("queue editing changed byte-stable prior queue cursor response")
+	}
+	if oldPullAgain.Code != 200 || oldPullAgain.Body.String() != oldPull.Body.String() {
+		t.Fatalf("queue editing changed prior detail bytes: before=%s after=%s", oldPull.Body.String(), oldPullAgain.Body.String())
+	}
+	visible := make(map[int64]PullSummary, 202)
+	currentPage := firstPage
+	for {
+		for _, item := range currentPage.Items {
+			visible[item.Number] = item
+		}
+		if !currentPage.HasMore {
+			break
+		}
+		if currentPage.Cursor == "" {
+			t.Fatal("current queue page omitted continuation cursor")
+		}
+		response := f.call("GET", base+"/queue?limit=100&cursor="+currentPage.Cursor, f.readToken, "", nil)
+		currentPage = QueueResponse{}
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &currentPage) != nil {
+			t.Fatalf("current queue continuation failed: %d %s", response.Code, response.Body.String())
+		}
+	}
+	if len(visible) != 202 || visible[202].State != "merged" || visible[203].Complete {
+		t.Fatalf("queue edit removed merged PR, failed to preserve partial entry, or changed omission coverage: visible=%d merged=%+v new=%+v", len(visible), visible[202], visible[203])
+	}
+	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("history references after queue edit:", err)
+	}
+	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("current summaries after queue edit:", err)
+	}
+	// Native history can continue on a hidden PR without changing queue
+	// visibility or clearing its explicit retirement marker.
+	scope := queueEditTestScope(t, f)
+	native := NativePublication{
+		Pull:    PullInput{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"},
+		Attempt: &Attempt{SourceAttemptID: "native-hidden-attempt", Channel: "cli", State: "unknown"},
+	}
+	if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "test.native.hidden", Target: "workspace", Key: "native-hidden", Request: native}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		return PublishNative(ctx, tx, scope, native)
+	}); err != nil {
+		t.Fatal("native update on hidden PR:", err)
+	}
+	queueAfterNative := f.call("GET", base+"/queue?limit=100", f.readToken, "", nil)
+	var afterNative QueueResponse
+	if queueAfterNative.Code != 200 || json.Unmarshal(queueAfterNative.Body.Bytes(), &afterNative) != nil {
+		t.Fatalf("queue read after native update failed: %d %s", queueAfterNative.Code, queueAfterNative.Body.String())
+	}
+	for _, item := range afterNative.Items {
+		if item.Number == 1 {
+			t.Fatalf("native update resurfaced explicitly retired PR: %d %s", queueAfterNative.Code, queueAfterNative.Body.String())
+		}
+	}
+
+	// Explicit selection clears only the retirement marker and restores the retained body.
+	reactivate := queueEditRequest(revision+2, []QueuePullInput{{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"}}, nil)
+	reactivate.Order = []int64{202, 1}
+	if response := queueEditHTTP(f, reactivate, "queue-edit-reactivate"); response.Code != 201 {
+		t.Fatalf("reactivation failed: %d %s", response.Code, response.Body.String())
+	}
+	// A bounded order does not load or replace the complete 203-entry workspace.
+	order := queueEditRequest(revision+3, nil, nil)
+	for n := int64(100); n >= 1; n-- {
+		order.Order = append(order.Order, n)
+	}
+	if response := queueEditHTTP(f, order, "large-relative-order"); response.Code != 201 {
+		t.Fatalf("large relative order: %d %s", response.Code, response.Body.String())
+	}
+	var untouched int
+	if err := f.store.DB().QueryRow(`SELECT position FROM review_current_pulls WHERE project_id=? AND number=203`, f.project).Scan(&untouched); err != nil || untouched != 202 {
+		t.Fatal("unselected append position changed", untouched, err)
+	}
+	if got := f.call("GET", base+"/queue?limit=1&cursor="+pinned.Cursor, f.readToken, "", nil); got.Code != 200 || got.Body.String() != oldContinuationBefore.Body.String() {
+		t.Fatal("relative order changed old cursor", got.Body.String())
+	}
+	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQueueEditRetirementCanBeOmittedOrRepeatedByFullObservation(t *testing.T) {
 	for _, repeat := range []bool{false, true} {
 		t.Run(fmt.Sprintf("repeat-%t", repeat), func(t *testing.T) {
@@ -380,6 +557,67 @@ func TestQueueEditsReplayCASLimitsAndEventRollback(t *testing.T) {
 	}
 	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQueueEditsNullDisplayMetadataRefusedWithoutMutationOrKeyReservation(t *testing.T) {
+	for _, field := range []string{"diff", "is_draft", "merged_at"} {
+		t.Run(field, func(t *testing.T) {
+			f := newAPIFixture(t)
+			pull := samplePull(1, "Retained metadata")
+			pull.HeadSHA = strings.Repeat("a", 40)
+			pull.Diff = &PullDiff{Files: 2, Additions: 3, Deletions: 4}
+			draft := true
+			pull.IsDraft = &draft
+			pull.MergedAt = "2026-01-01T00:00:00Z"
+			f.observe(t, reviewRequest(0, []PullInput{pull}), "null-metadata-seed")
+			selected := QueuePullInput{Number: pull.Number, Title: pull.Title, State: pull.State, HeadSHA: pull.HeadSHA, BaseRef: pull.BaseRef, BaseSHA: pull.BaseSHA, CIState: pull.CIState, Mergeability: pull.Mergeability}
+			valid := queueEditRequest(1, []QueuePullInput{selected}, nil)
+			var document map[string]any
+			if err := json.Unmarshal(importJSON(t, valid), &document); err != nil {
+				t.Fatal(err)
+			}
+			item := document["queue"].([]any)[0].(map[string]any)
+			item[field] = nil
+			invalid := json.RawMessage(importJSON(t, document))
+			before := importDatabaseState(t, f)
+			key := "null-metadata-key"
+			refused := f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, invalid)
+			requireImportResponse(t, refused, http.StatusBadRequest, "validation_failed")
+			if !reflect.DeepEqual(before, importDatabaseState(t, f)) {
+				t.Fatal("null display metadata changed records, receipts or events")
+			}
+			// Omission still inherits same-head facts, and rejection cannot consume
+			// the key needed to submit the corrected original request.
+			first := queueEditHTTP(f, valid, key)
+			requireImportResponse(t, first, http.StatusCreated, "")
+			kept := metadataRead(t, f, pull.Number, "").Pull
+			if !reflect.DeepEqual(kept.Diff, pull.Diff) || kept.IsDraft == nil || !*kept.IsDraft || kept.MergedAt != pull.MergedAt {
+				t.Fatal("omitted same-head display metadata was not inherited")
+			}
+			// Known zero/false and the permitted empty merge-time string remain
+			// distinct from JSON null. Empty time preserves same-head provenance.
+			document["expected_revision"] = 2
+			item["diff"] = &PullDiff{}
+			item["is_draft"] = false
+			item["merged_at"] = ""
+			later := f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, "explicit-empty-metadata", document)
+			requireImportResponse(t, later, http.StatusCreated, "")
+			updated := metadataRead(t, f, pull.Number, "").Pull
+			if updated.Diff == nil || *updated.Diff != (PullDiff{}) || updated.IsDraft == nil || *updated.IsDraft || updated.MergedAt != pull.MergedAt {
+				t.Fatal("known zero, false or permitted empty metadata changed meaning")
+			}
+			after := importDatabaseState(t, f)
+			replay := queueEditHTTP(f, valid, key)
+			if replay.Code != http.StatusCreated || replay.Body.String() != first.Body.String() || !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+				t.Fatal("original omitted-metadata replay changed after later edits")
+			}
+			refused = f.call(http.MethodPost, importBase(f)+"/queue/edits", f.admin, key, invalid)
+			requireImportResponse(t, refused, http.StatusBadRequest, "validation_failed")
+			if !reflect.DeepEqual(after, importDatabaseState(t, f)) {
+				t.Fatal("null metadata was normalized into an existing replay")
+			}
+		})
 	}
 }
 

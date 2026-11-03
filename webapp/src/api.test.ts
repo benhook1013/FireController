@@ -42,7 +42,7 @@ const reviewAttempt = {
 };
 const reviewPull = {
   number: 1, title: 'Retained merged work', state: 'merged', head_sha: reviewRun.head_sha, base_ref: 'main', base_sha: 'e'.repeat(40),
-  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, attempt_count: 1,
+  ci_state: 'success', mergeability: 'unknown', complete: true, run_count: 1, run_counts:{hosted:1,cli:0,manual:0,subagent:0}, attempt_count: 1,
   recent_runs: [reviewRun], latest_attempts: [reviewAttempt],
 };
 const reviewQueue = { ...reviewSnapshot, configured: true, items: [reviewPull], has_more: false };
@@ -471,7 +471,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
+    const pull = { ...reviewPull, run_count: 0, run_counts:{hosted:0,cli:0,manual:0,subagent:0}, attempt_count: 0, recent_runs: [], latest_attempts: [] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
@@ -532,7 +532,7 @@ describe('Api stored review workspace', () => {
     setupLocation();
     const client = api();
     await connect(client);
-    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...reviewPull, number: index + 1, run_count: 0, run_counts:{hosted:0,cli:0,manual:0,subagent:0}, recent_runs: [], attempt_count: 0, latest_attempts: [] }));
     const runs = Array.from({ length: 21 }, (_, index) => ({ ...reviewRun, id: `review_run_${index.toString(16).padStart(32, '0')}`, source_run_id: `run-${index}` }));
     for (const kind of ['queue', 'runs']) {
       const page = { ...reviewSnapshot, ...(kind === 'queue' ? { configured: true } : {}), items: kind === 'queue' ? pulls : runs, has_more: false };
@@ -1282,10 +1282,44 @@ describe('captured comparison policy assessment', () => {
 });
 
 describe('bounded retained review history', () => {
+  it.each(['2026-01-01T00:00:00,123Z', '2026-01-01T13:00:00,123456789+13:00', '2026-01-01T00:00:00.123Z'])('returns browser-renderable retained merge time %s in queue and pull views', async merged_at => {
+    setupLocation(); const client=api(); await connect(client);
+    const pull={...reviewPull,merged_at};
+    const queue={...reviewQueue,items:[pull]}, detail={...reviewSnapshot,pull};
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(queue)).mockResolvedValueOnce(json(detail)));
+    const expected=merged_at.replace(',', '.');
+    const queued=(await client.reviewQueue()).items[0], selected=(await client.reviewPull(1)).pull;
+    for(const result of [queued,selected]) {
+      expect(result).toEqual({...pull,merged_at:expected});
+      expect(Number.isFinite(Date.parse(result.merged_at!))).toBe(true);
+      expect(new Date(result.merged_at!).toISOString()).toBe('2026-01-01T00:00:00.123Z');
+    }
+    expect(queue.items[0].merged_at).toBe(merged_at); expect(detail.pull.merged_at).toBe(merged_at);
+  });
+  it('rejects malformed or misplaced merge times without hiding other invalid metadata', async()=>{
+    setupLocation(); const client=api(); await connect(client);
+    for(const change of [
+      {merged_at:'2026-01-01T00:00:00,Z'}, {merged_at:'2026-01-01T00:00:00,,123Z'},
+      {merged_at:'2026-01-01T00:00:00,noZ'}, {merged_at:'2026-01-01T99:00:00,123Z'},
+      {merged_at:'2026-01-01T00:00:00,123'}, {merged_at:'2026-01-01T00:00:00,'+'1'.repeat(45)+'Z'},
+      {merged_at:null}, {merged_at:12}, {state:'open',merged_at:'2026-01-01T00:00:00,123Z'},
+      {merged_at:'2026-01-01T00:00:00,123Z',unknown_metadata:true},
+    ]) {
+      const pull={...reviewPull,...change};
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewQueue,items:[pull]})).mockResolvedValueOnce(json({...reviewSnapshot,pull})));
+      await expect(client.reviewQueue()).rejects.toMatchObject({code:'invalid_response'});
+      await expect(client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
+    }
+    for(const body of [{...reviewQueue,items:[{...reviewPull,merged_at:'2026-01-01T00:00:00,123Z'}]}, {...reviewSnapshot,pull:{...reviewPull,merged_at:'2026-01-01T00:00:00,123Z'}}]) {
+      const raw=JSON.stringify(body).replace('"merged_at":','"merged_at":"2026-01-01T00:00:00Z","merged_at":');
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(new Response(raw,{headers:{'content-type':'application/json'}})));
+      await expect('items' in body ? client.reviewQueue() : client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
+    }
+  });
   it('accepts growing compact summaries and reads one explicitly selected archive page at a time', async () => {
     setupLocation(); const client = api(); await connect(client);
-    const pull = { ...reviewPull, run_count: 225, attempt_count:230 };
-    const item = {...reviewAttempt, source:'original-review-producer', state:'held'};
+    const pull = { ...reviewPull, run_count: 225, run_counts:{hosted:125,cli:100,subagent:0,manual:0}, attempt_count:230, diff:{files:83,additions:1024,deletions:8}, is_draft:false, merged_at:reviewRun.finished_at };
+    const item = {...reviewAttempt, source:'original-review-producer', state:'held', reason:'provider_cooldown'};
     const fetchMock = vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull}))
       .mockResolvedValueOnce(json({...reviewSnapshot,items:[item],has_more:true,cursor:'signed_attempt_cursor'}))
       .mockResolvedValueOnce(json({...reviewSnapshot,items:[{...item,source:'second-producer'}],has_more:false}));
@@ -1301,19 +1335,21 @@ describe('bounded retained review history', () => {
     expect(urls[2].searchParams.get('cursor')).toBe('signed_attempt_cursor');
     expect(urls.every(url => !url.searchParams.has('include_observation'))).toBe(true);
   });
-  it('rejects ambiguous archives, foreign snapshots and malformed lifetime totals', async () => {
+  it('rejects ambiguous archives, invalid diagnostics, counters and display facts', async () => {
     setupLocation(); const client=api(); await connect(client);
     const item={...reviewAttempt,source:'producer'};
     for (const body of [
       {...reviewSnapshot,items:[item,item],has_more:false},
       {...reviewSnapshot,items:[{...item,source:''}],has_more:false},
+      {...reviewSnapshot,items:[{...item,reason:'provider_cooldown'}],has_more:false},
+      {...reviewSnapshot,items:[{...item,state:'held',reason:'provider prose'}],has_more:false},
       {...reviewSnapshot,items:[item],has_more:true},
       {...reviewSnapshot,snapshot_id:`review_snapshot_${'f'.repeat(32)}`,items:[item],has_more:false},
     ]) {
       vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(body)));
       await expect(client.reviewAttempts(1,{snapshot:reviewSnapshot.snapshot_id})).rejects.toMatchObject({code:'invalid_response'});
     }
-    for (const change of [ {run_count:-1}, {run_count:Number.MAX_SAFE_INTEGER+1}, {attempt_count:-1}, {attempt_count:Number.MAX_SAFE_INTEGER+1}  ]) {
+    for (const change of [ {run_counts:{hosted:2,cli:0,subagent:0,manual:0}}, {run_counts:{hosted:0}}, {diff:{files:3}}, {diff:null}, {is_draft:null}, {state:'open',merged_at:reviewRun.finished_at} ]) {
       vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull:{...reviewPull,...change}})));
       await expect(client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
     }

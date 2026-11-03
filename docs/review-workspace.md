@@ -15,7 +15,7 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
 | `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
 | `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
-| `POST /reviews/queue/edits` | Administrator-only bounded metadata, retirement, reactivation or relative-order edit; preserves unselected queue entries and evidence. |
+| `POST /reviews/queue/edits` | Selected metadata/order edits, retirement and reactivation (administrator). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
@@ -29,22 +29,6 @@ Cursors bind the principal, project, route, order and retained snapshot. New imp
 ## Administrator observations
 
 The [prepared import contract](review-import.md) owns guided preview/apply and profile-bound administrator CLI commands. These routes share the observation transaction below; preview does not reserve a workspace revision.
-
-## Bounded queue edits
-
-`POST /api/v1/projects/{project_id}/reviews/queue/edits` manages a selected part of the queue without replacing its full current membership. It requires administrator authorization, an explicit idempotency key and a strict JSON document containing `expected_revision`, the project's `repository_id` and a bounded `source` label. Optional `queue` and `retired` arrays select between one and one hundred entries in total, unless a nonempty `order` is supplied. Each request and its normalized JSON are limited to 256 KiB. Omitted arrays normalize to empty. Null arrays, duplicate keys and unknown fields are refused. The `queue` and `retired` selections must each be unique and disjoint. The `order` selection must be unique and exclude retired PRs; it may include a metadata upsert from `queue`.
-
-Each `queue` item has `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`. Omitted SHA/base strings become empty. CI permits `unknown`, `pending`, `success`, `failure` and `not_required`. Runs, attempts, findings, counts and completeness cannot be supplied. Existing entries retain their position and evidence; a changed head clears inherited completeness. New entries append with zero history and partial coverage. Selecting a retired PR explicitly reactivates it. Each `retired` item names a currently visible PR and reason `superseded` or `defunct`. Retirement hides it from the queue while preserving its detail, history, controls and native publications; later native evidence cannot silently reactivate it. Merged PRs omitted from an edit remain visible completed history and are never implicitly retired.
-
-Optional `order` selects one to one hundred unique visible positive 32-bit PR numbers. The selected entries exchange only their occupied positions; unselected positions stay unchanged. Thus `[1,2,3,4]` with `order:[3,1]` becomes `[3,2,1,4]`. Metadata upserts and explicit reactivation occur before order selection. Unknown or still-retired PRs, entries retired by the same request and empty/null order arrays are refused. Omitting order preserves the existing normalized edit shape.
-
-The selected changes, immutable snapshot, references, derived summaries, public projection refresh, event and receipt commit together. Edits retain the prior source observation time and perform no provider work or review-policy mutation. Success returns HTTP 201 with only snapshot `id`, new `revision` and `outcome:queue_edited`. Exact-key replay returns that original receipt after later edits or restart under current authorization; changed input with the same key conflicts. The existing complete-observation limits and explicit retirement requirements remain unchanged. Bounded queue edits remain usable when native growth exceeds those full-replacement limits.
-
-Use MCP `review_queue_edit` with `document` and `idempotency_key`, or the typed client’s native endpoint. These validate the document before service I/O, preserve its exact bytes and explicit binding, and never retry automatically. Lost receipts retain exact-key recovery. These are administrator management operations, not review requests or automatic scheduling controls.
-
-Focused source tests exercise actual growth beyond two hundred native PRs, selected metadata and retirement, preserved merged omissions, relative ordering, historical detail/cursor bytes, original-key replay, revision/authentication guards and transaction rollback. Client and SDK MCP checks exercise the native endpoint, strict inputs and lost receipts. This does not establish live-provider behavior or installed rollout.
-
-## Complete observations
 
 The strict JSON body requires `expected_revision` (zero for the first observation), the configured stable GitHub `repository_id`, a bounded `source`, an RFC3339 `observed_at`, ordered `queue` entries and explicit `retired` entries. Omitted arrays normalize to empty arrays. The body and its normalized form are bounded to 256 KiB. A changed request under an existing idempotency key conflicts; an exact retained replay returns the original receipt before re-evaluating the revision. Replay still requires current authorization.
 
@@ -62,7 +46,15 @@ Findings preserve source identity, title, plain detail, severity, disposition, d
 
 Every retained run keeps its owning PR, original producer/source ID, channel, captured head and scope from its first observation, whether or not adjudication is finalized. An unknown captured run head remains unknown; later observations cannot replace it with another commit. Finalization also protects source counts and known finding identity/text. A later observation may add missing structured evidence or record corrected decision/fix evidence while retaining earlier snapshots, but cannot replace known finding text under unchanged finalized counts. Native run IDs derive from project, source and source run identity, rather than exposing filesystem paths.
 
-Attempts retain source IDs, channel, head, state, timing, nullable duration and optional source-run/provider references, bounded to 100 per PR and 200 in each complete observation request. Native publication can retain more across bounded operations. Failed, rate-limited, uncertain and unknown attempts remain visible. An unknown duration is null and displays as “Unknown”; measured zero remains zero. An unknown attempt head or start time may be filled once; known values cannot be cleared or replaced. A process exit code alone does not establish completed coverage. Queue and PR summaries contain only the three most recent runs and latest attempt per channel, with aggregate retained run and attempt totals. Attempt pages include the original producer and load explicitly through `reviews attempts PR --snapshot SNAPSHOT --limit LIMIT --cursor CURSOR` or the `review_attempts` MCP tool; snapshot, limit and cursor are optional selectors. Each call returns exactly one page. Full findings load explicitly on a run page.
+Attempts retain source IDs, channel, head, state, timing, nullable duration and optional source-run/provider references, bounded to 100 per PR and 200 in each complete observation request. Native publication can retain more across bounded operations. Failed, rate-limited, uncertain and unknown attempts remain visible. An unknown duration is null and displays as “Unknown”; measured zero remains zero. An unknown attempt head or start time may be filled once; known values cannot be cleared or replaced. A process exit code alone does not establish completed coverage. Queue and PR summaries contain only the three most recent runs and latest attempt per channel, with completed-run channel counts alongside retained totals. Optional bounded reason codes describe held, rate-limited, uncertain or failed attempts; they never contain provider prose. Attempt pages include the original producer and load explicitly through `reviews attempts PR --snapshot SNAPSHOT --limit LIMIT --cursor CURSOR` or the `review_attempts` MCP tool; snapshot, limit and cursor are optional selectors. Each call returns exactly one page. Full findings load explicitly on a run page.
+
+### Optional PR display metadata
+
+PR observations may include `diff`, `is_draft`, `merged_at` and `merge_state_status`. These fields retain observed display facts and grant no review coverage or execution authority. Compact queue/detail summaries expose `diff`, `is_draft` and `merged_at`; raw `merge_state_status` remains retained provider input rather than an additional summary field. Merge-status presentation is outside this slice’s implemented read contract. `diff` is one atomic object containing exactly `files`, `additions` and `deletions`, each an integer from zero through 2147483647; a partial object is invalid. `is_draft` is an optional boolean, so known `false` differs from unknown. A nonempty `merged_at` is an RFC3339 instant of at most 64 characters and is valid only when `state` is `merged`. Omit unknown metadata rather than inventing zero, false or a timestamp. Queue edits refuse explicit null optional metadata; observations also refuse a null or incomplete `diff` object.
+
+Observation `merge_state_status` may be omitted, empty, or one of `BEHIND`, `BLOCKED`, `CLEAN`, `DIRTY`, `DRAFT`, `HAS_HOOKS`, `UNKNOWN` and `UNSTABLE`. Queue edits accept the other optional display fields but do not accept `merge_state_status`; they are not fresh provider observations.
+
+Complete observations record the supplied optional metadata without inheriting an earlier snapshot's omitted fields. Native publications and queue edits inherit omitted metadata when the head is unchanged; a changed head clears omitted metadata. A head or base comparison change also clears the inherited merge-state observation, and leaving the merged lifecycle clears `merged_at`. Explicit supplied metadata remains subject to the same validation. Retained historical snapshots keep their original metadata.
 
 ## Retention and browser behavior
 
@@ -82,9 +74,37 @@ The 98-file Go/browser/module/config/asset manifest stayed unchanged: SHA-256 `b
 
 These checks use synthetic observations on Linux/WSL Chromium. They do not establish native execution, a complete migration product, populated multi-project browser coverage, remote deployment, fleet throughput or installed-agent behavior. Existing authentication/revocation and strict-parser tests provide separate focused evidence.
 
+## Bounded queue edits
+
+### Selected queue edits
+
+Administrator queue edits maintain selected stored metadata, relative ordering and explicit retirement/reactivation without resubmitting a complete retained workspace. They are an administrator maintenance boundary, not another ordinary worker enrollment step.
+
+Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Selected edits do not require a complete project export or a lifetime PR ceiling. Prepared additive history transfer is separate from this implemented metadata boundary.
+
+Queue edits require administrator access, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for administrator provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
+
+Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` under the [PR display metadata contract](#optional-pr-display-metadata). CI permits `unknown`, `pending`, `success`, `failure` and `not_required`. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
+
+Optional `order` names one to one hundred unique positive 32-bit PR numbers in the desired relative order. After this request's metadata upserts and retirements, those visible PRs exchange only the positions they occupy; unnamed PR positions remain unchanged. For example, queue `[1,2,3,4]` with `order: [3,1]` becomes `[3,2,1,4]`. A newly upserted or explicitly reactivated PR may be selected. Unknown PRs, currently retired PRs without reactivation, and PRs retired by the same request are refused. An empty or null order is refused. Order-only requests use the same endpoint and CLI file; omitting `order` preserves the original normalized request bytes and replay semantics. Ordering changes no retained metadata, findings, counts, completeness, execution policy or review budget.
+
+Each `retired` entry names a currently visible PR and its `superseded` or `defunct` reason. Retirement changes queue visibility, preserving retained parent records and review histories. Later native publication can update retained facts without making the PR reappear. If complete observations have removed its current parent and retirement marker, native reintroduction preserves the latest retained retirement reason; unrelated replacement observations do not authorize reactivation. Explicit retirement also governs a retained snapshot containing both a pull record and its retirement; the presence of the pull record alone cannot make it visible. Retirement does not cancel review operations, change execution policy or unpublish an explicitly enrolled public PR.
+
+Omitted PRs and records remain unchanged. Revision admission, the new snapshot, history references, compact summaries, receipt, event and public projection refresh commit together. A queue edit inherits the prior observation time and does no provider work; it cannot claim freshly collected source facts. Exact original-key replay returns its original receipt after later changes or restart, subject to current authorization. A changed request under the same key conflicts. Successful HTTP 201 returns only the snapshot `id`, new `revision` and `outcome: queue_edited`.
+
+The bound administrator CLI is:
+
+```sh
+fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key
+```
+
+It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. MCP `review_queue_edit` sends the same native document and explicit `idempotency_key`; service administrator admission still applies. It does not request reviews or change scheduling configuration.
+
+Focused regressions grow the workspace through actual native publication beyond 200 PRs, apply selected edits without dropping omitted merged history, preserve original cursor/detail and evidence bytes, retain retirement through later native publication, and prove exact original-key replay after intervening edits and database reopen. Optional-metadata, relative-order, rollback and client tests cover the same selected-edit boundary. CLI and SDK MCP tests exercise strict/authenticated native calls and lost-receipt recovery. These source checks do not establish live-provider behavior or installed rollout.
+
 ## Retained history and bounded archives
 
-The [retained history contract](review-history-growth.md) owns immutable versions, membership, current summaries, migrations and backup validation. PR detail remains compact regardless of archive growth. The browser reads one explicit attempt page at a time, preserving snapshot-bound continuation and original producer identity. Optional PR display metadata, attempt reasons, completed-channel counters and public review windows remain with the next presentation slice.
+The [retained history contract](review-history-growth.md) owns immutable versions, membership, current summaries, migrations and backup validation. PR detail remains compact regardless of archive growth. The browser reads one explicit attempt page at a time, preserving snapshot-bound continuation and original producer identity. Optional observed diff, draft and merge-time metadata remains display evidence, never admission or coverage authority.
 
 ## Agent reads and restored review history
 

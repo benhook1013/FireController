@@ -79,6 +79,14 @@ A minimal file can select the default fire presentation with a deliberate public
 
 Preview shows normalized empty sections and the default presentation. Add only text and destinations intended for anonymous readers. Publishing a private source's title or content requires that explicit selection; importing it privately does not imply permission to publish it.
 
+## Bounded review windows
+
+Each selected PR publishes a bounded window of at most 100 finalized summaries independently for Hosted and CLI. Optional `hosted_has_more:true` and `cli_has_more:true` flags explicitly identify retained rounds outside the public window; absent flags mean no known omission. Present false, null or nonboolean flags are invalid. The anonymous browser shows a continuation notice without exposing private cursors or identifiers.
+
+The adapter first selects finalized completed candidates by descending retained run position. Refresh merges those candidates with already published rounds by opaque identity, preserving earlier published evidence and omission flags. The builder then orders the bounded union by observed instant ascending, with unknown times last and opaque public keys breaking ties, and keeps its final 100 entries per channel. This is a bounded window over retained candidates, not a guarantee of the latest 100 completion times across all private history.
+
+A bounded candidate union may contain up to 200 summaries per channel while refreshing the window. The builder validates candidates and preserves explicit omission flags; final stored content remains at most 100 per channel. If the overall public byte budget requires a smaller window, the same flag marks the omitted summaries. Private history remains intact. Existing fitting publications retain their canonical bytes.
+
 ## Anonymous transport and retention
 
 The browser routes are `/public/{slug}` and `/public/{slug}/history/{revision}?generation={generation}`. The private workspace remains at `/`. Public transport omits credentials and never mounts the private session or query cache.

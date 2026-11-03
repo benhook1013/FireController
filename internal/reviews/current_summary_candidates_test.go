@@ -1,13 +1,8 @@
 package reviews
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/publicsite"
@@ -70,31 +65,31 @@ func TestCurrentSummaryStagedChannelReplacementsRemovalAndTies(t *testing.T) {
 func TestCurrentRunOrderTracksEligibilityReorderAndOmission(t *testing.T) {
 	f := newAPIFixture(t)
 	pull := nativePull(1)
-	first := currentOrderFixtureRun(1, "cli", 0)
-	second := currentOrderFixtureRun(1, "cli", 1)
-	draft := currentOrderFixtureRun(1, "cli", 2)
+	first := publicWindowRun(1, "cli", 0)
+	second := publicWindowRun(1, "cli", 1)
+	draft := publicWindowRun(1, "cli", 2)
 	draft.Outcome, draft.Finalized = "active", false
 	pull.Runs = []RunInput{first, second, draft}
-	currentOrderFixtureArchive(t, f, 1, []PullInput{pull})
+	publicWindowArchive(t, f, 1, []PullInput{pull})
 	if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("initial current order cache invalid", err)
 	}
 	manifest := publicsite.Manifest{Reviews: []publicsite.EnrolledReview{{Number: 1}}}
-	initial := currentOrderFixtureRead(t, f, manifest)
-	if len(initial) != 1 || len(initial[0].CLI) != 2 || initial[0].CLI[0].Key != currentOrderFixtureKey(f.project, 1, second) {
+	initial := publicWindowRead(t, f, manifest)
+	if len(initial) != 1 || len(initial[0].CLI) != 2 || initial[0].CLI[0].Key != publicWindowKey(f.project, 1, second) {
 		t.Fatal("eligible current rows did not produce newest-first channel window", initial,
-			"expected newest", currentOrderFixtureKey(f.project, 1, second), "then", currentOrderFixtureKey(f.project, 1, first))
+			"expected newest", publicWindowKey(f.project, 1, second), "then", publicWindowKey(f.project, 1, first))
 	}
 
 	// Reordering existing identities updates the compact index while retaining
 	// the same immutable run versions.
 	pull.Runs = []RunInput{second, draft, first}
-	currentOrderFixtureArchive(t, f, 2, []PullInput{pull})
+	publicWindowArchive(t, f, 2, []PullInput{pull})
 	if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("reordered current order cache invalid", err)
 	}
-	reordered := currentOrderFixtureRead(t, f, manifest)
-	if len(reordered[0].CLI) != 2 || reordered[0].CLI[0].Key != currentOrderFixtureKey(f.project, 1, first) {
+	reordered := publicWindowRead(t, f, manifest)
+	if len(reordered[0].CLI) != 2 || reordered[0].CLI[0].Key != publicWindowKey(f.project, 1, first) {
 		t.Fatal("public ordering did not follow current run positions", reordered)
 	}
 
@@ -103,17 +98,17 @@ func TestCurrentRunOrderTracksEligibilityReorderAndOmission(t *testing.T) {
 	draft.Finalized = true
 	draft.Outcome = "completed"
 	pull.Runs = []RunInput{second, draft, first}
-	currentOrderFixtureArchive(t, f, 3, []PullInput{pull})
+	publicWindowArchive(t, f, 3, []PullInput{pull})
 	if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("eligibility update left stale current order metadata", err)
 	}
-	updated := currentOrderFixtureRead(t, f, manifest)
-	if len(updated) != 1 || len(updated[0].CLI) != 3 || updated[0].CLI[0].Key != currentOrderFixtureKey(f.project, 1, first) || updated[0].CLI[1].Key != currentOrderFixtureKey(f.project, 1, draft) {
+	updated := publicWindowRead(t, f, manifest)
+	if len(updated) != 1 || len(updated[0].CLI) != 3 || updated[0].CLI[0].Key != publicWindowKey(f.project, 1, first) || updated[0].CLI[1].Key != publicWindowKey(f.project, 1, draft) {
 		t.Fatal("finalized draft missing or unrelated public order changed", updated)
 	}
 
 	// Omission removes the current cache row but leaves historical detail.
-	currentOrderFixtureArchive(t, f, 4, []PullInput{nativePull(1)})
+	publicWindowArchive(t, f, 4, []PullInput{nativePull(1)})
 	if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
 		t.Fatal("omitted run left stale current order row", err)
 	}
@@ -127,16 +122,17 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 	t.Run("valid v5 upgrade", func(t *testing.T) {
 		f := newAPIFixture(t)
 		pull := nativePull(1)
-		pull.Runs = []RunInput{currentOrderFixtureRun(1, "cli", 0), currentOrderFixtureRun(1, "hosted", 0)}
+		pull.Runs = []RunInput{publicWindowRun(1, "cli", 0), publicWindowRun(1, "hosted", 0)}
 		f.observe(t, reviewRequest(0, []PullInput{pull}), "run-order-upgrade-one")
 		f.observe(t, reviewRequest(1, []PullInput{pull}), "run-order-upgrade-two")
 		manifest := publicsite.Manifest{Reviews: []publicsite.EnrolledReview{{Number: 1}}}
-		beforePublic := currentOrderFixtureRead(t, f, manifest)
+		beforePublic := publicWindowRead(t, f, manifest)
 		var before PullResponse
 		beforeWire := nativeRead(t, f, "/pulls/1", &before)
 		if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 			t.Fatal(err)
 		}
+		removeMetadataForPre7Fixture(t, f.store)
 		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
 			t.Fatal(err)
 		}
@@ -144,13 +140,13 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 			t.Fatal("v5 current-order migration failed", err)
 		}
 		var version string
-		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "6" {
+		if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
 			t.Fatal("new review schema version not installed", version, err)
 		}
 		if err := ValidateCurrentRunOrder(t.Context(), f.store.DB()); err != nil {
 			t.Fatal("backfilled order cache invalid", err)
 		}
-		if got := currentOrderFixtureRead(t, f, manifest); !reflect.DeepEqual(got, beforePublic) {
+		if got := publicWindowRead(t, f, manifest); !reflect.DeepEqual(got, beforePublic) {
 			t.Fatal("backfill changed public window", got, beforePublic)
 		}
 		if after := nativeRead(t, f, "/pulls/1", &before); string(after) != string(beforeWire) {
@@ -165,12 +161,13 @@ func TestCurrentRunOrderUpgradeBackfillAndCorruptSourceRollback(t *testing.T) {
 	t.Run("invalid retained reference rolls migration back", func(t *testing.T) {
 		f := newAPIFixture(t)
 		pull := nativePull(1)
-		pull.Runs = []RunInput{currentOrderFixtureRun(1, "cli", 0)}
+		pull.Runs = []RunInput{publicWindowRun(1, "cli", 0)}
 		f.observe(t, reviewRequest(0, []PullInput{pull}), "run-order-rollback-one")
 		f.observe(t, reviewRequest(1, []PullInput{pull}), "run-order-rollback-two")
 		if _, err := f.store.DB().Exec(`DROP TABLE review_current_run_order`); err != nil {
 			t.Fatal(err)
 		}
+		removeMetadataForPre7Fixture(t, f.store)
 		if _, err := f.store.DB().Exec(`UPDATE metadata SET value='5' WHERE key='schema:reviews'`); err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +202,7 @@ func TestPublicRunOrderFailsClosedOnSelectedCacheMismatch(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := newAPIFixture(t)
 			pull := nativePull(1)
-			run := currentOrderFixtureRun(1, "cli", 0)
+			run := publicWindowRun(1, "cli", 0)
 			if mode == "overflow probe" {
 				run.Finalized = false
 			}
@@ -214,10 +211,10 @@ func TestPublicRunOrderFailsClosedOnSelectedCacheMismatch(t *testing.T) {
 				// The forged row must be the 101st candidate: already knowing HasMore
 				// does not permit skipping its authoritative eligibility check.
 				for i := 1; i <= 100; i++ {
-					pull.Runs = append(pull.Runs, currentOrderFixtureRun(1, "cli", i))
+					pull.Runs = append(pull.Runs, publicWindowRun(1, "cli", i))
 				}
 			}
-			currentOrderFixtureArchive(t, f, 1, []PullInput{pull})
+			publicWindowArchive(t, f, 1, []PullInput{pull})
 			statement := `UPDATE review_current_run_order SET run_order=run_order+1 WHERE project_id=? AND run_order=0`
 			if mode == "overflow probe" {
 				statement = `UPDATE review_current_run_order SET finalized=1 WHERE project_id=? AND run_order=0`
@@ -230,76 +227,10 @@ func TestPublicRunOrderFailsClosedOnSelectedCacheMismatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			_, err = PublicSiteReviewFacts(t.Context(), tx, f.project, publicsite.Manifest{Reviews: []publicsite.EnrolledReview{{Number: 1}}}, currentOrderFixtureSalt)
+			_, err = PublicSiteReviewFacts(t.Context(), tx, f.project, publicsite.Manifest{Reviews: []publicsite.EnrolledReview{{Number: 1}}}, publicWindowSalt)
 			if err == nil {
 				t.Fatal("selected stale cache metadata was published", mode)
 			}
 		})
 	}
-}
-
-const currentOrderFixtureSource = "PRIVATE_ARCHIVE_PRODUCER"
-const currentOrderFixtureSalt = "public_salt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-// Seed a trusted retained archive through the owning immutable history writer.
-// This bypasses observation/native admission limits only in the fixture; it
-// creates no executor journal, captured evidence or native coverage authority.
-func currentOrderFixtureArchive(t *testing.T, f *apiFixture, revision int64, queue []PullInput) string {
-	t.Helper()
-	tx := historyWriterTx(t, f)
-	id := fmt.Sprintf("public_window_snapshot_%d", revision)
-	_, err := tx.ExecContext(t.Context(), `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,701,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?)`, f.project, id, revision, currentOrderFixtureSource, strings.Repeat("a", 64))
-	if err != nil {
-		t.Fatal(err)
-	}
-	write := newHistorySnapshotWrite(f.project, revision)
-	req := reviewRequest(revision-1, queue)
-	req.Source = currentOrderFixtureSource
-	if err := write.observation(t.Context(), tx, req); err != nil {
-		t.Fatal(err)
-	}
-	if err := write.applyCurrent(t.Context(), tx, id, revision-1); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateHistoryReferences(t.Context(), tx); err != nil {
-		t.Fatal("trusted archive has invalid retained references", err)
-	}
-	if err := ValidateCurrentSummaries(t.Context(), tx); err != nil {
-		t.Fatal("trusted archive has invalid derived current rows", err)
-	}
-	if err := ValidateCurrentRunOrder(t.Context(), tx); err != nil {
-		t.Fatal("trusted archive has invalid current run-order cache", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
-func currentOrderFixtureRun(number int64, channel string, order int) RunInput {
-	return RunInput{SourceRunID: fmt.Sprintf("PRIVATE_SOURCE_%d_%s_%d", number, channel, order), Channel: channel, Outcome: "completed", Finalized: true, Complete: true,
-		StartedAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-01T00:01:00.123Z", Scope: "PRIVATE_SCOPE", Reviewer: "PRIVATE_REVIEWER", CoverageLimits: []string{"PRIVATE_COVERAGE"}}
-}
-
-func currentOrderFixtureRead(t *testing.T, f *apiFixture, manifest publicsite.Manifest) []publicsite.ReviewFacts {
-	t.Helper()
-	tx, err := f.store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	facts, err := PublicSiteReviewFacts(t.Context(), tx, f.project, manifest, currentOrderFixtureSalt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return facts
-}
-
-func currentOrderFixtureKey(project string, number int64, run RunInput) string {
-	key, _ := hex.DecodeString(strings.TrimPrefix(currentOrderFixtureSalt, "public_salt_"))
-	mac := hmac.New(sha256.New, key)
-	for _, value := range []string{project, fmt.Sprint(number), currentOrderFixtureSource, run.SourceRunID, run.Channel} {
-		fmt.Fprintf(mac, "%d:%s", len(value), value)
-	}
-	return "public_round_" + hex.EncodeToString(mac.Sum(nil)[:16])
 }

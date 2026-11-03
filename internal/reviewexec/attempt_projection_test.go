@@ -187,6 +187,7 @@ func TestAttemptProjectionTerminalAndUncertainStates(t *testing.T) {
 			if state == "held" {
 				// The owning trusted publisher also refuses to reopen a held projection.
 				value.State = "preparing"
+				value.Reason = ""
 				pull := projectionPull(2)
 				err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 					_, err := reviews.PublishNative(ctx, tx, core.Scope{ProjectID: attemptProject, PrincipalID: "test"}, reviews.NativePublication{Pull: pull, Attempt: &value})

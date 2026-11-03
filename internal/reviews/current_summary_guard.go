@@ -44,7 +44,7 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 	}
 	expected := make(map[string]AttemptSummary, len(previous))
 	for _, item := range previous {
-		if !oneOf(item.Channel, "hosted", "cli", "manual", "subagent") {
+		if !oneOf(item.Channel, "hosted", "cli", "manual", "subagent") || !ValidAttemptReason(item.State, item.Reason) {
 			return historyInconsistent()
 		}
 		if _, exists := expected[item.Channel]; exists {
@@ -57,7 +57,7 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 		var candidate Attempt
 		var key, cachedChannel string
 		var cachedNumber, cachedPosition, currentNumber, currentPosition, memberNumber, memberPosition, bodyNumber int64
-		err := tx.QueryRowContext(ctx, currentSummaryAttemptQuery(columns), project, number, channel).Scan(&candidate.SourceAttemptID, &candidate.Channel, &candidate.HeadSHA, &candidate.State, &candidate.StartedAt, &candidate.FinishedAt, &candidate.DurationSeconds, &candidate.SourceRunID, &candidate.TriggerID, &candidate.ProviderReviewID, &key, &cachedChannel, &cachedNumber, &cachedPosition, &currentNumber, &currentPosition, &memberNumber, &memberPosition, &bodyNumber)
+		err := tx.QueryRowContext(ctx, currentSummaryAttemptQuery(columns), project, number, channel).Scan(&candidate.SourceAttemptID, &candidate.Channel, &candidate.HeadSHA, &candidate.State, &candidate.StartedAt, &candidate.FinishedAt, &candidate.DurationSeconds, &candidate.SourceRunID, &candidate.TriggerID, &candidate.ProviderReviewID, &candidate.Reason, &key, &cachedChannel, &cachedNumber, &cachedPosition, &currentNumber, &currentPosition, &memberNumber, &memberPosition, &bodyNumber)
 		prior, exists := expected[channel]
 		if errors.Is(err, sql.ErrNoRows) {
 			if exists {
@@ -72,7 +72,7 @@ func validateCurrentSummaryFrontColumns(ctx context.Context, tx HistoryQuery, pr
 		if err != nil {
 			return err
 		}
-		if !exists || mustJSON(AttemptSummary(candidate)) != mustJSON(prior) || key != canonicalKey || candidate.Channel != channel || cachedChannel != candidate.Channel || cachedNumber != number || currentNumber != number || memberNumber != number || bodyNumber != number || cachedPosition != currentPosition || memberPosition != currentPosition {
+		if !ValidAttemptReason(candidate.State, candidate.Reason) || !exists || mustJSON(AttemptSummary(candidate)) != mustJSON(prior) || key != canonicalKey || candidate.Channel != channel || cachedChannel != candidate.Channel || cachedNumber != number || currentNumber != number || memberNumber != number || bodyNumber != number || cachedPosition != currentPosition || memberPosition != currentPosition {
 			return historyInconsistent()
 		}
 		actual = append(actual, AttemptSummary(candidate))

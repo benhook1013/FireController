@@ -70,7 +70,7 @@ func attempts(store *core.Store) http.HandlerFunc {
 			if _, err := pullExists(ctx, tx, scope.ProjectID, meta.SnapshotID, number); err != nil {
 				return err
 			}
-			querySQL := `SELECT source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id,position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=?`
+			querySQL := `SELECT source,source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id,reason,position FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=?`
 			args := []any{scope.ProjectID, meta.SnapshotID, number}
 			if cursorSnapshot != "" {
 				querySQL += ` AND position<?`
@@ -87,8 +87,11 @@ func attempts(store *core.Store) http.HandlerFunc {
 			for rows.Next() {
 				var item AttemptHistoryItem
 				var position int
-				if err := rows.Scan(&item.Source, &item.SourceAttemptID, &item.Channel, &item.HeadSHA, &item.State, &item.StartedAt, &item.FinishedAt, &item.DurationSeconds, &item.SourceRunID, &item.TriggerID, &item.ProviderReviewID, &position); err != nil {
+				if err := rows.Scan(&item.Source, &item.SourceAttemptID, &item.Channel, &item.HeadSHA, &item.State, &item.StartedAt, &item.FinishedAt, &item.DurationSeconds, &item.SourceRunID, &item.TriggerID, &item.ProviderReviewID, &item.Reason, &position); err != nil {
 					return err
+				}
+				if !ValidAttemptReason(item.State, item.Reason) {
+					return historyInconsistent()
 				}
 				if len(response.Items) == limit {
 					response.HasMore = true

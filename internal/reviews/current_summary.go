@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// CurrentSummarySchemaSQL retains the canonical schema-five/six
-// derived indexes for migration and read-only backup inspection.
-func CurrentSummarySchemaSQL() []string {
+// CurrentSummarySchemaSQLV8 retains the canonical schema-five-through-eight
+// derived indexes for migration and read-only predecessor backup inspection.
+func CurrentSummarySchemaSQLV8() []string {
 	return []string{
 		`CREATE TABLE review_current_totals (
  project_id TEXT NOT NULL,
@@ -38,6 +38,7 @@ func CurrentSummarySchemaSQL() []string {
 
 type summaryTotals struct {
 	runs, attempts, incomplete int64
+	channels                   ChannelRunCounts
 }
 
 type currentSummarySQL interface {
@@ -115,6 +116,9 @@ func backfillCurrentSummaries(ctx context.Context, conn *sql.Conn) error {
 			break
 		}
 	}
+	if err := backfillChannelRunCounts(ctx, conn); err != nil {
+		return err
+	}
 	return ValidateCurrentSummaries(ctx, conn)
 }
 
@@ -152,7 +156,7 @@ func insertAttemptOrder(ctx context.Context, q currentSummarySQL, project, sourc
 
 func readSummaryTotals(ctx context.Context, q HistoryQuery, project string, number int64) (summaryTotals, error) {
 	var totals summaryTotals
-	err := q.QueryRowContext(ctx, `SELECT run_count,attempt_count,incomplete_run_count FROM review_current_totals WHERE project_id=? AND pull_number=?`, project, number).Scan(&totals.runs, &totals.attempts, &totals.incomplete)
+	err := q.QueryRowContext(ctx, `SELECT run_count,attempt_count,incomplete_run_count,`+channelRunCountColumns+` FROM review_current_totals WHERE project_id=? AND pull_number=?`, project, number).Scan(&totals.runs, &totals.attempts, &totals.incomplete, &totals.channels.Hosted, &totals.channels.CLI, &totals.channels.Subagent, &totals.channels.Manual)
 	if errors.Is(err, sql.ErrNoRows) {
 		var exists bool
 		if err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_pulls WHERE project_id=? AND number=?)`, project, number).Scan(&exists); err != nil {
@@ -183,14 +187,26 @@ func (w *historySnapshotWrite) prospectiveTotals(ctx context.Context, tx *sql.Tx
 }
 
 func validSummaryTotals(totals summaryTotals) bool {
-	return totals.runs >= 0 && totals.attempts >= 0 && totals.incomplete >= 0 && totals.incomplete <= totals.runs
+	return totals.runs >= 0 && totals.attempts >= 0 && totals.incomplete >= 0 && totals.incomplete <= totals.runs && totals.channels.Valid(totals.runs)
 }
 
 // ValidateCurrentSummaries is the read-only backup integrity boundary. It
 // verifies derived values against exact current versions, never grants native
 // execution authority, and is deliberately a full maintenance scan.
 func ValidateCurrentSummaries(ctx context.Context, q HistoryQuery) error {
+	var version int
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil {
+		return err
+	}
 	columns := summaryAttemptColumns
+	if version < 8 {
+		columns = summaryAttemptColumnsV7 + `,''`
+	}
+	if version >= 9 {
+		if err := validateChannelRunCounts(ctx, q, version); err != nil {
+			return err
+		}
+	}
 	queries := []string{
 		`SELECT 1 FROM review_current_pulls p LEFT JOIN review_current_totals t ON t.project_id=p.project_id AND t.pull_number=p.number WHERE t.project_id IS NULL LIMIT 1`,
 		`SELECT 1 FROM review_current_totals t WHERE t.run_count!=(SELECT count(*) FROM review_current_runs r WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number) OR t.attempt_count!=(SELECT count(*) FROM review_current_attempts a WHERE a.project_id=t.project_id AND a.pull_number=t.pull_number) OR t.incomplete_run_count!=(SELECT count(*) FROM review_current_runs r JOIN review_run_memberships m ON m.project_id=r.project_id AND m.id=r.id AND m.start_revision=r.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number AND v.complete=0) LIMIT 1`,
@@ -329,6 +345,11 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 			delta := deltas[oldNumber]
 			if isRun {
 				delta.runs--
+				if outcome == "completed" {
+					if err := delta.channels.add(channel, -1); err != nil {
+						return nil, err
+					}
+				}
 				if !complete {
 					delta.incomplete--
 				}
@@ -350,6 +371,11 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 				return nil, err
 			}
 			delta.runs++
+			if outcome == "completed" {
+				if err := delta.channels.add(channel, 1); err != nil {
+					return nil, err
+				}
+			}
 			if !complete {
 				delta.incomplete++
 			}
@@ -367,6 +393,10 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 		totals.runs += delta.runs
 		totals.attempts += delta.attempts
 		totals.incomplete += delta.incomplete
+		totals.channels.Hosted += delta.channels.Hosted
+		totals.channels.CLI += delta.channels.CLI
+		totals.channels.Subagent += delta.channels.Subagent
+		totals.channels.Manual += delta.channels.Manual
 		if !validSummaryTotals(totals) {
 			return nil, historyInconsistent()
 		}
@@ -377,7 +407,7 @@ func (w *historySnapshotWrite) prepareCurrentTotals(ctx context.Context, tx *sql
 
 func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *sql.Tx, totals map[int64]summaryTotals) error {
 	for number, total := range totals {
-		_, err := w.exec(ctx, tx, `INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) SELECT project_id,number,?,?,? FROM review_current_pulls WHERE project_id=? AND number=? ON CONFLICT(project_id,pull_number) DO UPDATE SET run_count=excluded.run_count,attempt_count=excluded.attempt_count,incomplete_run_count=excluded.incomplete_run_count`, total.runs, total.attempts, total.incomplete, w.project, number)
+		_, err := w.exec(ctx, tx, `INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count,`+channelRunCountColumns+`) SELECT project_id,number,?,?,?,?,?,?,? FROM review_current_pulls WHERE project_id=? AND number=? ON CONFLICT(project_id,pull_number) DO UPDATE SET run_count=excluded.run_count,attempt_count=excluded.attempt_count,incomplete_run_count=excluded.incomplete_run_count,hosted_run_count=excluded.hosted_run_count,cli_run_count=excluded.cli_run_count,subagent_run_count=excluded.subagent_run_count,manual_run_count=excluded.manual_run_count`, total.runs, total.attempts, total.incomplete, total.channels.Hosted, total.channels.CLI, total.channels.Subagent, total.channels.Manual, w.project, number)
 		if err != nil {
 			return err
 		}
@@ -405,7 +435,7 @@ func (w *historySnapshotWrite) installCurrentSummaries(ctx context.Context, tx *
 }
 
 const summaryAttemptColumnsV7 = `v.source_attempt_id,v.channel,v.head_sha,v.state,v.started_at,v.finished_at,v.duration_seconds,v.source_run_id,v.trigger_id,v.provider_review_id`
-const summaryAttemptColumns = summaryAttemptColumnsV7
+const summaryAttemptColumns = summaryAttemptColumnsV7 + `,v.reason`
 
 func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx HistoryQuery, number int64) ([]AttemptSummary, error) {
 	var changed []historyCurrentChange
@@ -435,7 +465,7 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		}
 		var candidate stagedCandidate
 		attempt := &candidate.attempt
-		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &candidate.position)
+		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,m.position FROM review_attempt_memberships m JOIN review_attempt_versions v ON v.project_id=m.project_id AND v.source=m.source AND v.source_attempt_id=m.source_attempt_id AND v.version_revision=m.version_revision WHERE m.project_id=? AND m.source=? AND m.source_attempt_id=? AND m.start_revision=?`, w.project, change.keys[0], change.keys[1], change.values[0]).Scan(&attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State, &attempt.StartedAt, &attempt.FinishedAt, &attempt.DurationSeconds, &attempt.SourceRunID, &attempt.TriggerID, &attempt.ProviderReviewID, &attempt.Reason, &candidate.position)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +481,7 @@ func (w *historySnapshotWrite) latestCurrentAttempts(ctx context.Context, tx His
 		var bestKey string
 		var bestPosition int64
 		err := tx.QueryRowContext(ctx, `SELECT `+summaryAttemptColumns+`,o.sort_key,o.position`+currentSummaryAttemptJoins+`
- WHERE o.project_id=? AND o.pull_number=? AND o.channel=?`+exclude+` ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, args...).Scan(&best.SourceAttemptID, &best.Channel, &best.HeadSHA, &best.State, &best.StartedAt, &best.FinishedAt, &best.DurationSeconds, &best.SourceRunID, &best.TriggerID, &best.ProviderReviewID, &bestKey, &bestPosition)
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel=?`+exclude+` ORDER BY o.sort_key DESC,o.position DESC LIMIT 1`, args...).Scan(&best.SourceAttemptID, &best.Channel, &best.HeadSHA, &best.State, &best.StartedAt, &best.FinishedAt, &best.DurationSeconds, &best.SourceRunID, &best.TriggerID, &best.ProviderReviewID, &best.Reason, &bestKey, &bestPosition)
 		found := err == nil
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err

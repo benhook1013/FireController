@@ -37,7 +37,7 @@ func BenchmarkCurrentSummaryAttemptPreparation(b *testing.B) {
 
 func TestCurrentSummaryAttemptLookupUsesBoundedIndexes(t *testing.T) {
 	f := currentSummaryGuardFixture(t)
-	for _, columns := range []string{summaryAttemptColumns} {
+	for _, columns := range []string{summaryAttemptColumns, summaryAttemptColumnsV7 + `,''`} {
 		rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+currentSummaryAttemptQuery(columns), f.project, 1, "cli")
 		if err != nil {
 			t.Fatal(err)
