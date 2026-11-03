@@ -110,7 +110,11 @@ class SelectionTests(unittest.TestCase):
             self.assertIn("needs." + job + ".result", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertIn("fail-fast: false", workflow)
-        self.assertIn("run: make test-race vet", workflow)
+        static = workflow.split("\n  static:\n", 1)[1].split("\n  linux:\n", 1)[0]
+        linux = workflow.split("\n  linux:\n", 1)[1].split("\n  qualification:\n", 1)[0]
+        self.assertEqual(len(re.findall(r"^        run: make vet$", static, re.MULTILINE)), 1)
+        self.assertRegex(linux, r"(?m)^        run: make test-race$")
+        self.assertNotIn("vet", linux)
         self.assertIn("run: make workflow-check ci-selection-check fmt-check docs-check browser-check", workflow)
         for command in ["make build", "make smoke", "make browser-smoke", 'make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"']:
             self.assertIn("run: " + command, workflow)

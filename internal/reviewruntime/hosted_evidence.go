@@ -94,6 +94,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	if !proven && len(publication.Roots) > 0 && len(publication.Batches) == 1 {
 		loadBaseline()
 		if baselineErr != nil {
+			result.Reason = "standing_baseline_unproven"
 			return result, baselineErr
 		}
 		if baselineReason == "" {

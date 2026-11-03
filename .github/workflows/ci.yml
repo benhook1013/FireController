@@ -34,6 +34,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Vet all Go packages
+        run: make vet
       - run: make workflow-check ci-selection-check fmt-check docs-check browser-check
 
   linux:
@@ -70,11 +72,11 @@ jobs:
           set -euo pipefail
           go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-go-tests"
           python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" --tests "$RUNNER_TEMP/firecontroller-go-tests" >> "$GITHUB_OUTPUT"
-      - name: Run race tests and vet
+      - name: Run race tests
         env:
           GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
           GO_TEST_RUN: ${{ steps.partition.outputs.run || '.' }}
-        run: make test-race vet
+        run: make test-race
 
   qualification:
     name: Packaged qualification
