@@ -39,6 +39,12 @@ var standingRiskLabel = regexp.MustCompile(`^<summary><strong>Merge Risk:</stron
 
 const standingRecentStart = "<!-- recent_review_start -->"
 const standingRecentEnd = "<!-- recent_review_end -->"
+const standingStatusStart = "<!-- recent_review_status_start -->"
+const standingStatusEnd = "<!-- recent_review_status_end -->"
+
+func standingZeroClaim(line string) bool {
+	return line == "No actionable comments were generated in the recent review. 🎉" || line == "No actionable comments were generated in the recent review."
+}
 
 type standingRiskParser struct {
 	phase            int
@@ -130,17 +136,32 @@ func (p *standingRiskParser) line(line string, stack []string) (handled, ok bool
 // standingSections requires visible root recent metadata and the specifically
 // labelled Merge Risk coverage envelope. Other HTML containers and examples
 // cannot supply protocol proof. Recent metadata has its own closed grammar.
-func standingSections(body string) (recent []string, coverage string, ok bool) {
+func standingSections(body string) (recent []string, coverage string, statusZero, ok bool) {
 	var stack []string
 	var fence byte
 	fenceLength := 0
 	comment, inRecent := false, false
+	inStatus, statusSeen, statusClaim := false, false, false
 	starts, ends := 0, 0
 	risk := standingRiskParser{}
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
+		// A separately published status is proof only at its exact visible root
+		// position. Inside it, no markup, example or extra claim is skippable.
+		if inStatus {
+			switch {
+			case line == "":
+			case standingZeroClaim(line) && !statusClaim:
+				statusClaim = true
+			case line == standingStatusEnd && statusClaim:
+				inStatus, statusZero = false, true
+			default:
+				return nil, "", false, false
+			}
+			continue
+		}
 		if inRecent && line != standingRecentEnd {
 			recent = append(recent, line)
 		}
@@ -172,28 +193,36 @@ func standingSections(body string) (recent []string, coverage string, ok bool) {
 		}
 		if !comment && len(stack) == 0 {
 			switch {
+			case line == standingStatusStart:
+				if inRecent || statusSeen {
+					return nil, "", false, false
+				}
+				inStatus, statusSeen = true, true
+				continue
+			case strings.Contains(line, "recent_review_status_start") || strings.Contains(line, "recent_review_status_end"):
+				return nil, "", false, false
 			case line == standingRecentStart:
 				starts++
 				if inRecent || starts != 1 {
-					return nil, "", false
+					return nil, "", false, false
 				}
 				inRecent = true
 				continue
 			case line == standingRecentEnd:
 				ends++
 				if !inRecent || ends != 1 {
-					return nil, "", false
+					return nil, "", false, false
 				}
 				inRecent = false
 				continue
 			case strings.Contains(line, "recent_review_start") || strings.Contains(line, "recent_review_end"):
-				return nil, "", false
+				return nil, "", false, false
 			}
 		}
 		if !comment && !pre && !inRecent {
 			handled, valid := risk.line(line, stack)
 			if !valid {
-				return nil, "", false
+				return nil, "", false, false
 			}
 			if handled {
 				continue
@@ -216,7 +245,7 @@ func standingSections(body string) (recent []string, coverage string, ok bool) {
 				continue
 			}
 			if token == "-->" {
-				return nil, "", false
+				return nil, "", false, false
 			}
 			if match == nil {
 				continue
@@ -225,13 +254,13 @@ func standingSections(body string) (recent []string, coverage string, ok bool) {
 			closing := strings.HasPrefix(token, "</")
 			if hostedComparisonVoid(tag) {
 				if closing {
-					return nil, "", false
+					return nil, "", false, false
 				}
 				continue
 			}
 			if closing {
 				if len(stack) == 0 || stack[len(stack)-1] != tag {
-					return nil, "", false
+					return nil, "", false, false
 				}
 				stack = stack[:len(stack)-1]
 			} else if !strings.HasSuffix(token, "/>") {
@@ -239,7 +268,7 @@ func standingSections(body string) (recent []string, coverage string, ok bool) {
 			}
 		}
 	}
-	return recent, risk.coverage, starts == 1 && ends == 1 && risk.complete && !inRecent && !comment && fence == 0 && len(stack) == 0
+	return recent, risk.coverage, statusZero, starts == 1 && ends == 1 && risk.complete && !inRecent && !inStatus && !comment && fence == 0 && len(stack) == 0
 }
 
 type standingRecentParser struct {
@@ -382,7 +411,7 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 			return zero, false
 		}
 	}
-	recent, coverage, valid := standingSections(body)
+	recent, coverage, statusZero, valid := standingSections(body)
 	if !valid {
 		return zero, false
 	}
@@ -399,11 +428,11 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 	if len(p.lines) == 0 {
 		return zero, false
 	}
-	zeroClaim := p.lines[0] == "No actionable comments were generated in the recent review. 🎉" || p.lines[0] == "No actionable comments were generated in the recent review."
-	if requireZero != zeroClaim {
+	inlineZero := standingZeroClaim(p.lines[0])
+	if statusZero && inlineZero || requireZero != (statusZero || inlineZero) {
 		return zero, false
 	}
-	if zeroClaim {
+	if inlineZero {
 		p.at++
 	}
 	// The observed heading wrapper presents this complete metadata block only;
