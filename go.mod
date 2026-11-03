@@ -6,7 +6,8 @@ require (
 	github.com/gorilla/securecookie v1.1.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/sys v0.49.0
-	modernc.org/libc v1.80.0
+	modernc.org/libc v1.79.0
+	modernc.org/libc/v2 v2.1.30
 	modernc.org/sqlite v1.61.1
 )
 
