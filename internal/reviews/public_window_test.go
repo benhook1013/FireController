@@ -209,13 +209,14 @@ func TestPublicSiteWindowQueriesUseCurrentPositionIndexes(t *testing.T) {
 }
 
 // The large seed uses the trusted immutable writer; the measured updates below
-// use actual admitted native writes and their optional public refresh.
+// use actual admitted transfer/native writes and their optional public refresh.
 // This finite fixture is not a fleet latency guarantee.
 func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
 	f := newAPIFixture(t)
 	pull := nativePull(1)
 	hosted := publicWindowRun(1, "hosted", 0)
 	hosted.HeadSHA, hosted.Finalized = pull.HeadSHA, false
+	pull.Runs = []RunInput{hosted}
 	for i := range 4096 {
 		run := publicWindowRun(1, "cli", i)
 		run.HeadSHA = pull.HeadSHA
@@ -236,11 +237,10 @@ func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal("multi-page current-run index migration failed", err)
 	}
-	t.Logf("schema6 backfill of 4096 current runs: %s", time.Since(migrationStarted))
+	t.Logf("schema6 backfill of 4097 current runs: %s", time.Since(migrationStarted))
 	if got := historyMigrationRead(t, f, "/pulls/1?snapshot="+snapshot); !reflect.DeepEqual(got, historical) {
 		t.Fatal("multi-page index migration changed pinned historical response")
 	}
-	mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &hosted})
 	if err := publicsite.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
@@ -285,11 +285,11 @@ func TestPublicSiteSparseHistoryRefreshUnderOrdinaryWrites(t *testing.T) {
 	// Finalization is a supported transition and must reach the sparse channel
 	// while keeping the independent CLI window and its older private tail.
 	hosted.Finalized = true
+	selected := pull
+	selected.Runs = []RunInput{hosted}
 	started := time.Now()
-	if _, changed, err := applyNativeAdjudication(f, nativeAdjudicationInput(hosted)); err != nil || !changed {
-		t.Fatal("native finalization did not update retained adjudication", changed, err)
-	}
-	t.Logf("admitted native finalization and preview on 4097 current runs: %s", time.Since(started))
+	transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: publicWindowSource, Pulls: []PullInput{selected}}), "finalize-sparse-hosted")
+	t.Logf("admitted transfer and preview on 4097 current runs: %s", time.Since(started))
 	after := read()
 	if after.Revision != before.Revision+1 || len(after.Content.Reviews[0].Hosted) != 1 || !reflect.DeepEqual(after.Content.Reviews[0].CLI, before.Content.Reviews[0].CLI) || !after.Content.Reviews[0].CLIHasMore {
 		t.Fatal("sparse finalization missed public refresh or changed other channel")

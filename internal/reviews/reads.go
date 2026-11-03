@@ -95,7 +95,7 @@ func queue(store *core.Store) http.HandlerFunc {
 				if err != nil {
 					return err
 				}
-				item.Diff, item.IsDraft, item.MergedAt = m.Diff, m.IsDraft, m.MergedAt
+				item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
 				item.Complete = complete != 0
 				if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
 					return err
@@ -173,7 +173,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return err
 			}
-			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt = m.Diff, m.IsDraft, m.MergedAt
+			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt, response.Pull.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
 			response.Pull.Complete = complete != 0
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &response.Pull); err != nil {
 				return err

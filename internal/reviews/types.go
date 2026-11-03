@@ -150,23 +150,24 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
-	Diff           *PullDiff        `json:"diff,omitempty"`
-	IsDraft        *bool            `json:"is_draft,omitempty"`
-	MergedAt       string           `json:"merged_at,omitempty"`
-	Number         int64            `json:"number"`
-	Title          string           `json:"title"`
-	State          string           `json:"state"`
-	HeadSHA        string           `json:"head_sha"`
-	BaseRef        string           `json:"base_ref"`
-	BaseSHA        string           `json:"base_sha"`
-	CIState        string           `json:"ci_state"`
-	Mergeability   string           `json:"mergeability"`
-	Complete       bool             `json:"complete"`
-	RunCount       int64            `json:"run_count"`
-	RunCounts      ChannelRunCounts `json:"run_counts"`
-	AttemptCount   int64            `json:"attempt_count"`
-	RecentRuns     []RunSummary     `json:"recent_runs"`
-	LatestAttempts []AttemptSummary `json:"latest_attempts"`
+	mergeStateStatus string
+	Diff             *PullDiff        `json:"diff,omitempty"`
+	IsDraft          *bool            `json:"is_draft,omitempty"`
+	MergedAt         string           `json:"merged_at,omitempty"`
+	Number           int64            `json:"number"`
+	Title            string           `json:"title"`
+	State            string           `json:"state"`
+	HeadSHA          string           `json:"head_sha"`
+	BaseRef          string           `json:"base_ref"`
+	BaseSHA          string           `json:"base_sha"`
+	CIState          string           `json:"ci_state"`
+	Mergeability     string           `json:"mergeability"`
+	Complete         bool             `json:"complete"`
+	RunCount         int64            `json:"run_count"`
+	RunCounts        ChannelRunCounts `json:"run_counts"`
+	AttemptCount     int64            `json:"attempt_count"`
+	RecentRuns       []RunSummary     `json:"recent_runs"`
+	LatestAttempts   []AttemptSummary `json:"latest_attempts"`
 }
 
 type QueueResponse struct {

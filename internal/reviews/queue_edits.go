@@ -234,7 +234,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 		return Receipt{}, err
 	}
 	for _, selected := range req.Queue {
-		old, position, err := retainedPullBody(ctx, tx, scope.ProjectID, previousID, selected.Number)
+		old, position, err := retainedTransferPullBody(ctx, tx, scope.ProjectID, selected.Number)
 		if errors.Is(err, sql.ErrNoRows) {
 			old = []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability, int64(0), int64(0), int64(0), "[]", "[]", "{}"}
 			position = nextPosition
@@ -275,7 +275,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 				return Receipt{}, validationError("Order must select currently visible pull requests.")
 			}
 			var err error
-			pull.body, pull.position, err = retainedPullBody(ctx, tx, scope.ProjectID, previousID, number)
+			pull.body, pull.position, err = retainedTransferPullBody(ctx, tx, scope.ProjectID, number)
 			if errors.Is(err, sql.ErrNoRows) {
 				return Receipt{}, validationError("Order must select currently visible pull requests.")
 			}

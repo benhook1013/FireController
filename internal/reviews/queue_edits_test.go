@@ -16,18 +16,6 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func queueEditTestScope(t *testing.T, f *apiFixture) core.Scope {
-	t.Helper()
-	r := httptest.NewRequest("POST", importBase(f)+"/queue/edits", nil)
-	r.SetPathValue("project_id", f.project)
-	r.Header.Set("Authorization", "Bearer "+f.admin)
-	scope, err := f.store.AdminScope(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return scope
-}
-
 func TestQueueEditsManageNativeQueueBeyondTwoHundred(t *testing.T) {
 	f := newAPIFixture(t)
 	pulls := make([]PullInput, 100)
@@ -188,31 +176,30 @@ func queueEditHTTP(f *apiFixture, req QueueEditRequest, key string) *httptest.Re
 
 func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) {
 	f := newAPIFixture(t)
-	// Seed a bounded observation, then append native PRs without replacing history.
-	pulls := make([]PullInput, 100)
-	for i := range pulls {
-		pulls[i] = nativePull(int64(i + 1))
-		pulls[i].State = "open"
-	}
-	f.observe(t, reviewRequest(0, pulls), "queue-growth-observation")
-	for number := int64(101); number <= 202; number++ {
-		pull := nativePull(number)
-		pull.Title, pull.State, pull.BaseRef = fmt.Sprintf("Selected pull %d", number), "open", "main"
-		if number == 202 {
-			pull.State = "merged"
+	// Add more than 201 pulls through ordinary bounded additive batches. This
+	// proves queue edits do not require a full-list replacement to change one
+	// entry or retire another.
+	for batch := 0; batch < 3; batch++ {
+		start, end := batch*100+1, (batch+1)*100
+		if end > 202 {
+			end = 202
 		}
-		run := RunInput{SourceRunID: fmt.Sprintf("retained-run-%d", number), Channel: "cli", Scope: "full", Outcome: "unknown"}
-		attempt := Attempt{SourceAttemptID: fmt.Sprintf("retained-attempt-%d", number), Channel: "cli", State: "unknown"}
-		mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run, Attempt: &attempt})
-		if number == 202 {
-			run.SourceRunID, run.Channel = "second-run", "hosted"
-			attempt.SourceAttemptID, attempt.Channel = "second-attempt", "hosted"
-			mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run, Attempt: &attempt})
+		group := TransferGroup{Source: "growth-producer"}
+		for number := start; number <= end; number++ {
+			pull := transferAdmissionPull(int64(number))
+			pull.State = "open"
+			if number == 202 {
+				pull.State = "merged"
+				pull.Runs = []RunInput{{SourceRunID: "retained-run", Channel: "cli", Scope: "full", Outcome: "unknown"}}
+				pull.Attempts = []Attempt{{SourceAttemptID: "retained-attempt", Channel: "cli", State: "unknown"}}
+			}
+			group.Pulls = append(group.Pulls, pull)
 		}
-	}
-	var revision int64
-	if err := f.store.DB().QueryRow("SELECT revision FROM review_workspace WHERE project_id=?", f.project).Scan(&revision); err != nil {
-		t.Fatal(err)
+		groups := []TransferGroup{group}
+		if batch == 2 {
+			groups = append(groups, TransferGroup{Source: "second-producer", Pulls: []PullInput{{Number: 202, Title: "Selected pull 202", State: "merged", BaseRef: "main", CIState: "success", Mergeability: "mergeable", Runs: []RunInput{{SourceRunID: "second-run", Channel: "hosted", Scope: "full", Outcome: "unknown"}}, Attempts: []Attempt{{SourceAttemptID: "second-attempt", Channel: "hosted", State: "unknown"}}}}})
+		}
+		transferApplyFor(t, f, transferRequest(int64(batch), groups...), fmt.Sprintf("queue-growth-%d", batch))
 	}
 	base := importBase(f)
 	oldFirst := f.call("GET", base+"/queue?limit=1", f.readToken, "", nil)
@@ -240,10 +227,10 @@ func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) 
 	}
 	selected := QueuePullInput{Number: 202, Title: "Merged but retained", State: "merged", HeadSHA: strings.Repeat("a", 40), BaseRef: "main", CIState: "success", Mergeability: "mergeable"}
 	newPull := QueuePullInput{Number: 203, Title: "New partial entry", State: "open", BaseRef: "main", CIState: "pending", Mergeability: "unknown"}
-	edit := queueEditRequest(revision, []QueuePullInput{selected, newPull}, []RetiredPull{{Number: 1, Reason: "superseded"}})
+	edit := queueEditRequest(3, []QueuePullInput{selected, newPull}, []RetiredPull{{Number: 1, Reason: "superseded"}})
 	first := queueEditHTTP(f, edit, "queue-edit-first")
 	var receipt Receipt
-	if first.Code != http.StatusCreated || json.Unmarshal(first.Body.Bytes(), &receipt) != nil || receipt.Revision != revision+1 || receipt.Outcome != "queue_edited" {
+	if first.Code != http.StatusCreated || json.Unmarshal(first.Body.Bytes(), &receipt) != nil || receipt.Revision != 4 || receipt.Outcome != "queue_edited" {
 		t.Fatalf("selected queue edit: %d %s", first.Code, first.Body.String())
 	}
 	if got := queueEditHTTP(f, edit, "queue-edit-first"); got.Code != 201 || got.Body.String() != first.Body.String() {
@@ -255,7 +242,7 @@ func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) 
 	}
 	page := f.call("GET", base+"/queue?limit=100", f.readToken, "", nil)
 	var firstPage QueueResponse
-	if page.Code != 200 || json.Unmarshal(page.Body.Bytes(), &firstPage) != nil || firstPage.Revision != revision+1 || len(firstPage.Items) != 100 {
+	if page.Code != 200 || json.Unmarshal(page.Body.Bytes(), &firstPage) != nil || firstPage.Revision != 4 || len(firstPage.Items) != 100 {
 		t.Fatalf("edited queue page: %d %s", page.Code, page.Body.String())
 	}
 	if firstPage.Items[0].Number != 2 || firstPage.Items[0].Title != omitted.Pull.Title || !firstPage.HasMore {
@@ -316,7 +303,7 @@ func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) 
 	}
 	// Native history can continue on a hidden PR without changing queue
 	// visibility or clearing its explicit retirement marker.
-	scope := queueEditTestScope(t, f)
+	scope := transferTestScope(t, f)
 	native := NativePublication{
 		Pull:    PullInput{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"},
 		Attempt: &Attempt{SourceAttemptID: "native-hidden-attempt", Channel: "cli", State: "unknown"},
@@ -337,14 +324,23 @@ func TestQueueEditsBoundedSelectionPreservesHistoryAndReactivates(t *testing.T) 
 		}
 	}
 
-	// Explicit selection clears only the retirement marker and restores the retained body.
-	reactivate := queueEditRequest(revision+2, []QueuePullInput{{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"}}, nil)
+	// A retired marker blocks additive transfer while hidden. Explicitly
+	// selecting the PR clears only that marker and restores its retained body.
+	transferPull := transferAdmissionPull(1)
+	transferPull.State = "open"
+	retiredTransfer := transferRequest(5, TransferGroup{Source: "growth-producer", Pulls: []PullInput{transferPull}})
+	if denied := f.call(http.MethodPost, base+"/transfer/preview", f.admin, "", retiredTransfer); denied.Code != http.StatusConflict {
+		t.Fatalf("transfer crossed retirement marker: %d %s", denied.Code, denied.Body.String())
+	}
+	reactivate := queueEditRequest(5, []QueuePullInput{{Number: 1, Title: "Selected pull 1", State: "open", BaseRef: "main", CIState: "success", Mergeability: "mergeable"}}, nil)
 	reactivate.Order = []int64{202, 1}
 	if response := queueEditHTTP(f, reactivate, "queue-edit-reactivate"); response.Code != 201 {
 		t.Fatalf("reactivation failed: %d %s", response.Code, response.Body.String())
 	}
+	retiredTransfer.ExpectedRevision = int64Pointer(6)
+	transferApplyFor(t, f, retiredTransfer, "transfer-after-reactivation")
 	// A bounded order does not load or replace the complete 203-entry workspace.
-	order := queueEditRequest(revision+3, nil, nil)
+	order := queueEditRequest(7, nil, nil)
 	for n := int64(100); n >= 1; n-- {
 		order.Order = append(order.Order, n)
 	}
@@ -817,7 +813,7 @@ func TestNativeDoesNotResurfaceHistoricallyRetiredMissingParent(t *testing.T) {
 			f.observe(t, ObservationRequest{ExpectedRevision: &revision, RepositoryID: 701, Source: "complete-source", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []PullInput{}, Retired: []RetiredPull{}}, "clear-current-retirements")
 			revision++
 
-			scope := queueEditTestScope(t, f)
+			scope := transferTestScope(t, f)
 			publication := NativePublication{Pull: samplePull(1, "One"), Attempt: &Attempt{SourceAttemptID: "native-after-retirement", Channel: "cli", State: "unknown"}}
 			if _, err := f.store.DB().Exec(`CREATE TRIGGER native_retirement_event_failure BEFORE INSERT ON events WHEN NEW.event_type='review.observed' BEGIN SELECT RAISE(ABORT,'injected native event failure'); END`); err != nil {
 				t.Fatal(err)
@@ -875,7 +871,7 @@ func TestNativeDoesNotResurfaceHistoricallyRetiredMissingParent(t *testing.T) {
 		if response := queueEditHTTP(f, queueEditRequest(2, []QueuePullInput{reactivate}, nil), "reactivate-explicit"); response.Code != 201 {
 			t.Fatalf("reactivate: %d %s", response.Code, response.Body.String())
 		}
-		scope := queueEditTestScope(t, f)
+		scope := transferTestScope(t, f)
 		publication := NativePublication{Pull: pull, Attempt: &Attempt{SourceAttemptID: "native-after-reactivation", Channel: "cli", State: "unknown"}}
 		if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "test.native.reactivated", Target: "workspace", Key: "native-after-reactivation", Request: publication}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			return PublishNative(ctx, tx, scope, publication)
@@ -889,3 +885,5 @@ func TestNativeDoesNotResurfaceHistoricallyRetiredMissingParent(t *testing.T) {
 		}
 	})
 }
+
+func int64Pointer(value int64) *int64 { return &value }
