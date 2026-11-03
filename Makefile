@@ -1,20 +1,30 @@
 GO ?= go
 GOFMT ?= gofmt
+GO_TEST_PACKAGES ?= ./...
+GO_TEST_RUN ?= .
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check fmt-check test build docs-check browser-check browser-build smoke browser-smoke
+.PHONY: check workflow-check ci-selection-check fmt-check test test-race vet build docs-check browser-check browser-build smoke browser-smoke
 
-check: workflow-check browser-check fmt-check test docs-check
+check: workflow-check ci-selection-check browser-check fmt-check test docs-check
 
 workflow-check:
 	$(ACTIONLINT) -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
+ci-selection-check:
+	python3 -m unittest discover -s tools/ci -p 'test_*.py'
+
 fmt-check:
 	@files="$$($(GOFMT) -l cmd internal tools)" || exit $$?; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
 
-test:
-	$(GO) test -race -p=2 -timeout=20m ./...
-	$(GO) vet ./...
+test: test-race
+	$(MAKE) vet
+
+test-race:
+	$(GO) test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' $(GO_TEST_PACKAGES)
+
+vet:
+	$(GO) vet $(GO_TEST_PACKAGES)
 
 build: browser-build
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/fc ./cmd/fc

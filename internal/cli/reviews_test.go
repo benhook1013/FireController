@@ -32,7 +32,9 @@ func reviewObservation() reviews.ObservationRequest {
 				}
 				pull.Runs = append(pull.Runs, run)
 			}
-			pull.Attempts = []reviews.Attempt{{SourceAttemptID: "unknown-duration", Channel: "manual", State: "unknown", SourceRunID: "run-5"}}
+			for j := 0; j < 6; j++ {
+				pull.Attempts = append(pull.Attempts, reviews.Attempt{SourceAttemptID: "unknown-duration-" + strconv.Itoa(j), Channel: "manual", State: "unknown", SourceRunID: "run-5"})
+			}
 		}
 		observation.Queue = append(observation.Queue, pull)
 	}
@@ -98,8 +100,17 @@ func TestReviewCommandsReadNativeSnapshotWithoutEffects(t *testing.T) {
 	}
 	var pull client.ReviewPull
 	invoke(&pull, "pull", "1", "--snapshot", queue.SnapshotID)
-	if len(pull.Attempts) != 1 || pull.Attempts[0].DurationSeconds != nil || pull.Pull.Complete {
+	if len(pull.Pull.LatestAttempts) != 1 || pull.Pull.LatestAttempts[0].DurationSeconds != nil || pull.Pull.Complete {
 		t.Fatal("unknown duration or incomplete source observation was repaired")
+	}
+	var attempts, attemptTail client.ReviewAttempts
+	out = invoke(&attempts, "attempts", "1", "--snapshot", queue.SnapshotID)
+	if len(attempts.Items) != 5 || !attempts.HasMore || attempts.Cursor == "" || attempts.Items[0].Source != "synthetic CLI fixture" || attempts.Items[0].SourceAttemptID != "unknown-duration-5" || strings.Contains(out, "PRIVATE_FINDING_DETAIL") {
+		t.Fatal("attempt archive default-five page lost original producer or drained history")
+	}
+	invoke(&attemptTail, "attempts", "1", "--snapshot", queue.SnapshotID, "--cursor", attempts.Cursor)
+	if len(attemptTail.Items) != 1 || attemptTail.HasMore || attemptTail.SnapshotID != queue.SnapshotID || attemptTail.Items[0].SourceAttemptID != "unknown-duration-0" {
+		t.Fatal("attempt continuation lost pinned tail")
 	}
 	var runs, last client.ReviewRuns
 	out = invoke(&runs, "runs", "1", "--snapshot", queue.SnapshotID)
@@ -115,7 +126,7 @@ func TestReviewCommandsReadNativeSnapshotWithoutEffects(t *testing.T) {
 	if len(detail.Findings) != 1 || detail.Findings[0].Detail != "PRIVATE_FINDING_DETAIL" || detail.Run.Complete || len(detail.Run.CoverageLimits) != 1 || detail.SnapshotID != queue.SnapshotID {
 		t.Fatal("explicit finding/proof/incomplete source detail changed")
 	}
-	if writes.Load() != 0 || reads.Load() != 7 || f.resolverHit.Load() != providerBefore || !reflect.DeepEqual(before, counts()) {
+	if writes.Load() != 0 || reads.Load() != 9 || f.resolverHit.Load() != providerBefore || !reflect.DeepEqual(before, counts()) {
 		t.Fatal("read adapter performed extra requests, provider work or durable effects")
 	}
 }
@@ -133,7 +144,7 @@ func TestReviewCommandSelectorsFailBeforeProfileOrNetwork(t *testing.T) {
 		{"pull"}, {"pull", "0"}, {"pull", "01"}, {"pull", "+1"}, {"pull", "2147483648"}, {"pull", "1", "--limit", "1"},
 		{"runs", "1", "--snapshot", ""}, {"runs", "1", "--snapshot", "review_snapshot_" + strings.Repeat("A", 32)},
 		{"run", "../other"}, {"run", "review_run_" + strings.Repeat("a", 32), "--snapshot", "x", "--snapshot", "y"},
-		{"observe"}, {"queue", "--project", "other"},
+		{"attempts"}, {"attempts", "0"}, {"attempts", "01"}, {"attempts", "1", "--snapshot", ""}, {"attempts", "1", "--limit", "101"}, {"attempts", "1", "--cursor", " padded "}, {"observe"}, {"queue", "--project", "other"},
 	} {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			for _, profilesPath := range []string{"/unavailable/profiles.json", path} {

@@ -6,6 +6,8 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 
 ## Documents
 
+- [Retained review history](review-history-growth.md): immutable versions, compact current summaries, paginated archive reads and backup integrity.
+
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.

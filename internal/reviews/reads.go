@@ -69,8 +69,10 @@ func queue(store *core.Store) http.HandlerFunc {
 			}
 			response.Configured = true
 			setMetaQueue(&response, meta)
-			rows, err := tx.QueryContext(ctx, `SELECT number,title,state,head_sha,base_ref,base_sha,ci_state,mergeability,complete,run_count,attempt_count,recent_runs_json,latest_attempts_json,position
-				FROM review_pulls WHERE project_id=? AND snapshot_id=? AND position>? ORDER BY position LIMIT ?`,
+			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.position
+				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position>? AND NOT EXISTS (
+					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
+				) ORDER BY p.position LIMIT ?`,
 				scope.ProjectID, meta.SnapshotID, position, limit+1)
 			if err != nil {
 				return err
@@ -93,12 +95,8 @@ func queue(store *core.Store) http.HandlerFunc {
 				if err := strictStoredJSON(recentJSON, &item.RecentRuns); err != nil {
 					return err
 				}
-				// Pre-mixed snapshots stored one producer in snapshot metadata.
-				// Fill their old compact projection only in the read response.
-				for i := range item.RecentRuns {
-					if item.RecentRuns[i].Source == "" {
-						item.RecentRuns[i].Source = meta.Source
-					}
+				if err := fillRecentRunSources(ctx, tx, scope.ProjectID, meta.SnapshotID, item.Number, item.RecentRuns); err != nil {
+					return err
 				}
 				if err := strictStoredJSON(latestJSON, &item.LatestAttempts); err != nil {
 					return err
@@ -143,7 +141,7 @@ func pull(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		response := PullResponse{ProjectID: scope.ProjectID, Attempts: []AttemptSummary{}}
+		response := PullResponse{ProjectID: scope.ProjectID}
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			meta, found, err := selectSnapshot(ctx, tx, scope.ProjectID, query.Get("snapshot"))
 			if err != nil {
@@ -167,27 +165,13 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err := strictStoredJSON(recentJSON, &response.Pull.RecentRuns); err != nil {
 				return err
 			}
-			for i := range response.Pull.RecentRuns {
-				if response.Pull.RecentRuns[i].Source == "" {
-					response.Pull.RecentRuns[i].Source = meta.Source
-				}
+			if err := fillRecentRunSources(ctx, tx, scope.ProjectID, meta.SnapshotID, number, response.Pull.RecentRuns); err != nil {
+				return err
 			}
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
 			}
-			rows, err := tx.QueryContext(ctx, `SELECT source_attempt_id,channel,head_sha,state,started_at,finished_at,duration_seconds,source_run_id,trigger_id,provider_review_id FROM review_attempts WHERE project_id=? AND snapshot_id=? AND pull_number=? ORDER BY position`, scope.ProjectID, meta.SnapshotID, number)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var item AttemptSummary
-				if err := rows.Scan(&item.SourceAttemptID, &item.Channel, &item.HeadSHA, &item.State, &item.StartedAt, &item.FinishedAt, &item.DurationSeconds, &item.SourceRunID, &item.TriggerID, &item.ProviderReviewID); err != nil {
-					return err
-				}
-				response.Attempts = append(response.Attempts, item)
-			}
-			return rows.Err()
+			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)
@@ -204,7 +188,7 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -223,7 +207,15 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
+		channel := query.Get("channel")
+		if _, selected := query["channel"]; selected && !oneOf(channel, "hosted", "cli", "subagent", "manual") {
+			core.WriteError(w, validationError("Select hosted, cli, subagent or manual for the runs channel."))
+			return
+		}
 		filter := fmt.Sprintf("reviews.runs:%d:v1", number)
+		if channel != "" {
+			filter += ":channel=" + channel
+		}
 		after, err := store.ParseCursor(scope, filter, query.Get("cursor"))
 		if err != nil {
 			core.WriteError(w, err)
@@ -257,6 +249,10 @@ func runs(store *core.Store) http.HandlerFunc {
 			}
 			querySQL := `SELECT id,pull_number,source,source_run_id,channel,head_sha,reviewer,scope,outcome,attributable,complete,started_at,finished_at,found,accepted,routed,finalized,fixed,coverage_limits_json,run_order FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=?`
 			args := []any{scope.ProjectID, meta.SnapshotID, number}
+			if channel != "" {
+				querySQL += ` AND channel=?`
+				args = append(args, channel)
+			}
 			if cursorSnapshot != "" {
 				querySQL += ` AND run_order<?`
 				args = append(args, cursorOrder)
@@ -331,7 +327,7 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, validationError("Use a valid review run identity."))
 			return
 		}
-		response := RunDetailResponse{ProjectID: scope.ProjectID, Findings: []Finding{}}
+		response := RunDetailResponse{ProjectID: scope.ProjectID, Findings: []FindingView{}}
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			meta, found, err := selectSnapshot(ctx, tx, scope.ProjectID, query.Get("snapshot"))
 			if err != nil {
@@ -446,4 +442,18 @@ func setMetaDetail(response *RunDetailResponse, meta snapshotMeta) {
 	response.Source = meta.Source
 	response.ObservedAt = meta.ObservedAt
 	response.RecordedAt = meta.RecordedAt
+}
+
+// Historical compact summaries may omit source. A mixed snapshot's publisher
+// cannot supply that identity; resolve only the exact retained run in this PR.
+func fillRecentRunSources(ctx context.Context, tx *sql.Tx, project, snapshot string, number int64, runs []RunSummary) error {
+	for i := range runs {
+		if runs[i].Source != "" {
+			continue
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT source FROM review_runs WHERE project_id=? AND snapshot_id=? AND pull_number=? AND id=?`, project, snapshot, number, runs[i].ID).Scan(&runs[i].Source); err != nil {
+			return err
+		}
+	}
+	return nil
 }

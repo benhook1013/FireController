@@ -36,29 +36,25 @@ func replaceAttemptCapacity(t *testing.T, f *attemptFixture, total bool, spare i
 	}
 }
 
-func TestAttemptProjectionReplacementCapacityRemainsLedgerOnly(t *testing.T) {
+func TestAttemptProjectionReplacementHistoryAllowsOriginalTransitions(t *testing.T) {
 	for _, total := range []bool{false, true} {
 		for _, boundary := range []string{"admit", "advance", "restart-preparing", "restart-active"} {
 			t.Run(fmt.Sprintf("total-%t/%s", total, boundary), func(t *testing.T) {
 				f := attemptProjectionFixture(t, true)
-				a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "capacity-live", "cli", 2, 1))
+				a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "retained-live", "cli", 2, 1))
+				var err error
 				if boundary == "advance" || boundary == "restart-active" {
-					var err error
 					a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "")
 					if err != nil {
 						t.Fatal(err)
 					}
 				}
 				replaceAttemptCapacity(t, f, total, 0)
-				before := projectionDigest(t, f, "")
-				events := attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`)
-				transitions := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`)
-				// Explicit publication retains the normal bounded-history error and must
-				// not leave the copied snapshot rows created before the capacity check.
-				_, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil)
-				attemptCode(t, err, "workspace_capacity")
-				if projectionDigest(t, f, "") != before {
-					t.Fatal("explicit failed publication left orphan projection rows")
+				var before reviews.PullResponse
+				projectionRead(t, f, "/pulls/2", &before)
+				history := projectionDigest(t, f, before.SnapshotID)
+				if _, err = f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil); err != nil {
+					t.Fatal("retained history blocked publication", err)
 				}
 				want := "active"
 				switch boundary {
@@ -68,7 +64,6 @@ func TestAttemptProjectionReplacementCapacityRemainsLedgerOnly(t *testing.T) {
 					a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured", "")
 					want = "completed"
 				default:
-					// Start performs synchronous crash recovery before launching workers.
 					restarted, newErr := New(f.store, attemptCapabilities, WithNativeProjection())
 					if newErr != nil {
 						t.Fatal(newErr)
@@ -78,21 +73,20 @@ func TestAttemptProjectionReplacementCapacityRemainsLedgerOnly(t *testing.T) {
 					done, startErr := restarted.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
 					cancel()
 					if startErr != nil {
-						t.Fatal("restart recovery", startErr)
+						t.Fatal(startErr)
 					}
 					select {
-					case stopErr := <-done:
-						if stopErr != nil {
-							t.Fatal(stopErr)
-						}
+					case err = <-done:
 					case <-time.After(3 * time.Second):
 						t.Fatal("supervisor shutdown timed out")
 					}
-					err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-						var readErr error
-						a, readErr = readAttempt(ctx, tx, attemptProject, a.ID)
-						return readErr
-					})
+					if err == nil {
+						err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+							var e error
+							a, e = readAttempt(ctx, tx, attemptProject, a.ID)
+							return e
+						})
+					}
 					want = "uncertain"
 					if boundary == "restart-preparing" {
 						want = "cancelled"
@@ -102,20 +96,18 @@ func TestAttemptProjectionReplacementCapacityRemainsLedgerOnly(t *testing.T) {
 					}
 				}
 				if err != nil || a.State != want {
-					t.Fatalf("journal transition at full projection: state=%s want=%s err=%v", a.State, want, err)
+					t.Fatal("retained original transition", a, err)
 				}
-				if projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != events {
-					t.Fatal("ledger-only transition changed current or historical projection")
-				}
-				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != transitions+1 {
-					t.Fatal("journal transition not retained exactly once")
+				_, projected := projectedAttempt(t, f, a)
+				if projected.State != want || history != projectionDigest(t, f, before.SnapshotID) {
+					t.Fatal("transition lost projection or changed pinned history", projected)
 				}
 				reservations := 0
 				if want == "active" || want == "uncertain" {
 					reservations = 1
 				}
 				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != reservations {
-					t.Fatal("journal reservation semantics changed")
+					t.Fatal("reservation semantics changed")
 				}
 			})
 		}
@@ -194,27 +186,22 @@ func missingTargetCapacityObservation(t *testing.T, f *attemptFixture, fullPulls
 	}
 }
 
-func TestAttemptProjectionMissingTargetCapacityHoldsBeforeDriver(t *testing.T) {
+func TestAttemptProjectionMissingTargetBeyondFormerHistoryCaps(t *testing.T) {
 	for _, kind := range []string{"global-attempts", "pull-rows"} {
 		t.Run(kind, func(t *testing.T) {
 			f := attemptProjectionFixture(t, false)
 			missingTargetCapacityObservation(t, f, kind == "pull-rows", kind == "global-attempts", false)
-			request := f.enqueue(t, attemptProject, "missing-target-at-capacity", "cli", 2, 1)
-			before := projectionDigest(t, f, "")
+			receipt := f.enqueue(t, attemptProject, "missing-target-with-history", "cli", 2, 1)
 			driver := &controlledDriver{}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal(err)
 			}
-			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
-			if err != nil || operation.State != "held" || operation.Reason != "projection_capacity" || operation.AttemptID != "" || driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
-				t.Fatal("missing PR bypassed retained projection capacity", operation, err, "prepare", driver.prepares.Load(), "dispatch", driver.calls.Load())
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+			if err != nil || operation.State != "completed" || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+				t.Fatal("history blocked original authorized work", operation, err)
 			}
-			if projectionDigest(t, f, "") != before {
-				t.Fatal("preparation refusal created orphan or changed retained projection")
-			}
-			events := attemptCount(t, f.store, `SELECT count(*) FROM events`)
-			if err = f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events {
-				t.Fatal("held capacity work repeated effects", err)
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("completed ledger retained reservation")
 			}
 		})
 	}
@@ -260,14 +247,14 @@ func TestAttemptProjectionMissingTargetCapacityAllowsInitialMetadataWithinBounds
 }
 
 func TestAttemptProjectionMissingTargetReadFailuresRollbackBeforePreparation(t *testing.T) {
-	for _, table := range []string{"review_attempts", "review_pulls"} {
+	for _, table := range []string{"review_pulls"} {
 		t.Run(table, func(t *testing.T) {
 			f := attemptProjectionFixture(t, false)
 			missingTargetCapacityObservation(t, f, false, false, false)
 			receipt := f.enqueue(t, attemptProject, "storage-error-before-preparation", "cli", 2, 1)
 			// Break only the owned fixture's read schema, preserving a genuine queued
 			// operation so StartAttempt, rather than the pending query, reaches failure.
-			admissionSQL(t, f, `ALTER TABLE `+table+` RENAME TO unavailable_projection_rows`)
+			admissionSQL(t, f, `DROP VIEW `+table)
 			beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 			a, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID)
 			if err == nil || a.ID != "" {
