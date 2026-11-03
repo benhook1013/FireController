@@ -19,7 +19,7 @@ func ValidAttemptReason(state, reason string) bool {
 func attemptReasonMigrationSQL() []string {
 	return []string{
 		`ALTER TABLE review_attempt_versions ADD COLUMN reason TEXT NOT NULL DEFAULT '' CHECK (length(CAST(reason AS BLOB)) <= 128)`,
-		`DROP VIEW review_attempts`, HistoryReadViewSQL()["review_attempts"],
+		`DROP VIEW review_attempts`, HistoryReadViewSQLV10()["review_attempts"],
 	}
 }
 
