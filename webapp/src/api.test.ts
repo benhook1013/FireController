@@ -60,6 +60,32 @@ async function connect(client: Api): Promise<void> {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+describe('stored review CI states', () => {
+  it.each(['unknown', 'pending', 'success', 'failure', 'not_required'])('accepts %s in queue and pull detail', async ci_state => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, ci_state };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] })).mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
+    expect((await client.reviewQueue()).items[0].ci_state).toBe(ci_state);
+    expect((await client.reviewPull(1)).pull.ci_state).toBe(ci_state);
+  });
+
+  it.each(['not-required', 'passed', '', null, 1])('rejects invalid CI state %s in queue and pull detail', async ci_state => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const pull = { ...reviewPull, ci_state };
+    for (const [body, read] of [
+      [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
+    ] as Array<[unknown, () => Promise<unknown>]>) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+});
+
 describe('read-only browser cookie session transport', () => {
   it('exchanges verified bearer once, then uses only the selector cookie mode for finite reads and logout', async () => {
     setupLocation();
@@ -207,7 +233,7 @@ describe('Api stored review workspace', () => {
     for (const kind of ['queue', 'pull', 'runs', 'detail']) {
       for (const run of [missingSource, ...[null, '', ' \t\n', '🔥'.repeat(33), 'bad\u0000source'].map(source => ({ ...reviewRun, source }))]) {
         const envelope = kind === 'queue' ? { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [run] }] }
-          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] }, attempts: [reviewAttempt] }
+          : kind === 'pull' ? { ...reviewSnapshot, pull: { ...reviewPull, recent_runs: [run] } }
           : kind === 'runs' ? { ...reviewSnapshot, items: [run], has_more: false }
           : { ...reviewDetail, run };
         vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(envelope)));
@@ -227,13 +253,13 @@ describe('Api stored review workspace', () => {
     const runs = channels.map((channel, index) => ({ ...reviewRun, channel, id: `review_run_${String(index).repeat(32)}`, source_run_id: `run-${index}` }));
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull], has_more: true, cursor: 'signed_queue_cursor' }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: runs, has_more: true, cursor: 'signed_runs_cursor' }))
       .mockResolvedValueOnce(json(reviewDetail))
       .mockResolvedValueOnce(json({ project_id: 'project_one', configured: false, revision: 0, snapshot_id: '', source: '', observed_at: '', recorded_at: '', items: [], has_more: false }));
     vi.stubGlobal('fetch', fetchMock);
     expect((await client.reviewQueue({ limit: 1, cursor: 'previous_queue_cursor' })).items[0].state).toBe('merged');
-    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).attempts.map(item => item.channel)).toEqual(channels);
+    expect((await client.reviewPull(1, reviewSnapshot.snapshot_id)).pull.latest_attempts.map(item => item.channel)).toEqual(channels);
     expect((await client.reviewRuns(1, { snapshot: reviewSnapshot.snapshot_id, limit: 4, cursor: 'previous_runs_cursor' })).items.map(item => item.id)).toEqual(runs.map(item => item.id));
     const detail = await client.reviewRun(reviewRun.id, reviewSnapshot.snapshot_id);
     expect(detail.findings[0]).toEqual(reviewFinding);
@@ -267,9 +293,9 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, latest_attempts: [attempt] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
     expect((await client.reviewQueue()).items[0].latest_attempts[0].state).toBe(state);
-    expect((await client.reviewPull(1)).attempts[0].state).toBe(state);
+    expect((await client.reviewPull(1)).pull.latest_attempts[0].state).toBe(state);
     client.close();
   });
 
@@ -282,7 +308,7 @@ describe('Api stored review workspace', () => {
       const pull = { ...reviewPull, latest_attempts: [attempt] };
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] })));
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull })));
       await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
       await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
     }
@@ -291,7 +317,7 @@ describe('Api stored review workspace', () => {
       const pull = { ...reviewPull, recent_runs: [run] };
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [reviewAttempt] }))
+        .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
         .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
         .mockResolvedValueOnce(json({ ...reviewDetail, run })));
       await expect(client.reviewQueue()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -309,12 +335,12 @@ describe('Api stored review workspace', () => {
     for (const value of ['A'.repeat(40), `aB${'c'.repeat(38)}`]) {
       const cases: Array<{ name: string; body: unknown; read: () => Promise<unknown> }> = [
         { name: 'queue pull head', body: { ...reviewQueue, items: [{ ...reviewPull, head_sha: value }] }, read: () => client.reviewQueue() },
-        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value }, attempts: [reviewAttempt] }, read: () => client.reviewPull(1) },
+        { name: 'pull base', body: { ...reviewSnapshot, pull: { ...reviewPull, base_sha: value } }, read: () => client.reviewPull(1) },
         { name: 'queue run head', body: { ...reviewQueue, items: [{ ...reviewPull, recent_runs: [{ ...reviewRun, head_sha: value }] }] }, read: () => client.reviewQueue() },
         { name: 'run page head', body: { ...reviewSnapshot, items: [{ ...reviewRun, head_sha: value }], has_more: false }, read: () => client.reviewRuns(1) },
         { name: 'run detail head', body: { ...reviewDetail, run: { ...reviewRun, head_sha: value } }, read: () => client.reviewRun(reviewRun.id) },
         { name: 'queue attempt head', body: { ...reviewQueue, items: [{ ...reviewPull, latest_attempts: [{ ...reviewAttempt, head_sha: value }] }] }, read: () => client.reviewQueue() },
-        { name: 'pull attempt head', body: { ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, head_sha: value }] }, read: () => client.reviewPull(1) },
+        { name: 'pull attempt head', body: { ...reviewSnapshot, pull: {...reviewPull, latest_attempts: [{ ...reviewAttempt, head_sha: value }]} }, read: () => client.reviewPull(1) },
         { name: 'finding fix', body: { ...reviewDetail, findings: [{ ...reviewFinding, fix_sha: value }] }, read: () => client.reviewRun(reviewRun.id) },
       ];
       for (const test of cases) {
@@ -337,7 +363,7 @@ describe('Api stored review workspace', () => {
     const finding = { ...reviewFinding, fix_sha: '', proof_note: '', resolved_at: '' };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
       .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -363,7 +389,7 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, recent_runs: [run] };
     const views: Array<[unknown, () => Promise<unknown>]> = [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
       [{ ...reviewSnapshot, items: [run], has_more: false }, () => client.reviewRuns(1)],
       [{ ...reviewDetail, run }, () => client.reviewRun(run.id)],
     ];
@@ -388,7 +414,7 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, latest_attempts: [attempt] };
     for (const [body, read] of [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [attempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
     ] as Array<[unknown, () => Promise<unknown>]>) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
       await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -402,7 +428,7 @@ describe('Api stored review workspace', () => {
     const pull = kind === 'runs' ? { ...reviewPull, recent_runs: [] } : { ...reviewPull, latest_attempts: [] };
     for (const [body, read] of [
       [{ ...reviewQueue, items: [pull] }, () => client.reviewQueue()],
-      [{ ...reviewSnapshot, pull, attempts: [reviewAttempt] }, () => client.reviewPull(1)],
+      [{ ...reviewSnapshot, pull }, () => client.reviewPull(1)],
     ] as Array<[unknown, () => Promise<unknown>]>) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(body)));
       await expect(read()).rejects.toMatchObject({ code: 'invalid_response' });
@@ -429,12 +455,12 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, recent_runs: [run], latest_attempts: [attempt] };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [attempt] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [run], has_more: false }))
       .mockResolvedValueOnce(json({ ...reviewDetail, run, findings: [finding] }));
     vi.stubGlobal('fetch', fetchMock);
     expect((await client.reviewQueue()).items[0].recent_runs[0]).toEqual(run);
-    expect((await client.reviewPull(1)).attempts[0]).toEqual(attempt);
+    expect((await client.reviewPull(1)).pull.latest_attempts[0]).toEqual(attempt);
     expect((await client.reviewRuns(1)).items[0]).toEqual(run);
     expect((await client.reviewRun(run.id)).findings[0]).toEqual(finding);
     expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -448,10 +474,10 @@ describe('Api stored review workspace', () => {
     const pull = { ...reviewPull, run_count: 0, attempt_count: 0, recent_runs: [], latest_attempts: [] };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(json({ ...reviewQueue, items: [pull] }))
-      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull, attempts: [] }))
+      .mockResolvedValueOnce(json({ ...reviewSnapshot, pull }))
       .mockResolvedValueOnce(json({ ...reviewSnapshot, items: [], has_more: false })));
     expect((await client.reviewQueue()).items[0]).toEqual(pull);
-    expect((await client.reviewPull(1)).attempts).toEqual([]);
+    expect((await client.reviewPull(1)).pull.latest_attempts).toEqual([]);
     expect((await client.reviewRuns(1)).items).toEqual([]);
   });
 
@@ -493,8 +519,8 @@ describe('Api stored review workspace', () => {
       expect((error as Error).message).not.toContain('private-token');
     }
     for (const value of [
-      { ...reviewSnapshot, pull: { ...reviewPull, number: 2, recent_runs: [] }, attempts: [reviewAttempt] },
-      { ...reviewSnapshot, snapshot_id: `review_snapshot_${'f'.repeat(32)}`, pull: reviewPull, attempts: [reviewAttempt] },
+      { ...reviewSnapshot, pull: { ...reviewPull, number: 2, recent_runs: [] } },
+      { ...reviewSnapshot, snapshot_id: `review_snapshot_${'f'.repeat(32)}`, pull: reviewPull },
       { ...reviewSnapshot, pull: reviewPull, attempts: [] },
     ]) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
@@ -559,10 +585,10 @@ describe('Api stored review workspace', () => {
     const client = api();
     await connect(client);
     const attempt = { ...reviewAttempt, duration_seconds: null };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [attempt] }, attempts: [attempt] })));
-    expect((await client.reviewPull(1)).attempts[0].duration_seconds).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: { ...reviewPull, latest_attempts: [attempt] } })));
+    expect((await client.reviewPull(1)).pull.latest_attempts[0].duration_seconds).toBeNull();
     for (const duration_seconds of [-1, '0', Number.MAX_SAFE_INTEGER + 1]) {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: reviewPull, attempts: [{ ...reviewAttempt, duration_seconds }] })));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewSnapshot, pull: {...reviewPull, latest_attempts: [{ ...reviewAttempt, duration_seconds }]} })));
       await expect(client.reviewPull(1)).rejects.toMatchObject({ code: 'invalid_response' });
     }
   });
@@ -1252,5 +1278,44 @@ describe('captured comparison policy assessment', () => {
     const session = expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'cancelled' });
     client.close(); await session;
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('bounded retained review history', () => {
+  it('accepts growing compact summaries and reads one explicitly selected archive page at a time', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    const pull = { ...reviewPull, run_count: 225, attempt_count:230 };
+    const item = {...reviewAttempt, source:'original-review-producer', state:'held'};
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull}))
+      .mockResolvedValueOnce(json({...reviewSnapshot,items:[item],has_more:true,cursor:'signed_attempt_cursor'}))
+      .mockResolvedValueOnce(json({...reviewSnapshot,items:[{...item,source:'second-producer'}],has_more:false}));
+    vi.stubGlobal('fetch',fetchMock);
+    expect((await client.reviewPull(1)).pull).toEqual(pull);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await client.reviewAttempts(1,{snapshot:reviewSnapshot.snapshot_id,limit:1})).items[0]).toEqual(item);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((await client.reviewAttempts(1,{snapshot:reviewSnapshot.snapshot_id,limit:1,cursor:'signed_attempt_cursor'})).has_more).toBe(false);
+    const urls = fetchMock.mock.calls.map(call => new URL(String(call[0])));
+    expect(urls[1].pathname).toBe('/api/v1/projects/project_one/reviews/pulls/1/attempts');
+    expect(urls[2].searchParams.get('snapshot')).toBe(reviewSnapshot.snapshot_id);
+    expect(urls[2].searchParams.get('cursor')).toBe('signed_attempt_cursor');
+    expect(urls.every(url => !url.searchParams.has('include_observation'))).toBe(true);
+  });
+  it('rejects ambiguous archives, foreign snapshots and malformed lifetime totals', async () => {
+    setupLocation(); const client=api(); await connect(client);
+    const item={...reviewAttempt,source:'producer'};
+    for (const body of [
+      {...reviewSnapshot,items:[item,item],has_more:false},
+      {...reviewSnapshot,items:[{...item,source:''}],has_more:false},
+      {...reviewSnapshot,items:[item],has_more:true},
+      {...reviewSnapshot,snapshot_id:`review_snapshot_${'f'.repeat(32)}`,items:[item],has_more:false},
+    ]) {
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json(body)));
+      await expect(client.reviewAttempts(1,{snapshot:reviewSnapshot.snapshot_id})).rejects.toMatchObject({code:'invalid_response'});
+    }
+    for (const change of [ {run_count:-1}, {run_count:Number.MAX_SAFE_INTEGER+1}, {attempt_count:-1}, {attempt_count:Number.MAX_SAFE_INTEGER+1}  ]) {
+      vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(json({...reviewSnapshot,pull:{...reviewPull,...change}})));
+      await expect(client.reviewPull(1)).rejects.toMatchObject({code:'invalid_response'});
+    }
   });
 });

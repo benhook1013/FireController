@@ -65,6 +65,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if mutationTool(name) {
 		bound = 256 << 10
 	}
+	if name == "review_queue_edit" {
+		bound = (256 << 10) + 1024
+	}
 	if len(data) > bound || strictjson.Validate(data) != nil {
 		return args, invalidArguments()
 	}
@@ -76,6 +79,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return args, invalidArguments()
 		}
+	}
+	if name == "review_queue_edit" {
+		return queueEditArguments(data)
 	}
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)

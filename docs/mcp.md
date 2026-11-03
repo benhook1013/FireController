@@ -83,7 +83,9 @@ Startup validates configuration without opening the credential or contacting the
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
-| `review_pull` | Required pull_number, optional snapshot; explicit PR summary and attempts. |
+| `review_queue_edit` | Administrator-only native `document` plus `idempotency_key`; selected metadata, explicit retirement/reactivation and relative ordering through [bounded queue edits](review-workspace.md#bounded-queue-edits). No provider work or automatic retry. |
+| `review_pull` | Required pull_number, optional snapshot; compact PR summary with latest attempts per channel. |
+| `review_attempts` | Required pull_number, optional snapshot/limit/cursor; default five newest-first attempts with original producer and explicit continuation. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
 | `review_run` | Required run_id, optional snapshot; explicit full findings/decisions/fix proof. |
 | `review_checkpoint_publish` | Required idempotency_key/evidence_id/expected_revision; optional wait_seconds (default 2, range 0–50). Explicitly publishes finalized historical source counts, returning terminal facts or a pending receipt. |
@@ -103,7 +105,7 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
 | `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
 
-Review queue/run lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
+Review queue/run/attempt lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 
 [Job progress](job-progress.md) owns update/checklist content limits, independent revisions, explicit archives and integration proof. Checklist replacement can remove or replace effective items and is annotated destructive; its immutable history remains available. Job updates and checklist operations perform no provider work.
 

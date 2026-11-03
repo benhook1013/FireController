@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +89,7 @@ func projectionDigest(t *testing.T, f *attemptFixture, snapshot string) string {
 		if snapshot != "" {
 			query, args = query+" AND snapshot_id=?", append(args, snapshot)
 		}
-		rows, err := f.store.DB().Query(query+" ORDER BY rowid", args...)
+		rows, err := f.store.DB().Query(query, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,6 +99,7 @@ func projectionDigest(t *testing.T, f *attemptFixture, snapshot string) string {
 			t.Fatal(err)
 		}
 		h.Write([]byte(table))
+		var records []string
 		for rows.Next() {
 			values, pointers := make([]any, len(columns)), make([]any, len(columns))
 			for i := range values {
@@ -112,12 +114,16 @@ func projectionDigest(t *testing.T, f *attemptFixture, snapshot string) string {
 				rows.Close()
 				t.Fatal(err)
 			}
-			h.Write(body)
+			records = append(records, string(body))
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
 			t.Fatal(err)
+		}
+		sort.Strings(records)
+		for _, record := range records {
+			h.Write([]byte(record))
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
@@ -220,7 +226,7 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	projectionRead(t, f, "/pulls/2", &pull)
 	projectionRead(t, f, "/pulls/1", &mergedNow)
 	// Source freshness and current PR metadata are not review decisions.
-	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(pull.Attempts, oldPull.Attempts) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
+	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(projectionAttempts(t, f, pull), projectionAttempts(t, f, oldPull)) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
 		t.Fatal("current facts, merged history, or conservative freshness changed")
 	}
 	var queue reviews.QueueResponse

@@ -14,7 +14,7 @@ const maxRunDetailBytes = 4 << 20
 
 // readRunDetail is shared by public reads and pre-commit native capacity checks.
 func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID string) (RunDetailResponse, error) {
-	response := RunDetailResponse{ProjectID: meta.ProjectID, Findings: []Finding{}}
+	response := RunDetailResponse{ProjectID: meta.ProjectID, Findings: []FindingView{}}
 	setMetaDetail(&response, meta)
 	var pullNum, attributable, complete, finalized int
 	var limits string
@@ -52,7 +52,7 @@ func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID str
 			}
 			return response, err
 		}
-		response.Findings = append(response.Findings, finding)
+		response.Findings = append(response.Findings, FindingView{Finding: finding})
 	}
 	if err := rows.Err(); err != nil {
 		return response, err
