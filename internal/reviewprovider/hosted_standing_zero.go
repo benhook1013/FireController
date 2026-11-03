@@ -406,6 +406,12 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 	if zeroClaim {
 		p.at++
 	}
+	// The observed heading wrapper presents this complete metadata block only;
+	// it cannot hide or replace any of the inventory or comparison grammar.
+	heading := p.at < len(p.lines) && p.lines[p.at] == "<h6>"
+	if heading {
+		p.at++
+	}
 	if !p.block("ℹ️ Recent review info") {
 		return zero, false
 	}
@@ -498,7 +504,7 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 	if p.at < len(p.lines) && standingAvailability.MatchString(p.lines[p.at]) {
 		p.at++
 	}
-	if !p.close() || p.at != len(p.lines) {
+	if !p.close() || heading && !p.take("</h6>") || p.at != len(p.lines) {
 		return zero, false
 	}
 	proof := standingCoverage.FindStringSubmatch(coverage)
