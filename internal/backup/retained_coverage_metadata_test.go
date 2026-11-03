@@ -12,6 +12,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func TestHistoricalCoverageMetadataBackupRestoreAndCorruptionRefusal(t *testing.T) {
@@ -64,6 +65,20 @@ func TestHistoricalCoverageMetadataBackupRestoreAndCorruptionRefusal(t *testing.
 					t.Fatal("historical fixture changed admission/accounting", table)
 				}
 			}
+			engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "bundle-cli", Provider: "coderabbit", Account: "cli-account", Channels: []string{"cli"}}}, reviewexec.WithNativeProjection())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pull := reviews.PullInput{Number: evidence.Anchor.PullNumber, Title: "Retained source", State: "open", HeadSHA: evidence.Anchor.CandidateSHA, BaseRef: evidence.Anchor.BaseRef, BaseSHA: evidence.Anchor.BaseSHA, CIState: "unknown", Mergeability: "unknown"}
+			first, err := engine.PublishEvidence(t.Context(), f.project, evidence.ID, &pull)
+			if err != nil {
+				t.Fatal("retained warnings blocked native display before backup", err)
+			}
+			again, err := engine.PublishEvidence(t.Context(), f.project, evidence.ID, nil)
+			if err != nil || again != first {
+				t.Fatal("bounded warning display did not replay before backup", again, err)
+			}
+			seeded = backupRows(t, f.store.DB())
 			raw, err := os.ReadFile(filepath.Join(f.dir, cli))
 			if err != nil {
 				t.Fatal(err)
