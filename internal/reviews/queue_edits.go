@@ -30,14 +30,17 @@ type QueueEditRequest struct {
 }
 
 type QueuePullInput struct {
-	Number       int64  `json:"number"`
-	Title        string `json:"title"`
-	State        string `json:"state"`
-	HeadSHA      string `json:"head_sha"`
-	BaseRef      string `json:"base_ref"`
-	BaseSHA      string `json:"base_sha"`
-	CIState      string `json:"ci_state"`
-	Mergeability string `json:"mergeability"`
+	Diff         *PullDiff `json:"diff,omitempty"`
+	IsDraft      *bool     `json:"is_draft,omitempty"`
+	MergedAt     string    `json:"merged_at,omitempty"`
+	Number       int64     `json:"number"`
+	Title        string    `json:"title"`
+	State        string    `json:"state"`
+	HeadSHA      string    `json:"head_sha"`
+	BaseRef      string    `json:"base_ref"`
+	BaseSHA      string    `json:"base_sha"`
+	CIState      string    `json:"ci_state"`
+	Mergeability string    `json:"mergeability"`
 }
 
 func readQueueEditJSON(w http.ResponseWriter, r *http.Request, dst *QueueEditRequest) error {
@@ -76,7 +79,7 @@ func readQueueEditJSON(w http.ResponseWriter, r *http.Request, dst *QueueEditReq
 					return validationError("Required queue metadata must be present and non-null.")
 				}
 			}
-			for _, optional := range []string{"head_sha", "base_ref", "base_sha"} {
+			for _, optional := range []string{"head_sha", "base_ref", "base_sha", "diff", "is_draft", "merged_at"} {
 				if value, ok := entry[optional]; ok && string(value) == "null" {
 					return validationError("Optional queue metadata must be omitted or non-null.")
 				}
@@ -107,6 +110,9 @@ func validateQueueEdit(req *QueueEditRequest) error {
 			!oneOf(pull.CIState, "unknown", "pending", "success", "failure", "not_required") ||
 			!oneOf(pull.Mergeability, "unknown", "mergeable", "conflicting") {
 			return validationError("A pull request contains invalid identity or summary fields.")
+		}
+		if err := (PullDisplayMetadata{Diff: pull.Diff, IsDraft: pull.IsDraft, MergedAt: pull.MergedAt}).Validate(pull.State); err != nil {
+			return err
 		}
 		if _, exists := seen[pull.Number]; exists {
 			return validationError("Queue entries and retirements must be unique and disjoint.")
@@ -230,7 +236,7 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 	for _, selected := range req.Queue {
 		old, position, err := retainedPullBody(ctx, tx, scope.ProjectID, previousID, selected.Number)
 		if errors.Is(err, sql.ErrNoRows) {
-			old = []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability, int64(0), int64(0), int64(0), "[]", "[]"}
+			old = []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability, int64(0), int64(0), int64(0), "[]", "[]", "{}"}
 			position = nextPosition
 			nextPosition++
 		} else if err != nil {
@@ -242,6 +248,11 @@ func publishQueueEdit(ctx context.Context, tx *sql.Tx, scope core.Scope, req Que
 				old[7] = int64(0)
 			}
 		}
+		metadataJSON, metadataErr := inheritedPullMetadata(old, PullInput{HeadSHA: selected.HeadSHA, BaseSHA: selected.BaseSHA, BaseRef: selected.BaseRef, State: selected.State, Diff: selected.Diff, IsDraft: selected.IsDraft, MergedAt: selected.MergedAt})
+		if metadataErr != nil {
+			return Receipt{}, metadataErr
+		}
+		old[12] = metadataJSON
 		metadata := []any{selected.Title, selected.State, selected.HeadSHA, selected.BaseRef, selected.BaseSHA, selected.CIState, selected.Mergeability}
 		copy(old[:7], metadata)
 		pulls[selected.Number] = selectedPull{old, position}

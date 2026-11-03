@@ -359,7 +359,7 @@ func TestReviewProgressStatesDoNotWeakenAttemptOrRunValidation(t *testing.T) {
 		t.Helper()
 		currentAttempt, currentRun := attempt, run
 		currentAttempt.State, currentRun.Outcome = state, outcome
-		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: 1, AttemptCount: 1, RecentRuns: []client.ReviewRunSummary{currentRun}, LatestAttempts: []client.ReviewAttempt{currentAttempt}}
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: 1, RunCounts: client.ReviewChannelRunCounts{CLI: 1}, AttemptCount: 1, RecentRuns: []client.ReviewRunSummary{currentRun}, LatestAttempts: []client.ReviewAttempt{currentAttempt}}
 		body := map[string]any{}
 		for key, value := range meta {
 			body[key] = value
@@ -418,7 +418,7 @@ func TestReviewClientRequiresRunOriginAndKeepsMixedProducerIdentity(t *testing.T
 		for key, item := range meta {
 			value[key] = item
 		}
-		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: int64(len(items)), RecentRuns: items, LatestAttempts: []client.ReviewAttempt{}}
+		pull := client.ReviewPullSummary{Number: 1, Title: "PR", State: "open", CIState: "unknown", Mergeability: "unknown", RunCount: int64(len(items)), RunCounts: client.ReviewChannelRunCounts{Manual: int64(len(items))}, RecentRuns: items, LatestAttempts: []client.ReviewAttempt{}}
 		switch kind {
 		case "queue":
 			value["configured"], value["items"], value["has_more"] = true, []client.ReviewPullSummary{pull}, false
@@ -842,6 +842,7 @@ func TestReviewCompactSummaryAcceptsInt64LifetimeCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	pull.Pull.RunCount, pull.Pull.AttemptCount = math.MaxInt64, math.MaxInt64
+	pull.Pull.RunCounts = client.ReviewChannelRunCounts{Manual: math.MaxInt64}
 	body, err := json.Marshal(pull)
 	if err != nil {
 		t.Fatal(err)

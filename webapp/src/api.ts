@@ -329,6 +329,21 @@ function assessmentJSON(raw: string): unknown {
   if (position !== tokens.length) throw new Error('Invalid assessment JSON');
   return value;
 }
+function reviewDisplayJSON(raw: string): unknown {
+  const value=assessmentJSON(raw);
+  const normalize=(pull: unknown) => {
+    if (!record(pull) || typeof pull.merged_at !== 'string' || !pull.merged_at.includes(',')) return;
+    const normalized=pull.merged_at.replace(',', '.');
+    // Go accepts a fractional comma; display the same retained instant in the
+    // spelling understood by Date without changing history or other fields.
+    if (timestamp(normalized)) pull.merged_at=normalized;
+  };
+  if (record(value)) {
+    if (Array.isArray(value.items)) value.items.forEach(normalize);
+    normalize(value.pull);
+  }
+  return value;
+}
 function assessmentTime(value: unknown): value is string {
   if (!timestamp(value)) return false;
   const date = value.slice(0, 10).split('-').map(Number);
@@ -371,10 +386,12 @@ function validReviewRun(value: unknown, number?: number): value is ReviewRunSumm
   return record(value) && keys(value, ['source', 'id', 'pull_number', 'source_run_id', 'channel', 'head_sha', 'reviewer', 'scope', 'coverage_limits', 'outcome', 'attributable', 'complete', 'started_at', 'finished_at', 'found', 'accepted', 'routed', 'finalized', 'fixed']) && checkpointText(value.source, 128, true) && reviewRunID(value.id) && pullNumber(value.pull_number) && (number === undefined || value.pull_number === number) && checkpointText(value.source_run_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && checkpointText(value.reviewer, 128, false) && checkpointText(value.scope, 128, true) && Array.isArray(value.coverage_limits) && value.coverage_limits.length <= 16 && value.coverage_limits.every(item => checkpointText(item, 1024, true)) && typeof value.outcome === 'string' && reviewOutcomes.has(value.outcome) && typeof value.attributable === 'boolean' && typeof value.complete === 'boolean' && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && ((value.outcome !== 'completed' && !value.complete) || (!!value.started_at && !!value.finished_at)) && nonnegative(value.found) && nonnegative(value.accepted) && nonnegative(value.routed) && value.accepted + value.routed <= value.found && nonnegative(value.fixed) && value.fixed <= value.found && typeof value.finalized === 'boolean';
 }
 function validReviewAttempt(value: unknown, archive = false): value is ReviewAttemptSummary {
-  return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id', ...(archive ? ['source'] : [])]) && (!archive || checkpointText(value.source, 128, true)) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewAttemptStates.has(value.state) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
+  return record(value) && keys(value, ['source_attempt_id', 'channel', 'head_sha', 'state', 'started_at', 'finished_at', 'duration_seconds', 'source_run_id', 'trigger_id', 'provider_review_id', ...(archive ? ['source'] : [])], ['reason']) && (!archive || checkpointText(value.source, 128, true)) && (value.reason === undefined || typeof value.state === 'string' && ['held', 'uncertain', 'rate_limited', 'failed'].includes(value.state) && typeof value.reason === 'string' && /^[a-z][a-z0-9_]{0,127}$/u.test(value.reason)) && checkpointText(value.source_attempt_id, 256, true) && typeof value.channel === 'string' && ['cli', 'hosted', 'manual', 'subagent'].includes(value.channel) && sha(value.head_sha) && typeof value.state === 'string' && reviewAttemptStates.has(value.state) && maybeTimestamp(value.started_at) && maybeTimestamp(value.finished_at) && orderedTimes(value.started_at, value.finished_at) && (value.state !== 'completed' || (!!value.started_at && !!value.finished_at)) && (value.duration_seconds === null || nonnegative(value.duration_seconds)) && checkpointText(value.source_run_id, 256, false) && checkpointText(value.trigger_id, 128, false) && checkpointText(value.provider_review_id, 128, false);
 }
 function validReviewPull(value: unknown): value is ReviewPullSummary {
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'attempt_count', 'recent_runs', 'latest_attempts']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(item => validReviewAttempt(item)) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(item => validReviewAttempt(item)) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, n) => sum + Number(n), 0) > value.run_count) return false;
+  if (value.diff !== undefined && (!record(value.diff) || !keys(value.diff, ['files','additions','deletions']) || !Object.values(value.diff).every(n => nonnegative(n) && n <= 2147483647)) || value.is_draft !== undefined && typeof value.is_draft !== 'boolean' || value.merged_at !== undefined && (value.state !== 'merged' || !timestamp(value.merged_at))) return false;
   return new Set(value.recent_runs.map(item => item.id)).size === value.recent_runs.length && new Set(value.latest_attempts.map(item => item.channel)).size === value.latest_attempts.length;
 }
 function validFindingRoute(value: unknown): boolean {
@@ -771,7 +788,7 @@ export class Api {
     return value as Page<JobWorkstreamHistoryEntry>;
   }
   async reviewQueue(options: PageOptions = {}, signal?: AbortSignal): Promise<ReviewQueue> {
-    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal);
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/queue'), pageOptions(options)), signal, undefined, maxBytes, reviewDisplayJSON);
     if (!record(value) || !keys(value, [...reviewMetadata, 'configured', 'items', 'has_more'], ['cursor']) || typeof value.configured !== 'boolean' || !Array.isArray(value.items) || !validReviewPage({ items: value.items, has_more: value.has_more, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) }, options)) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (value.configured ? !validReviewSnapshot(value, this.projectId) : value.project_id !== this.projectId || value.revision !== 0 || value.snapshot_id !== '' || value.source !== '' || value.observed_at !== '' || value.recorded_at !== '' || value.items.length !== 0 || value.has_more) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
@@ -780,7 +797,7 @@ export class Api {
   async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
     const query = reviewQuery(snapshot);
-    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal);
+    const value = await this.finiteGet(withQuery(this.projectRoute(`reviews/pulls/${number}`), query), signal, undefined, maxBytes, reviewDisplayJSON);
     if (!record(value) || !keys(value, [...reviewMetadata, 'pull']) || !validReviewSnapshot(value, this.projectId, snapshot) || !validReviewPull(value.pull) || value.pull.number !== number) throw new ApiError('invalid_response', 'The service returned an invalid review pull request.');
     return value as unknown as ReviewPull;
   }

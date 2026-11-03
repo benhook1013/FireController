@@ -81,7 +81,7 @@ func (f *apiFixture) call(method, path, token, key string, body any) *httptest.R
 		r.Header.Set("Idempotency-Key", key)
 	}
 	w := httptest.NewRecorder()
-	f.mux.ServeHTTP(w, r)
+	metadataFixtureReaders(f.store, f.mux).ServeHTTP(w, r)
 	return w
 }
 

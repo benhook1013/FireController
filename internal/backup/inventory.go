@@ -220,7 +220,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 6, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 1, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
 	"review_run_versions":              {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
@@ -584,6 +584,15 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_current_totals" && versions["reviews"] >= 9 {
+			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
+		}
+		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
+			columns += " reason"
+		}
+		if name == "review_pull_versions" && versions["reviews"] >= 7 {
+			columns += " metadata_json"
+		}
 		receiptPK := map[string]int{}
 		if name == "receipts" {
 			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
@@ -807,6 +816,8 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		{4, reviews.ValidateHistoryReferences},
 		{5, reviews.ValidateCurrentSummaries},
 		{6, reviews.ValidateCurrentRunOrder},
+		{7, reviews.ValidatePullMetadataHistory},
+		{8, reviews.ValidateAttemptReasonsHistory},
 	} {
 		if versions["reviews"] < check.since {
 			continue
@@ -1145,7 +1156,13 @@ func historyDefinitionSQL(definition string) string {
 func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) error {
 	expected := map[string]string{}
 	if reviewVersion >= 4 {
-		expected = reviews.HistoryReadViewSQL()
+		expected = reviews.HistoryReadViewSQLV6()
+		if reviewVersion >= 7 {
+			expected = reviews.HistoryReadViewSQLV7()
+		}
+		if reviewVersion >= 8 {
+			expected = reviews.HistoryReadViewSQLV10()
+		}
 	}
 	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='view' LIMIT 6`)
 	if err != nil {
@@ -1175,10 +1192,20 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 	type object struct{ kind, definition string }
 	expected := map[string]object{}
 	var names []string
-	definitions := reviews.HistorySchemaSQL()
+	definitions := reviews.HistorySchemaSQLV6()
+	if version >= 7 {
+		definitions = reviews.HistorySchemaSQLV7()
+	}
+	if version >= 8 {
+		definitions = reviews.HistorySchemaSQLV10()
+	}
 	expectedTables, expectedObjects := 13, 22
 	if version >= 5 {
-		definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		if version >= 9 {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQL()...)
+		} else {
+			definitions = append(definitions, reviews.CurrentSummarySchemaSQLV8()...)
+		}
 		expectedTables, expectedObjects = 15, 25
 	}
 	if version >= 6 {
