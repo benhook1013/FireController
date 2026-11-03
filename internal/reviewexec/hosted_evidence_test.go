@@ -303,3 +303,20 @@ func TestHostedAdditionalEvidenceRetainsRealReviewAndCoordinates(t *testing.T) {
 		t.Fatal("unknown additional location accepted")
 	}
 }
+
+func TestHostedStandingZeroRejectsSubmittedReviewVariant(t *testing.T) {
+	_, _, input := standingEvidenceFixture(t)
+	if input.Hosted.StandingSummary == nil || len(input.Review.Findings) != 0 || input.Review.ReportedFindings != 0 {
+		t.Fatal("fixture must begin with standing zero-finding evidence")
+	}
+	if err := validateHostedEvidenceMetadata(input.Hosted, input.ExpectedAnchor, input.Review); err != nil {
+		t.Fatal("valid standing zero-finding metadata rejected", err)
+	}
+	input.Hosted.SubmittedReview = &HostedSubmittedReviewMetadata{
+		ProviderRunID:            "44444444-4444-4444-8444-444444444444",
+		AcknowledgementCommentID: input.Hosted.TriggerCommentID + 1,
+	}
+	if err := validateHostedEvidenceMetadata(input.Hosted, input.ExpectedAnchor, input.Review); err == nil {
+		t.Fatal("standing zero-finding evidence accepted submitted-review metadata")
+	}
+}
