@@ -7,7 +7,7 @@ export function relativeAge(value: string, now = Date.now()): string {
   if (elapsed <= -60000) return 'Future date';
   // Sub-minute client/server clock differences are ordinary display skew.
   const minutes = Math.floor(Math.max(0, elapsed) / 60000);
-  if (minutes < 1) return 'Just now';
+  if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 1440) return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
   return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ago`;

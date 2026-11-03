@@ -148,7 +148,7 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 				}
 			}
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "reviews.adoption_obligations_imported", b.Source.Namespace, revision, map[string]any{"new": len(added), "unchanged": len(b.Obligations) - len(added)}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "reviews.adoption_obligations_imported", scope.ProjectID, revision, map[string]any{"new": len(added), "unchanged": len(b.Obligations) - len(added)}); err != nil {
 			return nil, err
 		}
 		return m.Receipt{Outcome: "imported", Revision: revision, New: len(added), Unchanged: len(b.Obligations) - len(added)}, nil

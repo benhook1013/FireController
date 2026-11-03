@@ -30,9 +30,11 @@ describe('bounded Delivery board', () => {
     const one = { workers: { items: [worker], has_more: false }, jobs: { items: [], has_more: false } };
     const paused = markup(<DeliveryLanes value={one} home={home} presence={presence} />);
     expect(paused).toContain('Paused');
-    expect(paused).not.toContain('Client attached');
-    expect(paused).toContain('</h3><details class="delivery-worker-pause"');
+    expect(paused).toContain('Last contact');
+    expect(paused).toContain('aria-label="Builder: Paused"');
+    expect(paused).toContain('</h3><details class="worker-presence worker-presence-paused"');
     const active = markup(<DeliveryLanes value={{...one,workers:{...one.workers,items:[{...worker,paused:false}]}}} home={home} presence={presence} />);
+    expect(active).toContain('aria-label="Builder: Active"');
     expect(active).toContain('Client attached');
     expect(active).not.toContain('Paused');
   });

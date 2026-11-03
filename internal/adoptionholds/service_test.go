@@ -767,3 +767,26 @@ func TestPreviewWorkerProjectBindingAndReadOnlyInventory(t *testing.T) {
 		t.Fatal("reads mutated audit state")
 	}
 }
+
+func TestImportEventKeepsSourceNamespacesOutOfNativeResourceIdentity(t *testing.T) {
+	for _, namespace := range []string{"legacy:firemud", "source:" + strings.Repeat("x", 193)} {
+		t.Run(namespace, func(t *testing.T) {
+			f := fresh(t)
+			b := batch()
+			b.Source.Namespace = namespace
+			f.apply(b, "import-event")
+			var resource string
+			if err := f.store.DB().QueryRow(`SELECT resource_id FROM events WHERE event_type='reviews.adoption_obligations_imported'`).Scan(&resource); err != nil {
+				t.Fatal(err)
+			}
+			if resource != "project_one" {
+				t.Fatalf("import invalidation resource=%q, want native project identity", resource)
+			}
+			page := f.page("?status=all")
+			detail := decode[m.Detail](t, f.call("GET", base+"/"+page.Items[0].ID, f.token, "", "", nil), 200)
+			if detail.Source.Namespace != namespace {
+				t.Fatal("source namespace provenance changed")
+			}
+		})
+	}
+}
