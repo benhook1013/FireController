@@ -124,7 +124,7 @@ try {
           snapshot.inbox_sidebar=await page.locator('.sidebar').count();
           snapshot.inbox_heading=await page.getByRole('heading',{name:'Builder inbox',exact:true}).count();
           snapshot.readonly_new_message=await page.getByRole('button',{name:'New message',exact:true}).count();
-          snapshot.contact_labels=await page.locator('.worker-contact').count();
+          snapshot.contact_labels=await page.locator('.worker-presence > summary').count();
           if (await page.locator('.feed-card .status-dot').count()) snapshot.indicators=await indicatorColors();
         },
       });
@@ -401,11 +401,15 @@ try {
   checkpoint = 'builder-job';
   await expect(builderLane.getByText('Primary focus', {exact:true})).toBeVisible();
   checkpoint = 'builder-primary';
-  await expect(inspectorLane.getByText('Paused', {exact:true})).toBeVisible();
+  const pauseBadge=inspectorLane.locator('.worker-presence-paused');
+  const pauseSummary=pauseBadge.locator('summary');
+  await expect(pauseSummary).toHaveCount(1);
+  await expect(pauseSummary).toHaveText('Paused');
+  await expect(pauseSummary).toHaveAccessibleName('Inspector: Paused');
+  await expect(pauseSummary).toBeVisible();
   checkpoint = 'inspector-paused';
-  const pauseBadge=inspectorLane.locator('.delivery-worker-pause');
-  const pauseSummary=pauseBadge.getByText('Paused',{exact:true});
-  const pauseReason=pauseBadge.getByText('Paused for synthetic dependency review.',{exact:true});
+  const pauseReason=pauseBadge.locator('.worker-presence-reason');
+  await expect(pauseReason).toHaveText('Paused for synthetic dependency review.');
   checkpoint='pause-reason-closed';
   await expect(pauseReason).not.toBeVisible();
   const closedPauseHeight=await inspectorLane.locator('.delivery-lane-heading').evaluate(e=>e.getBoundingClientRect().height);
@@ -427,6 +431,25 @@ try {
   await pauseSummary.press('Enter');
   await expect(pauseReason).not.toBeVisible();
   await pauseSummary.blur();
+  checkpoint='pause-reason-touch';
+  const touch=await context.newCDPSession(page);
+  try {
+    await touch.send('Emulation.setTouchEmulationEnabled',{enabled:true});
+    const tapPause=async()=>{
+      const box=await pauseSummary.boundingBox();
+      need(!!box);
+      await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+box.height/2}]});
+      await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    };
+    await tapPause();
+    await expect(pauseReason).toBeVisible();
+    await tapPause();
+    await expect(pauseReason).not.toBeVisible();
+    need(await inspectorLane.locator('.delivery-lane-heading').evaluate(e=>e.getBoundingClientRect().height)===closedPauseHeight);
+  } finally {
+    await touch.send('Emulation.setTouchEmulationEnabled',{enabled:false});
+    await touch.detach();
+  }
   checkpoint = 'inspector-pause-reason';
   await expect(unassignedLane.getByText('Unassigned parked work', {exact:true})).toBeVisible();
   checkpoint = 'unassigned-job';
@@ -478,8 +501,11 @@ try {
   checkpoint = 'presence-initial';
   await expect.poll(() => presenceFinished, {timeout:5000}).toBe(1);
   need(presenceReads===1 && presenceHeaderErrors===0);
-  await expect(builderLane.locator('.worker-contact')).toHaveText('Contact unknown');
-  await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
+  const builderPresence=builderLane.locator('.worker-presence');
+  const builderSummary=builderPresence.locator('summary');
+  await expect(builderSummary).toHaveText('Unknown');
+  await expect(builderSummary).toHaveAccessibleName('Builder: Contact unknown');
+  await expect(pauseSummary).toHaveText('Paused');
   const contactReadBoundary={delivery:deliveryReads,brief:jobBriefReads,archive:jobArchiveReads,history:contactHistoryReads};
   const sameContactReadBoundary=()=>deliveryReads===contactReadBoundary.delivery && jobBriefReads===contactReadBoundary.brief && jobArchiveReads===contactReadBoundary.archive && contactHistoryReads===contactReadBoundary.history;
   const restoreContactVisibility=()=>page.evaluate(()=>globalThis.__fcSmokeRestoreContactVisibility?.());
@@ -510,8 +536,8 @@ try {
     const hiddenUntil=hiddenAt+15500;
     while (performance.now()<hiddenUntil) await new Promise(resolve=>setTimeout(resolve,Math.max(1,Math.ceil(hiddenUntil-performance.now()))));
     need(performance.now()-hiddenAt>=15500 && presenceReads===1 && presenceFinished===1 && presenceHeaderErrors===0 && sameContactReadBoundary());
-    await expect(builderLane.locator('.worker-contact')).toHaveText('Contact unknown');
-    await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
+    await expect(builderSummary).toHaveText('Unknown');
+    await expect(pauseSummary).toHaveText('Paused');
     checkpoint = 'presence-visible';
     await restoreContactVisibility();
     need(await page.evaluate(()=>document.visibilityState==='visible'));
@@ -521,9 +547,15 @@ try {
     await expect.poll(()=>presenceResponses,{timeout:8000}).toBe(2);
     need(presenceHTTPStatus===200);
     checkpoint = 'presence-visible-content';
-    await expect(builderLane.locator('.worker-contact')).toContainText('Last contact');
+    await expect(builderSummary).toHaveText('Active');
+    await expect(builderSummary).toHaveAccessibleName('Builder: Active');
+    await builderSummary.hover();
+    await expect(builderPresence.locator('.worker-presence-details')).toContainText('Last contact');
+    await expect(builderPresence.locator('.worker-presence-details')).toContainText('Client contact does not indicate model activity or job progress.');
+    await page.mouse.move(0,0);
+    await expect(builderPresence.locator('.worker-presence-details')).not.toBeVisible();
     need(presenceReads===2 && presenceHeaderErrors===0 && sameContactReadBoundary());
-    await expect(inspectorLane.locator('.worker-contact')).toHaveText('Paused');
+    await expect(pauseSummary).toHaveText('Paused');
   } finally {
     // Restore the original property even when a contact/timing assertion fails.
     await restoreContactVisibility().catch(()=>{});
@@ -1026,15 +1058,18 @@ try {
   await expect(queueHosted.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
   checkpoint = 'current-round-close-live';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1,action:'close'}, 200);
-  for (const limits of [hero.locator('[aria-label="Current hosted round limits"]'), queueHosted.locator('[aria-label="Current hosted round limits"]')]) {
+  for (const [surface,limits] of [['hero',hero.locator('[aria-label="Current hosted round limits"]')], ['queue',queueHosted.locator('[aria-label="Current hosted round limits"]')]]) {
+    checkpoint=`current-round-close-${surface}-summary`;
     await expect(limits.locator('summary')).toHaveText('No reviews remaining');
+    checkpoint=`current-round-close-${surface}-open`;
     await limits.locator('summary').click();
+    checkpoint=`current-round-close-${surface}-reason`;
     await expect(limits.locator('details')).toContainText('Manually closed');
     await limits.locator('summary').click();
   }
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const age = queueHosted.locator('.review-round-pill time');
-  await expect(age).toHaveText(/^(?:Just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
+  await expect(age).toHaveText(/^(?:just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
   await expect(age).toHaveAttribute('datetime', finished);
   checkpoint = 'attempt-reason-layout';
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {

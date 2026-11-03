@@ -196,7 +196,7 @@ try {
   await expect(hostedLane.locator('.review-lane-heading')).toContainText('100 published rounds');
   need(await hostedLane.getByText(/^Round \d+$/).count() === 0);
   need(await phone.getByRole('region', { name: 'CLI review rounds', exact: true }).getByRole('link', {name:/^Published CLI round:/}).count() === 1);
-  need(await hostedLane.getByText('More published Hosted rounds are outside this view.', { exact: false }).count() === 1);
+  need(await hostedLane.getByText('Other finalized Hosted rounds are outside this view.', { exact: false }).count() === 1);
   need(await hostedLane.getByText('these snapshots may not contain every round.', { exact: false }).count() === 1);
   if (config.proof_directory) await phone.screenshot({ path: config.proof_directory + '/phone-window.png', fullPage: true });
   phase = 'window-private-quiet';

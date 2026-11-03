@@ -306,7 +306,7 @@ try {
   await expect(attention).toContainText('Synthetic routed follow-up');
   await expect(attention).toContainText('No receiving PR is assigned.');
   await current.page.setViewportSize({width:1440,height:900});
-  const workerHeads = await current.page.locator('.delivery-lane-heading').evaluateAll(heads=>heads.slice(0,3).map(head=>({height:head.getBoundingClientRect().height,nameTop:head.querySelector('h3').getBoundingClientRect().top-head.getBoundingClientRect().top,paused:!!head.querySelector('.delivery-worker-pause')})));
+  const workerHeads = await current.page.locator('.delivery-lane-heading').evaluateAll(heads=>heads.slice(0,3).map(head=>({height:head.getBoundingClientRect().height,nameTop:head.querySelector('h3').getBoundingClientRect().top-head.getBoundingClientRect().top,paused:!!head.querySelector('.worker-presence-paused > summary')})));
   need(workerHeads.length===3 && workerHeads[0].paused);
   need(workerHeads.every(head=>Math.abs(head.height-workerHeads[0].height)<1 && Math.abs(head.nameTop-workerHeads[0].nameTop)<1));
   if (config.proof_directory) for (const width of [1440,390]) {
