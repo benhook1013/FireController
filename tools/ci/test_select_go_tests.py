@@ -116,7 +116,11 @@ class SelectionTests(unittest.TestCase):
         for job in required:
             self.assertIn("needs." + job + ".result", gate)
         self.assertIn("if: ${{ always() }}", gate)
-        self.assertIn("run: make test-race vet", workflow)
+        static = workflow.split("\n  static:\n", 1)[1].split("\n  linux:\n", 1)[0]
+        linux = workflow.split("\n  linux:\n", 1)[1].split("\n  qualification:\n", 1)[0]
+        self.assertEqual(len(re.findall(r"^        run: make vet$", static, re.MULTILINE)), 1)
+        self.assertRegex(linux, r"(?m)^        run: make test-race$")
+        self.assertNotIn("vet", linux)
         self.assertIn("run: make test-budgets", workflow)
         self.assertIn("CHANGES_RESULT: ${{ needs.changes.result }}", gate)
         self.assertIn('test "$SOURCE_REF" = refs/heads/develop', gate)

@@ -73,6 +73,8 @@ jobs:
             webapp/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - name: Vet all Go packages
+        run: make vet
       - run: make workflow-check ci-selection-check fmt-check docs-check source-converter-check browser-check browser-build
       - name: Verify embedded browser assets match source
         run: |
@@ -119,11 +121,11 @@ jobs:
           set -euo pipefail
           go test -race -p=2 -list . "$GO_TEST_PACKAGES" > "$RUNNER_TEMP/firecontroller-go-tests"
           python3 tools/ci/select-go-tests.py "$SHARD" "$RUNNER_TEMP/firecontroller-go-packages" --tests "$RUNNER_TEMP/firecontroller-go-tests" >> "$GITHUB_OUTPUT"
-      - name: Run fresh race tests and vet
+      - name: Run fresh race tests
         env:
           GO_TEST_PACKAGES: ${{ steps.packages.outputs.packages }}
           GO_TEST_RUN: ${{ steps.partition.outputs.run || '.' }}
-        run: make test-race vet
+        run: make test-race
 
   qualification:
     name: Packaged qualification
