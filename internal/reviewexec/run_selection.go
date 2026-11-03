@@ -152,12 +152,19 @@ func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if policy.Revision < 1 {
 		return Receipt{}, core.Fail("reviews_policy_unconfigured", "Configure project review requirements before selecting a review.", 409)
 	}
-	var busy bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting'))`, scope.ProjectID, input.Channel).Scan(&busy); err != nil {
+	var pendingID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting')`, scope.ProjectID, input.Channel).Scan(&pendingID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, err
 	}
-	if busy {
-		return Receipt{}, core.Fail("review_busy", "A selection in this channel is already pending.", 409)
+	if err == nil {
+		pending, err := readRun(ctx, tx, scope.ProjectID, pendingID)
+		if err != nil {
+			return Receipt{}, err
+		}
+		return Receipt{}, &core.Error{Code: "review_busy", Status: 409,
+			Message: "A selection in this channel is already pending. This start was not accepted; read the existing selection with reviews run-read --selection-id " + pending.ID + " (MCP review_selection_read).",
+			Details: map[string]string{"selection_id": pending.ID, "channel": pending.Channel, "state": pending.State}}
 	}
 	var total, local int64
 	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(project_id=?),0) FROM review_selections WHERE state IN ('queued','selecting')`, scope.ProjectID).Scan(&total, &local); err != nil {

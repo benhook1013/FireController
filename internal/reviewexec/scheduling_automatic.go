@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -59,16 +60,28 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 	return e.requireAutomaticRun(ctx, tx, r)
 }
 
+const automaticCurrentRunsBasisQuery = `SELECT v.id,v.channel,v.head_sha,v.complete,v.finalized,v.found,v.accepted,v.routed,v.fixed FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? AND v.channel='hosted' AND v.outcome='completed' ORDER BY v.id LIMIT 10001`
+const automaticCurrentFindingsBasisQuery = `SELECT f.run_id,f.source_finding_id,f.disposition,f.fix_sha,f.proof_note,f.route_json FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_finding_versions f ON f.project_id=m.project_id AND f.run_id=m.id AND f.run_version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? ORDER BY f.run_id,f.position LIMIT 10001`
+
+// Query text remains part of the retained intent digest. Pin only physical join
+// order for current-reference reads; never replace the digest input with hints.
+func automaticBasisQuery(query string, pinJoins bool) string {
+	if pinJoins {
+		return strings.ReplaceAll(query, " JOIN ", " CROSS JOIN ")
+	}
+	return query
+}
+
 // The semantic digest excludes projection revisions, observation timestamps,
 // attempt states and selection/operation transitions. Failed/cancelled requests
 // therefore cannot create their own next automatic request. Only original source
 // facts and deliberate controls, completed results and finding work change it.
 func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull int64) (string, error) {
 	h := sha256.New()
-	appendRows := func(query string, args ...any) error {
+	appendRows := func(query string, pinJoins bool, args ...any) error {
 		h.Write([]byte(query))
 		h.Write([]byte{0})
-		rows, err := tx.QueryContext(ctx, query, args...)
+		rows, err := tx.QueryContext(ctx, automaticBasisQuery(query, pinJoins), args...)
 		if err != nil {
 			return err
 		}
@@ -122,7 +135,7 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 		{`SELECT o.id,o.revision,o.status FROM review_adoption_targets t JOIN review_adoption_obligations o ON o.id=t.obligation_id AND o.project_id=t.project_id WHERE t.project_id=? AND t.pull_number=? ORDER BY o.id LIMIT 10001`, []any{project, pull}},
 	}
 	for _, q := range queries {
-		if err := appendRows(q.sql, q.args...); err != nil {
+		if err := appendRows(q.sql, false, q.args...); err != nil {
 			return "", err
 		}
 	}
@@ -131,13 +144,13 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 		return "", err
 	}
 	if hasWorkspace {
-		if err := appendRows(`SELECT p.state,p.head_sha,p.base_ref,p.base_sha,json_extract(p.metadata_json,'$.is_draft') FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions p ON p.project_id=m.project_id AND p.number=m.number AND p.version_revision=m.version_revision WHERE c.project_id=? AND c.number=?`, project, pull); err != nil {
+		if err := appendRows(`SELECT p.state,p.head_sha,p.base_ref,p.base_sha,json_extract(p.metadata_json,'$.is_draft') FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions p ON p.project_id=m.project_id AND p.number=m.number AND p.version_revision=m.version_revision WHERE c.project_id=? AND c.number=?`, false, project, pull); err != nil {
 			return "", err
 		}
-		if err := appendRows(`SELECT v.id,v.channel,v.head_sha,v.complete,v.finalized,v.found,v.accepted,v.routed,v.fixed FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? AND v.channel='hosted' AND v.outcome='completed' ORDER BY v.id LIMIT 10001`, project, pull); err != nil {
+		if err := appendRows(automaticCurrentRunsBasisQuery, true, project, pull); err != nil {
 			return "", err
 		}
-		if err := appendRows(`SELECT f.run_id,f.source_finding_id,f.disposition,f.fix_sha,f.proof_note,f.route_json FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_finding_versions f ON f.project_id=m.project_id AND f.run_id=m.id AND f.run_version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? ORDER BY f.run_id,f.position LIMIT 10001`, project, pull); err != nil {
+		if err := appendRows(automaticCurrentFindingsBasisQuery, true, project, pull); err != nil {
 			return "", err
 		}
 	}

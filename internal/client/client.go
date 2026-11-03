@@ -585,6 +585,9 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "review_busy" && status != http.StatusConflict {
+		result.Details = nil
+	}
 	if status == http.StatusConflict && result.Code == "review_conflict" {
 		reviewConflictDiagnostic(result)
 	}
@@ -622,6 +625,14 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	}
 	if status == http.StatusConflict {
 		switch result.Code {
+		case "review_busy":
+			result.Message = "Existing review work is pending; this request was not accepted."
+			result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations), or read its original accepted receipt. Do not replace or cancel pending work."
+			if details, ok := result.Details.(map[string]any); ok {
+				id := details["selection_id"].(string)
+				result.Message = "A review selection in this channel is already pending; this start was not accepted."
+				result.Action = "Read the existing selection with review_selection_read selection_id=" + id + " (CLI: reviews run-read --selection-id " + id + "). Optional bounded waiting follows its original operation when available. This refusal accepted no new start; do not replace or cancel pending work."
+			}
 		case "review_round_capacity":
 			result.Message = "No unreserved review capacity is available for this PR/channel; existing work may already occupy the remaining allocation."
 			result.Action = "Use review_operations_list filtered by pull_number and channel (CLI: reviews operations --pr NUMBER --channel CHANNEL) to find existing queued, active or completed-unfinalized work, then read its original operation. Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) separately for configured limits and completed counts. Do not submit duplicate reviews, cancel existing work or change grants automatically."
@@ -686,6 +697,19 @@ func (c *Client) sensitive(value string) bool {
 	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
 }
 func (c *Client) safeDetails(value any, code string) any {
+	if code == "review_busy" {
+		object, ok := value.(map[string]any)
+		if !ok || len(object) != 3 {
+			return nil
+		}
+		id, idOK := object["selection_id"].(string)
+		channel, channelOK := object["channel"].(string)
+		state, stateOK := object["state"].(string)
+		if !idOK || ValidateReviewRunSelectionID(id) != nil || c.sensitive(id) || !channelOK || !oneReviewOf(channel, "cli", "hosted") || !stateOK || !oneReviewOf(state, "queued", "selecting") {
+			return nil
+		}
+		return map[string]any{"selection_id": id, "channel": channel, "state": state}
+	}
 	if code == "worker_retirement_blocked" {
 		return safeWorkerRetirementBlockers(value)
 	}
