@@ -53,7 +53,7 @@ export function WorkerPresenceView({ value, worker, name, paused = false, reason
     onMouseEnter={event => { if (window.matchMedia('(hover: hover)').matches) event.currentTarget.open = true; }}
     onMouseLeave={event => { if (!event.currentTarget.contains(document.activeElement)) event.currentTarget.open = false; }}>
     <summary aria-label={`${name}: ${label}`} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) (event.currentTarget.parentElement as HTMLDetailsElement).open = true; }}>
-      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="currentColor">{paused ? <path d="M5 3h3.5v14H5zm6.5 0H15v14h-3.5z" /> : known ? <path d="M5 2.5 17 10 5 17.5z" /> : <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.8" />}</svg>
+      {paused ? 'Paused' : known ? 'Active' : 'Unknown'}
     </summary>
     <div className="worker-presence-details"><strong>{label}</strong>
       {paused && <p className="worker-presence-reason">{reason ? reason + (reasonTruncated ? '…' : '') : 'This worker is explicitly paused.'}</p>}

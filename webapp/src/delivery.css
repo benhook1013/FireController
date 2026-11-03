@@ -95,16 +95,18 @@
 
 .skeleton-hero .project-introduction-category .skeleton-ink{width:48%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink{width:95%;height:1.6em}.skeleton-hero .project-introduction-text .skeleton-ink:last-child{width:80%}.skeleton-hero .project-introduction-link .skeleton-ink{width:9em;height:1.6em}
 
-/* One icon occupies a fixed header corner without adding a status line. */
+/* One soft status badge occupies the header corner without adding a line. */
 .delivery-worker-heading{align-items:flex-start}
-.delivery-worker-heading:has(>.worker-presence)>h3{padding-inline-end:32px}
+.delivery-worker-heading:has(>.worker-presence)>h3{padding-inline-end:5.25rem}
 .delivery-worker-heading>.badge{align-self:center;flex:none;margin:0;padding:2px 6px;font-size:.7rem;line-height:1.2}
-.worker-presence{position:absolute;inset-block-start:0;inset-inline-end:0;width:24px;height:24px;margin:0}
-.worker-presence>summary{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:24px;padding:0;list-style:none;cursor:pointer;border-radius:3px;color:inherit}
+.worker-presence{position:absolute;inset-block-start:0;inset-inline-end:0;width:max-content;margin:0}
+.worker-presence>summary{position:relative;display:block;box-sizing:border-box;margin:0;padding:2px 8px;list-style:none;cursor:pointer;border:0;border-radius:20px;font-size:.785714rem;font-weight:650;line-height:1.454545;white-space:nowrap}
 .worker-presence>summary::-webkit-details-marker{display:none}
-.worker-presence>summary:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-.worker-presence>summary:hover{background:#ffffff26}
-.worker-presence>summary svg{display:block;flex:none}
+.worker-presence>summary:focus-visible{outline:2px solid var(--fc-header_text,#fff);outline-offset:2px}
+.worker-presence-active>summary{background:#d9f1e1;color:#174832}
+.worker-presence-paused>summary{background:#ffebbe;color:#6a4900}
+.worker-presence-unknown>summary{background:#ece7ea;color:#564e56}
+@media(pointer:coarse){.worker-presence>summary::after{content:"";position:absolute;inset:-10px -5px}}
 .delivery-lane:has(.worker-presence[open]){position:relative;overflow:visible;z-index:2}
 .worker-presence-details{position:absolute;inset-block-start:calc(100% + 6px);inset-inline-end:0;z-index:3;width:min(290px,calc(100vw - 64px));box-sizing:border-box;padding:10px 12px;border:1px solid var(--fc-surface_border,#d5d0cb);border-radius:4px;background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#252833);box-shadow:0 4px 12px #0003;font-size:.78rem;font-weight:400;line-height:1.5;overflow-wrap:anywhere}
 .worker-presence-details>strong{display:block;margin-bottom:6px}
