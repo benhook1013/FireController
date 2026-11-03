@@ -192,8 +192,17 @@ func TestUsageLifecycleSelectionRestartAdjudicationExternalAndMerge(t *testing.T
 	if current.Pull.State != "merged" || current.Pull.RunCounts != (reviews.ChannelRunCounts{Hosted: 1, CLI: 1}) || cliPublicationDetail(t, f, 2, captured.ID).Run.Fixed != 1 {
 		t.Fatal("automatic merge observation lost completed review history", current.Pull)
 	}
-	if count := attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE origin_kind='controller' AND recipient_worker_id='selection-worker'`); count != 1 {
-		t.Fatal("joined manual participation/restart/merge did not retain exactly one inbox notice", count)
+	// Native completion and the later merge are distinct notification events.
+	// Replays and observer/store restarts must preserve one of each, not suppress
+	// the ready result or deliver either event twice.
+	if count := attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE origin_kind='controller' AND recipient_worker_id='selection-worker'`); count != 2 {
+		t.Fatal("joined completion/restart/merge did not retain exactly two inbox notices", count)
+	}
+	if count := attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE origin_kind='controller' AND recipient_worker_id='selection-worker' AND body LIKE 'CodeRabbit CLI review results ready for PR #2.%' AND instr(body,?)>0 AND instr(body,?)>0`, "Evidence: "+captured.ID, "Operation: "+a.OperationID); count != 1 {
+		t.Fatal("original completed review did not retain exactly one bound ready notice", count)
+	}
+	if count := attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE origin_kind='controller' AND recipient_worker_id='selection-worker' AND body LIKE 'PR #2 was merged:%'`); count != 1 {
+		t.Fatal("merge observation did not retain exactly one terminal notice", count)
 	}
 	var queue reviews.QueueResponse
 	projectionRead(t, f, "/queue?view=recent", &queue)

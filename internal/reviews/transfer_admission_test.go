@@ -128,6 +128,44 @@ func TestReviewTransferHTTPApplyAndReplay(t *testing.T) {
 	}
 }
 
+// This ordinary-runtime gate is kept separate from instrumented atomicity
+// checks. It must exercise the maximum batch through the real HTTP deadline.
+func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
+	f := newAPIFixture(t)
+	req := transferAdmissionBatch(100)
+	preview := transferPreviewFor(t, f, req)
+	if preview.Counts != (TransferCounts{Pulls: 100, Runs: 200, Attempts: 200}) {
+		t.Fatal("maximum batch counts changed", preview.Counts)
+	}
+	apply := TransferApplyRequest{PreviewSHA256: preview.PreviewSHA256, Batch: req}
+	body := importJSON(t, apply)
+	if len(body) > 256<<10 {
+		t.Fatal("maximum fixture exceeds ordinary HTTP body budget")
+	}
+	started := time.Now()
+	response := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "maximum-ordinary-transfer", body)
+	elapsed := time.Since(started)
+	requireImportResponse(t, response, 201, "")
+	for table, want := range map[string]int{"review_current_pulls": 100, "review_current_runs": 200, "review_current_attempts": 200, "receipts": 1, "events": 1} {
+		if got := countRows(t, f.store, table); got != want {
+			t.Fatal("maximum HTTP batch not committed atomically", table, got, want)
+		}
+	}
+	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+	before := historyMigrationDatabaseDigest(t, f)
+	replay := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "maximum-ordinary-transfer", body)
+	requireImportResponse(t, replay, 201, "")
+	if replay.Body.String() != response.Body.String() || before != historyMigrationDatabaseDigest(t, f) {
+		t.Fatal("maximum HTTP replay changed receipt or retained state")
+	}
+	t.Logf("100 PRs, 200 runs and 200 attempts: HTTP apply=%s through ordinary core.Mutate deadline; replay retained exact receipt and state", elapsed)
+}
+
 func TestReviewTransferOrdinaryDeadlineRollsBackPublication(t *testing.T) {
 	f := newAPIFixture(t)
 	req := transferAdmissionBatch(2)

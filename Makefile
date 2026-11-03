@@ -48,7 +48,7 @@ test-budgets:
 		esac; \
 		for budget_test in $$budget_tests; do \
 		names="$$( $(GO) test -race=false -list "^$$budget_test$$" "$$package" )" || exit $$?; \
-		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf '%s\n' 'Ordinary runtime budget test was not discovered.' >&2; exit 1; }; \
+		printf '%s\n' "$$names" | grep -Fx -- "$$budget_test" >/dev/null || { printf 'Ordinary runtime budget test was not discovered: %s / %s\n' "$$package" "$$budget_test" >&2; exit 1; }; \
 		$(GO) test -race=false -v -count=1 -timeout=20m -run "^$$budget_test$$" "$$package" || exit $$?; \
 		done; \
 	done

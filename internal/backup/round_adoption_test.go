@@ -153,10 +153,13 @@ func TestRoundAdoptionInventoryResealedCorruptionRefused(t *testing.T) {
 }
 func TestRoundAdoptionInventoryVersionOnePredecessor(t *testing.T) {
 	f := newRestoreFixture(t)
-	for _, query := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `DROP TABLE review_round_controls`, reviewexec.RoundSchemaV1SQL()[0], `DROP TABLE review_round_completions`, reviewexec.RoundSchemaV1SQL()[4], `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
+	for _, query := range []string{`DROP TABLE review_round_adoptions`, `DELETE FROM metadata WHERE key='schema:review_round_adoption'`, `DROP TABLE review_round_controls`, reviewexec.RoundSchemaV1SQL()[0], `DROP TABLE review_round_changes`, reviewexec.RoundSchemaV1SQL()[1], `DROP TABLE review_round_completions`, reviewexec.RoundSchemaV1SQL()[4], `UPDATE metadata SET value='1' WHERE key='schema:review_rounds'`} {
 		if _, err := f.store.DB().Exec(query); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := reviewexec.ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("fixture did not reconstruct the canonical version-one round schema", err)
 	}
 	bundle := restoreBundle(t, f)
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {

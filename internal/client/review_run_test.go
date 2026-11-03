@@ -331,7 +331,10 @@ func TestReviewRunPostAcceptedFailureAndLostResponse(t *testing.T) {
 				if mutation {
 					_, err = c.RunReview(t.Context(), "key", selectionRequest(), 2)
 				} else {
-					_, err = c.WaitReviewSelection(t.Context(), runSelectionID, 2)
+					// This tests one immediate read's uncertainty boundary. Positive
+					// waits deliberately reconnect within their original budget;
+					// TestResultWaitReconnectKeepsOriginalReadAcrossRestart covers that.
+					_, err = c.WaitReviewSelection(t.Context(), runSelectionID, 0)
 				}
 				var failure *client.Error
 				if !errors.As(err, &failure) || failure.OutcomeUnknown != mutation || calls.Load() != 1 {

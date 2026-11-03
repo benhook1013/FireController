@@ -70,9 +70,9 @@ func enrollmentState(t *testing.T, f *attemptFixture) string {
 func assertEnrollmentDefault(t *testing.T, f *attemptFixture, pull int64, channel string) RoundControl {
 	t.Helper()
 	c := roundRead(t, f, pull, channel)
-	maximum, taper := int64(6), int64(3)
+	maximum, taper := int64(6), int64(2)
 	if channel == "hosted" {
-		maximum, taper = 3, 1
+		maximum = 3
 	}
 	if !c.Configured || c.Revision != 1 || c.Epoch != 1 || c.Minimum != 2 || c.Maximum != maximum || c.Taper != taper || c.Used != 0 || c.Dry != 0 || c.Closed || c.Tapered || c.OriginSource != "" {
 		t.Fatalf("incorrect new enrollment default %d/%s: %+v", pull, channel, c)

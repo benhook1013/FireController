@@ -92,6 +92,21 @@ class SelectionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 
+    def test_every_ordinary_budget_gate_names_an_existing_test_in_its_owner(self):
+        makefile = (ROOT / "Makefile").read_text()
+        declared = dict(re.findall(r"(?m)^([A-Z_]+_BUDGET_TEST) := (Test\w+)$", makefile))
+        owners = re.findall(r"internal/(\w+)\) budget_tests='([^']+)'", makefile)
+        selected = []
+        for package, variables in owners:
+            names = set()
+            for source in (ROOT / "internal" / package).glob("*_test.go"):
+                names.update(re.findall(r"(?m)^func (Test\w+)\(t \*testing\.T\)", source.read_text()))
+            for variable in re.findall(r"\$\((\w+)\)", variables):
+                self.assertIn(variable, declared)
+                self.assertIn(declared[variable], names, f"ordinary budget gate missing from internal/{package}")
+                selected.append(variable)
+        self.assertEqual(sorted(selected), sorted(declared))
+
     def test_workflow_has_every_slice_and_requires_each_independent_job(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         matrix = re.search(r"^        shard: \[([^\]]+)\]$", workflow, re.MULTILINE)

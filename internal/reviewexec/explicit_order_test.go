@@ -200,7 +200,7 @@ func TestExplicitOrderFinalGuardBypassesOnlyProgressionBothChannels(t *testing.T
 				f := newAttemptFixture(t)
 				explicitOrderConfigure(t, f)
 				a := explicitOrderAdmit(t, f, f.start(t, attemptProject, explicitOrderEnqueue(t, f, "order-final", channel, allow, 1)), channel)
-				predecessor := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 2, State: "open", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("c", 40), BaseRef: "main", ChangedFiles: 1}, ParentSHA: strings.Repeat("c", 40), ObservedAt: stamp()}
+				predecessor := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 2, State: "open", HeadSHA: strings.Repeat("b", 40), HeadRef: "parent-branch", BaseSHA: strings.Repeat("c", 40), BaseRef: "main", ChangedFiles: 1}, ParentSHA: strings.Repeat("c", 40), ObservedAt: stamp()}
 				if allow {
 					hostedAdmissionVerify(t, f, a, "", "")
 					hostedAdmissionVerify(t, f, a, "validation_failed", "", predecessor)

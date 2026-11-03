@@ -202,8 +202,15 @@ CREATE INDEX fixture_reply_fk ON inbox_messages(project_id,reply_to_message_id)`
 	// Keep several thousand conversations and replies in one project. Without
 	// bounded child-key lookups, the DROP/rebuild scans that entire project for
 	// each message and can exhaust the ordinary startup migration budget.
-	err = store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
+	// Synthetic population is not an ordinary background mutation: its 6000
+	// inserts can exceed that API's two-second budget under the race detector.
+	// Keep fixture construction separate from the unchanged migration deadline.
+	tx, err := store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(t.Context(), `
 WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000)
 INSERT INTO inbox_conversations SELECT 'p',printf('c%05d',x),printf('m%05d',2*x-1) FROM n;
 WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000)
@@ -218,9 +225,10 @@ INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fi
 SELECT value,'principal','p','message.send','r','retained-key','retained-fingerprint','{"id":"m00001"}' FROM metadata WHERE key='instance_id';
 INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
 VALUES('p','message.sent','m00001',1,'principal','{"id":"m00001"}','2026-11-02T00:00:00Z')`)
-		return err
-	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.DB().Exec(`DROP INDEX fixture_root_fk;DROP INDEX fixture_reply_fk`); err != nil {

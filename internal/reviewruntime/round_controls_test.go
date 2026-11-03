@@ -19,12 +19,12 @@ func runtimeRoundGrant(t *testing.T, f *cliDriverFixture, pull int64, channel st
 	}
 }
 
-func TestRoundControlsRealRunnerRepeatsCoveredHeadUntilThreeDryRounds(t *testing.T) {
+func TestRoundControlsRealRunnerRepeatsCoveredHeadUntilTwoDryRounds(t *testing.T) {
 	f := newCLIDriverFixture(t)
 	// Older native coverage remains evidence, but is not additional-round credit.
 	seedCLIDriverNativeCoverage(t, f, 2)
 	runtimeRoundGrant(t, f, 2, "cli", 8)
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 2; i++ {
 		op, a := f.prepareAdmit(t, 2, 1, fmt.Sprintf("additional-cli-%d", i))
 		result, err := f.driver.Dispatch(t.Context(), op, a, nil)
 		if err != nil || result.State != "completed" {
@@ -46,7 +46,7 @@ func TestRoundControlsRealRunnerRepeatsCoveredHeadUntilThreeDryRounds(t *testing
 			t.Fatal(err)
 		}
 		state, err := f.engine.ReadRoundControl(t.Context(), f.scope(t, f.writer, false), 2, "cli")
-		if err != nil || state.Used != int64(i) || state.Dry != int64(i) || state.Tapered != (i == 3) {
+		if err != nil || state.Taper != 2 || state.Used != int64(i) || state.Dry != int64(i) || state.Tapered != (i == 2) {
 			t.Fatal("actual native finalization did not count once", state, err)
 		}
 	}
@@ -54,8 +54,8 @@ func TestRoundControlsRealRunnerRepeatsCoveredHeadUntilThreeDryRounds(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines := strings.Split(strings.TrimSpace(string(before)), "\n"); len(lines) != 6 {
-		t.Fatal("required rounds did not make exactly three usage/review pairs", len(lines))
+	if lines := strings.Split(strings.TrimSpace(string(before)), "\n"); len(lines) != 4 {
+		t.Fatal("required rounds did not make exactly two usage/review pairs", len(lines))
 	}
 	_, err = f.engine.Enqueue(context.Background(), f.scope(t, f.writer, false), "after-taper", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: f.headSHA})
 	assertCoreErrorCode(t, err, "review_round_complete")
