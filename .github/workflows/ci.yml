@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
+# Share one budget across PRs and main; retain waiting runs instead of replacing them.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: firecontroller-ci
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   static:
@@ -43,7 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 20
+      # 16 race jobs + source, qualification and two native jobs = 20 runners.
+      max-parallel: 16
       matrix:
         shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
     steps:
