@@ -84,6 +84,13 @@ func completionNoticeCapture(t *testing.T, f *attemptFixture, a Attempt, complet
 
 func completionNoticeFixture(t *testing.T, channel string, complete bool) (*attemptFixture, Attempt, Receipt) {
 	t.Helper()
+	f, a := completionNoticeStartedFixture(t, channel)
+	a, evidence := completionNoticeCapture(t, f, a, complete)
+	return f, a, evidence
+}
+
+func completionNoticeStartedFixture(t *testing.T, channel string) (*attemptFixture, Attempt) {
+	t.Helper()
 	f := newAttemptFixture(t)
 	completionNoticeSchema(t, f)
 	admissionSQL(t, f, `INSERT INTO workers VALUES(?,?,?)`, attemptProject, "requester", "Requester")
@@ -98,9 +105,7 @@ func completionNoticeFixture(t *testing.T, channel string, complete bool) (*atte
 	if err != nil || json.Unmarshal(raw, &receipt) != nil || followingPreference(t, f, "requester", 2).Mode != "auto" {
 		t.Fatal("explicit requester was not retained as participant", err)
 	}
-	a := f.start(t, attemptProject, receipt)
-	a, evidence := completionNoticeCapture(t, f, a, complete)
-	return f, a, evidence
+	return f, f.start(t, attemptProject, receipt)
 }
 
 func completionNoticeCount(t *testing.T, f *attemptFixture) int {

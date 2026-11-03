@@ -16,6 +16,12 @@ When a native CLI or Hosted attempt completes with validated complete evidence, 
 
 The attempt transition, completion bookkeeping, notices and inbox events commit together. An immutable evidence-scoped key provides per-recipient deduplication; completion recovery after restart uses the original evidence and cannot duplicate a delivered notice. A message failure rolls back settlement so the same original completion can retry. Raw captures, provider trigger acknowledgments, queued requests, cooldowns, cancellations, incomplete results and other failure diagnostics do not produce a ready notice. Historical imports and enabling the native projection do not scan or notify old completions. Existing notice text remains immutable across upgrades, restart and exact replay; old notices are not rewritten or republished. Standalone execution journals without the native workspace remain independent of inbox delivery. No new polling, subscription or schema is required. Durable inbox availability does not guarantee that a host wakes an idle agent.
 
+## Capture needs attention
+
+A new native Hosted transition to `uncertain` with reason `hosted_finished_inventory_unproven` creates a durable inbox notice through the same participant, mute and retirement rules as ready results. The provider has finished, but the complete findings inventory cannot yet be verified. The notice identifies the original provider, admitted GitHub PR link and operation; it does not claim completion, supply findings/counts, free the reservation or grant another review.
+
+The capture-block transition and notice commit atomically. Original operation and reason identify the notice, so repeated observer passes, recovery reentry and restart cannot repeat it. A message failure rolls back the transition for normal original-action recovery. Ordinary waiting, cooldown, transient observation errors, CLI uncertainty and other reasons remain quiet. Deployment does not scan or notify historical blocks. If later recovery proves a complete result, its normal evidence-scoped ready notice still follows; the earlier attention message remains an immutable record of that earlier event.
+
 ## Optional preference controls
 
 No subscription step is needed for ordinary explicit work. For deliberate changes, read the preference revision first:

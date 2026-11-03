@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func (e *Engine) sampleAttemptTime() time.Time {
@@ -399,6 +401,11 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
 		}
+		if o.Channel == "hosted" && state == "uncertain" && reason == "hosted_finished_inventory_unproven" {
+			if err = e.publishCaptureAttentionNotice(ctx, tx, o, a); err != nil {
+				return err
+			}
+		}
 		if state == "completed" {
 			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
 				return err
@@ -422,6 +429,25 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 		e.notifyOperation(result.OperationID)
 	}
 	return result, err
+}
+
+// Only an actionable, finished-but-unverified Hosted result enters this path.
+// Original operation/reason identity makes recovery and observer reentry quiet.
+func (e *Engine) publishCaptureAttentionNotice(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt) error {
+	if e.publishQueue == nil {
+		return nil
+	}
+	if attempt.Anchor == nil || attempt.ProjectID != operation.ProjectID || attempt.Anchor.PullNumber != operation.PullNumber {
+		return adjudicationStorageError()
+	}
+	label, link, ok := completedReviewContext(attempt.Provider, attempt.Anchor.Repository, operation.PullNumber)
+	if !ok {
+		return adjudicationStorageError()
+	}
+	const reason = "hosted_finished_inventory_unproven"
+	body := fmt.Sprintf("%s Hosted capture needs attention for PR #%d.\nThe provider has finished, but the complete findings inventory could not be verified. The review remains unresolved.\nGitHub: %s\nOperation: %s\nReason: %s", label, operation.PullNumber, link, operation.ID, reason)
+	scope := core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+	return reviews.PublishFollowerNotice(ctx, tx, scope, operation.PullNumber, "review-capture-attention:"+operation.ID+":"+reason, body)
 }
 
 func allowedTransition(from, to string) bool {
