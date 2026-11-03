@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -384,8 +385,29 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	daemon.stop(t)
 	firstObserver.awaitCancelled(t, ctx)
 	beforeRestart := readUpgradeState(t, ctx, data)
+	// Explicit selection follows only the PR whose native child was admitted.
+	// Inspect the stopped daemon's database read-only, without adding API traffic.
+	if initial.counts["review_pr_followers"] != 0 || beforeRestart.counts["review_pr_followers"] != 1 {
+		t.Fatal("selection created missing or extra notification followers")
+	}
+	followerURL := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(data, "firecontroller.sqlite")), RawQuery: "mode=ro"}
+	followerDB, err := sql.Open("sqlite", followerURL.String())
+	if err != nil {
+		t.Fatal("selection follower snapshot unavailable")
+	}
+	var followerProject, followerWorker, followerMode, followerUpdated string
+	var followerPull, followerRevision int64
+	followerErr := followerDB.QueryRowContext(ctx, `SELECT project_id,pull_number,worker_id,mode,revision,updated_at FROM review_pr_followers`).Scan(&followerProject, &followerPull, &followerWorker, &followerMode, &followerRevision, &followerUpdated)
+	followerCloseErr := followerDB.Close()
+	followerAt, followerTimeErr := time.Parse(time.RFC3339Nano, followerUpdated)
+	if followerErr != nil || followerCloseErr != nil || followerProject != project || followerWorker != worker || followerPull != 3 || followerMode != "auto" || followerRevision != 1 || followerTimeErr != nil || followerAt.IsZero() {
+		t.Fatal("selection did not retain exactly its acting worker's PR3 auto-follow; held PR2 must have no follower")
+	}
 	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 1, []int64{3, 2}, false)
 	afterConfig := readUpgradeState(t, ctx, data)
+	if afterConfig.tables["review_pr_followers"] != beforeRestart.tables["review_pr_followers"] || afterConfig.counts["review_pr_followers"] != 1 {
+		t.Fatal("configuration edit changed the original selection's follower")
+	}
 	secondObserver := provider.holdNextObserver(t)
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	secondObserver.awaitStarted(t, ctx)
@@ -427,6 +449,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
 	changed := map[string]bool{"review_front_frames": true, "review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	// The exact one-row follower delta was asserted above; final deep equality
+	// still protects it through configuration changes, replay, reads and restart.
+	changed["review_pr_followers"] = true
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
