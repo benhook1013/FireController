@@ -42,7 +42,7 @@ func TestReviewRoundsReadStrictBindingAndShape(t *testing.T) {
 				case "wrong-channel":
 					value.Channel = "hosted"
 				case "invalid-taper":
-					value.Taper = 1
+					value.Taper = 0
 				case "invalid-counts":
 					value.Dry = 5
 				case "invalid-latch":
@@ -103,6 +103,11 @@ func TestReviewRoundsMutationValidationAndUnknownResponse(t *testing.T) {
 			if request.Minimum != nil || request.Maximum != nil {
 				t.Error("close included grant bounds")
 			}
+		} else if request.Action == "taper" {
+			outcome = "taper_updated"
+			if request.Taper == nil || *request.Taper != 2 || request.Minimum != nil || request.Maximum != nil {
+				t.Error("taper lost threshold or included grant bounds")
+			}
 		}
 		receipt := client.ReviewRoundControlReceipt{PullNumber: 2, Channel: "cli", Revision: 4, Epoch: 2, Outcome: outcome}
 		switch currentMode {
@@ -110,6 +115,10 @@ func TestReviewRoundsMutationValidationAndUnknownResponse(t *testing.T) {
 			receipt.PullNumber = 3
 		case "revision":
 			receipt.Revision = 3
+		case "older-revision":
+			receipt.Revision = 2
+		case "future-revision":
+			receipt.Revision = 5
 		case "outcome":
 			receipt.Outcome = "closed"
 		case "lost":
@@ -180,6 +189,21 @@ func TestReviewRoundsMutationValidationAndUnknownResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, m := range []string{"valid", "revision", "older-revision", "future-revision", "outcome", "lost"} {
+		mode.Store(m)
+		_, err = c.ConfigureReviewRoundControl(context.Background(), 2, "cli", "round-key", client.ConfigureReviewRoundControlRequest{ExpectedRevision: roundInt(3), Action: "taper", Taper: roundInt(2)})
+		if m == "valid" || m == "revision" {
+			if err != nil {
+				t.Fatal("valid taper update/no-op receipt refused", m, err)
+			}
+		} else {
+			var failure *client.Error
+			if !errors.As(err, &failure) || !failure.OutcomeUnknown {
+				t.Fatal("invalid taper receipt lost mutation uncertainty", m, err)
+			}
+		}
+	}
+	mode.Store("valid")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	before := calls.Load()
@@ -187,6 +211,53 @@ func TestReviewRoundsMutationValidationAndUnknownResponse(t *testing.T) {
 	var failure *client.Error
 	if !errors.As(err, &failure) || failure.OutcomeUnknown || calls.Load() != before {
 		t.Fatal("unsent cancellation became uncertain", err)
+	}
+}
+
+func TestReviewRoundsTaperMutationStrictFields(t *testing.T) {
+	for _, value := range []int64{1, 2, 1000} {
+		if err := client.ValidateReviewRoundControlRequest(client.ConfigureReviewRoundControlRequest{ExpectedRevision: roundInt(4), Action: "taper", Taper: roundInt(value)}); err != nil {
+			t.Fatal("valid threshold refused", value, err)
+		}
+	}
+	for _, request := range []client.ConfigureReviewRoundControlRequest{
+		{ExpectedRevision: roundInt(4), Action: "taper"},
+		{ExpectedRevision: roundInt(4), Action: "taper", Taper: roundInt(0)},
+		{ExpectedRevision: roundInt(4), Action: "taper", Taper: roundInt(1001)},
+		{ExpectedRevision: roundInt(4), Action: "taper", Taper: roundInt(2), Minimum: roundInt(0)},
+		{ExpectedRevision: roundInt(4), Action: "taper", Taper: roundInt(2), Maximum: roundInt(8)},
+		{ExpectedRevision: roundInt(4), Action: "grant", Taper: roundInt(2), Minimum: roundInt(0), Maximum: roundInt(8)},
+		{ExpectedRevision: roundInt(4), Action: "close", Taper: roundInt(2)},
+	} {
+		if client.ValidateReviewRoundControlRequest(request) == nil {
+			t.Fatal("invalid threshold mutation accepted", request)
+		}
+	}
+}
+
+func TestReviewRoundsReadCurrentAndHistoricalTaperWithoutInventingOrigin(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, threshold := range []int64{0, 1, 2, 3, 1000, 1001} {
+			value := roundControlSample()
+			value.Channel, value.Taper = channel, threshold
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(value)
+			}))
+			got, err := newClient(t, server).ReviewRoundControl(context.Background(), 2, channel)
+			server.Close()
+			if threshold >= 1 && threshold <= 1000 {
+				if err != nil || got != value {
+					t.Fatal("current/historical threshold altered or refused", channel, threshold, got, err)
+				}
+			} else {
+				checkError(t, err, "invalid_response")
+			}
+		}
 	}
 }
 
@@ -239,7 +310,7 @@ func TestReviewRoundsReadUnboundedSafeCounters(t *testing.T) {
 }
 
 func TestReviewRoundsCumulativeFiniteBoundsAndAcceptedReset(t *testing.T) {
-	for _, mode := range []string{"cumulative", "safe-edge", "accepted-reset", "legacy-carried", "unsafe-maximum", "minimum-over-maximum", "used-over-maximum", "unproven-taper"} {
+	for _, mode := range []string{"cumulative", "safe-edge", "accepted-reset", "legacy-carried", "changed-origin-taper", "unsafe-maximum", "minimum-over-maximum", "used-over-maximum", "unproven-taper"} {
 		t.Run(mode, func(t *testing.T) {
 			value := roundControlSample()
 			value.Closed = false
@@ -255,6 +326,9 @@ func TestReviewRoundsCumulativeFiniteBoundsAndAcceptedReset(t *testing.T) {
 				if mode == "legacy-carried" {
 					value.Tapered = true
 				}
+			case "changed-origin-taper":
+				value.OriginSource, value.OriginKey, value.OriginSHA256 = "original-controller", "2-cli", strings.Repeat("a", 64)
+				value.InitialDry, value.Taper = 2, 1
 			case "unsafe-maximum":
 				value.Maximum = 9007199254740992
 			case "minimum-over-maximum":
@@ -277,7 +351,7 @@ func TestReviewRoundsCumulativeFiniteBoundsAndAcceptedReset(t *testing.T) {
 			defer server.Close()
 			got, err := newClient(t, server).ReviewRoundControl(context.Background(), 2, "cli")
 			switch mode {
-			case "cumulative", "safe-edge", "accepted-reset", "legacy-carried":
+			case "cumulative", "safe-edge", "accepted-reset", "legacy-carried", "changed-origin-taper":
 				if err != nil || got != value {
 					t.Fatal("lost valid cumulative or carried control", got, err)
 				}

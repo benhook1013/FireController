@@ -20,6 +20,11 @@ func TestReviewRoundsCLIInvalidBeforeCredentials(t *testing.T) {
 	for _, suffix := range [][]string{{}, {"--max", "0"}, {"--max", "1001"}, {"--max", "03"}, {"--max", "3", "--min", "4"}, {"--exact", "0"}, {"--exact", "2", "--min", "0"}, {"--exact", "2", "--max", "2"}, {"--max", "2", "--max", "3"}, {"--max", "2", "--expected-revision", "1"}, {"--max", "2", "--worker", "other"}, {"--exact", "+2"}, {"--exact", "2", "extra"}} {
 		cases = append(cases, append(append([]string{}, base...), suffix...))
 	}
+	taper := []string{"reviews", "rounds", "taper", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--key", "taper-key"}
+	for _, suffix := range [][]string{{}, {"--taper", "0"}, {"--taper", "1001"}, {"--taper", "02"}, {"--taper", "+2"}, {"--taper", "2", "--min", "0"}, {"--taper", "2", "--max", "8"}, {"--taper", "2", "--exact", "2"}, {"--taper", "2", "--taper", "3"}} {
+		cases = append(cases, append(append([]string{}, taper...), suffix...))
+	}
+	cases = append(cases, append(append([]string{}, base...), "--max", "8", "--taper", "2"))
 	for _, args := range cases {
 		code, out, stderr := run(append([]string{"--profiles-file", "/unavailable/round-profile"}, args...), map[string]string{"FC_PROFILE": "missing"})
 		if code != cli.ExitUsage || out != "" || !strings.Contains(stderr, "invalid_arguments") {
@@ -60,11 +65,11 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 		return value
 	}
 	initial := read("cli")
-	if !initial.Configured || initial.Revision != 1 || initial.Epoch != 1 || initial.Minimum != 2 || initial.Maximum != 6 || initial.Taper != 3 || initial.Used != 0 || initial.Dry != 0 {
+	if !initial.Configured || initial.Revision != 1 || initial.Epoch != 1 || initial.Minimum != 2 || initial.Maximum != 6 || initial.Taper != 2 || initial.Used != 0 || initial.Dry != 0 {
 		t.Fatal("new CLI enrollment lost product defaults", initial)
 	}
 	initialHosted := read("hosted")
-	if !initialHosted.Configured || initialHosted.Revision != 1 || initialHosted.Minimum != 2 || initialHosted.Maximum != 3 || initialHosted.Taper != 1 {
+	if !initialHosted.Configured || initialHosted.Revision != 1 || initialHosted.Minimum != 2 || initialHosted.Maximum != 3 || initialHosted.Taper != 2 {
 		t.Fatal("new Hosted enrollment lost product defaults", initialHosted)
 	}
 	args := []string{"reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expected-revision", "1", "--max", "8", "--key", "round-grant"}
@@ -78,7 +83,7 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 		t.Fatal("grant retry changed result")
 	}
 	state := read("cli")
-	if !state.Configured || state.Revision != 2 || state.Epoch != 1 || state.Minimum != 0 || state.Maximum != 8 || state.Taper != 3 {
+	if !state.Configured || state.Revision != 2 || state.Epoch != 1 || state.Minimum != 0 || state.Maximum != 8 || state.Taper != 2 {
 		t.Fatal("bad grant state", state)
 	}
 	closeArgs := []string{"reviews", "rounds", "close", "--pr", "2", "--channel", "cli", "--expected-revision", "2", "--key", "round-close"}
@@ -91,6 +96,20 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 	if closed["outcome"] != "closed" || closed["revision"] != float64(3) || !read("cli").Closed {
 		t.Fatal("close recovery failed")
 	}
+	taperArgs := []string{"reviews", "rounds", "taper", "--pr", "2", "--channel", "cli", "--expected-revision", "3", "--taper", "1", "--key", "round-taper"}
+	tapered := roundSuccess(t, path, "builder", taperArgs...)
+	if tapered["outcome"] != "taper_updated" || tapered["revision"] != float64(4) || encodeString(tapered) != encodeString(roundSuccess(t, path, "builder", taperArgs...)) {
+		t.Fatal("taper update or exact replay changed receipt", tapered)
+	}
+	current := read("cli")
+	if current.Taper != 1 || !current.Closed || current.Minimum != state.Minimum || current.Maximum != state.Maximum || current.Used != state.Used || current.Dry != state.Dry || current.Epoch != state.Epoch {
+		t.Fatal("taper changed closure, grants or progress", current)
+	}
+	noopArgs := []string{"reviews", "rounds", "taper", "--pr", "2", "--channel", "cli", "--expected-revision", "4", "--taper", "1", "--key", "round-taper-noop"}
+	noop := roundSuccess(t, path, "builder", noopArgs...)
+	if noop["outcome"] != "taper_updated" || noop["revision"] != float64(4) || encodeString(noop) != encodeString(roundSuccess(t, path, "builder", noopArgs...)) || read("cli") != current {
+		t.Fatal("same taper changed control or exact replay", noop)
+	}
 	if hosted := read("hosted"); hosted != initialHosted {
 		t.Fatal("CLI controls changed Hosted defaults", hosted)
 	}
@@ -99,7 +118,7 @@ func TestReviewRoundsCLIRealHTTPGrantReadCloseAndReplay(t *testing.T) {
 		t.Fatal(exact)
 	}
 	hosted := read("hosted")
-	if hosted.Minimum != 2 || hosted.Maximum != 2 || hosted.Taper != 1 {
+	if hosted.Minimum != 2 || hosted.Maximum != 2 || hosted.Taper != 2 {
 		t.Fatal("exact did not bind bounds")
 	}
 	if f.resolverHit.Load() != beforeProvider {

@@ -22,6 +22,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			f := roundFixture(t)
 			roundGrant(t, f, 2, "cli", 0, 0, 8, "initial")
+			retainHistoricalRoundTaper(t, f, 2, "cli")
 			for i := 0; i < 3; i++ {
 				a, evidence := roundCapture(t, f, i, false)
 				roundFinalize(t, f, a, evidence, i, false)
@@ -103,6 +104,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 func TestRoundGrantReopeningIncludesAlreadyCapturedRound(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "initial")
+	retainHistoricalRoundTaper(t, f, 2, "cli")
 	late, evidence := roundCapture(t, f, 0, false)
 	for i := 1; i <= 3; i++ {
 		a, id := roundCapture(t, f, i, false)

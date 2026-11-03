@@ -102,7 +102,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_start` | Required channel/idempotency_key; optional expected_pull_number, expected_configuration_revision and wait_seconds (0–900/default 2). One explicit channel-front selection/request; no unattended successor. |
 | `review_selection_read` | Required selection_id; optional wait_seconds (0–900/default 0). One retained selection and original linked operation; no provider action. |
 | `review_rounds_read` | Required pull_number and channel; compact stored additional-round progress and closure. No provider calls or readiness verdict. |
-| `review_rounds_configure` | Project-writer grant/close with pull_number, channel, expected_revision, action and idempotency_key. Grant requires minimum/maximum; close omits both. Changes local controls without dispatching reviews. |
+| `review_rounds_configure` | Project-writer grant/close/taper with pull_number, channel, expected_revision, action and idempotency_key. Grant requires minimum/maximum; close omits both; taper requires taper (1-1000) and omits bounds. Taper changes preserve grants, streak, epoch and explicit closure. Changes local controls without dispatching reviews. |
 | `review_evidence_read` | Required evidence_id; explicit full retained native capture and parsed findings, excluding raw diagnostics. |
 | `review_adjudication_read` | Required evidence_id; current guarded decisions and fix references without repeating finding text. |
 | `review_findings_decide` | Required evidence_id, expected_revision, explicit items (1–100 unique indices, dispositions, reasons and applicable route guards), idempotency_key; atomic single-revision batch, no implicit finalization. |

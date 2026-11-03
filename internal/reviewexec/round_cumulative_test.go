@@ -30,7 +30,7 @@ func seedLegacyRoundGrant(t *testing.T, f *attemptFixture, pull int64, channel s
 		if created == "" {
 			created = at
 		}
-		c := roundRecord{RoundControl: RoundControl{ProjectID: scope.ProjectID, PullNumber: pull, Channel: channel, Configured: true, Revision: revision + 1, Epoch: prior.Epoch + 1, Minimum: minimum, Maximum: maximum, Taper: roundTaper(channel), ActorID: scope.PrincipalID, CreatedAt: created, UpdatedAt: at}, grantRevision: revision + 1}
+		c := roundRecord{RoundControl: RoundControl{ProjectID: scope.ProjectID, PullNumber: pull, Channel: channel, Configured: true, Revision: revision + 1, Epoch: prior.Epoch + 1, Minimum: minimum, Maximum: maximum, Taper: historicalRoundTaper(channel), ActorID: scope.PrincipalID, CreatedAt: created, UpdatedAt: at}, grantRevision: revision + 1}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,?,?,'grant',?,'')`, c.ProjectID, pull, channel, c.Revision, c.Epoch, encoded(c.RoundControl)); err != nil {
 			return err
 		}
@@ -134,6 +134,7 @@ func TestRoundCumulativeLateOriginalRevisionBeyondItsOldCap(t *testing.T) {
 func TestRoundCumulativeAcceptedAfterClosureResetsEffectiveTaper(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "first")
+	retainHistoricalRoundTaper(t, f, 2, "cli")
 	late, evidence := roundCapture(t, f, 0, true)
 	for i := 1; i <= 3; i++ {
 		a, id := roundCapture(t, f, i, false)
@@ -191,7 +192,7 @@ func TestRoundCumulativeInitializerOnlyCreatesAbsentRule(t *testing.T) {
 		return initializeRoundControl(ctx, tx, scope, 2, "hosted", 2, 3)
 	})
 	c := roundRead(t, f, 2, "hosted")
-	if c.Minimum != 2 || c.Maximum != 3 || c.Taper != 1 || c.Epoch != 1 {
+	if c.Minimum != 2 || c.Maximum != 3 || c.Taper != 2 || c.Epoch != 1 {
 		t.Fatal("default helper lost supplied rule", c)
 	}
 	var body string
@@ -313,6 +314,7 @@ func TestRoundCumulativeIncompleteTerminalCaptureDoesNotRetainCapacity(t *testin
 func TestRoundCumulativeStoppedSettingsCannotBecomeOriginalDispatchGrant(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "first")
+	retainHistoricalRoundTaper(t, f, 2, "cli")
 	for i := 0; i < 3; i++ {
 		a, id := roundCapture(t, f, i, false)
 		roundFinalize(t, f, a, id, i, false)

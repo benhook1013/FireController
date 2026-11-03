@@ -18,6 +18,16 @@ func cumulativeTapered(c RoundControl) bool {
 	return c.Used >= c.Minimum && (c.Dry >= c.Taper || c.InitiallyTapered && c.Dry-c.Used == c.InitialDry)
 }
 
+// A deliberate threshold change requires the retained streak itself to meet
+// that threshold. Historical imported stopping proof remains immutable but
+// does not stand in for the newly selected clean-round target.
+func effectiveRoundTapered(c roundRecord) bool {
+	if c.taperSet {
+		return c.Used >= c.Minimum && c.Dry >= c.Taper
+	}
+	return cumulativeTapered(c.RoundControl)
+}
+
 // cumulativeLegacyDry corrects the legacy frozen streak projection exactly once
 // on an explicit format conversion. Only immutable, already-counted completions
 // participate; completion credit, imported baseline and history are unchanged.
@@ -131,4 +141,10 @@ func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, e
 			return count, nil
 		}
 	}
+}
+
+// Original adoption carries earned progress; only a later explicit grant asks
+// for another completion before the preserved streak may stop discovery again.
+func roundTaperBoundary(bound RoundControl, used int64) bool {
+	return bound.Tapered || used > bound.Used || bound.Revision == 1 && hasRoundOrigin(bound)
 }

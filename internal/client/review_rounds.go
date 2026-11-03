@@ -42,6 +42,7 @@ type ConfigureReviewRoundControlRequest struct {
 	Action           string `json:"action"`
 	Minimum          *int64 `json:"minimum,omitempty"`
 	Maximum          *int64 `json:"maximum,omitempty"`
+	Taper            *int64 `json:"taper,omitempty"`
 }
 
 type ReviewRoundControlReceipt struct {
@@ -58,11 +59,15 @@ func ValidateReviewRoundControlRequest(r ConfigureReviewRoundControlRequest) err
 	}
 	switch r.Action {
 	case "grant":
-		if r.Minimum == nil || r.Maximum == nil || *r.Maximum < 1 || *r.Maximum > 1000 || *r.Minimum < 0 || *r.Minimum > *r.Maximum {
+		if r.Taper != nil || r.Minimum == nil || r.Maximum == nil || *r.Maximum < 1 || *r.Maximum > 1000 || *r.Minimum < 0 || *r.Minimum > *r.Maximum {
 			return mutationValidation()
 		}
 	case "close":
-		if r.Minimum != nil || r.Maximum != nil {
+		if r.Minimum != nil || r.Maximum != nil || r.Taper != nil {
+			return mutationValidation()
+		}
+	case "taper":
+		if r.Minimum != nil || r.Maximum != nil || r.Taper == nil || *r.Taper < 1 || *r.Taper > 1000 {
 			return mutationValidation()
 		}
 	default:
@@ -92,9 +97,8 @@ func (c *Client) validRoundControl(r ReviewRoundControl, pull int64, channel str
 	if !r.Configured {
 		return r == (ReviewRoundControl{ProjectID: r.ProjectID, PullNumber: pull, Channel: channel})
 	}
-	taper := int64(3)
-	if channel == "hosted" {
-		taper = 1
+	if r.Taper < 1 || r.Taper > 1000 {
+		return false
 	}
 	origin := r.OriginSource != "" || r.OriginKey != "" || r.OriginSHA256 != ""
 	maximumMinimum := int64(1)
@@ -102,11 +106,11 @@ func (c *Client) validRoundControl(r ReviewRoundControl, pull int64, channel str
 		text := func(s string) bool {
 			return s != "" && s == strings.TrimSpace(s) && len(s) <= 200 && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
 		}
-		if !text(r.OriginSource) || !text(r.OriginKey) || !controlHex(r.OriginSHA256, 64) || r.InitialDry < 0 || r.InitialDry > 1000 || r.Taper < 1 || r.Taper > 1000 || r.InitialDry >= r.Taper && !r.InitiallyTapered {
+		if !text(r.OriginSource) || !text(r.OriginKey) || !controlHex(r.OriginSHA256, 64) || r.InitialDry < 0 || r.InitialDry > 1000 {
 			return false
 		}
 		maximumMinimum = 0
-	} else if r.MaximumUnbounded || r.InitialDry != 0 || r.InitiallyTapered || r.Taper != taper {
+	} else if r.MaximumUnbounded || r.InitialDry != 0 || r.InitiallyTapered {
 		return false
 	}
 	return r.Revision >= 1 && r.Epoch >= 1 && r.Epoch <= r.Revision && r.Minimum >= 0 && r.Used >= 0 && r.Used <= 9007199254740991 && r.Dry >= 0 && r.Dry <= 9007199254740991 && r.Dry <= r.Used+r.InitialDry && (r.MaximumUnbounded && r.Maximum == 0 && r.Minimum <= 9007199254740991 || !r.MaximumUnbounded && r.Maximum >= maximumMinimum && r.Maximum <= 9007199254740991 && r.Minimum <= r.Maximum && r.Used <= r.Maximum) && (!r.Tapered || r.Used >= r.Minimum && (r.InitiallyTapered || r.Dry >= r.Taper)) && validID(r.ActorID) && controlTime(r.CreatedAt) && controlTime(r.UpdatedAt)
@@ -130,8 +134,11 @@ func (c *Client) ConfigureReviewRoundControl(ctx context.Context, pull int64, ch
 	outcome := "granted"
 	if input.Action == "close" {
 		outcome = "closed"
+	} else if input.Action == "taper" {
+		outcome = "taper_updated"
 	}
-	if result.PullNumber != pull || result.Channel != channel || result.Revision != *input.ExpectedRevision+1 || result.Epoch < 1 || result.Epoch > result.Revision || result.Outcome != outcome {
+	validRevision := result.Revision == *input.ExpectedRevision+1 || input.Action == "taper" && result.Revision == *input.ExpectedRevision
+	if result.PullNumber != pull || result.Channel != channel || !validRevision || result.Epoch < 1 || result.Epoch > result.Revision || result.Outcome != outcome {
 		return ReviewRoundControlReceipt{}, unknownMutation("invalid_response", "The round-control receipt was invalid; its outcome is unknown.", http.StatusOK)
 	}
 	return result, nil

@@ -17,6 +17,7 @@ func roundControlArguments(name string, data json.RawMessage) (arguments, error)
 		Action           string `json:"action,omitempty"`
 		Minimum          *int64 `json:"minimum,omitempty"`
 		Maximum          *int64 `json:"maximum,omitempty"`
+		Taper            *int64 `json:"taper,omitempty"`
 	}
 	if strictjson.Decode(data, &in) != nil || in.PullNumber == nil || *in.PullNumber < 1 || *in.PullNumber > 2147483647 || (in.Channel != "hosted" && in.Channel != "cli") {
 		return args, invalidArguments()
@@ -30,7 +31,7 @@ func roundControlArguments(name string, data json.RawMessage) (arguments, error)
 		return args, nil
 	}
 	args.key = in.Key
-	args.roundControl = client.ConfigureReviewRoundControlRequest{ExpectedRevision: in.ExpectedRevision, Action: in.Action, Minimum: in.Minimum, Maximum: in.Maximum}
+	args.roundControl = client.ConfigureReviewRoundControlRequest{ExpectedRevision: in.ExpectedRevision, Action: in.Action, Minimum: in.Minimum, Maximum: in.Maximum, Taper: in.Taper}
 	if !validKey(in.Key) || client.ValidateReviewRoundControlRequest(args.roundControl) != nil {
 		return arguments{}, invalidArguments()
 	}
@@ -45,6 +46,6 @@ func roundControlDefinitions() []definition {
 	}
 	return []definition{
 		{"review_rounds_read", "Read one PR/channel's local additional-round allowance, dry streak and explicit closure. No provider work or merge-readiness verdict.", schema(map[string]any{"pull_number": pull, "channel": channel}, "pull_number", "channel")},
-		{"review_rounds_configure", "Project write permission: grant additional rounds or close one PR/channel, using its current revision and an explicit retained idempotency key. Every grant reopens discovery, preserving the earned streak and requested bounds; the next eligible completion evaluates taper again. Includes already underway/unfinalized work. Grant requires minimum and maximum; close omits both. No provider dispatch or automatic retry.", schema(map[string]any{"pull_number": pull, "channel": channel, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "action": map[string]any{"type": "string", "enum": []string{"grant", "close"}}, "minimum": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000}, "maximum": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}, "pull_number", "channel", "expected_revision", "idempotency_key", "action")},
+		{"review_rounds_configure", "Project write permission: grant additional rounds, close a channel or change its taper threshold, using its current revision and an explicit retained idempotency key. Every grant reopens discovery, preserving the earned streak and requested bounds; the next eligible completion evaluates taper again. Includes already underway/unfinalized work. Grant requires minimum and maximum; close omits both. Taper requires taper (1-1000) and omits bounds, preserving grants, streak, epoch and explicit closure. No provider dispatch or automatic retry.", schema(map[string]any{"pull_number": pull, "channel": channel, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "action": map[string]any{"type": "string", "enum": []string{"grant", "close", "taper"}}, "minimum": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000}, "maximum": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}, "taper": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}, "pull_number", "channel", "expected_revision", "idempotency_key", "action")},
 	}
 }

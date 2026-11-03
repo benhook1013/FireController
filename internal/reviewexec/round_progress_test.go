@@ -83,10 +83,10 @@ func TestRoundProgressStoredFactsAndCompactHTTPWithoutCapabilities(t *testing.T)
 		}
 	}
 	hosted, cli := result.Items[1].Channels[0], result.Items[1].Channels[1]
-	if !hosted.Configured || hosted.Maximum != 2 || hosted.Taper != 1 || hosted.Closed || hosted.Pending != 0 {
+	if !hosted.Configured || hosted.Maximum != 2 || hosted.Taper != 2 || hosted.Closed || hosted.Pending != 0 {
 		t.Fatal("hosted allowance changed", hosted)
 	}
-	if !cli.Configured || cli.Revision != 2 || cli.Epoch != 1 || !cli.Closed || cli.Minimum != 1 || cli.Maximum != 4 || cli.Taper != 3 || cli.Used != 1 || cli.Dry != 1 || cli.Tapered || cli.Pending != 0 {
+	if !cli.Configured || cli.Revision != 2 || cli.Epoch != 1 || !cli.Closed || cli.Minimum != 1 || cli.Maximum != 4 || cli.Taper != 2 || cli.Used != 1 || cli.Dry != 1 || cli.Tapered || cli.Pending != 0 {
 		t.Fatal("native consumed/closed allowance changed", cli)
 	}
 	for _, private := range []string{"actor_id", "origin_", "capability", "evidence", "operation_id", "source", "ready", "coverage"} {

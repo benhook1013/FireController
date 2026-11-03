@@ -695,6 +695,7 @@ func TestSchedulingDependentHeldChildReleasesAfterParentTapersAtSameHead(t *test
 	// Parent is deliberately reopened after selection but before final dispatch.
 	// Its comparison and B's binding stay unchanged throughout this scenario.
 	roundGrant(t, f, 2, "hosted", 0, 1, 2, "parent-needs-one-more")
+	retainHistoricalRoundTaper(t, f, 2, "hosted")
 	a := f.start(t, attemptProject, Receipt{ID: child.ID})
 	anchor := attemptAnchor(attemptProject, 4)
 	anchor.CandidateSHA = strings.Repeat("e", 40)

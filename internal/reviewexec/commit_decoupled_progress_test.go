@@ -94,7 +94,7 @@ func TestCommitDecoupledProgressPreservesExhaustionAndCleanTaper(t *testing.T) {
 		tapered bool
 	}{
 		{"exhausted_without_taper", 1, 1, false},
-		{"clean_taper_before_maximum", 5, 3, true},
+		{"clean_taper_before_maximum", 5, 2, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := roundFixture(t)

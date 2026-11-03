@@ -219,7 +219,7 @@ The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` comm
 
 ## Per-PR review round controls
 
-The [round-control guide](review-round-controls.md#bound-commands-and-api) owns administrator `fc reviews rounds read|grant|close`, additional minimum/maximum/exact semantics, MCP arguments and exact-key recovery. These are compact local operations; granting or closing a channel does not itself start or cancel provider work.
+The [round-control guide](review-round-controls.md#bound-commands-and-api) owns administrator `fc reviews rounds read|grant|close|taper`, additional minimum/maximum/exact semantics, MCP arguments and exact-key recovery. These are compact local operations; granting, closing or changing taper does not itself start or cancel provider work.
 
 ## Start the next review
 

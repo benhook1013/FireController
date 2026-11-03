@@ -44,11 +44,11 @@ func seedPredecessorExecutionConfiguration(t *testing.T, f *restoreFixture, scop
 	}
 }
 
-func TestCumulativeRoundInventoryV4AndLegacyV3PreserveHistoryAndCompletions(t *testing.T) {
-	for _, version := range []int{4, 3} {
-		t.Run(map[int]string{4: "cumulative-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
+func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndCompletions(t *testing.T) {
+	for _, version := range []int{5, 4, 3} {
+		t.Run(map[int]string{5: "current-v5", 4: "frozen-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
 			f := roundInventoryFixture(t, false)
-			if version == 4 {
+			if version >= 4 {
 				e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}, {ID: "bundle-cli", Provider: "coderabbit", Account: "cli-account", Channels: []string{"cli"}}})
 				if err != nil {
 					t.Fatal(err)
@@ -61,7 +61,13 @@ func TestCumulativeRoundInventoryV4AndLegacyV3PreserveHistoryAndCompletions(t *t
 				if err != nil || control.Epoch != 1 || control.Used != 1 || control.Dry != 1 || control.Maximum != 1001 {
 					t.Fatal("fixture lost cumulative thresholds or completion credit", control, err)
 				}
-			} else {
+			}
+			if version <= 4 {
+				// The predecessor CHECK admits grant/close only; changing the
+				// version marker alone would mislabel a current physical schema.
+				roundTaperPredecessor(t, f)
+			}
+			if version == 3 {
 				// A first grant, one completion and a close have identical legacy
 				// accounting. Retain their genuine native graph while restoring
 				// the exact v3 declaration and unwrapped legacy history format.

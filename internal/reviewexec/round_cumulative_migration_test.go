@@ -15,6 +15,7 @@ func TestRoundCumulativeV3UpgradePreservesLegacyRecordsUntilExplicitEdit(t *test
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes`).Scan(&originalHistory); err != nil {
 		t.Fatal(err)
 	}
+	retainRoundV4Changes(t, f)
 	for _, query := range []string{
 		`ALTER TABLE review_round_controls RENAME TO fixture_controls_v4`, RoundSchemaV3SQL()[0],
 		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumns + ` FROM fixture_controls_v4`,

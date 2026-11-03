@@ -147,6 +147,7 @@ func TestRoundV2MigrationPreservesFiniteHistoryAndPredecessorDeclarations(t *tes
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes`).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
+	retainRoundV4Changes(t, f)
 	statements := []string{`ALTER TABLE review_round_controls RENAME TO fixture_v3_controls`, RoundSchemaV2SQL()[0], `INSERT INTO review_round_controls(` + roundColumnsV2 + `) SELECT ` + roundColumnsV2 + ` FROM fixture_v3_controls`, `DROP TABLE fixture_v3_controls`, `ALTER TABLE review_round_completions RENAME TO fixture_v3_completions`, RoundSchemaV2SQL()[4], `INSERT INTO review_round_completions SELECT * FROM fixture_v3_completions`, `DROP TABLE fixture_v3_completions`, `UPDATE metadata SET value='2' WHERE key='schema:review_rounds'`}
 	for _, s := range statements {
 		if _, err := f.store.DB().Exec(s); err != nil {

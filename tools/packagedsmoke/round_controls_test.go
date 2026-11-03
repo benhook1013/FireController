@@ -180,7 +180,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	}
 	grant := []string{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "0", "--max", "5", "--key", "round-original"}
 	original := call("admin", grant...)
-	if c := read("reader", "42", "cli"); !c.Configured || c.Minimum != 0 || c.Maximum != 5 || c.Taper != 3 || c.Used != 0 || c.Dry != 0 || c.Epoch != 1 || c.Revision != 1 {
+	if c := read("reader", "42", "cli"); !c.Configured || c.Minimum != 0 || c.Maximum != 5 || c.Taper != 2 || c.Used != 0 || c.Dry != 0 || c.Epoch != 1 || c.Revision != 1 {
 		t.Fatal("CLI default additional grant incorrect")
 	}
 	exact := []string{"reviews", "rounds", "grant", "--pr", "43", "--channel", "cli", "--expected-revision", "0", "--exact", "2", "--key", "round-exact"}
@@ -269,7 +269,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	if !mcpControl.Closed || mcpControl.Revision != 2 || mcpControl.Used != 0 || mcpControl.Dry != 0 || mcpControl.Tapered {
 		t.Fatal("MCP scoped closed state incorrect")
 	}
-	if c := read("admin", "42", "hosted"); c.Closed || c.Maximum != 2 || c.Taper != 1 {
+	if c := read("admin", "42", "hosted"); c.Closed || c.Maximum != 2 || c.Taper != 2 {
 		t.Fatal("CLI closure crossed channel")
 	}
 	if c := read("admin", "43", "cli"); c.Closed || c.Minimum != 2 {

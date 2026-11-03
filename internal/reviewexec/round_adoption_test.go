@@ -255,6 +255,7 @@ func TestRoundAdoptionVersionOneUpgradeConservesHistory(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes`).Scan(&audit); err != nil {
 		t.Fatal(err)
 	}
+	retainRoundV4Changes(t, f)
 	tx, err := f.store.DB().BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)

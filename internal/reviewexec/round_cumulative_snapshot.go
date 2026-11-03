@@ -66,7 +66,7 @@ func advanceRoundReplay(ctx context.Context, q EvidenceQuery, c *roundRecord, th
 					c.Dry = 0
 				}
 				if c.cumulative {
-					c.Tapered = cumulativeTapered(c.RoundControl)
+					c.Tapered = effectiveRoundTapered(*c)
 				} else if c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper) {
 					c.Tapered = true
 				}
@@ -88,12 +88,13 @@ func advanceRoundReplay(ctx context.Context, q EvidenceQuery, c *roundRecord, th
 func sameRoundBaseline(a, b RoundControl) bool {
 	return a.ProjectID == b.ProjectID && a.PullNumber == b.PullNumber && a.Channel == b.Channel && a.Epoch == b.Epoch && a.CreatedAt == b.CreatedAt && a.Taper == b.Taper && a.InitialDry == b.InitialDry && a.InitiallyTapered == b.InitiallyTapered && a.OriginSource == b.OriginSource && a.OriginKey == b.OriginKey && a.OriginSHA256 == b.OriginSHA256
 }
-func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) error {
-	current, err := readRoundRecordVersion(ctx, q, project, pull, channel, 4)
+func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) error {
+	current, err := readRoundRecordVersion(ctx, q, project, pull, channel, version)
 	if err != nil {
 		return err
 	}
 	var previous roundRecord
+	var activeGrant RoundControl
 	var revision int64
 	cumulativeSeen := false
 	for {
@@ -125,7 +126,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 			if err != nil || v.revision != revision+1 || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != v.revision || c.Epoch != v.epoch || v.worker != "" && !identifier.MatchString(v.worker) {
 				return roundUnavailable()
 			}
-			record := roundRecord{RoundControl: c, cumulative: cumulative, grantRevision: previous.grantRevision}
+			record := roundRecord{RoundControl: c, cumulative: cumulative, grantRevision: previous.grantRevision, taperSet: previous.taperSet}
 			first := revision == 0
 			newEpoch := !first && c.Epoch != previous.Epoch
 			if first || newEpoch {
@@ -137,7 +138,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 						return err
 					}
 				}
-				if c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) {
+				if hasRoundOrigin(c) && c.InitialDry >= c.Taper && !c.InitiallyTapered || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) {
 					return roundUnavailable()
 				}
 				if v.action == "grant" {
@@ -151,8 +152,13 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 					return roundUnavailable()
 				}
 				record.grantRevision = c.Revision
+				activeGrant = c
 			} else {
-				if !sameRoundBaseline(previous.RoundControl, c) {
+				baseline := c
+				if v.action == "taper" {
+					baseline.Taper = previous.Taper
+				}
+				if !sameRoundBaseline(previous.RoundControl, baseline) {
 					return roundUnavailable()
 				}
 				if err = advanceRoundReplay(ctx, q, &previous, c.Used); err != nil {
@@ -171,11 +177,17 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 					if !c.Closed || cumulative != previous.cumulative || c.Minimum != previous.Minimum || c.Maximum != previous.Maximum || c.MaximumUnbounded != previous.MaximumUnbounded || c.Tapered != previous.Tapered {
 						return roundUnavailable()
 					}
+				} else if v.action == "taper" {
+					record.taperSet = true
+					if version < 5 || !cumulative || c.Closed != previous.Closed || c.Minimum != previous.Minimum || c.Maximum != previous.Maximum || c.MaximumUnbounded != previous.MaximumUnbounded || c.Tapered != (effectiveRoundTapered(record) && roundTaperBoundary(activeGrant, c.Used)) {
+						return roundUnavailable()
+					}
 				} else if v.action == "grant" {
 					if !cumulative || c.Closed || c.MaximumUnbounded || c.Minimum < c.Used || c.Maximum <= c.Used || c.Maximum-c.Used > 1000 || c.Minimum-c.Used > 1000 || c.Tapered && !cumulativeTapered(c) {
 						return roundUnavailable()
 					}
 					record.grantRevision = c.Revision
+					activeGrant = c
 				} else {
 					return roundUnavailable()
 				}

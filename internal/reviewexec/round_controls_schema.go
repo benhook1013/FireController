@@ -10,7 +10,7 @@ import (
 // EnsureRoundSchema installs explicit additional-round accounting. It never
 // derives grants or completion credit from existing execution/imported history.
 func EnsureRoundSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL(), roundV4MigrationSQL())
+	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL(), roundV4MigrationSQL(), roundV5MigrationSQL())
 }
 
 var roundSchemaV1SQL = []string{
@@ -94,9 +94,9 @@ func roundV3MigrationSQL() []string {
 	}
 }
 
-// RoundSchemaSQL is the current cumulative-threshold schema. Predecessor
+// RoundSchemaV4SQL preserves the cumulative-threshold predecessor. Predecessor
 // declarations remain exact for upgrade and historical backup inspection.
-func RoundSchemaSQL() []string {
+func RoundSchemaV4SQL() []string {
 	out := RoundSchemaV3SQL()
 	out[0] = strings.Replace(out[0], "maximum BETWEEN 0 AND 1000", "maximum BETWEEN 0 AND 9007199254740991", 1)
 	return out
@@ -104,8 +104,27 @@ func RoundSchemaSQL() []string {
 func roundV4MigrationSQL() []string {
 	return []string{
 		`ALTER TABLE review_round_controls RENAME TO legacy_review_round_controls_v3`,
-		RoundSchemaSQL()[0],
+		RoundSchemaV4SQL()[0],
 		`INSERT INTO review_round_controls(` + roundColumns + `) SELECT ` + roundColumns + ` FROM legacy_review_round_controls_v3`,
 		`DROP TABLE legacy_review_round_controls_v3`,
+	}
+}
+
+// RoundSchemaSQL adds a distinct threshold-setting event without changing any
+// allowance, completion or original operation-binding columns.
+func RoundSchemaSQL() []string {
+	out := RoundSchemaV4SQL()
+	out[1] = strings.Replace(out[1], "action IN ('grant','close')", "action IN ('grant','close','taper')", 1)
+	return out
+}
+
+func roundV5MigrationSQL() []string {
+	return []string{
+		`PRAGMA defer_foreign_keys=ON`,
+		`CREATE TEMP TABLE review_round_changes_copy_v5 AS SELECT * FROM review_round_changes`,
+		`DROP TABLE review_round_changes`,
+		RoundSchemaSQL()[1],
+		`INSERT INTO review_round_changes SELECT * FROM temp.review_round_changes_copy_v5`,
+		`DROP TABLE temp.review_round_changes_copy_v5`,
 	}
 }

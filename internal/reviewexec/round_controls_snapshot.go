@@ -18,7 +18,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_rounds'`).Scan(&version); err != nil {
 		return err
 	}
-	if version != 1 && version != 2 && version != 3 && version != 4 {
+	if version != 1 && version != 2 && version != 3 && version != 4 && version != 5 {
 		return roundUnavailable()
 	}
 	if err := validateRoundPhysicalVersion(ctx, q, version); err != nil {
@@ -82,7 +82,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 // Physical validation precedes keyset traversal: SQLite TEXT affinity alone
 // permits BLOB keys that cannot be resumed using a scanned Go string cursor.
 func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
-	return validateRoundPhysicalVersion(ctx, q, 4)
+	return validateRoundPhysicalVersion(ctx, q, 5)
 }
 func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version int) error {
 	expected := map[string]string{}
@@ -93,6 +93,8 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 		definitions = RoundSchemaV2SQL()
 	} else if version == 3 {
 		definitions = RoundSchemaV3SQL()
+	} else if version == 4 {
+		definitions = RoundSchemaV4SQL()
 	}
 	for _, statement := range definitions {
 		fields := strings.Fields(statement)
@@ -282,7 +284,7 @@ func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl
 
 func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) error {
 	if version >= 4 {
-		return validateCumulativeRoundHistory(ctx, q, project, pull, channel)
+		return validateCumulativeRoundHistory(ctx, q, project, pull, channel, version)
 	}
 	current, err := readRoundRecordVersion(ctx, q, project, pull, channel, version)
 	if err != nil {
@@ -330,7 +332,7 @@ func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, 
 				return roundUnavailable()
 			}
 			if v.action == "grant" {
-				if (!hasRoundOrigin(c) && c.Closed) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) || revision > 0 && (c.Epoch != last.Epoch+1 || hasRoundOrigin(c)) {
+				if hasRoundOrigin(c) && c.InitialDry >= c.Taper && !c.InitiallyTapered || (!hasRoundOrigin(c) && c.Closed) || c.Used != 0 || c.Dry != c.InitialDry || c.Tapered != (c.InitiallyTapered && c.Minimum == 0) || revision > 0 && (c.Epoch != last.Epoch+1 || hasRoundOrigin(c)) {
 					return roundUnavailable()
 				}
 				grantRevision = c.Revision

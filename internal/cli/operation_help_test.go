@@ -24,7 +24,7 @@ func TestOperationHelpIsOfflineBoundedAndDoesNotReadFiles(t *testing.T) {
 	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"jobs help", "inbox help", "notes help", "jobs read", "jobs revision", "inbox read", "inbox thread", "notes read", "notes revision", "jobs history", "jobs progress-history", "jobs create", "jobs update", "jobs status", "jobs checklist-set", "jobs checklist-item", "inbox send", "inbox ack", "inbox seen", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close"} {
+	for _, operation := range []string{"jobs help", "inbox help", "notes help", "jobs read", "jobs revision", "inbox read", "inbox thread", "notes read", "notes revision", "jobs history", "jobs progress-history", "jobs create", "jobs update", "jobs status", "jobs checklist-set", "jobs checklist-item", "inbox send", "inbox ack", "inbox seen", "notes list", "notes add", "notes update", "reviews evidence", "reviews adjudication", "reviews route-create", "reviews route", "reviews routes", "reviews route-decide", "reviews route-fix", "map update", "publication prepare", "reviews request", "reviews start", "reviews operation", "reviews runs", "reviews fix", "reviews decide", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews publish", "reviews publication", "reviews publication-recover", "reviews source-operation", "reviews rounds read", "reviews rounds grant", "reviews rounds close", "reviews rounds taper"} {
 		spellings := [][]string{append(strings.Fields(operation), "--help"), append([]string{"help"}, strings.Fields(operation)...)}
 		if operation == "inbox help" || operation == "notes help" {
 			group := strings.Fields(operation)[0]
@@ -146,6 +146,7 @@ func TestRunHelpDescribesCompactAdapterAndRetainedRunIdentity(t *testing.T) {
 func TestExpandedOperationHelpExamplesMatchRealParsers(t *testing.T) {
 	for _, args := range [][]string{
 		{"reviews", "rounds", "read", "--pr", "42", "--channel", "cli"},
+		{"reviews", "rounds", "taper", "--pr", "42", "--channel", "hosted", "--expected-revision", "2", "--taper", "2", "--key", "hosted-taper"},
 		{"reviews", "rounds", "grant", "--pr", "42", "--channel", "hosted", "--expected-revision", "1", "--min", "2", "--max", "3", "--key", "hosted-42-grant"},
 		{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "0", "--exact", "2", "--key", "cli-42-exact"},
 		{"reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expected-revision", "2", "--key", "cli-42-close"},
@@ -193,13 +194,14 @@ func TestExpandedOperationHelpExamplesMatchRealParsers(t *testing.T) {
 func TestExpandedOperationHelpExplainsGuardsAndCompactReads(t *testing.T) {
 	for operation, expected := range map[string][]string{
 		"reviews help":         {"reviews decide-batch --help", "reviews fix-batch --help"},
-		"reviews rounds":       {"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help"},
+		"reviews rounds":       {"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help", "reviews rounds taper --help"},
 		"reviews rounds grant": {"--expected-revision", "--max", "--min", "--exact", "including underway", "complete-unfinalized", "Preserves earned dry streak", "after taper", "without provider dispatch", "same key, exact request"},
+		"reviews rounds taper": {"--expected-revision", "--taper", "1-1000", "Preserves minimum", "does not reopen", "No provider dispatch", "same key, exact request"},
 		"reviews rounds close": {"--expected-revision", "Does not cancel", "Preserves earned dry streak", "no provider dispatch", "same key, exact request"},
 		"reviews decide-batch": {"2 MiB", "1-100", "unique", "reason", "expected_route_revision", "atomically", "rolls back", "implicit finalization", "same key, exact request"},
 		"reviews fix-batch":    {"expected_sha", "explicit empty string", "proof_note", "accepted source findings", "same key, exact request"},
 		"jobs status":          {"progress_summary", "1024", "512", "truncation flags", "evidence_count", "without brief", "jobs read"},
-		"reviews operation":    {"--diagnostics", "compact status", "stage, reason", "evidence_id", "next_action", "0-900", "refused local database read admission", "original selected deadline"},
+		"reviews operation":    {"--diagnostics", "compact status", "stage, reason", "evidence_id", "next_action", "0-900", "refused local database read admission", "original selected deadline", "does not prove the provider is still running", "publication-safe fixes", "do not repost or grant credit"},
 		"reviews queue":        {"--active", "before pagination", "scalar", "merged/closed history", "same view", "without provider work"},
 	} {
 		help, ok := operationHelp(operation)

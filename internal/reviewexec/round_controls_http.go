@@ -55,6 +55,7 @@ func (e *Engine) configureRoundControlHTTP(w http.ResponseWriter, r *http.Reques
 		Action           string          `json:"action"`
 		Minimum          json.RawMessage `json:"minimum,omitempty"`
 		Maximum          json.RawMessage `json:"maximum,omitempty"`
+		Taper            json.RawMessage `json:"taper,omitempty"`
 	}
 	if err := core.ReadJSON(w, r, &wire); err != nil {
 		core.WriteError(w, err)
@@ -64,7 +65,7 @@ func (e *Engine) configureRoundControlHTTP(w http.ResponseWriter, r *http.Reques
 	for _, field := range []struct {
 		raw    json.RawMessage
 		target **int64
-	}{{wire.Minimum, &request.Minimum}, {wire.Maximum, &request.Maximum}} {
+	}{{wire.Minimum, &request.Minimum}, {wire.Maximum, &request.Maximum}, {wire.Taper, &request.Taper}} {
 		if field.raw == nil {
 			continue
 		}

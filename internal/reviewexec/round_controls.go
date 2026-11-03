@@ -20,6 +20,7 @@ type RoundControlRequest struct {
 	Action           string `json:"action"`
 	Minimum          *int64 `json:"minimum,omitempty"`
 	Maximum          *int64 `json:"maximum,omitempty"`
+	Taper            *int64 `json:"taper,omitempty"`
 }
 
 type RoundControl struct {
@@ -59,6 +60,7 @@ type roundRecord struct {
 	RoundControl
 	grantRevision int64
 	cumulative    bool
+	taperSet      bool
 }
 
 const roundColumnsV1 = `project_id,pull_number,channel,revision,epoch,grant_revision,closed,minimum,maximum,taper,used,dry,tapered,actor_id,created_at,updated_at`
@@ -74,12 +76,7 @@ func roundDenied(code, message string) error { return core.Fail(code, message, 4
 func roundScope(project string, pull int64, channel string) bool {
 	return identifier.MatchString(project) && pull >= 1 && pull <= 2147483647 && validChannel(channel)
 }
-func roundTaper(channel string) int64 {
-	if channel == "hosted" {
-		return 1
-	}
-	return 3
-}
+func roundTaper(string) int64 { return 2 }
 func roundDone(c RoundControl) bool {
 	return c.Configured && (!c.MaximumUnbounded && c.Used >= c.Maximum || c.Tapered)
 }
@@ -98,15 +95,15 @@ func hasRoundOrigin(c RoundControl) bool {
 }
 func validRoundControl(c RoundControl) bool {
 	origin := hasRoundOrigin(c)
-	baseline := !c.MaximumUnbounded && c.Maximum >= 1 && c.Taper == roundTaper(c.Channel) && c.InitialDry == 0 && !c.InitiallyTapered
+	baseline := !c.MaximumUnbounded && c.Maximum >= 1 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry == 0 && !c.InitiallyTapered
 	if origin {
-		baseline = validRoundOrigin(c) && c.Maximum >= 0 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry >= 0 && c.InitialDry <= 1000 && (c.InitialDry < c.Taper || c.InitiallyTapered)
+		baseline = validRoundOrigin(c) && c.Maximum >= 0 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry >= 0 && c.InitialDry <= 1000
 	}
 	return baseline && roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Used >= 0 && c.Used <= roundSafeInteger && c.Dry >= 0 && c.Dry <= roundSafeInteger && c.Dry <= c.Used+c.InitialDry && (c.MaximumUnbounded && c.Maximum == 0 && c.Minimum <= roundSafeInteger || !c.MaximumUnbounded && c.Minimum <= c.Maximum && c.Maximum <= roundSafeInteger && c.Used <= c.Maximum) && (!c.Tapered || c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper)) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
 }
 
 func readRoundRecord(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) (roundRecord, error) {
-	return readRoundRecordVersion(ctx, q, project, pull, channel, 4)
+	return readRoundRecordVersion(ctx, q, project, pull, channel, 5)
 }
 func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) (roundRecord, error) {
 	c := roundRecord{RoundControl: RoundControl{ProjectID: project, PullNumber: pull, Channel: channel}}
@@ -127,19 +124,27 @@ func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string
 		return c, err
 	}
 	c.Configured = true
-	var grantBody string
-	if err := q.QueryRowContext(ctx, `SELECT body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=? AND epoch=?`, project, pull, channel, c.grantRevision, c.Epoch).Scan(&grantBody); err != nil {
+	var grantBody, latestBody string
+	if err := q.QueryRowContext(ctx, `SELECT g.body_json,l.body_json,EXISTS(SELECT 1 FROM review_round_changes t WHERE t.project_id=g.project_id AND t.pull_number=g.pull_number AND t.channel=g.channel AND t.epoch=g.epoch AND t.action='taper' AND t.revision<=?) FROM review_round_changes g JOIN review_round_changes l ON l.project_id=g.project_id AND l.pull_number=g.pull_number AND l.channel=g.channel AND l.revision=? AND l.epoch=g.epoch WHERE g.project_id=? AND g.pull_number=? AND g.channel=? AND g.revision=? AND g.epoch=?`, c.Revision, c.Revision, project, pull, channel, c.grantRevision, c.Epoch).Scan(&grantBody, &latestBody, &c.taperSet); err != nil {
 		return roundRecord{}, err
 	}
 	var bound RoundControl
-	bound, c.cumulative, err = decodeRoundHistory(grantBody)
+	bound, _, err = decodeRoundHistory(grantBody)
 	if err != nil {
 		return roundRecord{}, err
+	}
+	latest, cumulative, err := decodeRoundHistory(latestBody)
+	if err != nil {
+		return roundRecord{}, err
+	}
+	c.cumulative = cumulative
+	if latest.ProjectID != project || latest.PullNumber != pull || latest.Channel != channel || latest.Revision != c.Revision || latest.Epoch != c.Epoch || latest.Taper != c.Taper || version < 5 && c.taperSet {
+		return roundRecord{}, roundUnavailable()
 	}
 	if bound.ProjectID != project || bound.PullNumber != pull || bound.Channel != channel || bound.Revision != c.grantRevision || bound.Epoch != c.Epoch {
 		return roundRecord{}, roundUnavailable()
 	}
-	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.Used < bound.Used || c.cumulative && c.Tapered != (cumulativeTapered(c.RoundControl) && (bound.Tapered || c.Used > bound.Used)) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
+	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.Used < bound.Used || c.cumulative && c.Tapered != (effectiveRoundTapered(c) && roundTaperBoundary(bound, c.Used)) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
 		return roundRecord{}, roundUnavailable()
 	}
 	return c, nil
@@ -173,7 +178,7 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 	previous := *input.ExpectedRevision
 	input.ExpectedRevision = &previous
 	if input.Action == "grant" {
-		if input.Minimum == nil || input.Maximum == nil {
+		if input.Minimum == nil || input.Maximum == nil || input.Taper != nil {
 			return nil, invalid()
 		}
 		minimum, maximum := *input.Minimum, *input.Maximum
@@ -181,7 +186,13 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			return nil, invalid()
 		}
 		input.Minimum, input.Maximum = &minimum, &maximum
-	} else if input.Action != "close" || input.Minimum != nil || input.Maximum != nil {
+	} else if input.Action == "taper" {
+		if input.Taper == nil || *input.Taper < 1 || *input.Taper > 1000 || input.Minimum != nil || input.Maximum != nil {
+			return nil, invalid()
+		}
+		taper := *input.Taper
+		input.Taper = &taper
+	} else if input.Action != "close" || input.Minimum != nil || input.Maximum != nil || input.Taper != nil {
 		return nil, invalid()
 	}
 	target := fmt.Sprintf("%d/%s", pull, channel)
@@ -195,6 +206,12 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		}
 		if c.Revision == math.MaxInt64 {
 			return nil, roundDenied("review_round_revision_exhausted", "The retained round control cannot advance.")
+		}
+		if input.Action == "taper" && !c.Configured {
+			return nil, roundDenied("review_round_unconfigured", "This PR review channel has no round control to update.")
+		}
+		if input.Action == "taper" && c.Taper == *input.Taper {
+			return RoundControlReceipt{PullNumber: pull, Channel: channel, Revision: c.Revision, Epoch: c.Epoch, Outcome: "taper_updated"}, nil
 		}
 		at := stamp()
 		if !c.Configured {
@@ -233,6 +250,18 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			// earned streak or raising the requested minimum. The immutable grant's
 			// Used boundary distinguishes reopening from a newly earned completion.
 			c.Tapered = false
+		} else if input.Action == "taper" {
+			var original string
+			if err = tx.QueryRowContext(ctx, `SELECT body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=? AND epoch=?`, c.ProjectID, c.PullNumber, c.Channel, c.grantRevision, c.Epoch).Scan(&original); err != nil {
+				return nil, err
+			}
+			bound, _, err := decodeRoundHistory(original)
+			if err != nil {
+				return nil, err
+			}
+			c.Taper = *input.Taper
+			c.cumulative, c.taperSet = true, true
+			c.Tapered = effectiveRoundTapered(c) && roundTaperBoundary(bound, c.Used)
 		} else {
 			if c.grantRevision == 0 {
 				c.grantRevision = c.Revision
@@ -256,6 +285,8 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		outcome := "granted"
 		if input.Action == "close" {
 			outcome = "closed"
+		} else if input.Action == "taper" {
+			outcome = "taper_updated"
 		}
 		return RoundControlReceipt{PullNumber: pull, Channel: channel, Revision: c.Revision, Epoch: c.Epoch, Outcome: outcome}, nil
 	})
@@ -504,7 +535,7 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		} else {
 			c.Dry = 0
 		}
-		c.Tapered = cumulativeTapered(c.RoundControl)
+		c.Tapered = effectiveRoundTapered(c)
 	} else if !done {
 		if state.FrozenCounts.Accepted == 0 {
 			c.Dry++

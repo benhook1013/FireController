@@ -30,6 +30,8 @@ func parseReviewRounds(args []string) (*reviewRoundsInvocation, bool) {
 		allowed["--expected-revision"], allowed["--key"], allowed["--min"], allowed["--max"], allowed["--exact"] = true, true, true, true, true
 	case "close":
 		allowed["--expected-revision"], allowed["--key"] = true, true
+	case "taper":
+		allowed["--expected-revision"], allowed["--key"], allowed["--taper"] = true, true, true
 	default:
 		return nil, false
 	}
@@ -84,6 +86,13 @@ func parseReviewRounds(args []string) (*reviewRoundsInvocation, bool) {
 	}
 	in.input.ExpectedRevision = &revision
 	in.input.Action = in.operation
+	if in.operation == "taper" {
+		taper, valid := number("--taper", 1000)
+		if !valid || taper < 1 {
+			return nil, false
+		}
+		in.input.Taper = &taper
+	}
 	if in.operation == "grant" {
 		var minimum, maximum int64
 		if _, exact := values["--exact"]; exact {

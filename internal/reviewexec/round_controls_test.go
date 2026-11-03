@@ -164,11 +164,11 @@ func TestRoundControlsGrantCloseScopeReplayAndAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	c = roundRead(t, f, 2, "cli")
-	if c.Revision != 1 || c.Epoch != 1 || c.Closed || c.Minimum != 0 || c.Maximum != 4 || c.Taper != 3 || c.Used != 0 || c.Dry != 0 || c.Tapered || c.ActorID != writer.PrincipalID || c.CreatedAt == "" || c.UpdatedAt == "" {
+	if c.Revision != 1 || c.Epoch != 1 || c.Closed || c.Minimum != 0 || c.Maximum != 4 || c.Taper != 2 || c.Used != 0 || c.Dry != 0 || c.Tapered || c.ActorID != writer.PrincipalID || c.CreatedAt == "" || c.UpdatedAt == "" {
 		t.Fatal("new grant baseline incorrect")
 	}
 	roundGrant(t, f, 2, "hosted", 0, 0, 3, "hosted")
-	if roundRead(t, f, 2, "hosted").Taper != 1 {
+	if roundRead(t, f, 2, "hosted").Taper != 2 {
 		t.Fatal("hosted default taper")
 	}
 	revision := int64(1)
@@ -339,6 +339,7 @@ func TestRoundControlsBindingCapacityAndClosedAdmission(t *testing.T) {
 func TestRoundControlsFrozenAcceptedDryStreakAndTaperLatch(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "discovery")
+	retainHistoricalRoundTaper(t, f, 2, "cli")
 	var acceptedID string
 	for i, accepted := range []bool{false, false, true, false, false, false} {
 		a, id := roundCapture(t, f, i, accepted)
