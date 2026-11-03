@@ -198,10 +198,10 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 	if !slices.Contains(current.Configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
 		return invalid()
 	}
-	number, head := target.ParentPullNumber, target.ParentSHA
+	number, head, branch := target.ParentPullNumber, target.ParentSHA, target.BaseRef
 	seen := map[int64]bool{current.Operation.PullNumber: true}
 	for _, plan := range predecessors {
-		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head {
+		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head || plan.Pull.HeadRef != branch {
 			return invalid()
 		}
 		seen[number] = true
@@ -217,7 +217,7 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if state.Pending || !state.Covered {
 			return sourceHold("predecessor_unfinished")
 		}
-		number, head = plan.ParentPullNumber, plan.ParentSHA
+		number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
 	}
 	if number != 0 {
 		return invalid()
