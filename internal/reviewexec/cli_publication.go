@@ -118,7 +118,13 @@ func currentReviewPull(ctx context.Context, tx *sql.Tx, project string, number i
 
 func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt Attempt) (reviews.RunInput, error) {
 	capture := evidence.Capture
-	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: append([]string{}, capture.Review.CoverageLimits...), Findings: make([]reviews.Finding, 0, len(state.Findings))}
+	limits := append([]string{}, capture.Review.CoverageLimits...)
+	if validateNewCoverageLimits(capture) != nil {
+		// Display policy cannot invalidate already-retained source evidence.
+		// Keep the original metadata in the ledger rather than silently clipping it.
+		limits = []string{"Source coverage limitations were omitted from this display; see the original review evidence."}
+	}
+	run := reviews.RunInput{SourceRunID: evidence.ID, Channel: evidenceChannel(capture), HeadSHA: evidence.Anchor.CandidateSHA, Reviewer: attempt.Provider, Scope: "admitted comparison", Outcome: capture.Review.Outcome, Attributable: capture.Review.Complete, Complete: capture.Review.Complete, StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Found: capture.Review.ReportedFindings, Finalized: state.Finalized, CoverageLimits: limits, Findings: make([]reviews.Finding, 0, len(state.Findings))}
 	if !run.Complete {
 		run.CoverageLimits = append(run.CoverageLimits, "Incomplete CLI capture; retained findings do not establish completed review coverage.")
 		if run.Found < int64(len(capture.Review.Findings)) {

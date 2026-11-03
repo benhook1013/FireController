@@ -1,5 +1,6 @@
 import { chromium, expect } from '../../webapp/node_modules/@playwright/test/index.mjs';
 import fs from 'node:fs/promises';
+import { classifyBrowserFailure } from './browser-diagnostics.mjs';
 
 // All inputs are synthetic, private files produced by browser_test.go. Neither
 // Playwright diagnostics nor request/credential bytes are printed on failure.
@@ -408,7 +409,7 @@ try {
   console.log(JSON.stringify({state:'PASS', fixture_writes:fixtureWrites, session_posts:sessionPosts, session_deletes:sessionDeletes, action_writes:actionWrites, metadata_reconnect:true, injected_metadata_failures:injectedResponses, injected_console_errors:injectedConsoleErrors, ...metadataCounts}));
 } catch (error) {
   // Only fixed categories leave this process; raw exception text may contain credentials.
-  const failure_kind = error?.name === 'TimeoutError' ? 'timeout' : error?.message === 'assertion' ? 'assertion' : 'driver';
+  const failure_kind = classifyBrowserFailure(error);
   console.log(JSON.stringify({state:'FAIL', phase, checkpoint, failure_kind, ...diagnostics()}));
   process.exitCode = 1;
 } finally {
