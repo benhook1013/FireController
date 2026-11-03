@@ -45,6 +45,7 @@ smoke:
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicationSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	FC_SMOKE_BIN_DIR="$(CURDIR)/bin" $(GO) test -v -tags=packaged_smoke -run '^TestPackagedHostedSubmittedSourceRetention$$' -count=1 -timeout=60s ./internal/backup
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedTransferSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
 # Requires built fcd and the browser installed for webapp's pinned Playwright.
