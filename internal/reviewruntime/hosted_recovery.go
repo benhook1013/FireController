@@ -104,6 +104,44 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "observation_unavailable"
 		return result, err
 	}
+	anchor := *attempt.Anchor
+	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
+	finishedUnproven := attempt.State == "uncertain" && bound.Operation.Reason == "hosted_finished_inventory_unproven"
+	// A decoder repair can make the latest original source complete. Prove it
+	// before fetching mutable provider summaries that may have been edited since
+	// the actual review. Never search past a newer incomplete or invalid record.
+	if finishedUnproven && len(observations) > 0 && observations[len(observations)-1].Input.Kind == "" {
+		in := observations[len(observations)-1].Input
+		record, err := captures.Read(ctx, attempt.ID, CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes})
+		if err != nil {
+			result.Reason = "observation_unavailable"
+			return result, err
+		}
+		if record.RepositoryID != anchor.RepositoryID || record.Repository != anchor.Repository || record.PullNumber != anchor.PullNumber || record.Intent != intent || !record.EarliestPosting.Equal(bound.EarliestPosting) || record.PostingActor.ID != postingActor.ID || record.PostingActor.Kind != postingActor.Kind || record.ProviderActor.ID != providerActor.ID || record.ProviderActor.Kind != providerActor.Kind || in.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || in.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || in.ObservedAt != record.Snapshot.ObservedAt.Format(time.RFC3339Nano) {
+			result.Reason = "observation_unavailable"
+			return result, captureError("capture_unavailable")
+		}
+		trigger, err := reviewprovider.RecoverHostedTrigger(record.Snapshot.IssueComments, record.Snapshot.Complete, intent, record.PostingActor, record.EarliestPosting, record.Snapshot.ObservedAt)
+		if err != nil {
+			result.Reason = "observation_unavailable"
+			return result, err
+		}
+		if trigger.State == "adopted" {
+			if attempt.ExternalID != strconv.FormatInt(trigger.CommentID, 10) {
+				result.Reason = "trigger_identity_changed"
+				return result, nil
+			}
+			captured, err := RetainHosted(ctx, captures, engine, attempt, record)
+			if err != nil {
+				result.Reason = captured.Reason
+				return result, err
+			}
+			if captured.Complete {
+				result.TriggerCommentID, sourceAt = trigger.CommentID, record.Snapshot.ObservedAt
+				return finish(captured.Receipt.ID)
+			}
+		}
+	}
 	// A full journal cannot retain another response. Stop before external reads
 	// or artifact creation; an existing final capture above still settles offline.
 	if len(observations) >= 200 {
@@ -113,7 +151,6 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		}
 		return result, err
 	}
-	anchor := *attempt.Anchor
 	repository, err := reader.Repository(ctx, anchor.RepositoryID)
 	if err != nil {
 		result.Reason = "source_unavailable"
@@ -130,7 +167,6 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "observation_incomplete"
 		return result, err
 	}
-	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
 	record := HostedCaptureRecord{RepositoryID: anchor.RepositoryID, Repository: anchor.Repository, PullNumber: anchor.PullNumber, Intent: intent, PostingActor: postingActor, ProviderActor: providerActor, EarliestPosting: bound.EarliestPosting, StartedAt: started, FinishedAt: finished, Snapshot: snapshot}
 	// Reuse immutable raw source when only our collection timestamps changed.
 	// A healthy wait must not spend the finite journal on identical responses.
@@ -163,7 +199,6 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	// already attached to this exact trigger. Keep observing without bouncing its
 	// durable uncertainty to active on every pass; later supported evidence can
 	// complete it from uncertain.
-	finishedUnproven := attempt.State == "uncertain" && bound.Operation.Reason == "hosted_finished_inventory_unproven"
 	if attempt.State == "posting" || attempt.State == "uncertain" && !finishedUnproven {
 		attempt, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "active", "trigger_recovered", externalID)
 		if err != nil {
