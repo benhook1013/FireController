@@ -670,3 +670,19 @@ func TestReviewReadFailureExplainsRunningClientRecovery(t *testing.T) {
 		t.Fatal("invalid read lacks safe running-client recovery", err)
 	}
 }
+
+func TestReviewStandingZeroRejectsSubmittedReviewVariantWire(t *testing.T) {
+	value := sampleStandingControlEvidence()
+	if value.Capture.Hosted.StandingSummary == nil || len(value.Capture.Findings) != 0 || value.Capture.ReportedFindings != 0 {
+		t.Fatal("fixture must begin with standing zero-finding evidence")
+	}
+	got, err := readControlEvidenceWire(t, standingControlJSON(t, value))
+	if err != nil || !reflect.DeepEqual(got, value) {
+		t.Fatal("valid standing zero-finding wire evidence changed", err)
+	}
+	value.Capture.Hosted.SubmittedReview = &client.ReviewHostedSubmittedReview{
+		ProviderRunID:            "44444444-4444-4444-8444-444444444444",
+		AcknowledgementCommentID: value.Capture.Hosted.TriggerCommentID + 1,
+	}
+	assertStandingControlInvalid(t, standingControlJSON(t, value))
+}
