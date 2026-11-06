@@ -116,7 +116,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
 		if reader, ok := target.reader.(sourceCIReader); ok {
-			ciCtx, ciCancel := context.WithTimeout(ctx, 30*time.Second)
+			ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
 			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
 			if readErr != nil {
 				providerErr = readErr

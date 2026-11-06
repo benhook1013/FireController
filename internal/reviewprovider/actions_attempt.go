@@ -90,10 +90,16 @@ func (j *githubActionsJob) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+const actionsJobsRequestLimit = 10 * time.Second
+
 type actionsBudget struct{ bytes, items, pages int }
 
 func (g *GitHub) actionsRead(ctx context.Context, path string, query url.Values, budget *actionsBudget, dst any) (http.Header, error) {
-	data, headers, status, err := g.requestBytes(ctx, http.MethodGet, path, query, nil)
+	return g.actionsReadWithClient(ctx, g.httpClient, path, query, budget, dst)
+}
+
+func (g *GitHub) actionsReadWithClient(ctx context.Context, client *http.Client, path string, query url.Values, budget *actionsBudget, dst any) (http.Header, error) {
+	data, headers, status, err := g.requestBytesWithClient(ctx, client, http.MethodGet, path, query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +270,12 @@ func (g *GitHub) actionsRuns(ctx context.Context, path, repository, head string,
 }
 
 func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run githubActionsRun, budget *actionsBudget) ([]ActionsJob, error) {
+	// GitHub's attempt jobs endpoint can take longer for large partial reruns.
+	// Keep the caller's aggregate attempt deadline and all inventory bounds.
+	client := *g.httpClient
+	if client.Timeout != 0 {
+		client.Timeout = max(client.Timeout, actionsJobsRequestLimit)
+	}
 	rows := make([]ActionsJob, 0)
 	seen, checks := map[int64]bool{}, map[int64]bool{}
 	total := int64(-1)
@@ -277,7 +289,7 @@ func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run g
 			TotalCount int64              `json:"total_count,required"`
 			Jobs       []githubActionsJob `json:"jobs,required"`
 		}
-		headers, err := g.actionsRead(ctx, path, query, budget, &envelope)
+		headers, err := g.actionsReadWithClient(ctx, &client, path, query, budget, &envelope)
 		if err != nil {
 			return nil, err
 		}

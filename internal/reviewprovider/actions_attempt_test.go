@@ -603,3 +603,30 @@ func TestCurrentActionsAttemptRetainsActualEventAndRunNumberWithoutApplicability
 		})
 	}
 }
+
+func TestCurrentActionsAttemptGivesOnlyJobPagesTheLongerRequestBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(actionsDefaultResponse(r))
+	}))
+	defer server.Close()
+	g := testGitHub(server, "")
+	underlying := g.httpClient.Transport
+	var jobsRead bool
+	g.httpClient.Transport = actionsRoundTrip(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		budget := time.Until(deadline)
+		if r.URL.Path == actionsJobsPath {
+			jobsRead = true
+			if !ok || budget <= githubRequestLimit || budget > actionsJobsRequestLimit {
+				t.Error("job page did not get the bounded longer deadline", budget)
+			}
+		} else if !ok || budget > githubRequestLimit {
+			t.Error("ordinary read got the longer job deadline", budget)
+		}
+		return underlying.RoundTrip(r)
+	})
+	got, err := g.CurrentActionsAttempt(t.Context(), "owner/repo", actionsHead, 40)
+	if err != nil || got.State != "complete" || !jobsRead || g.httpClient.Timeout != githubRequestLimit {
+		t.Fatal("attempt collection or shared client changed", got, err)
+	}
+}

@@ -53,10 +53,9 @@ func NewGitHub(token string) (*GitHub, error) {
 	client := &http.Client{
 		Timeout: githubRequestLimit,
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DisableKeepAlives:     true,
-			TLSHandshakeTimeout:   githubRequestLimit,
-			ResponseHeaderTimeout: githubRequestLimit,
+			Proxy:               http.ProxyFromEnvironment,
+			DisableKeepAlives:   true,
+			TLSHandshakeTimeout: githubRequestLimit,
 		},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -385,6 +384,10 @@ func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 }
 
 func (g *GitHub) requestBytes(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
+	return g.requestBytesWithClient(ctx, g.httpClient, method, path, query, body)
+}
+
+func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
@@ -400,7 +403,7 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	cached, conditional := g.conditionalRequest(request)
-	response, err := g.httpClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}

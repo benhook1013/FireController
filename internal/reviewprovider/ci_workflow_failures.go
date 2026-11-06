@@ -49,7 +49,7 @@ func (*CIWorkflowAttentionError) Error() string {
 }
 func (e *CIWorkflowAttentionError) Unwrap() error { return e.Cause }
 
-// ObserveCIGateWithWorkflows shares the ordinary thirty-second collection
+// ObserveCIGateWithWorkflows shares the ordinary CI collection
 // budget. Optional failures never replace, invalidate or upgrade gate facts.
 func (g *GitHub) ObserveCIGateWithWorkflows(ctx context.Context, target CITarget, gateRef string, workflowIDs []int64) (CIObservation, []CIWorkflowFailure, error) {
 	return g.observeCIGateWithWorkflowAttention(ctx, target, gateRef, workflowIDs, nil, nil)
@@ -88,7 +88,7 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 		}
 		historicalWanted[id] = true
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, CIObservationTimeout)
 	defer cancel()
 	observation, err := g.observeCI(ctx, target, gateRef)
 	if err != nil || len(wanted) == 0 {

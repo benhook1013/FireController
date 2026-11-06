@@ -314,7 +314,7 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 			}
 		}
 	}()
-	readCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	readCtx, cancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout+15*time.Second)
 	defer cancel()
 	repo, err := target.reader.Repository(readCtx, target.repository)
 	if err != nil {

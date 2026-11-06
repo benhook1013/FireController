@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// CIObservationTimeout bounds a complete gate read, including its final rechecks.
+const CIObservationTimeout = 40 * time.Second
+
 // CITarget is an explicit observed source assertion, not a discovery selector.
 type CITarget struct {
 	RepositoryID int64  `json:"repository_id"`
@@ -71,7 +74,7 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 			err = &ciCollectionError{stage: stage, cause: err}
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, CIObservationTimeout)
 	defer cancel()
 	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
 	if err != nil || out.Authority.State != "complete" || out.Authority.Checks == nil {
