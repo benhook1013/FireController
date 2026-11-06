@@ -523,6 +523,9 @@ func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
 	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-hop-stack", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{3, 2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
+	// Newly enrolled ancestors get discovery defaults; bound this fixture to
+	// its one deliberate native completion before testing published branch identity.
+	roundGrant(t, f, 3, "cli", 1, 0, 1, "two-hop-single-grandparent-round")
 	grandparentAnchor := attemptAnchor(attemptProject, 3)
 	grandparentAnchor.CandidateSHA = input.ExpectedAnchor.ParentSHA
 	grandparentAnchor.ParentSHA = grandparentAnchor.BaseSHA

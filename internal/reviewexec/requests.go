@@ -72,6 +72,32 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		if revision != *c.ExpectedRevision {
 			return nil, conflict()
 		}
+		var previous Configuration
+		if revision > 0 {
+			var err error
+			previous, _, err = readConfiguration(ctx, tx, scope.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		defaults, err := enrollmentRoundDefaults(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		for _, pull := range c.Queue {
+			for _, channel := range c.Channels {
+				if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
+					continue
+				}
+				bounds := defaults.CLI
+				if channel == "hosted" {
+					bounds = defaults.Hosted
+				}
+				if err := initializeRoundControl(ctx, tx, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
+					return nil, err
+				}
+			}
+		}
 		revision++
 		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
 			return nil, err
@@ -139,6 +165,9 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		}
 		id, at := core.NewID("review_operation"), stamp()
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
+			return nil, err
+		}
+		if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel}); err != nil {
 			return nil, err
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {

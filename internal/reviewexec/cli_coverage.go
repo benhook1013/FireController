@@ -19,8 +19,10 @@ func validCoverageSource(current SourcePlan) bool {
 // native evidence on any head. Covered does not claim that later code was reviewed;
 // Pending dominates admission even when a prior review is complete.
 type ComparisonState struct {
-	Covered bool
-	Pending bool
+	RoundsConfigured bool `json:"rounds_configured,omitempty"`
+	RoundsComplete   bool `json:"rounds_complete,omitempty"`
+	Covered          bool
+	Pending          bool
 }
 
 // Coverage reports completed PR/channel review progress only when no native
@@ -80,6 +82,12 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 	if dirty {
 		return ComparisonState{}, adjudicationStorageError()
 	}
+	c, err := readRoundControl(ctx, tx, project, number, channel)
+	if err != nil {
+		return ComparisonState{}, err
+	}
+	result.RoundsConfigured = c.Configured
+	result.RoundsComplete = c.Configured && (c.Closed || roundDone(c))
 	return result, nil
 }
 

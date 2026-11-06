@@ -50,5 +50,8 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := ensureComparisonSchema(ctx, store); err != nil {
 		return err
 	}
+	if err := EnsureRoundSchema(ctx, store); err != nil {
+		return err
+	}
 	return ensureRoutePolicySchema(ctx, store)
 }

@@ -14,6 +14,8 @@ import (
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/rounds/{pull_number}/{channel}", e.readRoundControlHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/{pull_number}/{channel}", e.configureRoundControlHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/publications", e.requestCheckpointPublicationHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/publications/{publication_id}", e.readCheckpointPublicationHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/publications/{publication_id}/recovery", e.recoverCheckpointPublicationHTTP)
