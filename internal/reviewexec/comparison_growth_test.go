@@ -110,9 +110,9 @@ func assertComparisonGrowthQueryPlans(t *testing.T, f *attemptFixture, current S
 			name, query, index string
 			args               []any
 		}{
-			{"dirty", `SELECT EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty')`, "review_comparison_proofs_state", []any{attemptProject, current.Pull.Number, channel}},
-			{"pending", `SELECT EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending')`, "review_comparison_proofs_state", []any{attemptProject, current.Pull.Number, channel}},
-			{"ready", `SELECT EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=? AND candidate_sha=? AND base_sha=? AND parent_sha=? AND parent_pull_number=? AND base_ref=?)`, "review_comparison_proofs_anchor", []any{attemptProject, current.Pull.Number, channel, current.Repository.ID, current.Pull.HeadSHA, current.Pull.BaseSHA, current.ParentSHA, current.ParentPullNumber, current.Pull.BaseRef}},
+			{"dirty", "SELECT " + comparisonDirtyExists, "review_comparison_proofs_state", []any{attemptProject, current.Pull.Number, channel}},
+			{"pending", "SELECT " + comparisonPendingExists, "review_comparison_proofs_state", []any{attemptProject, current.Pull.Number, channel}},
+			{"ready", "SELECT " + comparisonReadyExists, "review_comparison_proofs_anchor", []any{attemptProject, current.Pull.Number, channel, current.Repository.ID}},
 		}
 		for _, test := range tests {
 			rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+test.query, test.args...)

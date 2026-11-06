@@ -65,6 +65,12 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	return result, nil
 }
 
+const (
+	comparisonDirtyExists   = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty')`
+	comparisonPendingExists = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending')`
+	comparisonReadyExists   = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=?)`
+)
+
 // channelProgress reads completed native PR/channel outcomes. Captured anchors
 // remain evidence provenance; later commits cannot reopen earned progress.
 // Pending and dirty obligations still apply across every retained head.
@@ -74,10 +80,7 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 	}
 	var dirty bool
 	var result ComparisonState
-	err := tx.QueryRowContext(ctx, `SELECT
- EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty'),
- EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending'),
- EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='ready' AND repository_id=?)`,
+	err := tx.QueryRowContext(ctx, "SELECT "+comparisonDirtyExists+", "+comparisonPendingExists+", "+comparisonReadyExists,
 		project, number, channel, project, number, channel, project, number, channel, repositoryID).Scan(&dirty, &result.Pending, &result.Covered)
 	if err != nil {
 		return ComparisonState{}, err
