@@ -4,6 +4,8 @@
 
 The service implements project-scoped jobs, durable messages and native CLI/hosted review orchestration, with profile-bound CLI and MCP clients. The embedded browser provides jobs, workers, conversations and review inspection; see the [local API](local-api.md), [browser guide](browser-guide.md) and [execution contract](review-execution.md) for exact boundaries. The [delivery plan](delivery.md) records proof and unfinished work. The retained development controller remains primary until implementation is complete and the new GUI passes human review.
 
+The [Hosted source foundation](delivery.md#hosted-source-foundation) records the native submitted-review, recovery, source-binding and backup validation boundary and its remaining proof limits.
+
 ## Documents
 
 - [Retained review history](review-history-growth.md): immutable versions, compact summaries, bounded archives and backup integrity.

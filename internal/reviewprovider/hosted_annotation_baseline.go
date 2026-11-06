@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -11,8 +12,8 @@ var hostedAddressedRangeFooter = regexp.MustCompile(`^\n\n✅ Addressed in commi
 var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a-f0-9]{7,40})\n?$`)
 
 // ExtractHostedFindingsWithBaseline preserves strict extraction except for
-// proven old-root fix annotations for standing zero or complete outside-only
-// results. Unrelated Bot reports use the canonical current-source actor policy.
+// proven old-root fix annotations for standing zero or complete positive
+// findings. Unrelated Bot reports use the canonical current-source actor policy.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
 // checks here alone establish neither that journal ownership nor coverage.
@@ -45,7 +46,7 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	projected := snapshot
 	trigger := original.Publication.Trigger.CreatedAt
 	// Old annotations may not masquerade as new orphan roots. Omission still
-	// requires an independently complete standing-zero or outside-only result.
+	// requires an independently complete standing-zero or positive result.
 	projected.ReviewComments = make([]ReviewComment, 0, len(snapshot.ReviewComments))
 	var lastOmitted time.Time
 	for _, root := range snapshot.ReviewComments {
@@ -56,7 +57,7 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 			root.InReplyToID == 0 && publicationActor(root.Author, providerActor) &&
 			root.CreatedAt.Before(trigger) && old.UpdatedAt.Before(trigger) && root.UpdatedAt.After(trigger) &&
 			publicationActor(previousReview.Author, providerActor) && hostedTriggerTime(previousReview.SubmittedAt) && previousReview.SubmittedAt.Before(trigger) &&
-			previousReview.HeadSHA == root.OriginalHeadSHA && reflect.DeepEqual(previousReview, currentReview) &&
+			previousReview.HeadSHA == root.OriginalHeadSHA && sameHistoricalAnnotationReview(previousReview, currentReview) &&
 			sameAnnotatedRoot(root, old, intent.HeadSHA) {
 			if root.UpdatedAt.After(lastOmitted) {
 				lastOmitted = root.UpdatedAt
@@ -76,7 +77,8 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	// The strict resolver owns later-command attribution. Requiring every
 	// omitted edit no later than its finished acknowledgment keeps annotations
 	// inside that proven window without duplicating the closing-window logic.
-	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || outsideOnly) &&
+	positiveInline := len(fallback.Findings) > 0 && publicationInlineInventory(fallback.Publication)
+	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || outsideOnly || positiveInline) &&
 		!lastOmitted.After(fallback.Publication.FinishedAt) {
 		return fallback, nil
 	}
@@ -92,9 +94,37 @@ func sameAnnotatedRoot(current, baseline ReviewComment, head string) bool {
 		// first endpoint makes no ancestry, fix, or completion claim here.
 		footer = hostedAddressedRangeFooter.FindStringSubmatch(suffix)
 	}
-	if !ok || footer == nil || !strings.HasPrefix(head, footer[1]) {
+	// This exact provider status is presentation only, not a claim about a fix
+	// commit. The caller still proves the original comparison and independently
+	// complete inventory before it may omit this unchanged historical body.
+	latestUpdate := suffix == "\n\n✅ Addressed in the latest update" || suffix == "\n\n✅ Addressed in the latest update\n"
+	if !ok || !latestUpdate && (footer == nil || !strings.HasPrefix(head, footer[1])) {
 		return false
 	}
-	current.Body, current.UpdatedAt = baseline.Body, baseline.UpdatedAt
+	// GitHub may remap commit_id when later fixes move a historical comment.
+	// original_commit_id and all original source/position fields stay exact.
+	if !validSHA(current.HeadSHA) || !validSHA(baseline.HeadSHA) {
+		return false
+	}
+	current.Body, current.UpdatedAt, current.HeadSHA = baseline.Body, baseline.UpdatedAt, baseline.HeadSHA
 	return reflect.DeepEqual(current, baseline)
+}
+
+// CodeRabbit may remove one canonical count heading from an otherwise exact
+// historical submitted review when changing its presentation format. This is
+// source equivalence for old annotation exclusion, never new review credit.
+func sameHistoricalAnnotationReview(baseline, current HostedReview) bool {
+	if reflect.DeepEqual(baseline, current) {
+		return true
+	}
+	count, ok := publicationRootCount(baseline.Body)
+	if !ok || !publicationCountAbsent(HostedPublication{EligibleReviews: []HostedReview{current}}) {
+		return false
+	}
+	heading := "\n\n**Actionable comments posted: " + strconv.Itoa(count) + "**"
+	if strings.Count(baseline.Body, heading) != 1 || strings.Replace(baseline.Body, heading, "", 1) != current.Body {
+		return false
+	}
+	current.Body = baseline.Body
+	return reflect.DeepEqual(baseline, current)
 }

@@ -3,10 +3,12 @@ package reviewprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -82,15 +84,23 @@ func TestParentPullEmptyAmbiguousAndMalformedInventory(t *testing.T) {
 		name, body, link string
 		mutate           func(map[string]any)
 		zero             bool
+		ambiguous        bool
 	}{
 		{name: "zero", body: "[]", zero: true},
-		{name: "ambiguous", body: "two"},
+		{name: "ambiguous", body: "two", ambiguous: true},
 		{name: "too many", body: "three"},
 		{name: "null", body: "null"},
 		{name: "object", body: "{}"},
 		{name: "malformed", body: "["},
 		{name: "duplicate key", body: `[{"number":2,"number":2}]`},
-		{name: "pagination", link: `<https://foreign.invalid/pulls?page=2>; rel="next"`},
+		{name: "foreign pagination", link: `<https://foreign.invalid/pulls?page=2>; rel="next"`},
+		{name: "pagination", link: "valid", ambiguous: true},
+		{name: "partial empty inventory", body: "[]", link: "valid", ambiguous: true},
+		{name: "changed pagination selector", link: "changed-selector"},
+		{name: "malformed matching candidates", body: "malformed-two"},
+		{name: "malformed pagination", link: "not-a-link"},
+		{name: "duplicate candidates", body: "duplicate"},
+		{name: "malformed candidate with pagination", body: "[", link: "valid"},
 		{name: "empty pagination", link: " "},
 		{name: "foreign head", mutate: func(v map[string]any) { parentObject(parentObject(v, "head"), "repo")["full_name"] = "other/repo" }},
 		{name: "same owner different repo", mutate: func(v map[string]any) { parentObject(parentObject(v, "head"), "repo")["full_name"] = "owner/fork" }},
@@ -111,11 +121,25 @@ func TestParentPullEmptyAmbiguousAndMalformedInventory(t *testing.T) {
 					t.Error("unproven inventory caused fresh lookup")
 				}
 				if test.link != "" {
-					w.Header()["Link"] = []string{test.link}
+					link := test.link
+					if link == "valid" || link == "changed-selector" {
+						query := url.Values{"state": {"open"}, "head": {"owner:" + ref}, "per_page": {"2"}, "page": {"2"}}
+						if link == "changed-selector" {
+							query.Set("head", "owner:other-branch")
+						}
+						link = "<" + serverURL(r) + r.URL.Path + "?" + query.Encode() + ">; rel=\"next\""
+					}
+					w.Header()["Link"] = []string{link}
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if test.body == "two" || test.body == "three" {
+				if test.body == "two" || test.body == "three" || test.body == "duplicate" || test.body == "malformed-two" {
 					rows := []any{parentCandidateFixture(ref), parentCandidateFixture(ref)}
+					if test.body != "duplicate" {
+						rows[1].(map[string]any)["number"] = 3
+					}
+					if test.body == "malformed-two" {
+						rows[1].(map[string]any)["state"] = "closed"
+					}
 					if test.body == "three" {
 						rows = append(rows, parentCandidateFixture(ref))
 					}
@@ -138,7 +162,11 @@ func TestParentPullEmptyAmbiguousAndMalformedInventory(t *testing.T) {
 				if err != nil || pull != (Pull{}) {
 					t.Fatal("empty inventory is not a parent", pull, err)
 				}
-			} else if !hasCode(err, "provider_invalid_response") || pull != (Pull{}) {
+			} else if test.ambiguous {
+				if !errors.Is(err, ErrParentAmbiguous) || pull != (Pull{}) {
+					t.Fatal("unproven uniqueness lost typed hold", pull, err)
+				}
+			} else if !hasCode(err, "provider_invalid_response") || errors.Is(err, ErrParentAmbiguous) || pull != (Pull{}) {
 				t.Fatal("unproven inventory accepted", pull, err)
 			}
 			if calls.Load() != 1 {

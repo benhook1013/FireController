@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func admissionPolicy(t *testing.T, f *attemptFixture, previous int64, paused ...string) {
@@ -410,7 +411,7 @@ func TestVerifyActionAlreadyCoveredAndHostedIndependent(t *testing.T) {
 	}
 }
 
-func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.T) {
+func TestVerifyActionStackedRequiresExactActualParentWitness(t *testing.T) {
 	f, prior, id, open := coverageFixture(t, 1, false)
 	adjudicationDecide(t, f, id, "reject-predecessor", 0, 0, "rejected")
 	coverageFinalize(t, f, prior, id, 1)
@@ -428,27 +429,28 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	merged := open
 	merged.Pull.Number, merged.Pull.Merged, merged.Pull.State = 3, true, "closed"
 	merged.ParentSHA, merged.ParentPullNumber = "", 0
-	dependencies := []SourcePlan{open, merged}
+	open.Pull.HeadRef = "parent-branch"
+	dependencies := []SourcePlan{open}
 	before := adjudicationState(t, f, child)
 	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
-		t.Fatal("valid covered/merged stack failed", err)
+		t.Fatal("valid covered actual parent failed", err)
 	}
 	for _, test := range []struct {
 		name   string
 		change func([]SourcePlan) []SourcePlan
 	}{
 		{"missing-all", func([]SourcePlan) []SourcePlan { return nil }},
-		{"missing-merged", func(in []SourcePlan) []SourcePlan { return in[:1] }},
-		{"extra", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
-		{"reordered", func(in []SourcePlan) []SourcePlan { return []SourcePlan{in[1], in[0]} }},
-		{"duplicate", func(in []SourcePlan) []SourcePlan { in[1] = in[0]; return in }},
+		{"unrelated-merged-prefix", func(in []SourcePlan) []SourcePlan { return append(in, merged) }},
+		{"duplicate", func(in []SourcePlan) []SourcePlan { return append(in, in[0]) }},
+		{"wrong-parent-number", func(in []SourcePlan) []SourcePlan { in[0].Pull.Number = 3; return in }},
+		{"same-head-wrong-parent-branch", func(in []SourcePlan) []SourcePlan { in[0].Pull.HeadRef = "unrelated-branch"; return in }},
 		{"foreign-repository", func(in []SourcePlan) []SourcePlan { in[0].Repository.ID = 802; return in }},
-		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[1].Pull.RepositoryID = 802; return in }},
-		{"malformed-merged-head", func(in []SourcePlan) []SourcePlan { in[1].Pull.HeadSHA = "bad"; return in }},
-		{"malformed-merged-lifecycle", func(in []SourcePlan) []SourcePlan { in[1].Pull.State = "open"; return in }},
+		{"foreign-pull-repository", func(in []SourcePlan) []SourcePlan { in[0].Pull.RepositoryID = 802; return in }},
+		{"malformed-head", func(in []SourcePlan) []SourcePlan { in[0].Pull.HeadSHA = "bad"; return in }},
+		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State = "closed"; return in }},
+		{"merged", func(in []SourcePlan) []SourcePlan { in[0].Pull.State, in[0].Pull.Merged = "closed", true; return in }},
 		{"malformed-open-parent", func(in []SourcePlan) []SourcePlan { in[0].ParentSHA = strings.Repeat("9", 40); return in }},
-		{"closed-unmerged", func(in []SourcePlan) []SourcePlan { in[1].Pull.Merged = false; return in }},
-		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[1].ObservedAt = ""; return in }},
+		{"missing-observation", func(in []SourcePlan) []SourcePlan { in[0].ObservedAt = ""; return in }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plans := test.change(append([]SourcePlan(nil), dependencies...))
@@ -460,9 +462,9 @@ func TestVerifyActionStackedRequiresCompleteOrderedFreshPredecessors(t *testing.
 	}
 	uncovered := append([]SourcePlan(nil), dependencies...)
 	uncovered[0].Pull.HeadSHA = strings.Repeat("9", 40)
-	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "review_held")
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, uncovered...), "validation_failed")
 	if adjudicationState(t, f, child) != before {
-		t.Fatal("uncovered predecessor refusal changed retained state")
+		t.Fatal("moved actual parent refusal changed retained state")
 	}
 	// The proof was ready at preparation, but a real current correction now needs
 	// a fix. The final guard must check predecessors and target in the same read.
@@ -497,5 +499,83 @@ func TestVerifyActionIndependentAndHostedRejectUnexpectedCLIPlans(t *testing.T) 
 			}
 			attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision, SourcePlan{}), "validation_failed")
 		})
+	}
+}
+
+func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
+	f, parent, input := evidenceFixture(t, "cli", false)
+	if err := EnsureAdjudicationSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	input.ExpectedAnchor.ParentPullNumber = 3
+	input.ExpectedAnchor.ParentSHA = input.ExpectedAnchor.BaseSHA
+	input.ExpectedAnchor.BaseRef = "grandparent-branch"
+	input.Review.Findings = []reviewprovider.ParsedFinding{}
+	input.Review.ReportedFindings = 0
+	var err error
+	parent, err = f.e.Admit(t.Context(), attemptProject, parent.ID, parent.Revision, input.ExpectedAnchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, parent.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverageFinalize(t, f, parent, receipt.ID, 0)
+	previous := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-hop-stack", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{3, 2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	grandparentAnchor := attemptAnchor(attemptProject, 3)
+	grandparentAnchor.CandidateSHA = input.ExpectedAnchor.ParentSHA
+	grandparentAnchor.ParentSHA = grandparentAnchor.BaseSHA
+	body, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "two-hop-grandparent", Request{ExpectedConfigurationRevision: 2, PullNumber: 3, Channel: "cli", HeadSHA: grandparentAnchor.CandidateSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queued Receipt
+	if err := json.Unmarshal(body, &queued); err != nil {
+		t.Fatal(err)
+	}
+	grandparent := f.start(t, attemptProject, queued)
+	grandparent, err = f.e.Admit(t.Context(), attemptProject, grandparent.ID, grandparent.Revision, grandparentAnchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandparentInput := evidenceClone(input)
+	grandparentInput.ExpectedAnchor = grandparentAnchor
+	grandparentInput.CaptureID = "review_capture_" + strings.Repeat("2", 32)
+	grandparentInput.CaptureSHA256 = strings.Repeat("2", 64)
+	grandparentReceipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, grandparent.ID, grandparentInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjudicationComplete(t, f, grandparent)
+	_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "two-hop-finalize-grandparent", grandparentReceipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := f.start(t, attemptProject, f.enqueue(t, attemptProject, "two-hop-child", "cli", 4, 2))
+	anchor := attemptAnchor(attemptProject, 4)
+	anchor.ParentPullNumber, anchor.ParentSHA, anchor.BaseSHA, anchor.BaseRef = 2, input.ExpectedAnchor.CandidateSHA, input.ExpectedAnchor.CandidateSHA, "parent-branch"
+	child, err = f.e.Admit(t.Context(), attemptProject, child.ID, child.Revision, anchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := []SourcePlan{
+		{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 2, State: "open", HeadSHA: input.ExpectedAnchor.CandidateSHA, HeadRef: "parent-branch", BaseSHA: input.ExpectedAnchor.BaseSHA, BaseRef: "grandparent-branch", ChangedFiles: 1}, ParentSHA: input.ExpectedAnchor.ParentSHA, ParentPullNumber: 3, ObservedAt: stamp()},
+		{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 3, State: "open", HeadSHA: grandparentAnchor.CandidateSHA, HeadRef: "grandparent-branch", BaseSHA: grandparentAnchor.BaseSHA, BaseRef: "main", ChangedFiles: 1}, ParentSHA: grandparentAnchor.ParentSHA, ObservedAt: stamp()},
+	}
+	before := adjudicationState(t, f, child)
+	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, plans...); err != nil {
+		t.Fatal("exact two-hop published branch chain refused", err)
+	}
+	for i := range plans {
+		changed := append([]SourcePlan(nil), plans...)
+		changed[i].Pull.HeadRef = "same-head-unrelated-branch"
+		attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, changed...), "validation_failed")
+		if adjudicationState(t, f, child) != before {
+			t.Fatal("mismatched branch changed retained state")
+		}
 	}
 }

@@ -5,6 +5,14 @@ import "time"
 // The complete snapshot and exact original trigger are already validated by
 // ResolveHostedPublication. A rejection proves no completed review or credit.
 func publicationRateLimited(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) bool {
+	return publicationCommandRejected(snapshot, result, provider, closing, "Review rate limited.")
+}
+
+func publicationSkipped(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) bool {
+	return publicationCommandRejected(snapshot, result, provider, closing, "Review skipped.")
+}
+
+func publicationCommandRejected(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time, outcome string) bool {
 	inside := func(at time.Time) bool {
 		return at.After(result.Trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
 	}
@@ -31,8 +39,8 @@ func publicationRateLimited(snapshot HostedPublicationSnapshot, result HostedPub
 			}
 			continue
 		}
-		if !standingCommandReply(comment.Body, "⚠️ Action not completed", "Review rate limited.") &&
-			!standingCommandReply(comment.Body, "Action not completed", "Review rate limited.") {
+		if !standingCommandReply(comment.Body, "⚠️ Action not completed", outcome) &&
+			!standingCommandReply(comment.Body, "Action not completed", outcome) {
 			return false
 		}
 		count++

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,10 +28,9 @@ func transferAdmissionPull(number int64) PullInput {
 	return p
 }
 
-func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
-	f := newAPIFixture(t)
+func transferAdmissionBatch(pulls int64) TransferRequest {
 	group := TransferGroup{Source: "maximum-selected-producer"}
-	for n := int64(1); n <= 100; n++ {
+	for n := int64(1); n <= pulls; n++ {
 		p := transferAdmissionPull(n)
 		for i := 0; i < 2; i++ {
 			id := fmt.Sprintf("selected-%d-%d", n, i)
@@ -38,7 +39,12 @@ func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
 		}
 		group.Pulls = append(group.Pulls, p)
 	}
-	req := transferRequest(0, group)
+	return transferRequest(0, group)
+}
+
+func TestReviewTransferMaximumBatchPublicationIsAtomic(t *testing.T) {
+	f := newAPIFixture(t)
+	req := transferAdmissionBatch(100)
 	preview := transferPreviewFor(t, f, req)
 	if preview.Counts != (TransferCounts{Pulls: 100, Runs: 200, Attempts: 200}) {
 		t.Fatal("maximum batch counts changed", preview.Counts)
@@ -47,13 +53,65 @@ func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
 	if len(importJSON(t, apply)) > 256<<10 {
 		t.Fatal("fixture exceeds selected transport budget")
 	}
-	started := time.Now()
-	response := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "maximum-batch", importJSON(t, apply))
-	requireImportResponse(t, response, 201, "")
-	t.Logf("100-pull/200-run/200-attempt apply completed in %s through ordinary core.Mutate deadline", time.Since(started))
-	for table, want := range map[string]int{"review_current_pulls": 100, "review_current_runs": 200, "review_current_attempts": 200, "receipts": 1, "events": 1} {
+	body, err := normalizeTransfer(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := transferTestScope(t, f)
+	assertMaximum := func(q HistoryQuery) {
+		t.Helper()
+		// publishTransfer owns the publication and event; core.Mutate adds the
+		// receipt, covered separately through actual HTTP apply and replay.
+		for table, want := range map[string]int{"review_current_pulls": 100, "review_current_runs": 200, "review_current_attempts": 200, "receipts": 0, "events": 1} {
+			var got int
+			if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&got); err != nil || got != want {
+				t.Fatal("maximum batch not published atomically", table, got, want, err)
+			}
+		}
+		if err := ValidateHistoryReferences(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateCurrentSummaries(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish := func(tx *sql.Tx) {
+		t.Helper()
+		plan, err := admitTransfer(t.Context(), tx, scope.ProjectID, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := publishTransfer(t.Context(), tx, scope, req, body, plan)
+		if err != nil || receipt.ID == "" || receipt.Revision != 1 || receipt.Outcome != "transferred" {
+			t.Fatal("maximum admitted publication failed", receipt, err)
+		}
+		assertMaximum(tx)
+	}
+	// Maximum-size publication is an atomicity proof, independent of host
+	// speed under race instrumentation. The ordinary deadline is proved below.
+	before := historyMigrationDatabaseDigest(t, f)
+	tx := historyWriterTx(t, f)
+	publish(tx)
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if before != historyMigrationDatabaseDigest(t, f) {
+		t.Fatal("rolled-back maximum publication changed retained state")
+	}
+	tx = historyWriterTx(t, f)
+	publish(tx)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertMaximum(f.store.DB())
+}
+
+func TestReviewTransferHTTPApplyAndReplay(t *testing.T) {
+	f := newAPIFixture(t)
+	_, apply, receipt := transferApplyFor(t, f, transferAdmissionBatch(2), "ordinary-transfer")
+	for table, want := range map[string]int{"review_current_pulls": 2, "review_current_runs": 4, "review_current_attempts": 4, "receipts": 1, "events": 1} {
 		if got := countRows(t, f.store, table); got != want {
-			t.Fatal("maximum batch not committed atomically", table, got, want)
+			t.Fatal("HTTP apply not committed atomically", table, got, want)
 		}
 	}
 	if err := ValidateHistoryReferences(t.Context(), f.store.DB()); err != nil {
@@ -61,6 +119,62 @@ func TestReviewTransferMaximumBatchUsesOrdinaryWriteBudget(t *testing.T) {
 	}
 	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
 		t.Fatal(err)
+	}
+	before := historyMigrationDatabaseDigest(t, f)
+	replay := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "ordinary-transfer", importJSON(t, apply))
+	requireImportResponse(t, replay, 201, "")
+	if replay.Body.String() != receipt || before != historyMigrationDatabaseDigest(t, f) {
+		t.Fatal("HTTP replay changed receipt or retained state")
+	}
+}
+
+func TestReviewTransferOrdinaryDeadlineRollsBackPublication(t *testing.T) {
+	f := newAPIFixture(t)
+	req := transferAdmissionBatch(2)
+	preview := transferPreviewFor(t, f, req)
+	body, err := normalizeTransfer(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := transferTestScope(t, f)
+	before := historyMigrationDatabaseDigest(t, f)
+	started := time.Now()
+	var expired error
+	result, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.transfer", Target: "workspace", Key: "expired-transfer", Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.Before(started.Add(2*time.Second)) || deadline.After(time.Now().Add(2*time.Second)) {
+			t.Fatal("transfer did not receive the ordinary two-second deadline", deadline, ok)
+		}
+		plan, err := admitTransfer(ctx, tx, scope.ProjectID, req)
+		if err != nil {
+			return nil, err
+		}
+		receipt, err := publishTransfer(ctx, tx, scope, req, body, plan)
+		if err != nil {
+			return nil, err
+		}
+		// Wait for the actual mutation deadline after staging publication.
+		// Even a callback returning success must not commit expired work.
+		<-ctx.Done()
+		expired = ctx.Err()
+		return receipt, nil
+	})
+	var failure *core.Error
+	if !errors.Is(expired, context.DeadlineExceeded) || !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Status != http.StatusServiceUnavailable || len(result) != 0 {
+		t.Fatal("expired publication did not return the core deadline refusal", expired, result, err)
+	}
+	if before != historyMigrationDatabaseDigest(t, f) || countRows(t, f.store, "events") != 0 || countRows(t, f.store, "receipts") != 0 {
+		t.Fatal("expired publication changed retained state")
+	}
+	// This recovery is an actual HTTP apply with the same batch and key,
+	// proving expiration left neither a receipt nor held writer admission.
+	apply := TransferApplyRequest{PreviewSHA256: preview.PreviewSHA256, Batch: req}
+	recovery := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "expired-transfer", importJSON(t, apply))
+	requireImportResponse(t, recovery, 201, "")
+	for table, want := range map[string]int{"review_current_pulls": 2, "review_current_runs": 4, "review_current_attempts": 4, "receipts": 1, "events": 1} {
+		if got := countRows(t, f.store, table); got != want {
+			t.Fatal("same-key recovery not committed atomically", table, got, want)
+		}
 	}
 }
 

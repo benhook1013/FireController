@@ -74,6 +74,12 @@ func validEvidenceAnchor(a Anchor) bool {
 	return err == nil && !t.IsZero() && a.RepositoryID > 0 && repository.MatchString(a.Repository) && a.PullNumber > 0 && a.PullNumber <= 2147483647 && a.ParentPullNumber >= 0 && a.ParentPullNumber <= 2147483647 && a.BaseRef != "" && safeText(a.BaseRef, 256) && sha.MatchString(a.CandidateSHA) && sha.MatchString(a.BaseSHA) && sha.MatchString(a.ParentSHA) && sha.MatchString(a.MergeBaseSHA) && hash.MatchString(a.PatchSHA256)
 }
 
+// ValidateRetainedReviewCapture checks immutable capture structure for backup
+// inspection. It grants no current coverage, admission or completion authority.
+func ValidateRetainedReviewCapture(input ReviewEvidenceInput) error {
+	return validateReviewEvidence(input)
+}
+
 // validateReviewEvidence checks immutable structure, never current wall-clock
 // freshness. Retained captures remain valid after a host clock correction.
 func validateReviewEvidence(in ReviewEvidenceInput) error {
@@ -127,6 +133,26 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 	return nil
 }
 
+// New capture warnings must fit the current bounded publication contract.
+// Retained source metadata keeps its original immutable validation boundary.
+func validateNewCoverageLimits(in ReviewEvidenceInput) error {
+	r := in.Review
+	coverageLimitCount := 16
+	if in.Hosted == nil && !r.Complete {
+		// Leave room for the existing incomplete-capture publication warning.
+		coverageLimitCount--
+	}
+	if len(r.CoverageLimits) > coverageLimitCount {
+		return invalid()
+	}
+	for _, limit := range r.CoverageLimits {
+		if !safeText(limit, 1024) || strings.TrimSpace(limit) == "" {
+			return invalid()
+		}
+	}
+	return nil
+}
+
 // RecordReviewEvidence retains one immutable capture without settling or crediting
 // its attempt. Only trusted in-process capture integration may call this method.
 func (e *Engine) RecordReviewEvidence(ctx context.Context, project, attemptID string, input ReviewEvidenceInput) (Receipt, error) {
@@ -137,7 +163,8 @@ func (e *Engine) recordReviewEvidenceAt(ctx context.Context, project, attemptID 
 	if !identifier.MatchString(project) || !identifier.MatchString(attemptID) {
 		return Receipt{}, invalid()
 	}
-	// Validate before JSON encoding, which otherwise replaces invalid UTF-8.
+	// Validate immutable structure before encoding. New warning policy uses the
+	// original input after exact fingerprint replay, preserving invalid UTF-8 checks.
 	if err := validateReviewEvidence(input); err != nil {
 		return Receipt{}, err
 	}
@@ -171,6 +198,11 @@ func (e *Engine) recordReviewEvidenceAt(ctx context.Context, project, attemptID 
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		// New warning bounds never invalidate an identical retained capture.
+		// Inspect original input: JSON encoding replaces invalid UTF-8.
+		if err := validateNewCoverageLimits(input); err != nil {
 			return err
 		}
 		// Only a genuinely new capture is subject to the admission clock. Exact

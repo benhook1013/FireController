@@ -79,10 +79,10 @@ func TestHostedAnnotationBaselineRejectsUnprovenChanges(t *testing.T) {
 		"uppercase commit": func(s, _ *HostedPublicationSnapshot) {
 			s.ReviewComments[0].Body = strings.ReplaceAll(s.ReviewComments[0].Body, strings.Repeat("c", 7), strings.Repeat("C", 7))
 		},
-		"path moved":          func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Path = "engine/else.go" },
-		"line moved":          func(s, _ *HostedPublicationSnapshot) { v := int64(12); s.ReviewComments[0].Line = &v },
-		"head moved":          func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].HeadSHA = strings.Repeat("e", 40) },
-		"original head moved": func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].OriginalHeadSHA = strings.Repeat("e", 40) },
+		"path moved":           func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Path = "engine/else.go" },
+		"line moved":           func(s, _ *HostedPublicationSnapshot) { v := int64(12); s.ReviewComments[0].Line = &v },
+		"invalid current head": func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].HeadSHA = "invalid" },
+		"original head moved":  func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].OriginalHeadSHA = strings.Repeat("e", 40) },
 		"creation moved": func(s, _ *HostedPublicationSnapshot) {
 			s.ReviewComments[0].CreatedAt = s.ReviewComments[0].CreatedAt.Add(time.Second)
 		},
@@ -132,10 +132,14 @@ func TestHostedAnnotationBaselineRejectsUnprovenChanges(t *testing.T) {
 }
 
 func TestHostedAnnotationBaselineExactFootersAndRawConservation(t *testing.T) {
-	for _, length := range []int{7, 12, 40} {
+	for _, length := range []int{0, 7, 12, 40} {
 		for _, newline := range []string{"", "\n"} {
 			s, b, intent, poster, bot, earliest := annotationBaselineFixture(t)
-			s.ReviewComments[0].Body = b.ReviewComments[0].Body + "\n\n✅ Addressed in commit " + intent.HeadSHA[:length] + newline
+			footer := "\n\n✅ Addressed in the latest update"
+			if length > 0 {
+				footer = "\n\n✅ Addressed in commit " + intent.HeadSHA[:length]
+			}
+			s.ReviewComments[0].Body = b.ReviewComments[0].Body + footer + newline
 			second := s.ReviewComments[0]
 			second.ID++
 			second.UpdatedAt = s.IssueComments[2].UpdatedAt // Equality at the exact finish is permitted.
@@ -159,6 +163,51 @@ func TestHostedAnnotationBaselineExactFootersAndRawConservation(t *testing.T) {
 				t.Fatal("attribution changed a raw snapshot or caller metadata")
 			}
 		}
+	}
+}
+
+func TestHostedAnnotationBaselineLatestUpdateRejectsUnprovenChanges(t *testing.T) {
+	for name, change := range map[string]func(*HostedPublicationSnapshot, *HostedPublicationSnapshot){
+		"changed original body": func(s, _ *HostedPublicationSnapshot) {
+			s.ReviewComments[0].Body = "Changed finding.\n" + s.ReviewComments[0].Body
+		},
+		"near footer":        func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Body += "." },
+		"extra newline":      func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Body += "\n\n" },
+		"extra prose":        func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Body += "\nAnother finding." },
+		"missing baseline":   func(_, b *HostedPublicationSnapshot) { *b = HostedPublicationSnapshot{} },
+		"different root":     func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].ID++ },
+		"different actor":    func(_, b *HostedPublicationSnapshot) { b.ReviewComments[0].Author.ID++ },
+		"different location": func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Path = "engine/moved.go" },
+		"different original head": func(s, _ *HostedPublicationSnapshot) {
+			s.ReviewComments[0].OriginalHeadSHA = strings.Repeat("e", 40)
+		},
+		"different review": func(s, _ *HostedPublicationSnapshot) { s.Reviews[0].Body += " Changed inventory." },
+		"fresh root": func(s, _ *HostedPublicationSnapshot) {
+			s.ReviewComments[0].CreatedAt = s.IssueComments[0].CreatedAt.Add(time.Second)
+		},
+		"after finish":   func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].UpdatedAt = s.ObservedAt },
+		"missing finish": func(s, _ *HostedPublicationSnapshot) { s.IssueComments = s.IssueComments[:2] },
+		"unknown inventory": func(s, _ *HostedPublicationSnapshot) {
+			s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "No actionable comments were generated in the recent review.", "Inventory unavailable.", 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, b, intent, poster, bot, earliest := annotationBaselineFixture(t)
+			s.ReviewComments[0].Body = b.ReviewComments[0].Body + "\n\n✅ Addressed in the latest update"
+			change(&s, &b)
+			before, _ := json.Marshal(s)
+			baselineBefore, _ := json.Marshal(b)
+			want, wantErr := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			got, err := ExtractHostedFindingsWithBaseline(s, b, intent, poster, bot, earliest)
+			if (err == nil) != (wantErr == nil) || !reflect.DeepEqual(got, want) || got.Complete {
+				t.Fatal("generic status footer weakened strict refusal", got, err, want, wantErr)
+			}
+			after, _ := json.Marshal(s)
+			baselineAfter, _ := json.Marshal(b)
+			if string(before) != string(after) || string(baselineBefore) != string(baselineAfter) {
+				t.Fatal("refusal changed immutable source")
+			}
+		})
 	}
 }
 
