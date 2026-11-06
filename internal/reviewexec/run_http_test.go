@@ -75,33 +75,41 @@ func TestRunHTTPWaitSharesBudgetAcrossSelectionAndExecution(t *testing.T) {
 	mux := http.NewServeMux()
 	f.e.Register(mux)
 	read := "/api/v1/projects/" + attemptProject + "/reviews/selections/" + receipt.ID
-	// Selection consumes most of a one-second wait; the still-queued child
-	// receives the remaining budget rather than another full second.
+	// Selection consumes part of a two-second wait. Its queued child gets
+	// only the remaining budget. Leave time for race-instrumented SQL.
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 		select {
-		case <-time.After(800 * time.Millisecond):
+		case <-time.After(time.Second):
 			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
 		case <-ctx.Done():
 			return reviewprovider.Repository{}, ctx.Err()
 		}
 	}}
-	started := time.Now()
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() { done <- runHTTPCall(t, f, mux, "GET", read, "", "", "wait=1") }()
+	type response struct {
+		recorder *httptest.ResponseRecorder
+		elapsed  time.Duration
+	}
+	done := make(chan response, 1)
+	go func() {
+		started := time.Now()
+		w := runHTTPCall(t, f, mux, "GET", read, "", "", "wait=2")
+		done <- response{w, time.Since(started)}
+	}()
 	operationWaitRegistered(t, f.e, 1)
 	if _, err := f.e.runNext(ctx, map[string]TargetReader{"test-capability": reader}); err != nil {
 		t.Fatal(err)
 	}
 	var w *httptest.ResponseRecorder
 	select {
-	case w = <-done:
-	case <-time.After(2 * time.Second):
+	case result := <-done:
+		w = result.recorder
+		if result.elapsed > 2750*time.Millisecond {
+			t.Fatal("each stage allocated a separate wait", result.elapsed)
+		}
+	case <-time.After(3 * time.Second):
 		t.Fatal("combined wait did not finish")
-	}
-	if elapsed := time.Since(started); elapsed > 1600*time.Millisecond {
-		t.Fatal("each stage allocated a separate wait", elapsed)
 	}
 	var state RunState
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.State != "selected" || state.Operation == nil || state.Operation.State != "queued" {
