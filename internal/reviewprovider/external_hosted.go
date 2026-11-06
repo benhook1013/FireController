@@ -92,7 +92,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			run, count, selected, valid := parseSubmittedReview(review.Body, review.HeadSHA)
 			archive := false
 			if run == "" {
-				run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, review.HeadSHA, true)
+				run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, review.HeadSHA, true, false)
 				archive = run != ""
 			}
 			if run == "" {
@@ -157,7 +157,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		}
 	}
 	result := make([]ExternalHostedRun, 0, len(groups))
-	var omittedCompletions map[int64]bool
+	var omittedCompletions map[int64]time.Time
 	for _, g := range groups {
 		pub := &g.run.Inventory.Publication
 		pub.FinishedAt = g.run.FinishedAt
@@ -230,9 +230,9 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			}
 			if g.reason == "" && g.archiveSubmitted && g.count == 0 {
 				if omittedCompletions == nil {
-					omittedCompletions = externalOmittedCountCompletions(snapshot, provider, windows)
+					omittedCompletions = omittedHostedCountCompletions(snapshot, provider, windows, 0, time.Time{})
 				}
-				if len(g.run.ReviewIDs) != 1 || !omittedCompletions[g.run.ReviewIDs[0]] {
+				if len(g.run.ReviewIDs) != 1 || omittedCompletions[g.run.ReviewIDs[0]].IsZero() {
 					g.reason = "submitted_review_inventory_unproven"
 				}
 			}

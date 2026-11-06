@@ -87,9 +87,10 @@ func currentReviewHeadingOffsets(body string) (int, int) {
 
 // An omitted count can only describe an empty archive when a single submitted
 // review and a unique authenticated terminal reply occupy one exact full-review
-// command window. This is inventory corroboration, not native ownership.
-func externalOmittedCountCompletions(s HostedPublicationSnapshot, provider Author, windows externalNativeWindows) map[int64]bool {
-	completed := map[int64]bool{}
+// command window. A nonzero trigger has already been adopted by native
+// recovery, so it restricts the proof to that one exact marked command.
+func omittedHostedCountCompletions(s HostedPublicationSnapshot, provider Author, windows externalNativeWindows, trigger int64, closing time.Time) map[int64]time.Time {
+	completed := map[int64]time.Time{}
 	var commands, replies []IssueComment
 	var reviews []HostedReview
 	var roots []time.Time
@@ -141,7 +142,12 @@ func externalOmittedCountCompletions(s HostedPublicationSnapshot, provider Autho
 		if i+1 < len(commands) {
 			end = commands[i+1].CreatedAt
 		}
-		if command.Body != "@coderabbitai full review" || !command.UpdatedAt.Equal(start) || i > 0 && commands[i-1].CreatedAt.Equal(start) {
+		if !closing.IsZero() && closing.Before(end) {
+			end = closing
+		}
+		exactCommand := trigger == 0 && command.Body == "@coderabbitai full review" ||
+			trigger != 0 && command.ID == trigger && externalNativeTrigger.MatchString(command.Body)
+		if !exactCommand || !command.UpdatedAt.Equal(start) || i > 0 && commands[i-1].CreatedAt.Equal(start) {
 			continue
 		}
 		a := sort.Search(len(replies), func(i int) bool { return !replies[i].CreatedAt.Before(start) })
@@ -161,10 +167,33 @@ func externalOmittedCountCompletions(s HostedPublicationSnapshot, provider Autho
 		}
 		edit := sort.Search(len(windows.edits), func(i int) bool { return windows.edits[i].CreatedAt.After(ack.UpdatedAt) }) - 1
 		root := sort.Search(len(roots), func(i int) bool { return !roots[i].Before(start) })
-		if !unique || edit >= 0 && !windows.latestEdit[edit].Before(start) || root < len(roots) && !roots[root].After(ack.UpdatedAt) {
+		if !unique || trigger == 0 && edit >= 0 && !windows.latestEdit[edit].Before(start) || root < len(roots) && !roots[root].After(ack.UpdatedAt) {
 			continue
 		}
-		completed[review.ID] = true
+		completed[review.ID] = ack.UpdatedAt
 	}
 	return completed
+}
+
+// A marked zero without a count requires the exact provider envelope, no new
+// roots or competing result, and an authenticated terminal command reply.
+func publicationMarkedZero(snapshot HostedPublicationSnapshot, result HostedPublication, provider Author, closing time.Time) time.Time {
+	if len(result.Batches) != 1 || len(result.EligibleReviews) != 1 || len(result.Roots) != 0 || !publicationCountAbsent(result) {
+		return time.Time{}
+	}
+	review := result.Batches[0]
+	run, count, _, ok := parseSubmittedReviewEnvelope(review.Body, review.HeadSHA, true, true)
+	if !ok || count != 0 {
+		return time.Time{}
+	}
+	for _, other := range snapshot.Reviews {
+		if other.ID == review.ID || !publicationActor(other.Author, provider) {
+			continue
+		}
+		marker, found, _ := publicationBatchMarker(other.Body)
+		if other.State == "pending" || found && marker.publication == result.PublicationID || submittedRunReused(other.Body, run) {
+			return time.Time{}
+		}
+	}
+	return omittedHostedCountCompletions(snapshot, provider, externalNativeWindows{}, result.Trigger.CommentID, closing)[review.ID]
 }

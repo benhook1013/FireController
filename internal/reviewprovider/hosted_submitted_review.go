@@ -71,7 +71,11 @@ func (p *submittedReviewParser) block(label string) bool {
 // Only the observed optional dl/dd wrapper is accepted, with a matching close.
 func (p *submittedReviewParser) wrap() (wrapped, ok bool) {
 	if line, _ := p.next(); line.text == "<dl>" {
-		return true, p.take("<dl>", false) && p.take("<dd>", false)
+		if !p.take("<dl>", false) || !p.take("<dd>", false) {
+			return true, false
+		}
+		p.take("<br>", false)
+		return true, true
 	}
 	return false, true
 }
@@ -106,10 +110,10 @@ func (p *submittedReviewParser) caution(body string) bool {
 }
 
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
-	return parseSubmittedReviewEnvelope(body, head, false)
+	return parseSubmittedReviewEnvelope(body, head, false, false)
 }
 
-func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, count int, selected map[string]bool, ok bool) {
+func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run string, count int, selected map[string]bool, ok bool) {
 	if !validBody(body) {
 		return
 	}
@@ -121,7 +125,7 @@ func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, 
 	if !p.take("<!-- coderabbit-ai-generated:v1 -->", true) {
 		return
 	}
-	if line, _ := p.next(); !archive || line.text != "---" {
+	if line, _ := p.next(); !current || line.text != "---" {
 		claim, valid := p.text()
 		match := publicationActionable.FindStringSubmatch(claim)
 		if !valid || match == nil {
@@ -150,7 +154,7 @@ func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, 
 	}
 	// The optional prompt is opaque. findingBlock retains visibility across
 	// fences/quotes, so examples cannot close the prompt and become metadata.
-	if archive {
+	if current {
 		if !p.currentPrompt(body) || !p.take("<h6>", false) {
 			return
 		}
@@ -283,8 +287,14 @@ func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, 
 			return
 		}
 	}
-	if !p.close(infoWrapped) || archive && !p.take("</h6>", false) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
+	if !p.close(infoWrapped) || current && !p.take("</h6>", false) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
 		return
+	}
+	if marked {
+		line, valid := p.text()
+		if !valid || !publicationMarker.MatchString(line) {
+			return
+		}
 	}
 	_, extra := p.next()
 	return run, count, selected, !extra

@@ -570,8 +570,11 @@ func standingCommandReply(body, summary, outcome string) bool {
 	} else {
 		return false
 	}
-	// Only the two observed closed envelopes are accepted. Generic HTML
+	// Only the observed closed envelopes are accepted. Generic HTML
 	// removal could turn quoted examples or unknown outcomes into an ACK.
+	if len(lines) >= 3 && lines[0] == "<dl>" && lines[1] == "<dd>" && lines[2] == "<br>" {
+		return slices.Equal(lines[3:], []string{outcome, "</dd>", "</dl>", "</details>"})
+	}
 	return slices.Equal(lines, []string{outcome, "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", outcome, "</dd>", "</dl>", "</details>"})
 }
 

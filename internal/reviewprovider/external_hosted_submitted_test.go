@@ -158,7 +158,7 @@ func TestExternalHostedOmittedCountRequiresCompleteTerminalEvidence(t *testing.T
 			f.snapshot.ReviewComments = []ReviewComment{root}
 		}, false},
 		{"unclassified finding section", func(f *hfFixture) {
-			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "</h6>", "</h6>\n\n"+hfOutsideCategory(1, hfOutside(3, "engine/queue.go", "12-15", "Outside finding")), 1)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "</h6>", "</h6>\n\n## Unrecognized finding section\n"+hfMarker(3), 1)
 		}, false},
 		{"unknown prompt", func(f *hfFixture) {
 			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Prompt to fix all issues", "Unrecognized prompt", 1)
@@ -200,6 +200,68 @@ func TestExternalHostedCurrentRootClockAllowanceIsNarrow(t *testing.T) {
 			got := externalDiscover(t, f)
 			if len(got) != 1 || got[0].Inventory.Complete || got[0].Inventory.Reason != "root_binding_mismatch" {
 				t.Fatal("new archive presentation waived exact root binding")
+			}
+		})
+	}
+}
+
+func TestNativeHostedMarkedOmittedCountRequiresTerminalEvidence(t *testing.T) {
+	for _, mode := range []string{"complete", "missing reply", "wrong author", "early reply", "competing submission", "malformed count", "unclassified finding", "unknown reply markup", "unproven root", "late annotation"} {
+		t.Run(mode, func(t *testing.T) {
+			f := submittedCurrentFixture(t)
+			review, reply := &f.snapshot.Reviews[0], &f.snapshot.IssueComments[1]
+			prompt, metadata, _ := strings.Cut(externalCurrentSubmission(f.intent.HeadSHA, true), "<h6>")
+			review.Body = prompt + "<h6>" + strings.ReplaceAll(metadata, "<dl>\n<dd>\n", "<dl>\n<dd>\n<br>\n") + "\n\n" + publicationTestMarker(1, 1)
+			reply.Body = strings.Replace(reply.Body, "<summary>✅ Action performed</summary>\n\nFull review finished.", "<summary>Action performed</summary>\n<dl>\n<dd>\n<br>\n\nFull review finished.\n\n</dd>\n</dl>", 1)
+
+			root := f.snapshot.ReviewComments[0]
+			trigger := f.snapshot.IssueComments[0].CreatedAt
+			oldHead := strings.Repeat("d", 40)
+			oldReview := HostedReview{ID: 400, Author: f.bot, HeadSHA: oldHead, State: "commented", SubmittedAt: trigger.Add(-time.Minute)}
+			root.ReviewID, root.HeadSHA, root.OriginalHeadSHA = oldReview.ID, oldHead, oldHead
+			root.CreatedAt, root.UpdatedAt = oldReview.SubmittedAt, oldReview.SubmittedAt
+			baseline := HostedPublicationSnapshot{Complete: true, ObservedAt: trigger.Add(-time.Second), IssueComments: []IssueComment{}, Reviews: []HostedReview{oldReview}, ReviewComments: []ReviewComment{root}}
+			root.UpdatedAt = trigger.Add(time.Second)
+			root.Body += "\n\n✅ Addressed in commits " + oldHead[:7] + " to " + f.intent.HeadSHA[:7]
+			f.snapshot.ReviewComments = []ReviewComment{root}
+
+			switch mode {
+			case "missing reply":
+				f.snapshot.IssueComments = f.snapshot.IssueComments[:1]
+			case "wrong author":
+				reply.Author.ID++
+			case "early reply":
+				reply.UpdatedAt = review.SubmittedAt
+			case "competing submission":
+				other := *review
+				other.ID += 10
+				other.Body = ""
+				f.snapshot.Reviews = append(f.snapshot.Reviews, other)
+			case "malformed count":
+				review.Body = "**Actionable comments posted: unknown**\n\n" + review.Body
+			case "unclassified finding":
+				review.Body = strings.Replace(review.Body, "</h6>", "</h6>\n\n## Unrecognized finding section\n"+hfMarker(3), 1)
+			case "unknown reply markup":
+				reply.Body = strings.Replace(reply.Body, "<br>", "<blockquote>", 1)
+			case "unproven root":
+				baseline.ReviewComments = []ReviewComment{}
+			case "late annotation":
+				f.snapshot.ReviewComments[0].UpdatedAt = reply.UpdatedAt.Add(500 * time.Millisecond)
+			}
+			f.snapshot.Reviews = append(f.snapshot.Reviews, oldReview)
+			if f.extract(t).Complete {
+				t.Fatal("edited historical root should require baseline proof")
+			}
+			got, err := ExtractHostedFindingsWithBaseline(f.snapshot, baseline, f.intent, f.poster, f.bot, f.earliest)
+			if err != nil || got.Complete != (mode == "complete") {
+				t.Fatal("unexpected marked zero attribution", got.Reason, err)
+			}
+			if got.Complete {
+				parent := strings.Repeat("b", 40)
+				base, proven := ResolveHostedComparison(got.Publication, f.intent.HeadSHA, parent, parent)
+				if !proven || base != parent || len(got.Findings) != 0 || got.Publication.Trigger.CommentID != 301 || got.Publication.Batches[0].ID != 401 || !got.Publication.FinishedAt.Equal(reply.UpdatedAt) {
+					t.Fatal("marked zero did not retain exact original proof")
+				}
 			}
 		})
 	}
