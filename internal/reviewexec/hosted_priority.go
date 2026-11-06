@@ -73,7 +73,10 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 }
 
 func (e *Engine) hostedPriorityBinding(ctx context.Context, tx *sql.Tx, o Operation) (bool, error) {
-	_, err := e.currentExecutionContext(ctx, tx, o)
+	err := requireExternalHostedSettled(ctx, tx, o.ProjectID, o.PullNumber, o.Channel)
+	if err == nil {
+		_, err = e.currentExecutionContext(ctx, tx, o)
+	}
 	if err == nil {
 		return true, nil
 	}

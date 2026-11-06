@@ -32,6 +32,8 @@ type mutationInvocation struct {
 	reviewFix                client.ReviewFixRequest
 	reviewDecisionBatch      client.ReviewDecisionBatchRequest
 	reviewFixBatch           client.ReviewFixBatchRequest
+	externalHostedSettlement client.ExternalHostedSettlementRequest
+	pullNumber               int64
 	reviewFinalize           client.ReviewFinalizeRequest
 	reviewRequest            client.ReviewRequest
 	reviewSource             client.ReviewSourceRequest
@@ -52,7 +54,7 @@ func isMutation(command, operation string) bool {
 		return true
 	}
 	switch command + " " + operation {
-	case "reviews publish", "reviews publication-recover", "jobs create", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews decide-batch", "reviews fix-batch", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
+	case "reviews publish", "reviews publication-recover", "jobs create", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews decide-batch", "reviews fix-batch", "reviews settle-hosted", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
 	}
 	return false
@@ -238,6 +240,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.DecideReviewFindings(ctx, call.key, call.id, call.reviewDecisionBatch)
 	case "reviews fix-batch":
 		return service.RecordReviewFixes(ctx, call.key, call.id, call.reviewFixBatch)
+	case "reviews settle-hosted":
+		return service.SettleExternalHosted(ctx, call.key, call.pullNumber, call.externalHostedSettlement)
 	case "reviews decide":
 		return service.DecideReviewFinding(ctx, call.key, call.id, call.reviewDecision)
 	case "reviews fix":

@@ -135,6 +135,7 @@ func findingLines(body string) ([]findingLine, bool) {
 type findingDecoder struct {
 	inventory *HostedFindingInventory
 	seen      map[string]bool
+	archive   bool
 }
 
 func (d *findingDecoder) fail(reason string) {
@@ -865,10 +866,30 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 		d.fail("summary_format_unsupported")
 	}
 	followup, followupItems := false, 0
+	archivePrompt, archiveHeadingClose := false, -1
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if l.hidden || l.text == "" {
 			continue
+		}
+		if d.archive && selected && l.quote == 0 {
+			if i == archiveHeadingClose {
+				continue
+			}
+			if l.text == "<h6>" && archivePrompt && archiveHeadingClose == -1 {
+				p := submittedReviewParser{lines: lines, at: i + 1}
+				p.next()
+				start := p.at
+				if p.block("ℹ️ Review info") {
+					if end, closed := findingBlock(lines, start, 0); closed {
+						p.at = end + 1
+						if p.take("</h6>", false) {
+							archiveHeadingClose, i = p.at-1, start-1
+							continue
+						}
+					}
+				}
+			}
 		}
 		if l.quote == 0 && l.text == "## Follow-up Comments" {
 			if followup {
@@ -906,6 +927,11 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 					d.reviewInfoCoverage(review.Body, lines, i, end)
 				}
 				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || reviewInfo
+				if d.archive && selected && externalSubmittedPrompt.MatchString(header) {
+					p := submittedReviewParser{lines: lines, at: i}
+					known = !archivePrompt && p.archivePrompt(review.Body) && p.at == end+1 && p.take("<h6>", false)
+					archivePrompt = archivePrompt || known
+				}
 				if !known && selected {
 					d.fail("summary_format_unsupported")
 				}
@@ -1020,6 +1046,10 @@ func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTrig
 // decodeHostedFindings shares only inventory decoding; callers establish source
 // attribution independently. It performs no request/attempt or coverage action.
 func decodeHostedFindings(publication HostedPublication) HostedFindingInventory {
+	return decodeHostedFindingsMode(publication, false)
+}
+
+func decodeHostedFindingsMode(publication HostedPublication, archive bool) HostedFindingInventory {
 	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
 	if publication.State != "attributed" {
 		result.Reason = publication.Reason
@@ -1031,7 +1061,7 @@ func decodeHostedFindings(publication HostedPublication) HostedFindingInventory 
 		return result
 	}
 	result.Complete = true
-	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
+	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}, archive: archive}
 	for _, root := range publication.Roots {
 		decoder.inline(root)
 	}

@@ -26,6 +26,7 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
       ['source_obligations_pending', {text:'Carried work',description:'Unresolved work carried over at cutover holds new reviews. Read the carried work in Review details.'}],
       ['source_obligations_unavailable', {text:'Held',description:'Carried review work could not be checked. New reviews remain held.'}],
       ['routed_findings_pending', {text:'Findings pending',description:'Incoming routed findings hold new reviews.'}],
+      ['external_hosted_pending', {text:'Manual results pending',description:'Settle the captured manual Hosted results before starting another Hosted review.'}],
       ['review_evidence_pending', {text:'Results pending',description:'Retained review results still need to be settled before another review.'}],
       ['predecessor_unfinished', {text:'Dependency pending',description:'This PR depends on unfinished predecessor work.'}],
     ]);

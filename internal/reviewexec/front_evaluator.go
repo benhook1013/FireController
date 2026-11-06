@@ -58,6 +58,9 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 		}
 		return evaluatedFront{}, err
 	}
+	if state.ExternalPending {
+		return evaluatedFront{state: "held", reason: "external_hosted_pending", plan: plan}, nil
+	}
 	if state.Pending {
 		return evaluatedFront{state: "held", reason: "review_evidence_pending", plan: plan}, nil
 	}

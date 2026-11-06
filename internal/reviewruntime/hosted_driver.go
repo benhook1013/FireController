@@ -307,6 +307,10 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	reads := newSourceReads(d.provider)
 	currentSource, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
 	if err != nil {
+		var refusal *core.Error
+		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+			return failed(refusal.Code)
+		}
 		return failed("source_admission_changed")
 	}
 	// Preserve the exact semantic comparison checked by RecheckSource while
@@ -329,6 +333,10 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		return failed("execution_binding_changed")
 	}
 	if err := d.engine.VerifyHostedAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, currentSource, predecessors...); err != nil {
+		var refusal *core.Error
+		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+			return failed(refusal.Code)
+		}
 		return failed("admission_changed")
 	}
 	comment, err := d.provider.PostIssueComment(ctx, prepared.plan.Repository.FullName, operation.PullNumber, body)

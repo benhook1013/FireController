@@ -218,7 +218,7 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || roundControlRefusal(failure.Code) {
+		if failure.Code == "review_evidence_pending" || failure.Code == "external_hosted_pending" || failure.Code == "review_capacity" || roundControlRefusal(failure.Code) {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
@@ -337,6 +337,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			// A protective source hold may arrive during successful preparation.
 			// Admit has refused before recording intent or invoking Dispatch, so
 			// settle this unused reservation through the normal held transition.
+			if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+				return e.finishPreparation(a, "held", refusal.Code)
+			}
 			if errors.As(err, &refusal) && refusal.Code == "review_held" && preparationReason(err) == "source_obligations_pending" {
 				return e.finishPreparation(a, "held", "source_obligations_pending")
 			}

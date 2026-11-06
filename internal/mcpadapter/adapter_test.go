@@ -601,6 +601,7 @@ var managementDiscoveryContract = map[string]struct{ write, destructive, externa
 	"publication_preview":               {false, false, false},
 	"publication_unpublish":             {true, true, false},
 	"review_attempt_settle":             {true, true, false},
+	"review_external_hosted_settle":     {true, true, false},
 	"review_execution_configure":        {true, true, false},
 	"review_import_apply":               {true, true, false},
 	"review_import_preview":             {false, false, false},

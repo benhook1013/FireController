@@ -61,6 +61,9 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if name == externalHostedSettlementTool {
+		return externalHostedSettlementArguments(data)
+	}
 	if name == "wait_for_reviews" {
 		return reviewWatchArguments(data)
 	}
@@ -281,7 +284,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
-	if name == "review_following_update" {
+	if name == "review_following_update" || name == externalHostedSettlementTool {
 		return true
 	}
 	if existingManagementWrite(name) {

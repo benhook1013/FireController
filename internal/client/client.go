@@ -221,6 +221,9 @@ func requestOperation(method string, segments []string) string {
 		return "service mutation"
 	}
 	resource := segments[4:]
+	if method == http.MethodPost && len(resource) == 4 && resource[0] == "reviews" && resource[1] == "external-hosted" && resource[3] == "settlement" {
+		return "Hosted settlement"
+	}
 	if len(resource) == 1 && resource[0] == "jobs" {
 		return "job creation"
 	}
@@ -633,6 +636,9 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 				result.Message = "A review selection in this channel is already pending; this start was not accepted."
 				result.Action = "Read the existing selection with review_selection_read selection_id=" + id + " (CLI: reviews run-read --selection-id " + id + "). Optional bounded waiting follows its original operation when available. This refusal accepted no new start; do not replace or cancel pending work."
 			}
+		case "external_hosted_pending":
+			hint := externalHostedPendingDiagnostic()
+			result.Message, result.Action = hint.Explanation, hint.NextAction
 		case "review_round_capacity":
 			result.Message = "No unreserved review capacity is available for this PR/channel; existing work may already occupy the remaining allocation."
 			result.Action = "Use review_operations_list filtered by pull_number and channel (CLI: reviews operations --pr NUMBER --channel CHANNEL) to find existing queued, active or completed-unfinalized work, then read its original operation. Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) separately for configured limits and completed counts. Do not submit duplicate reviews, cancel existing work or change grants automatically."
@@ -709,6 +715,9 @@ func (c *Client) safeDetails(value any, code string) any {
 			return nil
 		}
 		return map[string]any{"selection_id": id, "channel": channel, "state": state}
+	}
+	if code == "external_hosted_pending" {
+		return safeExternalHostedPendingDetails(value)
 	}
 	if code == "worker_retirement_blocked" {
 		return safeWorkerRetirementBlockers(value)

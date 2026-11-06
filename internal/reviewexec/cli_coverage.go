@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func validCoverageSource(current SourcePlan) bool {
@@ -21,6 +23,7 @@ func validCoverageSource(current SourcePlan) bool {
 type ComparisonState struct {
 	Covered          bool
 	Pending          bool
+	ExternalPending  bool
 	RoundsConfigured bool
 	RoundsComplete   bool
 }
@@ -81,6 +84,27 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 	}
 	if dirty {
 		return ComparisonState{}, adjudicationStorageError()
+	}
+	if channel == "hosted" {
+		ids, err := reviews.PendingExternalHosted(ctx, tx, project, repositoryID, number, 1)
+		if err != nil {
+			return ComparisonState{}, err
+		}
+		result.ExternalPending = len(ids) > 0
+		result.Pending = result.Pending || result.ExternalPending
+		if !result.Covered {
+			// A deliberately counted and fixed batch supplies earned channel
+			// coverage for its original repository, across later head movement.
+			err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM review_round_external_credits credit
+ JOIN review_round_external_members member ON member.batch_id=credit.batch_id AND member.project_id=credit.project_id
+ JOIN review_run_versions v ON v.project_id=member.project_id AND v.id=member.run_id AND v.pull_number=credit.pull_number AND v.finalized=1
+ JOIN review_snapshots s ON s.project_id=v.project_id AND s.revision=v.version_revision
+ WHERE credit.project_id=? AND credit.pull_number=? AND s.repository_id=?)`, project, number, repositoryID).Scan(&result.Covered)
+			if err != nil {
+				return ComparisonState{}, err
+			}
+		}
 	}
 	rounds, err := readRoundControl(ctx, tx, project, number, channel)
 	if err != nil {

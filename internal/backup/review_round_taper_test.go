@@ -23,6 +23,8 @@ func roundTaperPredecessor(t *testing.T, f *restoreFixture) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE review_round_external_members`,
+		`DROP TABLE review_round_external_credits`,
 		`CREATE TEMP TABLE taper_predecessor_changes AS SELECT * FROM review_round_changes`,
 		`DROP TABLE review_round_changes`,
 		reviewexec.RoundSchemaV4SQL()[1],
@@ -92,8 +94,8 @@ func TestRoundTaperInventoryPopulatedUpgradeAndInactiveRestore(t *testing.T) {
 	roundTaperPredecessor(t, f)
 	// Inspection and inactive restore accept the original version-four bundle
 	// without upgrading its schema or rewriting its policy history.
-	for _, version := range []int{4, 5} {
-		if version == 5 {
+	for _, version := range []int{4, 6} {
+		if version == 6 {
 			lowerRoundTaper(t, f)
 		}
 		before := backupRows(t, f.store.DB())
@@ -126,7 +128,7 @@ func TestRoundTaperInventoryPopulatedUpgradeAndInactiveRestore(t *testing.T) {
 			t.Fatal("native completion changed", completions, err)
 		}
 		expectedChanges := 2
-		if version == 5 {
+		if version == 6 {
 			expectedChanges++
 		}
 		if err = db.QueryRow(`SELECT count(*) FROM review_round_changes WHERE project_id=? AND pull_number=4 AND channel='cli'`, f.project).Scan(&changes); err != nil || changes != expectedChanges {

@@ -217,6 +217,9 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if err := requireIncomingRoutesClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
 		return Receipt{}, err
 	}
+	if err := requireExternalHostedSettled(ctx, tx, scope.ProjectID, r.PullNumber, r.Channel); err != nil {
+		return Receipt{}, err
+	}
 	policy, err := readPolicy(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err

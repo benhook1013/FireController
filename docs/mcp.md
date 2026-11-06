@@ -110,6 +110,7 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_finding_decide` | Required idempotency_key/evidence_id/expected_revision/finding/disposition/reason; completed adjudication result. |
 | `review_finding_fix` | Required idempotency_key/evidence_id/expected_revision/finding/expected_sha/fix_sha/proof_note; completed fix-reference result. |
 | `review_source_finalize` | Required idempotency_key/evidence_id/expected_revision; completed source-count finalization result. |
+| `review_external_hosted_settle` | Required pull_number, idempotency_key, count_round and runs. Settle selected manual Hosted results with all finding decisions and fix proof for accepted findings. Optionally count the batch as one round. |
 | `review_subagent_record` | Record one actual completed independent Subagent review under the bound project writer; counts and identities derived; no provider request or allowance use. |
 | `review_subagent_read` | Read a recorded Subagent run, stable run revision and original findings for decision/fix updates. |
 | `review_subagent_update` | Guarded partial decisions/fix proof/finalization on a recorded Subagent review; original capture and finalized counts retained. |

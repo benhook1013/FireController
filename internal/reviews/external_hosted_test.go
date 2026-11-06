@@ -239,6 +239,16 @@ func TestExternalHostedRollbackMissingRetiredAndConcurrentNative(t *testing.T) {
 	if len(retained.Findings) != 1 || retained.Findings[0].Disposition != "accepted" || retained.Findings[0].ProofNote != "RETAINED_NATIVE_FIX" {
 		t.Fatal("external append changed native decisions", retained)
 	}
+	// Full replacement is safe once the captured result has been handled.
+	r := externalRun(1)
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return FinalizeExternalHostedRun(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "fixture"}, NativeAdjudication{
+			SourceRunID: r.SourceRunID, Finalized: true, FrozenCounts: &NativeCounts{Found: 1},
+			Findings: []NativeFindingUpdate{{SourceFindingID: r.Findings[0].SourceFindingID, Disposition: "rejected", DecisionReason: "Fixture settled", Actor: "fixture", DecidedAt: r.FinishedAt}},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var rev int64
 	f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, f.project).Scan(&rev)
 	req := reviewRequest(rev, nil)
@@ -401,4 +411,25 @@ func TestExternalHostedAuthoritativeDetailCapacityRollsBack(t *testing.T) {
 		t.Fatal("detail capacity failure leaked snapshots/findings/events")
 	}
 	externalMustPublish(t, f, externalRun(31))
+}
+
+func TestExternalHostedCaptureCannotBeForgedOrOmittedByFullObservation(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	historyObservationPost(t, f, reviewRequest(0, []PullInput{pull}), "external-initial")
+	tx := historyWriterTx(t, f)
+	fake := reviewRequest(1, []PullInput{pull})
+	fake.Source = externalHostedSource
+	_, err := admitObservation(t.Context(), tx, f.project, fake)
+	if err == nil {
+		t.Fatal("observation impersonated the observer")
+	}
+	tx.Rollback()
+	externalInit(t, f)
+	run := externalRun(1)
+	externalMustPublish(t, f, run)
+	tx = historyWriterTx(t, f)
+	defer tx.Rollback()
+	_, err = admitObservation(t.Context(), tx, f.project, reviewRequest(2, []PullInput{pull}))
+	nativeErrorCode(t, err, "external_hosted_pending")
 }

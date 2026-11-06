@@ -38,7 +38,7 @@ func retainHistoricalRoundTaper(t *testing.T, f *attemptFixture, pull int64, cha
 func retainRoundV4Changes(t *testing.T, f *attemptFixture) {
 	t.Helper()
 	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
-		for _, q := range []string{`PRAGMA defer_foreign_keys=ON`, `CREATE TEMP TABLE fixture_round_changes AS SELECT * FROM review_round_changes`, `DROP TABLE review_round_changes`, RoundSchemaV4SQL()[1], `INSERT INTO review_round_changes SELECT * FROM temp.fixture_round_changes`, `DROP TABLE temp.fixture_round_changes`} {
+		for _, q := range []string{`PRAGMA defer_foreign_keys=ON`, `DROP TABLE review_round_external_members`, `DROP TABLE review_round_external_credits`, `CREATE TEMP TABLE fixture_round_changes AS SELECT * FROM review_round_changes`, `DROP TABLE review_round_changes`, RoundSchemaV4SQL()[1], `INSERT INTO review_round_changes SELECT * FROM temp.fixture_round_changes`, `DROP TABLE temp.fixture_round_changes`} {
 			if _, err := tx.ExecContext(ctx, q); err != nil {
 				return err
 			}

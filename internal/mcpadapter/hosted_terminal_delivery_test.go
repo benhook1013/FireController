@@ -16,6 +16,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -26,7 +27,7 @@ func TestHostedTerminalDeliveryAndAcknowledgementDuringLongSDKWait(t *testing.T)
 	ctx, cancel := context.WithCancel(t.Context())
 	stop := time.AfterFunc(12*time.Second, cancel)
 	t.Cleanup(func() { stop.Stop(); cancel() })
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema} {
+	for _, ensure := range []func(context.Context, *core.Store) error{reviews.EnsureSchema, reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema} {
 		if err := ensure(ctx, f.store); err != nil {
 			t.Fatal(err)
 		}

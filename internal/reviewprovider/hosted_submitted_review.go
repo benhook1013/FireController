@@ -106,6 +106,10 @@ func (p *submittedReviewParser) caution(body string) bool {
 }
 
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
+	return parseSubmittedReviewEnvelope(body, head, false)
+}
+
+func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, count int, selected map[string]bool, ok bool) {
 	if !validBody(body) {
 		return
 	}
@@ -117,17 +121,22 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 	if !p.take("<!-- coderabbit-ai-generated:v1 -->", true) {
 		return
 	}
-	claim, valid := p.text()
-	match := publicationActionable.FindStringSubmatch(claim)
-	if !valid || match == nil {
-		return
+	if line, _ := p.next(); !archive || line.text != "---" {
+		claim, valid := p.text()
+		match := publicationActionable.FindStringSubmatch(claim)
+		if !valid || match == nil {
+			return
+		}
+		count, _ = strconv.Atoi(match[1])
+		if count < 1 || count > 200 || !p.caution(body) {
+			return
+		}
 	}
-	count, _ = strconv.Atoi(match[1])
-	if count < 1 || count > 200 || !p.caution(body) || !p.take("---", false) {
+	if !p.take("---", false) {
 		return
 	}
 	if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
-		if !p.take(line.text, true) {
+		if count == 0 || !p.take(line.text, true) {
 			return
 		}
 		checkbox, found := p.next()
@@ -141,7 +150,11 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 	}
 	// The optional prompt is opaque. findingBlock retains visibility across
 	// fences/quotes, so examples cannot close the prompt and become metadata.
-	if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
+	if archive {
+		if !p.archivePrompt(body) || !p.take("<h6>", false) {
+			return
+		}
+	} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
 		end, complete := findingBlock(lines, p.at, 0)
 		label := submittedReviewParser{lines: lines, at: p.at + 1}
 		header, visible := label.next()
@@ -270,7 +283,7 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 			return
 		}
 	}
-	if !p.close(infoWrapped) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
+	if !p.close(infoWrapped) || archive && !p.take("</h6>", false) || !p.take("<!-- This is an auto-generated comment by CodeRabbit for review status -->", true) {
 		return
 	}
 	_, extra := p.next()

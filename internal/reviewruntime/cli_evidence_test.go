@@ -23,6 +23,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -53,6 +54,9 @@ func newCLIEvidenceFixture(t *testing.T) *cliEvidenceFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if err := reviews.EnsureSchema(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
 	if err := reviewexec.EnsureSchema(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}

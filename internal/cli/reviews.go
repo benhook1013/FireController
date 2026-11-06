@@ -255,6 +255,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "settle-hosted" {
+		return parseExternalHostedSettlement(args)
+	}
 	if operation == "decide-batch" || operation == "fix-batch" {
 		return parseReviewBatch(operation, args)
 	}

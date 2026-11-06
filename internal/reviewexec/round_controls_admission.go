@@ -20,6 +20,9 @@ func (e *Engine) RoundAdmission(ctx context.Context, project, operationID string
 		if err := requireSourceObligationsClear(ctx, tx, project, operation.PullNumber); err != nil {
 			return err
 		}
+		if err := requireExternalHostedSettled(ctx, tx, project, operation.PullNumber, operation.Channel); err != nil {
+			return err
+		}
 		configured, err = admitRoundControl(ctx, tx, operation)
 		return err
 	})

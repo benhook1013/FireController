@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 type httpFixture struct {
@@ -36,6 +37,9 @@ func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	t.Cleanup(func() { _ = store.Close() })
 	t.Logf("fixture store open completed in %s", time.Since(phaseStarted))
 	phaseStarted = time.Now()
+	if err := reviews.EnsureSchema(context.Background(), store); err != nil {
+		t.Fatalf("fixture review history schema: %v", err)
+	}
 	if err := EnsureSchema(context.Background(), store); err != nil {
 		t.Fatalf("fixture execution schema after %s: %v", time.Since(phaseStarted), err)
 	}

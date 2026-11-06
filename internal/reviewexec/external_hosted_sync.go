@@ -158,7 +158,7 @@ func (e *Engine) externalHostedInputs(ctx context.Context, tx *sql.Tx, target li
 			continue
 		}
 
-		mapped := reviews.RunInput{SourceRunID: run.SourceID, Channel: "hosted", HeadSHA: run.HeadSHA, Reviewer: "CodeRabbit", Scope: "external hosted publication", Outcome: "completed", Attributable: true, Complete: true, StartedAt: run.FinishedAt.UTC().Format(time.RFC3339Nano), FinishedAt: run.FinishedAt.UTC().Format(time.RFC3339Nano), Found: int64(len(run.Inventory.Findings)), Finalized: false, CoverageLimits: []string{"Observed external hosted inventory only; no native review coverage, adjudication or round credit.", "Both timestamps identify provider publication; execution start time and runtime were not observed."}, Findings: []reviews.Finding{}}
+		mapped := reviews.RunInput{SourceRunID: run.SourceID, Channel: "hosted", HeadSHA: run.HeadSHA, Reviewer: "CodeRabbit", Scope: "external hosted publication", Outcome: "completed", Attributable: true, Complete: true, StartedAt: run.FinishedAt.UTC().Format(time.RFC3339Nano), FinishedAt: run.FinishedAt.UTC().Format(time.RFC3339Nano), Found: int64(len(run.Inventory.Findings)), Finalized: false, CoverageLimits: []string{"External Hosted publication. Capture alone does not establish native coverage or count as a Controller round.", "Both timestamps identify provider publication; execution start time and runtime were not observed."}, Findings: []reviews.Finding{}}
 		for _, finding := range run.Inventory.Findings {
 			mapped.Findings = append(mapped.Findings, reviews.Finding{SourceFindingID: finding.SourceKey, Title: finding.Title, Detail: finding.Detail, Severity: finding.Severity, Disposition: "unadjudicated"})
 		}
@@ -425,6 +425,11 @@ func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycl
 		}
 		unsupported = true
 		changed = false
+	}
+	if changed {
+		if err = holdQueuedExternalHosted(ctx, tx, target.project, target.number); err != nil {
+			return false, false, err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `RELEASE external_hosted_candidate`)
 	return changed, unsupported, err

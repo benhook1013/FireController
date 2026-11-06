@@ -193,6 +193,9 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if err != nil {
 		return err
 	}
+	if state.ExternalPending {
+		return requireExternalHostedSettled(ctx, tx, project, operation.PullNumber, operation.Channel)
+	}
 	if state.Pending {
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}

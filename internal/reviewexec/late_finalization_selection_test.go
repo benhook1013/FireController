@@ -55,11 +55,11 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	selectionNext(t, f, reader)
 	selected := selectionRead(t, f, hosted.ID)
 	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), selected.OperationID)
-	if err != nil || selected.State != "selected" || op.PullNumber != 2 || op.HeadSHA != strings.Repeat("c", 40) {
-		t.Fatal("external archive manufactured native coverage or other channel blocked selection", selected, op, err)
+	if err != nil || selected.State != "selected" || op.PullNumber != 4 || op.HeadSHA != strings.Repeat("c", 40) {
+		t.Fatal("pending external results did not skip the same PR without holding the later PR", selected, op, err)
 	}
 	progress := readProgress(t, f, 2).Items[0].Channels
-	if progress[0].Used != 0 || progress[0].Pending != 1 || progress[1].Used != 0 || progress[1].Pending != 1 {
+	if progress[0].Used != 0 || progress[0].Pending != 0 || progress[1].Used != 0 || progress[1].Pending != 1 {
 		t.Fatal("archive/pending evidence supplied native completion credit", progress)
 	}
 	roundFinalize(t, f, a, evidence, 710, false)

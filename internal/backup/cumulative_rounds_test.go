@@ -45,8 +45,8 @@ func seedPredecessorExecutionConfiguration(t *testing.T, f *restoreFixture, scop
 }
 
 func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndCompletions(t *testing.T) {
-	for _, version := range []int{5, 4, 3} {
-		t.Run(map[int]string{5: "current-v5", 4: "frozen-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
+	for _, version := range []int{6, 5, 4, 3} {
+		t.Run(map[int]string{6: "current-v6", 5: "frozen-v5", 4: "frozen-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
 			f := roundInventoryFixture(t, false)
 			if version >= 4 {
 				e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}, {ID: "bundle-cli", Provider: "coderabbit", Account: "cli-account", Channels: []string{"cli"}}})
@@ -60,6 +60,11 @@ func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndComplet
 				control, err := e.ReadRoundControl(t.Context(), routePolicyInventoryScope(t, f), 4, "cli")
 				if err != nil || control.Epoch != 1 || control.Used != 1 || control.Dry != 1 || control.Maximum != 1001 {
 					t.Fatal("fixture lost cumulative thresholds or completion credit", control, err)
+				}
+			}
+			if version == 5 {
+				if _, err := f.store.DB().Exec(`DROP TABLE review_round_external_members; DROP TABLE review_round_external_credits; UPDATE metadata SET value='5' WHERE key='schema:review_rounds'`); err != nil {
+					t.Fatal("reconstruct version-five predecessor", err)
 				}
 			}
 			if version <= 4 {

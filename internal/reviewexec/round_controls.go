@@ -61,6 +61,7 @@ type roundRecord struct {
 	grantRevision int64
 	cumulative    bool
 	taperSet      bool
+	external      bool
 }
 
 const roundColumnsV1 = `project_id,pull_number,channel,revision,epoch,grant_revision,closed,minimum,maximum,taper,used,dry,tapered,actor_id,created_at,updated_at`
@@ -103,10 +104,10 @@ func validRoundControl(c RoundControl) bool {
 }
 
 func readRoundRecord(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string) (roundRecord, error) {
-	return readRoundRecordVersion(ctx, q, project, pull, channel, 5)
+	return readRoundRecordVersion(ctx, q, project, pull, channel, roundSchemaVersion)
 }
 func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string, pull int64, channel string, version int) (roundRecord, error) {
-	c := roundRecord{RoundControl: RoundControl{ProjectID: project, PullNumber: pull, Channel: channel}}
+	c := roundRecord{RoundControl: RoundControl{ProjectID: project, PullNumber: pull, Channel: channel}, external: version >= 6}
 	if !roundScope(project, pull, channel) {
 		return c, invalid()
 	}
@@ -489,12 +490,16 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	credited, err := hasCreditedNativeHostedAlias(ctx, tx, project, pull, evidence.Capture.Hosted)
+	if err != nil || credited {
+		return err
+	}
 	original, err := readRoundGrant(ctx, tx, project, pull, channel, grant, epoch)
 	if err != nil {
 		return err
 	}
-	var used int64
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_completions WHERE project_id=? AND pull_number=? AND channel=? AND epoch=?`, project, pull, channel, epoch).Scan(&used); err != nil {
+	used, err := roundCompletionCount(ctx, tx, project, pull, channel, epoch)
+	if err != nil {
 		return err
 	}
 	c, err := readRoundRecord(ctx, tx, project, pull, channel)
@@ -521,13 +526,14 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 	if !c.cumulative && c.grantRevision != grant || c.Used != used || (!c.MaximumUnbounded && c.Used >= c.Maximum) || c.Used >= roundSafeInteger {
 		return roundUnavailable()
 	}
+	return writeRoundCompletionProgress(ctx, tx, &c, state.FrozenCounts.Accepted, at)
+}
+
+func advanceRoundCounters(c *roundRecord, accepted int64) error {
 	done := roundDone(c.RoundControl)
-	if !done && state.FrozenCounts.Accepted == 0 && c.Dry >= roundSafeInteger {
-		return roundUnavailable()
-	}
 	c.Used++
-	if c.cumulative {
-		if state.FrozenCounts.Accepted == 0 {
+	if c.cumulative || !done {
+		if accepted == 0 {
 			if c.Dry >= roundSafeInteger {
 				return roundUnavailable()
 			}
@@ -535,21 +541,24 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		} else {
 			c.Dry = 0
 		}
-		c.Tapered = effectiveRoundTapered(c)
-	} else if !done {
-		if state.FrozenCounts.Accepted == 0 {
-			c.Dry++
-		} else {
-			c.Dry = 0
-		}
-		if c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper) {
+		if c.cumulative {
+			c.Tapered = effectiveRoundTapered(*c)
+		} else if c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper) {
 			c.Tapered = true
 		}
 	}
+	return nil
+}
+
+func writeRoundCompletionProgress(ctx context.Context, tx *sql.Tx, c *roundRecord, accepted int64, at string) error {
+	if err := advanceRoundCounters(c, accepted); err != nil {
+		return err
+	}
+	c.UpdatedAt = at
 	if !validRoundControl(c.RoundControl) {
 		return roundUnavailable()
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE review_round_controls SET used=?,dry=?,tapered=?,updated_at=? WHERE project_id=? AND pull_number=? AND channel=? AND epoch=?`, c.Used, c.Dry, c.Tapered, at, project, pull, channel, epoch)
+	_, err := tx.ExecContext(ctx, `UPDATE review_round_controls SET used=?,dry=?,tapered=?,updated_at=? WHERE project_id=? AND pull_number=? AND channel=? AND epoch=?`, c.Used, c.Dry, c.Tapered, at, c.ProjectID, c.PullNumber, c.Channel, c.Epoch)
 	return err
 }
 

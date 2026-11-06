@@ -225,7 +225,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 5, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 1, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -250,6 +250,8 @@ var tables = map[string]tableVersion{
 	"review_round_changes":              {"review_rounds", 1, "project_id pull_number channel revision epoch action body_json worker_id"},
 	"review_round_operation_bindings":   {"review_rounds", 1, "operation_id project_id pull_number channel epoch grant_revision"},
 	"review_round_completions":          {"review_rounds", 1, "operation_id evidence_id project_id pull_number channel epoch ordinal accepted completed_at"},
+	"review_round_external_credits":     {"review_rounds", 6, "batch_id project_id pull_number channel epoch revision ordinal accepted completed_at"},
+	"review_round_external_members":     {"review_rounds", 6, "project_id run_id batch_id"},
 	"coordination_import_messages":      {"coordination_import", 2, "project_id source source_key message_id conversation_id reply_message_id import_revision item_sha256 source_sha256 item_json created_at"},
 	"coordination_import_state":         {"coordination_import", 1, "project_id revision"},
 	"coordination_import_records":       {"coordination_import", 1, "project_id source source_key job_id import_revision item_sha256 source_sha256 item_json created_at"},
@@ -1643,6 +1645,8 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_round_changes":              {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_round_operation_bindings":   {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_completions":          {canonicalFK("review_execution_evidence", "evidence_id", "id", "NO ACTION"), canonicalFK("review_round_operation_bindings", "operation_id,project_id,pull_number,channel,epoch", "operation_id,project_id,pull_number,channel,epoch", "NO ACTION")},
+	"review_round_external_credits":     {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
+	"review_round_external_members":     {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_external_credits", "batch_id", "batch_id", "NO ACTION")},
 	"coordination_import_messages":      {canonicalFK("inbox_messages", "project_id,message_id", "project_id,id", "NO ACTION"), canonicalFK("inbox_conversations", "project_id,conversation_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},
 	"coordination_import_state":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"coordination_import_records":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION"), canonicalFK("coordination_import_batches", "project_id,import_revision", "project_id,revision", "NO ACTION")},

@@ -35,11 +35,11 @@ func reviewExecutionBeforeEnrollmentFixture(t *testing.T, native ...bool) (*serv
 	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
+	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	var options []reviewexec.EngineOption
 	if len(native) > 0 && native[0] {
-		if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
-			t.Fatal(err)
-		}
 		options = append(options, reviewexec.WithNativeProjection())
 	}
 	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli", "hosted"}}}, options...)

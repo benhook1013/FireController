@@ -98,6 +98,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			}
 			return err
 		}
+		if err := requireExternalHostedSettled(ctx, tx, project, o.PullNumber, o.Channel); err != nil {
+			var refusal *core.Error
+			if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+				return holdOperation(ctx, tx, o, refusal.Code, stamp())
+			}
+			return err
+		}
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
@@ -248,6 +255,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
+			return err
+		}
+		if err := requireExternalHostedSettled(ctx, tx, project, o.PullNumber, o.Channel); err != nil {
 			return err
 		}
 		if repositoryID != anchor.RepositoryID {

@@ -405,6 +405,16 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	}
 	reads := newHistoryReads(tx)
 	defer reads.close()
+	if req.Source == externalHostedSource {
+		return 0, transferNativeConflict()
+	}
+	pending, err := PendingExternalHosted(ctx, reads, projectID, repositoryID, 0, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) != 0 {
+		return 0, core.Fail("external_hosted_pending", "Settle the pending manual Hosted results before replacing the review history snapshot.", http.StatusConflict)
+	}
 	if err := guardSubagentImport(ctx, reads, projectID, req.Source, req.Queue); err != nil {
 		return 0, err
 	}

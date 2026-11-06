@@ -146,6 +146,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if err != nil {
 		return plan, nil, err
 	}
+	if comparison.ExternalPending {
+		return plan, nil, core.Fail("external_hosted_pending", "Settle the pending manual Hosted results before starting another Hosted review for this PR.", 409)
+	}
 	if comparison.Pending {
 		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
