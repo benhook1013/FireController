@@ -10,7 +10,7 @@ A review target binds project, provider repository, PR, exact candidate head, se
 
 The project may choose independent PRs or an ordered stack. In stacked mode, the actual PR published from the selected base branch is the effective parent and must belong to the configured queue; a target based on the repository default branch has no parent PR. Parent movement requires re-evaluation of affected descendants. An explicit expected PR asserts selection; it never forces a different target past admission policy.
 
-Use deterministic Git diff options to calculate patch identity. History-only change, identical patch, candidate movement, parent movement, and actual scope change remain distinct classifications. Reuse of evidence across any boundary requires an explicit proven applicability rule rather than comparing counts or choosing the latest-looking result.
+Use deterministic Git diff options to calculate patch identity. History-only change, identical patch, candidate movement, parent movement, and actual scope change remain distinct classifications. Reuse of evidence across any boundary requires an explicit proven applicability rule rather than comparing counts or choosing the latest-looking result. [Retained native channel completion](#retained-native-channel-completion) preserves earned PR/channel progress separately; it does not reinterpret the captured code scope.
 
 ## Observations versus authorization
 
@@ -20,7 +20,7 @@ Starting a review requires sufficiently current PR identity and lifecycle, exact
 
 Recheck exact identity at the last provider-action boundary. GitHub offers no transaction with the local service: the head can still move after that check. Capture the admitted identity and classify later results against it; a moved head cannot turn into evidence for the new head silently.
 
-Review completion establishes attributable coverage and finding disposition; it does not itself establish mergeability. A separate merge-readiness assessment combines applicable review evidence, required CI, unresolved current and outdated threads, accepted finding obligations, applicable stops, and current mergeability. Unknown or conflicting mergeability cannot produce a ready verdict. A cached dashboard can show its last result but cannot present it as a fresh verified merge gate. Humans perform merges.
+Review completion establishes attributable coverage and finding disposition; it does not itself establish mergeability. A separate merge-readiness assessment combines applicable review evidence and [retained native channel completion](#retained-native-channel-completion), required CI, unresolved current and outdated threads, accepted finding obligations, applicable stops, and current mergeability. Unknown or conflicting mergeability cannot produce a ready verdict. A cached dashboard can show its last result but cannot present it as a fresh verified merge gate. Humans perform merges.
 
 Required-check authority comes from the provider's applicable branch/repository rules, supplemented by stricter project expectations. A project cannot silently weaken provider-required checks. Match results to the exact candidate, required context, expected provider-app identity, and applicable latest run/attempt; a same-named foreign check or obsolete successful retry cannot satisfy the requirement. Missing authority, incomplete inventory, and ambiguous check identity remain holds rather than an empty passing gate.
 
@@ -46,7 +46,7 @@ Cancellation requests distinguish queued work, safe-to-cancel execution, and alr
 
 ## Evidence and findings
 
-Persist original captures privately with checksums and durable provider/run identities. Completed, attributable, scope-applicable reviews are eligible for policy credit. Failed, incomplete, provisional, ambiguous, and rate-limited attempts remain inspectable but cannot masquerade as completed review coverage.
+Persist original captures privately with checksums and durable provider/run identities. Completed, attributable, scope-applicable reviews are eligible for policy credit. Earned native PR/channel progress remains eligible under the safeguards in [retained native channel completion](#retained-native-channel-completion) when candidate or parent identities move. Failed, incomplete, provisional, ambiguous, and rate-limited attempts remain inspectable but cannot masquerade as completed review coverage.
 
 Finding decisions distinguish accepted, routed, and rejected, with reasons and source identities. Finalized source counts are immutable. A routed finding has independent receiving-project/PR disposition only when an explicit authorized route exists; the first release restricts routes to the same project. Receiving decisions cannot rewrite source review counts.
 

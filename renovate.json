@@ -19,6 +19,25 @@
       "matchManagers": [
         "gomod"
       ],
+      "postUpdateOptions": [
+        "gomodTidy"
+      ]
+    },
+    {
+      "description": "SQLite owns the compatible libc version; update libc through the SQLite dependency graph.",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchPackageNames": [
+        "modernc.org/libc",
+        "modernc.org/libc/v2"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
       "matchUpdateTypes": [
         "minor",
         "patch",
