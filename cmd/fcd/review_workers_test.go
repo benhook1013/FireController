@@ -20,6 +20,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -84,7 +85,7 @@ func newObserverTestFixture(t *testing.T) *observerTestFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, jobs.EnsureSchema, inbox.EnsureSchema} {
+	for _, ensure := range []func(context.Context, *core.Store) error{reviews.EnsureSchema, reviewexec.EnsureSchema, jobs.EnsureSchema, inbox.EnsureSchema} {
 		if err := ensure(t.Context(), store); err != nil {
 			t.Fatal(err)
 		}
