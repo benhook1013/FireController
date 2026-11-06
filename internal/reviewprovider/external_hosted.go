@@ -237,7 +237,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 				}
 			}
 			if g.reason == "" {
-				g.run.Inventory = decodeHostedFindingsMode(*pub, true)
+				g.run.Inventory = decodeHostedFindings(*pub)
 				if g.archiveSubmitted && g.count == 0 && len(g.run.Inventory.Findings) != 0 {
 					g.reason = "submitted_review_inventory_unproven"
 				}

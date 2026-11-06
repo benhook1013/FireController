@@ -151,7 +151,7 @@ func parseSubmittedReviewEnvelope(body, head string, archive bool) (run string, 
 	// The optional prompt is opaque. findingBlock retains visibility across
 	// fences/quotes, so examples cannot close the prompt and become metadata.
 	if archive {
-		if !p.archivePrompt(body) || !p.take("<h6>", false) {
+		if !p.currentPrompt(body) || !p.take("<h6>", false) {
 			return
 		}
 	} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {

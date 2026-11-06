@@ -7,16 +7,16 @@ import (
 	"time"
 )
 
-var externalSubmittedPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix all issues</summary>$`)
+var currentSubmittedPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix all issues</summary>$`)
 
-// The observed archive presentation contains one opaque fenced prompt. It
+// The current provider presentation contains one opaque fenced prompt. It
 // cannot supply inventory, status, or run identity.
-func (p *submittedReviewParser) archivePrompt(body string) bool {
+func (p *submittedReviewParser) currentPrompt(body string) bool {
 	if !p.take("<details>", false) {
 		return false
 	}
 	header, ok := p.text()
-	if !ok || !externalSubmittedPrompt.MatchString(header) || !p.take("<dl>", false) || !p.take("<dd>", false) {
+	if !ok || !currentSubmittedPrompt.MatchString(header) || !p.take("<dl>", false) || !p.take("<dd>", false) {
 		return false
 	}
 	fence, ok := p.next()
@@ -30,6 +30,59 @@ func (p *submittedReviewParser) archivePrompt(body string) bool {
 		}
 	}
 	return false
+}
+
+// currentReviewInfoHeading proves that the exact heading wraps just one
+// provider Review info block. Neither tag grants metadata authority on its own.
+func currentReviewInfoHeading(lines []findingLine, opening int) (start, closing int, ok bool) {
+	p := submittedReviewParser{lines: lines, at: opening}
+	if !p.take("<h6>", false) {
+		return 0, 0, false
+	}
+	p.next()
+	start = p.at
+	if !p.block("ℹ️ Review info") {
+		return 0, 0, false
+	}
+	end, closed := findingBlock(lines, start, 0)
+	if !closed {
+		return 0, 0, false
+	}
+	p.at = end + 1
+	if !p.take("</h6>", false) {
+		return 0, 0, false
+	}
+	return start, p.at - 1, true
+}
+
+// The comparison scanner may treat these two exact presentation tags as
+// transparent. It still validates the ordinary metadata scopes inside them.
+func currentReviewHeadingOffsets(body string) (int, int) {
+	if !strings.Contains(body, "<h6>") || !strings.Contains(body, " Prompt to fix all issues</summary>") {
+		return -1, -1
+	}
+	lines, valid := findingLines(body)
+	if !valid {
+		return -1, -1
+	}
+	open, close := -1, -1
+	for i, line := range lines {
+		if line.hidden || line.quote != 0 || line.text != "<details>" {
+			continue
+		}
+		p := submittedReviewParser{lines: lines, at: i}
+		if !p.currentPrompt(body) {
+			continue
+		}
+		p.next()
+		if _, end, ok := currentReviewInfoHeading(lines, p.at); ok {
+			if open >= 0 {
+				return -1, -1
+			}
+			open, close = lines[p.at].start, lines[end].start
+		}
+	}
+	return open, close
 }
 
 // An omitted count can only describe an empty archive when a single submitted

@@ -71,7 +71,7 @@ func TestExternalHostedCurrentSubmissionsKeepDistinctSameHeadRuns(t *testing.T) 
 	}
 }
 
-func TestExternalHostedCurrentMarkedSummaryRemainsArchiveOnly(t *testing.T) {
+func TestHostedCurrentMarkedSummaryDecodesWithEitherAttributionPath(t *testing.T) {
 	f := submittedCurrentFixture(t)
 	review := &f.snapshot.Reviews[0]
 	review.Body = externalCurrentSubmission(review.HeadSHA, false) + "\n\n" + publicationTestMarker(1, 1)
@@ -92,9 +92,16 @@ func TestExternalHostedCurrentMarkedSummaryRemainsArchiveOnly(t *testing.T) {
 			if len(got) != 1 || got[0].Inventory.Complete != (shape == "supported") || len(got[0].Inventory.Findings) != 1 || got[0].Inventory.Publication.Batches[0].Body != review.Body {
 				t.Fatal("marked archive summary misclassified or rewrote source")
 			}
-			if decodeHostedFindings(got[0].Inventory.Publication).Complete {
-				t.Fatal("archive summary also passed native inventory decoding")
+			native := f.extract(t)
+			if native.Complete != (shape == "supported") || native.Publication.Trigger.State != "adopted" || len(native.Findings) != 1 {
+				t.Fatal("native capture did not retain exact marked inventory", native.Reason)
 			}
+			parent := strings.Repeat("b", 40)
+			base, proven := ResolveHostedComparison(native.Publication, f.intent.HeadSHA, parent, parent)
+			if proven != (shape == "supported") || proven && base != parent {
+				t.Fatal("unexpected comparison proof for current marked review", proven, base)
+			}
+
 		})
 	}
 }
