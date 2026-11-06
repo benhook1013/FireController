@@ -272,3 +272,32 @@ func TestMessageWaitCommandStreamResyncIsConflictWithoutEffects(t *testing.T) {
 		t.Fatal("resync/replay changed retained state, profiles, or performed hidden work", err)
 	}
 }
+
+func TestMessageWaitCommandKeepsWaitBudgetAfterSlowSetup(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "slow-wait-setup")
+	worker := f.worker(t, project, "Bound")
+	mux := http.NewServeMux()
+	mux.Handle("/", f.handler)
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	server.RegisterMessageStream(mux, f.store, ctx)
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" || strings.HasSuffix(r.URL.Path, "/stream") {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	profiles := mutationProfiles(t, f, service.URL, map[string][2]string{"bound": {project, worker}})
+	snapshot := f.call(t, "GET", "/api/v1/projects/"+project+"/inbox/"+worker+"/snapshot", f.admin, worker, nil)
+	code, out, diag := mutationInvoke(t, profiles, "bound", "inbox", "wait", "--cursor", snapshot["event_cursor"].(string), "--wait-seconds", "10")
+	var page client.MessageEventPage
+	if code != cli.ExitSuccess || diag != "" || json.Unmarshal([]byte(out), &page) != nil || !page.TimedOut || page.Cursor == "" {
+		t.Fatal("slow identity and stream setup prevented a valid quiet timeout", code, diag)
+	}
+}

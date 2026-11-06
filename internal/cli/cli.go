@@ -235,8 +235,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.history != nil && (call.subcommand == "collect" || call.subcommand == "collection") {
 		timeout = time.Duration(call.history.waitSeconds+5) * time.Second
 	}
+	// Quiet inbox and CI waits keep their full selected budget after bounded
+	// instance verification, matching the MCP adapters for these operations.
 	if call.command == "inbox" && call.subcommand == "wait" {
-		timeout = client.MessageWaitBudget(call.waitSeconds)
+		timeout = client.MessageWaitBudget(call.waitSeconds) + 2*serviceTimeout
 	}
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") {
 		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait)
@@ -248,7 +250,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
 	}
 	if call.ciWatch != nil {
-		timeout = client.ReviewOperationBudget(call.ciWatch.seconds)
+		timeout = client.ReviewOperationBudget(call.ciWatch.seconds) + 2*serviceTimeout
 	}
 	if call.reviewWatch != nil {
 		timeout = client.ReviewOperationBudget(call.reviewWatch.seconds)
