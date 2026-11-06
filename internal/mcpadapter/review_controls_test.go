@@ -176,16 +176,13 @@ func reviewControlsFixture(t *testing.T, native ...bool) (*mutationAPI, http.Han
 	t.Helper()
 	f := mutationFixture(t)
 	ctx := context.Background()
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema} {
+	for _, ensure := range []func(context.Context, *core.Store) error{reviews.EnsureSchema, reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema} {
 		if err := ensure(ctx, f.store); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var options []reviewexec.EngineOption
 	if len(native) > 0 && native[0] {
-		if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
-			t.Fatal(err)
-		}
 		options = append(options, reviewexec.WithNativeProjection())
 	}
 	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "fixture", Provider: "synthetic", Account: "fixture", Channels: []string{"cli"}}}, options...)

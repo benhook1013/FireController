@@ -16,6 +16,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 const executionOperationID = "review_operation_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -98,6 +99,9 @@ func TestReviewExecutionOutOfOrderWireAndTerminalIntent(t *testing.T) {
 func executionFixture(t *testing.T) (*mutationFixture, *reviewexec.Engine) {
 	t.Helper()
 	f := newMutationFixture(t)
+	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
