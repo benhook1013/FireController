@@ -24,6 +24,8 @@ Earned native review completion belongs to the same project, stable repository, 
 
 Outstanding unfinalized evidence, accepted findings, routes and imported obligations remain live across every head. Required channels, explicit round requirements and stops still apply. Imported display history supplies no fabricated native execution credit. Current CI, provider threads and mergeability remain separately bound to their observed source comparison.
 
+The comparison ledger derives pending and ready facts from retained operations, evidence, adjudication and routes. The [review history and backup contract](review-history-growth.md) describes the retained evidence and its validation. The comparison schema is backfilled only during its installation migration, within the 30-second startup migration deadline. Invalid retained authority or an expired deadline rolls back the installation and prevents the daemon from serving. After installation, a dirty proof makes reads for its PR and channel fail with `storage_unavailable` (HTTP 500). Supported mutations rederive affected proofs transactionally. For a persistent failure, preserve the installation and its diagnostics and follow the [inactive restore and activation procedure](backups.md) with a known-good validated bundle.
+
 ## Observations versus authorization
 
 Read-only review pages and status commands show stored evidence, operation state, and freshness without provider calls. Explicit refresh retrieves only the selected target and the dependency facts required by the requested scope. The [architecture](architecture.md) owns observation storage, completeness, coalescing, and quota scheduling.
