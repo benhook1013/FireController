@@ -16,6 +16,10 @@ Operator credentials, bootstrap token files, profiles, executables and external 
 
 Retained capture validation checks immutable structure, canonical fingerprints and raw-artifact references. New-capture coverage-warning limits are admission policy and do not retroactively invalidate retained metadata. Backup acceptance grants no current review coverage, publication eligibility or provider authority.
 
+### Derived native review facts
+
+Inspection and inactive restore validate the optional `review_comparison` and `review_route_policy` domains. Each present domain requires its matching `schema:<domain>` metadata marker and canonical tables, indexes and triggers. Inspection independently rederives its proof or receiving-route facts from retained authority and refuses missing, dirty, mismatched or forged facts. A supported predecessor bundle may omit a domain’s marker and tables together. Inspecting or restoring such a bundle leaves that domain absent.
+
 ## Inactive restore
 
 Restore accepts a verified bundle and creates a new private destination, never overlays existing data. It preserves canonical records and captured evidence, generates a new instance/signing identity, and revokes every restored API credential before the result can be used. Original grants and credential history remain retained; access is not silently revived. Record the predecessor instance, bundle and recovery window in restored metadata so pending work and receipts keep their originating provenance.
