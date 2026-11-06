@@ -1436,8 +1436,6 @@ try {
   replyStatus = replyResponse.status(); checkpoint = 'reply-status';
   need(replyStatus===201);
   checkpoint = 'reply-binding';
-  const replyBody = await replyResponse.json();
-  need(replyBody.conversation_id===incoming.conversation_id);
   const replyRequest = replyResponse.request().postDataJSON();
   need(replyRequest.reply_to_message_id===incoming.id && replyRequest.recipient_worker_id===config.other_worker && replyRequest.body==='Browser reply <literal>');
   const originalConversation = config.origin + home + '/inbox/' + incoming.conversation_id;
@@ -1445,6 +1443,18 @@ try {
   checkpoint = 'reply-visible';
   await page.locator('.conversation-list').getByText('Browser reply <literal>',{exact:true}).waitFor();
   need(page.url()===originalConversation);
+  // Verify the durable binding through the original conversation. Chromium
+  // can retire the POST response body after the page has consumed it.
+  const conversationResponse = await fetch(config.origin + prefix + '/conversations/' + incoming.conversation_id, {
+    headers: {'Authorization':'Bearer '+admin, 'X-FC-Instance':config.instance, 'X-FC-Worker':config.worker},
+    signal:AbortSignal.timeout(5000),
+  });
+  need(conversationResponse.status===200);
+  const conversation = await conversationResponse.json();
+  const matchingReplies = conversation.items.filter(item => item.reply_to_message_id===incoming.id &&
+    item.sender_worker_id===config.worker && item.recipient_worker_id===config.other_worker && item.body==='Browser reply <literal>');
+  need(conversation.conversation_id===incoming.conversation_id && matchingReplies.length===1 &&
+    matchingReplies[0].conversation_id===incoming.conversation_id);
   conversationMatch = true;
 
   phase = 'explicit-actions-settings';
