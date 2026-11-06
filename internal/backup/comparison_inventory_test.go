@@ -143,7 +143,7 @@ func TestComparisonInventoryCanonicalSchemaAndInvalidationTriggersRequired(t *te
 		{"extra-column", `ALTER TABLE review_comparison_proofs ADD COLUMN fabricated_credit INTEGER`},
 		{"wrong-domain-version", `UPDATE metadata SET value='2' WHERE key='schema:review_comparison'`},
 	}
-	var table, retain string
+	var table, retain, stateIndex, anchorIndex string
 	for _, statement := range reviewexec.ComparisonSchemaSQL() {
 		if strings.HasPrefix(statement, "CREATE TABLE review_comparison_proofs ") {
 			table = statement
@@ -152,6 +152,27 @@ func TestComparisonInventoryCanonicalSchemaAndInvalidationTriggersRequired(t *te
 			retain = statement
 		}
 	}
+	for _, statement := range reviewexec.ComparisonSchemaSQL() {
+		if strings.HasPrefix(statement, "CREATE INDEX review_comparison_proofs_state ") {
+			stateIndex = statement
+		}
+		if strings.HasPrefix(statement, "CREATE INDEX review_comparison_proofs_anchor ") {
+			anchorIndex = statement
+		}
+	}
+	if table == "" || retain == "" || stateIndex == "" || anchorIndex == "" {
+		t.Fatal("missing canonical schema fixture")
+	}
+	// Rebuilding without a table mutation must remain inspectable. This
+	// control prevents missing recreated objects from masking table checks.
+	t.Run("canonical-rebuild", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		bundle := restoreBundle(t, f)
+		mutateBundleSQL(t, bundle.Path, `DROP TABLE review_comparison_proofs; `+table+stateIndex+anchorIndex+retain)
+		if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+			t.Fatal("canonical rebuilt comparison schema refused", err)
+		}
+	})
 	for _, change := range []struct{ name, old, replacement string }{
 		{"changed-primary-key", "operation_id TEXT NOT NULL PRIMARY KEY", "operation_id TEXT NOT NULL UNIQUE"},
 		{"changed-foreign-key", "REFERENCES review_operations(id)", "REFERENCES review_operations(id) ON DELETE CASCADE"},
@@ -159,10 +180,10 @@ func TestComparisonInventoryCanonicalSchemaAndInvalidationTriggersRequired(t *te
 		{"changed-default", "repository_id INTEGER NOT NULL DEFAULT 0", "repository_id INTEGER NOT NULL DEFAULT 1"},
 	} {
 		changed := strings.Replace(table, change.old, change.replacement, 1)
-		if changed == table || table == "" || retain == "" {
+		if changed == table {
 			t.Fatal("missing canonical schema fixture", change.name)
 		}
-		tests = append(tests, struct{ name, sql string }{change.name, `DROP TABLE review_comparison_proofs; ` + changed + retain})
+		tests = append(tests, struct{ name, sql string }{change.name, `DROP TABLE review_comparison_proofs; ` + changed + stateIndex + anchorIndex + retain})
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
