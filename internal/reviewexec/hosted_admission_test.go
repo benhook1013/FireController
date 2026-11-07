@@ -210,7 +210,6 @@ func TestOutgoingRouteReleasesSourceReviewAndKeepsReceiverHold(t *testing.T) {
 			} else {
 				f, prior, evidence, _ = hostedComparisonFixture(t, false)
 			}
-			roundGrant(t, f, 2, channel, 0, 1, 4, "outgoing-grant")
 			adjudicationComplete(t, f, prior)
 			route := routeCreate(t, f, evidence, "outgoing-to-receiver", routeRequest(0, 0, 4))
 			routeDecision(t, f, route.ID, "receiver-owns-open-fix", 1, "accepted")
@@ -222,6 +221,7 @@ func TestOutgoingRouteReleasesSourceReviewAndKeepsReceiverHold(t *testing.T) {
 			}
 			body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "outgoing-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
 			adjudicationReceipt(t, body, err, evidence, "finalized", revision+1)
+			roundGrant(t, f, 2, channel, 0, 1, 4, "outgoing-grant")
 
 			next := hostedAdmissionAttempt(t, f, "outgoing-source-next", channel, 1, *prior.Anchor)
 			hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")

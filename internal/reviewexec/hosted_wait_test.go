@@ -233,7 +233,23 @@ func TestCooldownControlPauseResumeCancelAndProjectPause(t *testing.T) {
 func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 	for _, scenario := range []string{"revoked", "policy", "capability", "configuration", "closed allocation"} {
 		t.Run(scenario, func(t *testing.T) {
-			f, a, in, now := queuedCooldown(t)
+			var f *attemptFixture
+			var a Attempt
+			var in HostedAllowanceInput
+			if scenario == "closed allocation" {
+				f = roundFixture(t)
+				roundGrant(t, f, 2, "hosted", 0, 0, 3, "grant")
+				a = f.start(t, attemptProject, f.enqueue(t, attemptProject, "bound-cooldown", "hosted", 2, 1))
+				in = retainTimerCooldown(t, f, a, 3*time.Minute)
+				if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, 1); err != nil {
+					t.Fatal(err)
+				}
+				if configured, err := f.e.RoundAdmission(t.Context(), attemptProject, a.OperationID); err != nil || !configured {
+					t.Fatal("cooldown request lost its original grant binding", configured, err)
+				}
+			} else {
+				f, a, in, _ = queuedCooldown(t)
+			}
 			switch scenario {
 			case "revoked":
 				admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
@@ -244,14 +260,12 @@ func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 			case "configuration":
 				f.configure(t, attemptProject, "other-account", 1, false)
 			case "closed allocation":
-				roundGrant(t, f, 2, "hosted", 0, 0, 3, "grant")
 				revision := int64(1)
 				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close", 2, "hosted", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			f.e.schedulingNow = func() time.Time { return *now }
-			*now = in.Observation.RetryNotBefore
+			f.e.schedulingNow = func() time.Time { return in.Observation.RetryNotBefore }
 			next, err := f.e.StartAttempt(t.Context(), attemptProject, a.OperationID)
 			if err != nil || next.ID != "" {
 				t.Fatal("changed authority started", next, err)
@@ -262,6 +276,9 @@ func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 			}
 			if state != "held" || reason == "" {
 				t.Fatal("missing explicit hold", state, reason)
+			}
+			if scenario == "closed allocation" && reason != "review_round_closed" {
+				t.Fatal("closed bound allocation held for another reason", reason)
 			}
 			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE operation_id=?`, a.OperationID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 				t.Fatal("authority refusal allocated retry")
