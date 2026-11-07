@@ -208,7 +208,7 @@ func abandonRestoredAttempts(ctx context.Context, tx *sql.Tx, at time.Time, summ
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_attempts WHERE operation_id=?`, o.ID).Scan(&linked); err != nil {
 			return err
 		}
-		if !restoredOperationValid(o) || o.AttemptID != "" || linked != 0 && (o.Wait == nil || o.Wait.BaselineAttemptID == "") {
+		if !restoredOperationValid(o) || o.AttemptID != "" || linked != 0 && validateOperationWaitHistory(ctx, tx, o) != nil {
 			return restoredWorkInvalid()
 		}
 		stamp, err := attemptRecordingStamp(ctx, tx, o, nil, at)

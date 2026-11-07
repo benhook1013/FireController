@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"sync"
 	"testing"
@@ -207,6 +208,9 @@ func TestExplicitCLIDraftWaitUsesRealQuotaBaselineOnlyAfterReadiness(t *testing.
 		return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
 	}}}
 	d.prepare = func(ctx context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+		if d.prepares.Load() == 1 {
+			return Preparation{}, sourceHold("pull_draft")
+		}
 		in := CLIAllowanceObservation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}
 		if err := f.e.RecordCLIExhaustion(ctx, o.ProjectID, a.ID, a.Revision, in); err != nil {
 			t.Fatal(err)
@@ -226,11 +230,88 @@ func TestExplicitCLIDraftWaitUsesRealQuotaBaselineOnlyAfterReadiness(t *testing.
 	if err := f.e.processNext(t.Context(), drivers); err != nil {
 		t.Fatal(err)
 	}
+	waiting := cliWaitRead(t, f, request.ID)
+	if waiting.Reason != cliDraftWait || waiting.AttemptID != "" || waiting.Wait != nil {
+		t.Fatal("redraft did not detach before quota", waiting)
+	}
+	now = now.Add(cliDraftProbeInterval)
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal(err)
+	}
 	quota := cliWaitRead(t, f, request.ID)
 	cliWaitDue(t, quota)
-	if quota.Reason != "" || d.prepares.Load() != 1 || d.calls.Load() != 0 {
+	if quota.Reason != "" || d.prepares.Load() != 2 || d.calls.Load() != 0 {
 		t.Fatal("ready request bypassed genuine quota refusal", quota)
 	}
 	assertCLIWaitNoCredit(t, f)
 	assertCLIWaitSnapshot(t, f)
+}
+
+func TestExplicitCLIRedraftProjectsUnusedAttemptAndPreservesRestore(t *testing.T) {
+	for _, action := range []string{"ready", "restore", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			f := attemptProjectionFixture(t, true)
+			now := time.Now()
+			f.e.schedulingNow = func() time.Time { return now }
+			d := &draftWaitDriver{reader: &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+				draft := false
+				return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+			}}}
+			var unused Attempt
+			d.prepare = func(_ context.Context, _ Operation, _ Configuration, a Attempt) (Preparation, error) {
+				unused = a
+				return Preparation{}, sourceHold("pull_draft")
+			}
+			drivers := map[string]Driver{"test-capability": d}
+			request := f.enqueue(t, attemptProject, "draft-project-detached", "cli", 2, 1)
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal(err)
+			}
+			if got := cliWaitRead(t, f, request.ID); got.State != "queued" || got.Reason != cliDraftWait || got.AttemptID != "" || got.Wait != nil {
+				t.Fatal("production projection did not retain queued intent", got)
+			}
+			_, projected := projectedAttempt(t, f, unused)
+			if projected.State != "held" || projected.Reason != cliDraftWait || attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
+				t.Fatal("unused preparation did not project or retained its reservation", projected)
+			}
+			assertCLIWaitSnapshot(t, f)
+			control := func(action string) {
+				t.Helper()
+				op := cliWaitRead(t, f, request.ID)
+				if _, err := f.e.ControlOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), "redraft-"+action, op.ID, OperationControl{ExpectedRevision: op.Revision, Action: action}); err != nil {
+					t.Fatal(err)
+				}
+				assertCLIWaitSnapshot(t, f)
+			}
+			switch action {
+			case "restore":
+				var summary RestoredWorkSummary
+				if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					return abandonRestoredAttempts(ctx, tx, now, &summary)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := cliWaitRead(t, f, request.ID); got.State != "held" || got.Reason != "restore_reconciled" || summary.QueuedOperations != 1 || d.calls.Load() != 0 {
+					t.Fatal("restore did not settle the queued intent without provider work", got, summary)
+				}
+			case "cancel":
+				control("cancel")
+				if got := cliWaitRead(t, f, request.ID); got.State != "cancelled" || d.calls.Load() != 0 {
+					t.Fatal("cancel did not settle the queued intent without provider work", got)
+				}
+			case "ready":
+				control("pause")
+				control("resume")
+				d.prepare = nil
+				now = now.Add(cliDraftProbeInterval)
+				if err := f.e.processNext(t.Context(), drivers); err != nil {
+					t.Fatal(err)
+				}
+				if got := cliWaitRead(t, f, request.ID); got.State != "completed" || got.AttemptID == unused.ID || d.calls.Load() != 1 {
+					t.Fatal("original intent did not dispatch once after redraft", got)
+				}
+			}
+			assertCLIWaitSnapshot(t, f)
+		})
+	}
 }

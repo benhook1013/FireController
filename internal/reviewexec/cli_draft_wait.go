@@ -149,3 +149,36 @@ func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason
 	}
 	return err
 }
+
+// historicalCLIDraftOperation identifies an unused preparation detached when
+// GitHub returned the PR to Draft. It supplies attribution for history only.
+func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, bool, error) {
+	var reason string
+	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
+		return Operation{}, false, err
+	}
+	if reason != cliDraftWait {
+		return Operation{}, false, nil
+	}
+	if o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+		return Operation{}, false, waitUnavailable()
+	}
+	var startedAt, heldAt string
+	var occupied bool
+	err := q.QueryRowContext(ctx, `SELECT first.created_at, last.created_at,
+		EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=first.attempt_id AND revision NOT IN (1,2))
+		OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=first.attempt_id)
+		OR EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=first.attempt_id)
+		OR EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id)
+		FROM review_execution_transitions first
+		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
+		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
+		AND last.state='held' AND first.external_id='' AND last.external_id=''`, a.ID).Scan(&startedAt, &heldAt, &occupied)
+	started, validStart := attemptRecordedTime(startedAt)
+	held, validHold := attemptRecordedTime(heldAt)
+	if err != nil || occupied || !validStart || !validHold || held.Before(started) {
+		return Operation{}, false, waitUnavailable()
+	}
+	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
+	return o, true, nil
+}

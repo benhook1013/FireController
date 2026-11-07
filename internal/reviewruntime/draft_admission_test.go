@@ -17,7 +17,7 @@ func setRuntimeDraft(f *cliDriverFixture, draft bool) {
 	f.reader.pulls[2] = pull
 }
 
-func waitRuntimeDraftHold(t *testing.T, f *cliDriverFixture, driver reviewexec.Driver, id string) reviewexec.Operation {
+func waitRuntimeDraftState(t *testing.T, f *cliDriverFixture, driver reviewexec.Driver, id, channel string) reviewexec.Operation {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done, err := f.engine.Start(ctx, map[string]reviewexec.Driver{f.capability.ID: driver})
@@ -25,7 +25,11 @@ func waitRuntimeDraftHold(t *testing.T, f *cliDriverFixture, driver reviewexec.D
 		cancel()
 		t.Fatal(err)
 	}
-	operation, terminal, readErr := f.engine.WaitOperation(t.Context(), f.scope(t, f.writer, false), id, 3)
+	waitSeconds := 3
+	if channel == "cli" {
+		waitSeconds = 1
+	}
+	operation, terminal, readErr := f.engine.WaitOperation(t.Context(), f.scope(t, f.writer, false), id, waitSeconds)
 	cancel()
 	select {
 	case err := <-done:
@@ -35,8 +39,15 @@ func waitRuntimeDraftHold(t *testing.T, f *cliDriverFixture, driver reviewexec.D
 	case <-time.After(3 * time.Second):
 		t.Fatal("draft hold did not stop cleanly")
 	}
-	if readErr != nil || !terminal || operation.State != "held" || operation.Reason != "pull_draft" {
-		t.Fatal("native draft hold lost its original reason", operation, terminal, readErr)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if channel == "cli" {
+		if terminal || operation.State != "queued" || operation.Reason != "cli_draft_wait" || operation.AttemptID != "" {
+			t.Fatal("explicit CLI request did not wait for Draft readiness", operation, terminal)
+		}
+	} else if !terminal || operation.State != "held" || operation.Reason != "pull_draft" {
+		t.Fatal("native Hosted draft hold lost its original reason", operation, terminal)
 	}
 	for _, table := range []string{"review_execution_reservations", "review_execution_evidence", "review_round_completions"} {
 		if cliCount(t, f.store, `SELECT count(*) FROM `+table) != 0 {
@@ -68,7 +79,12 @@ func TestDraftNativeDirectAndFinalAdmissionRefuseBothChannels(t *testing.T) {
 			if err := json.Unmarshal(raw, &receipt); err != nil {
 				t.Fatal(err)
 			}
-			waitRuntimeDraftHold(t, f, driver, receipt.ID)
+			requested := waitRuntimeDraftState(t, f, driver, receipt.ID, channel)
+			if channel == "cli" {
+				if _, err := f.engine.ControlOperation(t.Context(), f.scope(t, f.writer, false), "cancel-draft-wait", requested.ID, reviewexec.OperationControl{ExpectedRevision: requested.Revision, Action: "cancel"}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := os.Stat(f.log); !os.IsNotExist(err) || f.fetches.Load() != 0 || hosted != nil && (hosted.provider.queries != 0 || hosted.provider.reviews != 0) {
 				t.Fatal("initial draft guard ran an allowance command, query or review", err)
 			}
@@ -112,7 +128,7 @@ func TestDraftHostedTimerRetryHoldsOriginalWithoutFreshProviderQuery(t *testing.
 	}
 	*now = due.Add(time.Millisecond)
 	setRuntimeDraft(f.cliDriverFixture, true)
-	held := waitRuntimeDraftHold(t, f.cliDriverFixture, f.hosted, op.ID)
+	held := waitRuntimeDraftState(t, f.cliDriverFixture, f.hosted, op.ID, "hosted")
 	if held.ID != op.ID || held.AttemptID == first.ID || f.provider.queries != 1 || f.provider.reviews != 0 {
 		t.Fatal("draft retry rebound intent or repeated provider work", held, f.provider.queries, f.provider.reviews)
 	}
