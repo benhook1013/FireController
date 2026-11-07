@@ -45,7 +45,19 @@ func TestHostedAdditionalLayoutRetainsRefusalBoundaries(t *testing.T) {
 		"unknown heading":       func(s string) string { return strings.Replace(s, " Review info</summary>", " Other info</summary>", 1) },
 		"unknown break":         func(s string) string { return strings.Replace(s, "<br>", `<br data-extra="finding">`, 1) },
 		"break outside layout":  func(s string) string { return "<br>\n" + s },
-		"unbalanced layout":     func(s string) string { return strings.Replace(s, "</dd>\n</dl>", "</dl>\n</dd>", 1) },
+		"repeated leading break": func(s string) string {
+			return strings.Replace(s, "<br>\n", "<br>\n\n<br>\n", 1)
+		},
+		"middle of finding": func(s string) string {
+			return strings.Replace(s, "Independent rationale.", "Independent rationale.\n<br>", 1)
+		},
+		"break before definition": func(s string) string {
+			return strings.Replace(s, "<dl>\n<dd>", "<dl>\n<br>\n<dd>", 1)
+		},
+		"break after nested body": func(s string) string {
+			return strings.Replace(s, "</dd>\n</dl>\n</details>", "</dd>\n</dl>\n</details>\n<br>", 1)
+		},
+		"unbalanced layout": func(s string) string { return strings.Replace(s, "</dd>\n</dl>", "</dl>\n</dd>", 1) },
 		"count mismatch": func(s string) string {
 			return strings.Replace(s, "Additional comments: 1", "Additional comments: 2", 1)
 		},
@@ -57,6 +69,66 @@ func TestHostedAdditionalLayoutRetainsRefusalBoundaries(t *testing.T) {
 			f.snapshot.Reviews[0].Body = mutate(f.snapshot.Reviews[0].Body)
 			if got := f.extract(t); got.Complete {
 				t.Fatal("unsupported presentation supplied completed inventory")
+			}
+		})
+	}
+}
+
+func TestHostedAdditionalLayoutLeadingBreakVisibility(t *testing.T) {
+	wrap := func(body string) string { return "<dl>\n<dd>\n" + body + "\n</dd>\n</dl>" }
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"no break", wrap("Body."), true},
+		{"one leading break", wrap("<br>\nBody."), true},
+		{"blank lines", wrap("\n<br>\nBody."), true},
+		{"hidden example before break", wrap("```html\n</dd>\n<br>\n```\n<br>\nBody."), true},
+		{"hidden comment before break", wrap("<!-- <br> -->\n<br>\nBody."), true},
+		{"quoted example before break", wrap("> </dd>\n> <br>\n<br>\nBody."), true},
+		{"one per nested definition", wrap("<br>\n<details>\n<summary>Example</summary>\n" + wrap("<br>\nBody.") + "\n</details>"), true},
+		{"one per sibling definition", "<dl>\n<dd>\n<br>\nFirst.\n</dd>\n<dd>\n<br>\nSecond.\n</dd>\n</dl>", true},
+		{"outside definition", "<br>", false},
+		{"before definition", "<dl>\n<br>\n<dd>\nBody.\n</dd>\n</dl>", false},
+		{"after definition", "<dl>\n<dd>\nBody.\n</dd>\n<br>\n</dl>", false},
+		{"repeated break", wrap("<br>\n\n<br>\nBody."), false},
+		{"middle of body", wrap("Body.\n<br>"), false},
+		{"hidden definition cannot restart body", wrap("Body.\n<!-- <dd> -->\n<br>"), false},
+		{"quoted definition cannot restart body", wrap("Body.\n> <dd>\n<br>"), false},
+		{"hidden break cannot reset leading break", wrap("<br>\n```html\n<dd>\n```\n<br>"), false},
+		{"different details depth", wrap("<details>\n<br>\n</details>"), false},
+		{"closed details cannot restart body", wrap("<details>\n<summary>Example</summary>\n</details>\n<br>"), false},
+		{"different HTML quote depth", wrap("<blockquote>\n<br>\n</blockquote>"), false},
+		{"closed HTML quote cannot restart body", wrap("<blockquote>\nExample.\n</blockquote>\n<br>"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines, sound := findingLines(tc.body)
+			if !sound {
+				t.Fatal("fixture is not balanced")
+			}
+			before := append([]findingLine(nil), lines...)
+			projected, ok := findingAdditionalLayout(lines, 0, len(lines)-1)
+			if ok != tc.want {
+				t.Fatalf("layout accepted = %t, want %t", ok, tc.want)
+			}
+			for i, original := range before {
+				if lines[i] != original {
+					t.Fatal("projection mutated original source lines")
+				}
+				if !ok {
+					continue
+				}
+				line := projected[i]
+				if !original.hidden && original.quote == 0 && original.text == "<br>" && !line.hidden {
+					t.Fatal("qualified leading break was not projected")
+				}
+				if (original.hidden || original.quote != 0) && line != original {
+					t.Fatal("projection changed hidden or quoted examples")
+				}
+				line.hidden = original.hidden
+				if line != original {
+					t.Fatal("projection changed source text or offsets")
+				}
 			}
 		})
 	}
