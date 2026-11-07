@@ -85,11 +85,19 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			return sourceHold("repository_changed")
 		}
 		result = PolicyAssessment{ProjectID: scope.ProjectID, EvidenceID: evidenceID, Anchor: evidence.Anchor, Source: "captured_comparison", State: "unconfigured", Channels: []PolicyAssessmentChannel{}}
+		// Carried obligations hold the PR independently of configured channels.
+		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, evidence.Anchor.PullNumber)
+		if err != nil {
+			return err
+		}
 		policy, err := readPolicy(ctx, tx, scope.ProjectID)
 		if err != nil {
 			var failure *core.Error
 			if !errors.As(err, &failure) || failure.Code != "reviews_policy_unconfigured" {
 				return err
+			}
+			if result.SourceObligationsPending > 0 {
+				result.Reason = "source_obligations_pending"
 			}
 			result.EvaluatedAt = stamp()
 			return nil
@@ -106,10 +114,6 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			result.State, result.Reason = "held", "routed_findings_capacity"
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
-		}
-		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, evidence.Anchor.PullNumber)
-		if err != nil {
-			return err
 		}
 		if result.SourceObligationsPending > 0 {
 			result.State = "held"
