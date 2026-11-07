@@ -175,15 +175,14 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "observation_unavailable"
 		return result, err
 	}
-	// The fresh collection was validated before dedup could replace its timing
-	// with an older immutable capture. Attribution refusals remain successful
-	// source checks; they do not establish provider activity or completion.
-	sourceAt = snapshot.ObservedAt
 	_, retained, err := retainHostedObservation(ctx, captures, engine, attempt, record)
 	if err != nil {
 		result.Reason = "observation_unavailable"
 		return result, err
 	}
+	// Claim fresh source only after its capture and journal references validate.
+	// Reused immutable source still proves a fresh check, not provider activity.
+	sourceAt = snapshot.ObservedAt
 	trigger, err := reviewprovider.RecoverHostedTrigger(retained.Snapshot.IssueComments, true, intent, retained.PostingActor, retained.EarliestPosting, retained.Snapshot.ObservedAt)
 	if err != nil || trigger.State != "adopted" {
 		result.Reason = trigger.Reason
