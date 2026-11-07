@@ -15,6 +15,7 @@ type HostedSubmittedReview struct {
 	Acknowledgement IssueComment
 }
 
+var submittedIgnored = regexp.MustCompile(`^<summary>(?:⛔|` + standingPicture + `) Files ignored due to path filters: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedSelected = regexp.MustCompile(`^<summary>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedNoReviewable = regexp.MustCompile(`^<summary>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (?:🪄 )?Fix comments: Fix CodeRabbit comments on this PR$`)
@@ -107,6 +108,30 @@ func (p *submittedReviewParser) caution(body string) bool {
 	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
 	p.at = decoder.outside(body, p.lines, p.at, 0) + 1
 	return inventory.Complete
+}
+
+// filePaths consumes the counted file list after its details heading.
+func (p *submittedReviewParser) filePaths(count int, entry *regexp.Regexp) (map[string]bool, bool) {
+	wrapped, valid := p.wrap()
+	if !valid || count < 0 || count > 10000 {
+		return nil, false
+	}
+	paths := map[string]bool{}
+	for {
+		if line, _ := p.next(); line.text == "</details>" || wrapped && line.text == "</dd>" {
+			break
+		}
+		line, valid := p.text()
+		if !valid {
+			return nil, false
+		}
+		path := entry.FindStringSubmatch(line)
+		if path == nil || !validRepoPath(path[1]) || paths[path[1]] || len(paths) >= count {
+			return nil, false
+		}
+		paths[path[1]] = true
+	}
+	return paths, len(paths) == count && p.close(wrapped)
 }
 
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
@@ -222,36 +247,33 @@ func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run 
 		return
 	}
 	line, valid = p.text()
+	if !valid {
+		return
+	}
+	var ignored map[string]bool
+	if match := submittedIgnored.FindStringSubmatch(line); match != nil {
+		total, _ := strconv.Atoi(match[1])
+		ignored, valid = p.filePaths(total, standingIgnoredFile)
+		if !valid || !p.take("<details>", false) {
+			return
+		}
+		line, valid = p.text()
+	}
 	files := submittedSelected.FindStringSubmatch(line)
 	if !valid || files == nil {
 		return
 	}
 	total, _ := strconv.Atoi(files[1])
-	if total < 1 || total > 10000 {
+	selected, valid = p.filePaths(total, standingFile)
+	if !valid || total == 0 {
 		return
 	}
-	filesWrapped, valid := p.wrap()
-	if !valid {
-		return
-	}
-	selected = map[string]bool{}
-	for {
-		if line, _ := p.next(); line.text == "</details>" || filesWrapped && line.text == "</dd>" {
-			break
-		}
-		line, valid = p.text()
-		if !valid {
+	for path := range selected {
+		if ignored[path] {
 			return
 		}
-		path := standingFile.FindStringSubmatch(line)
-		if path == nil || !validRepoPath(path[1]) || selected[path[1]] || len(selected) >= total {
-			return
-		}
-		selected[path[1]] = true
 	}
-	if len(selected) != total || !p.close(filesWrapped) {
-		return
-	}
+
 	if line, _ := p.next(); line.text == "<details>" {
 		if !p.take("<details>", false) {
 			return
@@ -338,6 +360,9 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 	review := result.EligibleReviews[0]
 	run, count, selected, valid := parseSubmittedReview(review.Body, intent.HeadSHA)
 	if !valid {
+		run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, intent.HeadSHA, true, false)
+	}
+	if !valid || count == 0 {
 		return result, false
 	}
 	inside := func(at time.Time) bool {
