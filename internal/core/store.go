@@ -21,6 +21,25 @@ import (
 
 const schemaVersion = 2
 
+// OpenOption configures a store before it opens or creates any files.
+type OpenOption func(*storeOptions) error
+
+type storeOptions struct {
+	schemaMigrationTimeout time.Duration
+}
+
+// WithSchemaMigrationTimeout sets the budget for each exclusive startup domain
+// migration, including its backfill. It does not change live write deadlines.
+func WithSchemaMigrationTimeout(timeout time.Duration) OpenOption {
+	return func(options *storeOptions) error {
+		if err := ValidateSchemaMigrationTimeout(timeout); err != nil {
+			return err
+		}
+		options.schemaMigrationTimeout = timeout
+		return nil
+	}
+}
+
 type Store struct {
 	db               *sql.DB
 	writer           *sql.DB
@@ -31,13 +50,24 @@ type Store struct {
 	eventGroups      map[messageTopic]map[*messageWaiter]struct{}
 	eventCount       int
 	principalWaiters map[string]int
+
+	schemaMigrationTimeout time.Duration
 }
 
 func (s *Store) InstanceID() string { return s.instanceID }
 func (s *Store) DB() *sql.DB        { return s.db }
 func (s *Store) Close() error       { return errors.Join(s.db.Close(), s.writer.Close()) }
 
-func Open(ctx context.Context, dataDir string) (*Store, error) {
+func Open(ctx context.Context, dataDir string, options ...OpenOption) (*Store, error) {
+	configuration := storeOptions{schemaMigrationTimeout: DefaultSchemaMigrationTimeout}
+	for _, option := range options {
+		if option == nil {
+			return nil, Fail("configuration_invalid", "A store open option is invalid.", 500)
+		}
+		if err := option(&configuration); err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(dataDir) == "" {
 		return nil, Fail("configuration_invalid", "A private data directory is required.", 500)
 	}
@@ -73,7 +103,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, Fail("storage_unavailable", "The database could not be opened.", 500)
 	}
 	writer.SetMaxOpenConns(1)
-	s := &Store{writer: writer, admission: make(chan struct{}, 1)}
+	s := &Store{writer: writer, admission: make(chan struct{}, 1), schemaMigrationTimeout: configuration.schemaMigrationTimeout}
 	if err = s.initialize(ctx, dataDir); err != nil {
 		_ = writer.Close()
 		return nil, err

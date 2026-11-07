@@ -73,7 +73,7 @@ func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope
 
 // projectedFindingRoute derives receiving state from the authoritative ledger
 // inside the caller's transaction. Imported display rows cannot supply proof.
-func projectedFindingRoute(ctx context.Context, tx *sql.Tx, evidence ReviewEvidence, finding FindingDecision) (*reviews.FindingRoute, error) {
+func projectedFindingRoute(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, finding FindingDecision) (*reviews.FindingRoute, error) {
 	if finding.Disposition != "routed" {
 		if finding.RouteID != "" {
 			return nil, adjudicationStorageError()

@@ -521,3 +521,25 @@ func TestCLIAdjudicationValidationAndRevisionOverflow(t *testing.T) {
 		t.Fatal("revision overflow changed state or allocated receipt")
 	}
 }
+
+func TestComparisonAdjudicationDerivedWriteRollbackAndExactRetry(t *testing.T) {
+	f, a, id, current := coverageFixture(t, 0, false)
+	adjudicationComplete(t, f, a)
+	before := adjudicationState(t, f, a)
+	admissionSQL(t, f, `CREATE TRIGGER fail_comparison_refresh BEFORE UPDATE ON review_comparison_proofs WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'synthetic derived write failure'); END`)
+	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	_, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
+	if err == nil || adjudicationState(t, f, a) != before {
+		t.Fatal("derived write failure committed source/audit/event/receipt", err)
+	}
+	admissionSQL(t, f, `DROP TRIGGER fail_comparison_refresh`)
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
+	first := adjudicationReceipt(t, raw, err, id, "finalized", 1)
+	after := adjudicationState(t, f, a)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
+	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != after {
+		t.Fatal("successful exact retry duplicated source/audit/event/receipt", err)
+	}
+	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
+}

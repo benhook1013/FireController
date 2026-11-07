@@ -105,7 +105,7 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			result.State, result.Reason = "held", "routed_findings_pending"
 		}
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, repositoryID, evidence.Anchor.PullNumber, evidence.Anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, repositoryID, evidence.Anchor.PullNumber, channel)
 			if err != nil {
 				return err
 			}

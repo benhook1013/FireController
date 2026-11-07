@@ -82,6 +82,21 @@ func TestReviewRoutePolicyOptionalFieldsAndIndependentIncomingHolds(t *testing.T
 					v["reason"] = "routed_findings_pending"
 					v["incoming_routes_pending"] = 100
 				}},
+				{"incoming exact 101", func(v map[string]any) {
+					v["state"] = "held"
+					v["reason"] = "routed_findings_pending"
+					v["incoming_routes_pending"] = 101
+				}},
+				{"incoming exact 103", func(v map[string]any) {
+					v["state"] = "held"
+					v["reason"] = "routed_findings_pending"
+					v["incoming_routes_pending"] = 103
+				}},
+				{"incoming exact safe maximum", func(v map[string]any) {
+					v["state"] = "held"
+					v["reason"] = "routed_findings_pending"
+					v["incoming_routes_pending"] = int64(1<<53) - 1
+				}},
 				{"capacity is not invented count", func(v map[string]any) {
 					v["state"] = "held"
 					v["reason"] = "routed_findings_capacity"
@@ -177,7 +192,7 @@ func TestReviewRoutePolicyRejectsMalformedOrContradictoryIncomingFacts(t *testin
 			}{
 				{"false sufficient", func(v map[string]any) { v["state"] = "sufficient" }},
 				{"negative count", func(v map[string]any) { v["incoming_routes_pending"] = -1 }},
-				{"over capacity exact count", func(v map[string]any) { v["incoming_routes_pending"] = 101 }},
+				{"inexact browser count", func(v map[string]any) { v["incoming_routes_pending"] = int64(1 << 53) }},
 				{"null count", func(v map[string]any) { v["incoming_routes_pending"] = nil }},
 				{"fraction count", func(v map[string]any) { v["incoming_routes_pending"] = 1.5 }},
 				{"string count", func(v map[string]any) { v["incoming_routes_pending"] = "1" }},

@@ -49,6 +49,8 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 		},
 		"incoming pending":       func(v map[string]any) { v["incoming_routes_pending"] = 1 },
 		"incoming capacity":      func(v map[string]any) { v["incoming_routes_capacity"] = true },
+		"incoming inexact":       func(v map[string]any) { v["incoming_routes_pending"] = int64(1 << 53) },
+		"incoming fractional":    func(v map[string]any) { v["incoming_routes_pending"] = 1.5 },
 		"incoming negative":      func(v map[string]any) { v["incoming_routes_pending"] = -1 },
 		"incoming null":          func(v map[string]any) { v["incoming_routes_pending"] = nil },
 		"positive reason":        func(v map[string]any) { v["reasons"] = []string{"unknown_hold"} },
@@ -110,6 +112,18 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 	response.Store(string(body))
 	if got, err := c.ReviewSourceReadiness(t.Context(), 2); err != nil || got.State != "held" || got.ReviewState.UnresolvedOutdated != 1 {
 		t.Fatal(got, err)
+	}
+	for _, pending := range []int64{101, 103, (1 << 53) - 1} {
+		held := sampleReadiness()
+		held.State = "held"
+		held.Reasons = []string{"routed_findings_pending"}
+		held.IncomingRoutesPending = pending
+		body, _ := json.Marshal(held)
+		response.Store(string(body))
+		got, err := c.ReviewSourceReadiness(t.Context(), 2)
+		if err != nil || got.IncomingRoutesPending != pending || !got.Channels[0].Covered || got.IncomingRoutesCapacity {
+			t.Fatal("exact count hold lost", got, err)
+		}
 	}
 	before := calls.Load()
 	_, err := c.ReviewSourceReadiness(t.Context(), 0)
