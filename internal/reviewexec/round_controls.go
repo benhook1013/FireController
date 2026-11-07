@@ -66,6 +66,14 @@ const roundColumns = roundColumnsV2 + `,maximum_unbounded`
 const roundSafeInteger int64 = 9007199254740991
 const roundPendingStates = `('queued','preparing','posting','active','uncertain')`
 
+const roundUnboundExecutionSQL = `SELECT EXISTS(SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state IN ` + roundPendingStates + ` AND NOT EXISTS(SELECT 1 FROM review_round_operation_bindings b WHERE b.operation_id=o.id))`
+const roundUnboundCaptureSQL = `SELECT p.operation_id,p.state FROM review_comparison_proofs p
+LEFT JOIN review_execution_evidence e ON e.id=p.evidence_id AND e.project_id=p.project_id AND e.operation_id=p.operation_id
+LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
+WHERE p.project_id=? AND p.pull_number=? AND p.channel=? AND p.state IN ('dirty','pending')
+AND NOT EXISTS(SELECT 1 FROM review_round_operation_bindings b WHERE b.operation_id=p.operation_id)
+AND (p.state='dirty' OR (json_extract(e.body_json,'$.capture.review.Complete')=1 AND json_extract(e.body_json,'$.capture.review.Outcome')='completed' AND COALESCE(json_extract(s.body_json,'$.finalized'),0)=0)) LIMIT 1`
+
 func roundUnavailable() error {
 	return core.Fail("storage_unavailable", "Stored review round controls are unavailable.", 500)
 }
@@ -220,6 +228,15 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			if c.Used > roundSafeInteger-*input.Maximum {
 				return nil, roundDenied("review_round_capacity", "The cumulative review limit cannot advance safely.")
 			}
+			// Closing an unconfigured pair can precede its first grant, so this
+			// guard must not depend on Configured or the placeholder grant revision.
+			unbound, err := roundUnboundOccupied(ctx, tx, c)
+			if err != nil {
+				return nil, err
+			}
+			if unbound {
+				return nil, roundDenied("review_round_inflight", "Finish or settle review work accepted without a round grant before granting additional rounds.")
+			}
 			if !c.cumulative {
 				c.Dry, err = cumulativeLegacyDry(ctx, tx, c)
 				if err != nil {
@@ -307,6 +324,43 @@ func checkRoundOpen(c RoundControl) error {
 // Subtraction keeps in-flight accounting within the interoperable integer bound.
 func roundHasCapacity(c RoundControl, occupied int64) bool {
 	return occupied >= 0 && c.Used >= 0 && c.Used < roundSafeInteger && occupied < roundSafeInteger-c.Used && (c.MaximumUnbounded || occupied < c.Maximum-c.Used)
+}
+
+// A new grant cannot retroactively authorize or credit unbound work. Use scoped
+// indexes to find unfinished work, not a scan of finalized capture history.
+func roundUnboundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord) (bool, error) {
+	var pending bool
+	if err := tx.QueryRowContext(ctx, roundUnboundExecutionSQL, c.ProjectID, c.PullNumber, c.Channel).Scan(&pending); err != nil || pending {
+		return pending, err
+	}
+	var operation, state string
+	err := tx.QueryRowContext(ctx, roundUnboundCaptureSQL, c.ProjectID, c.PullNumber, c.Channel).Scan(&operation, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if state == "dirty" {
+		return false, roundUnavailable()
+	}
+	// The derived ledger narrows the candidates; original authority still
+	// validates the complete capture and its pending finalization.
+	proof, err := deriveComparisonProof(ctx, tx, c.ProjectID, operation)
+	if err != nil {
+		return false, err
+	}
+	if proof.evidence == "" {
+		return false, roundUnavailable()
+	}
+	evidence, adjudication, err := loadReviewAdjudication(ctx, tx, c.ProjectID, proof.evidence)
+	if err != nil {
+		return false, err
+	}
+	if adjudication.Finalized || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+		return false, roundUnavailable()
+	}
+	return true, nil
 }
 
 func roundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (int64, error) {
