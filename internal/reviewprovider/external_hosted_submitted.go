@@ -58,7 +58,7 @@ func currentReviewInfoHeading(lines []findingLine, opening int) (start, closing 
 // The comparison scanner may treat these two exact presentation tags as
 // transparent. It still validates the ordinary metadata scopes inside them.
 func currentReviewHeadingOffsets(body string) (int, int) {
-	if !strings.Contains(body, "<h6>") || !strings.Contains(body, " Prompt to fix all issues</summary>") {
+	if !strings.Contains(body, "<h6>") {
 		return -1, -1
 	}
 	lines, valid := findingLines(body)
@@ -67,19 +67,25 @@ func currentReviewHeadingOffsets(body string) (int, int) {
 	}
 	open, close := -1, -1
 	for i, line := range lines {
-		if line.hidden || line.quote != 0 || line.text != "<details>" {
+		if line.hidden || line.quote != 0 || line.text != "<h6>" {
 			continue
 		}
-		p := submittedReviewParser{lines: lines, at: i}
-		if !p.currentPrompt(body) {
-			continue
-		}
-		p.next()
-		if _, end, ok := currentReviewInfoHeading(lines, p.at); ok {
+		if _, end, ok := currentReviewInfoHeading(lines, i); ok {
 			if open >= 0 {
 				return -1, -1
 			}
-			open, close = lines[p.at].start, lines[end].start
+			open, close = line.start, lines[end].start
+		}
+	}
+	if open >= 0 {
+		// Heading transparency must not make an unknown surrounding prompt or
+		// finding section authoritative. This scratch inventory validates only
+		// grammar; its local identity is never returned, retained or credited.
+		inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+		decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+		decoder.summary(HostedReview{ID: 1, Body: body}, true)
+		if !inventory.Complete {
+			return -1, -1
 		}
 	}
 	return open, close
