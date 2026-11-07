@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
@@ -72,13 +73,13 @@ func TestAdoptionObligationRetargetRejectsUncertainReceiptsWithoutRetry(t *testi
 	one, target := int64(1), int64(9)
 	for _, mode := range []string{"lost", "wrong-target", "wrong-revision", "missing-scope", "unsorted-scope", "resolved"} {
 		t.Run(mode, func(t *testing.T) {
-			calls := 0
+			var calls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
 				}
-				calls++
+				calls.Add(1)
 				if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/adoption-obligations/"+id+"/retarget" || r.Header.Get("Idempotency-Key") != "retain-key" || r.Header.Get("X-FC-Worker") != "worker-one" {
 					t.Error("lost retarget binding")
 				}
@@ -109,8 +110,8 @@ func TestAdoptionObligationRetargetRejectsUncertainReceiptsWithoutRetry(t *testi
 			c := newClient(t, server)
 			_, err := c.RetargetAdoptionObligation(t.Context(), id, "retain-key", client.AdoptionObligationRetargetRequest{ExpectedRevision: &one, TargetPullNumber: &target, Reason: "Move receiver"})
 			var failure *client.Error
-			if !errors.As(err, &failure) || !failure.OutcomeUnknown || calls != 1 {
-				t.Fatal("lost uncertain outcome or retried mutation", err, calls)
+			if count := calls.Load(); !errors.As(err, &failure) || !failure.OutcomeUnknown || count != 1 {
+				t.Fatal("lost uncertain outcome or retried mutation", err, count)
 			}
 		})
 	}
