@@ -42,6 +42,8 @@ An actual installed HTTPS quiet wait returned its compact timeout after 21.613 s
 
 ## Delivered capability boundaries
 
+The `develop` integration branch is the reference source for cumulative extraction consumer parity, not an installed-build claim. Before claiming parity, the integrating maintainer must compare operational adoption, external Hosted settlement and credit, browser progress and scheduling/CI consumer paths with `develop` and record focused contract, failure-mode and affected packaged checks for cumulative grants, taper, completion, original operation bindings and backup. Native-only round checks do not establish that consumer parity; implemented capabilities and their existing proof remain recorded at their owning contracts.
+
 Selected installed history acquisition, exact-key recovery, private exports and return to disabled collection now have [live installed proof](history-collection.md#installed-selected-acquisition). Existing project data and review authority were preserved; interrupted-pass resume retains its separate controlled packaged proof.
 
 The opt-in [public project website](public-site.md) has full validation, actual packaged CLI/browser proof and installed two-project anonymous/authenticated acceptance. Both selected publications were enabled through explicit preview/apply choices; publication remains opt-in for every other project.
