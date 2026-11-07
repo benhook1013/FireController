@@ -150,6 +150,7 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	Observation      *PullObservationHealth `json:"observation,omitempty"`
 	mergeStateStatus string
 	Diff             *PullDiff        `json:"diff,omitempty"`
 	IsDraft          *bool            `json:"is_draft,omitempty"`
@@ -171,16 +172,17 @@ type PullSummary struct {
 }
 
 type QueueResponse struct {
-	ProjectID  string        `json:"project_id"`
-	Configured bool          `json:"configured"`
-	Revision   int64         `json:"revision"`
-	SnapshotID string        `json:"snapshot_id"`
-	Source     string        `json:"source"`
-	ObservedAt string        `json:"observed_at"`
-	RecordedAt string        `json:"recorded_at"`
-	Items      []PullSummary `json:"items"`
-	Cursor     string        `json:"cursor,omitempty"`
-	HasMore    bool          `json:"has_more"`
+	Observer   *ObserverHealth `json:"observer,omitempty"`
+	ProjectID  string          `json:"project_id"`
+	Configured bool            `json:"configured"`
+	Revision   int64           `json:"revision"`
+	SnapshotID string          `json:"snapshot_id"`
+	Source     string          `json:"source"`
+	ObservedAt string          `json:"observed_at"`
+	RecordedAt string          `json:"recorded_at"`
+	Items      []PullSummary   `json:"items"`
+	Cursor     string          `json:"cursor,omitempty"`
+	HasMore    bool            `json:"has_more"`
 }
 
 type PullResponse struct {
