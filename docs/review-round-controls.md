@@ -14,7 +14,7 @@ Operational adoption, external Hosted settlement and credit, browser progress an
 
 ## Operational controls
 
-Hosted and CLI have independent per-PR scheduling state and independently advance through eligible work in queue priority order. A cooldown or active review in one channel does not hold the other channel. Minimum and maximum count additional completed rounds. Equal values express an exact count; the CLI's `--exact` is only shorthand for those equal bounds. A maximum permits early taper once the minimum is satisfied.
+The deferred channel-front scheduler will advance Hosted and CLI independently through eligible work in queue priority order. A cooldown or active review in one channel will not hold the other channel. Minimum and maximum count additional completed rounds. Equal values express an exact count; the CLI's `--exact` is only shorthand for those equal bounds. A maximum permits early taper once the minimum is satisfied.
 
 New execution enrollment atomically initializes absent PR/channel rules: Hosted minimum two, maximum three and taper two; CLI minimum two, maximum six and taper two. Reordering, pausing or changing capability leaves existing enrolled pairs untouched, including older unconfigured allocations. Explicit controls installed before enrollment are preserved.
 
