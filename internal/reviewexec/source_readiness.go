@@ -262,21 +262,25 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 		} else if out.IncomingRoutesPending > 0 {
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
 		}
-		missing, pending := false, false
+		missing, pending, roundsPending := false, false, false
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}
-			out.Channels = append(out.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
+			out.Channels = append(out.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
 			missing = missing || !state.Covered
 			pending = pending || state.Pending
+			roundsPending = roundsPending || state.RoundsConfigured && !state.RoundsComplete
 		}
 		if missing {
 			out.Reasons = append(out.Reasons, "review_coverage_missing")
 		}
 		if pending {
 			out.Reasons = append(out.Reasons, "review_evidence_pending")
+		}
+		if roundsPending {
+			out.Reasons = append(out.Reasons, "review_rounds_pending")
 		}
 		switch out.CI.State {
 		case "satisfied", "not_required":

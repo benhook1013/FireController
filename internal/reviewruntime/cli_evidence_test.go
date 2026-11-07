@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -122,7 +123,22 @@ func (f *cliEvidenceFixture) seedConfiguration(t *testing.T) {
 	}
 	previous := int64(0)
 	configuration := reviewexec.Configuration{ExpectedRevision: &previous, CapabilityID: "runtime-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}}
-	if _, err := f.engine.Configure(context.Background(), f.scope(t, f.admin, true), "runtime-config-key", configuration); err != nil {
+	// Preserve the authentic pre-round predecessor configuration for shared
+	// capture fixtures. Product enrollment defaults are tested through Configure.
+	scope := f.scope(t, f.admin, true)
+	body, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: "runtime-config-key", Request: configuration}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,1,?)`, f.project, string(body)); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, 1, map[string]any{"revision": int64(1), "paused": false}); err != nil {
+			return nil, err
+		}
+		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: 1}, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

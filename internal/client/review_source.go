@@ -227,11 +227,11 @@ func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64)
 	seen := map[string]bool{}
 	sufficient := value.IncomingRoutesPending == 0 && !value.IncomingRoutesCapacity
 	for _, channel := range value.Channels {
-		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] {
+		if !oneReviewOf(channel.Channel, "cli", "hosted") || seen[channel.Channel] || !channel.RoundsConfigured && channel.RoundsComplete {
 			return ReviewSourcePolicyAssessment{}, invalidResponse()
 		}
 		seen[channel.Channel] = true
-		sufficient = sufficient && channel.Covered && !channel.Pending
+		sufficient = sufficient && channel.Covered && !channel.Pending && (!channel.RoundsConfigured || channel.RoundsComplete)
 	}
 	if sufficient != (value.State == "sufficient") {
 		return ReviewSourcePolicyAssessment{}, invalidResponse()

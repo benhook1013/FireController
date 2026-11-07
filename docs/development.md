@@ -171,3 +171,7 @@ The profile-bound `fc publication read`, `preview`, `apply` and `unpublish` comm
 ## Optional offsite backup qualification
 
 After building `bin/fcd`, run `make offsite-smoke RCLONE=/absolute/path/to/rclone` to exercise operator push/status/fetch against disposable loopback S3, encrypted recovery, independent retention and failure paths. CI installs a pinned, checksum-verified transport and runs this check. Ordinary tests need no external binary or cloud account. See [offsite backups](offsite-backups.md) for isolation and proof limits.
+
+## Explicit native round controls
+
+Use `fc reviews rounds read --pr NUMBER --channel cli` for one compact native control. `grant` accepts `--min` and `--max` (or `--exact`), `taper` accepts `--taper` from 1 through 1,000, and `close` accepts no allocation fields. Mutations require `--expect-revision` (`--expected-revision` remains a compatible alias) and the caller's original `--key`; they perform no provider action. Both channels default to two clean rounds for taper. See [Per-PR review rounds](review-round-controls.md) for cumulative accounting, current authority, native completion and the deferred-consumer boundary.

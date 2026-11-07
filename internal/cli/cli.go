@@ -46,6 +46,7 @@ type options struct {
 }
 
 type invocation struct {
+	rounds              *reviewRoundsInvocation
 	reviewCIDiagnostics bool
 	options
 	command      string
@@ -94,6 +95,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return emit(stdout, stderr, struct {
 			Version string `json:"version"`
 		}{Version})
+	}
+	if call.rounds != nil && call.rounds.operation == "help" {
+		return emitReviewRoundsHelp(call.rounds, stdout, stderr)
 	}
 	if call.projectMap != nil {
 		if err := prepareProjectMap(ctx, call.projectMap); err != nil {
@@ -179,6 +183,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.rounds != nil {
+		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
+	}
+
 	if call.publication != nil {
 		return executePublication(requestCtx, ctx, service, call.publication, stdout, stderr)
 	}
@@ -363,6 +371,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "presentation" {
 		var ok bool
 		call.presentation, ok = parsePresentation(call.subcommand, operationArgs)
+		return call, ok
+	}
+	if call.command == "reviews" && call.subcommand == "rounds" {
+		var ok bool
+		call.rounds, ok = parseReviewRounds(operationArgs)
 		return call, ok
 	}
 	if call.command == "reviews" && call.subcommand == "queue-edit" {

@@ -13,10 +13,11 @@ import (
 // ExecutionContext is trusted local admission state, not dispatch permission.
 // Source identity, fresh allowance and workspace checks remain the driver's job.
 type ExecutionContext struct {
-	Operation     Operation
-	Configuration Configuration
-	Policy        PolicyRecord
-	RepositoryID  int64
+	Operation        Operation
+	Configuration    Configuration
+	Policy           PolicyRecord
+	RepositoryID     int64
+	RoundsConfigured bool
 }
 
 func boundPolicy(ctx context.Context, tx *sql.Tx, operation Operation) (PolicyRecord, string, error) {
@@ -76,6 +77,10 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	}
 	if result.RepositoryID < 1 {
 		return ExecutionContext{}, conflict()
+	}
+	result.RoundsConfigured, err = admitRoundControl(ctx, tx, operation)
+	if err != nil {
+		return ExecutionContext{}, err
 	}
 	result.Configuration, result.Policy = configuration, policy
 	return result, nil
@@ -180,7 +185,7 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if state.Pending {
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if state.Covered {
+	if state.Covered && !current.RoundsConfigured {
 		return &core.Error{Code: "review_held", Message: "The selected PR/channel already has completed native review progress.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}
 	return nil
@@ -213,7 +218,7 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil {
 			return err
 		}
-		if state.Pending || !state.Covered {
+		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
 			return sourceHold("predecessor_unfinished")
 		}
 		number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
