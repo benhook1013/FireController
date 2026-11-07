@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -329,4 +332,145 @@ func TestComparisonMigrationSetMismatchRollsBack(t *testing.T) {
 	if err := ensureComparisonSchema(t.Context(), f.store); err != nil {
 		t.Fatal("canonical retry after set refusal failed", err)
 	}
+}
+
+// Build more than one migration page through real journal/capture/adjudication
+// APIs. These are local synthetic captures, not live provider executions.
+func comparisonMigrationRetainedHistory(t *testing.T) (*attemptFixture, Attempt, SourcePlan) {
+	t.Helper()
+	f, a, id, current := coverageFixture(t, 0, false)
+	coverageFinalize(t, f, a, id, 0)
+	source, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 130; i++ {
+		next := coverageNextAttempt(t, f, fmt.Sprintf("migration-history-%d", i), "cli", strings.Repeat("9", 40))
+		capture := source.Capture
+		capture.ExpectedAnchor = *next.Anchor
+		capture.CaptureSHA256 = fmt.Sprintf("%032x%032x", i+1, i+1)
+		capture.CaptureID = "review_capture_" + capture.CaptureSHA256[:32]
+		recorded, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, next.ID, capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		adjudicationComplete(t, f, next)
+		body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("migration-finalized-%d", i), recorded.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+		adjudicationReceipt(t, body, err, recorded.ID, "finalized", 1)
+	}
+	return f, a, current
+}
+
+func TestComparisonMigrationRetainedHistoryLongerBudgetAndRollback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, a, current := comparisonMigrationRetainedHistory(t)
+		proofs := comparisonMigrationProofs(t, f)
+		if len(proofs) != 131 {
+			t.Fatal("fixture did not cross the 128-operation migration page", len(proofs))
+		}
+		comparisonPreDomain(t, f)
+		before := comparisonSourceRows(t, f)
+		assertSource := func() {
+			t.Helper()
+			if !reflect.DeepEqual(comparisonSourceRows(t, f), before) {
+				t.Fatal("startup changed retained source rows or DDL")
+			}
+		}
+		migrations := [][]string{ComparisonSchemaSQL()}
+		partial := func(ctx context.Context, conn *sql.Conn) error {
+			if err := refreshComparisonProof(ctx, conn, attemptProject, proofs[0].operation); err != nil {
+				return err
+			}
+			var count int
+			if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs`).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("first retained capture was not derived: count%d err%v", count, err)
+			}
+			return nil
+		}
+		calls := 0
+		backfill := func(ctx context.Context, conn *sql.Conn) error {
+			calls++
+			if err := partial(ctx, conn); err != nil {
+				return err
+			}
+			// Controlled elapsed work proves budgeting, not a throughput estimate.
+			time.Sleep(31 * time.Second)
+			return backfillComparisonProofs(ctx, conn)
+		}
+		err := f.store.EnsureSchemaWithBackfill(t.Context(), "review_comparison", migrations, backfill)
+		attemptCode(t, err, "schema_migration_timeout")
+		assertComparisonDomainAbsent(t, f)
+		assertSource()
+		var file string
+		if err := f.store.DB().QueryRow(`SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&file); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := core.Open(t.Context(), filepath.Dir(file), core.WithSchemaMigrationTimeout(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = reopened.Close() })
+		f.store = reopened
+		if err := reopened.EnsureSchemaWithBackfill(t.Context(), "review_comparison", migrations, backfill); err != nil || calls != 2 {
+			t.Fatal("longer-budget retry failed identical retained history", calls, err)
+		}
+		assertSource()
+		if !reflect.DeepEqual(comparisonMigrationProofs(t, f), proofs) {
+			t.Fatal("longer-budget backfill changed canonical retained proofs")
+		}
+		if err := ValidateComparisonProofs(t.Context(), reopened.DB()); err != nil {
+			t.Fatal(err)
+		}
+		// Rebind the engine to the reopened store for its ordinary coverage read.
+		f.e, err = New(reopened, attemptCapabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		coverageComparison(t, f, a, current, ComparisonState{Covered: true})
+		if err := reopened.EnsureSchemaWithBackfill(t.Context(), "review_comparison", migrations, backfill); err != nil || calls != 2 {
+			t.Fatal("already-current startup reran retained backfill", calls, err)
+		}
+		assertSource()
+		if !reflect.DeepEqual(comparisonMigrationProofs(t, f), proofs) {
+			t.Fatal("repeat startup changed derived proofs")
+		}
+
+		// A longer budget must still honor cancellation after partial work.
+		comparisonPreDomain(t, f)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		err = reopened.EnsureSchemaWithBackfill(ctx, "review_comparison", migrations, func(ctx context.Context, conn *sql.Conn) error {
+			if err := partial(ctx, conn); err != nil {
+				return err
+			}
+			cancel()
+			return nil // Even a callback omitting cancellation cannot commit.
+		})
+		attemptCode(t, err, "overloaded")
+		assertComparisonDomainAbsent(t, f)
+		assertSource()
+
+		// Corrupt the last retained capture in migration order, so the real
+		// backfill has processed a full page before discovering invalid authority.
+		if _, err := reopened.DB().Exec(`UPDATE review_execution_evidence SET body_json='{}' WHERE operation_id=?`, proofs[len(proofs)-1].operation); err != nil {
+			t.Fatal(err)
+		}
+		before = comparisonSourceRows(t, f)
+		inserted := 0
+		err = reopened.EnsureSchemaWithBackfill(t.Context(), "review_comparison", migrations, func(ctx context.Context, conn *sql.Conn) error {
+			err := backfillComparisonProofs(ctx, conn)
+			if scanErr := conn.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE state='ready'`).Scan(&inserted); scanErr != nil {
+				return scanErr
+			}
+			return err
+		})
+		if err == nil || inserted != 130 {
+			t.Fatal("late corrupt capture did not refuse after a full page", inserted, err)
+		}
+		assertComparisonDomainAbsent(t, f)
+		assertSource() // Corruption is retained for diagnosis, never repaired.
+	})
 }

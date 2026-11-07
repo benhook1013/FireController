@@ -8,9 +8,18 @@ import (
 	"time"
 )
 
-// Startup maintenance can rewrite retained domain history before serving. Its
-// budget is separate from the short admission/transaction budget for live work.
-const schemaMigrationTimeout = 30 * time.Second
+// DefaultSchemaMigrationTimeout bounds each startup domain migration, which can
+// rewrite retained history before serving. Live writes retain a separate budget.
+const DefaultSchemaMigrationTimeout = 30 * time.Second
+
+// ValidateSchemaMigrationTimeout lets operators reject invalid configuration
+// before filesystem access. Each domain gets its own positive, bounded budget.
+func ValidateSchemaMigrationTimeout(timeout time.Duration) error {
+	if timeout <= 0 || timeout > 24*time.Hour {
+		return Fail("configuration_invalid", "Use a positive --schema-migration-timeout of at most 24h.", 500)
+	}
+	return nil
+}
 
 // EnsureSchema applies ordered, repository-owned domain migrations at exclusive
 // startup, before serving. Each statement group advances one schema version.
@@ -23,13 +32,13 @@ func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[
 // EnsureSchema, then runs backfill on that connection before committing. The
 // callback runs only when at least one migration is required and shares the
 // migration deadline and atomic rollback, including schema version metadata.
-// It must perform only bounded database work, with no filesystem, network or
+// Work must honor the context and use bounded batches, with no filesystem, network or
 // provider calls, and must not commit or roll back the connection itself.
 func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
 	if domain == "" || len(migrations) == 0 {
 		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
 	}
-	ctx, cancel := context.WithTimeout(ctx, schemaMigrationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.schemaMigrationTimeout)
 	defer cancel()
 	select {
 	case s.admission <- struct{}{}:
