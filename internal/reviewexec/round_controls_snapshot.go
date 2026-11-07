@@ -76,7 +76,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateRoundBindings(ctx, q); err != nil {
 		return err
 	}
-	return nil
+	return validateRoundAdoptions(ctx, q)
 }
 
 // Physical validation precedes keyset traversal: SQLite TEXT affinity alone

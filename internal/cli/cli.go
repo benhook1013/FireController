@@ -46,6 +46,8 @@ type options struct {
 }
 
 type invocation struct {
+	adoptionObligations *adoptionObligationsInvocation
+	roundAdoption       *roundAdoptionInvocation
 	rounds              *reviewRoundsInvocation
 	reviewCIDiagnostics bool
 	options
@@ -124,6 +126,16 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			return reportClientError(stderr, err, ctx)
 		}
 	}
+	if call.adoptionObligations != nil {
+		if err := prepareAdoptionObligations(ctx, call.adoptionObligations); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.roundAdoption != nil {
+		if err := prepareRoundAdoption(ctx, call.roundAdoption); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
 	if call.reviewImport != nil {
 		if err := prepareReviewImport(ctx, call.reviewImport); err != nil {
 			return reportClientError(stderr, err, ctx)
@@ -183,6 +195,12 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.adoptionObligations != nil {
+		return executeAdoptionObligations(requestCtx, ctx, service, call.adoptionObligations, stdout, stderr)
+	}
+	if call.roundAdoption != nil {
+		return executeRoundAdoption(requestCtx, ctx, service, call.roundAdoption, stdout, stderr)
+	}
 	if call.rounds != nil {
 		return executeReviewRounds(requestCtx, ctx, service, call.rounds, stdout, stderr)
 	}
@@ -373,7 +391,15 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.presentation, ok = parsePresentation(call.subcommand, operationArgs)
 		return call, ok
 	}
+	if call.command == "reviews" && call.subcommand == "obligations" {
+		var ok bool
+		call.adoptionObligations, ok = parseAdoptionObligations(operationArgs)
+		return call, ok
+	}
 	if call.command == "reviews" && call.subcommand == "rounds" {
+		if len(operationArgs) > 0 && operationArgs[0] == "adopt" {
+			return parseRoundAdoption(call, operationArgs[1:])
+		}
 		var ok bool
 		call.rounds, ok = parseReviewRounds(operationArgs)
 		return call, ok

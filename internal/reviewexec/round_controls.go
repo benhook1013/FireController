@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -89,17 +92,21 @@ func roundTime(value string) bool {
 	at, err := time.Parse(time.RFC3339Nano, value)
 	return len(value) <= 64 && err == nil && !at.IsZero()
 }
+func validRoundOrigin(c RoundControl) bool {
+	return validRoundSource(c.OriginSource) && validRoundSource(c.OriginKey) && len(c.OriginSHA256) == 64 && strings.Trim(c.OriginSHA256, "0123456789abcdef") == ""
+}
+func validRoundSource(s string) bool {
+	return len(s) <= 200 && utf8.ValidString(s) && s != "" && s == strings.TrimSpace(s) && strings.IndexFunc(s, unicode.IsControl) < 0
+}
 func hasRoundOrigin(c RoundControl) bool {
 	return c.OriginSource != "" || c.OriginKey != "" || c.OriginSHA256 != ""
 }
 func validRoundControl(c RoundControl) bool {
-	// Native-only controls have no independently verified adoption authority.
-	// Retain the historical wire/schema fields but reject carried baselines.
 	origin := hasRoundOrigin(c)
-	if origin || c.InitialDry != 0 || c.InitiallyTapered || c.MaximumUnbounded {
-		return false
-	}
 	baseline := !c.MaximumUnbounded && c.Maximum >= 1 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry == 0 && !c.InitiallyTapered
+	if origin {
+		baseline = validRoundOrigin(c) && c.Maximum >= 0 && c.Taper >= 1 && c.Taper <= 1000 && c.InitialDry >= 0 && c.InitialDry <= 1000
+	}
 	return baseline && roundScope(c.ProjectID, c.PullNumber, c.Channel) && c.Configured && c.Revision >= 1 && c.Epoch >= 1 && c.Epoch <= c.Revision && c.Minimum >= 0 && c.Used >= 0 && c.Used <= roundSafeInteger && c.Dry >= 0 && c.Dry <= roundSafeInteger && c.Dry <= c.Used+c.InitialDry && (c.MaximumUnbounded && c.Maximum == 0 && c.Minimum <= roundSafeInteger || !c.MaximumUnbounded && c.Minimum <= c.Maximum && c.Maximum <= roundSafeInteger && c.Used <= c.Maximum) && (!c.Tapered || c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper)) && identifier.MatchString(c.ActorID) && roundTime(c.CreatedAt) && roundTime(c.UpdatedAt)
 }
 
