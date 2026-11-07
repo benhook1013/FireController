@@ -2,10 +2,12 @@ package client_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
@@ -63,5 +65,54 @@ func TestAdoptionObligationRetargetValidationBeforeTransport(t *testing.T) {
 	valid, err := client.NormalizeAdoptionObligationRetarget(client.AdoptionObligationRetargetRequest{ExpectedRevision: &one, TargetPullNumber: &zero, Reason: "Unassigned backlog"})
 	if err != nil || valid.TargetPullNumber == nil || *valid.TargetPullNumber != 0 {
 		t.Fatal("explicit zero rejected", valid, err)
+	}
+}
+
+func TestAdoptionObligationRetargetRejectsUncertainReceiptsWithoutRetry(t *testing.T) {
+	id := "adoption_obligation_" + strings.Repeat("a", 32)
+	one, target := int64(1), int64(9)
+	for _, mode := range []string{"lost", "wrong-target", "wrong-revision", "missing-scope", "unsorted-scope", "resolved"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/adoption-obligations/"+id+"/retarget" || r.Header.Get("Idempotency-Key") != "retain-key" || r.Header.Get("X-FC-Worker") != "worker-one" {
+					t.Error("lost retarget binding")
+				}
+				if mode == "lost" {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						_ = conn.Close()
+					}
+					return
+				}
+				receipt := client.AdoptionObligationRetargetReceipt{ID: id, Status: "open", Revision: 2, TargetPullNumber: target, AffectedPullNumbers: []int64{2, 9}, Outcome: "retargeted"}
+				switch mode {
+				case "wrong-target":
+					receipt.TargetPullNumber = 8
+				case "wrong-revision":
+					receipt.Revision = 1
+				case "missing-scope":
+					receipt.AffectedPullNumbers = []int64{2}
+				case "unsorted-scope":
+					receipt.AffectedPullNumbers = []int64{9, 2}
+				case "resolved":
+					receipt.Status = "resolved"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(receipt)
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			_, err := c.RetargetAdoptionObligation(t.Context(), id, "retain-key", client.AdoptionObligationRetargetRequest{ExpectedRevision: &one, TargetPullNumber: &target, Reason: "Move receiver"})
+			var failure *client.Error
+			if count := calls.Load(); !errors.As(err, &failure) || !failure.OutcomeUnknown || count != 1 {
+				t.Fatal("lost uncertain outcome or retried mutation", err, count)
+			}
+		})
 	}
 }

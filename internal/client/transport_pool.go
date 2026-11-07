@@ -31,9 +31,11 @@ func NewWithTransportPool(ctx context.Context, binding profile.Binding, pool *Tr
 
 func newTransport() *http.Transport {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
-	transport.DialContext = (&net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}).DialContext
+	// Bootstrap may spend its ten-second budget establishing a first connection.
+	// Each operation's request context still enforces its own shorter deadline.
+	transport.DialContext = (&net.Dialer{Timeout: bootstrapTimeout, KeepAlive: 30 * time.Second}).DialContext
 	transport.ResponseHeaderTimeout = requestTimeout
-	transport.TLSHandshakeTimeout = requestTimeout
+	transport.TLSHandshakeTimeout = bootstrapTimeout
 	transport.MaxConnsPerHost = 4
 	transport.MaxIdleConns = 4
 	transport.DisableCompression = true

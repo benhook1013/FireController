@@ -25,6 +25,7 @@ import (
 
 const maxResponseBytes = 4 << 20
 const requestTimeout = 5 * time.Second
+const bootstrapTimeout = 2 * requestTimeout
 
 // SourceRefreshBudget returns the total budget for an already validated source
 // wait preference. Argument validation remains with the command or request.
@@ -108,11 +109,14 @@ func (c *Client) verifyInstance(ctx context.Context, instance any) error {
 
 // The private wait seam keeps bounded retry/cancellation tests deterministic.
 func (c *Client) verifyInstanceWithWait(ctx context.Context, instance any, wait func(context.Context, time.Duration) error) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, bootstrapTimeout)
 	defer cancel()
 	delay := 250 * time.Millisecond
 	for attempt := 0; ; attempt++ {
-		err := c.get(ctx, []string{"api", "v1", "instance"}, nil, false, instance)
+		// Keep the authenticated connection for the selected operation. A slow
+		// first dial/TLS handshake may use the remaining bootstrap budget rather
+		// than being abandoned at the ordinary operation's five-second limit.
+		err := c.requestWithTimeout(ctx, http.MethodGet, []string{"api", "v1", "instance"}, nil, false, "", nil, http.StatusOK, false, instance, maxResponseBytes, decodeResponse, nil, bootstrapTimeout)
 		var failure *Error
 		if err == nil || attempt >= 6 || ctx.Err() != nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
 			return err
@@ -353,6 +357,10 @@ type sourceWaitOptions struct {
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
+	return c.requestWithTimeout(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, wait, requestTimeout)
+}
+
+func (c *Client) requestWithTimeout(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration) error {
 	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -368,7 +376,6 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	u.Path, _ = url.PathUnescape(escaped)
 	u.RawPath = escaped
 	u.RawQuery = query.Encode()
-	timeout := requestTimeout
 	if wait != nil {
 		timeout = providerWaitBudget(wait.seconds)
 		if wait.budget > 0 {
@@ -442,10 +449,10 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		return contextError(err)
 	}
 	httpClient := c.http
-	if wait != nil {
+	if wait != nil || timeout > requestTimeout {
 		ownedClient := *c.http
 		ownedClient.Timeout = timeout
-		if timeout > requestTimeout {
+		if wait != nil && timeout > requestTimeout {
 			ownedTransport := c.transport.Clone()
 			ownedTransport.ResponseHeaderTimeout = timeout
 			defer ownedTransport.CloseIdleConnections()
