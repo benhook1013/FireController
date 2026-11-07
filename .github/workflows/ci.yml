@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 # Every job acquires one of twenty shared repository slots before runner admission.
-# Default to the legacy lock until the owner drains/aligns eligible revisions.
-# GitHub expression string comparisons are case-insensitive.
+# Compatibility stage: retain the literal legacy lock while adding job lanes.
+# Enabling interleaving requires a reviewed follow-up workflow change.
 concurrency:
-  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
+  group: firecontroller-ci
   queue: max
   cancel-in-progress: false
 
