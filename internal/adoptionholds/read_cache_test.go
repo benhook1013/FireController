@@ -162,3 +162,57 @@ func TestReadFactsNamespaceCacheRemainsBounded(t *testing.T) {
 		t.Fatalf("overflow cache skipped record validation: %+v", q)
 	}
 }
+
+func TestHasOpenStopsAfterValidatedOpenButFalseChecksEveryOriginal(t *testing.T) {
+	f := fresh(t)
+	b := batch()
+	b.Obligations = nil
+	for i := 0; i < 70; i++ {
+		b.Obligations = append(b.Obligations, m.Obligation{SourceKey: fmt.Sprintf("finding-%03d", i), Kind: "finding", AffectedPullNumbers: []int64{3251}, Summary: "Retained original", Evidence: []string{}, OriginalStatus: "open"})
+	}
+	f.apply(b, "many-open-originals")
+	q := &obligationCountingQuery{DB: f.store.DB()}
+	if open, err := h.HasOpen(t.Context(), q, "project_one", 3251); err != nil || !open {
+		t.Fatal("validated open obligation did not hold", open, err)
+	}
+	if q.originals != 1 || q.targets != 1 || q.resolutions != 1 || q.source != 1 || q.project != 1 {
+		t.Fatalf("boolean guard scanned beyond the first fully validated open obligation: %+v", q)
+	}
+	if facts, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 3251); err != nil || facts.Open != 70 {
+		t.Fatal("full count was short-circuited", facts, err)
+	}
+	// Early success may not trust a corrupt first record just because it says open.
+	var corruptErr error
+	_ = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET original_sha256='invalid' WHERE id=(SELECT min(id) FROM review_adoption_obligations)`); err != nil {
+			return err
+		}
+		_, corruptErr = h.HasOpen(ctx, tx, "project_one", 3251)
+		return errors.New("rollback deliberate corruption")
+	})
+	var failure *core.Error
+	if !errors.As(corruptErr, &failure) || failure.Code != "storage_unavailable" {
+		t.Fatal("first corrupt original established an open hold", corruptErr)
+	}
+	// Resolve through the public service, so the false path sees valid history.
+	listed := decode[m.Page](t, f.call("GET", base+"?pull_number=3251&limit=100", f.token, "", "", nil), 200)
+	if len(listed.Items) != 70 {
+		t.Fatal("fixture lost originals", len(listed.Items))
+	}
+	one := int64(1)
+	for i, item := range listed.Items {
+		resolution := m.ResolveRequest{ExpectedRevision: &one, Reason: "Verified correction", Evidence: []string{"proof:resolved"}}
+		decode[map[string]any](t, f.call("POST", base+"/"+item.ID+"/resolve", f.token, "worker_one", fmt.Sprintf("resolve-%d", i), resolution), 200)
+	}
+	q = &obligationCountingQuery{DB: f.store.DB()}
+	if open, err := h.HasOpen(t.Context(), q, "project_one", 3251); err != nil || open {
+		t.Fatal("resolved history remained open", open, err)
+	}
+	if q.originals != 70 || q.targets != 70 || q.resolutions != 70 {
+		t.Fatalf("false skipped retained validation across pages: %+v", q)
+	}
+	f.exec(`DROP TRIGGER review_adoption_resolutions_immutable; UPDATE review_adoption_resolutions SET evidence_json='invalid' WHERE obligation_id=(SELECT max(id) FROM review_adoption_obligations)`)
+	if open, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3251); open || !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+		t.Fatal("late corrupt resolution incorrectly established clearance", open, err)
+	}
+}
