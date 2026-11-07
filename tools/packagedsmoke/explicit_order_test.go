@@ -272,8 +272,11 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	explicitOperation := read(explicitReceipt, true)
 	providerBefore := provider.inventory()
 	gitBefore, err := os.ReadFile(gitLog)
-	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 2 || !reflect.DeepEqual(providerBefore, map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}) {
-		t.Fatal("request did not stop at the bounded source/Git fixture")
+	// Each request checks Draft readiness before claiming a slot, then
+	// preparation independently reads the repository and pull before Git.
+	expectedSelected := map[string]int{"GET /repositories/991": 4, "GET /repos/synthetic/packaged-smoke/pulls/3": 4}
+	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 2 || !reflect.DeepEqual(providerBefore, expectedSelected) {
+		t.Fatalf("request did not stop at the bounded source/Git fixture: %v", providerBefore)
 	}
 	defaultReplay := tool("review_request", arguments("default-order", false), "")
 	explicitReplay := call(requestArgs("explicit-order", true)...)
@@ -335,7 +338,7 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("replay/read/restart launched Git again")
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 6, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
+	expectedTotal := map[string]int{"GET /repositories/991": 8, "GET /repos/synthetic/packaged-smoke/pulls/3": 4}
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("explicit selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
@@ -347,7 +350,7 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 			t.Fatal("immutable fixture input changed")
 		}
 	}
-	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=8 selected_source_gets=4 held_observer_gets=4 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
+	t.Logf("packaged explicit order passed: total=%s cli_calls=%d mcp_calls=%d application_http=%d request_posts=7 loopback_source_gets=12 selected_source_gets=8 held_observer_gets=4 git_stub_calls=2 review_calls=0 native_operations=2 owned_processes=0", time.Since(started).Round(time.Millisecond), cliCalls, mcpCalls, requests.Load())
 }
 
 // The client adds only diagnostic from current queued-response headers. Keep
