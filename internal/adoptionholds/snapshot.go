@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 	"strings"
 )
@@ -89,10 +90,11 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 	seen := map[string]bool{}
 	for rows.Next() {
 		var name, definition string
-		if err = rows.Scan(&name, &definition); err != nil {
+		var nameValue, definitionValue any
+		if err = rows.Scan(&nameValue, &definitionValue); err != nil {
 			break
 		}
-		if expected[name] != strings.TrimSuffix(strings.TrimSpace(definition), ";") {
+		if !retainedText(nameValue, &name) || !retainedText(definitionValue, &definition) || expected[name] != strings.TrimSuffix(strings.TrimSpace(definition), ";") {
 			rows.Close()
 			return unavailable()
 		}
@@ -103,7 +105,7 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 	}
 	rows.Close()
 	if err != nil {
-		return unavailable()
+		return err
 	}
 	if len(seen) != len(expected) {
 		return unavailable()
@@ -197,7 +199,7 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 		for _, pair := range pairs {
 			detail, err := readDetail(ctx, q, pair[1], pair[0])
 			if err != nil {
-				return unavailable()
+				return snapshotReadError(err)
 			}
 			if err := validateRetargetHistory(ctx, q, detail); err != nil {
 				return err
@@ -210,15 +212,26 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 	}
 	return nil
 }
+
+// Snapshot reads use retained identifiers and require the original repository.
+// Their domain refusals are corruption; operational failures keep their identity.
+func snapshotReadError(err error) error {
+	var failure *core.Error
+	if errors.As(err, &failure) && (failure.Code == "validation_failed" || failure.Code == "repository_changed") {
+		return unavailable()
+	}
+	return retainedSourceReadError(err)
+}
+
 func validateSource(ctx context.Context, q Query, project, namespace string) error {
 	source, err := ReadSource(ctx, q, project, namespace)
 	if err != nil {
-		return unavailable()
+		return snapshotReadError(err)
 	}
 	for revision := int64(1); revision <= source.Revision; revision++ {
 		var body, sha, actor, worker, at string
 		if err = q.QueryRowContext(ctx, `SELECT batch_json,batch_sha256,actor_id,worker_id,created_at FROM review_adoption_imports WHERE project_id=? AND namespace=? AND revision=?`, project, namespace, revision).Scan(&body, &sha, &actor, &worker, &at); err != nil {
-			return unavailable()
+			return retainedSourceReadError(err)
 		}
 		var batch m.Batch
 		if strictjson.Decode([]byte(body), &batch) != nil || digest([]byte(body)) != sha || !identifier.MatchString(actor) || !identifier.MatchString(worker) || !validTime(at) {
@@ -232,10 +245,13 @@ func validateSource(ctx context.Context, q Query, project, namespace string) err
 		for _, item := range normalized.Obligations {
 			var id string
 			if err = q.QueryRowContext(ctx, `SELECT id FROM review_adoption_obligations WHERE project_id=? AND namespace=? AND source_key=?`, project, namespace, item.SourceKey).Scan(&id); err != nil {
-				return unavailable()
+				return retainedSourceReadError(err)
 			}
 			d, err := readDetail(ctx, q, project, id)
-			if err != nil || d.SourceRevision > revision || string(encode(d.Original)) != string(encode(item)) {
+			if err != nil {
+				return snapshotReadError(err)
+			}
+			if d.SourceRevision > revision || string(encode(d.Original)) != string(encode(item)) {
 				return unavailable()
 			}
 			if d.SourceRevision == revision {
