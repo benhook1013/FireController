@@ -18,7 +18,7 @@ Retained capture validation checks immutable structure, canonical fingerprints a
 
 ### Derived native review facts
 
-Inspection and inactive restore validate the optional `review_comparison` and `review_route_policy` domains. Each present domain requires its matching `schema:<domain>` metadata marker and canonical tables, indexes and triggers. Inspection independently rederives its proof or receiving-route facts from retained authority and refuses missing, dirty, mismatched or forged facts. A supported predecessor bundle may omit a domain’s marker and tables together. Inspecting or restoring such a bundle leaves that domain absent.
+Manual and scheduled backup creation, inspection, and inactive restore validate the optional `review_comparison` and `review_route_policy` domains. Each present domain requires its matching `schema:<domain>` metadata marker and canonical tables, indexes, foreign keys and triggers. Validation independently rederives proof or receiving-route facts from retained authority and refuses missing, dirty, mismatched or forged facts, including in resealed bundles. Creation refuses invalid state before publishing a completed bundle. A supported predecessor bundle may omit a domain’s marker and tables together. Inspecting or restoring such a bundle leaves that domain absent. For persistent failures, see the recovery guidance for [completion proofs](reviews.md#pr-and-channel-completion) and [receiving-route facts](review-routes.md#indexed-receiving-policy).
 
 ## Inactive restore
 
