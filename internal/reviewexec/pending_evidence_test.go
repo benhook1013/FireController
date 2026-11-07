@@ -8,42 +8,40 @@ import (
 	"testing"
 )
 
-func pendingRouteHold(t *testing.T, n int) (*attemptFixture, Attempt, string, []string) {
+func pendingSourceFixHold(t *testing.T, n int) (*attemptFixture, Attempt) {
 	t.Helper()
 	f, prior, evidence := routeFixture(t, n)
-	routes := []string{}
 	for i := 0; i < n; i++ {
-		r := routeCreate(t, f, evidence, "pending-route-"+string(rune('a'+i)), routeRequest(int64(i), int64(i), 4))
-		routes = append(routes, r.ID)
-		routeDecision(t, f, r.ID, "accept-pending-"+string(rune('a'+i)), 1, "accepted")
+		adjudicationDecide(t, f, evidence, "pending-fix-"+string(rune('a'+i)), int64(i), int64(i), "accepted")
 	}
 	coverageFinalize(t, f, prior, evidence, int64(n))
+	return f, historicalEvidenceHold(t, f)
+}
+
+func historicalEvidenceHold(t *testing.T, f *attemptFixture) Attempt {
+	t.Helper()
 	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "held-source", "cli", 2, 2))
 	_, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "review_evidence_pending", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f, a, evidence, routes
+	return a
 }
-func TestPendingEvidenceIdentifiesOutgoingRouteAndCurrentResolution(t *testing.T) {
-	f, a, evidence, routes := pendingRouteHold(t, 1)
+
+func TestPendingEvidenceLeavesOutgoingRouteOnReceiver(t *testing.T) {
+	f, prior, evidence := routeFixture(t, 1)
+	route := routeCreate(t, f, evidence, "pending-outgoing-route", routeRequest(0, 0, 4))
+	routeDecision(t, f, route.ID, "accept-outgoing-route", 1, "accepted")
+	coverageFinalize(t, f, prior, evidence, 1)
+	a := historicalEvidenceHold(t, f)
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	before := routeState(t, f, a)
 	v, err := f.e.readPendingEvidence(t.Context(), scope, a.OperationID)
-	if err != nil || v == nil || len(v.Items) != 1 || v.HasMore {
-		t.Fatal(v, err)
-	}
-	x := v.Items[0]
-	if x.EvidenceID != evidence || x.Finding == nil || *x.Finding != 0 || x.RouteID != routes[0] || x.TargetPullNumber != 4 || x.Reason != "route_fix_pending" {
-		t.Fatal("missing exact blocking reference", x)
-	}
-	if routeState(t, f, a) != before {
-		t.Fatal("blocker read mutated authority")
-	}
-	routeFix(t, f, routes[0], "resolve-pending", 2, "", strings.Repeat("9", 40))
-	v, err = f.e.readPendingEvidence(t.Context(), scope, a.OperationID)
 	if err != nil || v == nil || len(v.Items) != 0 || v.HasMore {
-		t.Fatal("resolved blocker retained", v, err)
+		t.Fatal("source diagnostic retained receiver-owned work", v, err)
+	}
+	if pending, err := routePending(t, f, 4); err != nil || pending != 1 || routeState(t, f, a) != before {
+		t.Fatal("source read changed or cleared the receiving obligation", pending, err)
 	}
 	held, err := f.e.ReadOperation(t.Context(), scope, a.OperationID)
 	if err != nil || held.State != "held" || held.Reason != "review_evidence_pending" {
@@ -54,7 +52,7 @@ func TestPendingEvidenceIdentifiesOutgoingRouteAndCurrentResolution(t *testing.T
 	}
 }
 func TestPendingEvidenceBoundedAndDoesNotRepeatPrivateFindingText(t *testing.T) {
-	f, a, _, _ := pendingRouteHold(t, 6)
+	f, a := pendingSourceFixHold(t, 6)
 	v, err := f.e.readPendingEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), a.OperationID)
 	if err != nil || len(v.Items) != 5 || !v.HasMore {
 		t.Fatal(v, err)
@@ -65,7 +63,7 @@ func TestPendingEvidenceBoundedAndDoesNotRepeatPrivateFindingText(t *testing.T) 
 	}
 }
 func TestPendingEvidenceHTTPExpansionIsExplicitAndLocal(t *testing.T) {
-	f, a, _, _ := pendingRouteHold(t, 1)
+	f, a := pendingSourceFixHold(t, 1)
 	for _, suffix := range []string{"", "/status"} {
 		path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID + suffix
 		old := f.request("GET", path, f.reader, "", "")
@@ -125,7 +123,7 @@ func TestPendingEvidenceRejectsDirtyOrCorruptSelectedRecords(t *testing.T) {
 		`UPDATE review_execution_evidence SET body_json='{}'`,
 	} {
 		t.Run(statement, func(t *testing.T) {
-			f, a, _, _ := pendingRouteHold(t, 1)
+			f, a := pendingSourceFixHold(t, 1)
 			if _, err := f.store.DB().Exec(statement); err != nil {
 				t.Fatal(err)
 			}

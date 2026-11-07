@@ -19,12 +19,10 @@ type PendingEvidence struct {
 	HasMore     bool                  `json:"has_more"`
 }
 type PendingEvidenceItem struct {
-	OperationID      string `json:"operation_id"`
-	EvidenceID       string `json:"evidence_id,omitempty"`
-	Finding          *int64 `json:"finding,omitempty"`
-	RouteID          string `json:"route_id,omitempty"`
-	TargetPullNumber int64  `json:"target_pull_number,omitempty"`
-	Reason           string `json:"reason"`
+	OperationID string `json:"operation_id"`
+	EvidenceID  string `json:"evidence_id,omitempty"`
+	Finding     *int64 `json:"finding,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 // Explicit response expansion keeps full-operation reads compatible with
@@ -91,7 +89,7 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 				if evidence.OperationID != x.operation || evidence.Anchor.PullNumber != op.PullNumber {
 					return adjudicationStorageError()
 				}
-				ready, err := coverageProof(ctx, tx, evidence, state, op.Channel)
+				ready, err := coverageProof(ctx, tx, evidence, state, op.Channel, false)
 				if err != nil {
 					return err
 				}
@@ -115,23 +113,6 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 						case "accepted":
 							if finding.FixSHA == "" {
 								v.Reason = "fix_pending"
-							}
-						case "routed":
-							route, err := projectedFindingRoute(ctx, tx, evidence, finding)
-							if err != nil {
-								return err
-							}
-							resolved, err := receivingRouteResolved(route)
-							if err != nil {
-								return err
-							}
-							if !resolved {
-								v.RouteID = route.ID
-								v.TargetPullNumber = route.TargetPullNumber
-								v.Reason = "route_undecided"
-								if route.Disposition == "accepted" {
-									v.Reason = "route_fix_pending"
-								}
 							}
 						}
 						if v.Reason != "" {

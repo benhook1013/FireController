@@ -118,7 +118,7 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 	return result, nil
 }
 
-func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
+func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, state ReviewAdjudication, channel string, requireReceivingFix bool) (bool, error) {
 	if channel != "cli" && channel != "hosted" || channel == "cli" && evidence.Capture.Hosted != nil || channel == "hosted" && validateHostedEvidenceMetadata(evidence.Capture.Hosted, evidence.Anchor, evidence.Capture.Review) != nil {
 		return false, adjudicationStorageError()
 	}
@@ -154,7 +154,9 @@ func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidenc
 			if err != nil {
 				return false, err
 			}
-			ready = ready && resolved
+			if requireReceivingFix {
+				ready = ready && resolved
+			}
 			continue
 		}
 		if finding.FixSHA == "" {

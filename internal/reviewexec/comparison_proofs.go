@@ -26,6 +26,10 @@ type comparisonWriter interface {
 // Evaluate exactly one native operation using the same retained authority as
 // the former all-history comparison loop. Missing capture remains an obligation.
 func deriveComparisonProof(ctx context.Context, q EvidenceQuery, project, id string) (comparisonProof, error) {
+	return deriveComparisonProofForVersion(ctx, q, project, id, "2")
+}
+
+func deriveComparisonProofForVersion(ctx context.Context, q EvidenceQuery, project, id, version string) (comparisonProof, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(id) {
 		return comparisonProof{}, adjudicationStorageError()
 	}
@@ -81,7 +85,7 @@ func deriveComparisonProof(ctx context.Context, q EvidenceQuery, project, id str
 	if operation.Channel == "hosted" && validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil {
 		return proof, adjudicationStorageError()
 	}
-	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel)
+	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel, version == "1")
 	if err != nil {
 		return proof, err
 	}
@@ -155,6 +159,10 @@ func validateComparisonProofSet(ctx context.Context, q EvidenceQuery) error {
 // ValidateComparisonProofs is full read-only maintenance validation, not a
 // per-command scan. Re-derive credit from actual journals, captures and routes.
 func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
+	var version string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&version); err != nil || version != "1" && version != "2" {
+		return adjudicationStorageError()
+	}
 	if err := validateComparisonProofSet(ctx, q); err != nil {
 		return err
 	}
@@ -181,7 +189,7 @@ func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
 			return err
 		}
 		for _, stored := range page {
-			actual, err := deriveComparisonProof(ctx, q, stored.project, stored.operation)
+			actual, err := deriveComparisonProofForVersion(ctx, q, stored.project, stored.operation, version)
 			if err != nil {
 				return err
 			}

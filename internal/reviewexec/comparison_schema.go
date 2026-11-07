@@ -64,7 +64,9 @@ func ComparisonSchemaSQL() []string {
 }
 
 func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
-	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs); err != nil {
+	// Version two rederives source progress after valid routes transfer the
+	// remaining fix obligation to the receiving PR. The physical schema stays v1.
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL(), nil}, backfillComparisonProofs); err != nil {
 		return err
 	}
 	if err := ensureComparisonAttemptTriggers(ctx, store); err != nil {

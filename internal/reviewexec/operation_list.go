@@ -210,7 +210,7 @@ func validateOperationAttention(ctx context.Context, tx *sql.Tx, project, id str
 	}
 	// Reuse complete finding/fix validation, without broadening this list to
 	// receiving route work or changing any coverage/round accounting.
-	if _, err := coverageProof(ctx, tx, evidence, state, o.Channel); err != nil {
+	if _, err := coverageProof(ctx, tx, evidence, state, o.Channel, false); err != nil {
 		return err
 	}
 	if !state.Finalized {

@@ -197,3 +197,49 @@ func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.
 	admissionPolicy(t, f, 1)
 	hostedAdmissionVerify(t, f, child, "review_conflict", "", plans...)
 }
+
+func TestOutgoingRouteReleasesSourceReviewAndKeepsReceiverHold(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			hostedAdmissionNoHTTP(t)
+			var f *attemptFixture
+			var prior Attempt
+			var evidence string
+			if channel == "cli" {
+				f, prior, evidence, _ = coverageFixture(t, 2, false)
+			} else {
+				f, prior, evidence, _ = hostedComparisonFixture(t, false)
+			}
+			roundGrant(t, f, 2, channel, 0, 1, 4, "outgoing-grant")
+			adjudicationComplete(t, f, prior)
+			route := routeCreate(t, f, evidence, "outgoing-to-receiver", routeRequest(0, 0, 4))
+			routeDecision(t, f, route.ID, "receiver-owns-open-fix", 1, "accepted")
+			adjudicationDecide(t, f, evidence, "outgoing-accept-local", 1, 1, "accepted")
+			revision := int64(2)
+			if channel == "hosted" {
+				adjudicationDecide(t, f, evidence, "outgoing-reject-extra", revision, 2, "rejected")
+				revision++
+			}
+			body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "outgoing-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
+			adjudicationReceipt(t, body, err, evidence, "finalized", revision+1)
+
+			next := hostedAdmissionAttempt(t, f, "outgoing-source-next", channel, 1, *prior.Anchor)
+			hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
+			coverageFix(t, f, evidence, "outgoing-fix-local", revision+1, 1, "")
+			hostedAdmissionVerify(t, f, next, "", "")
+			for _, receivingChannel := range []string{"cli", "hosted"} {
+				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "outgoing-receiver-"+receivingChannel, Request{
+					ExpectedConfigurationRevision: 1,
+					PullNumber:                    4, Channel: receivingChannel, HeadSHA: prior.Anchor.CandidateSHA,
+				})
+				var held *core.Error
+				if !errors.As(err, &held) || held.Code != "review_held" || !strings.Contains(encoded(held.Details), "routed_findings_pending") {
+					t.Fatal("receiving PR lost its incoming review hold", err)
+				}
+			}
+			if detail := routeRead(t, f, route.ID).Route; detail.Disposition != "accepted" || detail.FixSHA != "" || detail.Revision != 2 {
+				t.Fatal("source review permission altered receiving route", detail)
+			}
+		})
+	}
+}

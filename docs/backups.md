@@ -20,6 +20,8 @@ Retained capture validation checks immutable structure, canonical fingerprints a
 
 Manual and scheduled backup creation, inspection, and inactive restore validate the optional `review_comparison` and `review_route_policy` domains. Each present domain requires its matching `schema:<domain>` metadata marker and canonical tables, indexes, foreign keys and triggers. Validation independently rederives proof or receiving-route facts from retained authority and refuses missing, dirty, mismatched or forged facts, including in resealed bundles. Creation refuses invalid state before publishing a completed bundle. A supported predecessor bundle may omit a domain’s marker and tables together. Inspecting or restoring such a bundle leaves that domain absent. For persistent failures, see the recovery guidance for [completion proofs](reviews.md#pr-and-channel-completion) and [receiving-route facts](review-routes.md#indexed-receiving-policy).
 
+Comparison proof version two uses the same tables and triggers with the [source and receiving route policy](review-routes.md#source-and-receiving-authority). Inspection and inactive restore validate each bundle under its recorded proof version. The first serving start upgrades a version-one proof cache atomically from the retained review and route records.
+
 Rederivation can exceed the configured deadline even on a valid installation and return `backup_unavailable`. If the deadline was reached, a longer manual [`--timeout`](#operator-commands) or scheduled [`--backup-timeout`](#managed-scheduling-and-retention), up to the supported twenty-four-hour maximum, may allow it to finish. `backup_unavailable` alone does not establish that a timeout occurred.
 
 ## Inactive restore

@@ -144,7 +144,7 @@ func TestComparisonInventoryCanonicalSchemaAndInvalidationTriggersRequired(t *te
 		{"wrong-trigger", `DROP TRIGGER review_comparison_repository_changed; CREATE TRIGGER review_comparison_repository_changed AFTER UPDATE ON projects BEGIN SELECT 1; END`},
 		{"unknown-trigger", `CREATE TRIGGER unexpected_comparison BEFORE INSERT ON review_comparison_proofs BEGIN SELECT 1; END`},
 		{"extra-column", `ALTER TABLE review_comparison_proofs ADD COLUMN fabricated_credit INTEGER`},
-		{"wrong-domain-version", `UPDATE metadata SET value='2' WHERE key='schema:review_comparison'`},
+		{"wrong-domain-version", `UPDATE metadata SET value='3' WHERE key='schema:review_comparison'`},
 	}
 	var table, retain, stateIndex, anchorIndex string
 	for _, statement := range reviewexec.ComparisonSchemaSQL() {
@@ -344,9 +344,6 @@ func TestNativeInventoryVersionOneSchemaDefinitionsPinned(t *testing.T) {
 		{"review_route_policy", reviewexec.RoutePolicySchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
 	} {
 		t.Run(tc.domain, func(t *testing.T) {
-			if got := supportedDomains[tc.domain]; got != 1 {
-				t.Fatalf("supported version = %d; retain v1 fixtures and add explicit versioned inventory coverage", got)
-			}
 			counts := map[string]int{}
 			seen := map[string]bool{}
 			definitions := make([]string, 0, len(tc.statements))

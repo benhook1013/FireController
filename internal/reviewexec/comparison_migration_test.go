@@ -330,3 +330,35 @@ func TestComparisonMigrationSetMismatchRollsBack(t *testing.T) {
 		t.Fatal("canonical retry after set refusal failed", err)
 	}
 }
+
+func TestComparisonUpgradeReleasesSourceWhileKeepingOpenReceiver(t *testing.T) {
+	f, a, evidence, plan := routeProjectionFixture(t, false)
+	route := createProjectionRoute(t, f, evidence.ID, "migrate-outgoing-route", 0, 0)
+	adjudicationDecide(t, f, evidence.ID, "migrate-outgoing-source-decision", 1, 1, "rejected")
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "migrate-outgoing-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	routeDecision(t, f, route.ID, "migrate-outgoing-receiver-accept", 1, "accepted")
+
+	// Recreate the earlier derived proof from the same canonical records.
+	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='1' WHERE key='schema:review_comparison'; UPDATE review_comparison_proofs SET state='pending' WHERE operation_id=?`, a.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("pre-upgrade snapshot must validate", err)
+	}
+	before := comparisonSourceRows(t, f)
+	coverageRead(t, f, a, plan, false)
+	if err := ensureComparisonSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("upgraded snapshot must validate", err)
+	}
+	coverageRead(t, f, a, plan, true)
+	if pending, err := routePending(t, f, 4); err != nil || pending != 1 {
+		t.Fatal("upgrade cleared receiving work", pending, err)
+	}
+	if after := comparisonSourceRows(t, f); !reflect.DeepEqual(after, before) {
+		t.Fatal("upgrade rewrote canonical records")
+	}
+}
