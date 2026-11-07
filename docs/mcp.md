@@ -28,6 +28,14 @@ Startup validates configuration without opening the credential or contacting the
 
 | Tool | Input and result |
 | --- | --- |
+| `review_round_adoption_preview` | Preview the existing native round-adoption document against its original-source and current revision guards; no live reviews are requested. |
+| `review_round_adoption_apply` | Apply the exact previewed native round-adoption document with preview_sha256 and explicit key. Preserves retained attribution and accounting rules; tooling access is not review authorization. |
+| `review_obligations_list` | Read one compact carried-obligation page, optionally scoped to pull_number and open/resolved status. Full bodies require review_obligation_read. |
+| `review_obligation_read` | Read one explicit retained carried obligation and original evidence, without marking it resolved. |
+| `review_obligation_retarget` | Move an open carried route to one receiving PR or unassigned backlog with the current expected revision, reason and explicit key. Preserves original provenance and source scope; does not resolve work or grant review credit. |
+| `review_obligations_import_preview` | Preview one strict native carried-obligation batch, preserving original evidence and provenance; no application or new review. |
+| `review_obligations_import_apply` | Apply the exact previewed carried-obligation batch with preview_sha256 and explicit key. Existing source conflicts and evidence requirements remain enforced. |
+| `review_obligation_resolve` | Resolve one carried obligation using the native {expected_revision,reason,evidence} document and explicit key. Requires a real evidence-backed resolution; grants no review credit. |
 | `context` | No fields; configured local identity, without service verification. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity. |

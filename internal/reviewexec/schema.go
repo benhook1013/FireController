@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -51,6 +52,12 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		return err
 	}
 	if err := EnsureRoundSchema(ctx, store); err != nil {
+		return err
+	}
+	if err := ensureRoundAdoptionSchema(ctx, store); err != nil {
+		return err
+	}
+	if err := adoptionholds.EnsureSchema(ctx, store); err != nil {
 		return err
 	}
 	return ensureRoutePolicySchema(ctx, store)

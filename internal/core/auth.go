@@ -15,6 +15,10 @@ type querier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// Administrative reports whether this scope was obtained through AdminScope.
+// It pins the requirement; store reads and mutations reauthorize the credential.
+func (scope Scope) Administrative() bool { return scope.admin }
+
 // Authenticate validates a current credential for instance identity inspection.
 // Project data still requires Scope and administrative actions AdminScope.
 func (s *Store) Authenticate(r *http.Request) (Scope, error) { return s.authenticate(r) }

@@ -47,6 +47,9 @@ func policyAdmissionConflict() error {
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
+	if err := requireSourceObligationsClear(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
+		return ExecutionContext{}, err
+	}
 	configuration, revision, err := readConfiguration(ctx, tx, operation.ProjectID)
 	if err != nil {
 		return ExecutionContext{}, err
@@ -213,6 +216,9 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		observed, err := time.Parse(time.RFC3339Nano, plan.ObservedAt)
 		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
+		}
+		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
+			return err
 		}
 		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
 		if err != nil {

@@ -18,6 +18,12 @@ import (
 )
 
 func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
+	f, project, worker, enroll := reviewExecutionBeforeEnrollmentFixture(t)
+	enroll()
+	return f, project, worker
+}
+
+func reviewExecutionBeforeEnrollmentFixture(t *testing.T) (*serviceFixture, string, string, func()) {
 	t.Helper()
 	f := setupServiceFixture(t)
 	project := f.project(t, "execution-fixture")
@@ -40,15 +46,18 @@ func reviewExecutionFixture(t *testing.T) (*serviceFixture, string, string) {
 	if _, err := engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Configure(t.Context(), scope, "config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
-		t.Fatal(err)
+	enroll := func() {
+		t.Helper()
+		if _, err := engine.Configure(t.Context(), scope, "config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Reads and enqueue are public handlers, without a provider driver/supervisor.
 	mux := http.NewServeMux()
 	mux.Handle("/", f.handler)
 	engine.Register(mux)
 	f.handler = mux
-	return f, project, worker
+	return f, project, worker, enroll
 }
 
 func reviewRequestArgs() []string {

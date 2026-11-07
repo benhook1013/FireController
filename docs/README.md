@@ -8,6 +8,8 @@ The [Hosted source foundation](delivery.md#hosted-source-foundation) records the
 
 ## Documents
 
+- [Carried review obligations](adoption-obligations.md): original source-bound holds, minimum-only rules, guarded resolution and retargeting.
+
 - [Retained review history](review-history-growth.md): immutable versions, compact summaries, bounded archives and backup integrity.
 
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
