@@ -46,6 +46,24 @@ If a queued request’s target no longer matches its original comparison, prepar
 
 Control reads are local, compact and provider-free. Project write mutations use the ordinary authorization, expected revision, idempotency and atomic event/receipt rules. Their compact change events identify the affected PR/channel resource and its revision; the durable event cursor remains the delivery deduplication identity. Storing a grant does not authorize provider calls. Carried adoption uses the separate administrator controls below; channel-front selection remains outside this slice.
 
+## Refusals and recovery
+
+New review requests check configured rounds during acceptance, not only at dispatch. A closed, tapered or exhausted channel refuses the new request immediately; occupied capacity can also refuse it. Preparation can instead hold an already accepted queued operation, while final admission and action verification return conflicts. Neither outcome grants another round or erases the original operation.
+
+| Code | Where it applies | Caller action |
+| --- | --- | --- |
+| `review_round_revision_conflict` | Grant, close or taper with a stale expected revision; details include `current_revision`. | Read the current control and reassess the intended change before a new mutation with its current revision. |
+| `review_round_unconfigured` | Taper without an existing control. | Read the selected PR/channel; establish a grant only when additional rounds are authorized before changing its taper. |
+| `review_round_revision_exhausted` | A control mutation cannot advance its retained revision. | Stop retrying the mutation and seek operator investigation; do not reset retained history. |
+| `review_round_inflight` | A grant encounters unbound unfinished work or requests less capacity than already occupied. | Finish or settle unbound work first. For bound work, wait for finalization or choose an explicitly authorized maximum that includes it. |
+| `review_round_closed` | New request acceptance, preparation, final admission or action verification finds explicit closure. | Leave the channel closed unless a new additional-round grant is authorized; closure is not a transient retry condition. |
+| `review_round_complete` | Those review gates find taper or consumed maximum. | Stop requesting rounds under that completed grant. Reopen only through an explicitly authorized additional-round grant. |
+| `review_round_capacity` | A grant would overflow safe cumulative counters, or review admission finds occupied allowance or a counter ceiling. | Inspect the control and retained operations. Wait for occupied work or obtain an authorized additional grant where appropriate; a counter ceiling requires operator investigation, not repeated requests. |
+| `review_round_changed` | Binding or later review gates find a missing or incompatible original grant binding. | Read the retained operation and current control. Resolve the changed binding; if further review remains authorized, use a qualified current comparison and fresh request/key rather than reviving a terminal operation. |
+| `forbidden` / `unauthorized` | Control reads, writes or exact-key replay lack current permission or valid credentials. | Restore the required access through the authorized owner before retrying; a retained receipt does not preserve withdrawn authority. |
+
+A definite refusal is different from an uncertain write outcome. Recover a possibly accepted mutation with its original binding, body and key before proposing a changed request. Any later authorized review still obeys source, finding, provider and known-cooldown guards.
+
 ## Bound commands and API
 
 `fc reviews rounds --help` identifies the existing settings read, and `fc reviews rounds read --help` explains its selectors and counters without loading profiles or contacting the service. The read selects one explicit PR and Hosted or CLI channel; inspecting both channels uses two reads.
