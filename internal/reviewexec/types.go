@@ -65,22 +65,23 @@ type Anchor struct {
 }
 
 type Operation struct {
-	ID                    string `json:"id"`
-	ProjectID             string `json:"project_id"`
-	ActorID               string `json:"actor_id"`
-	WorkerID              string `json:"worker_id"`
-	ConfigurationRevision int64  `json:"configuration_revision"`
-	PolicyRevision        int64  `json:"policy_revision"`
-	CapabilityFingerprint string `json:"capability_fingerprint"`
-	PullNumber            int64  `json:"pull_number"`
-	Channel               string `json:"channel"`
-	HeadSHA               string `json:"head_sha"`
-	State                 string `json:"state"`
-	Revision              int64  `json:"revision"`
-	Reason                string `json:"reason"`
-	AttemptID             string `json:"attempt_id"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	Observer              *HostedObserverStatus `json:"observer,omitempty"`
+	ID                    string                `json:"id"`
+	ProjectID             string                `json:"project_id"`
+	ActorID               string                `json:"actor_id"`
+	WorkerID              string                `json:"worker_id"`
+	ConfigurationRevision int64                 `json:"configuration_revision"`
+	PolicyRevision        int64                 `json:"policy_revision"`
+	CapabilityFingerprint string                `json:"capability_fingerprint"`
+	PullNumber            int64                 `json:"pull_number"`
+	Channel               string                `json:"channel"`
+	HeadSHA               string                `json:"head_sha"`
+	State                 string                `json:"state"`
+	Revision              int64                 `json:"revision"`
+	Reason                string                `json:"reason"`
+	AttemptID             string                `json:"attempt_id"`
+	CreatedAt             string                `json:"created_at"`
+	UpdatedAt             string                `json:"updated_at"`
 }
 
 type Attempt struct {
@@ -97,6 +98,8 @@ type Attempt struct {
 }
 
 type Engine struct {
+	hostedObserverMu           sync.Mutex
+	hostedObservers            map[string]*hostedObserverEntry
 	operationMu                sync.Mutex
 	operationWaiters           map[string]map[*operationWaiter]struct{}
 	operationWaiterPrincipals  map[string]int

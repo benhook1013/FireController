@@ -1,0 +1,25 @@
+# Retained Review Operations
+
+## Discovery and compact status
+
+The service exposes provider-free discovery of retained operations through `GET /api/v1/projects/{project_id}/reviews/operations`, the bound CLI `reviews operations`, and MCP `review_operations_list`. Each call reads one newest-first page, defaulting to five pending operations. Pending includes queued, preparing, posting, active and uncertain operations, plus held operations that retain an execution reservation. Use CLI `--all` or MCP `status: all` to include terminal and held history when recovering a lost operation receipt.
+
+Optional PR and channel filters restrict the authorized project page. A cursor is bound to the project, principal and filters. Mutable state is evaluated again on each page; pagination is not a historical snapshot. The list exposes bounded identities, state, cause and timestamps, without provider bodies, captures, credentials or selected configuration. It never requests or retries a review and does not automatically follow another page.
+
+`GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status` reads one compact status. CLI `reviews operation OPERATION_ID` and MCP `review_operation_read` use this view by default. Set CLI `--diagnostics` or MCP `diagnostics: true` for the original full retained operation. Both support the existing bounded wait, which detaches without cancelling or retrying the durable work. Local CLI help is available as `reviews operations --help` and `reviews operation --help`, without opening a profile or credentials.
+
+Compact status reports the retained operation, stage, next action and optional evidence handle. Evidence is selected from the same authorized project and exact operation/attempt/anchor binding. It does not load findings or capture files. A completed operation with complete bound evidence reports `evidence_ready`; missing or incomplete evidence cannot become completed coverage. An active operation remains a provider wait even if evidence has been retained before settlement. A posted trigger proves delivery, not provider execution or completion. Read the original evidence before adjudication and preserve unknown outcomes rather than starting a replacement.
+
+## Original Hosted observer diagnostics
+
+For a Hosted operation in `posting`, `active` or `uncertain` with a current attempt, compact and full reads include an `observer` object when the client sends `X-FC-Hosted-Observer: 1`. Matching clients request it automatically. This is bounded process-local metadata for the exact admitted project, operation, attempt and configured capability, not execution authority. After restart, it reports `state: unknown` until that attempt is checked again. Historical captures do not establish current observer activity.
+
+`checking` means a live or scheduled pass is running, including overlapping checks. `waiting` means the latest completed pass returned without a collection or local error. `retrying` carries a static safe error class; `stopped` means the recovery worker ended. `last_check_at` dates a completed pass, including a failed one. `last_source_at` dates the latest validated complete provider collection before identical source is deduplicated into an earlier immutable capture. Unchanged successful polls advance freshness without adding captures or journal records. Offline settlement can update the check time without inventing a new source collection.
+
+Optional `next_check_at` is the existing recovery scheduler's next eligible check, subject to interruption and later activity. It is neither a reserved provider start nor a completion estimate. The existing bounded backoff and retry-after rules remain unchanged. Clock corrections do not impose ordering between these timestamps.
+
+The bounded `reason` describes the latest check separately from the durable operation reason. A complete source check may still return an unresolved attribution or publication result without an error. Provider and local failures expose static safe error codes, never raw response bodies or exception text. Reading these fields invokes no provider, changes no operation or round, and does not wake result waits on every poll. Preserve the original request and attempt while observing its outcome.
+
+## Proof boundary
+
+Focused controlled tests cover authorized pagination, compact evidence binding, incomplete or missing captures, strict client output validation, CLI and official SDK views, observer freshness under deduplication, interrupted checks and process restart. They verify that reads do not contact a provider or change review accounting. Full-package, race and packaged qualification results belong in the delivery record. These tests do not establish installed-host behavior, live provider state or deployment cutover.

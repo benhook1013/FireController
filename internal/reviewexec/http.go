@@ -39,6 +39,8 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/execution/configuration", e.readExecutionConfigurationHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations", e.readOperationsHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}/status", e.readOperationStatusHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations/{operation_id}", e.readOperationHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}", e.readEvidenceHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/adjudication", e.readAdjudicationHTTP)
@@ -153,6 +155,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "X-FC-Hosted-Observer")
 	w.Header().Add("Vary", "Prefer")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
@@ -182,6 +185,9 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
+		operation.Observer = e.observerStatus(operation)
 	}
 	core.WriteJSON(w, http.StatusOK, operation)
 }
