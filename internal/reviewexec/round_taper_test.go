@@ -272,3 +272,74 @@ func TestRoundTaperHistoryRetainsOriginalAdoptionValidation(t *testing.T) {
 		t.Fatal("corrupt original dry baseline accepted")
 	}
 }
+
+func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		accepted       bool
+		threshold, dry int64
+		tapered        bool
+	}{
+		{name: "stale_low_clean_streak", threshold: 4, dry: 4, tapered: true},
+		{name: "stale_high_accepted_reset", accepted: true, threshold: 2, dry: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := roundFixture(t)
+			checkSnapshot := func() {
+				t.Helper()
+				if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
+					t.Fatal("validate retained round history", err)
+				}
+			}
+			seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 8, "legacy")
+			// Capture late work before taper, then finalize it after the legacy streak
+			// freezes. Every completion remains backed by its original native evidence.
+			late, lateEvidence := roundCapture(t, f, 3, tc.accepted)
+			pending, pendingEvidence := roundCapture(t, f, 4, false)
+			for i := 0; i < 3; i++ {
+				a, evidence := roundCapture(t, f, i, false)
+				roundFinalize(t, f, a, evidence, i, false)
+			}
+			roundFinalize(t, f, late, lateEvidence, 3, tc.accepted)
+			before := roundRead(t, f, 2, "cli")
+			if before.Used != 4 || before.Dry != 3 || !before.Tapered {
+				t.Fatal("legacy fixture did not retain frozen streak", before)
+			}
+			checkSnapshot()
+			var original string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&original); err != nil {
+				t.Fatal(err)
+			}
+			completions := attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`)
+			setRoundTaper(t, f, 2, "cli", 1, tc.threshold, "convert-taper")
+			converted := roundRead(t, f, 2, "cli")
+			if converted.Dry != tc.dry || converted.Tapered != tc.tapered || converted.Used != before.Used || converted.Minimum != before.Minimum || converted.Maximum != before.Maximum || converted.Epoch != before.Epoch || converted.Closed != before.Closed {
+				t.Fatal("taper conversion used frozen legacy streak or changed allowance", converted)
+			}
+			record, err := readRoundRecord(t.Context(), f.store.DB(), attemptProject, 2, "cli")
+			if err != nil || !record.cumulative || record.grantRevision != 1 {
+				t.Fatal("taper conversion changed grant binding or kept legacy semantics", record, err)
+			}
+			var retained string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&retained); err != nil || retained != original || attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != completions {
+				t.Fatal("conversion rewrote history or manufactured credit", err)
+			}
+			checkSnapshot()
+			roundFinalize(t, f, pending, pendingEvidence, 4, false)
+			after := roundRead(t, f, 2, "cli")
+			if after.Used != 5 || after.Dry != tc.dry+1 || after.Tapered != tc.tapered {
+				t.Fatal("later cumulative completion built on stale legacy streak", after)
+			}
+			checkSnapshot()
+			// Exact receipt replay after later completion cannot convert or count again.
+			state := roundTables(t, f)
+			revision := int64(1)
+			if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "convert-taper", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "taper", Taper: &tc.threshold}); err != nil {
+				t.Fatal(err)
+			}
+			if roundTables(t, f) != state {
+				t.Fatal("conversion replay changed retained counters")
+			}
+		})
+	}
+}

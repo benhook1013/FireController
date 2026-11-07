@@ -252,6 +252,12 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 			// Used boundary distinguishes reopening from a newly earned completion.
 			c.Tapered = false
 		} else if input.Action == "taper" {
+			if !c.cumulative {
+				c.Dry, err = cumulativeLegacyDry(ctx, tx, c)
+				if err != nil {
+					return nil, err
+				}
+			}
 			var original string
 			if err = tx.QueryRowContext(ctx, `SELECT body_json FROM review_round_changes WHERE project_id=? AND pull_number=? AND channel=? AND revision=? AND epoch=?`, c.ProjectID, c.PullNumber, c.Channel, c.grantRevision, c.Epoch).Scan(&original); err != nil {
 				return nil, err
