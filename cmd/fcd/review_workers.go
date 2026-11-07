@@ -81,12 +81,21 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 				}
 			}
 		}
-		done, err := execution.StartSourceRefresh(workerCtx, readers)
+		done, err := execution.StartReviewRuns(workerCtx, readers)
 		if err != nil {
 			startupErr = err
 			cancel()
 		} else if done != nil {
 			channels = append(channels, worker{done: done})
+		}
+		if startupErr == nil {
+			done, err = execution.StartSourceRefresh(workerCtx, readers)
+			if err != nil {
+				startupErr = err
+				cancel()
+			} else if done != nil {
+				channels = append(channels, worker{done: done})
+			}
 		}
 		if startupErr == nil {
 			lifecycleReaders := make(map[string]reviewexec.TargetReader, len(readers))

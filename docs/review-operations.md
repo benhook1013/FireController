@@ -23,3 +23,7 @@ The bounded `reason` describes the latest check separately from the durable oper
 ## Proof boundary
 
 Focused controlled tests cover authorized pagination, compact evidence binding, incomplete or missing captures, strict client output validation, CLI and official SDK views, observer freshness under deduplication, interrupted checks and process restart. They verify that reads do not contact a provider or change review accounting. Full-package, race and packaged qualification results belong in the delivery record. These tests do not establish installed-host behavior, live provider state or deployment cutover.
+
+## Recover a pending selection
+
+A queued or selecting channel request has no operation yet, so an empty operations list does not prove that selection is idle. Use `reviews run-read --selection-id ID` or MCP `review_selection_read` for a known selection, including a strictly validated `review_busy` handle. Once selected, that read follows the original child under one bounded wait. It never starts replacement work; lost mutation outcomes retain their original key. See [explicit selection](review-round-controls.md#one-explicit-channel-front-run).

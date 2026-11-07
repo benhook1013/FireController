@@ -107,7 +107,7 @@ func (e *Engine) readAdmission(ctx context.Context, read func(context.Context, *
 		if errors.As(err, &failure) {
 			return err
 		}
-		return core.Fail("storage_unavailable", "Local review verification is unavailable.", 500)
+		return core.NormalizeStorageError(err)
 	}
 	return nil
 }
