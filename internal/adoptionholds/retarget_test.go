@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -265,7 +266,8 @@ func TestRetargetSnapshotChecksHistoricalMetadataAndCurrentIndex(t *testing.T) {
 	}
 }
 
-func TestPopulatedOriginalSchemaMigratesWithoutRewritingEvidence(t *testing.T) {
+func populatedOriginalSchema(t *testing.T) (*fixture, map[string]string) {
+	t.Helper()
 	f := &fixture{t: t, dir: filepath.Join(t.TempDir(), "legacy-adoption")}
 	var err error
 	f.store, err = core.Open(t.Context(), f.dir)
@@ -292,6 +294,11 @@ func TestPopulatedOriginalSchemaMigratesWithoutRewritingEvidence(t *testing.T) {
 	}
 	one := int64(1)
 	decode[map[string]any](t, f.call("POST", base+"/"+ids["finding"]+"/resolve", f.token, "worker_one", "old-resolution", m.ResolveRequest{ExpectedRevision: &one, Reason: "Resolved original finding", Evidence: []string{"commit:old-proof"}}), 200)
+	return f, ids
+}
+
+func TestPopulatedOriginalSchemaMigratesWithoutRewritingEvidence(t *testing.T) {
+	f, ids := populatedOriginalSchema(t)
 	prior := retainedRetargetSource(t, f, ids["route"])
 	resolved := retargetDetail(t, f, ids["finding"])
 	f.validate()
@@ -307,5 +314,120 @@ func TestPopulatedOriginalSchemaMigratesWithoutRewritingEvidence(t *testing.T) {
 	f.validate()
 	if err := h.EnsureSchema(context.Background(), f.store); err != nil {
 		t.Fatal("repeat upgrade changed current state", err)
+	}
+}
+
+// Capture actual predecessor rows and definitions so rollback and retention checks
+// compare against the populated v1 database, not a reconstruction of its output.
+func originalSchemaRows(t *testing.T, f *fixture) map[string][][]any {
+	t.Helper()
+	queries := map[string]string{
+		"schema":  `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name LIKE 'review_adoption_%' ORDER BY name`,
+		"version": `SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`,
+	}
+	for _, table := range []string{"projects", "workers", "review_adoption_sources", "review_adoption_imports", "review_adoption_obligations", "review_adoption_targets", "review_adoption_resolutions"} {
+		queries[table] = `SELECT * FROM "` + table + `" ORDER BY rowid`
+	}
+	result := map[string][][]any{}
+	for name, query := range queries {
+		rows, err := f.store.DB().QueryContext(t.Context(), query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values, pointers := make([]any, len(columns)), make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			result[name] = append(result[name], values)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return result
+}
+
+func seedMigrationFKViolation(t *testing.T, f *fixture, query string) {
+	t.Helper()
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(t.Context(), `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := conn.ExecContext(t.Context(), query); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOriginalSchemaMigrationIgnoresUnrelatedFKCorruption(t *testing.T) {
+	f, _ := populatedOriginalSchema(t)
+	// Workers belong to core, with no references to either rebuilt adoption parent.
+	seedMigrationFKViolation(t, f, `INSERT INTO workers VALUES('missing-project','orphan-worker','Unrelated retained corruption')`)
+	before := originalSchemaRows(t, f)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := h.EnsureSchema(t.Context(), f.store); err != nil {
+			t.Fatalf("upgrade attempt %d: %v", attempt, err)
+		}
+		f.validate()
+		after := originalSchemaRows(t, f)
+		for table, rows := range before {
+			if table != "schema" && table != "version" && !reflect.DeepEqual(after[table], rows) {
+				t.Fatalf("upgrade changed retained %s rows", table)
+			}
+		}
+		if !reflect.DeepEqual(after["version"], [][]any{{"2"}}) {
+			t.Fatal("upgrade did not persist v2", after["version"])
+		}
+		var table, parent string
+		var rowid, fk int64
+		if err := f.store.DB().QueryRow(`PRAGMA foreign_key_check`).Scan(&table, &rowid, &parent, &fk); err != nil || table != "workers" || parent != "projects" {
+			t.Fatal("unrelated corruption was changed or hidden", table, parent, err)
+		}
+	}
+}
+
+func TestOriginalSchemaMigrationRefusesOwnedFKCorruptionAtomically(t *testing.T) {
+	for name, query := range map[string]string{
+		"sources":     `INSERT INTO review_adoption_sources SELECT 'missing-project',namespace,repository_id,snapshot_sha256,revision FROM review_adoption_sources`,
+		"imports":     `INSERT INTO review_adoption_imports SELECT project_id,'missing-source',revision,batch_json,batch_sha256,actor_id,worker_id,created_at FROM review_adoption_imports`,
+		"obligations": `INSERT INTO review_adoption_obligations SELECT 'orphan-obligation',project_id,namespace,'orphan-key',99,original_json,original_sha256,status,revision,actor_id,worker_id,created_at FROM review_adoption_obligations LIMIT 1`,
+		"targets":     `INSERT INTO review_adoption_targets VALUES('missing-obligation','project_one',999)`,
+		"resolutions": `INSERT INTO review_adoption_resolutions SELECT 'missing-obligation',revision,reason,evidence_json,actor_id,worker_id,resolved_at FROM review_adoption_resolutions`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := populatedOriginalSchema(t)
+			seedMigrationFKViolation(t, f, query)
+			before := originalSchemaRows(t, f)
+			for attempt := 0; attempt < 2; attempt++ {
+				err := h.EnsureSchema(t.Context(), f.store)
+				var failure *core.Error
+				if !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+					t.Fatalf("upgrade accepted owned FK corruption: %v", err)
+				}
+				if after := originalSchemaRows(t, f); !reflect.DeepEqual(before, after) {
+					t.Fatal("refused migration changed predecessor rows, schema or version")
+				}
+			}
+		})
 	}
 }
