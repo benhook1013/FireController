@@ -164,7 +164,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 				if err = advanceRoundReplay(ctx, q, &previous, c.Used); err != nil {
 					return err
 				}
-				if v.action == "grant" && cumulative && !previous.cumulative {
+				if (v.action == "grant" || v.action == "taper") && cumulative && !previous.cumulative {
 					previous.Dry, err = cumulativeLegacyDry(ctx, q, previous)
 					if err != nil {
 						return err

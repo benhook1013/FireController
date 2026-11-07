@@ -4,7 +4,7 @@
 
 Newly enrolled PRs receive product bounds of minimum two / maximum three Hosted reviews and minimum two / maximum six CLI reviews unless the project policy explicitly supplies `round_defaults`. That optional policy object contains both `hosted` and `cli` bounds, each with explicit `minimum` and `maximum`; minimum can be zero, maximum is finite from one through one thousand, and minimum cannot exceed maximum. New Hosted and CLI controls both require two consecutive eligible zero-accepted rounds for early taper, after satisfying their minimum.
 
-Set defaults through the existing guarded project policy configuration, using its current revision and explicit key. The selected bounds initialize only missing PR/channel controls during enrollment. Updating defaults leaves existing grants, completed counts, taper and closure intact; deliberately change an existing PR through its ordinary round controls. Omitted defaults preserve existing policy JSON and product behavior. These values are project preferences rather than provider quota or permission to dispatch automatically.
+Set defaults through the existing guarded project policy configuration, using its current revision and explicit key. The selected bounds initialize only missing PR/channel controls during enrollment. Updating defaults leaves existing grants, completed counts, taper and closure intact; deliberately change an existing PR through its ordinary round controls. Every policy write replaces `round_defaults`; omitting the field removes previously stored project defaults and restores product defaults for later enrollments. These values are project preferences rather than provider quota or permission to dispatch automatically.
 
 ## Implementation status
 

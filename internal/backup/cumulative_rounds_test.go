@@ -1,48 +1,14 @@
 package backup
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 )
-
-// Preserve the exact pre-default enrollment transaction in recovery fixtures.
-// This records a genuine predecessor configuration, receipt and event; it does
-// not disable or replace the current Configure path used for later enrollments.
-func seedPredecessorExecutionConfiguration(t *testing.T, f *restoreFixture, scope core.Scope, key string, configuration reviewexec.Configuration) {
-	t.Helper()
-	_, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: configuration}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var previous int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, f.project).Scan(&previous); err != nil {
-			return nil, err
-		}
-		if configuration.ExpectedRevision == nil || *configuration.ExpectedRevision != previous {
-			return nil, core.Fail("fixture_revision_mismatch", "Predecessor configuration revision mismatch.", 409)
-		}
-		body, err := json.Marshal(configuration)
-		if err != nil {
-			return nil, err
-		}
-		next := previous + 1
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, f.project, next, string(body)); err != nil {
-			return nil, err
-		}
-		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, next, map[string]any{"revision": next, "paused": configuration.Paused}); err != nil {
-			return nil, err
-		}
-		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: next}, nil
-	})
-	if err != nil {
-		t.Fatal("seed authentic predecessor configuration", err)
-	}
-}
 
 func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndCompletions(t *testing.T) {
 	for _, version := range []int{5, 4, 3} {

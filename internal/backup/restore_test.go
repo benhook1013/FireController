@@ -584,7 +584,7 @@ func seedPreRoundBackupConfiguration(t *testing.T, f *restoreFixture, scope core
 			return nil, err
 		}
 		if c.ExpectedRevision == nil || revision != *c.ExpectedRevision {
-			t.Fatal("pre-round fixture configuration revision mismatch")
+			return nil, core.Fail("fixture_revision_mismatch", "Pre-round fixture configuration revision mismatch.", 409)
 		}
 		body, err := json.Marshal(c)
 		if err != nil {
