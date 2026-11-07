@@ -5,19 +5,26 @@ on:
   push:
     branches:
       - main
+      - develop
 
 permissions:
   contents: read
 
-# Share one budget across PRs and main; retain waiting runs instead of replacing them.
+# Every job acquires one of twenty shared repository slots before runner admission.
+# Default to the legacy lock until the owner drains/aligns eligible revisions.
+# GitHub expression string comparisons are case-insensitive.
 concurrency:
-  group: firecontroller-ci
+  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
   queue: max
   cancel-in-progress: false
 
 jobs:
   static:
     name: Source and browser checks
+    concurrency:
+      group: firecontroller-ci-slot-2
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -42,13 +49,61 @@ jobs:
 
   linux:
     name: Go race (${{ matrix.shard }})
+    concurrency:
+      group: firecontroller-ci-slot-${{ matrix.slot }}
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # 16 race jobs + source, qualification and two native jobs = 20 runners.
-      max-parallel: 16
+      # Job-level slots, not a per-run limit, enforce the shared twenty-job cap.
       matrix:
         shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+        include:
+          - shard: backup-0
+            slot: 0
+          - shard: reviewexec-0
+            slot: 1
+          - shard: reviews-0
+            slot: 2
+          - shard: reviewruntime-0
+            slot: 3
+          - shard: rest-0
+            slot: 4
+          - shard: backup-1
+            slot: 5
+          - shard: reviewexec-1
+            slot: 6
+          - shard: reviews-1
+            slot: 7
+          - shard: reviewruntime-1
+            slot: 8
+          - shard: rest-1
+            slot: 9
+          - shard: backup-2
+            slot: 10
+          - shard: reviewexec-2
+            slot: 11
+          - shard: reviews-2
+            slot: 12
+          - shard: backup-3
+            slot: 13
+          - shard: reviewexec-3
+            slot: 14
+          - shard: reviews-3
+            slot: 15
+          - shard: backup-4
+            slot: 16
+          - shard: reviewexec-4
+            slot: 17
+          - shard: backup-5
+            slot: 18
+          - shard: reviewexec-5
+            slot: 19
+          - shard: backup-6
+            slot: 0
+          - shard: backup-7
+            slot: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -83,6 +138,10 @@ jobs:
 
   qualification:
     name: Packaged qualification
+    concurrency:
+      group: firecontroller-ci-slot-3
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -145,12 +204,21 @@ jobs:
 
   native-smoke:
     name: Native smoke (${{ matrix.os }})
+    concurrency:
+      group: firecontroller-ci-slot-${{ matrix.slot }}
+      queue: max
+      cancel-in-progress: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            slot: 4
+          - os: macos-latest
+            slot: 5
     env:
       CGO_ENABLED: "0"
     defaults:
@@ -187,6 +255,10 @@ jobs:
 
   validate:
     name: validate
+    concurrency:
+      group: firecontroller-ci-slot-2
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     needs: [static, linux, qualification, native-smoke]
     if: ${{ always() }}

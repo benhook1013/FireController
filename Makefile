@@ -9,7 +9,7 @@ ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 check: workflow-check ci-selection-check browser-check fmt-check test docs-check
 
 # actionlint v1.7.12 lacks GitHub concurrency.queue (upstream #657).
-# CI selection validates our one queue declaration; every other lint error remains fatal.
+# CI selection validates the rollout gate, every job slot and queue declaration; every other lint error remains fatal.
 workflow-check:
 	$(ACTIONLINT) -ignore '^unexpected key "queue" for "concurrency" section[.] expected one of "cancel-in-progress", "group"$$' -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
