@@ -684,6 +684,12 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		}
 		result.ConfigurationRevision = revision
 		stale := bindingReason != ""
+		if !stale {
+			result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+			if err != nil {
+				return err
+			}
+		}
 		policy, err := readPolicy(ctx, tx, scope.ProjectID)
 		if err != nil {
 			var failure *core.Error
@@ -693,6 +699,8 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			if stale {
 				result.State = "held"
 				result.Reason = "source_configuration_changed"
+			} else if result.SourceObligationsPending > 0 {
+				result.Reason = "source_obligations_pending"
 			}
 			return nil
 		}
@@ -711,10 +719,6 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			result.State, result.Reason = "held", "routed_findings_capacity"
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
-		}
-		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
-		if err != nil {
-			return err
 		}
 		if result.SourceObligationsPending > 0 {
 			result.State = "held"

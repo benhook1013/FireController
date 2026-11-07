@@ -249,9 +249,16 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 				return nil
 			}
 		}
+		out.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
 		if policyErr != nil {
 			out.State = "unconfigured"
 			out.Reasons = append(out.Reasons, "policy_unconfigured")
+			if out.SourceObligationsPending > 0 {
+				out.Reasons = append(out.Reasons, "source_obligations_pending")
+			}
 			return nil
 		}
 		out.IncomingRoutesPending, out.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
@@ -264,10 +271,6 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
 		}
 		missing, pending, roundsPending := false, false, false
-		out.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
-		if err != nil {
-			return err
-		}
 		if out.SourceObligationsPending > 0 {
 			out.Reasons = append(out.Reasons, "source_obligations_pending")
 		}
