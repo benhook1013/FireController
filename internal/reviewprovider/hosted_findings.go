@@ -875,7 +875,7 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 			if i == headingClose {
 				continue
 			}
-			if l.text == "<h6>" && currentPrompt && headingClose == -1 {
+			if l.text == "<h6>" && headingClose == -1 {
 				if start, end, ok := currentReviewInfoHeading(lines, i); ok {
 					headingClose, i = end, start-1
 					continue

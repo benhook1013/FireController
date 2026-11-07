@@ -118,8 +118,8 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	return 0
 }
 
-func openGuardedDaemonStore(ctx context.Context, dataDir string) (*core.Store, error) {
-	store, err := core.Open(ctx, dataDir)
+func openGuardedDaemonStore(ctx context.Context, dataDir string, options ...core.OpenOption) (*core.Store, error) {
+	store, err := core.Open(ctx, dataDir, options...)
 	if err != nil {
 		return nil, err
 	}

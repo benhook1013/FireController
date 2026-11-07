@@ -66,6 +66,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	var backupHealthFiles server.BackupHealthFiles
 	flags.Var(&backupHealthFiles, "backup-offsite-health-file", "optional redacted offsite status file (repeatable, maximum eight)")
 	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
+	schemaMigrationTimeout := flags.String("schema-migration-timeout", core.DefaultSchemaMigrationTimeout.String(), "startup deadline per domain schema including backfill, positive and at most 24h (does not change live write deadlines)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -76,6 +77,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
 		return 2
 	}
+	migrationTimeout, parseErr := time.ParseDuration(*schemaMigrationTimeout)
+	if parseErr != nil {
+		diagnostic(stderr, "configuration_invalid", "Use a positive --schema-migration-timeout of at most 24h.")
+		return 2
+	}
+	if err := core.ValidateSchemaMigrationTimeout(migrationTimeout); err != nil {
+		diagnosticError(stderr, err)
+		return 2
+	}
+	storeOption := core.WithSchemaMigrationTimeout(migrationTimeout)
 	providedBackupFlags := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { providedBackupFlags[f.Name] = true })
 	hasSchedule := providedBackupFlags["backup-destination"] || providedBackupFlags["backup-interval"] || providedBackupFlags["backup-keep"]
@@ -103,7 +114,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	_, existingErr := os.Lstat(filepath.Join(*dataDir, "firecontroller.sqlite"))
 	if existingErr == nil {
 		var err error
-		store, err = openGuardedDaemonStore(ctx, *dataDir)
+		store, err = openGuardedDaemonStore(ctx, *dataDir, storeOption)
 		if err != nil {
 			diagnosticError(stderr, err)
 			return 3
@@ -154,7 +165,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		address = net.JoinHostPort("127.0.0.1", port)
 	}
 	if store == nil {
-		store, err = openGuardedDaemonStore(ctx, *dataDir)
+		store, err = openGuardedDaemonStore(ctx, *dataDir, storeOption)
 		if err != nil {
 			diagnosticError(stderr, err)
 			return 3

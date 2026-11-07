@@ -50,6 +50,14 @@ Before relocating an instance, stop its existing writer, capture a consistent da
 
 Local [operator backup, inspection, inactive restore and managed scheduling](backups.md) are implemented. Remote/browser backup controls and automatic off-host transfer remain unimplemented. A migration backup does not establish an installed recurring backup policy or off-host durability.
 
+## Startup schema migrations
+
+`fcd --schema-migration-timeout DURATION` selects a positive startup budget of at most `24h`, defaulting to `30s`. The value is validated before filesystem work or operator credential loading. It applies separately to each versioned domain schema installation or upgrade, including that domain's migration statements, metadata update and backfill. Each domain receives a fresh budget; this is not a total daemon startup deadline or a change to base database initialization, live writes, HTTP requests, provider work or backup-command deadlines. The option is process-local and does not change stored configuration. Parent cancellation or an earlier parent deadline still stops the work.
+
+Every domain migration remains one exclusive transaction, with complete retained-authority validation and no intermediate commits. A failed domain rolls back its new schema, derived rows and version metadata together; domains completed earlier in startup may already be committed. The daemon does not listen until all required schemas complete. A timeout after exclusive work begins reports `schema_migration_timeout`; admission or lock contention retains `overloaded`. Preserve the installation and diagnostics for investigation, especially if rollback cannot be confirmed. The timeout alone does not establish corruption.
+
+A valid large retained history can exceed the default. After diagnosing the failure, confirming rollback and checking storage/resources, an operator can retry with an explicit larger budget, for example `fcd --data-dir /private/firecontroller --schema-migration-timeout 10m`. Allow the service manager or orchestrator enough startup time for all domains; the example is not a capacity guarantee. The failed domain restarts from the beginning and reruns all validation, rather than resuming or accepting partial work. Increasing the budget does not repair invalid retained authority, remove records, bypass validation or permit unbounded waits. Preserve the single-writer replacement strategy and the [validated backup and inactive-restore procedure](backups.md) when recovery is needed. Restarting with an unchanged insufficient budget or restoring identical over-budget data can repeat the failure.
+
 ## Executed deployment proof
 
 The sections below are historical deployment checkpoints pinned to the source and conditions tested. Statements that the predecessor remained primary describe those checkpoints; current working authority is recorded in [development runtime](delivery.md#development-runtime).

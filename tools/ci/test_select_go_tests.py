@@ -147,20 +147,6 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("test -race -count=1", makefile)
 
 
-    def test_repository_runner_budget_queues_without_dropping_check_families(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-        self.assertRegex(concurrency, r"(?m)^  group: firecontroller-ci$")
-        self.assertRegex(concurrency, r"(?m)^  queue: max$")
-        self.assertEqual(re.findall(r"(?m)^\s*queue:.*$", workflow), ["  queue: max"])
-        self.assertRegex(concurrency, r"(?m)^  cancel-in-progress: false$")
-        linux = workflow.split("\n  linux:\n", 1)[1].split("\n  qualification:\n", 1)[0]
-        parallel = int(re.search(r"(?m)^      max-parallel: (\d+)$", linux)[1])
-        native = workflow.split("\n  native-smoke:\n", 1)[1].split("\n  validate:\n", 1)[0]
-        platforms = re.search(r"(?m)^        os: \[([^\]]+)\]$", native)[1].split(",")
-        # The gate waits for all families; it cannot overlap their runner use.
-        self.assertGreater(parallel, 0)
-        self.assertLessEqual(parallel + 3 + len(platforms), 20)
 
 if __name__ == "__main__":
     unittest.main()

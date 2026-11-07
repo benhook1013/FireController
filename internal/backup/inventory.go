@@ -1330,11 +1330,12 @@ func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) 
 	return nil
 }
 
+type physicalSchemaObject struct{ kind, definition string }
+
 // Exact canonical DDL binds CHECK, PK, UNIQUE, default and partial-index
 // semantics in addition to the independent column/FK inventory below.
 func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
-	type object struct{ kind, definition string }
-	expected := map[string]object{}
+	expected := map[string]physicalSchemaObject{}
 	var names []string
 	definitions := reviews.HistorySchemaSQLV6()
 	if version >= 7 {
@@ -1385,39 +1386,12 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		if _, duplicate := expected[name]; duplicate {
 			return invalid()
 		}
-		expected[name] = object{kind, historyDefinitionSQL(definition)}
+		expected[name] = physicalSchemaObject{kind, historyDefinitionSQL(definition)}
 	}
 	if len(names) != expectedTables || len(expected) != expectedObjects {
 		return invalid()
 	}
-	placeholders := make([]string, len(names))
-	args := make([]any, len(names))
-	for i, name := range names {
-		placeholders[i] = "?"
-		args[i] = name
-	}
-	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(expectedObjects+1), args...)
-	if err != nil {
-		return invalid()
-	}
-	defer rows.Close()
-	seen := map[string]bool{}
-	for rows.Next() {
-		var kind, name string
-		var definition sql.NullString
-		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
-			return invalid()
-		}
-		want, known := expected[name]
-		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
-			return invalid()
-		}
-		seen[name] = true
-	}
-	if rows.Err() != nil || len(seen) != len(expected) {
-		return invalid()
-	}
-	return nil
+	return validatePhysicalSchemaObjects(ctx, db, expected, names)
 }
 
 // Reviews versions two and three contain exact revision triggers; comparison
@@ -1489,42 +1463,7 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparis
 // Bind every comparison table/index detail to the frozen owning DDL, including
 // primary keys, defaults and both scoped comparison indexes.
 func validateComparisonPhysicalSchema(ctx context.Context, db sqlReader) error {
-	type object struct{ kind, definition string }
-	expected := map[string]object{}
-	for _, statement := range reviewexec.ComparisonSchemaSQL() {
-		fields := strings.Fields(statement)
-		if len(fields) < 4 {
-			return invalid()
-		}
-		if fields[1] == "TABLE" || fields[1] == "INDEX" {
-			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
-		}
-	}
-	if len(expected) != 3 {
-		return invalid()
-	}
-	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name='review_comparison_proofs' AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 4`)
-	if err != nil {
-		return invalid()
-	}
-	defer rows.Close()
-	seen := map[string]bool{}
-	for rows.Next() {
-		var kind, name string
-		var definition sql.NullString
-		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
-			return invalid()
-		}
-		want, known := expected[name]
-		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
-			return invalid()
-		}
-		seen[name] = true
-	}
-	if rows.Err() != nil || len(seen) != len(expected) {
-		return invalid()
-	}
-	return nil
+	return validateDomainPhysicalSchema(ctx, db, reviewexec.ComparisonSchemaSQL(), "review_comparison_proofs")
 }
 
 // Retained applicability is optional, but its immutable rows and target lookup
@@ -1572,42 +1511,7 @@ func validateApplicabilityPhysicalSchema(ctx context.Context, db sqlReader) erro
 // These derived tables are optional for supported predecessors. When present,
 // every table/index detail must match their owning canonical definitions.
 func validateRoutePolicyPhysicalSchema(ctx context.Context, db sqlReader) error {
-	type object struct{ kind, definition string }
-	expected := map[string]object{}
-	for _, statement := range reviewexec.RoutePolicySchemaSQL() {
-		fields := strings.Fields(statement)
-		if len(fields) < 4 {
-			return invalid()
-		}
-		if fields[1] == "TABLE" || fields[1] == "INDEX" {
-			expected[fields[2]] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
-		}
-	}
-	if len(expected) != 4 {
-		return invalid()
-	}
-	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name IN ('review_route_policy_facts','review_route_policy_invalidations') AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 5`)
-	if err != nil {
-		return invalid()
-	}
-	defer rows.Close()
-	seen := map[string]bool{}
-	for rows.Next() {
-		var kind, name string
-		var definition sql.NullString
-		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
-			return invalid()
-		}
-		want, known := expected[name]
-		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
-			return invalid()
-		}
-		seen[name] = true
-	}
-	if rows.Err() != nil || len(seen) != len(expected) {
-		return invalid()
-	}
-	return nil
+	return validateDomainPhysicalSchema(ctx, db, reviewexec.RoutePolicySchemaSQL(), "review_route_policy_facts", "review_route_policy_invalidations")
 }
 
 // Foreign keys are invariant across supported versions of each existing table;
@@ -1902,4 +1806,88 @@ func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader) error {
 		return invalid()
 	}
 	return nil
+}
+
+// Query only explicitly owned tables, bounding the read to detect one extra
+// physical object without trusting the incoming database schema.
+func validatePhysicalSchemaObjects(ctx context.Context, db sqlReader, expected map[string]physicalSchemaObject, names []string) error {
+	if len(expected) == 0 || len(names) == 0 {
+		return invalid()
+	}
+	placeholders := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, name := range names {
+		placeholders[i] = "?"
+		args[i] = name
+	}
+	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE (type='table' OR (type='index' AND sql IS NOT NULL)) AND tbl_name IN (`+strings.Join(placeholders, ",")+`) LIMIT `+strconv.Itoa(len(expected)+1), args...)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var kind, name string
+		var definition sql.NullString
+		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
+			return invalid()
+		}
+		want, known := expected[name]
+		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
+}
+
+// Statements are repository-owned canonical SQL, never incoming bundle SQL.
+// Triggers have their own exact-definition validator; only physical tables and
+// explicit indexes belong to this inventory.
+func validateDomainPhysicalSchema(ctx context.Context, db sqlReader, statements []string, names ...string) error {
+	expected := map[string]physicalSchemaObject{}
+	tables := map[string]bool{}
+	for _, name := range names {
+		if name == "" || tables[name] {
+			return invalid()
+		}
+		tables[name] = true
+	}
+	seenTables := map[string]bool{}
+	for _, statement := range statements {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 || fields[0] != "CREATE" {
+			return invalid()
+		}
+		kind, name := "table", fields[2]
+		switch fields[1] {
+		case "TABLE":
+			if !tables[name] || seenTables[name] {
+				return invalid()
+			}
+			seenTables[name] = true
+		case "INDEX":
+			kind = "index"
+		case "UNIQUE":
+			if len(fields) < 5 || fields[2] != "INDEX" {
+				return invalid()
+			}
+			kind, name = "index", fields[3]
+		case "TRIGGER":
+			continue
+		default:
+			return invalid()
+		}
+		if _, duplicate := expected[name]; duplicate {
+			return invalid()
+		}
+		expected[name] = physicalSchemaObject{kind, historyDefinitionSQL(statement)}
+	}
+	if len(seenTables) != len(tables) {
+		return invalid()
+	}
+	return validatePhysicalSchemaObjects(ctx, db, expected, names)
 }

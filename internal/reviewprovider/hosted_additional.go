@@ -23,6 +23,10 @@ func findingAdditionalLayout(lines []findingLine, start, end int) ([]findingLine
 			continue
 		}
 		switch l.text {
+		case "<br>":
+			if len(stack) > 0 && stack[len(stack)-1] == (frame{"<dd>", details, quotes}) {
+				projected[i].hidden = true
+			}
 		case "<dl>", "<dd>":
 			if l.text == "<dd>" && (len(stack) == 0 || stack[len(stack)-1].tag != "<dl>" || stack[len(stack)-1].details != details || stack[len(stack)-1].quotes != quotes) {
 				return nil, false

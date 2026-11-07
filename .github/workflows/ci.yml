@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# Share one budget across PRs and branch pushes; keep waiting runs.
+# Compatibility stage: retain the legacy workflow lock while adding shared job lanes.
 concurrency:
   group: firecontroller-ci
   queue: max
@@ -19,6 +19,10 @@ concurrency:
 jobs:
   changes:
     name: Select development checks
+    concurrency:
+      group: firecontroller-ci-slot-6
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
@@ -57,6 +61,10 @@ jobs:
 
   static:
     name: Source and browser checks
+    concurrency:
+      group: firecontroller-ci-slot-2
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -87,13 +95,63 @@ jobs:
     name: Go race (${{ matrix.shard }})
     needs: [changes]
     if: needs.changes.outputs.website_only != 'true'
+    concurrency:
+      group: firecontroller-ci-slot-${{ matrix.slot }}
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # 15 race jobs + source, qualification, container and two native jobs = 20.
-      max-parallel: 15
+      # Shared job lanes bound admission, including selector and publication.
       matrix:
         shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, reviewruntime-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+        include:
+          - shard: backup-0
+            slot: 0
+          - shard: reviewexec-0
+            slot: 1
+          - shard: reviews-0
+            slot: 2
+          - shard: reviewruntime-0
+            slot: 3
+          - shard: rest-0
+            slot: 4
+          - shard: backup-1
+            slot: 5
+          - shard: reviewexec-1
+            slot: 6
+          - shard: reviews-1
+            slot: 7
+          - shard: reviewruntime-1
+            slot: 8
+          - shard: rest-1
+            slot: 9
+          - shard: backup-2
+            slot: 10
+          - shard: reviewexec-2
+            slot: 11
+          - shard: reviews-2
+            slot: 12
+          - shard: reviewruntime-2
+            slot: 13
+          - shard: backup-3
+            slot: 14
+          - shard: reviewexec-3
+            slot: 15
+          - shard: reviews-3
+            slot: 16
+          - shard: backup-4
+            slot: 17
+          - shard: reviewexec-4
+            slot: 18
+          - shard: backup-5
+            slot: 19
+          - shard: reviewexec-5
+            slot: 0
+          - shard: backup-6
+            slot: 1
+          - shard: backup-7
+            slot: 2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -132,6 +190,10 @@ jobs:
   qualification:
     name: Packaged qualification
     # Keep the browser dependency baseline explicit across hosted image rollouts.
+    concurrency:
+      group: firecontroller-ci-slot-3
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -215,6 +277,10 @@ jobs:
 
   container:
     name: Container runtime
+    concurrency:
+      group: firecontroller-ci-slot-8
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -262,12 +328,21 @@ jobs:
     name: Native smoke (${{ matrix.os }})
     needs: [changes]
     if: needs.changes.outputs.website_only != 'true'
+    concurrency:
+      group: firecontroller-ci-slot-${{ matrix.slot }}
+      queue: max
+      cancel-in-progress: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            slot: 4
+          - os: macos-latest
+            slot: 5
     env:
       CGO_ENABLED: "0"
     defaults:
@@ -315,6 +390,10 @@ jobs:
 
   validate:
     name: validate
+    concurrency:
+      group: firecontroller-ci-slot-2
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     needs: [changes, static, linux, qualification, container, native-smoke]
     if: ${{ always() }}
@@ -349,14 +428,15 @@ jobs:
     name: Publish tested container
     needs: [validate]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    concurrency:
+      group: firecontroller-ci-slot-7
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: container-publication-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
