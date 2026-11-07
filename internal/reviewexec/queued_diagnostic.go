@@ -68,6 +68,17 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		if !originalJSON.Valid || !latestJSON.Valid || json.Unmarshal([]byte(originalJSON.String), &original) != nil || json.Unmarshal([]byte(latestJSON.String), &latest) != nil || validateConfigurationShape(original) != nil || validateConfigurationShape(latest) != nil {
 			return adjudicationStorageError()
 		}
+		if op.Reason == cliDraftWait {
+			switch {
+			case op.Wait != nil && op.Wait.Paused:
+				cause = "operation_paused"
+			case latest.Paused:
+				cause = "project_paused"
+			default:
+				cause = cliDraftWait
+			}
+			return nil
+		}
 		if op.Channel == "cli" {
 			if capability, ok := e.capabilities[original.CapabilityID]; ok && capability.Fingerprint == op.CapabilityFingerprint {
 				due, err := cliAccountRetryDeadline(ctx, tx, capability)

@@ -75,6 +75,10 @@ func attemptRecordingStamp(ctx context.Context, tx *sql.Tx, o Operation, a *Atte
 // CLI is account-wide; Hosted is per repository on that account.
 // It does no provider work; preparing has not authorized an external action.
 func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt, error) {
+	return e.startAttempt(ctx, project, id, 0)
+}
+
+func (e *Engine) startAttempt(ctx context.Context, project, id string, draftReadyRevision int64) (Attempt, error) {
 	var result Attempt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		o, err := readOperation(ctx, tx, project, id)
@@ -163,6 +167,9 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			}
 			return err
 		}
+		if o.Reason == cliDraftWait && o.Revision != draftReadyRevision {
+			return nil
+		}
 		var repositoryID int64
 		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
 			return err
@@ -192,7 +199,7 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_execution_reservations(provider,repository_id,pull_number,action_class,account,attempt_id) VALUES(?,?,?,?,?,?)`, result.Provider, repositoryID, o.PullNumber, o.Channel, result.Account, result.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',reason='',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
 			return err
 		}
 		return e.transitionRow(ctx, tx, result, "preparing", at)
@@ -400,7 +407,11 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 		if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,external_id=? WHERE id=?`, state, a.Revision, a.ExternalID, a.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, a.OperationID); err != nil {
+		operationState, operationAttempt := state, o.AttemptID
+		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+			operationState, operationAttempt = "queued", ""
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
 			return err
 		}
 		if state != "posting" && state != "active" && state != "uncertain" {

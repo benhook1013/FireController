@@ -272,7 +272,25 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if !eligible {
 			continue
 		}
-		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
+		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
+				continue
+			}
+			return persistenceFailureAt("draft_check", err, o.ID, "")
+		}
+		if !proceed {
+			continue
+		}
+		var draftReadyRevision int64
+		if draftReady {
+			draftReadyRevision = o.Revision
+		}
+		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -311,6 +329,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			state := "held"
 			reason := preparationReason(err)
+			if explicitCLI && reason == "pull_draft" {
+				reason = cliDraftWait
+			}
 			if ctx.Err() == nil && (o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted") {
 				_, scheduleErr := e.persistCooldown(ctx, o, a)
 				if scheduleErr == nil {

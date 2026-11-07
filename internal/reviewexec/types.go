@@ -120,6 +120,8 @@ type Attempt struct {
 }
 
 type Engine struct {
+	draftProbeMu               sync.Mutex
+	draftProbeNext             map[string]time.Time
 	automaticCursor            string
 	automaticMu                sync.Mutex
 	automaticNext              time.Time

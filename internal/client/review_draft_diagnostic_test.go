@@ -83,3 +83,13 @@ func TestAgentDraftDiagnosticNeverInfersMissingSourceFacts(t *testing.T) {
 		t.Fatal("existing evidence priority changed")
 	}
 }
+
+func TestQueuedCLIDraftDiagnosticKeepsOriginalRequest(t *testing.T) {
+	hint := agentReviewOperationDiagnostic("cli", "queued", "cli_draft_wait")
+	if hint == nil || !strings.Contains(hint.Explanation, "queued while the PR is Draft") || !strings.Contains(hint.NextAction, "Keep this request") {
+		t.Fatal("Draft waiting guidance did not preserve the queued request", hint)
+	}
+	if hint := agentReviewOperationDiagnostic("hosted", "queued", "cli_draft_wait"); hint != nil {
+		t.Fatal("Hosted got CLI-only draft guidance", hint)
+	}
+}

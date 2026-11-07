@@ -287,7 +287,11 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason='',updated_at=? WHERE id=?`, state, at, id); err != nil {
+		reason := ""
+		if state == "queued" && o.Reason == cliDraftWait {
+			reason = o.Reason
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, id); err != nil {
 			return nil, err
 		}
 		if err := core.AppendEvent(ctx, tx, scope, "review.operation_updated", id, o.Revision+1, map[string]string{"action": input.Action}); err != nil {

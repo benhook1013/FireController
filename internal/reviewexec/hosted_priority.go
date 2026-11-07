@@ -25,7 +25,7 @@ func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Op
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT o.id FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number AND q.key<?
-WHERE o.project_id=? AND o.channel=? AND o.state='queued'
+WHERE o.project_id=? AND o.channel=? AND o.state='queued' AND o.reason<>'cli_draft_wait'
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
 ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Channel)
 	if err != nil {

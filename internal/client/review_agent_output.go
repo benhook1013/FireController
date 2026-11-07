@@ -240,6 +240,9 @@ func AgentReviewRunResult(value ReviewRunResult) any {
 // Legacy parent_moved does not identify whether the selected or an ancestor edge
 // failed; only the distinct predecessor reason proves the selected check passed.
 func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	if channel == "cli" && state == "queued" && reason == "cli_draft_wait" {
+		return queuedOperationDiagnostic(reason)
+	}
 	if hint := hostedAllowanceFailureDiagnostic(channel, state, reason); hint != nil {
 		return hint
 	}

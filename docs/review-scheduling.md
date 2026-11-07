@@ -16,7 +16,7 @@ Results still require normal adjudication, finalization and fix evidence. Automa
 
 An ordinary project writer can pause new reviews for a PR, even before its first review intent. Queue entries expose **Pause reviews** and **Resume reviews**. The pause covers undispatched work in both channels, preserves queued identities and cooldown deadlines, and permits collection of an already issued review. An optional short reason explains the pause; resume clears it.
 
-Draft PRs are separately ineligible for new reviews. A PR pause does not change GitHub Draft state, round settings, earned taper, channel closure, worker coordination pause, project execution pause or an individual operation's pause. Resuming a PR does not resume an explicitly paused operation or reopen a closed channel. See [operation controls](review-execution.md#timer-backed-hosted-waiting) and [round controls](review-round-controls.md).
+Draft PRs are separately ineligible for dispatch. [Explicit CLI requests can wait for readiness](review-execution.md#cli-requests-while-draft). A PR pause does not change GitHub Draft state, round settings, earned taper, channel closure, worker coordination pause, project execution pause or an individual operation's pause. Resuming a PR does not resume an explicitly paused operation or reopen a closed channel. See [operation controls](review-execution.md#timer-backed-hosted-waiting) and [round controls](review-round-controls.md).
 
 ## CLI and MCP
 
