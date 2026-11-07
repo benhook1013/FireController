@@ -12,6 +12,8 @@ Current references, aggregate counters, attempt ordering and run ordering advanc
 
 [Prepared additive transfer](review-import.md#additive-mixed-producer-transfer) retains omitted history and preserves each original producer separately from transfer provenance. Exact replay, immutable identity and native-journal/capture authority remain protected. [Selected queue edits](review-workspace.md#selected-queue-edits) maintain metadata, relative ordering, explicit retirement and reactivation after a complete-observation document no longer fits. Both paths advance the existing immutable history/current references atomically; they add no schema or provider execution.
 
+[Automatic external Hosted discovery](github-observation.md#external-hosted-history) appends provider-owned results without native attempts or review credit. Exact native reconciliation changes current membership only after a complete matching native replacement is available; original external snapshots and findings remain retained.
+
 ## Reads and growth
 
 Queue and PR detail contain bounded summaries: three recent runs, one latest attempt per channel, aggregate retained run/attempt totals and completed-run counts per channel. Completed-channel counts exclude failed, cancelled and unfinished run records; they include completed unfinalized reviews and therefore do not establish final counts or current coverage. Native publication and preparation do not count the lifetime archive to decide whether another bounded operation fits.

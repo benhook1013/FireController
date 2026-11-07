@@ -157,7 +157,7 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var frontiers int
-	if err := f.store.DB().QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_hosted_discovery_state'`).Scan(&frontiers); err != nil || frontiers != 0 {
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_hosted_discovery_state`).Scan(&frontiers); err != nil || frontiers != 0 {
 		t.Fatal("migration fabricated discovery state", frontiers, err)
 	}
 	got := metadataRead(t, f, 1, "metadata-v6")
@@ -168,7 +168,7 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='instance_id'`).Scan(&nextInstance)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='signing_key'`).Scan(&nextSigning)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version)
-	if version != "10" || instance != nextInstance || signing != nextSigning {
+	if version != "11" || instance != nextInstance || signing != nextSigning {
 		t.Fatal("migration changed identity/version")
 	}
 	if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {
