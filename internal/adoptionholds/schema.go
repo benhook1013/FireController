@@ -63,22 +63,27 @@ func retargetMigrationSQL() []string {
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
 	return store.EnsureSchemaWithBackfill(ctx, "review_adoption_obligations", [][]string{SchemaV1SQL(), retargetMigrationSQL()}, func(ctx context.Context, connection *sql.Conn) error {
-		rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
-		if err != nil {
-			return err
-		}
-		bad := rows.Next()
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if bad {
-			return unavailable()
+		// Check the owned reference graph, including every child of the rebuilt
+		// obligation and resolution parents. Unrelated domains validate their own
+		// retained state; their pre-existing violations must not block this upgrade.
+		for _, table := range []string{"review_adoption_sources", "review_adoption_imports", "review_adoption_obligations", "review_adoption_targets", "review_adoption_resolutions", "review_adoption_retargets"} {
+			rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check("`+table+`")`)
+			if err != nil {
+				return err
+			}
+			bad := rows.Next()
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return err
+			}
+			if bad {
+				return unavailable()
+			}
 		}
 		// Rebuilt parents satisfy the retained children. Clear SQLite's deferred
 		// DROP bookkeeping only after checking the actual reference graph.
-		_, err = connection.ExecContext(ctx, `PRAGMA defer_foreign_keys=OFF`)
+		_, err := connection.ExecContext(ctx, `PRAGMA defer_foreign_keys=OFF`)
 		return err
 	})
 }
