@@ -27,7 +27,7 @@ fc inbox events --cursor CURSOR --wait-ms 4000
 
 MCP provides `inbox_snapshot` with the same filters/page fields and `inbox_events` with required cursor plus optional limit/wait_ms. Both use the shared typed client and bound worker; invalid tool arguments fail before credential/network work. These are finite explicit reads, not automatic polling or a subscription. See the [MCP guide](mcp.md).
 
-Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. A five-second total budget covers identity verification and the request. The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
+Snapshot accepts the existing inbox filters and page options. Events requires an explicit snapshot/replay cursor and accepts limit plus wait-ms. One call returns one bounded page; no cursor is saved and no automatic polling, seen or acknowledgment occurs. The request retains a five-second budget after the [bounded identity check](agent-client.md#connection-reuse-and-bootstrap-recovery). The typed client rejects incomplete or mis-scoped event pages, unexpected payload fields, invalid ordering and inconsistent timeout/page state.
 
 ## Waiting and bounds
 
@@ -43,7 +43,7 @@ Credential revocation wakes current waits and causes authorization to be checked
 
 The connection registers once and reads durable changes only on relevant commit notifications. Fifteen-second keepalive comments recheck authorization without scanning message/event history. They stay in the transport layer. A permission, retention or storage failure sends one safe `error` event and closes; cancellation closes quietly. The service shutdown signal closes persistent streams promptly without changing message state, while finite requests retain their bounded graceful drain. Clients reconnect using their last processed cursor after restart. Frames are bounded to 1 MiB, with a two-second deadline covering each write/flush. Idle connections override the normal whole-response write timeout without leaving writes unbounded. A slow consumer cannot block storage transactions or build an unbounded queue.
 
-The browser consumes this endpoint through its own TypeScript fetch client. The [typed client, CLI and MCP wait](message-wait.md) now consume this transport for one bounded call, suppressing readiness, handling-only pages and keepalives until a new incoming-message page or timeout. The API does not assert that an installed host can wake an idle agent.
+The browser consumes this endpoint through its own TypeScript fetch client. The [typed client, CLI and MCP wait](message-wait.md) now consume this transport for one bounded call, suppressing readiness, handling-only pages and keepalives until a new incoming-message page or timeout, with temporary disconnects resumed inside that same call's original lifetime. The API does not assert that an installed host can wake an idle agent.
 
 ## Proof and limits
 

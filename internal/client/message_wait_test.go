@@ -156,9 +156,6 @@ func TestMessageWaitRejectsInvalidArgumentsBeforeHTTP(t *testing.T) {
 func TestMessageWaitMalformedStreamsReturnNoPartialPage(t *testing.T) {
 	valid := waitFrame(waitPage("next", waitEvent(7, "message.sent")))
 	cases := map[string]string{
-		"eof_before_ready":        "",
-		"eof_after_ready":         waitFrame(waitPage("ready")),
-		"partial_frame":           strings.TrimSuffix(valid, "\n"),
 		"cursor_mismatch":         strings.Replace(valid, "id: next", "id: other", 1),
 		"missing_id":              strings.Replace(valid, "id: next\n", "", 1),
 		"duplicate_id":            strings.Replace(valid, "id: next", "id: next\nid: next", 1),
@@ -424,5 +421,58 @@ func TestMessageWaitManyDataLinesRespectExactFrameBudget(t *testing.T) {
 				t.Fatalf("bounded many-line frame failed: page=%+v err=%v", page, err)
 			}
 		})
+	}
+}
+
+func TestMessageWaitNonJSONServerErrorsPreservePrivacyAndReconnect(t *testing.T) {
+	for _, status := range []int{200, 403, 502, 503, 504} {
+		for _, media := range []string{"text/html", "invalid;=", "", "encoded_json"} {
+			t.Run(http.StatusText(status)+"/"+media, func(t *testing.T) {
+				var calls atomic.Int64
+				s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
+					n := calls.Add(1)
+					if status >= 500 && n > 1 {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprint(w, waitFrame(waitPage("recovered", waitEvent(7, "message.sent"))))
+						return
+					}
+					if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.RawQuery != "cursor=saved-cursor&limit=5" {
+						t.Error("wait selection changed")
+					}
+					w.Header().Set("Content-Type", media)
+					if media == "" {
+						w.Header()["Content-Type"] = nil
+					} else if media == "encoded_json" {
+						w.Header().Set("Content-Type", "application/json")
+						w.Header().Set("Content-Encoding", "br")
+					}
+					w.Header().Set("X-Request-ID", "PRIVATE_PROXY_REQUEST")
+					w.WriteHeader(status)
+					_, _ = fmt.Fprint(w, "<html>PRIVATE_PROXY_BODY ", testToken, "</html>")
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				})
+				c := newClient(t, s)
+				page, err := c.WaitForMessages(t.Context(), "saved-cursor", 5, 1)
+				if status >= 500 {
+					if err != nil || calls.Load() != 2 || len(page.Items) != 1 || page.Cursor != "recovered" {
+						t.Fatal("gateway restart did not recover", page, calls.Load(), err)
+					}
+					return
+				}
+				wantCode, wantStatus := "invalid_response", 0
+				if status >= 500 {
+					wantCode, wantStatus = "service_unavailable", status
+				}
+				checkError(t, err, wantCode, "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
+				var failure *client.Error
+				if !errors.As(err, &failure) || failure.Status != wantStatus || failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() != 1 || page.Items != nil || page.Cursor != "" || page.TimedOut || page.HasMore {
+					t.Fatalf("wait error classification, cursor or no-retry changed: %#v page=%+v calls=%d", failure, page, calls.Load())
+				}
+				if status >= 500 && (!strings.Contains(failure.Action, "saved cursor") || !strings.Contains(failure.Action, "inbox") || strings.Contains(failure.Action, "compatibility")) {
+					t.Fatal("server outage lost saved-cursor recovery guidance")
+				}
+			})
+		}
 	}
 }

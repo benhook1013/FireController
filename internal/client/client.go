@@ -23,6 +23,7 @@ import (
 
 const maxResponseBytes = 4 << 20
 const requestTimeout = 5 * time.Second
+const bootstrapTimeout = 2 * requestTimeout
 
 // SourceRefreshBudget returns the total budget for an already validated source
 // wait preference. Argument validation remains with the command or request.
@@ -36,9 +37,14 @@ type Client struct {
 	token, credentialFile string
 	http                  *http.Client
 	transport             *http.Transport
+	borrowedTransport     bool
 }
 
 func New(ctx context.Context, binding profile.Binding) (*Client, error) {
+	return newClient(ctx, binding, nil)
+}
+
+func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, contextError(err)
 	}
@@ -51,19 +57,33 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
-	transport.DialContext = (&net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second}).DialContext
-	transport.ResponseHeaderTimeout = requestTimeout
-	transport.TLSHandshakeTimeout = requestTimeout
-	transport.MaxConnsPerHost = 4
-	transport.MaxIdleConns = 4
-	transport.DisableCompression = true
-	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var transport *http.Transport
+	if pool == nil {
+		transport = newTransport()
+	} else {
+		transport, err = pool.borrow()
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := &Client{identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
-	if err = c.get(ctx, []string{"api", "v1", "instance"}, nil, false, &instance); err != nil {
+	if err = c.verifyInstance(ctx, &instance); err != nil {
 		c.Close()
+		// Only the identity read was sent, never the caller's selected write.
+		var failure *Error
+		if errors.As(err, &failure) {
+			copy := *failure
+			copy.Message = "Service identity verification failed; the requested operation was not sent. " + failure.Message
+			copy.Action = "Resolve the identity-check error, then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
+			if transientIdentityFailure(failure) {
+				copy.Message = "The service is temporarily unavailable; this attempt did not send the selected operation."
+				copy.Action = "Retry the selected operation when the service is available, retaining its original request, idempotency key and binding. For any earlier uncertain write, recover that write using its exact same request body, idempotency key and binding; this failed identity check does not establish its outcome."
+			}
+			err = &copy
+		}
 		return nil, err
 	}
 	if instance.InstanceID != identity.InstanceID {
@@ -73,7 +93,60 @@ func New(ctx context.Context, binding profile.Binding) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Close()                    { c.transport.CloseIdleConnections() }
+// Only this bootstrap GET may be repeated. The selected operation has not been
+// dispatched; every attempt retains the same credential and instance pin.
+func (c *Client) verifyInstance(ctx context.Context, instance any) error {
+	return c.verifyInstanceWithWait(ctx, instance, waitIdentityRetry)
+}
+
+// The private wait seam keeps bounded retry/cancellation tests deterministic.
+func (c *Client) verifyInstanceWithWait(ctx context.Context, instance any, wait func(context.Context, time.Duration) error) error {
+	ctx, cancel := context.WithTimeout(ctx, bootstrapTimeout)
+	defer cancel()
+	delay := 250 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		// Keep the authenticated connection for the selected operation. A slow
+		// first dial/TLS handshake may use the remaining bootstrap budget rather
+		// than being abandoned at the ordinary operation's five-second limit.
+		err := c.requestWithTimeout(ctx, http.MethodGet, []string{"api", "v1", "instance"}, nil, false, "", nil, http.StatusOK, false, instance, maxResponseBytes, decodeResponse, nil, bootstrapTimeout)
+		var failure *Error
+		if err == nil || attempt >= 6 || ctx.Err() != nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
+			return err
+		}
+		if err := wait(ctx, delay); err != nil {
+			return contextError(err)
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+func transientIdentityFailure(failure *Error) bool {
+	if failure.Status == 401 || failure.Status == 403 || failure.Status == 404 {
+		return false
+	}
+	switch failure.Code {
+	case "unauthorized", "forbidden", "not_found", "instance_mismatch", "invalid_response", "redirect_rejected":
+		return false
+	}
+	return failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
+}
+
+func waitIdentityRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (c *Client) Close() {
+	if !c.borrowedTransport {
+		c.transport.CloseIdleConnections()
+	}
+}
 func (c *Client) Identity() profile.Context { return c.identity }
 
 func fail(code, message, action string, status int) *Error {
@@ -256,6 +329,10 @@ type sourceWaitOptions struct {
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
+	return c.requestWithTimeout(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, wait, requestTimeout)
+}
+
+func (c *Client) requestWithTimeout(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration) error {
 	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -271,7 +348,6 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	u.Path, _ = url.PathUnescape(escaped)
 	u.RawPath = escaped
 	u.RawQuery = query.Encode()
-	timeout := requestTimeout
 	if wait != nil {
 		timeout = providerWaitBudget(wait.seconds)
 	}
@@ -312,10 +388,10 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 		return contextError(err)
 	}
 	httpClient := c.http
-	if wait != nil {
+	if wait != nil || timeout > requestTimeout {
 		ownedClient := *c.http
 		ownedClient.Timeout = timeout
-		if wait.seconds > 2 {
+		if wait != nil && timeout > requestTimeout {
 			ownedTransport := c.transport.Clone()
 			ownedTransport.ResponseHeaderTimeout = timeout
 			defer ownedTransport.CloseIdleConnections()
@@ -345,6 +421,12 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	}
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		if response.StatusCode >= 500 && response.StatusCode < 600 {
+			if mutation {
+				return unknownRequest("service_unavailable", operation, "returned a service error", response.StatusCode)
+			}
+			return fail("service_unavailable", "The service returned an HTTP server error.", "Check the service and retry the read when it is available.", response.StatusCode)
+		}
 		if mutation {
 			return unknownRequest("invalid_response", operation, "response was invalid", response.StatusCode)
 		}
@@ -428,6 +510,12 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Status == http.StatusServiceUnavailable && result.Code == "overloaded" {
+		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
+			result.Message = "The controller ended this temporary wait during shutdown."
+			result.Action = "When the controller is available, reattach the same wait with the original operation ID. Preserve the original request and any key; interrupted waiting does not cancel the operation."
+		}
+	}
 	if result.Code == "instance_mismatch" {
 		result.Message = "The service instance does not match the selected profile."
 		result.Action = "Verify the service and explicitly update the private profile if its identity changed."
@@ -458,6 +546,10 @@ func (c *Client) safeDetails(value any, code string) any {
 	result := make(map[string]any)
 	for key, item := range object {
 		switch key {
+		case "reason":
+			if reason, ok := item.(string); ok && code == "overloaded" && reason == "result_wait_lifetime" {
+				result[key] = reason
+			}
 		case "current_revision":
 			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict" || code == "project_presentation_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
 				result[key] = int64(n)
