@@ -45,7 +45,7 @@ func (c *Client) ReviewPolicyAssessment(ctx context.Context, id string) (ReviewP
 		return ReviewPolicyAssessment{}, invalidResponse()
 	}
 	if value.State == "unconfigured" {
-		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.Reason != "" || value.SourceObligationsPending != 0 {
+		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.IncomingRoutesPending != 0 || value.IncomingRoutesCapacity {
 			return ReviewPolicyAssessment{}, invalidResponse()
 		}
 		return value, nil
