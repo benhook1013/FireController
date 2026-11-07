@@ -46,16 +46,16 @@ Control reads are local, compact and provider-free. Project write mutations use 
 
 ## Bound commands and API
 
-`fc reviews help` lists local round-control discovery. `fc reviews rounds --help` identifies the existing settings read, and `fc reviews rounds read --help` explains its selectors and counters without loading profiles or contacting the service. The read selects one explicit PR and Hosted or CLI channel; inspecting both channels uses two reads.
+`fc reviews rounds --help` identifies the existing settings read, and `fc reviews rounds read --help` explains its selectors and counters without loading profiles or contacting the service. The read selects one explicit PR and Hosted or CLI channel; inspecting both channels uses two reads.
 
-Commands use the selected project profile with ordinary project write permission. Workers can grant, close and reopen a PR/channel directly; no Overseer identity or administrator handoff is required. Read-only credentials and read-only browser sessions cannot change controls. Reads retain the ordinary five-second budget and perform no provider work. `--min` defaults to zero; `--exact` is exclusive with `--min` and `--max`. A close requires the current revision and omits allocation fields. A taper update requires the current revision and `--taper` from one through one thousand, without allocation fields.
+Commands use the selected project profile with ordinary project write permission. Workers can grant, close and reopen a PR/channel directly; no Overseer identity or administrator handoff is required. Read-only credentials and read-only browser sessions cannot change controls. Reads retain the ordinary five-second budget and perform no provider work. `--min` defaults to zero; `--exact` is exclusive with `--min` and `--max`. The older `--expected-revision` spelling remains a compatible alias; supplying both spellings is refused. A close requires the current revision and omits allocation fields. A taper update requires the current revision and `--taper` from one through one thousand, without allocation fields.
 
 ```sh
 fc reviews rounds read --pr 42 --channel cli
-fc reviews rounds grant --pr 42 --channel cli --expected-revision 1 --max 8 --key cli-42-grant
-fc reviews rounds grant --pr 42 --channel hosted --expected-revision 1 --min 2 --max 2 --key hosted-42-grant
-fc reviews rounds taper --pr 42 --channel cli --expected-revision 2 --taper 2 --key cli-42-taper
-fc reviews rounds close --pr 42 --channel cli --expected-revision 3 --key cli-42-close
+fc reviews rounds grant --pr 42 --channel cli --expect-revision 1 --max 8 --key cli-42-grant
+fc reviews rounds grant --pr 42 --channel hosted --expect-revision 1 --min 2 --max 2 --key hosted-42-grant
+fc reviews rounds taper --pr 42 --channel cli --expect-revision 2 --taper 2 --key cli-42-taper
+fc reviews rounds close --pr 42 --channel cli --expect-revision 3 --key cli-42-close
 ```
 
 `GET /api/v1/projects/{project_id}/reviews/rounds/{pull_number}/{channel}` returns the compact configured state, revision/epoch, bounds, consumed/dry counts, taper and closure. An unconfigured read explicitly returns `configured:false` with revision zero. Project-authorized write `POST` at the same route accepts `expected_revision`, `action` (`grant`, `close` or `taper`), grant-only `minimum`/`maximum`, and taper-only `taper`, with the explicit idempotency header. The receipt contains only pull number, channel, revision, epoch and outcome. Exact-key replay retains that result after later changes or restart, with current project write authorization still required, including after permission or credential revocation.

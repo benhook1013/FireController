@@ -96,6 +96,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			Version string `json:"version"`
 		}{Version})
 	}
+	if call.rounds != nil && call.rounds.operation == "help" {
+		return emitReviewRoundsHelp(call.rounds, stdout, stderr)
+	}
 	if call.projectMap != nil {
 		if err := prepareProjectMap(ctx, call.projectMap); err != nil {
 			return reportClientError(stderr, err, ctx)

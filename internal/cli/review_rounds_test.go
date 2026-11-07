@@ -146,3 +146,46 @@ func roundSuccess(t *testing.T, path, profile string, args ...string) map[string
 	}
 	return receipt
 }
+
+func TestReviewRoundsCLILocalHelpWithoutCredentials(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"help"}, {"read", "--help"}, {"grant", "--help"}, {"close", "--help"}, {"taper", "--help"}} {
+		full := append([]string{"--profiles-file", "/unavailable/round-profile", "reviews", "rounds"}, args...)
+		code, out, stderr := run(full, map[string]string{"FC_PROFILE": "missing"})
+		var help map[string]any
+		if code != cli.ExitSuccess || stderr != "" || json.Unmarshal([]byte(out), &help) != nil || !strings.Contains(help["usage"].(string), "fc reviews rounds") {
+			t.Fatal("local round help reached credentials or was invalid", args, code, stderr)
+		}
+	}
+	for _, args := range [][]string{{"unknown", "--help"}, {"read", "--help", "--pr", "2"}, {"grant", "--help=1"}} {
+		code, _, _ := run(append([]string{"reviews", "rounds"}, args...), nil)
+		if code != cli.ExitUsage {
+			t.Fatal("malformed help accepted", args, code)
+		}
+	}
+}
+
+func TestReviewRoundsCLIRevisionAliasAndDuplicateRefusal(t *testing.T) {
+	f, project, worker := reviewExecutionFixture(t)
+	srv := httptest.NewServer(f.handler)
+	defer srv.Close()
+	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
+	args := []string{"reviews", "rounds", "grant", "--pr", "2", "--channel", "cli", "--expect-revision", "1", "--max", "8", "--key", "canonical-revision"}
+	original := roundSuccess(t, path, "builder", args...)
+	alias := append([]string{}, args...)
+	for i := range alias {
+		if alias[i] == "--expect-revision" {
+			alias[i] = "--expected-revision"
+		}
+	}
+	if encodeString(original) != encodeString(roundSuccess(t, path, "builder", alias...)) {
+		t.Fatal("revision alias changed exact replay")
+	}
+	for _, extra := range [][]string{{"--expected-revision", "1"}, {"--expect-revision=1"}, {"--expected-revision=2"}} {
+		full := append([]string{"--profiles-file", "/unavailable/round-profile"}, args...)
+		full = append(full, extra...)
+		code, _, stderr := run(full, map[string]string{"FC_PROFILE": "missing"})
+		if code != cli.ExitUsage || !strings.Contains(stderr, "invalid_arguments") {
+			t.Fatal("duplicate revision reached credentials", code, stderr)
+		}
+	}
+}
