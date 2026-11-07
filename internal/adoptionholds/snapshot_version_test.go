@@ -83,3 +83,22 @@ func TestSnapshotVersionPreservesOptionalAbsenceAndQueryErrors(t *testing.T) {
 		t.Fatal("version query erased cancellation", err)
 	}
 }
+
+func TestSnapshotRejectsUnprefixedRetargetSchemaObjects(t *testing.T) {
+	for _, definition := range []string{
+		`CREATE INDEX arbitrary_receiver_reason ON review_adoption_retargets(reason)`,
+		`CREATE TRIGGER arbitrary_receiver_change AFTER INSERT ON review_adoption_retargets BEGIN SELECT 1; END`,
+	} {
+		t.Run(definition, func(t *testing.T) {
+			f := fresh(t)
+			if err := h.ValidateSnapshot(t.Context(), f.store.DB()); err != nil {
+				t.Fatal("canonical empty retarget schema refused", err)
+			}
+			f.exec(definition)
+			var failure *core.Error
+			if err := h.ValidateSnapshot(t.Context(), f.store.DB()); !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+				t.Fatal("unprefixed object on retarget table bypassed exact-schema validation", err)
+			}
+		})
+	}
+}

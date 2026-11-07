@@ -603,3 +603,68 @@ func TestAdoptionHoldsIntegrationSupervisorRetainsPossiblyDispatchedWork(t *test
 		})
 	}
 }
+
+func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, corrupt := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/corrupt=%t", channel, corrupt), func(t *testing.T) {
+				f := newAttemptFixture(t)
+				f.configure(t, attemptProject, "test-capability", 0, false)
+				receipt := f.enqueue(t, attemptProject, "prepare-source-change", channel, 2, 1)
+				var preparing Attempt
+				driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+					preparing = a
+					integrationImportHold(t, f, o.PullNumber)
+					query := `UPDATE projects SET github_repository_id=999 WHERE id=?`
+					if corrupt {
+						query = `UPDATE review_adoption_obligations SET revision=2 WHERE project_id=?`
+					}
+					if _, err := f.store.DB().Exec(query, o.ProjectID); err != nil {
+						t.Fatal(err)
+					}
+					intent := ""
+					if channel == "hosted" {
+						intent = "synthetic-unposted-intent"
+					}
+					return Preparation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber), Intent: intent}, nil
+				}}
+				err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver})
+				if corrupt {
+					attemptCode(t, err, "review_persistence_failed")
+					if op := roundOperation(t, f, receipt.ID); op.State == "held" {
+						t.Fatal("storage corruption was disguised as a normal policy hold", op)
+					}
+					if driver.calls.Load() != 0 {
+						t.Fatal("corrupt retained source reached dispatch")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal("repository change stopped the supervisor", err)
+				}
+				op := roundOperation(t, f, receipt.ID)
+				if preparing.ID == "" || op.State != "held" || op.Reason != "repository_changed" || op.AttemptID != preparing.ID || op.Revision != 3 {
+					t.Fatal("repository change lost its held reason", op)
+				}
+				var state, intent, external string
+				var revision int64
+				if err := f.store.DB().QueryRow(`SELECT state,revision,intent,external_id FROM review_execution_attempts WHERE id=?`, preparing.ID).Scan(&state, &revision, &intent, &external); err != nil {
+					t.Fatal(err)
+				}
+				if state != "held" || revision != 2 || intent != "" || external != "" || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+					t.Fatal("repository change dispatched or retained an unused reservation", state, revision, intent, external)
+				}
+				// A repository identity change is local to its retained source. The
+				// next supervisor pass must remain able to serve another project.
+				f.configure(t, otherAttemptProject, "test-capability", 0, false)
+				f.enqueue(t, otherAttemptProject, "other-project-after-source-change", channel, 2, 1)
+				other := &controlledDriver{dispatch: func(_ context.Context, _ Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+					return Result{State: "failed", Reason: "synthetic_no_post"}, nil
+				}}
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": other}); err != nil || other.calls.Load() != 1 {
+					t.Fatal("repository hold prevented unrelated project progress", err)
+				}
+			})
+		}
+	}
+}

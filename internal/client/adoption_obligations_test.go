@@ -1,10 +1,12 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -140,4 +142,73 @@ func TestAdoptionObligationUnknownKindResponsesRefuse(t *testing.T) {
 	checkError(t, err, "invalid_response")
 	_, err = service.AdoptionObligation(context.Background(), id)
 	checkError(t, err, "invalid_response")
+}
+
+// Exercise the same typed detail read used by both CLI and MCP, including
+// escaped content at all three admission boundaries and maximum current scope.
+func TestAdoptionObligationFullDetailEncodedBudget(t *testing.T) {
+	one, two := int64(1), int64(2)
+	target := int64(2147483647)
+	original := adoptionholdsmodel.Obligation{SourceKey: strings.Repeat("<", 200), Kind: "route", Summary: strings.Repeat("<", 4500), Evidence: []string{}, OriginalStatus: "pending"}
+	for number := target - 100; number < target; number++ {
+		original.AffectedPullNumbers = append(original.AffectedPullNumbers, number)
+	}
+	original.Summary += strings.Repeat("x", (32<<10)-len(adoptionholdsmodel.Encode(original)))
+	resolution := adoptionholdsmodel.ResolveRequest{ExpectedRevision: &two, Reason: strings.Repeat("<", 2600), Evidence: []string{"proof:"}}
+	resolution.Evidence[0] += strings.Repeat("x", (16<<10)-len(adoptionholdsmodel.Encode(resolution)))
+	retarget := adoptionholdsmodel.RetargetRequest{ExpectedRevision: &one, TargetPullNumber: &target, Reason: strings.Repeat("<", 2600)}
+	retarget.Reason += strings.Repeat("x", (16<<10)-len(adoptionholdsmodel.Encode(retarget)))
+	if _, err := adoptionholdsmodel.NormalizeObligation(original); err != nil {
+		t.Fatal("maximum original is not admissible", err)
+	}
+	if _, err := adoptionholdsmodel.NormalizeResolution(resolution); err != nil {
+		t.Fatal("maximum resolution is not admissible", err)
+	}
+	if _, err := adoptionholdsmodel.NormalizeRetarget(retarget); err != nil {
+		t.Fatal("maximum retarget is not admissible", err)
+	}
+	if len(adoptionholdsmodel.Encode(original)) != 32<<10 || len(adoptionholdsmodel.Encode(resolution)) != 16<<10 || len(adoptionholdsmodel.Encode(retarget)) != 16<<10 {
+		t.Fatal("fixture lost an exact encoded admission boundary")
+	}
+	id := "adoption_obligation_00000000000000000000000000000000"
+	actor := strings.Repeat("a", 128)
+	at := "2026-10-20T00:00:00.123456789+00:00"
+	detail := adoptionholdsmodel.Detail{
+		ID: id, ProjectID: "project-one", Source: adoptionholdsmodel.Source{Namespace: strings.Repeat("<", 200), RepositoryID: 9223372036854775807, SnapshotSHA256: strings.Repeat("a", 64)},
+		SourceRevision: 9223372036854775807, Original: original, Status: "resolved", Revision: 3, ActorID: actor, WorkerID: actor, CreatedAt: at,
+		AffectedPullNumbers: adoptionholdsmodel.RouteAffectedPullNumbers(original, target),
+		Retarget:            &adoptionholdsmodel.Retarget{Revision: 2, TargetPullNumber: target, Reason: retarget.Reason, ActorID: actor, WorkerID: actor, ChangedAt: at},
+		Resolution:          &adoptionholdsmodel.Resolution{Revision: 3, Reason: resolution.Reason, Evidence: resolution.Evidence, ActorID: actor, WorkerID: actor, ResolvedAt: at},
+	}
+	body := append(adoptionholdsmodel.Encode(detail), '\n')
+	if len(detail.AffectedPullNumbers) != 101 || len(body) <= 64<<10 || len(body) >= 80<<10 {
+		t.Fatal("fixture must exceed the old cap but fit the proved bound", len(body))
+	}
+	// Conservative proof independent of the fixture's shorter generated IDs and
+	// timestamps: all bounded strings may expand sixfold under JSON escaping.
+	const metadataBound = (8*128+200+64+3*64)*6 + 101*11 + 2 + 10*20 + (2 << 10)
+	if metadataBound >= 16<<10 || ((32+16+16)<<10)+metadataBound >= 80<<10 {
+		t.Fatal("detail metadata no longer fits its documented conservative bound")
+	}
+	t.Logf("original=%d resolution_request=%d retarget_request=%d detail=%d conservative_metadata=%d", len(adoptionholdsmodel.Encode(original)), len(adoptionholdsmodel.Encode(resolution)), len(adoptionholdsmodel.Encode(retarget)), len(body), metadataBound)
+	var response atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/instance") {
+			handshake(w)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response.Load().([]byte))
+	}))
+	defer server.Close()
+	service := newClient(t, server)
+	for _, size := range []int{len(body), 96 << 10, (96 << 10) + 1} {
+		response.Store(append(append([]byte(nil), body...), bytes.Repeat([]byte(" "), size-len(body))...))
+		got, err := service.AdoptionObligation(context.Background(), id)
+		if size > 96<<10 {
+			checkError(t, err, "invalid_response")
+		} else if err != nil || !reflect.DeepEqual(got, detail) {
+			t.Fatalf("full detail at %d bytes was not preserved: %v", size, err)
+		}
+	}
 }

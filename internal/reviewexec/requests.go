@@ -109,6 +109,15 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 			if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
 				continue
 			}
+			// Removing and re-adding a legacy pair must not grant new rounds
+			// over retained native work that was accepted without a control.
+			var retained bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=?)`, scope.ProjectID, pull, channel).Scan(&retained); err != nil {
+				return Receipt{}, err
+			}
+			if retained {
+				continue
+			}
 			bounds := defaults.CLI
 			if channel == "hosted" {
 				bounds = defaults.Hosted

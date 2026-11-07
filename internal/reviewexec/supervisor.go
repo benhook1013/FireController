@@ -361,8 +361,11 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
 				return e.finishPreparation(a, "held", refusal.Code)
 			}
-			if errors.As(err, &refusal) && refusal.Code == "review_held" && preparationReason(err) == "source_obligations_pending" {
-				return e.finishPreparation(a, "held", "source_obligations_pending")
+			if errors.As(err, &refusal) && refusal.Code == "review_held" {
+				reason := preparationReason(err)
+				if reason == "source_obligations_pending" || reason == "repository_changed" {
+					return e.finishPreparation(a, "held", reason)
+				}
 			}
 			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed" || roundControlRefusal(refusal.Code)) {
 				return e.finishPreparation(a, "held", "admission_changed")
