@@ -64,7 +64,8 @@ func (e *Engine) BeginHostedObserver(capabilityID, project, operation, attempt s
 }
 
 // FinishHostedObserver records a completed pass. sourceAt is supplied only for
-// a validated complete provider collection, before immutable capture dedup.
+// a validated and retained complete collection, using its fresh observation time
+// even when capture deduplication reuses earlier immutable source.
 func (e *Engine) FinishHostedObserver(check *HostedObserverCheck, at, sourceAt time.Time, reason string, failure error) {
 	if e == nil || check == nil {
 		return
@@ -80,8 +81,8 @@ func (e *Engine) FinishHostedObserver(check *HostedObserverCheck, at, sourceAt t
 	if value := hostedObserverTime(at); value != "" {
 		entry.status.LastCheckAt = value
 	}
-	if !sourceAt.IsZero() && entry.status.LastCheckAt != "" {
-		entry.status.LastSourceAt = hostedObserverTime(sourceAt)
+	if value := hostedObserverTime(sourceAt); value != "" && entry.status.LastCheckAt != "" {
+		entry.status.LastSourceAt = value
 	}
 	entry.status.Reason = hostedObserverReason(reason)
 	entry.status.Error = hostedObserverError(failure)
