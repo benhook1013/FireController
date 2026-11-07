@@ -96,51 +96,76 @@ func initializeRoundControl(ctx context.Context, tx *sql.Tx, scope core.Scope, p
 	return core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", fmt.Sprintf("%d/%s", pull, channel), 1, map[string]any{"pull_number": pull, "channel": channel, "revision": 1})
 }
 
+// The indexed ledger narrows candidates before canonical capture decoding. Dirty
+// authority is never filtered by capture fields, which may themselves be stale.
+// SQL still examines retained pending rows; only full canonical decoding is
+// restricted to complete, unfinalized candidates.
+const roundUnfinalizedSQL = `SELECT p.operation_id FROM review_comparison_proofs p
+JOIN review_round_operation_bindings b ON b.operation_id=p.operation_id
+JOIN review_operations o ON o.id=p.operation_id
+LEFT JOIN review_execution_evidence e ON e.id=p.evidence_id AND e.project_id=p.project_id AND e.operation_id=p.operation_id
+LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
+WHERE p.project_id=? AND p.pull_number=? AND p.channel=? AND p.state=?
+AND b.project_id=p.project_id AND b.pull_number=p.pull_number AND b.channel=p.channel AND b.epoch=?
+AND p.operation_id!=? AND p.operation_id>? AND o.state='completed'
+AND NOT EXISTS(SELECT 1 FROM review_round_completions done WHERE done.operation_id=p.operation_id)
+AND (p.state='dirty' OR (json_extract(e.body_json,'$.capture.review.Complete')=1 AND json_extract(e.body_json,'$.capture.review.Outcome')='completed' AND COALESCE(json_extract(s.body_json,'$.finalized'),0)=0))
+ORDER BY p.operation_id LIMIT 64`
+
 // Preserve full capture validation for terminal-but-unfinalized reservations.
-// No raw provider or review text is returned by this bounded local read.
+// No raw provider or review text is returned by this local read.
 func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (int64, error) {
 	var count int64
-	after := ""
-	for {
-		rows, err := tx.QueryContext(ctx, `SELECT b.operation_id FROM review_round_operation_bindings b JOIN review_operations o ON o.id=b.operation_id LEFT JOIN review_round_completions done ON done.operation_id=b.operation_id WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id!=? AND b.operation_id>? AND o.state='completed' AND done.operation_id IS NULL ORDER BY b.operation_id LIMIT 64`, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding, after)
-		if err != nil {
-			return 0, err
-		}
-		ids := []string{}
-		for rows.Next() {
-			var id string
-			if err = rows.Scan(&id); err != nil {
-				break
-			}
-			ids = append(ids, id)
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		rows.Close()
-		if err != nil {
-			return 0, err
-		}
-		for _, id := range ids {
-			proof, err := deriveComparisonProof(ctx, tx, c.ProjectID, id)
+	// Separate state ranges retain index ordering without sorting retained history.
+	for _, state := range []string{"dirty", "pending"} {
+		after := ""
+		for {
+			rows, err := tx.QueryContext(ctx, roundUnfinalizedSQL, c.ProjectID, c.PullNumber, c.Channel, state, c.Epoch, excluding, after)
 			if err != nil {
 				return 0, err
 			}
-			if proof.evidence != "" {
-				evidence, state, err := loadReviewAdjudication(ctx, tx, c.ProjectID, proof.evidence)
+			ids := []string{}
+			for rows.Next() {
+				var id string
+				if err = rows.Scan(&id); err != nil {
+					break
+				}
+				ids = append(ids, id)
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			rows.Close()
+			if err != nil {
+				return 0, err
+			}
+			if state == "dirty" && len(ids) != 0 {
+				return 0, roundUnavailable()
+			}
+			for _, id := range ids {
+				proof, err := deriveComparisonProof(ctx, tx, c.ProjectID, id)
 				if err != nil {
 					return 0, err
 				}
-				if !state.Finalized && evidence.Capture.Review.Complete && evidence.Capture.Review.Outcome == "completed" {
-					count++
+				if proof.evidence == "" {
+					return 0, roundUnavailable()
 				}
+				evidence, adjudication, err := loadReviewAdjudication(ctx, tx, c.ProjectID, proof.evidence)
+				if err != nil {
+					return 0, err
+				}
+				if adjudication.Finalized || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+					return 0, roundUnavailable()
+				}
+				count++
+				after = id
 			}
-			after = id
-		}
-		if len(ids) < 64 {
-			return count, nil
+			if len(ids) < 64 {
+				break
+			}
 		}
 	}
+	return count, nil
 }
 
 // An explicit grant asks for another completion before the preserved streak
