@@ -46,10 +46,13 @@ type options struct {
 }
 
 type invocation struct {
-	adoptionObligations *adoptionObligationsInvocation
-	roundAdoption       *roundAdoptionInvocation
-	rounds              *reviewRoundsInvocation
-	reviewCIDiagnostics bool
+	operationHelp         string
+	reviewOperations      client.ReviewOperationsOptions
+	reviewOperationStatus *reviewOperationStatusInvocation
+	adoptionObligations   *adoptionObligationsInvocation
+	roundAdoption         *roundAdoptionInvocation
+	rounds                *reviewRoundsInvocation
+	reviewCIDiagnostics   bool
 	options
 	command      string
 	subcommand   string
@@ -88,7 +91,14 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) int {
 func RunContext(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) int {
 	call, ok := parseInvocation(args)
 	if !ok {
-		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", "Use fc version, fc context, fc doctor, or a documented service command.")
+		action := "Use fc version, fc context, fc doctor, or a documented service command."
+		if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation") {
+			action = "Use fc reviews " + call.subcommand + " --help."
+		}
+		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", action)
+	}
+	if call.operationHelp != "" {
+		return emitOperationHelp(call.operationHelp, stdout, stderr)
 	}
 	if call.command == "version" {
 		if call.hasProfile || call.hasProfilesFile {
@@ -364,6 +374,10 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	call.command = remaining[0]
+	if len(remaining) == 3 && remaining[0] == "help" && remaining[1] == "reviews" && (remaining[2] == "operations" || remaining[2] == "operation") {
+		call.operationHelp = remaining[2]
+		return call, true
+	}
 	if call.command == "version" || call.command == "context" || call.command == "doctor" {
 		return call, len(remaining) == 1
 	}
@@ -381,6 +395,10 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
+		call.operationHelp = call.subcommand
+		return call, true
+	}
 	if call.command == "publication" {
 		var ok bool
 		call.publication, ok = parsePublication(call.subcommand, operationArgs)

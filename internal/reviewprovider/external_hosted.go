@@ -22,14 +22,15 @@ type ExternalHostedRun struct {
 }
 
 type externalHostedGroup struct {
-	run      ExternalHostedRun
-	batches  map[int]HostedReview
-	total    int
-	count    int
-	selected map[string]bool
-	reason   string
-	standing bool
-	first    time.Time
+	run              ExternalHostedRun
+	batches          map[int]HostedReview
+	total            int
+	count            int
+	selected         map[string]bool
+	reason           string
+	standing         bool
+	archiveSubmitted bool
+	first            time.Time
 }
 
 // DiscoverExternalHosted recognizes actual provider identities independently of
@@ -89,6 +90,11 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			g.batches[marker.ordinal] = review
 		} else {
 			run, count, selected, valid := parseSubmittedReview(review.Body, review.HeadSHA)
+			archive := false
+			if run == "" {
+				run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, review.HeadSHA, true, false)
+				archive = run != ""
+			}
 			if run == "" {
 				continue
 			}
@@ -100,6 +106,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 				g.reason = "conflicting_submitted_review_evidence"
 			}
 			g.run.ProviderRunID, g.count, g.selected = run, count, selected
+			g.archiveSubmitted = archive
 			if !valid && g.reason == "" {
 				g.reason = "submitted_review_inventory_unproven"
 			}
@@ -150,6 +157,7 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 		}
 	}
 	result := make([]ExternalHostedRun, 0, len(groups))
+	var omittedCompletions map[int64]time.Time
 	for _, g := range groups {
 		pub := &g.run.Inventory.Publication
 		pub.FinishedAt = g.run.FinishedAt
@@ -176,7 +184,13 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 				g.run.ReviewIDs = append(g.run.ReviewIDs, review.ID)
 				for _, root := range roots[review.ID] {
 					pub.Roots = append(pub.Roots, root)
-					if g.reason == "" && (!publicationActor(root.Author, provider) || root.OriginalHeadSHA != g.run.HeadSHA || root.CreatedAt.After(g.run.FinishedAt) || g.total == 0 && (root.UpdatedAt.After(g.run.FinishedAt) || !g.selected[root.Path])) {
+					updatedBy := g.run.FinishedAt
+					if g.archiveSubmitted {
+						// GitHub publishes an attached root during the next clock second.
+						// This does not permit a new root created after submission.
+						updatedBy = updatedBy.Add(time.Second)
+					}
+					if g.reason == "" && (!publicationActor(root.Author, provider) || root.OriginalHeadSHA != g.run.HeadSHA || root.CreatedAt.After(g.run.FinishedAt) || g.total == 0 && (root.UpdatedAt.After(updatedBy) || !g.selected[root.Path])) {
 						g.reason = "root_binding_mismatch"
 					}
 				}
@@ -214,8 +228,19 @@ func DiscoverExternalHosted(snapshot HostedPublicationSnapshot, provider Author)
 			if g.reason == "" && !hostedInlineCountMatches(pub.Roots, g.count) {
 				g.reason = "root_count_mismatch"
 			}
+			if g.reason == "" && g.archiveSubmitted && g.count == 0 {
+				if omittedCompletions == nil {
+					omittedCompletions = omittedHostedCountCompletions(snapshot, provider, windows, 0, time.Time{})
+				}
+				if len(g.run.ReviewIDs) != 1 || omittedCompletions[g.run.ReviewIDs[0]].IsZero() {
+					g.reason = "submitted_review_inventory_unproven"
+				}
+			}
 			if g.reason == "" {
 				g.run.Inventory = decodeHostedFindings(*pub)
+				if g.archiveSubmitted && g.count == 0 && len(g.run.Inventory.Findings) != 0 {
+					g.reason = "submitted_review_inventory_unproven"
+				}
 			}
 		}
 		if g.reason != "" {

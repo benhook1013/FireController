@@ -9,7 +9,7 @@ ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 check: workflow-check ci-selection-check browser-check fmt-check test docs-check
 
 # actionlint v1.7.12 lacks GitHub concurrency.queue (upstream #657).
-# CI selection validates our one queue declaration; every other lint error remains fatal.
+# CI selection validates the literal compatibility lock, every job slot and queue declaration; every other lint error remains fatal.
 workflow-check:
 	$(ACTIONLINT) -ignore '^unexpected key "queue" for "concurrency" section[.] expected one of "cancel-in-progress", "group"$$' -shellcheck="" -pyflakes="" .github/workflows/ci.yml
 
@@ -44,6 +44,7 @@ browser-build:
 
 # Requires the actual outputs from make build; no implicit rebuild.
 smoke:
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedOperationReadsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedCarriedAdoptionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedRoundControlsSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

@@ -21,8 +21,9 @@ AND (a.state='uncertain' OR EXISTS(
 // HostedRecoveryCandidate selects originally admitted work for observation.
 // It grants no permission to post, retry a review or claim completed coverage.
 type HostedRecoveryCandidate struct {
-	ProjectID string
-	AttemptID string
+	OperationID string
+	ProjectID   string
+	AttemptID   string
 }
 
 // PendingHostedRecovery returns at most one originally bound observation target.
@@ -84,7 +85,7 @@ func (e *Engine) PendingHostedRecovery(ctx context.Context, capabilityID string)
 		}
 		// Full anchor, intent and final-evidence checks remain owned by the
 		// subsequent ReadHostedRecovery call, using this exact target identity.
-		result = &HostedRecoveryCandidate{ProjectID: candidate.ProjectID, AttemptID: candidate.AttemptID}
+		result = &HostedRecoveryCandidate{ProjectID: candidate.ProjectID, OperationID: o.ID, AttemptID: candidate.AttemptID}
 		return nil
 	})
 	if err != nil {

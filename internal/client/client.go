@@ -250,8 +250,9 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
-	seconds int
-	status  *int
+	hostedObserver bool
+	seconds        int
+	status         *int
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
@@ -290,6 +291,9 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 	if wait != nil {
+		if wait.hostedObserver && method == http.MethodGet {
+			r.Header.Set("X-FC-Hosted-Observer", "1")
+		}
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 	}
 	if len(body) != 0 {

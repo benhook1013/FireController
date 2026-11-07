@@ -83,6 +83,17 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if name == "review_queue_edit" {
 		return queueEditArguments(data)
 	}
+	if name == "review_operations_list" {
+		return operationListArguments(data)
+	}
+	if name == "review_operation_read" {
+		input, err := operationStatusArguments(data)
+		if err != nil {
+			return args, err
+		}
+		args.operationStatus, args.reviewSourceWait = input, input.WaitSeconds
+		return args, nil
+	}
 	if checkpointTool(name) {
 		return checkpointArguments(name, data)
 	}

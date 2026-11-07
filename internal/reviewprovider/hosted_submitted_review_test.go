@@ -351,3 +351,46 @@ func TestHostedSubmittedReviewPreservesExistingExplicitMarkers(t *testing.T) {
 		t.Fatal("explicit format changed", got.Reason)
 	}
 }
+
+func TestHostedCurrentSubmittedReviewWithIgnoredFiles(t *testing.T) {
+	for _, mode := range []string{"complete", "wrong count", "selected overlap"} {
+		t.Run(mode, func(t *testing.T) {
+			f := submittedCurrentFixture(t)
+			review := &f.snapshot.Reviews[0]
+			ignored := "<details>\n<summary>⛔ Files ignored due to path filters: 1</summary>\n<dl>\n<dd>\n<br>\n* `build/generated.js` is excluded by `!build/**`\n</dd>\n</dl>\n</details>\n"
+			if mode == "wrong count" {
+				ignored = strings.Replace(ignored, "filters: 1", "filters: 2", 1)
+			}
+			if mode == "selected overlap" {
+				ignored = strings.Replace(ignored, "build/generated.js", f.snapshot.ReviewComments[0].Path, 1)
+			}
+			body := externalCurrentSubmission(f.intent.HeadSHA, false)
+			lines := strings.Split(body, "\n")
+			for i, line := range lines {
+				if submittedSelected.MatchString(line) {
+					for j := i - 1; j >= 0; j-- {
+						if lines[j] == "<details>" {
+							lines[j] = ignored + lines[j]
+							break
+						}
+					}
+					break
+				}
+			}
+			review.Body = strings.Join(lines, "\n")
+			if review.Body == body {
+				t.Fatal("ignored files fixture did not apply")
+			}
+			got := f.extract(t)
+			if mode != "complete" {
+				if got.Complete {
+					t.Fatal("invalid ignored files supplied completed inventory")
+				}
+				return
+			}
+			if !got.Complete || got.Publication.SubmittedReview == nil || len(got.Findings) != 1 || got.Publication.Batches[0].Body != review.Body {
+				t.Fatal("submitted inventory did not retain the original finding and source", got.Reason, got.Publication.Reason)
+			}
+		})
+	}
+}

@@ -11,6 +11,17 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "operations" {
+		return parseOperationList(call, args)
+	}
+	if call.subcommand == "operation" {
+		var ok bool
+		call.reviewOperationStatus, ok = parseReviewOperationStatus(args)
+		if ok {
+			call.waitSeconds = call.reviewOperationStatus.WaitSeconds
+		}
+		return call, ok
+	}
 	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" || call.subcommand == "readiness" {
 		if call.subcommand == "ci-assess" {
 			filtered := make([]string, 0, len(args))
@@ -152,8 +163,10 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return service.ReviewFindingRoutes(ctx, call.pullNumber, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "execution":
 		return service.ReviewExecution(ctx)
+	case "operations":
+		return service.ReviewOperations(ctx, call.reviewOperations)
 	case "operation":
-		return service.WaitReviewOperation(ctx, call.position[0], call.waitSeconds)
+		return executeReviewOperationStatus(ctx, service, call.reviewOperationStatus)
 	case "source-operation":
 		return service.ReviewSourceOperation(ctx, call.position[0])
 	case "source-assess":
