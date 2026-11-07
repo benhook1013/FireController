@@ -518,7 +518,7 @@ func parseInvocation(args []string) (invocation, bool) {
 			return call, validHelpOptions(call.options)
 		}
 	}
-	if len(operationArgs) == 1 && operationArgs[0] == "--help" {
+	if len(operationArgs) == 1 && (operationArgs[0] == "--help" || call.command == "reviews" && call.subcommand == "rounds" && operationArgs[0] == "help") {
 		if _, exists := operationHelp(call.command + " " + call.subcommand); exists {
 			call.helpOperation = call.command + " " + call.subcommand
 			call.command = "help"

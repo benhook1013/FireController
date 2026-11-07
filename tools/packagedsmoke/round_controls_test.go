@@ -178,12 +178,12 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	if c := read("admin", "42", "cli"); c != (client.ReviewRoundControl{ProjectID: project, PullNumber: 42, Channel: "cli"}) {
 		t.Fatal("unconfigured scope not explicit")
 	}
-	grant := []string{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "0", "--max", "5", "--key", "round-original"}
+	grant := []string{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expect-revision", "0", "--max", "5", "--key", "round-original"}
 	original := call("admin", grant...)
 	if c := read("reader", "42", "cli"); !c.Configured || c.Minimum != 0 || c.Maximum != 5 || c.Taper != 2 || c.Used != 0 || c.Dry != 0 || c.Epoch != 1 || c.Revision != 1 {
 		t.Fatal("CLI default additional grant incorrect")
 	}
-	exact := []string{"reviews", "rounds", "grant", "--pr", "43", "--channel", "cli", "--expected-revision", "0", "--exact", "2", "--key", "round-exact"}
+	exact := []string{"reviews", "rounds", "grant", "--pr", "43", "--channel", "cli", "--expect-revision", "0", "--exact", "2", "--key", "round-exact"}
 	call("admin", exact...)
 	if c := read("admin", "43", "cli"); c.Minimum != 2 || c.Maximum != 2 || c.Used != 0 {
 		t.Fatal("CLI exact grant incorrect")
@@ -260,7 +260,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	tool("review_rounds_configure", hosted, "")
 	closeArgs := map[string]any{"pull_number": 42, "channel": "cli", "expected_revision": 1, "action": "close", "idempotency_key": "round-close"}
 	closed := tool("review_rounds_configure", closeArgs, "")
-	cliClose := []string{"reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expected-revision", "1", "--key", "round-close"}
+	cliClose := []string{"reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expect-revision", "1", "--key", "round-close"}
 	if !jsonEqual(closed, call("admin", cliClose...)) || !jsonEqual(closed, tool("review_rounds_configure", closeArgs, "")) {
 		t.Fatal("cross-transport close replay changed receipt")
 	}
@@ -278,7 +278,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	if c := read("other", "42", "cli"); c.Configured || c.ProjectID != otherProject {
 		t.Fatal("MCP closure crossed project")
 	}
-	call("other", "reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "0", "--max", "7", "--key", "round-other")
+	call("other", "reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expect-revision", "0", "--max", "7", "--key", "round-other")
 	if c := read("other", "42", "cli"); c.Maximum != 7 || c.Closed || c.Used != 0 {
 		t.Fatal("second profile lost explicit project binding")
 	}
@@ -321,7 +321,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	}
 	// Commit with an unwritable stdout, then retain the original key across a
 	// later configuration change and actual process restart.
-	reopen := []string{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expected-revision", "2", "--max", "4", "--key", "round-lost-output"}
+	reopen := []string{"reviews", "rounds", "grant", "--pr", "42", "--channel", "cli", "--expect-revision", "2", "--max", "4", "--key", "round-lost-output"}
 	null, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal("lost output fixture unavailable")
@@ -349,7 +349,7 @@ func TestPackagedRoundControlsSmoke(t *testing.T) {
 	if reopened.Revision != 3 || reopened.Epoch != 1 || reopened.Outcome != "granted" {
 		t.Fatal("lost stdout recovery receipt incorrect")
 	}
-	call("admin", "reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expected-revision", "3", "--key", "round-later-close")
+	call("admin", "reviews", "rounds", "close", "--pr", "42", "--channel", "cli", "--expect-revision", "3", "--key", "round-later-close")
 	beforeRestart := read("admin", "42", "cli")
 	if beforeRestart.Revision != 4 || beforeRestart.Epoch != 1 || !beforeRestart.Closed || beforeRestart.Used != 0 {
 		t.Fatal("later change did not preserve new empty allowance")

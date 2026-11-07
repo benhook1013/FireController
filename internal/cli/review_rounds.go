@@ -27,17 +27,20 @@ func parseReviewRounds(args []string) (*reviewRoundsInvocation, bool) {
 	switch in.operation {
 	case "read":
 	case "grant":
-		allowed["--expected-revision"], allowed["--key"], allowed["--min"], allowed["--max"], allowed["--exact"] = true, true, true, true, true
+		allowed["--expect-revision"], allowed["--key"], allowed["--min"], allowed["--max"], allowed["--exact"] = true, true, true, true, true
 	case "close":
-		allowed["--expected-revision"], allowed["--key"] = true, true
+		allowed["--expect-revision"], allowed["--key"] = true, true
 	case "taper":
-		allowed["--expected-revision"], allowed["--key"], allowed["--taper"] = true, true, true
+		allowed["--expect-revision"], allowed["--key"], allowed["--taper"] = true, true, true
 	default:
 		return nil, false
 	}
 	values := map[string]string{}
 	for i := 1; i < len(args); i++ {
 		flag, value, assigned := strings.Cut(args[i], "=")
+		if flag == "--expected-revision" {
+			flag = "--expect-revision"
+		}
 		if !allowed[flag] {
 			return nil, false
 		}
@@ -80,7 +83,7 @@ func parseReviewRounds(args []string) (*reviewRoundsInvocation, bool) {
 	if !validMutationKey(in.key) {
 		return nil, false
 	}
-	revision, ok := number("--expected-revision", math.MaxInt64-1)
+	revision, ok := number("--expect-revision", math.MaxInt64-1)
 	if !ok {
 		return nil, false
 	}

@@ -110,6 +110,55 @@ func TestRoundCumulativeUnderwayAndUnfinalizedCountOnceAgainstOneMore(t *testing
 	adoptionValid(t, f)
 }
 
+func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
+	f := roundFixture(t)
+	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 1, "legacy")
+	a, evidence := roundCapture(t, f, 0, false)
+	before := roundTables(t, f)
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "legacy-extra", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_round_capacity")
+	if roundTables(t, f) != before {
+		t.Fatal("capacity refusal changed legacy history or allocated a binding")
+	}
+	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || readProgress(t, f, 2).Items[0].Channels[1].Pending != 1 {
+		t.Fatal("legacy capture lost its reservation or received early credit", c)
+	}
+	roundFinalize(t, f, a, evidence, 0, false)
+	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || !roundDone(c) || readProgress(t, f, 2).Items[0].Channels[1].Pending != 0 {
+		t.Fatal("legacy finalization failed to convert occupancy into completion", c)
+	}
+	before = roundTables(t, f)
+	roundCompleteHook(t, f, a.OperationID)
+	if roundTables(t, f) != before {
+		t.Fatal("legacy completion replay changed history")
+	}
+	adoptionValid(t, f)
+}
+
+func TestRoundLegacySpareCapacityPreservesPendingEvidenceDispatchGuard(t *testing.T) {
+	f := roundFixture(t)
+	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 2, "legacy")
+	first, evidence := roundCapture(t, f, 0, false)
+	next := f.enqueue(t, attemptProject, "legacy-spare", "cli", 2, 1)
+	if configured, err := f.e.RoundAdmission(t.Context(), attemptProject, next.ID); err != nil || !configured {
+		t.Fatal("legacy spare capacity refused admission", configured, err)
+	}
+	a := f.start(t, attemptProject, next)
+	anchor := attemptAnchor(attemptProject, 2)
+	anchor.ParentSHA = anchor.BaseSHA
+	var err error
+	a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision), "review_evidence_pending")
+	roundFinalize(t, f, first, evidence, 0, false)
+	if err = f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal("finalized evidence held the remaining legacy round", err)
+	}
+	adoptionValid(t, f)
+}
+
 func TestRoundCumulativeLateOriginalRevisionBeyondItsOldCap(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 1, "first")

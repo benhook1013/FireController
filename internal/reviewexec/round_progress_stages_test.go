@@ -75,8 +75,8 @@ func TestRoundProgressStagesLegacyEpochAndStrictReadScope(t *testing.T) {
 	f := roundFixture(t)
 	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 8, "legacy-stages")
 	roundCapture(t, f, 601, true)
-	// Legacy controls historically count execution only, even with unfinalized evidence.
-	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 1), 0, 0)
+	// Legacy controls retain terminal-unfinalized capacity until adjudication.
+	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 1), 0, 1)
 	roundGrant(t, f, 2, "cli", 1, 0, 8, "convert-stages")
 	assertProgressStages(t, progressStageChannel(t, f, "view=stages", 1), 0, 1)
 	for _, query := range []string{"view=", "view=all", "view=stages&view=stages", "view=stages&unknown=x"} {

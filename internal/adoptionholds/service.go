@@ -131,7 +131,10 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_adoption_imports(project_id,namespace,revision,batch_json,batch_sha256,actor_id,worker_id,created_at) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, b.Source.Namespace, revision, string(body), digest(body), scope.PrincipalID, scope.WorkerID, at); err != nil {
 			return nil, err
 		}
-		target, err := tx.PrepareContext(ctx, `INSERT INTO review_adoption_targets(obligation_id,project_id,pull_number) VALUES(?,?,?)`)
+		// The normalized bounded integer array is inserted in one statement per
+		// obligation, avoiding 10,000 client/driver calls at the maximum batch.
+		// The same transaction and table constraints retain all-or-nothing scope.
+		target, err := tx.PrepareContext(ctx, `INSERT INTO review_adoption_targets(obligation_id,project_id,pull_number) SELECT ?,?,value FROM json_each(?)`)
 		if err != nil {
 			return nil, err
 		}
@@ -142,10 +145,8 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 			if _, err = tx.ExecContext(ctx, `INSERT INTO review_adoption_obligations(id,project_id,namespace,source_key,source_revision,original_json,original_sha256,status,revision,actor_id,worker_id,created_at) VALUES(?,?,?,?,?,?,?,'open',1,?,?,?)`, id, scope.ProjectID, b.Source.Namespace, item.SourceKey, revision, string(original), digest(original), scope.PrincipalID, scope.WorkerID, at); err != nil {
 				return nil, err
 			}
-			for _, number := range item.AffectedPullNumbers {
-				if _, err = target.ExecContext(ctx, id, scope.ProjectID, number); err != nil {
-					return nil, err
-				}
+			if _, err = target.ExecContext(ctx, id, scope.ProjectID, string(encode(item.AffectedPullNumbers))); err != nil {
+				return nil, err
 			}
 		}
 		if err = core.AppendEvent(ctx, tx, scope, "reviews.adoption_obligations_imported", scope.ProjectID, revision, map[string]any{"new": len(added), "unchanged": len(b.Obligations) - len(added)}); err != nil {

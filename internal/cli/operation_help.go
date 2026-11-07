@@ -148,27 +148,29 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews rounds":
 		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"
 		out.Optional = []string{"reviews rounds read --help", "reviews rounds grant --help", "reviews rounds close --help", "reviews rounds taper --help"}
-		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant sets finite additional bounds or reopens the selected channel; close stops new dispatch. Both require project write authority, the current --expected-revision and an explicit --key. Help performs no action."}
+		out.Semantics = []string{"read returns current local per-PR/channel minimum, maximum, used, dry streak, taper, closure and revision without provider work.", "grant sets finite additional bounds or reopens the selected channel; close stops new dispatch. Both require project write authority, the current --expect-revision and an explicit --key. Help performs no action."}
 		out.Example = "<bound launcher> reviews rounds read --pr 42 --channel hosted"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews rounds grant":
-		out.Usage = "<bound launcher> reviews rounds grant --pr NUMBER --channel cli|hosted --expected-revision N --max N [--min N] --key KEY | --exact N instead of --min/--max"
-		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision, initially 0)", "--max N (1-1000 additional completed rounds), or --exact N", "--key KEY"}
-		out.Optional = []string{"--min N (0 to --max, default 0)", "--exact N (1-1000; sets equal minimum/maximum; exclusive with --min and --max)"}
-		out.Semantics = []string{"Project writers can grant or reopen this PR/channel directly. Read reviews rounds read first for its current revision; the flag is --expected-revision, not --expect-revision.", "Bounds count additional completed rounds, including underway and complete-unfinalized work. One more includes that occupied round; wait for its finalization before requiring a round after it. A maximum below unavoidable occupied work is refused.", "Preserves earned dry streak, completed counts and history. Every grant reopens this channel, including after taper. The next eligible completion evaluates taper again; the requested minimum and maximum stay unchanged. Other channels are unchanged. This changes local settings without provider dispatch or a new review.", recovery}
-		out.Example = "<bound launcher> reviews rounds grant --pr 42 --channel hosted --expected-revision 1 --min 2 --max 3 --key hosted-42-grant"
+		out.Usage = "<bound launcher> reviews rounds grant --pr NUMBER --channel cli|hosted --expect-revision N --max N [--min N] --key KEY | --exact N instead of --min/--max"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expect-revision N (current round-control revision, initially 0)", "--max N (1-1000 additional completed rounds), or --exact N", "--key KEY"}
+		out.Optional = []string{"--expected-revision N (compatible alias for --expect-revision; do not combine revision flags)", "--min N (0 to --max, default 0)", "--exact N (1-1000; sets equal minimum/maximum; exclusive with --min and --max)"}
+		out.Semantics = []string{"Project writers can grant or reopen this PR/channel directly. Read reviews rounds read first for its current revision; use --expect-revision.", "Bounds count additional completed rounds, including underway and complete-unfinalized work. One more includes that occupied round; wait for its finalization before requiring a round after it. A maximum below unavoidable occupied work is refused.", "Preserves earned dry streak, completed counts and history. Every grant reopens this channel, including after taper. The next eligible completion evaluates taper again; the requested minimum and maximum stay unchanged. Other channels are unchanged. This changes local settings without provider dispatch or a new review.", recovery}
+		out.Example = "<bound launcher> reviews rounds grant --pr 42 --channel hosted --expect-revision 1 --min 2 --max 3 --key hosted-42-grant"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews rounds taper":
-		out.Usage = "<bound launcher> reviews rounds taper --pr NUMBER --channel cli|hosted --expected-revision N --taper N --key KEY"
-		out.Required = []string{"--pr NUMBER", "--channel cli|hosted", "--expected-revision N (current configured round-control revision)", "--taper N (1-1000 consecutive eligible rounds with zero accepted findings)", "--key KEY"}
+		out.Optional = []string{"--expected-revision N (compatible alias for --expect-revision; do not combine revision flags)"}
+		out.Usage = "<bound launcher> reviews rounds taper --pr NUMBER --channel cli|hosted --expect-revision N --taper N --key KEY"
+		out.Required = []string{"--pr NUMBER", "--channel cli|hosted", "--expect-revision N (current configured round-control revision)", "--taper N (1-1000 consecutive eligible rounds with zero accepted findings)", "--key KEY"}
 		out.Semantics = []string{"Changes only this configured PR/channel's taper threshold. Preserves minimum, maximum, earned dry streak, completed counts, epoch and explicit closure; grants no extra rounds and does not reopen a closed channel.", "Reassesses taper against retained progress and the original grant boundary. No provider dispatch or new review. Omit --min, --max and --exact.", recovery}
-		out.Example = "<bound launcher> reviews rounds taper --pr 42 --channel hosted --expected-revision 2 --taper 2 --key hosted-42-taper"
+		out.Example = "<bound launcher> reviews rounds taper --pr 42 --channel hosted --expect-revision 2 --taper 2 --key hosted-42-taper"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews rounds close":
-		out.Usage = "<bound launcher> reviews rounds close --pr NUMBER --channel cli|hosted --expected-revision N --key KEY"
-		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expected-revision N (current round-control revision)", "--key KEY"}
-		out.Semantics = []string{"Project writers can close this PR/channel directly. Read reviews rounds read for the current --expected-revision. No --min, --max or --exact is accepted.", "Stops new dispatch, including queued/prepared work at its final guard. Does not cancel a possibly posted action: its result can still be captured, adjudicated and counted once.", "Preserves earned dry streak, completed counts and history; other channels are unchanged. A later explicit grant reopens this channel. This local mutation performs no provider dispatch.", recovery}
-		out.Example = "<bound launcher> reviews rounds close --pr 42 --channel cli --expected-revision 2 --key cli-42-close"
+		out.Optional = []string{"--expected-revision N (compatible alias for --expect-revision; do not combine revision flags)"}
+		out.Usage = "<bound launcher> reviews rounds close --pr NUMBER --channel cli|hosted --expect-revision N --key KEY"
+		out.Required = []string{"--pr NUMBER (canonical positive PR number, 1-2147483647)", "--channel cli|hosted", "--expect-revision N (current round-control revision)", "--key KEY"}
+		out.Semantics = []string{"Project writers can close this PR/channel directly. Read reviews rounds read for the current --expect-revision. No --min, --max or --exact is accepted.", "Stops new dispatch, including queued/prepared work at its final guard. Does not cancel a possibly posted action: its result can still be captured, adjudicated and counted once.", "Preserves earned dry streak, completed counts and history; other channels are unchanged. A later explicit grant reopens this channel. This local mutation performs no provider dispatch.", recovery}
+		out.Example = "<bound launcher> reviews rounds close --pr 42 --channel cli --expect-revision 2 --key cli-42-close"
 		out.Documentation = "docs/review-round-controls.md"
 	case "reviews rounds read":
 		out.Usage = "<bound launcher> reviews rounds read --pr NUMBER --channel cli|hosted"

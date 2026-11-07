@@ -327,11 +327,11 @@ func roundOccupancyStages(ctx context.Context, tx *sql.Tx, c roundRecord, exclud
 	if err != nil {
 		return 0, 0, err
 	}
-	if c.cumulative {
-		adjudication, err = roundUnfinalizedOccupancy(ctx, tx, c, excluding)
-		if err != nil {
-			return 0, 0, err
-		}
+	// Complete captures retain their slot until finalization for both legacy
+	// and cumulative grants; this does not change historical completion credit.
+	adjudication, err = roundUnfinalizedOccupancy(ctx, tx, c, excluding)
+	if err != nil {
+		return 0, 0, err
 	}
 	return execution, adjudication, nil
 }

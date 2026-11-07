@@ -597,3 +597,60 @@ func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyAdmissionRoundContextAndFinalGuards(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		t.Run(strconv.FormatBool(configured), func(t *testing.T) {
+			f, prior, id, _ := coverageFixture(t, 1, false)
+			adjudicationDecide(t, f, id, "reject-prior", 0, 0, "rejected")
+			coverageFinalize(t, f, prior, id, 1)
+			if configured {
+				roundGrant(t, f, 2, "cli", 0, 1, 3, "additional-discovery")
+			}
+			prepared := f.start(t, attemptProject, f.enqueue(t, attemptProject, "next-round", "cli", 2, 1))
+			before := adjudicationState(t, f, prepared)
+			current, err := f.e.ExecutionContext(t.Context(), attemptProject, prepared.OperationID)
+			if err != nil || current.RoundsConfigured != configured {
+				t.Fatal("preparation did not retain admitted round state", current, err)
+			}
+			if adjudicationState(t, f, prepared) != before {
+				t.Fatal("preparation context changed journal")
+			}
+			a, err := f.e.Admit(t.Context(), attemptProject, prepared.ID, prepared.Revision, attemptAnchor(attemptProject, 2), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			before = adjudicationState(t, f, a)
+			err = f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision)
+			if configured {
+				if err != nil {
+					t.Fatal("admitted discovery was blocked by prior coverage", err)
+				}
+			} else {
+				attemptCode(t, err, "review_held")
+			}
+			if adjudicationState(t, f, a) != before {
+				t.Fatal("final guard changed journal")
+			}
+			// Retaining round admission must not bypass evidence added after preparation.
+			adjudicationDecide(t, f, id, "late-acceptance", 2, 0, "accepted")
+			before = adjudicationState(t, f, a)
+			attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision), "review_evidence_pending")
+			if adjudicationState(t, f, a) != before {
+				t.Fatal("pending-evidence guard changed journal")
+			}
+			if configured {
+				coverageFix(t, f, id, "late-fix", 3, 0, "")
+				revision := int64(1)
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-after-admit", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+				before = adjudicationState(t, f, a)
+				attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision), "review_round_closed")
+				if adjudicationState(t, f, a) != before {
+					t.Fatal("closure guard changed journal")
+				}
+			}
+		})
+	}
+}
