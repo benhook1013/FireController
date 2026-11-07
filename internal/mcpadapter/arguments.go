@@ -83,6 +83,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if name == "review_queue_edit" {
 		return queueEditArguments(data)
 	}
+	if name == "review_start" || name == "review_selection_read" {
+		return reviewRunArguments(name, data)
+	}
 	if name == "review_operations_list" {
 		return operationListArguments(data)
 	}
@@ -197,6 +200,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if name == "review_start" {
+		return true
+	}
 	if name == "job_primary_replace" || name == "job_update_append" || name == "job_checklist_replace" {
 		return true
 	}

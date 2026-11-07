@@ -295,3 +295,7 @@ The retainer journals the immutable source before deriving evidence. A finished 
 Reported unavailable-file limitations remain bounded private capture metadata and native run limitations. They do not alter finding counts or imply every selected file was reviewed. Original source captures and published checkpoint bodies stay immutable. Historical checkpoint file-annotation projection, automatic observation and external/native history reconciliation remain separate consuming work; this boundary adds no new scheduling or checkpoint-publication behavior.
 
 Focused proof covers parser-to-native source identity, strict HTTP/client variant decoding, same-attempt recovery and replay, immutable capture reuse, source/readiness binding, and canonical backup refusal of mixed metadata. Packaged proof and its exact executed limits are recorded in the [delivery plan](delivery.md#hosted-source-foundation). Live-provider execution, installed deployment and operational cutover remain separate.
+
+## Explicit selection entry point
+
+A [durable channel selection](review-round-controls.md#one-explicit-channel-front-run) may link one ordinary request through the same transactional admission helper used by exact-target requests. The selector adds no provider privilege, round allowance or completion credit. Native preparation and final provider guards remain authoritative after selection.

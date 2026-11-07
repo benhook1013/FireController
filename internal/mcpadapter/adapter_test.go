@@ -210,6 +210,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_obligation_resolve"] = true
 			expected["review_queue_edit"] = true
 			expected["review_rounds_read"], expected["review_rounds_configure"] = true, true
+			expected["review_start"], expected["review_selection_read"] = true, true
 			expected["review_queue"], expected["review_pull"], expected["review_runs"], expected["review_run"] = true, true, true, true
 			expected["review_evidence_read"], expected["review_adjudication_read"], expected["review_finding_decide"], expected["review_finding_fix"], expected["review_source_finalize"] = true, true, true, true, true
 			expected["review_execution_read"], expected["review_operation_read"], expected["review_request"], expected["review_operations_list"] = true, true, true, true
@@ -234,6 +235,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			writes["note_create"], writes["note_update"] = true, true
 			writes["job_update_append"], writes["job_checklist_replace"] = true, true
 			writes["job_checkpoint_append"], writes["review_request"], writes["review_source_refresh"] = true, true, true
+			writes["review_start"] = true
 			writes["review_finding_decide"], writes["review_finding_fix"], writes["review_source_finalize"] = true, true, true
 			writes["review_finding_route"], writes["review_route_decide"], writes["review_route_fix"] = true, true, true
 			writes["review_checkpoint_publish"], writes["review_checkpoint_recover"] = true, true
@@ -243,7 +245,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)

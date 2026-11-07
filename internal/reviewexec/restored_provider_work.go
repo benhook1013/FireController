@@ -13,6 +13,7 @@ import (
 // RestoredWorkSummary counts local abandonments, never external cancellations
 // or completed review credit.
 type RestoredWorkSummary struct {
+	Selections       int64 `json:"selections,omitempty"`
 	QueuedOperations int64 `json:"queued_operations"`
 	Attempts         int64 `json:"attempts"`
 	SourceRefreshes  int64 `json:"source_refreshes"`
