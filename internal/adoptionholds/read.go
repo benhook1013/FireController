@@ -237,9 +237,9 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	return d, nil
 }
 
-// ReadFacts reads only the selected project/PR using its target index. Original
+// readFacts reads only the selected project/PR using its target index. Original
 // records are validated in bounded pages; no captured credit is consulted.
-func readFacts(ctx context.Context, q Query, project string, number int64) (Facts, error) {
+func readFacts(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool) (Facts, error) {
 	var facts Facts
 	if !identifier.MatchString(project) || !pull(number) {
 		return facts, invalid()
@@ -278,6 +278,9 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 			}
 			if d.Status == "open" {
 				facts.Open++
+				if stopAtFirstOpen {
+					return facts, nil
+				}
 				if facts.Open > 1<<53-1 {
 					return facts, unavailable()
 				}
@@ -292,6 +295,10 @@ func readFacts(ctx context.Context, q Query, project string, number int64) (Fact
 
 // ReadFacts treats only a genuinely absent optional domain as empty.
 func ReadFacts(ctx context.Context, q Query, project string, number int64) (Facts, error) {
+	return readFactsIfPresent(ctx, q, project, number, false)
+}
+
+func readFactsIfPresent(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool) (Facts, error) {
 	if !identifier.MatchString(project) || !pull(number) {
 		return Facts{}, invalid()
 	}
@@ -302,7 +309,7 @@ func ReadFacts(ctx context.Context, q Query, project string, number int64) (Fact
 	if !present {
 		return Facts{}, nil
 	}
-	facts, err := readFacts(ctx, q, project, number)
+	facts, err := readFacts(ctx, q, project, number, stopAtFirstOpen)
 	if err != nil {
 		return Facts{}, retainedSourceReadError(err)
 	}
@@ -318,8 +325,11 @@ func retainedSourceReadError(err error) error {
 	}
 	return err
 }
+
+// HasOpen stops only after fully validating one open obligation. Proving that
+// none remain requires validating the entire targeted history.
 func HasOpen(ctx context.Context, q Query, project string, number int64) (bool, error) {
-	facts, err := ReadFacts(ctx, q, project, number)
+	facts, err := readFactsIfPresent(ctx, q, project, number, true)
 	return facts.Open > 0, err
 }
 func (s *Service) Detail(ctx context.Context, scope core.Scope, id string) (m.Detail, error) {
