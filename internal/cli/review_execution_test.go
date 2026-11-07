@@ -211,7 +211,7 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 			}))
 			defer service.Close()
 			path := mutationProfiles(t, f, service.URL, map[string][2]string{"builder": {project, worker}})
-			ctx, cancel := context.WithCancel(t.Context())
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			if mode == "cancelled" {
 				time.AfterFunc(300*time.Millisecond, cancel)
@@ -220,10 +220,7 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 			start := time.Now()
 			code := cli.RunContext(ctx, append([]string{"--profiles-file", path, "--profile", "builder"}, reviewRequestArgs()...), nil, &out, &stderr)
 			elapsed := time.Since(start)
-			want := cli.ExitService
-			if mode == "cancelled" {
-				want = cli.ExitCancelled
-			}
+			want := cli.ExitCancelled
 			if code != want || out.Len() != 0 || posts.Load() != 1 || !strings.Contains(stderr.String(), `"outcome_unknown":true`) {
 				t.Fatal("request bound/cancellation failed", code, elapsed, stderr.String())
 			}

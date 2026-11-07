@@ -75,6 +75,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, projectMapDefinitions()...)
 	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
 	known := make(map[string]bool)
+	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
@@ -116,9 +117,11 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if tool.name == "review_request" || tool.name == "review_operation_read" {
 				timeout = client.ReviewOperationBudget(args.reviewSourceWait)
 			}
+			// Identity recovery gets up to ten seconds; operations keep their own limits.
+			timeout = max(timeout, 15*time.Second)
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			service, err := client.New(ctx, binding)
+			service, err := transports.newClient(ctx, binding, request.Session)
 			if err != nil {
 				return resultFailure(err), nil
 			}
