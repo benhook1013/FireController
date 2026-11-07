@@ -1,9 +1,12 @@
 package backup
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -324,5 +327,53 @@ func TestComparisonInventoryAbsentOptionalDomainRemainsSupported(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, backupRows(t, store.DB())) {
 		t.Fatal("predecessor inspection / restore changed source")
+	}
+}
+
+// These version-one fingerprints are backup compatibility fixtures, not values
+// to regenerate when live migrations change. Introduce version-specific inventory
+// definitions before evolving either domain, so retained v1 bundles remain valid.
+func TestNativeInventoryVersionOneSchemaDefinitionsPinned(t *testing.T) {
+	for _, tc := range []struct {
+		domain     string
+		statements []string
+		counts     map[string]int
+		digest     string
+	}{
+		{"review_comparison", reviewexec.ComparisonSchemaSQL(), map[string]int{"TABLE": 1, "INDEX": 2, "TRIGGER": 20}, "584a984a5981c377eda89cafdfb48f4893eb969cd5e006af52651f29f422d69f"},
+		{"review_route_policy", reviewexec.RoutePolicySchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			if got := supportedDomains[tc.domain]; got != 1 {
+				t.Fatalf("supported version = %d; retain v1 fixtures and add explicit versioned inventory coverage", got)
+			}
+			counts := map[string]int{}
+			seen := map[string]bool{}
+			definitions := make([]string, 0, len(tc.statements))
+			for _, statement := range tc.statements {
+				fields := strings.Fields(statement)
+				if len(fields) < 4 || fields[0] != "CREATE" {
+					t.Fatalf("unexpected schema statement: %q", statement)
+				}
+				if _, ok := tc.counts[fields[1]]; !ok || seen[fields[2]] {
+					t.Fatalf("unexpected or duplicate schema object: %q", statement)
+				}
+				seen[fields[2]] = true
+				counts[fields[1]]++
+				// Match the trigger and physical validators' normalization exactly.
+				// Preserve internal whitespace and SQL literals, which they compare.
+				definitions = append(definitions, historyDefinitionSQL(statement))
+			}
+			if !reflect.DeepEqual(counts, tc.counts) {
+				t.Errorf("version-one object counts = %v, want %v", counts, tc.counts)
+			}
+			// Statement order is not part of the inventory contract. A NUL
+			// separator preserves object boundaries in the complete definition set.
+			sort.Strings(definitions)
+			got := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(definitions, "\x00"))))
+			if got != tc.digest {
+				t.Errorf("version-one schema digest = %s, want %s; live definitions changed without preserving the backup contract", got, tc.digest)
+			}
+		})
 	}
 }
