@@ -135,3 +135,28 @@ func TestHostedStandingStatusPreservesAttributionGuards(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedStandingStatusAcceptsOnlyLeadingPresentationBreaks(t *testing.T) {
+	s, baseline, intent, poster, bot, earliest := annotationBaselineFixture(t)
+	body := standingStatusBody(standingHeadingBody(decoratedStandingBody(s.IssueComments[1].Body, true)))
+	body = strings.ReplaceAll(body, "<dl>\n<dd>\n", "<dl>\n<dd>\n<br>\n")
+	s.IssueComments[1].Body = body
+	got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
+	if err != nil || !got.Complete || got.Publication.StandingZero == nil || len(got.Findings) != 0 {
+		t.Fatal("leading presentation breaks lost the attributed inventory", got.Reason, err)
+	}
+	for name, malformed := range map[string]string{
+		"repeated metadata break": strings.Replace(body, "<br>\n", "<br>\n<br>\n", 1),
+		"repeated coverage break": strings.Replace(body, "<br>\n<!-- final_review_risk_start -->", "<br>\n<br>\n<!-- final_review_risk_start -->", 1),
+		"break in file list":      strings.Replace(body, "* `pkg/alpha.go`", "<br>\n* `pkg/alpha.go`", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if malformed == body {
+				t.Fatal("fixture mutation did not apply")
+			}
+			if _, ok := parseStandingZero(malformed); ok {
+				t.Fatal("misplaced presentation break supplied zero inventory")
+			}
+		})
+	}
+}

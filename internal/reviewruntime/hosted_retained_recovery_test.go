@@ -26,6 +26,8 @@ func retainedHostedRecoveryFixture(t *testing.T) (*runtimeAllowanceFixture, Host
 		t.Fatal(err)
 	}
 	recoveryRuntimeMetadata(t, f.f, f.a)
+	// Keep the provider's leading presentation breaks in the original bytes.
+	record.Snapshot.IssueComments[1].Body = strings.ReplaceAll(record.Snapshot.IssueComments[1].Body, "<dl>\n<dd>\n", "<dl>\n<dd>\n<br>\n")
 	// Model a decoder that previously retained this source without recognizing
 	// its complete inventory. No final evidence or completion credit exists yet.
 	retained, _, err := retainHostedObservation(t.Context(), f.captures, f.f.engine, f.a, record)

@@ -28,6 +28,8 @@ A finished reply alone cannot establish an empty review. Standing zero results r
 
 `SubmittedReview` decoding has a native consumer: the [execution contract](review-execution.md#hosted-source-adoption) owns retained run, review, acknowledgment and finding identities, same-attempt recovery and their validation boundary. Parser recognition alone remains insufficient for native completion.
 
+Current positive, marked-empty and standing presentation recovery is defined by the [native source contract](review-execution.md#hosted-source-adoption). Passive archive decoding retains distinct real provider runs and original bodies, but does not establish a native command or completed round.
+
 Passive Hosted archive collection can retain unrelated comments with contradictory clocks while refusing them as native command-window evidence. Provider-owned comments and visible competing commands retain strict clock checks. This distinction cannot establish native trigger ownership.
 
 ## Validation boundary

@@ -50,6 +50,7 @@ type standingRiskParser struct {
 	phase            int
 	prefix, coverage string
 	complete         bool
+	bodyBreak        bool
 }
 
 // line recognizes only the observed root Merge Risk details/dl/dd envelope.
@@ -106,6 +107,10 @@ func (p *standingRiskParser) line(line string, stack []string) (handled, ok bool
 			p.phase = 0
 		}
 	case 4:
+		if ancestry == "details/dl/dd" && line == "<br>" && !p.bodyBreak {
+			p.bodyBreak = true
+			return true, true
+		}
 		p.phase = 0
 	case 5, 6:
 		if ancestry == "" {
@@ -128,7 +133,7 @@ func (p *standingRiskParser) line(line string, stack []string) (handled, ok bool
 		p.phase, p.complete = 0, true
 	}
 	if ancestry == "" && line == "<details>" {
-		p.phase, p.prefix = 1, ""
+		p.phase, p.prefix, p.bodyBreak = 1, "", false
 	}
 	return false, true
 }
@@ -302,8 +307,18 @@ func (p *standingRecentParser) block(label string) bool {
 		return false
 	}
 	p.at++
-	return p.take("<dl>", "<dd>")
+	return p.openBody()
 }
+
+func (p *standingRecentParser) openBody() bool {
+	if !p.take("<dl>", "<dd>") {
+		return false
+	}
+	// The provider can place one presentation break before the body.
+	p.take("<br>")
+	return true
+}
+
 func (p *standingRecentParser) close() bool { return p.take("</dd>", "</dl>", "</details>") }
 
 func (p *standingRecentParser) files(pattern *regexp.Regexp, ignored bool, seen map[string]bool) (int64, bool) {
@@ -316,7 +331,7 @@ func (p *standingRecentParser) files(pattern *regexp.Regexp, ignored bool, seen 
 	}
 	p.at++
 	count, err := strconv.ParseInt(match[1], 10, 64)
-	if err != nil || count > 10000 || !ignored && count == 0 || !p.take("<dl>", "<dd>") {
+	if err != nil || count > 10000 || !ignored && count == 0 || !p.openBody() {
 		return 0, false
 	}
 	var found int64
@@ -348,7 +363,7 @@ func (p *standingRecentParser) noReviewableFiles(selected map[string]bool) bool 
 	}
 	p.at++
 	count, err := strconv.ParseInt(match[1], 10, 64)
-	if err != nil || count > 10000 || count > int64(len(selected)) || !p.take("<dl>", "<dd>") {
+	if err != nil || count > 10000 || count > int64(len(selected)) || !p.openBody() {
 		return false
 	}
 	seen := map[string]bool{}
@@ -570,8 +585,11 @@ func standingCommandReply(body, summary, outcome string) bool {
 	} else {
 		return false
 	}
-	// Only the two observed closed envelopes are accepted. Generic HTML
+	// Only the observed closed envelopes are accepted. Generic HTML
 	// removal could turn quoted examples or unknown outcomes into an ACK.
+	if len(lines) >= 3 && lines[0] == "<dl>" && lines[1] == "<dd>" && lines[2] == "<br>" {
+		return slices.Equal(lines[3:], []string{outcome, "</dd>", "</dl>", "</details>"})
+	}
 	return slices.Equal(lines, []string{outcome, "</details>"}) || slices.Equal(lines, []string{"<dl>", "<dd>", outcome, "</dd>", "</dl>", "</details>"})
 }
 

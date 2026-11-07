@@ -12,8 +12,8 @@ var hostedAddressedRangeFooter = regexp.MustCompile(`^\n\n✅ Addressed in commi
 var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a-f0-9]{7,40})\n?$`)
 
 // ExtractHostedFindingsWithBaseline preserves strict extraction except for
-// proven old-root fix annotations for standing zero or complete positive
-// findings. Unrelated Bot reports use the canonical current-source actor policy.
+// proven old-root fix annotations alongside independently complete inventory.
+// Unrelated Bot reports use the canonical current-source actor policy.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
 // checks here alone establish neither that journal ownership nor coverage.
@@ -46,7 +46,7 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	projected := snapshot
 	trigger := original.Publication.Trigger.CreatedAt
 	// Old annotations may not masquerade as new orphan roots. Omission still
-	// requires an independently complete standing-zero or positive result.
+	// requires an independently complete result.
 	projected.ReviewComments = make([]ReviewComment, 0, len(snapshot.ReviewComments))
 	var lastOmitted time.Time
 	for _, root := range snapshot.ReviewComments {
@@ -78,7 +78,7 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	// omitted edit no later than its finished acknowledgment keeps annotations
 	// inside that proven window without duplicating the closing-window logic.
 	positiveInline := len(fallback.Findings) > 0 && publicationInlineInventory(fallback.Publication)
-	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || outsideOnly || positiveInline) &&
+	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || fallback.Publication.markedZero || outsideOnly || positiveInline) &&
 		!lastOmitted.After(fallback.Publication.FinishedAt) {
 		return fallback, nil
 	}

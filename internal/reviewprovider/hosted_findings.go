@@ -865,10 +865,22 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 		d.fail("summary_format_unsupported")
 	}
 	followup, followupItems := false, 0
+	currentPrompt, headingClose := false, -1
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if l.hidden || l.text == "" {
 			continue
+		}
+		if selected && l.quote == 0 {
+			if i == headingClose {
+				continue
+			}
+			if l.text == "<h6>" && currentPrompt && headingClose == -1 {
+				if start, end, ok := currentReviewInfoHeading(lines, i); ok {
+					headingClose, i = end, start-1
+					continue
+				}
+			}
 		}
 		if l.quote == 0 && l.text == "## Follow-up Comments" {
 			if followup {
@@ -906,6 +918,11 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 					d.reviewInfoCoverage(review.Body, lines, i, end)
 				}
 				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || reviewInfo
+				if selected && currentSubmittedPrompt.MatchString(header) {
+					p := submittedReviewParser{lines: lines, at: i}
+					known = !currentPrompt && p.currentPrompt(review.Body) && p.at == end+1 && p.take("<h6>", false)
+					currentPrompt = currentPrompt || known
+				}
 				if !known && selected {
 					d.fail("summary_format_unsupported")
 				}
