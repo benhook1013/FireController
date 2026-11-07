@@ -82,7 +82,7 @@ func ValidateSnapshot(ctx context.Context, q Query) error {
 			tables = append(tables, name)
 		}
 	}
-	rows, err := q.QueryContext(ctx, `SELECT name,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE (name GLOB 'review_adoption_*' OR tbl_name IN ('review_adoption_sources','review_adoption_imports','review_adoption_obligations','review_adoption_targets','review_adoption_resolutions')) AND sql IS NOT NULL`)
+	rows, err := q.QueryContext(ctx, `SELECT name,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE (name GLOB 'review_adoption_*' OR tbl_name IN ('review_adoption_sources','review_adoption_imports','review_adoption_obligations','review_adoption_targets','review_adoption_resolutions','review_adoption_retargets')) AND sql IS NOT NULL`)
 	if err != nil {
 		return err
 	}

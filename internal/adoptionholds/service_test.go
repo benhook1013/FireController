@@ -19,7 +19,9 @@ import (
 
 	h "github.com/benhook1013/FireController/internal/adoptionholds"
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
@@ -789,4 +791,54 @@ func TestImportEventKeepsSourceNamespacesOutOfNativeResourceIdentity(t *testing.
 			}
 		})
 	}
+}
+
+func TestRetargetedEncodedRecordBoundariesRemainReadableThroughClient(t *testing.T) {
+	f := fresh(t)
+	b := batch()
+	b.Source.Namespace = strings.Repeat("<", 200)
+	target := int64(2147483647)
+	original := m.Obligation{SourceKey: strings.Repeat("<", 200), Kind: "route", Summary: strings.Repeat("<", 4500), Evidence: []string{}, OriginalStatus: "pending"}
+	for number := target - 100; number < target; number++ {
+		original.AffectedPullNumbers = append(original.AffectedPullNumbers, number)
+	}
+	original.Summary += strings.Repeat("x", (32<<10)-len(m.Encode(original)))
+	b.Obligations = []m.Obligation{original}
+	f.apply(b, "detail-boundary")
+	id := f.page("?status=all").Items[0].ID
+	one, two := int64(1), int64(2)
+	retarget := m.RetargetRequest{ExpectedRevision: &one, TargetPullNumber: &target, Reason: strings.Repeat("<", 2600)}
+	retarget.Reason += strings.Repeat("x", (16<<10)-len(m.Encode(retarget)))
+	decode[m.RetargetReceipt](t, f.call("POST", base+"/"+id+"/retarget", f.token, "worker_one", "boundary-retarget", retarget), 200)
+	resolution := m.ResolveRequest{ExpectedRevision: &two, Reason: strings.Repeat("<", 2600), Evidence: []string{"proof:"}}
+	resolution.Evidence[0] += strings.Repeat("x", (16<<10)-len(m.Encode(resolution)))
+	decode[map[string]any](t, f.call("POST", base+"/"+id+"/resolve", f.token, "worker_one", "boundary-resolution", resolution), 200)
+	response := f.call("GET", base+"/"+id, f.token, "", "", nil)
+	detail := decode[m.Detail](t, response, 200)
+	if len(m.Encode(detail.Original)) != 32<<10 || len(m.Encode(resolution)) != 16<<10 || len(m.Encode(retarget)) != 16<<10 || len(detail.AffectedPullNumbers) != 101 || response.Body.Len() <= 64<<10 || response.Body.Len() >= 80<<10 {
+		t.Fatal("accepted three-part boundary must exceed the old detail cap and fit the new bound", response.Body.Len())
+	}
+	f.validate()
+	// Reopen retained state before the real client read: no migration or smaller
+	// admission limit should be necessary to read existing accepted records.
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.open()
+	f.mux.HandleFunc("GET /api/v1/instance", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": f.store.InstanceID()})
+	})
+	server := httptest.NewServer(f.mux)
+	defer server.Close()
+	c, err := client.New(t.Context(), profile.Binding{Context: profile.Context{Profile: "boundary", ServerURL: server.URL, InstanceID: f.store.InstanceID(), ProjectID: "project_one", WorkerID: "worker_one"}, CredentialFile: filepath.Join(f.dir, "bootstrap-admin.token")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.AdoptionObligation(t.Context(), id)
+	if err != nil || !reflect.DeepEqual(got, detail) {
+		t.Fatalf("accepted retained detail was not preserved through the shared CLI/MCP client: %v", err)
+	}
+	t.Logf("accepted original=%d resolution_request=%d retarget_request=%d current_targets=%d HTTP_detail=%d; unchanged after restart and client read", len(m.Encode(original)), len(m.Encode(resolution)), len(m.Encode(retarget)), len(got.AffectedPullNumbers), response.Body.Len())
 }

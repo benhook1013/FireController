@@ -103,12 +103,17 @@ func (c *Client) AdoptionObligations(ctx context.Context, pullNumber int64, stat
 	return result, nil
 }
 
+// adoptionObligationDetailLimit preserves accepted original (32 KiB), resolution
+// (16 KiB) and retarget (16 KiB) records plus bounded attribution and current
+// scope. See the encoded-size proof in docs/adoption-obligations.md.
+const adoptionObligationDetailLimit = 96 << 10
+
 func (c *Client) AdoptionObligation(ctx context.Context, id string) (AdoptionObligation, error) {
 	if !validAdoptionObligationID(id) {
 		return AdoptionObligation{}, validation()
 	}
 	var result AdoptionObligation
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "adoption-obligations", id), nil, true, "", nil, http.StatusOK, false, &result, 64<<10, decodeAdoptionObligationDetail); err != nil {
+	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "adoption-obligations", id), nil, true, "", nil, http.StatusOK, false, &result, adoptionObligationDetailLimit, decodeAdoptionObligationDetail); err != nil {
 		return AdoptionObligation{}, err
 	}
 	if !c.validAdoptionObligation(result, id) {
