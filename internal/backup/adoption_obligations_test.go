@@ -218,6 +218,7 @@ func TestAdoptionObligationsResealedCorruptionRefusedBeforeRestore(t *testing.T)
 		{"missing-policy-provenance", `DELETE FROM review_round_adoptions`, true},
 		{"missing-immutable-trigger", `DROP TRIGGER review_adoption_originals_immutable`, false},
 		{"extra-index", `CREATE INDEX arbitrary_source_scope ON review_adoption_obligations(namespace)`, false},
+		{"extra-retarget-index", `CREATE INDEX arbitrary_receiver_reason ON review_adoption_retargets(reason)`, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
