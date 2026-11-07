@@ -213,7 +213,7 @@ func (c *Client) ReviewSourcePolicyAssessment(ctx context.Context, number int64)
 		return ReviewSourcePolicyAssessment{}, invalidResponse()
 	}
 	if value.State == "unconfigured" {
-		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.Reason != "" || value.IncomingRoutesPending != 0 || value.IncomingRoutesCapacity || value.SourceObligationsPending != 0 {
+		if value.PolicyRevision != 0 || len(value.Channels) != 0 || value.IncomingRoutesPending != 0 || value.IncomingRoutesCapacity || !validSourceObligationPolicy(value.SourceObligationsPending, 0, false, value.Reason) {
 			return ReviewSourcePolicyAssessment{}, invalidResponse()
 		}
 		return value, nil
