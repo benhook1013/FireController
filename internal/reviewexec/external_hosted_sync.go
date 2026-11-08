@@ -430,7 +430,7 @@ func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycl
 		changed = false
 	}
 	if changed {
-		if err = holdQueuedExternalHosted(ctx, tx, target.project, target.number); err != nil {
+		if err = holdQueuedExternalHosted(ctx, tx, target.project, target.number, true); err != nil {
 			return false, false, err
 		}
 	}

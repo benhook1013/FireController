@@ -233,8 +233,18 @@ func TestCompletionNoticeIncompleteAndOtherTerminalStatesStaySilent(t *testing.T
 	for _, state := range []string{"completed", "failed", "cancelled", "rate_limited"} {
 		t.Run(state, func(t *testing.T) {
 			f, a, _ := completionNoticeFixture(t, "cli", false)
-			if _, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, state, "fixture_terminal", ""); err != nil || completionNoticeCount(t, f) != 0 {
-				t.Fatal("incomplete capture or terminal diagnostics claimed ready evidence", err)
+			if _, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, state, "fixture_terminal", ""); err != nil {
+				t.Fatal(err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM inbox_messages WHERE body LIKE '%review results ready%'`) != 0 {
+				t.Fatal("incomplete capture or terminal diagnostics claimed ready evidence")
+			}
+			want := 0
+			if state == "failed" || state == "rate_limited" {
+				want = 1
+			}
+			if completionNoticeCount(t, f) != want {
+				t.Fatal("unexpected stopped notice", state)
 			}
 		})
 	}

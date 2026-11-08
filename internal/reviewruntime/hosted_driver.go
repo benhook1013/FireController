@@ -315,7 +315,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
 			return failed(refusal.Code)
 		}
-		return failed("source_admission_changed")
+		return failed(actionRefusalReason(err, "source_admission_changed"))
 	}
 	// Preserve the exact semantic comparison checked by RecheckSource while
 	// keeping the current plan and using this phase's single provider read set.
@@ -341,7 +341,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
 			return failed(refusal.Code)
 		}
-		return failed("admission_changed")
+		return failed(actionRefusalReason(err, "admission_changed"))
 	}
 	comment, err := d.provider.PostIssueComment(ctx, prepared.plan.Repository.FullName, operation.PullNumber, body)
 	if err != nil {

@@ -99,10 +99,7 @@ func TestDraftNativeDirectAndFinalAdmissionRefuseBothChannels(t *testing.T) {
 				operation, attempt = f.prepareAdmit(t, 2, 1, "ready-then-draft")
 			}
 			setRuntimeDraft(f, true)
-			expectedReason := "source_changed"
-			if hosted != nil {
-				expectedReason = "source_admission_changed"
-			}
+			expectedReason := "pull_draft"
 			result, err := driver.Dispatch(t.Context(), operation, attempt, func(context.Context, string) error { t.Error("draft review was posted"); return nil })
 			if err != nil || result.State != "failed" || result.Reason != expectedReason || hosted != nil && hosted.provider.reviews != 0 {
 				t.Fatal("final source recheck admitted a Draft", result, err)

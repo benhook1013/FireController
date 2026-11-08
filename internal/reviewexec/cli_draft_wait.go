@@ -106,7 +106,11 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		if !waiting {
 			return true, false, true, nil
 		}
-		return false, false, true, e.recordCLIDraftDecision(ctx, o, "target_changed")
+		reason := "target_changed"
+		if obsolete := obsoleteTargetReason(pull, execution.RepositoryID, o.PullNumber, o.HeadSHA); obsolete != "" {
+			reason = obsolete
+		}
+		return false, false, true, e.recordCLIDraftDecision(ctx, o, reason)
 	}
 	if pull.IsDraft == nil && waiting {
 		return false, false, false, nil
@@ -136,7 +140,7 @@ func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason
 		}
 		if reason != cliDraftWait {
 			changed = true
-			return holdOperation(ctx, tx, current, reason, at)
+			return e.holdOperation(ctx, tx, current, reason, at)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID); err != nil {
 			return err

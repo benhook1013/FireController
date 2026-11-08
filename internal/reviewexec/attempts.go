@@ -105,7 +105,7 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if err := requireExternalHostedSettled(ctx, tx, project, o.PullNumber, o.Channel); err != nil {
 			var refusal *core.Error
 			if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
-				return holdOperation(ctx, tx, o, refusal.Code, stamp())
+				return e.holdOperation(ctx, tx, o, refusal.Code, stamp())
 			}
 			return err
 		}
@@ -128,14 +128,14 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return err
 		}
 		if !compatible {
-			return holdOperation(ctx, tx, o, "configuration_changed", at)
+			return e.holdOperation(ctx, tx, o, "configuration_changed", at)
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
 		if !ok || e.validateConfiguration(c) != nil {
-			return holdOperation(ctx, tx, o, "capability_unavailable", at)
+			return e.holdOperation(ctx, tx, o, "capability_unavailable", at)
 		}
 		if o.CapabilityFingerprint != capability.Fingerprint {
-			return holdOperation(ctx, tx, o, "capability_changed", at)
+			return e.holdOperation(ctx, tx, o, "capability_changed", at)
 		}
 		if o.Channel == "cli" {
 			due, err := cliAccountRetryDeadline(ctx, tx, capability)
@@ -151,19 +151,19 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return err
 		}
 		if !allowed {
-			return holdOperation(ctx, tx, o, "authorization_changed", at)
+			return e.holdOperation(ctx, tx, o, "authorization_changed", at)
 		}
 		_, reason, err := boundPolicy(ctx, tx, o)
 		if err != nil {
 			return err
 		}
 		if reason != "" {
-			return holdOperation(ctx, tx, o, reason, at)
+			return e.holdOperation(ctx, tx, o, reason, at)
 		}
 		if _, err := admitRoundControl(ctx, tx, o); err != nil {
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "review_held" || roundControlRefusal(refusal.Code)) {
-				return holdOperation(ctx, tx, o, preparationReason(err), at)
+				return e.holdOperation(ctx, tx, o, preparationReason(err), at)
 			}
 			return err
 		}
@@ -428,6 +428,11 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
 		}
+		if e.publishQueue != nil && operationState == state {
+			if err = publishStoppedOperationNotice(ctx, tx, o, state, reason, false); err != nil {
+				return err
+			}
+		}
 		if o.Channel == "hosted" && state == "uncertain" && reason == "hosted_finished_inventory_unproven" {
 			if err = e.publishCaptureAttentionNotice(ctx, tx, o, a); err != nil {
 				return err
@@ -562,6 +567,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			interruptedPreparation := a.State == "preparing" && a.Anchor == nil && a.Intent == "" && a.ExternalID == ""
 			state, reason := "uncertain", "supervisor_interrupted"
 			if a.State == "active" && o.Channel == "hosted" {
 				confirmed, err := confirmedHostedRestart(ctx, tx, a, o)
@@ -595,6 +601,11 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 				return err
+			}
+			if e.publishQueue != nil && interruptedPreparation {
+				if err = publishStoppedOperationNotice(ctx, tx, o, state, reason, true); err != nil {
+					return err
+				}
 			}
 			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
 				return err

@@ -271,3 +271,33 @@ func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, proj
 func reviewPredecessorHold(number int64, cause string) error {
 	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }
+
+// Keep quiet, proven stop classes through final dispatch admission. No arbitrary
+// error code or detail becomes a persisted result reason.
+func actionRefusalReason(err error, fallback string) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "review_round_closed", "review_round_complete", "review_round_capacity", "review_round_changed":
+			return failure.Code
+		case "review_held":
+			if details, ok := failure.Details.(map[string]string); ok {
+				switch reason := details["reason"]; reason {
+				case "pull_draft", "target_already_covered":
+					return reason
+				}
+				if details["reason"] == "target_changed" {
+					switch reason := details["stop_reason"]; reason {
+					case "target_merged", "target_closed", "target_superseded":
+						return reason
+					}
+				}
+			}
+		}
+	}
+	var provider *reviewprovider.Error
+	if errors.As(err, &provider) && provider.Code == "provider_rate_limited" {
+		return provider.Code
+	}
+	return fallback
+}

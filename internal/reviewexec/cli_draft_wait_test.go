@@ -122,7 +122,7 @@ func TestExplicitCLIDraftWaitRefusesMovedHeadAndLeavesOldTerminalHold(t *testing
 	if err := f.e.processNext(t.Context(), drivers); err != nil {
 		t.Fatal(err)
 	}
-	for id, reason := range map[string]string{old.ID: "pull_draft", request.ID: "target_changed"} {
+	for id, reason := range map[string]string{old.ID: "pull_draft", request.ID: "target_superseded"} {
 		got, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), id)
 		if err != nil || got.State != "held" || got.Reason != reason {
 			t.Fatal("terminal hold changed or moved request became eligible", got, err)

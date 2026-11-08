@@ -227,10 +227,16 @@ func preparationReason(err error) string {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
+			if details["reason"] == "target_changed" {
+				switch reason := details["stop_reason"]; reason {
+				case "target_merged", "target_closed", "target_superseded":
+					return reason
+				}
+			}
 			switch reason := details["reason"]; reason {
 			case "hosted_allowance_history_invalid", "hosted_allowance_history_unavailable", "hosted_allowance_capture_invalid", "hosted_allowance_capture_unavailable", "hosted_allowance_query_post_unproven", "hosted_allowance_query_recording_pending", "hosted_allowance_capture_recording_pending":
 				return reason
-			case "pull_draft", "provider_activity_rate_limited", "provider_activity_unauthorized", "provider_activity_not_found", "provider_activity_response_invalid", "provider_activity_unavailable", "provider_activity_ambiguous", "provider_activity_state_unknown", "provider_activity_observation_invalid":
+			case "target_merged", "target_closed", "target_superseded", "pull_draft", "provider_activity_rate_limited", "provider_activity_unauthorized", "provider_activity_not_found", "provider_activity_response_invalid", "provider_activity_unavailable", "provider_activity_ambiguous", "provider_activity_state_unknown", "provider_activity_observation_invalid":
 				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "allowance_command_not_started", "allowance_timeout", "allowance_command_failed", "allowance_response_unproven", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "predecessor_parent_moved", "execution_binding_changed", "preparation_duplicate", "source_changed", "target_changed", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "source_unavailable", "source_fetch_timeout", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
@@ -376,7 +382,10 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 					return e.finishPreparation(a, "held", reason)
 				}
 			}
-			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed" || roundControlRefusal(refusal.Code)) {
+			if errors.As(err, &refusal) && roundControlRefusal(refusal.Code) {
+				return e.finishPreparation(a, "held", refusal.Code)
+			}
+			if errors.As(err, &refusal) && (refusal.Code == "review_conflict" || refusal.Code == "validation_failed") {
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
 			return persistenceFailureAt("admission", err, o.ID, a.ID)

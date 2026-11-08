@@ -106,7 +106,7 @@ func (e *Engine) SettleExternalHosted(ctx context.Context, scope core.Scope, key
 			ids = append(ids, selected.RunID)
 			accepted += input.FrozenCounts.Accepted
 		}
-		if err := holdQueuedExternalHosted(ctx, tx, scope.ProjectID, pull); err != nil {
+		if err := holdQueuedExternalHosted(ctx, tx, scope.ProjectID, pull, false); err != nil {
 			return nil, err
 		}
 		if *request.CountRound {
@@ -223,7 +223,7 @@ func requireExternalHostedSettled(ctx context.Context, tx *sql.Tx, project strin
 
 // Retire unposted intent before it can hold priority or consume a round that
 // the worker now has a completed result for. An active attempt settles normally.
-func holdQueuedExternalHosted(ctx context.Context, tx *sql.Tx, project string, pull int64) error {
+func holdQueuedExternalHosted(ctx context.Context, tx *sql.Tx, project string, pull int64, notify bool) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND channel='hosted' AND state='queued'`, project, pull)
 	if err != nil {
 		return err
@@ -249,6 +249,11 @@ func holdQueuedExternalHosted(ctx context.Context, tx *sql.Tx, project string, p
 		}
 		if err := holdOperation(ctx, tx, o, "external_hosted_pending", stamp()); err != nil {
 			return err
+		}
+		if notify {
+			if err := publishStoppedOperationNotice(ctx, tx, o, "held", "external_hosted_pending", false); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

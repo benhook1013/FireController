@@ -199,17 +199,17 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	reads := newSourceReads(d.reader)
 	if err := reviewexec.RecheckSource(ctx, reads, prepared.anchor.RepositoryID, prepared.configuration, operationRequest(operation), prepared.plan); err != nil {
-		return failed("source_changed")
+		return failed(actionRefusalReason(err, "source_changed"))
 	}
 	_, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
 	if err != nil {
-		return failed("source_admission_changed")
+		return failed(actionRefusalReason(err, "source_admission_changed"))
 	}
 	if err := d.verify(ctx, prepared.workspace); err != nil {
 		return failed("workspace_changed")
 	}
 	if err := d.engine.VerifyAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, predecessors...); err != nil {
-		return failed("admission_changed")
+		return failed(actionRefusalReason(err, "admission_changed"))
 	}
 	started := time.Now().UTC()
 	capture, executionErr := d.review(ctx, prepared.workspace)
