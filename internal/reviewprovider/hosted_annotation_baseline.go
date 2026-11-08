@@ -11,8 +11,8 @@ import (
 var hostedAddressedRangeFooter = regexp.MustCompile(`^\n\n✅ Addressed in commits [a-f0-9]{7,40} to ([a-f0-9]{7,40})\n?$`)
 var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a-f0-9]{7,40})\n?$`)
 
-// ExtractHostedFindingsWithBaseline preserves strict extraction except for
-// proven old-root fix annotations alongside independently complete inventory.
+// ExtractHostedFindingsWithBaseline permits only proven historical annotations
+// or positive submitted publication settlement alongside complete inventory.
 // Unrelated Bot reports use the canonical current-source actor policy.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
@@ -28,6 +28,9 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		!hostedTriggerTime(baseline.ObservedAt) || !baseline.ObservedAt.Before(snapshot.ObservedAt) ||
 		!validPublicationSnapshot(snapshot) || !validPublicationSnapshot(baseline) {
 		return original, nil
+	}
+	if settled := extractHostedSettledSubmission(snapshot, baseline, original, intent, postingActor, providerActor); settled.Complete {
+		return settled, nil
 	}
 	oldRoots := make(map[int64]ReviewComment, len(baseline.ReviewComments))
 	for _, root := range baseline.ReviewComments {
@@ -70,6 +73,9 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		return original, nil
 	}
 	fallback, fallbackErr := ExtractHostedFindings(projected, intent, postingActor, providerActor, earliestPosting)
+	if fallbackErr == nil && !fallback.Complete {
+		fallback = extractHostedSettledSubmission(projected, baseline, fallback, intent, postingActor, providerActor)
+	}
 	outsideOnly := len(fallback.Findings) > 0 && len(fallback.Publication.Roots) == 0 && len(fallback.Publication.Batches) == 1
 	for _, finding := range fallback.Findings {
 		outsideOnly = outsideOnly && finding.Kind == "outside_diff"

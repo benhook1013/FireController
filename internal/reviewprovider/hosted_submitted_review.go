@@ -354,6 +354,12 @@ func submittedRunReused(body, run string) bool {
 }
 
 func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPublication, intent HostedTriggerIntent, provider Author, closing time.Time) (HostedPublication, bool) {
+	return resolveSubmittedReviewBound(snapshot, result, intent, provider, closing, nil)
+}
+
+// A non-nil baseline permits only independently proven terminal publication
+// settlement; ordinary extraction retains its submission-time edit boundary.
+func resolveSubmittedReviewBound(snapshot HostedPublicationSnapshot, result HostedPublication, intent HostedTriggerIntent, provider Author, closing time.Time, baseline *HostedPublicationSnapshot) (HostedPublication, bool) {
 	if len(result.EligibleReviews) != 1 {
 		return result, false
 	}
@@ -405,6 +411,9 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 	if ack == nil {
 		return result, false
 	}
+	if baseline != nil && !submittedSettlementBaseline(*baseline, result, review, *ack, provider, run) {
+		return result, false
+	}
 	roots := []ReviewComment{}
 	for _, comment := range snapshot.ReviewComments {
 		if comment.InReplyToID != 0 {
@@ -416,7 +425,16 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 			}
 			continue
 		}
-		if !publicationActor(comment.Author, provider) || comment.OriginalHeadSHA != intent.HeadSHA || !inside(comment.CreatedAt) || comment.CreatedAt.After(review.SubmittedAt) || comment.UpdatedAt.After(review.SubmittedAt) || strings.TrimSpace(comment.Body) == "" || !selected[comment.Path] {
+		editBound := !comment.UpdatedAt.After(review.SubmittedAt)
+		if baseline != nil {
+			editBound = comment.UpdatedAt.Before(ack.UpdatedAt) && comment.CreatedAt.After(result.Trigger.CreatedAt)
+			for _, old := range baseline.ReviewComments {
+				if old.ID == comment.ID {
+					editBound = false
+				}
+			}
+		}
+		if !publicationActor(comment.Author, provider) || comment.OriginalHeadSHA != intent.HeadSHA || !inside(comment.CreatedAt) || comment.CreatedAt.After(review.SubmittedAt) || !editBound || strings.TrimSpace(comment.Body) == "" || !selected[comment.Path] {
 			return result, false
 		}
 		copy := comment
