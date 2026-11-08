@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -28,36 +28,36 @@ func TestLifecycleFrontierDomainRefusalHoldsOnlyTarget(t *testing.T) {
 			if mode == "timestamp" {
 				want = "validation_failed"
 			}
-			target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
-			if err != nil || target != nil {
-				t.Fatal("domain refusal escaped target", target, err)
+			// Metadata establishes the comparison independently of Hosted history.
+			metadata, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleMetadata)
+			if err != nil || metadata == nil {
+				t.Fatal(metadata, err)
 			}
-			d := s.due[lifecycleKey{attemptProject, 2}]
-			if d.enrichmentError != want || !d.enrichmentNext.After(clock.Now()) {
-				t.Fatal("missing safe hold", d)
+			if err := f.e.observeLifecycle(t.Context(), *metadata, s); err != nil {
+				t.Fatal(err)
 			}
-			if len(s.accounts) != 0 || len(s.lanes[lifecycleEnrichment].accounts) != 0 || r.archiveCalls != 0 {
-				t.Fatal("hold consumed account/provider capacity")
-			}
-			if !lifecycleTick(t, f, s, r) {
-				t.Fatal("metadata lane stopped")
-			}
-			if !s.due[lifecycleKey{attemptProject, 2}].successAt.Equal(clock.Now()) {
-				t.Fatal("metadata did not publish")
-			}
-			// The changed-comparison shortcut must not turn the hold into a busy loop.
-			if target, err = f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || target != nil {
-				t.Fatal(target, err)
-			}
-			// A persistent refusal is retried at ordinary cadence without
-			// changing any retained history or escalating to daemon failure.
-			clock.Add(time.Minute)
-			target, err = f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
-			if err != nil || target != nil {
-				t.Fatal("persistent refusal escaped target", target, err)
-			}
-			if !s.due[lifecycleKey{attemptProject, 2}].enrichmentNext.After(clock.Now()) {
-				t.Fatal("retry not deferred")
+			for pass := 0; pass < 2; pass++ {
+				target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
+				if err != nil || target == nil {
+					t.Fatal("Hosted refusal dropped independent CI", target, err)
+				}
+				if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+					t.Fatal(err)
+				}
+				d := s.due[lifecycleKey{attemptProject, 2}]
+				if d.hostedError != want || !d.enrichmentNext.After(clock.Now()) || d.ciCheckedAt.IsZero() {
+					t.Fatal("missing isolated refusal/cadence", d)
+				}
+				if r.archiveCalls != 0 || r.ciCalls.Load() != int64(pass+1) || lifecycleRead(t, f).CIState != "success" {
+					t.Fatal("independent CI not published", r.archiveCalls, r.ciCalls.Load(), lifecycleRead(t, f))
+				}
+				if a := s.accounts[target.account]; !a.until.IsZero() || a.lastErrorCode != "" {
+					t.Fatal("Hosted refusal poisoned account", a)
+				}
+				if again, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || again != nil {
+					t.Fatal("refusal busy loop", again, err)
+				}
+				clock.Add(s.options.CIInterval)
 			}
 
 		})
@@ -87,11 +87,49 @@ func TestLifecycleFrontierRefusalDoesNotStarveNextPull(t *testing.T) {
 	admissionSQL(t, f, `INSERT INTO review_hosted_discovery_state(project_id,repository_id,pull_number,cutoff_at,initialized_at) VALUES(?,999,2,'','2026-01-01T00:00:00Z')`, attemptProject)
 	r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
 	readers := map[string]TargetReader{"test-capability": r}
-	if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || target != nil {
+	if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || target == nil {
 		t.Fatal(target, err)
+	} else if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+		t.Fatal(err)
 	}
 	target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
 	if err != nil || target == nil || target.number != 4 {
 		t.Fatal("held target starved the next pull", target, err)
+	}
+}
+
+func TestLifecycleFrontierRefusalPreservesCIComparisonAndBinding(t *testing.T) {
+	for _, change := range []string{"head", "repository"} {
+		t.Run(change, func(t *testing.T) {
+			f, s, _ := lifecycleFixture(t)
+			r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+			metadata, err := f.e.claimLifecycleLane(t.Context(), map[string]TargetReader{"test-capability": r}, s, lifecycleMetadata)
+			if err != nil || metadata == nil {
+				t.Fatal(metadata, err)
+			}
+			if err := f.e.observeLifecycle(t.Context(), *metadata, s); err != nil {
+				t.Fatal(err)
+			}
+			admissionSQL(t, f, `INSERT INTO review_hosted_discovery_state(project_id,repository_id,pull_number,cutoff_at,initialized_at) VALUES(?,999,2,'','2026-01-01T00:00:00Z')`, attemptProject)
+			target, err := f.e.claimLifecycleLane(t.Context(), map[string]TargetReader{"test-capability": r}, s, lifecycleEnrichment)
+			if err != nil || target == nil {
+				t.Fatal(target, err)
+			}
+			if change == "head" {
+				r.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) {
+					p := lifecyclePull(2)
+					p.HeadSHA = strings.Repeat("b", 40)
+					return p, nil
+				}
+			} else {
+				admissionSQL(t, f, `UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject)
+			}
+			if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+				t.Fatal(err)
+			}
+			if r.ciCalls.Load() != 0 || r.archiveCalls != 0 {
+				t.Fatal("stale claim collected evidence")
+			}
+		})
 	}
 }

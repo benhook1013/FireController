@@ -128,6 +128,7 @@ type lifecycleTarget struct {
 	lane               lifecycleLane
 	comparison         lifecycleComparison
 	wakeComparison     lifecycleComparison
+	hostedRefusal      string
 }
 
 type lifecycleComparison struct{ head, baseSHA, baseRef, state string }
@@ -382,24 +383,24 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			}
 			return err
 		})
+		hostedRefusal := ""
+		if frontierRefusal != nil && errors.Is(err, frontierRefusal) {
+			// The frontier transaction rolled back. Re-pin the current comparison
+			// without Hosted initialization so independent CI remains available.
+			hostedRefusal = frontierRefusal.Code
+			err = e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+				var err error
+				pins, err = reviews.PinSourceMetadata(ctx, tx, p.id, []int64{number})
+				if err == nil && len(pins) > 0 {
+					comparison, err = readLifecycleComparison(ctx, tx, p.id, number)
+				}
+				return err
+			})
+		}
 		if err != nil {
-			if frontierRefusal != nil && errors.Is(err, frontierRefusal) {
-				// A retained source-domain refusal holds only this target. The
-				// failed transaction rolled back; do not poison account capacity
-				// or report a storage failure to the daemon supervisor.
-				s.mu.Lock()
-				key := lifecycleKey{p.id, number}
-				d := s.due[key]
-				d.enrichmentError = frontierRefusal.Code
-				d.enrichmentNext = now.Add(s.options.OpenInterval)
-				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = due.head, due.baseSHA, due.baseRef
-				s.due[key] = d
-				s.lanes[lane].lastPull[p.id] = number
-				s.mu.Unlock()
-				continue
-			}
 			return nil, err
 		}
+
 		if len(pins) == 0 {
 			continue
 		}
@@ -434,7 +435,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			s.watchTurn = true
 		}
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
 	if lane == lifecycleEnrichment && !watchFirst {
 		target, err := e.claimCIWatch(ctx, readers, s)

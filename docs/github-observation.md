@@ -78,7 +78,7 @@ The service populated previously missing actual GitHub head, CI and mergeability
 
 The subsequent browser-only runtime `e190049cb0f360359d2a2ec56ff167529e9f05a0` preserves that API, storage and client protocol. Actual browser proof covers shared rows and exact totals, current/public Project modes, direct bookmarks, retained sessions, compact diagnostics and semantic progress colours. Both projects passed sixteen installed view checks at 1440/390 pixels with no domain writes, external page requests, anonymous private requests or browser errors. The progress-text regression also passed packaged checks at 1440/390/320 pixels. Screenshots were inspected separately; these automated and source checks do not establish physical-device or human acceptance.
 
-Frontier domain refusals (`observation_conflict` or `validation_failed`) hold only that target and retain a safe enrichment diagnostic. They do not trigger account cooldown or stop daemon workers; storage failures still propagate. A provider without optional CI observation does not advertise that capability or fabricate a provider outage.
+Frontier domain refusals (`observation_conflict` or `validation_failed`) hold only Hosted collection for that target and retain a safe Hosted diagnostic. Independent pinned CI collection continues at its normal cadence. They do not trigger account cooldown or stop daemon workers; storage failures still propagate. A provider without optional CI observation does not advertise that capability or fabricate a provider outage.
 
 ## Review schema lineage compatibility
 

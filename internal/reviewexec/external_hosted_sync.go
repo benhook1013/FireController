@@ -27,6 +27,9 @@ func externalHostedUnproven() error {
 }
 
 func collectExternalHosted(ctx context.Context, target lifecycleTarget, repository string, earlier error) ([]reviewprovider.ExternalHostedRun, bool, error) {
+	if target.hostedRefusal != "" {
+		return nil, false, nil
+	}
 	reader, ok := target.reader.(ExternalHostedReader)
 	if !ok {
 		return nil, false, nil
