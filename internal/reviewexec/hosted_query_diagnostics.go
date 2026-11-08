@@ -69,7 +69,7 @@ func readHostedQueryDiagnostic(ctx context.Context, tx *sql.Tx, o Operation) (*H
 
 func hostedQueryDiagnosticReason(reason string) bool {
 	switch reason {
-	case "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown",
+	case "hosted_allowance_unproven", "hosted_allowance_reply_pending", "hosted_allowance_cooldown", "hosted_chat_cooldown",
 		"hosted_allowance_history_invalid", "hosted_allowance_history_unavailable",
 		"hosted_allowance_capture_invalid", "hosted_allowance_capture_unavailable",
 		"hosted_allowance_query_post_unproven", "hosted_allowance_query_recording_pending", "hosted_allowance_capture_recording_pending":

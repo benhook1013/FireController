@@ -272,6 +272,13 @@ func (e *Engine) VerifyHostedAction(ctx context.Context, project, attemptID stri
 		if err != nil {
 			return err
 		}
+		query, err := readHostedQuery(ctx, tx, attempt, operation)
+		if err != nil {
+			return err
+		}
+		if err := checkHostedChatCooldown(ctx, tx, attempt.Provider, attempt.Account, query.PostingActor, query.ProviderActor, time.Now().UTC()); err != nil {
+			return err
+		}
 		if !validHostedAllowanceInput(record.Input) || operation.Channel != "hosted" || attempt.State != "posting" || attempt.Anchor == nil || !hostedAllowanceSameSource(record.Input.Anchor, *attempt.Anchor) {
 			return conflict()
 		}

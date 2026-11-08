@@ -26,7 +26,7 @@ func TestHostedRoundClosurePreservesQuietDispatchReason(t *testing.T) {
 }
 
 func TestFinalActionQuietReasonsAreFinite(t *testing.T) {
-	for _, reason := range []string{"pull_draft", "target_already_covered"} {
+	for _, reason := range []string{"pull_draft", "target_already_covered", "hosted_chat_cooldown"} {
 		if got := actionRefusalReason(reviewHold(reason), "fallback"); got != reason {
 			t.Fatal("known quiet hold flattened", reason, got)
 		}

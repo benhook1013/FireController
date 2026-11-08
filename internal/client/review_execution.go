@@ -117,8 +117,12 @@ func validReviewAllowance(value ReviewOperation) bool {
 	switch a.Kind {
 	case "cli_exhausted":
 		return value.Channel == "cli" && value.Reason == "allowance_exhausted" && a.Remaining != nil && *a.Remaining == 0 && a.Limit != nil && *a.Limit >= 1 && *a.Limit <= 10000 && a.FullCapacityInMS != nil && *a.FullCapacityInMS >= 0 && *a.FullCapacityInMS <= 86400000 && a.RollingWindowMS != nil && *a.RollingWindowMS >= 1 && *a.RollingWindowMS <= 86400000 && a.RetryNotBefore == ""
-	case "hosted_cooldown":
-		return value.Channel == "hosted" && value.Reason == "hosted_allowance_cooldown" && a.Remaining == nil && a.Limit == nil && a.FullCapacityInMS == nil && a.RollingWindowMS == nil && validAllowanceTime(a.RetryNotBefore)
+	case "hosted_cooldown", "hosted_chat_cooldown":
+		reason := "hosted_allowance_cooldown"
+		if a.Kind == "hosted_chat_cooldown" {
+			reason = "hosted_chat_cooldown"
+		}
+		return value.Channel == "hosted" && value.Reason == reason && a.Remaining == nil && a.Limit == nil && a.FullCapacityInMS == nil && a.RollingWindowMS == nil && validAllowanceTime(a.RetryNotBefore)
 	}
 	return false
 }

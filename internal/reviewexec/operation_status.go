@@ -109,7 +109,7 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		if err != nil {
 			return err
 		}
-		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" {
+		if o.Channel == "hosted" && o.State == "held" && (o.Reason == "hosted_allowance_cooldown" || o.Reason == "hosted_chat_cooldown") {
 			allowance, err := readHeldAllowance(ctx, tx, o)
 			if err != nil {
 				return err

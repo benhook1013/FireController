@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -102,7 +103,7 @@ func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, 
 // readHeldAllowance projects only original held observations, never current
 // account capacity. All queries use the caller's authorized read transaction.
 func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*AllowanceObservation, error) {
-	if o.State != "held" || o.AttemptID == "" || !(o.Channel == "cli" && o.Reason == "allowance_exhausted" || o.Channel == "hosted" && o.Reason == "hosted_allowance_cooldown") {
+	if o.State != "held" || o.AttemptID == "" || !(o.Channel == "cli" && o.Reason == "allowance_exhausted" || o.Channel == "hosted" && (o.Reason == "hosted_allowance_cooldown" || o.Reason == "hosted_chat_cooldown")) {
 		return nil, nil
 	}
 	a, err := readAttempt(ctx, q, o.ProjectID, o.AttemptID)
@@ -136,7 +137,11 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 	if record.Input.Observation.State != "cooldown_observed" {
 		return nil, nil
 	}
-	return &AllowanceObservation{Kind: "hosted_cooldown", ObservedAt: record.Input.ObservedAt, RetryNotBefore: record.Input.Observation.RetryNotBefore.Format("2006-01-02T15:04:05.999999999Z07:00")}, nil
+	kind := "hosted_cooldown"
+	if record.Input.Observation.Reason == reviewprovider.HostedChatCooldownReason {
+		kind = "hosted_chat_cooldown"
+	}
+	return &AllowanceObservation{Kind: kind, ObservedAt: record.Input.ObservedAt, RetryNotBefore: record.Input.Observation.RetryNotBefore.Format("2006-01-02T15:04:05.999999999Z07:00")}, nil
 }
 
 // ValidateAllowanceSnapshot checks retained facts without applying ingestion

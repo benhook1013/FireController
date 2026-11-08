@@ -29,7 +29,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "target_changed" && value.PendingEvidence == nil {
 		value.NextAction = "qualify_current_target"
 	}
-	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_cooldown" {
+	if value.Channel == "hosted" && (value.State == "held" && value.Reason == "hosted_allowance_cooldown" || (value.State == "held" || value.State == "failed") && value.Reason == "hosted_chat_cooldown") {
 		value.NextAction = "new_request_after_cooldown"
 	}
 	if value.Channel == "hosted" && value.State == "held" && value.Reason == "hosted_allowance_reply_pending" {
@@ -255,7 +255,7 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	if channel == "hosted" && state == "active" && (reason == "trigger_recovered" || reason == "trigger_recorded" || reason == "trigger_posted") {
 		return &ReviewOperationDiagnostic{"The original Hosted review trigger was confirmed on GitHub. This proves delivery, not that CodeRabbit started or is still running. updated_at records a local state transition, not provider start or the last observation; pending observations need not change it.", "Keep the existing observer for this operation and use a bounded status wait while continuing other work. The service's driver/recovery path observes the same trigger without reposting. Use observer.last_check_at and observer.last_source_at for actual check freshness when available; observer.next_check_at is the current schedule, not an exact deadline or provider-start/finish ETA. Follow stage and evidence_id as results arrive; do not request another review, reset controls or infer a stuck provider from this reason's age alone."}
 	}
-	if state != "held" {
+	if state != "held" && !(channel == "hosted" && state == "failed" && reason == "hosted_chat_cooldown") {
 		return nil
 	}
 	if hint := schedulingDiagnostic(reason); hint != nil {
@@ -291,6 +291,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 			return nil
 		}
 		return &ReviewOperationDiagnostic{"The provider's included CLI allowance was observed at zero before review execution. This is provider quota, not this PR's local round limit; this hold completed no review. The held operation is terminal.", "Continue other work and avoid rapid retries. A later authorized new review_request with a fresh key and current configuration/head rechecks admission and provider allowance; the old key replays this hold. No reset timestamp or earliest retry is established. If retained, full_capacity_in_ms estimates a full allowance pool, not the next available slot; absent timing means unknown. Do not reset PR controls or infer availability from unused local rounds."}
+	case "hosted_chat_cooldown":
+		if channel != "hosted" {
+			return nil
+		}
+		return &ReviewOperationDiagnostic{"An attributed provider chat-message limit blocks this account and posting actor across hosted targets. This is separate from review allowance and CLI quota. No review was started by this stopped request, and it will not automatically retry.", "Respect the known chat cooldown before any new probe or review request. Keep the original stopped intent and evidence unchanged. After expiry, qualify the still-authorized current target and make at most one fresh request with a new key through normal preflight. Expiry is not availability proof; uncertain posted commands must retain their original recovery path."}
 	case "hosted_allowance_cooldown":
 		if channel != "hosted" {
 			return nil

@@ -147,6 +147,9 @@ func (e *Engine) BeginHostedAllowanceQuery(ctx context.Context, project, attempt
 		if observed.Before(now.Add(-time.Minute)) || observed.After(now.Add(5*time.Second)) {
 			return invalid()
 		}
+		if err := checkHostedChatCooldown(ctx, tx, a.Provider, a.Account, postingActor, providerActor, now); err != nil {
+			return err
+		}
 		result = HostedAllowanceQuery{ID: core.NewID("review_hosted_query"), ProjectID: project, AttemptID: a.ID, OperationID: o.ID, Anchor: anchor, Intent: body, CapabilityFingerprint: o.CapabilityFingerprint, PostingActor: postingActor, ProviderActor: providerActor, EarliestPosting: now.Format(time.RFC3339Nano), Revision: 1}
 		canonical, err := json.Marshal(result)
 		if err != nil || len(canonical) > hostedQueryLimit {

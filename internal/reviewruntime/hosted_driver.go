@@ -245,6 +245,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			if err := RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
 				return preparation, reviewHold("hosted_allowance_unproven")
 			}
+			if observed.Observation.Reason == reviewprovider.HostedChatCooldownReason {
+				return preparation, reviewHold("hosted_chat_cooldown")
+			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
 		if pass == 15 && observed.Reason == "allowance_not_proven" && observed.Observation.QueryCommentID != 0 {
@@ -386,6 +389,12 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 // Keep only maintained stage facts and typed failure classes. Provider text,
 // private capture paths and unknown errors never become operation reasons.
 func hostedAllowanceFailureReason(stage string, err error) string {
+	var held *core.Error
+	if errors.As(err, &held) && held.Code == "review_held" {
+		if details, ok := held.Details.(map[string]string); ok && details["reason"] == "hosted_chat_cooldown" {
+			return "hosted_chat_cooldown"
+		}
+	}
 	switch stage {
 	case "query_history_incomplete":
 		var provider *reviewprovider.Error

@@ -535,7 +535,7 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 			switch kind {
 			case "cli_exhausted":
 				required = []string{"kind", "observed_at", "remaining", "limit", "full_capacity_in_ms", "rolling_window_ms"}
-			case "hosted_cooldown":
+			case "hosted_cooldown", "hosted_chat_cooldown":
 				required = []string{"kind", "observed_at", "retry_not_before"}
 			default:
 				return false

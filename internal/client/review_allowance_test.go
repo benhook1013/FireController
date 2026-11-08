@@ -31,12 +31,17 @@ func allowanceSample(channel string) client.ReviewOperation {
 }
 
 func TestReviewAllowanceHTTPAllResultSurfaces(t *testing.T) {
-	for _, channel := range []string{"cli", "hosted", "legacy"} {
+	for _, channel := range []string{"cli", "hosted", "chat", "legacy"} {
 		for _, surface := range []string{"operation", "selection", "request", "start"} {
 			t.Run(channel+"/"+surface, func(t *testing.T) {
 				op := allowanceSample("cli")
 				if channel == "hosted" {
 					op = allowanceSample(channel)
+				}
+				if channel == "chat" {
+					op = allowanceSample("hosted")
+					op.Reason = "hosted_chat_cooldown"
+					op.Allowance.Kind = "hosted_chat_cooldown"
 				}
 				if channel == "legacy" {
 					op.Allowance = nil
@@ -198,6 +203,24 @@ func TestReviewAllowanceHTTPRejectsMalformedOrUnboundFacts(t *testing.T) {
 					t.Fatal("private wire data escaped")
 				}
 			})
+		}
+	}
+}
+
+func TestHostedChatCooldownAgentGuidanceIsDistinctAndTerminal(t *testing.T) {
+	op := allowanceSample("hosted")
+	op.Reason = "hosted_chat_cooldown"
+	op.Allowance.Kind = "hosted_chat_cooldown"
+	status := client.ReviewOperationStatus{Channel: "hosted", State: "held", Stage: "held", Reason: op.Reason, AttemptID: op.AttemptID, RetryNotBefore: op.Allowance.RetryNotBefore, NextAction: "read_diagnostics"}
+	for _, state := range []string{"held", "failed"} {
+		status.State, status.Stage = state, state
+		if state == "failed" {
+			status.RetryNotBefore = ""
+		}
+		output := client.AgentReviewOperationStatus(status)
+		raw, err := json.Marshal(output)
+		if err != nil || !strings.Contains(string(raw), "will not automatically retry") || !strings.Contains(string(raw), "new_request_after_cooldown") || !strings.Contains(string(raw), "CLI quota") {
+			t.Fatal("chat guidance lost distinctions", string(raw), err)
 		}
 	}
 }

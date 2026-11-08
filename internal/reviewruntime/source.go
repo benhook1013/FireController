@@ -283,7 +283,7 @@ func actionRefusalReason(err error, fallback string) string {
 		case "review_held":
 			if details, ok := failure.Details.(map[string]string); ok {
 				switch reason := details["reason"]; reason {
-				case "pull_draft", "target_already_covered":
+				case "pull_draft", "target_already_covered", "hosted_chat_cooldown":
 					return reason
 				}
 				if details["reason"] == "target_changed" {

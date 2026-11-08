@@ -127,7 +127,7 @@ func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	if (v.ReviewFinishedAt != "" || v.EvidenceRecordedAt != "") && (v.EvidenceID == "" || !controlTime(v.ReviewFinishedAt) || !controlTime(v.EvidenceRecordedAt)) {
 		return false
 	}
-	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || v.Reason != "hosted_allowance_cooldown" || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {
+	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || (v.Reason != "hosted_allowance_cooldown" && v.Reason != "hosted_chat_cooldown") || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {
 		return false
 	}
 	switch v.State {

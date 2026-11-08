@@ -15,7 +15,7 @@ func compactStatusFixture() client.ReviewOperationStatus {
 	return client.ReviewOperationStatus{ID: executionOperationID, PullNumber: 2, Channel: "hosted", State: "uncertain", Revision: 4, Stage: "capture_blocked", Reason: "hosted_finished_inventory_unproven", AttemptID: "review_attempt_" + strings.Repeat("b", 32), UpdatedAt: "2026-01-01T00:00:00Z", NextAction: "contact_controller_owner"}
 }
 func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
-	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "extra_metadata", "known_alias", "duplicate_future", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize", "cooldown", "cooldown_unknown", "retry_null", "retry_bad", "retry_nonutc", "retry_foreign_state", "retry_cli"} {
+	for _, mode := range []string{"valid", "ready", "captured", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "extra_metadata", "known_alias", "duplicate_future", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize", "cooldown", "cooldown_chat", "cooldown_unknown", "retry_null", "retry_bad", "retry_nonutc", "retry_foreign_state", "retry_cli"} {
 		t.Run(mode, func(t *testing.T) {
 			v := compactStatusFixture()
 			data, _ := json.Marshal(v)
@@ -26,6 +26,9 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 				if mode != "cooldown_unknown" {
 					fields["retry_not_before"] = "2026-01-01T00:10:00Z"
 				}
+			}
+			if mode == "cooldown_chat" {
+				fields["reason"] = "hosted_chat_cooldown"
 			}
 			switch mode {
 			case "retry_null":
@@ -100,7 +103,7 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 			defer s.Close()
 			c := newClient(t, s)
 			got, err := c.WaitReviewOperationStatus(t.Context(), executionOperationID, 900)
-			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" || mode == "cooldown" || mode == "cooldown_unknown" || mode == "extra_private" || mode == "extra_metadata" {
+			if mode == "valid" || mode == "ready" || mode == "captured" || mode == "unknown" || mode == "cooldown" || mode == "cooldown_chat" || mode == "cooldown_unknown" || mode == "extra_private" || mode == "extra_metadata" {
 				if err != nil || got.ID != executionOperationID {
 					t.Fatal(got, err)
 				}
@@ -108,7 +111,7 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 				if strings.Contains(string(out), "PRIVATE_SENTINEL") || strings.Contains(string(out), "future_metadata") || strings.Contains(string(out), "capability_fingerprint") {
 					t.Fatal("unknown metadata escaped typed output")
 				}
-				if mode == "cooldown" && got.RetryNotBefore != "2026-01-01T00:10:00Z" {
+				if (mode == "cooldown" || mode == "cooldown_chat") && got.RetryNotBefore != "2026-01-01T00:10:00Z" {
 					t.Fatal("original deadline changed", got)
 				}
 			} else {
