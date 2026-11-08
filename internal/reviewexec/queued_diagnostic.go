@@ -58,6 +58,14 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		if op.ID != id || op.State != "queued" || op.Revision != revision {
 			return nil
 		}
+		if err := e.requireAutomaticOperation(ctx, tx, op); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "automation_authorization_changed" {
+				cause = "automation_authorization_changed"
+				return nil
+			}
+			return err
+		}
 		var originalJSON, latestJSON sql.NullString
 		var repositoryID, latestRevision int64
 		err = tx.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(c.body_json AS BLOB))<=32768 THEN c.body_json END,CASE WHEN length(CAST(latest.body_json AS BLOB))<=32768 THEN latest.body_json END,p.github_repository_id,latest.revision FROM review_execution_config c JOIN projects p ON p.id=c.project_id JOIN review_execution_config latest ON latest.project_id=c.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=c.project_id) WHERE c.project_id=? AND c.revision=?`, op.ProjectID, op.ConfigurationRevision).Scan(&originalJSON, &latestJSON, &repositoryID, &latestRevision)

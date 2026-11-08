@@ -31,8 +31,17 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	if err != nil {
 		return err
 	}
-	if revision > s.Revision || !automaticChannelEnabled(s, r.Channel) || s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential || r.ActorID != actor || r.WorkerID != worker || !validChannel(r.Channel) {
+	if revision > s.Revision || !automaticChannelEnabled(s, r.Channel) || r.ActorID != actor || r.WorkerID != worker || !validChannel(r.Channel) {
 		return automaticDenied()
+	}
+	if s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential {
+		continuous, err := retainedAutomaticAuthorization(ctx, tx, r, revision, actor, s)
+		if err != nil {
+			return err
+		}
+		if !continuous {
+			return automaticDenied()
+		}
 	}
 	_, err = e.store.ProjectAutomationScope(ctx, tx, r.ProjectID, actor, worker, credential)
 	var failure *core.Error

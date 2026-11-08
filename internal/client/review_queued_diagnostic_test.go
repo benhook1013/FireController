@@ -12,7 +12,7 @@ import (
 
 func TestQueuedSchedulingHintIsCurrentPrivateBoundedMetadata(t *testing.T) {
 	for _, mode := range []string{"compact", "full", "receipt", "selection"} {
-		for _, cause := range []string{"operation_paused", "project_paused", "cooldown", "queue_order", "reservation_busy", "awaiting_scheduler", "PRIVATE_UNKNOWN", ""} {
+		for _, cause := range []string{"automation_authorization_changed", "operation_paused", "project_paused", "cooldown", "queue_order", "reservation_busy", "awaiting_scheduler", "PRIVATE_UNKNOWN", ""} {
 			t.Run(mode+"_"+cause, func(t *testing.T) {
 				full := sampleReviewOperation()
 				full.State = "queued"

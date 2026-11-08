@@ -135,6 +135,28 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					if !errors.As(err, &failure) || failure.Code != kind || failure.Status != 0 || failure.OutcomeUnknown || posts.Load() != 1 {
 						t.Fatal("interruption classification changed", err, posts.Load())
 					}
+					details, ok := failure.Details.(map[string]any)
+					if !ok {
+						t.Fatal("missing local diagnostic details")
+					}
+					transport, ok := details["transport"].(map[string]any)
+					wantPhase := "awaiting_response"
+					if phase == "body" {
+						wantPhase = "response_started"
+					}
+					if !ok || transport["phase"] != wantPhase || transport["requested_wait_seconds"] != 900 || transport["attempt_count"] != 1 {
+						t.Fatal("missing bounded transport facts", transport)
+					}
+					if elapsed, ok := transport["elapsed_ms"].(int64); !ok || elapsed < 0 || elapsed > 1000 {
+						t.Fatal("invalid elapsed diagnostic", transport)
+					}
+					if effective, ok := transport["effective_wait_seconds"].(int); !ok || effective < 0 || effective > 900 {
+						t.Fatal("invalid effective wait", transport)
+					}
+					encoded, marshalErr := json.Marshal(failure)
+					if marshalErr != nil || strings.Contains(string(encoded), "PRIVATE_HOST_CAUSE") || strings.Contains(string(encoded), service.URL) {
+						t.Fatal("transport diagnostic leaked private data")
+					}
 					for _, fact := range []string{"No review or CI rerun was requested", "does not establish CI failure or a changed PR head", "same PR/head/base pins", "independently verifying"} {
 						if !strings.Contains(failure.Action, fact) {
 							t.Fatal("missing truthful CI recovery", failure)

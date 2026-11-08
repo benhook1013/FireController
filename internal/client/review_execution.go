@@ -234,7 +234,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	err := resumeResultWait(ctx, waitSeconds, func(ctx context.Context, remaining int) error {
+	err := resumeTracedResultWait(ctx, waitSeconds, waitSeconds, func(ctx context.Context, remaining int) error {
 		value = ReviewOperation{}
 		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, reviewBlockers: true, operationEvidence: true, operationWait: true, hostedQuery: true, hostedObserver: true, queuedCause: &value.queuedCause, queuedReservation: &value.queuedReservation, deploymentDraining: &value.deploymentDraining})
 	})

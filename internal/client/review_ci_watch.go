@@ -104,6 +104,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	if err != nil {
 		return CIWatchResult{}, validation()
 	}
+	requested := seconds
 	// Client setup shares the caller deadline. The requested wait is an upper
 	// bound; reserve the existing response margin before starting this read.
 	if deadline, ok := ctx.Deadline(); ok && seconds > 0 {
@@ -116,7 +117,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	}
 	var value CIWatchResult
 	var status int
-	err = resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
+	err = resumeTracedResultWait(ctx, requested, seconds, func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
 		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciWorkflowDetails: workflowDetails})
 	})

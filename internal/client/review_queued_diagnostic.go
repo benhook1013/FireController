@@ -55,7 +55,7 @@ func boundQueuedReservation(v *queuedReservation, operationID, channel string) *
 
 func recognizedQueuedCause(value string) string {
 	switch value {
-	case "operation_paused", "project_paused", "cooldown", "cli_quota_wait", "cli_draft_wait", "queue_order", "reservation_busy", "awaiting_scheduler":
+	case "automation_authorization_changed", "operation_paused", "project_paused", "cooldown", "cli_quota_wait", "cli_draft_wait", "queue_order", "reservation_busy", "awaiting_scheduler":
 		return value
 	}
 	return ""
@@ -63,6 +63,8 @@ func recognizedQueuedCause(value string) string {
 func queuedOperationDiagnostic(cause string, reservation ...*queuedReservation) *ReviewOperationDiagnostic {
 	var explanation string
 	switch cause {
+	case "automation_authorization_changed":
+		return &ReviewOperationDiagnostic{"This retained automatic request cannot currently prove its scheduling authorization. No review has been dispatched by this queued operation.", "Keep the original operation while a project manager checks the enabled channel, retained authorization history, original credential grant and active worker. An owner change alone is not permission to replace or repost it. Use queued-only cancellation if the intent is withdrawn; do not reset grants or bypass authorization."}
 	case "operation_paused":
 		explanation = "This queued operation is explicitly paused."
 	case "project_paused":
