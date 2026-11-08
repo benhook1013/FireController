@@ -201,7 +201,7 @@ func (e *Engine) readSourceCIAssessmentHTTP(w http.ResponseWriter, r *http.Reque
 		core.WriteError(w, err)
 		return
 	}
-	if len(r.Header.Values("X-FC-CI-Watch")) != 1 || r.Header.Get("X-FC-CI-Watch") != "change-v2" {
+	if len(r.Header.Values("X-FC-CI-Watch")) != 1 || (r.Header.Get("X-FC-CI-Watch") != "change-v2" && r.Header.Get("X-FC-CI-Watch") != "change-v3") {
 		value.MergeBaseMismatch = nil
 	}
 	core.WriteJSON(w, http.StatusOK, value)

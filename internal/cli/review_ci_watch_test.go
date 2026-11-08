@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -29,5 +30,25 @@ func TestCIWatchCLIExactTargetsAndLocalHelp(t *testing.T) {
 	var out, diag bytes.Buffer
 	if code := RunContext(t.Context(), []string{"--profiles-file", "/unavailable", "reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "default 300") || !strings.Contains(out.String(), "0-900") || !strings.Contains(out.String(), "default merge branch") || !strings.Contains(out.String(), "all_targets_passed") || !strings.Contains(out.String(), "wake condition") {
 		t.Fatal("offline CI watch help unavailable", code, out.String(), diag.String())
+	}
+}
+
+func TestCIWatchHelpDocumentationAndBoundLauncher(t *testing.T) {
+	for _, operation := range []string{"ci-wait", "operations", "operation", "start", "run-read"} {
+		var out, diag bytes.Buffer
+		if emitOperationHelp(operation, &out, &diag) != ExitSuccess {
+			t.Fatal(diag.String())
+		}
+		var help struct{ Usage, Documentation string }
+		if json.Unmarshal(out.Bytes(), &help) != nil {
+			t.Fatal(out.String())
+		}
+		want := "docs/review-operations.md"
+		if operation == "ci-wait" {
+			want = "docs/ci-wait.md"
+		}
+		if help.Documentation != want || !strings.HasPrefix(help.Usage, "<bound launcher> reviews ") {
+			t.Fatal(help)
+		}
 	}
 }

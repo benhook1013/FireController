@@ -5,12 +5,14 @@ import "io"
 func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
 	usage := "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
 	semantics := "Read one compact newest-first page of retained project operations. Default five pending; --all includes held and terminal history. Reuse the same filters with a cursor. No provider reads, automatic pagination, execution or retry."
+	documentation := "docs/review-operations.md"
 	if operation == "operation-control" {
 		usage = "<bound launcher> reviews operation-control OPERATION_ID --action pause|resume|cancel --expect-revision N --key KEY"
 		semantics = "Control only a queued, undispatched operation using its current revision and explicit key. Pause retains the retry deadline; resume permits the same request to recheck when due. Cancel withdraws intent, never an issued provider request. Preserve exact request and key after unknown outcome. No changes to grants, taper, findings or project pause."
 	}
 	if operation == "ci-wait" {
-		usage = "fc reviews ci-wait --target PR:HEAD[:BASE] [--after-observation PR:KEY] [--failure-workflow PR:ID] [--wait-seconds 0-900 (default 300)]"
+		documentation = "docs/ci-wait.md"
+		usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--after-observation PR:KEY] [--failure-workflow PR:ID] [--wait-seconds 0-900 (default 300)]"
 		semantics = "Read-only CI against the default merge branch. The outer state reports the wake condition; all_targets_passed requires every target. An unchanged passed or failed verdict stays quiet; pending checks alone do not wake this terminal wait. No enrollment or review request."
 	}
 	if operation == "operation" {
@@ -29,5 +31,5 @@ func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
 		Usage         string `json:"usage"`
 		Semantics     string `json:"semantics"`
 		Documentation string `json:"documentation"`
-	}{usage, semantics, "docs/review-operations.md"})
+	}{usage, semantics, documentation})
 }
