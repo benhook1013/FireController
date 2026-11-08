@@ -77,8 +77,8 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 		if errors.As(err, &failure) {
 			copy := *failure
 			copy.Message = "Service identity verification failed; the requested operation was not sent. " + failure.Message
-			copy.Action = "Resolve the identity-check error, then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
-			if transientIdentityFailure(failure) {
+			copy.Action = failure.Action + " Then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
+			if transientIdentityFailure(failure) && ctx.Err() == nil {
 				copy.Message = "The service is temporarily unavailable; this attempt did not send the selected operation."
 				copy.Action = "Retry the selected operation when the service is available, retaining its original request, idempotency key and binding. For any earlier uncertain write, recover that write using its exact same request body, idempotency key and binding; this failed identity check does not establish its outcome."
 				if failure.Code == "connection_failed" {
