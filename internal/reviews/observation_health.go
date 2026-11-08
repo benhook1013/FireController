@@ -1,6 +1,11 @@
 package reviews
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
 
 // ObserverHealth describes the running service, independently of immutable
 // snapshot timestamps. It establishes neither coverage nor merge readiness.
@@ -29,7 +34,16 @@ func attachObservationHealth(ctx context.Context, project string, response *Queu
 	}
 	observer, pulls, err := readers[0](ctx, project, response.Items)
 	if err != nil {
-		return err
+		// Health is supplementary to the authorized snapshot. Only known local
+		// availability failures may degrade; never hide cancellation or refusals.
+		var failure *core.Error
+		if ctx.Err() != nil || !errors.As(err, &failure) ||
+			!((failure.Code == "overloaded" && failure.Status == 503) ||
+				(failure.Code == "storage_unavailable" && failure.Status == 500)) {
+			return err
+		}
+		response.Observer = &ObserverHealth{State: "unavailable"}
+		return nil
 	}
 	response.Observer = &observer
 	for i := range response.Items {
