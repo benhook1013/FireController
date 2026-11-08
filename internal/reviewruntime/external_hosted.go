@@ -41,3 +41,37 @@ type hostedArchiveCISource struct {
 func (r *hostedArchiveCISource) ObserveRequiredCI(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 	return r.ci.ObserveRequiredCI(ctx, target)
 }
+
+func (r *hostedArchiveSource) ObserveCIGate(ctx context.Context, target reviewprovider.CITarget, gateRef string) (reviewprovider.CIObservation, error) {
+	if reader, ok := r.provider.(interface {
+		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
+	}); ok {
+		return reader.ObserveCIGate(ctx, target, gateRef)
+	}
+	return reviewprovider.CIObservation{}, &reviewprovider.Error{Code: "provider_unavailable", Message: "CI gate observation is unavailable for this source adapter."}
+}
+
+func (r *hostedArchiveSource) SupportsCIWorkflowFailures() bool {
+	_, ok := r.provider.(interface {
+		ObserveCIGateWithWorkflows(context.Context, reviewprovider.CITarget, string, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+	})
+	return ok
+}
+
+func (r *hostedArchiveSource) ObserveCIGateWithWorkflows(ctx context.Context, target reviewprovider.CITarget, gateRef string, ids []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	if reader, ok := r.provider.(interface {
+		ObserveCIGateWithWorkflows(context.Context, reviewprovider.CITarget, string, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+	}); ok {
+		return reader.ObserveCIGateWithWorkflows(ctx, target, gateRef, ids)
+	}
+	return reviewprovider.CIObservation{}, nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "Workflow failure observation is unavailable for this source adapter."}
+}
+
+func (r *hostedArchiveSource) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gateRef string, ids, headIDs, historicalIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	if reader, ok := r.provider.(interface {
+		ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+	}); ok {
+		return reader.ObserveCIGateWithWorkflowAttention(ctx, target, gateRef, ids, headIDs, historicalIDs)
+	}
+	return r.ObserveCIGateWithWorkflows(ctx, target, gateRef, ids)
+}
