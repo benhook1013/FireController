@@ -267,7 +267,7 @@ func TestReviewExecutionCLIUnknownReceiptSameKeyOneEffect(t *testing.T) {
 }
 
 func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
-	for _, mode := range []string{"deadline", "cancelled"} {
+	for _, mode := range []string{"deadline", "caller-deadline", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			f, project, worker := reviewExecutionFixture(t)
 			var posts atomic.Int64
@@ -275,7 +275,7 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 				if r.URL.Path == "/api/v1/instance" {
 					select {
 					case <-time.After(func() time.Duration {
-						if mode == "deadline" {
+						if mode != "cancelled" {
 							return 1200 * time.Millisecond
 						}
 						return 50 * time.Millisecond
@@ -295,7 +295,13 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 			}))
 			defer service.Close()
 			path := mutationProfiles(t, f, service.URL, map[string][2]string{"builder": {project, worker}})
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if mode == "caller-deadline" {
+				ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
+			} else {
+				ctx, cancel = context.WithCancel(t.Context())
+			}
 			defer cancel()
 			if mode == "cancelled" {
 				time.AfterFunc(300*time.Millisecond, cancel)
@@ -306,11 +312,17 @@ func TestReviewExecutionCLIAggregateBudgetAndCancellation(t *testing.T) {
 			elapsed := time.Since(start)
 			// Both explicit cancellation and the caller deadline cancel the command.
 			want := cli.ExitCancelled
+			if mode == "deadline" {
+				want = cli.ExitService
+			}
 			if code != want || out.Len() != 0 || posts.Load() != 1 || !strings.Contains(stderr.String(), `"outcome_unknown":true`) {
 				t.Fatal("request bound/cancellation failed", code, elapsed, stderr.String())
 			}
-			if mode == "deadline" && (elapsed < 4500*time.Millisecond || elapsed > 5500*time.Millisecond) {
-				t.Fatal("aggregate deadline was reset after handshake", elapsed)
+			if mode == "deadline" && (elapsed < 6*time.Second || elapsed > 7*time.Second) {
+				t.Fatal("operation lost its own five-second budget after bootstrap", elapsed)
+			}
+			if mode == "caller-deadline" && (elapsed < 4500*time.Millisecond || elapsed > 5500*time.Millisecond) {
+				t.Fatal("caller deadline was not respected", elapsed)
 			}
 			if mode == "cancelled" && elapsed > time.Second {
 				t.Fatal("cancellation did not release request", elapsed)
