@@ -144,9 +144,6 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 					item.Checks[i].CommitStatus = &copy
 				}
 			}
-			if sub.bases[i] == "" && item.ObservedBaseSHA != "" {
-				sub.bases[i] = item.ObservedBaseSHA
-			}
 			if item.State != "closed" && item.ObservedHeadSHA != "" && (item.ObservedHeadSHA != target.HeadSHA || sub.bases[i] != "" && item.ObservedBaseSHA != sub.bases[i]) {
 				item.State, item.Reason = "superseded", "ci_watch_source_changed"
 			}
@@ -308,6 +305,13 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		entry.next = s.options.Now().Add(ciWatchFallbackInterval)
 		entry.result = item
 		for sub := range entry.owners {
+			// Pin the first eligible fresh source observation before another
+			// completion can replace it, even if this subscriber reads late.
+			for i, owned := range sub.entries {
+				if owned == entry && sub.bases[i] == "" && claim.version >= sub.minimum[i] && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
+					sub.bases[i] = item.ObservedBaseSHA
+				}
+			}
 			select {
 			case sub.changed <- struct{}{}:
 			default:
