@@ -42,6 +42,12 @@ function fixture(value?: ReviewRoutedFindingsPage, number?: number, apiOverride?
 }
 
 describe('current routed findings', () => {
+  it('shares routed status pill colors with the matching count for every state', () => {
+    for (const state of ['open', 'fixed', 'rejected', 'resolved']) {
+      const f = fixture(page(27, [item({ state: state as ReviewRoutedFindingItem['state'] })]), 27);
+      expect(f.render()).toContain(`review-routed-item review-routed-${state}`);
+    }
+  });
   it('shows incoming and outgoing routes together, counts the full selection and leaves evidence unopened', () => {
     const incoming = item({ id: `review_route_${'d'.repeat(32)}`, source_pull_numbers: [26], target_pull_number: 27, title: 'Incoming correction', state: 'fixed' });
     const outgoing = item({ title: 'Outgoing correction' });
@@ -49,6 +55,9 @@ describe('current routed findings', () => {
     const html = f.render();
     for (const text of ['Routed Findings', 'Incoming correction', 'Outgoing correction', 'Incoming', 'Outgoing', 'Open: <strong>41</strong>', 'Fixed: <strong>8</strong>', 'Rejected: <strong>3</strong>', 'Resolved: <strong>2</strong>']) expect(html).toContain(text);
     for (const number of [26, 27, 28]) expect(html).toContain(`href="/projects/project_one/reviews/pulls/${number}"`);
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('Finding details and proof');
+    expect(html).not.toContain('→');
     expect(html).toContain('aria-label="Next routed findings"');
     expect(html).not.toContain('aria-label="Next routed findings" disabled');
     expect(html).not.toMatch(/snapshot=|review_route_|review_evidence_|original bytes|<pre/);

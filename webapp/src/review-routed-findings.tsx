@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { ApiError } from './api';
@@ -96,6 +96,7 @@ export function ReviewRoutedFindingDetails({ item }: { item: ReviewRoutedFinding
 function RoutedFindingRow({ item, number }: { item: ReviewRoutedFindingItem; number?: number }) {
   const { home } = useWorkspace();
   const [open, setOpen] = useState(false);
+  const detailsID = useId();
   const direction = number === undefined ? '' : item.target_pull_number === number ? 'Incoming' : item.source_pull_numbers.includes(number) ? 'Outgoing' : 'Carried route';
   const states = { open: 'Open', fixed: 'Fixed', rejected: 'Rejected', resolved: 'Resolved' };
   const issue = item.target_state === 'closed' ? 'Receiving PR is closed; this route remains open.'
@@ -103,10 +104,14 @@ function RoutedFindingRow({ item, number }: { item: ReviewRoutedFindingItem; num
       : item.target_state === 'unassigned' ? 'No receiving PR is assigned.'
         : item.target_state === 'unknown' ? 'Receiving PR status is unknown.' : '';
   return <li className={`review-routed-item review-routed-${item.state}`}>
-    <div className="review-routed-item-heading"><h4>{item.title || (item.kind === 'carried' ? 'Carried routed finding' : 'Routed finding')}</h4><span className="review-routed-state">{states[item.state]}</span></div>
-    <div className="review-routed-direction">{direction && <strong>{direction}</strong>}<span>Source: {item.source_pull_numbers.length ? item.source_pull_numbers.map((pull, index) => <span key={pull}>{index > 0 && ', '}<Link to={`${home}/reviews/pulls/${pull}`}>PR #{pull}</Link></span>) : 'PR unknown'}</span><span aria-hidden="true">→</span><span>Receiving: {item.target_pull_number ? <Link to={`${home}/reviews/pulls/${item.target_pull_number}`}>PR #{item.target_pull_number}</Link> : item.target_state === 'unassigned' ? 'Unassigned' : 'Unknown receiving PR'}</span></div>
+    <div className="review-routed-row" onClick={event => { if (!(event.target as HTMLElement).closest('a,button')) setOpen(value => !value); }}>
+    <div className="review-routed-item-heading"><h4><button type="button" className="review-routed-toggle" aria-expanded={open} aria-controls={detailsID} onClick={() => setOpen(value => !value)}>{item.title || (item.kind === 'carried' ? 'Carried routed finding' : 'Routed finding')}</button></h4><span className="review-routed-state">{states[item.state]}</span></div>
+    <div className="review-routed-direction">{direction && <strong>{direction}</strong>}<span>Source: {item.source_pull_numbers.length ? item.source_pull_numbers.map((pull, index) => <span key={pull}>{index > 0 && ', '}<Link to={`${home}/reviews/pulls/${pull}`}>PR #{pull}</Link></span>) : 'PR unknown'}</span><span>Receiving: {item.target_pull_number ? <Link to={`${home}/reviews/pulls/${item.target_pull_number}`}>PR #{item.target_pull_number}</Link> : item.target_state === 'unassigned' ? 'Unassigned' : 'Unknown receiving PR'}</span></div>
+    </div>
+    <div id={detailsID} hidden={!open} className="review-routed-expanded">
     {item.state === 'open' && issue && <p className="review-routed-attention-reason">{issue}</p>}
-    <details className="review-routed-disclosure" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>Finding details and proof</summary>{open && <ReviewRoutedFindingDetails item={item} />}</details>
+    {open && <ReviewRoutedFindingDetails item={item} />}
+    </div>
   </li>;
 }
 
