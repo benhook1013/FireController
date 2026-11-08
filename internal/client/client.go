@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -137,10 +139,22 @@ func transientIdentityFailure(failure *Error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "unauthorized", "forbidden", "not_found", "instance_mismatch", "invalid_response", "redirect_rejected":
+	case "unauthorized", "forbidden", "not_found", "instance_mismatch", "invalid_response", "redirect_rejected", "tls_verification_failed":
 		return false
 	}
 	return failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
+}
+
+// Certificate verification failures are terminal for reads, not reconnectable outages.
+// Keep mutation outcome handling separate: a transport error is not proof that
+// an earlier attempt of the caller's original write did not execute.
+func tlsVerificationFailure(err error) bool {
+	var certificate *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var roots x509.SystemRootsError
+	return errors.As(err, &certificate) || errors.As(err, &authority) || errors.As(err, &hostname) || errors.As(err, &invalid) || errors.As(err, &roots)
 }
 
 func waitIdentityRetry(ctx context.Context, delay time.Duration) error {
@@ -433,6 +447,9 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 		}
 		if mutation {
 			return unknownRequest("connection_failed", operation, "request connection failed", 0)
+		}
+		if tlsVerificationFailure(err) {
+			return fail("tls_verification_failed", "The service certificate could not be verified.", "Check the configured service address, TLS and transport before retrying.", 0)
 		}
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
