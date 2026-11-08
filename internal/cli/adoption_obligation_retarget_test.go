@@ -68,6 +68,12 @@ func TestAdoptionObligationRetargetCLIActualReadReplayAndResolution(t *testing.T
 	if code != 0 || diagnostic != "" || out != replay {
 		t.Fatal("original retarget key failed", code, replay, diagnostic)
 	}
+	var failedReceipt strings.Builder
+	full := append([]string{"--profiles-file", path, "--profile", "builder"}, args...)
+	code = cli.RunContext(t.Context(), full, map[string]string{}, roundFailWriter{}, &failedReceipt)
+	if code != cli.ExitConfig || !strings.Contains(failedReceipt.String(), `"outcome_unknown":true`) || !strings.Contains(failedReceipt.String(), "retarget arguments") || !strings.Contains(failedReceipt.String(), "do not invent a replacement key") {
+		t.Fatal("failed retarget receipt lost exact recovery guidance", code, failedReceipt.String())
+	}
 	read := func() client.AdoptionObligation {
 		t.Helper()
 		code, body, stderr := mutationInvoke(t, path, "builder", "reviews", "obligations", "read", id)
