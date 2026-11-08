@@ -212,3 +212,23 @@ func TestSelectionResumptionInvalidAuditCountRefused(t *testing.T) {
 		t.Fatal("invalid release count accepted/mutated")
 	}
 }
+
+func TestSelectionResumptionCancellationIsRetryableAndUnchanged(t *testing.T) {
+	f, in, _ := selectionRestoredActive(t, "selecting")
+	before := activationRows(t, f.dir)
+	base, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &resumptionValidationCancellation{Context: base, cancel: cancel, phase: "AbandonReviewRuns"}
+	result, err := ResumeProviders(ctx, f.dir, in)
+	var failure *core.Error
+	if !ctx.reached.Load() || !errors.Is(base.Err(), context.Canceled) || !errors.As(err, &failure) || failure.Code != "restore_reconciliation_interrupted" || failure.Status != 503 || result != (ProviderResumptionSummary{}) {
+		t.Fatal("selection abandonment interruption lost retryable result", result, err)
+	}
+	if !reflect.DeepEqual(before, activationRows(t, f.dir)) {
+		t.Fatal("interrupted selection abandonment changed retained state")
+	}
+	retried, err := ResumeProviders(t.Context(), f.dir, in)
+	if err != nil || retried.ProvidersHeld || retried.Counts.Selections != 1 {
+		t.Fatal("same request failed after selection abandonment interruption", retried, err)
+	}
+}
