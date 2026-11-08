@@ -181,7 +181,7 @@ func hostedObserverReason(reason string) string {
 	switch reason {
 	case "":
 		return ""
-	case "observation_pending", "already_completed", "trigger_recording_pending", "publication_pending", "hosted_evidence_observed", "settlement_pending", "hosted_evidence_recovered", "observation_unavailable", "hosted_observation_capacity", "source_unavailable", "repository_changed", "observation_incomplete", "trigger_not_proven", "conflicting_trigger_evidence", "incomplete_collection", "exact_trigger_found", "trigger_identity_changed", "publication_not_proven", "invalid_publication_evidence", "hosted_review_rate_limited", "conflicting_publication_evidence", "hosted_finished_inventory_unproven", "attribution_window_closed", "missing_publication_batches", "invalid_actionable_count", "root_binding_mismatch", "root_count_mismatch", "publication_inventory_attributed":
+	case "comparison_unproven", "observation_pending", "already_completed", "trigger_recording_pending", "publication_pending", "hosted_evidence_observed", "settlement_pending", "hosted_evidence_recovered", "observation_unavailable", "hosted_observation_capacity", "source_unavailable", "repository_changed", "observation_incomplete", "trigger_not_proven", "conflicting_trigger_evidence", "incomplete_collection", "exact_trigger_found", "trigger_identity_changed", "publication_not_proven", "invalid_publication_evidence", "hosted_review_rate_limited", "conflicting_publication_evidence", "hosted_finished_inventory_unproven", "attribution_window_closed", "missing_publication_batches", "invalid_actionable_count", "root_binding_mismatch", "root_count_mismatch", "publication_inventory_attributed":
 		return reason
 	}
 	return "observation_unproven"
