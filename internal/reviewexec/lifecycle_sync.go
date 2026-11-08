@@ -127,6 +127,7 @@ type lifecycleTarget struct {
 	due                lifecycleDue
 	lane               lifecycleLane
 	comparison         lifecycleComparison
+	wakeComparison     lifecycleComparison
 }
 
 type lifecycleComparison struct{ head, baseSHA, baseRef, state string }
@@ -391,7 +392,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				d := s.due[key]
 				d.enrichmentError = frontierRefusal.Code
 				d.enrichmentNext = now.Add(s.options.OpenInterval)
-				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = comparison.head, comparison.baseSHA, comparison.baseRef
+				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = due.head, due.baseSHA, due.baseRef
 				s.due[key] = d
 				s.lanes[lane].lastPull[p.id] = number
 				s.mu.Unlock()
@@ -433,7 +434,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			s.watchTurn = true
 		}
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
 	if lane == lifecycleEnrichment && !watchFirst {
 		target, err := e.claimCIWatch(ctx, readers, s)
@@ -498,9 +499,10 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 			due.enrichmentNext = now.Add(interval)
 			due.enrichmentError = errorCode
 		}
-		if published && head != "" {
-			due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = head, target.due.baseSHA, target.due.baseRef
-		}
+		// Consume only the scheduler comparison that caused this claim,
+		// including when nothing publishes. A newer comparison or webhook
+		// generation arriving in flight must remain eligible for its own turn.
+		due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = target.wakeComparison.head, target.wakeComparison.baseSHA, target.wakeComparison.baseRef
 		if published && ci {
 			due.ci = now.Add(s.options.CIInterval)
 			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
