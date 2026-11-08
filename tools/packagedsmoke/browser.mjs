@@ -1050,7 +1050,7 @@ try {
     const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(margin)));
     return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, margin};
   });
-  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '130px'};
+  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '260px'};
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
   checkpoint = 'current-round-limits-shared';
   await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
@@ -1131,7 +1131,7 @@ try {
   await page.route(archivePattern,ownArchiveResponse);
   const attemptArchiveResponse = page.waitForResponse(response => response.request().method()==='GET' && new URL(response.url()).pathname===attemptPath && archivePattern(new URL(response.url()))).then(response => ({status:response.status(),url:response.url()}));
   // The detail view has its own bounded chronological history page, distinct from
-  // the six-round overview. Opening it does not fetch finding bodies.
+  // the width-sized overview. Opening it does not fetch finding bodies.
   const roundArchiveResponse = page.waitForResponse(response => {
     const url=new URL(response.url());
     return response.request().method()==='GET' && url.pathname===roundPath && archivePattern(url);

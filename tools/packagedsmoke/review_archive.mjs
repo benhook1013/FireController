@@ -14,7 +14,7 @@ try {
   need(Number.isSafeInteger(number) && number > 0 && count === 123);
   const prefix = `/api/v1/projects/${config.project}`;
   const path = `/projects/${config.project}/reviews/pulls/${number}`;
-  const archives = [], details = [], queueReads = [], controlReads = [];
+  const archives = [], details = [], queueReads = [], controlReads = [], previewDemandChecks = [];
   let errors = 0, external = 0, forbiddenWrites = 0, sessionPosts = 0;
   phase = 'launch';
   server = await chromium.launchServer({ headless:true, ...(config.executable ? {executablePath:config.executable} : {}), timeout:5000, proxy:{server:config.proxy,bypass:'127.0.0.1,localhost'}, args:['--disable-background-networking','--no-first-run'] });
@@ -50,9 +50,12 @@ try {
       if (match) {
         const limit = Number(url.searchParams.get('limit'));
         const view = url.searchParams.get('view'), channel = url.searchParams.get('channel');
-        archives.push({name,feed:match[1],snapshot:url.searchParams.get('snapshot'),cursor:url.searchParams.get('cursor'),limit,view,channel});
-        const bounded = match[1] === 'attempts' ? limit === 20 && view === null && channel === null : view === 'timeline' ? limit === 25 && channel === null : view === null && limit === 6 && ['cli','hosted','manual','subagent'].includes(channel);
+        archives.push({name,pull:Number(url.pathname.split('/').at(-2)),feed:match[1],snapshot:url.searchParams.get('snapshot'),cursor:url.searchParams.get('cursor'),limit,view,channel});
+        const bounded = match[1] === 'attempts' ? limit === 20 && view === null && channel === null : view === 'timeline' ? limit === 25 && channel === null : view === null && Number.isInteger(limit) && limit >= 1 && limit <= 100 && ['cli','hosted','manual','subagent'].includes(channel);
         if (!bounded || !/^review_snapshot_[a-f0-9]{32}$/u.test(url.searchParams.get('snapshot') ?? '')) errors++;
+        // Six is the pre-measurement/mobile demand. Every other preview limit
+        // must match an actual lane, not an arbitrary larger archive page.
+        if (match[1] === 'runs' && view === null && limit !== 6) previewDemandChecks.push(page.locator('.review-lane').evaluateAll((lanes,requested) => lanes.some(lane => { const style=getComputedStyle(lane), width=lane.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight); return Math.min(100,innerWidth<=650?6:Math.max(1,Math.floor((width+5)/81))) === requested; }),limit).catch(()=>false));
       }
     });
     await page.goto(config.origin+path+(snapshot ? `?snapshot=${snapshot}` : ''));
@@ -115,10 +118,13 @@ try {
       const head = page.getByRole('region',{name:'Review queue head',exact:true});
       await head.waitFor();
       const pills = head.locator('.review-round-pill');
-      await expect(pills).toHaveCount(6); // Shared queue row shows the latest six from the bounded archive page.
+      await expect(pills).toHaveCount(6); // Initial mobile view retains its six-pill grid.
       await expect(head.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${Number(config.count)} runs`);
       for (const width of [1440,390,320]) {
         await page.setViewportSize({width,height:900});
+        const lane = head.getByRole('region',{name:'CLI CodeRabbit',exact:true});
+        const capacity = await lane.evaluate(element => { const style=getComputedStyle(element), width=element.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight); return innerWidth<=650?6:Math.max(1,Math.floor((width+5)/81)); });
+        await expect(pills).toHaveCount(Math.min(count,capacity));
         need(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         const geometry = await head.evaluate(element => {
           const rect = node => { const box=node.getBoundingClientRect();return {left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width}; };
@@ -131,13 +137,13 @@ try {
           return {head:rect(element),row:rect(element.querySelector('.review-queue-row')),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkFamily:linkStyle.fontFamily,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].filter(pill=>pill.getClientRects().length>0).map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         if(config.proof_directory){await fs.mkdir(config.proof_directory,{recursive:true,mode:0o700});await fs.writeFile(config.proof_directory+'/merge-head-geometry.json',JSON.stringify({width,head:geometry.head,row:geometry.row,link:geometry.link,weight:geometry.linkWeight,family:geometry.linkFamily,pills:geometry.pills.map(item=>({pill:item.pill,stats:item.stats,date:item.date,statsLines:item.statsLines,dateLines:item.dateLines}))}),{mode:0o600});}
-        need(geometry.groups.length === 2 && geometry.pills.length>=1 && geometry.pills.length<=6);
+        need(geometry.groups.length === 2 && geometry.pills.length === Math.min(count,capacity));
         need(geometry.joined && geometry.twoTone && geometry.square && geometry.roundedPills);
         need(Math.abs((geometry.project.top+geometry.project.bottom)-(geometry.identity.top+geometry.identity.bottom)) <= 2);
         need(geometry.linkText === 'Review queue ↗' && geometry.linkChildren === 0 && geometry.linkWeight === '700' && geometry.linkFamily === 'ui-sans-serif, system-ui, sans-serif' && geometry.linkDecoration.includes('underline'));
         need(geometry.row.left >= geometry.head.left && geometry.row.right <= geometry.head.right && geometry.row.top >= geometry.head.top && geometry.row.bottom <= geometry.head.bottom);
         need(geometry.link.right <= geometry.row.right && geometry.row.right-geometry.link.right <= 32 && geometry.link.bottom <= geometry.row.bottom && geometry.row.bottom-geometry.link.bottom <= 32);
-        if (width === 1440) need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1);
+        if (width === 1440) { need(new Set(geometry.pills.map(item=>Math.round(item.pill.top))).size === 1); need(Math.abs(geometry.head.top-geometry.identity.top) <= 1 && Math.abs(geometry.head.left-geometry.identity.right) <= 1); }
         else {
           // A phone must not retain the desktop panel's empty vertical space.
           // Allow taller actual content without fixing one exact CSS height.
@@ -215,9 +221,16 @@ try {
   await expect(routed.getByRole('heading', {name:'Routed Findings',exact:true})).toBeVisible();
   await expect(routed).toContainText('Synthetic routed follow-up');
   await expect(routed.locator('.review-routed-count-open')).toHaveText('Open: 1');
-  await routed.getByText('Finding details and proof', {exact:true}).click();
-  await expect(routed.getByRole('heading', {name:'Original evidence',exact:true})).toBeVisible();
-  await routed.getByText('Finding details and proof', {exact:true}).click();
+  const routedToggle = routed.getByRole('button', {name:'Synthetic routed follow-up',exact:true});
+  const routedEvidence = routed.getByRole('heading', {name:'Original evidence',exact:true});
+  await expect(routedToggle).toHaveAttribute('aria-expanded','false');
+  await expect(routedEvidence).toBeHidden();
+  await routedToggle.click();
+  await expect(routedToggle).toHaveAttribute('aria-expanded','true');
+  await expect(routedEvidence).toBeVisible();
+  await routedToggle.click();
+  await expect(routedToggle).toHaveAttribute('aria-expanded','false');
+  await expect(routedEvidence).toBeHidden();
   const currentRow = current.rounds.locator('.review-history-row');
   need(details.length === 1);
   await expect(currentRow.locator('.review-history-counts > span').first()).toHaveText('Found: 1');
@@ -304,7 +317,14 @@ try {
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
   const attention = current.page.getByRole('region', {name:'Routed findings requiring attention',exact:true});
   await expect(attention).toContainText('Synthetic routed follow-up');
-  await expect(attention).toContainText('No receiving PR is assigned.');
+  const attentionToggle = attention.getByRole('button',{name:'Synthetic routed follow-up',exact:true});
+  await expect(attentionToggle).toHaveAttribute('aria-expanded','false');
+  await expect(attention.getByText('No receiving PR is assigned.',{exact:true})).toBeHidden();
+  await attentionToggle.click();
+  await expect(attentionToggle).toHaveAttribute('aria-expanded','true');
+  await expect(attention.getByText('No receiving PR is assigned.',{exact:true})).toBeVisible();
+  await attentionToggle.click();
+  await expect(attentionToggle).toHaveAttribute('aria-expanded','false');
   await current.page.setViewportSize({width:1440,height:900});
   const workerHeads = await current.page.locator('.delivery-lane-heading').evaluateAll(heads=>heads.slice(0,3).map(head=>({height:head.getBoundingClientRect().height,nameTop:head.querySelector('h3').getBoundingClientRect().top-head.getBoundingClientRect().top,paused:!!head.querySelector('.worker-presence-paused > summary')})));
   need(workerHeads.length===3 && workerHeads[0].paused);
@@ -368,9 +388,18 @@ try {
   need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 6);
   // Reload restores the current hero and may invalidate its first page once
   // when the live workspace snapshot arrives. Neither read follows a cursor.
-  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && archives.length >= 26 && archives.length <= 27 && details.length === 3);
+  const previews = archives.filter(item=>item.feed === 'runs' && item.view === null);
+  need((await Promise.all(previewDemandChecks)).every(Boolean));
+  // All fixture rounds completed: each width-sized preview is one first page.
+  // At most one reload/current-snapshot invalidation may repeat a cached key.
+  need(previews.every(item=>item.cursor === null));
+  const previewKeys = new Map();
+  for (const item of previews) { const key=JSON.stringify([item.name,item.pull,item.snapshot,item.channel,item.limit]); previewKeys.set(key,(previewKeys.get(key) ?? 0)+1); }
+  need([...previewKeys.values()].every(reads=>reads<=2));
+  need(archives.length-previews.length === 20); // Explicit full-history reads are unchanged.
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && details.length === 3);
   await Promise.all(contexts.map(context=>context.close())); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:25,source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch (error) {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');
