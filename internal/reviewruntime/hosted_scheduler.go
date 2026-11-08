@@ -74,7 +74,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 					// Pending observations retain useful raw source but consume the
 					// finite reference journal. Keep their cadence on bounded backoff;
 					// only completion or no candidate restores the idle interval.
-					reason = observed.Reason
+					reason = hostedRecoveryObserverReason(observed.Reason, err)
 					normal = err == nil && observed.State == "completed"
 				}
 			}
