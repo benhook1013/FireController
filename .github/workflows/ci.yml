@@ -10,9 +10,9 @@ on:
 permissions:
   contents: read
 
-# Compatibility stage: retain the legacy workflow lock while adding shared job lanes.
+# Default to the legacy lock; activate only after the documented alignment and drain.
 concurrency:
-  group: firecontroller-ci
+  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
   queue: max
   cancel-in-progress: false
 

@@ -6,4 +6,4 @@
 
 The workflow matrix and this selector must contain the same shards; `make ci-selection-check` verifies that boundary and the required validation dependencies. Full test, runtime-budget and build ownership is described in [development](../../docs/development.md#build-and-checks). No selection changes runtime deadlines or authorizes provider work.
 
-The [development scheduling contract](scheduling.md) owns this version's thirty-one-job inventory, literal compatibility lock, twenty shared lanes and proposed future interleaving. Its selector, container and publication boundaries must not be replaced by the smaller main-branch workflow when merging the scheduling changes.
+The [development scheduling contract](scheduling.md) owns this version's thirty-one-job inventory, default-closed interleaving gate, twenty shared lanes and operational alignment/drain requirements. Its selector, container and publication boundaries must not be replaced by the smaller main-branch workflow when merging the scheduling changes.
