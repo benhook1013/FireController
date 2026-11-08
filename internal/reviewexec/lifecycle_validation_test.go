@@ -75,7 +75,7 @@ func TestLifecycleCIObservationDiagnostics(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f, s, clock := lifecycleFixture(t)
 			base := refreshTestReader{pull: func(context.Context, string, int64) (reviewprovider.Pull, error) { return lifecyclePull(2), nil }}
-			r := &sourceCITestReader{refreshTestReader: base, ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+			r := &sourceCITestReader{refreshTestReader: refreshTestReader{pull: base.pull}, ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 				o := sourceCITestObservation(target, "satisfied")
 				switch mode {
 				case "wrong-target":

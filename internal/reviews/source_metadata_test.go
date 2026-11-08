@@ -253,7 +253,8 @@ func TestSourceMetadataInvalidOptionalDoesNotMaskMandatoryFailure(t *testing.T) 
 				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET metadata_json=? WHERE project_id=? AND number=1`, `{"diff":{"files":-1,"additions":0,"deletions":0}}`, f.project); err != nil {
 					t.Fatal(err)
 				}
-				pins = sourcePins(t, f, 1)
+				// Retain the valid pre-I/O baseline. Corruption must fail before
+				// either a stale-pin skip or omission of invalid optional input.
 			case "pin":
 				pin := pins[1]
 				pin.project = "another-project"
