@@ -371,3 +371,20 @@ describe('compact queue footer navigation',()=>{
     expect(html).not.toContain('>Review details');
   });
 });
+
+it.each(['unknown','pending','success','failure','not_required'] as const)('labels the final gate separately from the actual stacked comparison (%s)', ci_state => {
+  const value:ReviewPullSummary={...pull(7),base_ref:'feature/parent',ci_state,observation:{state:'current',last_success_at:'2026-10-28T12:12:35Z',ci_checked_at:'2026-10-28T12:12:35Z',ci_gate_ref:'main',ci_gate_state:ci_state}};
+  const html=markup(<ReviewPullFacts pull={value}/>);
+  expect(html).toContain('· main');
+  expect(html).toContain('Required checks for final branch main, evaluated on the actual PR comparison against feature/parent.');
+  expect(html).toContain('does not prove a hypothetical merge into main was tested');
+  expect(html).toContain('Last checked');
+});
+
+it('does not relabel selected-base empty CI as final-gate proof', () => {
+  const value:ReviewPullSummary={...pull(7),base_ref:'feature/parent',ci_state:'not_required',observation:{state:'current',last_success_at:'2026-10-28T12:12:35Z',ci_checked_at:'2026-10-28T12:12:35Z',ci_gate_ref:'main',ci_gate_state:'pending'}};
+  const html=markup(<ReviewPullFacts pull={value}/>);
+  expect(html).toContain('Required CI: Pending');
+  expect(html).not.toContain('Required CI: None');
+  expect(html).not.toContain('had no required checks');
+});

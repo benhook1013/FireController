@@ -78,6 +78,7 @@ type lifecycleDue struct {
 	head                                                 string
 	ciHead, ciBaseSHA, ciBaseRef                         string
 	ciCommit                                             string
+	ciGateRef, ciGateState                               string
 	enrichmentHead, enrichmentBaseSHA, enrichmentBaseRef string
 	enrichmentError                                      string
 }
@@ -293,6 +294,8 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		}
 		if lane == lifecycleEnrichment {
 			_, ci := readers[p.config.CapabilityID].(sourceCIReader)
+			_, gateCI := readers[p.config.CapabilityID].(ciGateReader)
+			ci = ci || gateCI
 			_, hosted := readers[p.config.CapabilityID].(ExternalHostedReader)
 			if !ci && !hosted {
 				continue
@@ -508,6 +511,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 			due.ci = now.Add(s.options.CIInterval)
 			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
 			due.ciCommit = target.due.ciCommit
+			due.ciGateRef, due.ciGateState = target.due.ciGateRef, target.due.ciGateState
 			due.ciCheckedAt, due.ciError = target.due.ciCheckedAt, target.due.ciError
 		}
 		if published && !target.ciOnly && !target.due.hostedCheckedAt.IsZero() {

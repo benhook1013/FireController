@@ -115,24 +115,22 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		ciCollected = true
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
-		if reader, ok := target.reader.(sourceCIReader); ok {
-			ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
-			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
-			if readErr != nil {
-				providerErr = readErr
-				// Classify before cleanup cancels the collection context, or an
-				// ordinary provider failure would look like caller cancellation.
-				ciReason = sourceCIErrorReason(ciCtx, readErr)
-			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
-				target.due.ciCommit = observation.SelectedCommitSHA
-				ciReason = observation.Reason
-				if ciReason == "" && observation.State == "unproven" {
-					ciReason = "ci_unproven"
-				}
-				ciState = sourceCIQueueState(observation.State)
-			}
-			ciCancel()
+		target.due.ciGateRef, target.due.ciGateState = "", ""
+		ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
+		observation, reason, readErr := observeLifecycleCIGate(ciCtx, target.reader, plan)
+		if readErr != nil {
+			providerErr = readErr
+			ciReason = sourceCIErrorReason(ciCtx, readErr)
+		} else if reason != "" {
+			ciReason = reason
+		} else {
+			target.due.ciGateRef = repo.DefaultBranch
+			target.due.ciCommit = observation.SelectedCommitSHA
+			ciReason = observation.Reason
+			ciState = sourceCIQueueState(observation.State)
+			target.due.ciGateState = ciState
 		}
+		ciCancel()
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -269,4 +267,38 @@ func (e *Engine) lifecycleBinding(ctx context.Context, tx *sql.Tx, target lifecy
 		return false, err
 	}
 	return visible, nil
+}
+
+// Use the final branch's required-check authority without replacing the actual
+// PR comparison. A stacked result never claims a hypothetical final merge ran.
+func observeLifecycleCIGate(ctx context.Context, reader TargetReader, plan SourcePlan) (reviewprovider.CIObservation, string, error) {
+	var observation reviewprovider.CIObservation
+	gate := plan.Repository.DefaultBranch
+	if gate == "" || !safeText(gate, 256) {
+		return observation, "ci_gate_unproven", nil
+	}
+	source := sourcePlanObservation(plan)
+	var err error
+	if gateReader, ok := reader.(ciGateReader); ok {
+		observation, err = gateReader.ObserveCIGate(ctx, sourceCITarget(source), gate)
+	} else if baseReader, ok := reader.(sourceCIReader); ok && gate == source.BaseRef {
+		// Older adapters are safe only when selected and actual gates coincide.
+		observation, err = baseReader.ObserveRequiredCI(ctx, sourceCITarget(source))
+	} else {
+		return observation, "ci_gate_reader_unavailable", nil
+	}
+	if err != nil {
+		return reviewprovider.CIObservation{}, "", err
+	}
+	if !validCIWithAuthorityBranch(observation, source, gate, false) || observation.StartedAt.Before(mustLifecycleTime(source.ObservedAt)) || observation.ObservedAt.Before(observation.StartedAt) || observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
+		return reviewprovider.CIObservation{}, "ci_observation_unproven", nil
+	}
+	finalRepo, err := reader.Repository(ctx, plan.Repository.ID)
+	if err != nil {
+		return reviewprovider.CIObservation{}, "", err
+	}
+	if finalRepo.ID != plan.Repository.ID || finalRepo.FullName != plan.Repository.FullName || finalRepo.DefaultBranch != gate {
+		return reviewprovider.CIObservation{}, "ci_gate_changed", nil
+	}
+	return observation, "", nil
 }

@@ -484,7 +484,9 @@ function validReviewAttemptItem(value: unknown): value is ReviewAttemptItem {
   return validReviewAttempt(attempt);
 }
 function validObservationHealth(value: unknown): boolean {
- if (!record(value) || !keys(value,['state'],['checked_at','last_success_at','next_check_at','error','ci_checked_at','ci_error','hosted_checked_at','hosted_error']) || !['not_enrolled','unavailable','waiting','current','comparison_changed','overdue','retrying'].includes(String(value.state))) return false;
+ if (!record(value) || !keys(value,['state'],['checked_at','last_success_at','next_check_at','error','ci_checked_at','ci_gate_ref','ci_gate_state','ci_error','hosted_checked_at','hosted_error']) || !['not_enrolled','unavailable','waiting','current','comparison_changed','overdue','retrying'].includes(String(value.state))) return false;
+ if (Object.hasOwn(value,'ci_gate_ref') !== Object.hasOwn(value,'ci_gate_state') || (Object.hasOwn(value,'ci_gate_state') && !['unknown','pending','success','failure','not_required'].includes(String(value.ci_gate_state)))) return false;
+ if (Object.hasOwn(value,'ci_gate_ref') && (typeof value.ci_gate_ref !== 'string' || !value.ci_gate_ref.trim() || value.ci_gate_ref.length > 256)) return false;
  for (const field of ['checked_at','last_success_at','next_check_at','ci_checked_at','hosted_checked_at']) if (Object.hasOwn(value,field) && !assessmentTime(value[field])) return false;
  for (const field of ['error','ci_error','hosted_error']) if (Object.hasOwn(value,field) && (typeof value[field]!=='string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value[field]))) return false;
  return (!['current','comparison_changed'].includes(String(value.state)) || typeof value.last_success_at==='string') && (value.state!=='retrying' || typeof value.error==='string');

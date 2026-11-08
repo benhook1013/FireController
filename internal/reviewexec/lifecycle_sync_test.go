@@ -217,7 +217,11 @@ func TestLifecycleSyncCIUnknownNotRequiredAndComparisonChanges(t *testing.T) {
 			if got := lifecycleRead(t, f); got.CIState != want {
 				t.Fatal("CI projection", state, got.CIState)
 			}
-			if r.ciCalls.Load() != 1 || r.calls.Load() != 4 {
+			wantCalls := int64(5) // repository and PR in each lane, plus gate recheck
+			if state == "unproven" {
+				wantCalls = 4
+			} // invalid evidence stops before recheck
+			if r.ciCalls.Load() != 1 || r.calls.Load() != wantCalls {
 				t.Fatal("unexpected collection fanout", r.ciCalls.Load(), r.calls.Load())
 			}
 		})

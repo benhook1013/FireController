@@ -63,13 +63,13 @@ func TestLifecycleWebhookCoalescesScopedHintsAndForcesFreshCI(t *testing.T) {
 	} {
 		hintLifecycle(t, f, hint)
 	}
-	if s.due[key] != initial || r.calls.Load() != 4 || r.ciCalls.Load() != 1 || !reflect.DeepEqual(before, lifecycleHintCounts(t, f)) {
+	if s.due[key] != initial || r.calls.Load() != 5 || r.ciCalls.Load() != 1 || !reflect.DeepEqual(before, lifecycleHintCounts(t, f)) {
 		t.Fatal("irrelevant hints changed scheduling, database or provider reads")
 	}
 	for range 20 {
 		hintLifecycle(t, f, githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{2}, Metadata: true, HeadSHA: strings.Repeat("d", 40)})
 	}
-	if !reflect.DeepEqual(before, lifecycleHintCounts(t, f)) || r.calls.Load() != 4 {
+	if !reflect.DeepEqual(before, lifecycleHintCounts(t, f)) || r.calls.Load() != 5 {
 		t.Fatal("delivery itself wrote state or fetched provider facts")
 	}
 	target, err := f.e.claimLifecycle(t.Context(), readers, s)
