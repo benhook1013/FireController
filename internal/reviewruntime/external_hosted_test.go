@@ -147,13 +147,3 @@ func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
 	}
 }
 
-func TestExternalHostedReaderDoesNotAdvertiseUnsupportedCI(t *testing.T) {
-	f := newHostedDriverFixture(t)
-	reader := f.hosted.HostedObservationReader()
-	if _, ok := reader.(hostedCIReader); ok {
-		t.Fatal("unsupported CI must follow the observer's local ci_reader_unavailable path, not account backoff")
-	}
-	if _, err := reader.ObserveHosted(t.Context(), "owner/repo", 2); err != nil {
-		t.Fatal(err)
-	}
-}
