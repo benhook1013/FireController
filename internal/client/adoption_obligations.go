@@ -79,7 +79,7 @@ func (c *Client) AdoptionObligations(ctx context.Context, pullNumber int64, stat
 		query.Set("status", status)
 	}
 	var result AdoptionObligationPage
-	if err = c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "adoption-obligations"), query, true, "", nil, http.StatusOK, false, &result, 256<<10, decodeReviewResponse); err != nil {
+	if err = c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "adoption-obligations"), query, true, "", nil, http.StatusOK, false, &result, 512<<10, decodeReviewResponse); err != nil {
 		return AdoptionObligationPage{}, err
 	}
 	limit := options.Limit
