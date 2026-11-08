@@ -59,7 +59,9 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		mergeability = "unknown"
 	}
 	mergeState := pull.MergeStateStatus
-	if mergeState == "" {
+	switch mergeState {
+	case "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE":
+	default:
 		mergeState = "UNKNOWN"
 	}
 	target.due.baseSHA, target.due.baseRef = pull.BaseSHA, pull.BaseRef
@@ -112,6 +114,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
 		if reader, ok := target.reader.(sourceCIReader); ok {
+			ciReason = "ci_observation_invalid"
 			ciCtx, ciCancel := context.WithTimeout(ctx, 30*time.Second)
 			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
 			if readErr != nil {
