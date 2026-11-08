@@ -7,7 +7,9 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-const conditionalMaxEntries = 256
+// Metadata, publication pages and CI inventories share this adapter's cache.
+// Keep a larger small-response working set without increasing retained bytes.
+const conditionalMaxEntries = 2048
 const conditionalMaxBytes = 16 << 20
 
 type conditionalEntry struct {
