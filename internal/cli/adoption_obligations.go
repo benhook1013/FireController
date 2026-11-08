@@ -244,7 +244,7 @@ func executeAdoptionObligations(ctx, parent context.Context, service *client.Cli
 		}
 	}
 	if err != nil {
-		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The carried-obligation receipt could not be written.", Action: "Retry the exact same file or resolution arguments, preview fingerprint when applicable, key and bound instance; do not invent a replacement key.", OutcomeUnknown: true})
+		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The carried-obligation receipt could not be written.", Action: "Retry the exact same file, resolution or retarget arguments, preview fingerprint when applicable, key and bound instance; do not invent a replacement key.", OutcomeUnknown: true})
 	}
 	return ExitSuccess
 }
