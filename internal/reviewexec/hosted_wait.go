@@ -17,10 +17,16 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 // Version 1 advertised Hosted cooldown baselines only. Keep its existing CLI
 // queued/pause shape; version 2 additionally understands CLI quota baselines.
 // Version 3 adds the retained provider allowance estimate, never a retry clock.
+// Version 4 extends version 2 with source-retry evidence; it omits quota estimates.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" && version != "3" {
+	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" {
 		return nil
 	}
+	copy := *wait
+	if version != "4" {
+		copy.SourceRetry = nil
+	}
+	wait = &copy
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
@@ -35,6 +41,7 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {
+	SourceRetry       *SourceRetry          `json:"source_retry,omitempty"`
 	CLIAllowance      *AllowanceObservation `json:"cli_allowance,omitempty"`
 	BaselineAttemptID string                `json:"baseline_attempt_id,omitempty"`
 	RetryNotBefore    string                `json:"retry_not_before,omitempty"`
@@ -58,7 +65,11 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	var paused int64
 	err := q.QueryRowContext(ctx, `SELECT baseline_attempt_id,retry_not_before,paused FROM review_operation_waits WHERE operation_id=?`, o.ID).Scan(&baseline, &result.RetryNotBefore, &paused)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		source, sourceErr := readSourceRetry(ctx, q, o)
+		if sourceErr != nil || source == nil {
+			return nil, sourceErr
+		}
+		return &OperationWait{SourceRetry: source}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -89,6 +100,10 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		} else if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
 			return nil, waitUnavailable()
 		}
+	}
+	result.SourceRetry, err = readSourceRetry(ctx, q, o)
+	if err != nil {
+		return nil, err
 	}
 	return &result, nil
 }
@@ -298,7 +313,7 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 			return nil, err
 		}
 		reason := ""
-		if state == "queued" && o.Reason == cliDraftWait {
+		if state == "queued" && (o.Reason == cliDraftWait || o.Reason == sourceRetryReason) {
 			reason = o.Reason
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, id); err != nil {

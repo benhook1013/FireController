@@ -129,14 +129,16 @@ func (e *Engine) pendingCandidates(ctx context.Context) ([]pendingCandidateID, e
 		return nil, err
 	}
 	defer tx.Rollback()
-	args := make([]any, 0, 4*len(e.capabilities))
+	args := make([]any, 0, 5*len(e.capabilities)+3)
 	for _, capability := range e.capabilities {
-		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
+		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint, e.sourceReadGroups[capability.ID])
 	}
-	args = append(args, e.sampleExecutionTime().UTC().Format(time.RFC3339Nano))
+	now := e.sampleExecutionTime().UTC().Format(time.RFC3339Nano)
+	args = append(args, now, now, now)
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
-	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
+	query := `WITH installed(id,provider,account,fingerprint,source_group) AS (VALUES (NULL,NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?,?)`, len(e.capabilities)) + `),
+ source_limited AS MATERIALIZED (SELECT DISTINCT source_group FROM review_source_retries INDEXED BY review_source_retries_due WHERE julianday(retry_not_before)>julianday(?))
 	SELECT o.project_id,o.id FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
@@ -144,6 +146,8 @@ func (e *Engine) pendingCandidates(ctx context.Context) ([]pendingCandidateID, e
 	WHERE o.state='queued'
 AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
+AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
+AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.id AND julianday(sr.retry_not_before)>julianday(?))
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
@@ -190,6 +194,11 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 		if err != nil {
 			return Operation{}, false, err
+		}
+		if ready, err := e.sourceCandidateDue(ctx, tx, o, c); err != nil {
+			return Operation{}, false, err
+		} else if !ready {
+			return Operation{}, false, nil
 		}
 		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
 			return Operation{}, false, err
@@ -342,6 +351,15 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			if ctx.Err() == nil {
+				scheduled, scheduleErr := e.ScheduleSourceRetry(ctx, o.ProjectID, a.ID, a.Revision, err)
+				if scheduleErr != nil {
+					return persistenceFailureAt("source_retry_schedule", scheduleErr, o.ID, a.ID)
+				}
+				if scheduled {
+					return nil
+				}
+			}
 			state := "held"
 			reason := preparationReason(err)
 			if explicitCLI && reason == "pull_draft" {

@@ -34,7 +34,7 @@ func TestReviewOperationWaitNegotiatedFullCompactAndLegacy(t *testing.T) {
 							return
 						}
 						w.Header().Set("Content-Type", "application/json")
-						if r.Header.Get("X-FC-Operation-Wait") != "2" {
+						if r.Header.Get("X-FC-Operation-Wait") != "4" {
 							t.Error("wait extension not negotiated")
 						}
 						if compact {

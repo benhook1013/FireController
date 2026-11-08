@@ -72,6 +72,14 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 			return reviews.Receipt{}, publicationConflict()
 		}
 		if !draft {
+			var source bool
+			original, source, err = historicalSourceRetryOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			draft = source
+		}
+		if !draft {
 			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
 			if err != nil {
 				return reviews.Receipt{}, publicationConflict()

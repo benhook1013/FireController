@@ -445,6 +445,12 @@ func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationD
 }
 
 func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOperationDiagnostic {
+	if w.SourceRetry != nil {
+		if w.Paused {
+			return &ReviewOperationDiagnostic{"This source-rate-limited request is paused before review dispatch. Its original provider deadline is retained.", "Resume or cancel this same queued request with its current revision. Resume cannot shorten the source deadline or bypass fresh source and authorization checks."}
+		}
+		return &ReviewOperationDiagnostic{"GitHub rejected read-only source preparation with a proven retry deadline. This same request remains queued for a bounded automatic retry at or after source_retry.retry_not_before; no review is running.", "Keep the original request and continue other work. Do not submit a duplicate or reset rounds. The controller retries at most three times and rechecks source, authority and admission before any review dispatch."}
+	}
 	if channel == "cli" && w.RetryNotBefore != "" {
 		if w.Paused {
 			return &ReviewOperationDiagnostic{"This CLI request is paused before dispatch. Its comparison and quota-recheck schedule are retained; no review is running.", "Resume or cancel this same undispatched request with current revision/key. Resume preserves the comparison and still rechecks shared account quota and admission. It does not grant allowance or interrupt another review."}

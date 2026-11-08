@@ -20,6 +20,16 @@ func TestReviewOrderInventoryCurrentSchema(t *testing.T) {
 	}
 }
 
+// Keep the retained Hosted request on PR2 intact. Flag round trips use a
+// separately configured synthetic target instead of bypassing duplicate intent.
+func configureReviewOrderTarget(t *testing.T, f *restoreFixture, e *reviewexec.Engine) {
+	t.Helper()
+	one := int64(1)
+	if _, err := e.Configure(t.Context(), routePolicyInventoryScope(t, f), "flag-test-target", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "restore-cap", Mode: "independent", Queue: []int64{2, 4}, Channels: []string{"hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reviewOrderFixture(t *testing.T, allow bool) *restoreFixture {
 	t.Helper()
 	f := newRestoreFixture(t)
@@ -30,7 +40,8 @@ func reviewOrderFixture(t *testing.T, allow bool) *restoreFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.Enqueue(t.Context(), routePolicyInventoryScope(t, f), "explicit-order-backup", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), AllowOutOfOrder: true}); err != nil {
+	configureReviewOrderTarget(t, f, e)
+	if _, err = e.Enqueue(t.Context(), routePolicyInventoryScope(t, f), "explicit-order-backup", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 4, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), AllowOutOfOrder: true}); err != nil {
 		t.Fatal("enqueue explicit operation", err)
 	}
 	return f
@@ -70,7 +81,7 @@ func TestReviewOrderInventoryRoundTripRetainsExplicitChoice(t *testing.T) {
 
 func TestReviewOrderInventoryAuthenticV6RemainsSupported(t *testing.T) {
 	f := reviewOrderFixture(t, false)
-	if _, err := f.store.DB().Exec(`DROP TABLE review_operation_waits; ALTER TABLE review_operations DROP COLUMN override_file_limit; ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; ALTER TABLE review_operations DROP COLUMN override_file_limit; ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	before := backupRows(t, f.store.DB())
@@ -180,7 +191,8 @@ func TestReviewFileLimitOverrideBackupRoundTripAndInvalidFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Enqueue(t.Context(), routePolicyInventoryScope(t, f), "override", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: true})
+	configureReviewOrderTarget(t, f, e)
+	_, err = e.Enqueue(t.Context(), routePolicyInventoryScope(t, f), "override", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 4, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), OverrideFileLimit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +215,7 @@ func TestReviewFileLimitOverrideBackupRoundTripAndInvalidFlags(t *testing.T) {
 }
 func TestReviewFileLimitOverrideAuthenticV7Backup(t *testing.T) {
 	f := reviewOrderFixture(t, true)
-	if _, err := f.store.DB().Exec(`DROP TABLE review_operation_waits; ALTER TABLE review_operations DROP COLUMN override_file_limit; UPDATE metadata SET value='7' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; ALTER TABLE review_operations DROP COLUMN override_file_limit; UPDATE metadata SET value='7' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	bundle := restoreBundle(t, f)

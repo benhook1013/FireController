@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"slices"
 	"time"
@@ -17,11 +19,14 @@ import (
 // Operator configuration is composed once, before accepting requests. Ordinary
 // installations have no provider drivers or review-workspace directories.
 func buildReviewExecution(store *core.Store, dataDir string, catalog reviewruntime.Catalog, options ...reviewexec.EngineOption) (*reviewexec.Engine, map[string]reviewexec.Driver, error) {
+	groups := make(map[string]string, len(catalog.Capabilities))
 	capabilities := make([]reviewexec.Capability, 0, len(catalog.Capabilities))
 	for _, capability := range catalog.Capabilities {
+		digest := sha256.Sum256([]byte("firecontroller-source-read-v1\x00" + capability.GitHubCredential()))
+		groups[capability.ID] = hex.EncodeToString(digest[:])
 		capabilities = append(capabilities, reviewexec.Capability{ID: capability.ID, Provider: "coderabbit", Account: capability.Account, Channels: capability.Channels, Fingerprint: capability.Fingerprint})
 	}
-	options = append(options, reviewexec.WithNativeProjection())
+	options = append(options, reviewexec.WithNativeProjection(), reviewexec.WithSourceReadGroups(groups))
 	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
 		return nil, nil, err
@@ -45,6 +50,8 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		if err != nil {
 			return nil, nil, err
 		}
+		group := groups[capability.ID]
+		provider.SetReadGate(func(ctx context.Context) error { return engine.SourceReadGate(ctx, group) })
 		var cli *reviewruntime.CLIDriver
 		var hosted *reviewruntime.HostedDriver
 		if slices.Contains(capability.Channels, "cli") {

@@ -54,6 +54,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Ended review settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.
 - [Operation discovery](review-operations.md): bounded provider-free recovery of pending operations and lost receipts.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
+- [Source preparation retries](source-preparation-retry-design.md): bounded retained rate-limit waits, shared credential throttling and backup/helper compatibility.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job state](job-state.md): one current progress record, partial updates, default working-context reads and existing-data conversion.
 - [Job checklists](job-progress.md): optional ordered plans with guarded history.

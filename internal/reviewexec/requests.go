@@ -275,6 +275,9 @@ func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string
 	}
 	if err == nil {
 		o.Wait, err = readOperationWait(ctx, tx, o)
+		if err == nil && o.State == "queued" && o.Reason == sourceRetryReason && (o.Wait == nil || o.Wait.SourceRetry == nil) {
+			err = waitUnavailable()
+		}
 	}
 	return o, err
 }

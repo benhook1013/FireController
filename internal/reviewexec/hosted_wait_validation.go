@@ -79,6 +79,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	var firstDeadline, lastDeadline, baselineDeadline time.Time
 	foundCurrent := o.AttemptID == ""
 	foundDraft := o.Reason == cliDraftWait
+	foundSource := false
 	for _, id := range ids {
 		a, err := readAttempt(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -97,6 +98,14 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 		}
 		if draft {
 			foundDraft = true
+			continue
+		}
+		_, source, err := historicalSourceRetryOperation(ctx, tx, o, a)
+		if err != nil {
+			return err
+		}
+		if source {
+			foundSource = true
 			continue
 		}
 		if !hasBaseline {
@@ -148,7 +157,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			return waitUnavailable()
 		}
 	}
-	if !foundCurrent || o.Wait == nil && !foundDraft {
+	if !foundCurrent || o.Wait == nil && !foundDraft && !foundSource {
 		return waitUnavailable()
 	}
 	if hasBaseline && (baselineDeadline.IsZero() || !baselineDeadline.Equal(firstDeadline) || lastDeadline.UTC().Format(time.RFC3339Nano) != o.Wait.RetryNotBefore) {

@@ -112,6 +112,9 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
+		if o.Wait != nil && o.Wait.SourceRetry != nil && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.SourceRetry.RetryNotBefore)) {
+			return nil
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -136,6 +139,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		}
 		if o.CapabilityFingerprint != capability.Fingerprint {
 			return e.holdOperation(ctx, tx, o, "capability_changed", at)
+		}
+		if ready, err := e.sourceCandidateDue(ctx, tx, o, c); err != nil {
+			return err
+		} else if !ready {
+			return nil
 		}
 		if o.Channel == "cli" {
 			due, err := cliAccountRetryDeadline(ctx, tx, capability)

@@ -35,6 +35,7 @@ const (
 // never discovers repositories or chooses review targets. CI inventory movement
 // permits one bounded recollection of the same immutable commit.
 type GitHub struct {
+	readGate   func(context.Context) error
 	token      string
 	baseURL    string
 	httpClient *http.Client
@@ -394,6 +395,11 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
+	}
+	if g.readGate != nil {
+		if err := g.readGate(ctx); err != nil {
+			return nil, nil, 0, err
+		}
 	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path + "?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
@@ -1193,3 +1199,7 @@ func parseTimestamp(value string) (time.Time, error) {
 	}
 	return parsed, nil
 }
+
+// SetReadGate installs a local pre-read throttle before this adapter is shared.
+// It must never be changed while requests are in flight. Mutations do not retry.
+func (g *GitHub) SetReadGate(gate func(context.Context) error) { g.readGate = gate }

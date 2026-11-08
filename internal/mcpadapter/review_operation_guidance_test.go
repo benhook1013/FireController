@@ -99,7 +99,7 @@ func TestReviewOperationHeldGuidanceMCPCompactAndDiagnostics(t *testing.T) {
 					w.Header().Set("X-FC-Review-Queued", "reservation_busy")
 					w.Header().Set("X-FC-Review-Reservation", `{"kind":"same_project","operation_id":"review_operation_`+strings.Repeat("f", 32)+`","pull_number":3299,"channel":"hosted","state":"active"}`)
 				}
-				if r.Method != "GET" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.Header.Get("X-FC-Operation-Wait") != "2" {
+				if r.Method != "GET" || r.Header.Get("Prefer") != "wait=0" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("X-FC-Worker") != binding.WorkerID || r.Header.Get("X-FC-Operation-Wait") != "4" {
 					t.Error("SDK diagnostic changed the read or worker binding")
 				}
 				switch r.URL.Path {

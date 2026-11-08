@@ -93,6 +93,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := EnsureFrontSchema(ctx, store); err != nil {
 		return err
 	}
+	if err := sourceRetrySchema(ctx, store); err != nil {
+		return err
+	}
 	return EnsureSchedulingSchema(ctx, store)
 }
 

@@ -120,6 +120,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	sourceReadGroups           map[string]string
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	automaticCursor            string
@@ -205,6 +206,11 @@ func New(store *core.Store, capabilities []Capability, options ...EngineOption) 
 			return nil, invalid()
 		}
 		option(e)
+	}
+	for id, group := range e.sourceReadGroups {
+		if _, ok := e.capabilities[id]; !ok || !hash.MatchString(group) {
+			return nil, invalid()
+		}
 	}
 	return e, nil
 }

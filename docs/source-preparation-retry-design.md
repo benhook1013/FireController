@@ -1,34 +1,31 @@
 # Source preparation rate-limit recovery
 
-## Implementation boundary
+## Provider timing evidence
 
-The provider error now carries additive `RetryTiming` evidence independently of the legacy `RetryAfterSeconds` hint. This does not change retry behavior. The legacy hint still rounds and caps values for existing callers; it must not be interpreted as an exact provider floor. New evidence records the response classification timestamp in `ObservedAt`, an absolute `NotBefore` only for `proven` timing, and an explicit `unknown` or `unsupported` state otherwise. Its zero value is not proof. Consumers use the absolute floor, never restart its duration from a later observation or restore time. Valid expired floors do not prove current availability.
+The provider error carries additive `RetryTiming` evidence independently of the legacy rounded and capped `RetryAfterSeconds` hint. Evidence records the response classification timestamp in `ObservedAt`, an absolute `NotBefore` only for `proven` timing, and an explicit `unknown` or `unsupported` state otherwise. Its zero value is not proof. Consumers use the absolute floor, never restart its duration from a later observation or restore time. Valid expired floors do not prove current availability.
 
 The parser preserves fractional-second relative deadlines and exact HTTP-date deadlines. When both valid Retry-After and exhausted-quota reset headers supply floors, the later floor wins. Ambiguous or malformed headers remain unknown. Delays beyond the supported 24-hour window are unsupported, not shortened into proven timing. Evidence contains no raw header, response body, credential, or account identity. Timing never establishes authorization, a read-only request, or a known mutation outcome.
 
-Durable automatic source-preparation retry remains unimplemented. The existing execution contract in [Native review execution](review-execution.md) continues to apply. Historical terminal holds remain terminal.
+## Retained source waits
 
-## Dedicated implementation slice
+Only a new CLI `source_resolution` preparation failure with a typed rate-limit HTTP 429 or 403, no possible side effect, and a proven future floor within 24 hours is eligible. The observed timestamp must belong to this preparation and precede its settlement. Missing, expired, unsupported or ambiguous timing, authentication failures, other preparation stages and Hosted failures retain their ordinary terminal behavior. Historical terminal operations are never reopened.
 
-A future source wait must retain new eligible read-only preparation failures before any provider action. Eligibility requires the maintained source-resolution stage, typed rate-limit classification, a known rejected read, no intent or external identity, and unchanged operation ownership. Authentication failures and unknown mutation outcomes are ineligible. A source-refresh error after other preparation work needs separate proof and is not implicitly eligible.
+The service atomically ends the unused preparation, retains its original failure observation, releases its reservation and keeps the same operation queued. It permits at most three such retries per operation. The fourth eligible refusal becomes an actionable terminal hold. Waiting emits no false stopped notice. An exact settlement replay cannot add another retry or reset the clock.
 
-Retain an immutable failure observation and a bounded retry count with the original operation, configuration, actor, worker, capability and source selection. Proven timing is a minimum, not an availability estimate. Local backoff may delay further but never shorten it. Missing or unsupported timing must remain an explicit conservative hold unless a separately specified finite local backoff policy is implemented. A due retry performs complete fresh source resolution and normal authorization, source comparison and final admission. It grants no new review round and never reposts an uncertain action.
+A due retry starts fresh preparation under the original operation, configuration, actor, worker and source selection. All normal authority, current-head, configuration, findings, round-control and final-admission checks remain mandatory. No source wait supplies a comparison anchor, allowance, review credit or permission to repeat a provider action. Pause, resume and cancellation use existing undispatched-operation controls; resume never shortens a retained floor.
 
-Source throttling is distinct from CodeRabbit allowance. Capabilities' configured review account names do not prove GitHub principal identity. A shared internal limiter must group identical GitHub credentials or independently verified GitHub principals across applicable capabilities. Credential-derived grouping must not become a public identifier. Different credentials for one principal cannot be assumed independent capacity, and no path may rotate credentials to evade a rate limit. Discovery and observation consumers need coordinated throttling so another lane does not defeat the preparation wait.
+Source throttling is distinct from CodeRabbit allowance. Production composition groups only identical GitHub credentials using private hashes that never enter client responses. Every new REST or GraphQL read through those adapters consults the retained shared floor, including observation lanes and sibling capabilities. Already in-flight reads are not cancelled. Different credentials for one principal are not assumed independent quota, but this slice does not discover principal equivalence and never rotates credentials. An inherited local gate refusal predating another preparation does not masquerade as that preparation's new provider observation.
+
+Candidate discovery filters future shared floors before its bounded candidate window. It explicitly uses the deadline index, because SQLite may otherwise prefer a whole-history group scan for distinct credential groups. A missing index fails discovery closed instead of silently removing the bound; exact per-operation admission still checks nanosecond deadlines.
 
 ## Compatibility and backup gates
 
-Existing operation wait rows bind CLI zero-allowance or Hosted cooldown evidence. Their readers, retry-baseline reconstruction, historical attempt validation and backup restore reject detached source-only attempts. Do not reuse that representation without explicit versioned semantics.
+The separate `review_source_retries` domain retains immutable per-attempt observations and a contiguous sequence bounded at three. Existing operation wait rows continue to mean CLI zero allowance or Hosted cooldown; source waits never become quota baselines. Historical attempt projection and validation recognize the new unused preparations without fabricating preflight evidence.
 
-Prefer a distinct source-wait evidence domain, with atomic operation/attempt settlement and reservation release. Include domain initialization, exact backup inventory, foreign-key validation, corruption rejection and restore proof. If attempts detach, update all historical attempt readers and projections intentionally. Negotiate any changed client wait shape without mislabeling source throttling as allowance exhaustion. Updated service, backup tools and helper readers must be rolled out together; old-reader behavior must be tested before deployment. No migration may convert historical terminal requests into active work.
+Wait protocol version 4 extends version 2 with `source_retry`, including the original attempt, observation time, absolute retry floor and sequence. It does not expose the private credential group or quota estimates. Earlier clients receive their existing wait shape and truthful queued state. Source timing is not placed in the existing Hosted-only compact cooldown field.
 
-## Required proof
+Matching backup helpers validate the new domain's inventory, ownership, unused-attempt history, clock ordering, retry bounds and absence of execution evidence. Export and inactive restore preserve original rows and timestamps. Older backup helpers must reject the unknown domain. Roll out the matching service and backup helpers together; do not bypass an older helper's compatibility refusal. New helpers continue to inspect prior snapshots without migrating them. Restore reconciliation validates source waits before abandoning queued work, and never authorizes provider release by itself.
 
-- Exact floor and observation timestamp survive restart and backup/restore without resetting a relative duration.
-- No provider read before the retained floor, including sibling capabilities sharing credentials.
-- Finite retry exhaustion retains an actionable terminal notice; ordinary scheduled waits do not emit false stopped notices.
-- Missing, malformed, duplicated, too-long and expired timing have explicit outcomes.
-- Revoked authority, cancellation, paused requests, changed configuration and moved source heads prevent dispatch.
-- Concurrent schedulers and lost persistence responses cannot duplicate preparations or provider actions.
-- Authentication failures, ambiguous mutations and historical terminal operations never acquire automatic retry.
-- Independent quota waits, source baselines, round controls and idempotent request replay retain their existing meanings.
+## Proof boundary
+
+Focused tests cover exact timing, bounded settlement and replay, restart clocks, shared credentials, pause/cancel, authority and source guards, no early provider calls, typed client compatibility and backup corruption/restore. Test execution and independent review are required before rollout. This slice does not claim production automatic-resumption proof, and the existing [native review execution](review-execution.md) dispatch and authorization invariants remain in force.

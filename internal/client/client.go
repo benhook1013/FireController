@@ -448,7 +448,7 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 			r.Header.Set("X-FC-Source-Refusal", "v4")
 		}
 		if wait.operationWait {
-			r.Header.Set("X-FC-Operation-Wait", "2")
+			r.Header.Set("X-FC-Operation-Wait", "4")
 		}
 		if wait.hostedQuery {
 			r.Header.Set("X-FC-Hosted-Query", "2")

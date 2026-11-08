@@ -253,6 +253,11 @@ func samePullReviewFacts(a, b PullReviewObservation) bool {
 // GraphQL is a read-only POST but needs a JSON content type. Keep the ordinary
 // shared client, authorization, redirect policy and body bound unchanged.
 func (g *GitHub) pullReviewPage(ctx context.Context, body []byte) ([]byte, http.Header, int, error) {
+	if g.readGate != nil {
+		if err := g.readGate(ctx); err != nil {
+			return nil, nil, 0, err
+		}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(g.baseURL, "/")+"/graphql", bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, 0, providerError("provider_unavailable", "The provider request could not be prepared.", 0, 0, false)

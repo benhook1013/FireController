@@ -6,14 +6,24 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"time"
 )
+
+// ReviewSourceRetry describes a retained source-read refusal, never quota.
+type ReviewSourceRetry struct {
+	AttemptID      string `json:"attempt_id"`
+	ObservedAt     string `json:"observed_at"`
+	RetryNotBefore string `json:"retry_not_before"`
+	Sequence       int    `json:"sequence"`
+}
 
 // ReviewOperationWait retains the same request while no provider action is running.
 // A retry deadline is the earliest automatic recheck, not a promised start time.
 type ReviewOperationWait struct {
-	BaselineAttemptID string `json:"baseline_attempt_id,omitempty"`
-	RetryNotBefore    string `json:"retry_not_before,omitempty"`
-	Paused            bool   `json:"paused"`
+	SourceRetry       *ReviewSourceRetry `json:"source_retry,omitempty"`
+	BaselineAttemptID string             `json:"baseline_attempt_id,omitempty"`
+	RetryNotBefore    string             `json:"retry_not_before,omitempty"`
+	Paused            bool               `json:"paused"`
 }
 
 func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt string) bool {
@@ -22,6 +32,13 @@ func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt st
 	}
 	if state != "queued" || attempt != "" {
 		return false
+	}
+	if r := w.SourceRetry; r != nil {
+		observed, _ := time.Parse(time.RFC3339Nano, r.ObservedAt)
+		due, _ := time.Parse(time.RFC3339Nano, r.RetryNotBefore)
+		if channel != "cli" || !validReviewOpaqueID(r.AttemptID, "review_attempt_") || !validAllowanceTime(r.ObservedAt) || !validAllowanceTime(r.RetryNotBefore) || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > 3 {
+			return false
+		}
 	}
 	if w.BaselineAttemptID == "" {
 		return w.RetryNotBefore == ""

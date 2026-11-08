@@ -109,6 +109,9 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 	}
 
 	if execution {
+		if err := ValidateSourceRetriesSnapshot(ctx, tx); err != nil {
+			return result, restoredWorkInvalid()
+		}
 		if err := ValidateOperationWaitsSnapshot(ctx, tx); err != nil {
 			return result, restoredWorkInvalid()
 		}
