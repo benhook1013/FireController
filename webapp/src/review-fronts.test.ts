@@ -121,3 +121,31 @@ describe('bounded front response admission',()=>{
     await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});api.close();
   });
 });
+
+describe('independent queued priority during source failure',()=>{
+  const waiting=():ReviewFronts=>({...value(),channels:[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',checked_at:time,source_progress:{verified_pull_count:0,queue_pull_count:4,next_unverified_pull_number:1},queued_priority:{pull_number:2,head_sha:sha,base_sha:base,base_ref:'main'}}]});
+  it('keeps priority visible without making a ready claim, including later queued work',()=>{
+    const v=waiting();
+    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Hosted review priority',channels:['hosted']});
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Queue priority',description:expect.stringContaining('Source verification unavailable')});
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(v.channels[0].state).toBe('unknown');
+    expect(v.channels[0].pull_number).toBeUndefined();
+    expect(reviewQueueBadges(pull(2),snapshot,v,{pull_number:2,channels:[control('hosted',true)]})[0]?.text).toBe('Review closed');
+    expect(reviewQueueBadges(pull(2),'old',v)).toEqual([]);
+    const changed=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)}],v);
+    expect(reviewQueueBadges(pull(2),snapshot,changed)).toEqual([]);
+    expect(reviewQueueBadges(pull(3),snapshot,changed)).toEqual([]);
+  });
+  it('validates priority separately from verified eligibility and accepts source diagnostics',async()=>{
+    const api=await connected(); const v=waiting();
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(v),{headers:{'content-type':'application/json'}})));
+    expect(await api.reviewFronts()).toEqual(v);
+    v.channels[0].queued_priority!.pull_number=999;
+    await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});
+    v.channels[0].queued_priority!.pull_number=2;
+    v.channels[0].source_progress!.next_unverified_pull_number=4;
+    await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});
+    api.close();
+  });
+});

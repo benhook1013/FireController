@@ -46,6 +46,9 @@ func TestFrontsLocalPositionsIgnoreHiddenMergedHistory(t *testing.T) {
 	value := frontRead(t, f)
 	for channel, number := range map[string]int64{"hosted": 4, "cli": 6} {
 		got := frontChannel(t, value, channel)
+		if got.QueuedPriority == nil || got.QueuedPriority.PullNumber != number {
+			t.Fatal("lost independent channel priority", got)
+		}
 		if got.State != "held" || got.Reason != "local_queue_position" || got.PullNumber != number || got.SourceObservedAt != "" || !roundTime(got.CheckedAt) {
 			t.Fatalf("local position claimed provider readiness or lost its front: %+v", got)
 		}
@@ -86,7 +89,7 @@ func TestFrontsLocalPositionsStopAtMissingOrUnknownPredecessor(t *testing.T) {
 				}
 			}
 			got := frontChannel(t, frontRead(t, f), "cli")
-			if got.State != "unknown" || got.PullNumber != 0 {
+			if got.State != "unknown" || got.PullNumber != 0 || got.QueuedPriority != nil {
 				t.Fatal("unknown or absent predecessor invented a later local position", got)
 			}
 		})

@@ -1,7 +1,10 @@
 import type { ReviewPullSummary } from './types';
 import type { ReviewProgressItem } from './review-progress';
 
+export interface ReviewQueuePriority { pull_number: number; head_sha: string; base_sha: string; base_ref: string }
 export interface ReviewFrontChannel {
+  queued_priority?: ReviewQueuePriority;
+  source_progress?: { verified_pull_count: number; queue_pull_count: number; next_unverified_pull_number?: number };
   review_size?: import('./review-size').ReviewSize;
   channel: 'hosted' | 'cli'; state: 'ready' | 'held' | 'complete' | 'unknown';
   reason?: string; pull_number?: number; head_sha?: string; base_sha?: string; base_ref?: string;
@@ -20,6 +23,11 @@ export interface ReviewChannelPosition { text: string; description?: string }
 export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string, channel: 'hosted' | 'cli', fronts?: ReviewFronts, progress?: ReviewProgressItem): ReviewChannelPosition | undefined {
   if (pull.state !== 'open' || !fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return undefined;
   const front = fronts.channels.find(item => item.channel === channel);
+  if (front?.queued_priority && matchesPriority(pull, front.queued_priority) && (front.state === 'unknown' || front.state === 'held' && ['reviews_paused','local_queue_position','restore_recovery_held'].includes(front.reason ?? ''))) {
+    const rounds = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
+    if (rounds?.configured && (rounds.closed || rounds.tapered || !rounds.maximum_unbounded && rounds.used >= rounds.maximum)) return undefined;
+    return {text:'Queue priority',description:`First remaining ${channel === 'hosted' ? 'Hosted' : 'CLI'} position under local queue and round controls. ${front.state === 'unknown' ? 'Source verification unavailable' : 'Review dispatch held'}${front.reason ? ` (${front.reason.replaceAll('_',' ')})` : ''}; this does not authorize a review.`};
+  }
   if (!front || front.pull_number !== pull.number || front.head_sha !== pull.head_sha || front.base_sha !== pull.base_sha || front.base_ref !== pull.base_ref) return undefined;
   if (front.state === 'held' && !['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) {
     const held = new Map<string, ReviewChannelPosition>([
@@ -39,14 +47,20 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
   return undefined;
 }
 
+function matchesPriority(pull: ReviewPullSummary, priority: ReviewQueuePriority): boolean {
+  return pull.state === 'open' && pull.number === priority.pull_number && pull.head_sha === priority.head_sha && pull.base_sha === priority.base_sha && pull.base_ref === priority.base_ref;
+}
+
 // A contradictory loaded blocker invalidates that whole channel's explanation,
 // including later Queued labels. An unloaded predecessor can still be a hold.
 export function currentReviewFronts(snapshot: string, pulls: ReviewPullSummary[], fronts?: ReviewFronts): ReviewFronts | undefined {
   if (!fronts || fronts.snapshot_id !== snapshot) return undefined;
   return {...fronts,channels:fronts.channels.map(channel=>{
+    const queued = pulls.find(item=>item.number===channel.queued_priority?.pull_number);
+    if (queued && channel.queued_priority && !matchesPriority(queued,channel.queued_priority)) channel = {...channel,queued_priority:undefined};
     const pull=pulls.find(item=>item.number===channel.pull_number);
     if (!pull || pull.state==='open' && pull.head_sha===channel.head_sha && pull.base_sha===channel.base_sha && pull.base_ref===channel.base_ref) return channel;
-    return {channel:channel.channel,state:'unknown',reason:'visible_source_changed'};
+    return {channel:channel.channel,state:'unknown',reason:'visible_source_changed',queued_priority:channel.queued_priority};
   })};
 }
 
@@ -64,9 +78,14 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   // snapshot that happens to be loading. Missing controls never mean closed.
   if (selected.length > 0 && selected.every(closed)) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
   if (!fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
+  const priority = fronts.channels.filter(channel => channel.queued_priority && matchesPriority(pull,channel.queued_priority) && !closed(channel.channel));
+  if (priority.length) return [{kind:'front',text:`${names(priority.map(channel=>channel.channel))} review priority`,channels:priority.map(channel=>channel.channel),description:`First remaining position under local queue and round controls. ${priority.filter(channel=>channel.state === 'unknown').map(channel=>`${names([channel.channel])} source verification unavailable${channel.reason ? ` (${channel.reason.replaceAll('_',' ')})` : ''}. `).join('')}Provider waiting and admission holds are separate; this is not permission to request a review.`}];
   const matching = fronts.channels.filter(channel => (channel.state === 'ready' || channel.state === 'held' && ['reviews_paused','local_queue_position'].includes(channel.reason ?? '')) && channel.pull_number === pull.number && channel.head_sha === pull.head_sha && channel.base_sha === pull.base_sha && channel.base_ref === pull.base_ref && !closed(channel.channel));
   if (matching.length) return [{kind:'front',text:'Review front',channels:matching.map(channel => channel.channel),description:'Next position under the stored queue and local round controls; requests still recheck source and admission.'}];
   const position = fronts.queue.indexOf(pull.number);
-  const ahead = fronts.channels.filter(channel => !closed(channel.channel) && (channel.state === 'ready' || channel.state === 'held') && channel.pull_number !== undefined && fronts.queue.indexOf(channel.pull_number) >= 0 && fronts.queue.indexOf(channel.pull_number) < position);
+  const ahead = fronts.channels.filter(channel => {
+    const number = channel.queued_priority?.pull_number ?? ((channel.state === 'ready' || channel.state === 'held') ? channel.pull_number : undefined);
+    return !closed(channel.channel) && number !== undefined && fronts.queue.indexOf(number) >= 0 && fronts.queue.indexOf(number) < position;
+  });
   return ahead.length ? [{kind:'queued',text:'Queued',description:`Behind the established ${names(ahead.map(channel => channel.channel))} front; provider and admission checks remain separate.`}] : [];
 }

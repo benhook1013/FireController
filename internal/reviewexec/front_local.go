@@ -34,6 +34,7 @@ func readLocalFrontPulls(ctx context.Context, tx *sql.Tx, project, snapshot stri
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT p.number,p.state,p.head_sha,p.base_sha,p.base_ref FROM review_pulls p
  WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.number IN (`+strings.TrimSuffix(strings.Repeat("?,", len(queue)), ",")+`)
+ AND EXISTS(SELECT 1 FROM review_snapshots s JOIN projects project ON project.id=s.project_id WHERE s.project_id=p.project_id AND s.snapshot_id=p.snapshot_id AND s.repository_id=project.github_repository_id)
  AND NOT EXISTS(SELECT 1 FROM review_current_retired r WHERE r.project_id=p.project_id AND r.number=p.number)`, args...)
 	if err != nil {
 		return nil, err

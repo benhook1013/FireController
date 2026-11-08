@@ -1091,7 +1091,15 @@ export class Api {
     const seen = new Set<string>();
     for (const channel of value.channels) {
       if (record(channel) && channel.review_size!==undefined && !validReviewSize(channel.review_size,Number(channel.pull_number))) throw bad();
-      if (!record(channel) || !keys(channel, ['channel','state'], ['reason','pull_number','head_sha','base_sha','base_ref','source_observed_at','checked_at','review_size']) || channel.channel !== 'hosted' && channel.channel !== 'cli' || seen.has(channel.channel) || typeof channel.state !== 'string' || !['ready','held','complete','unknown'].includes(channel.state) || channel.reason !== undefined && (typeof channel.reason !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/u.test(channel.reason)) || channel.source_observed_at !== undefined && !assessmentTime(channel.source_observed_at) || channel.checked_at !== undefined && !assessmentTime(channel.checked_at)) throw bad();
+      if (!record(channel) || !keys(channel, ['channel','state'], ['reason','pull_number','head_sha','base_sha','base_ref','source_observed_at','checked_at','review_size','queued_priority','source_progress']) || channel.channel !== 'hosted' && channel.channel !== 'cli' || seen.has(channel.channel) || typeof channel.state !== 'string' || !['ready','held','complete','unknown'].includes(channel.state) || channel.reason !== undefined && (typeof channel.reason !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/u.test(channel.reason)) || channel.source_observed_at !== undefined && !assessmentTime(channel.source_observed_at) || channel.checked_at !== undefined && !assessmentTime(channel.checked_at)) throw bad();
+      if (channel.queued_priority !== undefined) {
+        const p = channel.queued_priority;
+        if (!value.snapshot_id || !record(p) || !keys(p,['pull_number','head_sha','base_sha','base_ref']) || !pullNumber(p.pull_number) || !value.queue.includes(p.pull_number) || ![p.head_sha,p.base_sha].every(item=>typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !checkpointText(p.base_ref,256,true)) throw bad();
+      }
+      if (channel.source_progress !== undefined) {
+        const p = channel.source_progress;
+        if (!record(p) || !keys(p,['verified_pull_count','queue_pull_count'],['next_unverified_pull_number']) || !nonnegative(p.verified_pull_count) || p.queue_pull_count !== value.queue.length || Number(p.verified_pull_count) > value.queue.length || (Number(p.verified_pull_count) < value.queue.length ? p.next_unverified_pull_number !== value.queue[Number(p.verified_pull_count)] : p.next_unverified_pull_number !== undefined)) throw bad();
+      }
       seen.add(channel.channel);
       if (channel.pull_number !== undefined) {
         if (!pullNumber(channel.pull_number) || !value.queue.includes(channel.pull_number) || channel.state !== 'ready' && channel.state !== 'held' || ![channel.head_sha,channel.base_sha].every(item => typeof item === 'string' && /^[a-f0-9]{40}$/u.test(item)) || !checkpointText(channel.base_ref,256,true) || !(channel.state === 'held' && channel.reason === 'local_queue_position') && !assessmentTime(channel.source_observed_at) || !assessmentTime(channel.checked_at)) throw bad();
@@ -1310,7 +1318,7 @@ export class Api {
   }
   private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse, operationWait = false): Promise<unknown> {
     const headers = this.readHeaders(path, instanceId, worker);
-    if (operationWait) headers.set('X-FC-Operation-Wait', '2');
+    if (operationWait) headers.set('X-FC-Operation-Wait', '3');
     const response = await fetch(urlFor(path), { method: 'GET', headers, redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
     return readJson(response, signal, responseMaxBytes, decode);

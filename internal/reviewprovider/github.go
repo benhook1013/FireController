@@ -50,11 +50,15 @@ func NewGitHub(token string) (*GitHub, error) {
 	if !validToken(token) {
 		return nil, &Error{Code: "provider_unavailable", Message: "The provider credential is invalid."}
 	}
+	// Each adapter owns its bounded idle pool. Fresh metadata windows should
+	// not pay connection setup for every PR; reads and deadlines stay fresh.
 	client := &http.Client{
 		Timeout: githubRequestLimit,
 		Transport: &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
-			DisableKeepAlives:   true,
+			MaxIdleConns:        8,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     30 * time.Second,
 			TLSHandshakeTimeout: githubRequestLimit,
 		},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

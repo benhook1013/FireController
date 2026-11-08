@@ -28,6 +28,15 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('keeps Hosted priority visible alongside a waiting operation and unknown source', () => {
+    const v=fronts();v.channels=[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',queued_priority:{pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'}}];
+    const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:1,pending_execution:1,pending_adjudication:0,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2026-10-30T12:30:00Z',paused:false}}]};
+    const html=markup(<ReviewQueueView />,queue([pull(1,'merged'),pull(2),pull(3)]),undefined,{fronts:v,progress:[progress]});
+    expect(html).toContain('>Hosted review priority</span>');
+    expect(html).toContain('Waiting');
+    expect(html).not.toContain('>Up next</span>');
+  });
+
   it('shows Draft without the redundant Queued badge', () => {
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), is_draft: true }} status={{kind:'queued',text:'Queued',description:'Waiting in the queue'}} />);
     expect(html).toContain('Draft');

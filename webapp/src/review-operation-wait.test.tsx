@@ -54,3 +54,28 @@ describe('retained automatic review waiting', () => {
     expect(validOperationWait(wait,'other')).toBe(false);
   });
 });
+
+describe('retained CLI full-capacity estimate',()=>{
+  const allowance={kind:'cli_exhausted' as const,observed_at:'2026-10-30T12:00:00Z',remaining:0,limit:3,full_capacity_in_ms:3600000,rolling_window_ms:86400000};
+  it('shows the provider estimate and server recheck as distinct facts, including elapsed and zero estimates',()=>{
+    vi.useFakeTimers();vi.setSystemTime('2026-10-30T12:15:00Z');
+    const value={...wait,cli_allowance:allowance};
+    expect(validOperationWait(value,'cli')).toBe(true);
+    const html=renderToStaticMarkup(<ReviewOperationWaitBadge wait={value} channel="cli"/>);
+    expect(html).toContain('Provider full-capacity estimate:');expect(html).toContain('Next quota recheck:');
+    expect(html).toContain('does not establish the next available slot, refill pattern or review start');
+    expect(html).not.toContain('(past estimate)');
+    vi.setSystemTime('2026-10-30T13:15:00Z');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={value} channel="cli"/>)).toContain('(past estimate)');
+    const zero={...value,cli_allowance:{...allowance,full_capacity_in_ms:0}};
+    expect(validOperationWait(zero,'cli')).toBe(true);
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={zero} channel="cli"/>)).toContain('(past estimate)');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={{...value,paused:true}} channel="cli"/>)).toContain('Retained recheck:');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait} channel="cli"/>)).not.toContain('Provider full-capacity estimate:');
+  });
+  it('requires exact attributable bounded allowance fields and never accepts this on Hosted',()=>{
+    expect(validOperationWait({...wait,cli_allowance:allowance},'hosted')).toBe(false);
+    expect(validOperationWait({paused:false,cli_allowance:allowance},'cli')).toBe(false);
+    for(const change of [{observed_at:'2026-02-30T12:00:00Z'},{observed_at:'bad'},{remaining:1},{limit:0},{limit:10001},{full_capacity_in_ms:undefined},{full_capacity_in_ms:-1},{full_capacity_in_ms:86400001},{full_capacity_in_ms:0.5},{rolling_window_ms:0},{kind:'other'},{extra:'private'}]) expect(validOperationWait({...wait,cli_allowance:{...allowance,...change}},'cli')).toBe(false);
+  });
+});

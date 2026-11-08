@@ -62,7 +62,7 @@ func TestCLIWaitResponseVersionsPreserveQueuedIdentityAndPause(t *testing.T) {
 			original = cliWaitRead(t, f, a.OperationID)
 		}
 		before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "receipts")
-		for _, version := range []string{"", "1", "2", "unknown"} {
+		for _, version := range []string{"", "1", "2", "3", "unknown"} {
 			for _, path := range []string{base, base + "/status", roundProgressPath(attemptProject) + "?pull_numbers=2&view=stages"} {
 				response := versionWaitRead(t, f, path, version)
 				var wait *OperationWait
@@ -85,13 +85,17 @@ func TestCLIWaitResponseVersionsPreserveQueuedIdentityAndPause(t *testing.T) {
 						t.Fatal("response changed stage/action", operation)
 					}
 					wait = operation.Wait
-					if version != "2" && !paused && response.Header().Get(queuedDiagnosticHeader) != "awaiting_scheduler" {
+					if version != "2" && version != "3" && !paused && response.Header().Get(queuedDiagnosticHeader) != "awaiting_scheduler" {
 						t.Fatal("older reader received unsupported quota cause", response.Header())
 					}
 				}
 				switch version {
-				case "2":
-					if !reflect.DeepEqual(wait, original.Wait) {
+				case "2", "3":
+					expected := *original.Wait
+					if version == "2" {
+						expected.CLIAllowance = nil
+					}
+					if !reflect.DeepEqual(wait, &expected) {
 						t.Fatal("new reader lost baseline/deadline/pause", path, wait, original.Wait)
 					}
 				case "1":
@@ -118,7 +122,7 @@ func TestHostedWaitResponseVersionsKeepOriginalMetadata(t *testing.T) {
 	f, a, _, _ := queuedCooldown(t)
 	original := cliWaitRead(t, f, a.OperationID)
 	base := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
-	for _, version := range []string{"1", "2"} {
+	for _, version := range []string{"1", "2", "3"} {
 		for _, path := range []string{base, base + "/status", roundProgressPath(attemptProject) + "?pull_numbers=2&view=stages"} {
 			response := versionWaitRead(t, f, path, version)
 			var wait *OperationWait
@@ -152,13 +156,17 @@ func TestCLIWaitSelectionResponseNegotiatesSameChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := cliWaitRead(t, f, a.OperationID)
-	for _, version := range []string{"1", "2"} {
+	for _, version := range []string{"1", "2", "3"} {
 		response := versionWaitRead(t, f, "/api/v1/projects/"+attemptProject+"/reviews/selections/"+receipt.ID, version)
 		var state RunState
 		if json.Unmarshal(response.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.ID != original.ID || state.Operation.State != "queued" {
 			t.Fatal("selection child changed", response.Body.String())
 		}
-		if version == "2" && !reflect.DeepEqual(state.Operation.Wait, original.Wait) || version == "1" && !legacyOperationWaitAccepts(state.Operation.Wait, "cli", "queued", "") {
+		expected := *original.Wait
+		if version == "2" {
+			expected.CLIAllowance = nil
+		}
+		if (version == "2" || version == "3") && !reflect.DeepEqual(state.Operation.Wait, &expected) || version == "1" && !legacyOperationWaitAccepts(state.Operation.Wait, "cli", "queued", "") {
 			t.Fatal("selection ignored negotiation", version, state.Operation.Wait)
 		}
 	}
@@ -227,7 +235,7 @@ func TestCLIWaitRequestReplayPreservesReceiptAcrossVersions(t *testing.T) {
 	before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "receipts")
 	body := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"}`
 	var original []byte
-	for _, version := range []string{"1", "2"} {
+	for _, version := range []string{"1", "2", "3"} {
 		request := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/requests", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer "+f.writer)
 		request.Header.Set("Idempotency-Key", "cli-wait-request")
@@ -255,7 +263,7 @@ func TestCLIQueueOrderLegacyHintDoesNotCallItHosted(t *testing.T) {
 	f.configure(t, attemptProject, "test-capability", 0, false)
 	f.enqueue(t, attemptProject, "earlier-cli", "cli", 2, 1)
 	later := f.enqueue(t, attemptProject, "later-cli", "cli", 4, 1)
-	for _, version := range []string{"1", "2"} {
+	for _, version := range []string{"1", "2", "3"} {
 		response := versionWaitRead(t, f, "/api/v1/projects/"+attemptProject+"/reviews/operations/"+later.ID+"/status", version)
 		want := "queue_order"
 		if version == "1" {

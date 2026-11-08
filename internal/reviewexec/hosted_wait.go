@@ -16,12 +16,18 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 
 // Version 1 advertised Hosted cooldown baselines only. Keep its existing CLI
 // queued/pause shape; version 2 additionally understands CLI quota baselines.
+// Version 3 adds the retained provider allowance estimate, never a retry clock.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" {
+	if wait == nil || version != "1" && version != "2" && version != "3" {
 		return nil
 	}
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
+	}
+	if version != "3" {
+		copy := *wait
+		copy.CLIAllowance = nil
+		return &copy
 	}
 	return wait
 }
@@ -29,9 +35,10 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {
-	BaselineAttemptID string `json:"baseline_attempt_id,omitempty"`
-	RetryNotBefore    string `json:"retry_not_before,omitempty"`
-	Paused            bool   `json:"paused"`
+	CLIAllowance      *AllowanceObservation `json:"cli_allowance,omitempty"`
+	BaselineAttemptID string                `json:"baseline_attempt_id,omitempty"`
+	RetryNotBefore    string                `json:"retry_not_before,omitempty"`
+	Paused            bool                  `json:"paused"`
 }
 
 func waitUnavailable() error {
@@ -73,9 +80,12 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 			return nil, err
 		}
 		if o.Channel == "cli" {
-			if record, err := readCLIAllowanceRecord(ctx, q, original, a); err != nil || record.Observation.Remaining != 0 {
+			record, err := readCLIAllowanceRecord(ctx, q, original, a)
+			if err != nil || record.Observation.Remaining != 0 {
 				return nil, waitUnavailable()
 			}
+			in := record.Observation
+			result.CLIAllowance = &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: in.ObservedAt, Remaining: &in.Remaining, Limit: &in.Limit, FullCapacityInMS: &in.FullCapacityInMS, RollingWindowMS: &in.RollingWindowMS}
 		} else if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
 			return nil, waitUnavailable()
 		}

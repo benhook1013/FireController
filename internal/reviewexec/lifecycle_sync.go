@@ -365,6 +365,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		}
 		var pins map[int64]reviews.SourceMetadataPin
 		var comparison lifecycleComparison
+		var frontierRefusal *core.Error
 		err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			pins, err = reviews.PinSourceMetadata(ctx, tx, p.id, []int64{number})
@@ -372,11 +373,30 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				comparison, err = readLifecycleComparison(ctx, tx, p.id, number)
 				if _, ok := readers[p.config.CapabilityID].(ExternalHostedReader); err == nil && ok && lane == lifecycleEnrichment && !(hinted && !ordinaryDue) {
 					_, err = reviews.InitializeExternalHostedFrontier(ctx, tx, p.id, p.repository, number)
+					var refusal *core.Error
+					if errors.As(err, &refusal) && (refusal.Code == "observation_conflict" || refusal.Code == "validation_failed") {
+						frontierRefusal = refusal
+					}
 				}
 			}
 			return err
 		})
 		if err != nil {
+			if frontierRefusal != nil && errors.Is(err, frontierRefusal) {
+				// A retained source-domain refusal holds only this target. The
+				// failed transaction rolled back; do not poison account capacity
+				// or report a storage failure to the daemon supervisor.
+				s.mu.Lock()
+				key := lifecycleKey{p.id, number}
+				d := s.due[key]
+				d.enrichmentError = frontierRefusal.Code
+				d.enrichmentNext = now.Add(s.options.OpenInterval)
+				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = comparison.head, comparison.baseSHA, comparison.baseRef
+				s.due[key] = d
+				s.lanes[lane].lastPull[p.id] = number
+				s.mu.Unlock()
+				continue
+			}
 			return nil, err
 		}
 		if len(pins) == 0 {

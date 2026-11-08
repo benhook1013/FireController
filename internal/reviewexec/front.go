@@ -21,7 +21,26 @@ type FrontSnapshot struct {
 	Queue                 []int64        `json:"queue"`
 	Channels              []FrontChannel `json:"channels"`
 }
+
+// FrontSourceProgress describes retained verified coverage, not the failing
+// request: a bounded metadata window can have several reads in flight.
+type FrontSourceProgress struct {
+	VerifiedPullCount        int   `json:"verified_pull_count"`
+	QueuePullCount           int   `json:"queue_pull_count"`
+	NextUnverifiedPullNumber int64 `json:"next_unverified_pull_number,omitempty"`
+}
+
+// FrontQueuePriority is locally ordered remaining work, not verified eligibility.
+type FrontQueuePriority struct {
+	PullNumber int64  `json:"pull_number"`
+	HeadSHA    string `json:"head_sha"`
+	BaseSHA    string `json:"base_sha"`
+	BaseRef    string `json:"base_ref"`
+}
+
 type FrontChannel struct {
+	QueuedPriority   *FrontQueuePriority    `json:"queued_priority,omitempty"`
+	SourceProgress   *FrontSourceProgress   `json:"source_progress,omitempty"`
 	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`
 	Channel          string                 `json:"channel"`
 	State            string                 `json:"state"`
@@ -113,6 +132,10 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 				value.Reason = "configuration_changed"
 			case frame.sourceReason != "":
 				value.Reason = frame.sourceReason
+				value.SourceProgress = &FrontSourceProgress{VerifiedPullCount: len(frame.prefix), QueuePullCount: len(c.Queue)}
+				if len(frame.prefix) < len(c.Queue) {
+					value.SourceProgress.NextUnverifiedPullNumber = c.Queue[len(frame.prefix)]
+				}
 			default:
 				matches, visible, err := frontVisibleMatches(ctx, tx, scope.ProjectID, out.SnapshotID, frame.prefix)
 				if err != nil {
@@ -151,6 +174,23 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 					return err
 				} else if found {
 					value = local
+				}
+			}
+			// Keep priority separate from failed/stale provider checks and admission
+			// holds. Local controls can establish order without authorizing a run.
+			if out.SnapshotID != "" {
+				if localPulls == nil {
+					localPulls, err = readLocalFrontPulls(ctx, tx, scope.ProjectID, out.SnapshotID, c.Queue)
+					if err != nil {
+						return err
+					}
+				}
+				local, found, err := localChannelFront(ctx, tx, scope.ProjectID, c.Queue, channel, localPulls)
+				if err != nil {
+					return err
+				}
+				if found {
+					value.QueuedPriority = &FrontQueuePriority{PullNumber: local.PullNumber, HeadSHA: local.HeadSHA, BaseSHA: local.BaseSHA, BaseRef: local.BaseRef}
 				}
 			}
 			if value.PullNumber > 0 {

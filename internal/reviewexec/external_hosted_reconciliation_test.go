@@ -308,3 +308,23 @@ func TestHostedNativeReplayRetainsExistingAdjudication(t *testing.T) {
 		t.Fatal("old duplicate history changed")
 	}
 }
+
+func TestHostedAliasIncompleteEvidenceRejectedBeforePublication(t *testing.T) {
+	for _, kind := range []string{"publication", "submitted", "standing"} {
+		for _, outcome := range []string{"failed", "cancelled", "rate_limited", "uncertain"} {
+			t.Run(kind+"/"+outcome, func(t *testing.T) {
+				f, a, in, _, _ := reconciliationFixture(t, kind)
+				in.Review.Outcome, in.Review.Complete = outcome, false
+				if err := ValidateRetainedReviewCapture(in); err == nil {
+					t.Fatal("incomplete Hosted capture admitted by retained validator")
+				}
+				if _, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in); err == nil {
+					t.Fatal("incomplete Hosted capture admitted for publication")
+				}
+				if n := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`); n != 0 {
+					t.Fatal("rejected evidence retained", n)
+				}
+			})
+		}
+	}
+}

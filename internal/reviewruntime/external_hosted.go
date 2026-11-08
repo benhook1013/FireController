@@ -26,13 +26,20 @@ func (r *hostedArchiveSource) ObserveHosted(ctx context.Context, repository stri
 	return r.provider.ObserveHosted(ctx, repository, number)
 }
 func (r *hostedArchiveSource) TrustedHostedActor() reviewprovider.Author { return r.actor }
-func (r *hostedArchiveSource) ObserveRequiredCI(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
-	if reader, ok := r.provider.(interface {
-		ObserveRequiredCI(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error)
-	}); ok {
-		return reader.ObserveRequiredCI(ctx, target)
-	}
-	return reviewprovider.CIObservation{}, &reviewprovider.Error{Code: "provider_unavailable", Message: "Required CI observation is unavailable for this source adapter."}
+
+// Keep optional capabilities optional: an unsupported CI adapter is not a
+// provider outage and must not throttle every PR sharing the provider account.
+type hostedCIReader interface {
+	ObserveRequiredCI(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error)
+}
+
+type hostedArchiveCISource struct {
+	*hostedArchiveSource
+	ci hostedCIReader
+}
+
+func (r *hostedArchiveCISource) ObserveRequiredCI(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+	return r.ci.ObserveRequiredCI(ctx, target)
 }
 
 func (r *hostedArchiveSource) ObserveCIGate(ctx context.Context, target reviewprovider.CITarget, gateRef string) (reviewprovider.CIObservation, error) {
