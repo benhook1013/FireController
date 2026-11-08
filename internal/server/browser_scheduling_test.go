@@ -57,7 +57,7 @@ func TestBrowserSchedulingCookieAuthorityAndExplicitAuthorizer(t *testing.T) {
 	if count(t, f.store, "events") != before {
 		t.Fatal("exact replay duplicated event")
 	}
-	enable := `{"expected_revision":0,"automatic_hosted":true}`
+	enable := `{"expected_revision":0,"automatic_hosted":true,"automatic_cli":true}`
 	require(t, serveBrowserAction(f, browserActionRequest(f, "POST", base+"scheduling", wid, wc, worker, "writer-enable", enable)), 403)
 	require(t, serveBrowserAction(f, browserActionRequest(f, "POST", base+"scheduling", mid, mc, "", "missing-worker", enable)), 404)
 	require(t, serveBrowserAction(f, browserActionRequest(f, "POST", base+"scheduling", mid, mc, foreignWorker, "foreign-worker", enable)), 404)
@@ -66,7 +66,7 @@ func TestBrowserSchedulingCookieAuthorityAndExplicitAuthorizer(t *testing.T) {
 	require(t, serveBrowserAction(f, bad), 403)
 	call("POST", "scheduling", mid, mc, worker, "manager-enable", enable)
 	settings := call("GET", "scheduling", rid, rc, "", "", "")
-	if settings["automatic_hosted"] != true || settings["authorizing_worker_id"] != worker {
+	if settings["automatic_cli"] != true || settings["automatic_hosted"] != true || settings["authorizing_worker_id"] != worker {
 		t.Fatal(settings)
 	}
 	var principal, actor, authorizer string

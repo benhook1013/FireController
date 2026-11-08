@@ -25,7 +25,7 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 	switch in.action {
 	case "read":
 	case "configure":
-		allowed = map[string]bool{"--automatic-hosted": true, "--expect-revision": true, "--key": true}
+		allowed = map[string]bool{"--automatic-hosted": true, "--automatic-cli": true, "--expect-revision": true, "--key": true}
 	case "pause", "resume":
 		allowed["--expect-revision"], allowed["--key"] = true, true
 		if in.action == "pause" {
@@ -79,6 +79,13 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 			return nil, false
 		}
 		in.config = client.ConfigureReviewSchedulingRequest{ExpectedRevision: revision, AutomaticHosted: value == "true"}
+		if value, exists := values["--automatic-cli"]; exists {
+			if value != "true" && value != "false" {
+				return nil, false
+			}
+			enabled := value == "true"
+			in.config.AutomaticCLI = &enabled
+		}
 		return in, client.ValidateConfigureReviewScheduling(in.config) == nil
 	}
 	in.pause = client.ConfigureReviewPullSchedulingRequest{ExpectedRevision: revision, Paused: in.action == "pause", Reason: values["--reason"]}

@@ -170,6 +170,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Reason == cliDraftWait && o.Revision != draftReadyRevision {
 			return nil
 		}
+		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
+			return err
+		} else if preferred {
+			return nil
+		}
 		var repositoryID int64
 		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
 			return err

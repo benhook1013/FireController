@@ -42,3 +42,28 @@ func TestReviewSchedulingCLIExplicitControlsBeforeProfile(t *testing.T) {
 		t.Fatal("scheduling help not usable offline", code, out.String(), diag.String())
 	}
 }
+
+func TestReviewSchedulingCLIOptionalAutomaticCLI(t *testing.T) {
+	base := []string{"configure", "--automatic-hosted=false", "--expect-revision=0", "--key=cli-setting"}
+	for _, value := range []string{"", "true", "false"} {
+		args := append([]string{}, base...)
+		if value != "" {
+			args = append(args, "--automatic-cli="+value)
+		}
+		in, ok := parseReviewScheduling(args)
+		if !ok || in.config.AutomaticHosted || (in.config.AutomaticCLI == nil) != (value == "") {
+			t.Fatalf("lost optional CLI state: %q %+v", value, in)
+		}
+		if value != "" && *in.config.AutomaticCLI != (value == "true") {
+			t.Fatal("wrong explicit CLI state")
+		}
+	}
+	for _, extra := range [][]string{{"--automatic-cli=yes"}, {"--automatic-cli="}, {"--automatic-cli"}, {"--automatic-cli=true", "--automatic-cli=false"}} {
+		if _, ok := parseReviewScheduling(append(append([]string{}, base...), extra...)); ok {
+			t.Fatal("accepted invalid CLI flag", extra)
+		}
+	}
+	if _, ok := parseReviewScheduling([]string{"configure", "--automatic-cli=true", "--expect-revision=0", "--key=missing-hosted"}); ok {
+		t.Fatal("Hosted flag must remain explicit")
+	}
+}

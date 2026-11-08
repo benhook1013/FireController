@@ -297,3 +297,46 @@ func TestReviewSchedulingClientLocalValidationNeedsNoConnection(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulingOptionalCLIWireContract(t *testing.T) {
+	for _, state := range []string{"omitted", "true", "false"} {
+		request := client.ConfigureReviewSchedulingRequest{AutomaticHosted: true}
+		want := `{"expected_revision":0,"automatic_hosted":true`
+		if state != "omitted" {
+			enabled := state == "true"
+			request.AutomaticCLI = &enabled
+			want += `,"automatic_cli":` + state
+		}
+		encoded, err := json.Marshal(request)
+		if err != nil || string(encoded) != want+"}" {
+			t.Fatalf("wrong optional CLI body: %s %v", encoded, err)
+		}
+	}
+	var response string
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, response)
+	}))
+	defer service.Close()
+	c := newClient(t, service)
+	for _, tc := range []struct {
+		body           string
+		valid, enabled bool
+	}{
+		{`{"project_id":"project-one","revision":0,"automatic_hosted":false,"paused_pulls":[]}`, true, false},
+		{`{"project_id":"project-one","revision":0,"automatic_hosted":false,"automatic_cli":true,"paused_pulls":[]}`, false, false},
+		{`{"project_id":"project-one","revision":0,"automatic_hosted":false,"automatic_cli":null,"paused_pulls":[]}`, false, false},
+		{`{"project_id":"project-one","revision":1,"automatic_hosted":false,"automatic_cli":true,"paused_pulls":[],"updated_at":"2026-11-01T00:00:00Z"}`, false, false},
+		{`{"project_id":"project-one","revision":1,"automatic_hosted":false,"automatic_cli":true,"paused_pulls":[],"updated_at":"2026-11-01T00:00:00Z","authorizing_worker_id":"worker-one"}`, true, true},
+	} {
+		response = tc.body
+		value, err := c.ReviewScheduling(t.Context())
+		if (err == nil) != tc.valid || tc.valid && value.AutomaticCLI != tc.enabled {
+			t.Fatalf("wrong scheduling validation: %+v %v", value, err)
+		}
+	}
+}

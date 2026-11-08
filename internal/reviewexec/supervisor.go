@@ -147,7 +147,7 @@ AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
-	ORDER BY o.created_at,o.id LIMIT 256`
+	ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,o.created_at,o.id LIMIT 256`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -190,6 +190,11 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 		if err != nil {
 			return Operation{}, false, err
+		}
+		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
+			return Operation{}, false, err
+		} else if preferred {
+			return Operation{}, false, nil
 		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
 		if err != nil {

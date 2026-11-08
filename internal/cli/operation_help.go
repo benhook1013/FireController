@@ -329,7 +329,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/review-execution.md"
 	case "reviews execution":
 		out.Usage = "<bound launcher> reviews execution"
-		out.Semantics = []string{"Reads current stored execution configuration together with independently revisioned scheduling, including automatic_hosted and its authorizing worker. Authorizer records permission, not PR or lane ownership; these are separate reads, not one atomic configuration revision. No provider work or writes.", "Use this revision for an explicit source-refresh or review-request guard. A stale guard refuses before queuing work; read current configuration and submit only the intended operation with a new key."}
+		out.Semantics = []string{"Reads current stored execution configuration together with independently revisioned scheduling, including automatic_hosted, automatic_cli and their shared authorizing worker. Authorizer records permission, not PR or lane ownership; these are separate reads, not one atomic configuration revision. No provider work or writes.", "Use this revision for an explicit source-refresh or review-request guard. A stale guard refuses before queuing work; read current configuration and submit only the intended operation with a new key."}
 		out.Documentation = "docs/review-execution.md"
 	case "reviews source-operation":
 		out.Usage = "<bound launcher> reviews source-operation OPERATION_ID"
@@ -343,10 +343,10 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"One provider-free project read of completed Hosted/CLI results, elapsed-hour averages, UTC-aligned buckets with local offset labels and separate attempt diagnostics. No enrollment, configuration, review, quota check or history enumeration. Read coverage limits: retained source is not exhaustive provider inventory or native round credit; undated records remain separate."}
 		out.Documentation = "docs/review-activity.md"
 	case "reviews scheduling":
-		out.Usage = "<bound launcher> reviews scheduling [--pr N] | configure --automatic-hosted true|false --expect-revision N --key KEY | pause|resume --pr N --expect-revision N --key KEY [--reason TEXT]"
+		out.Usage = "<bound launcher> reviews scheduling [--pr N] | configure --automatic-hosted true|false [--automatic-cli true|false] --expect-revision N --key KEY | pause|resume --pr N --expect-revision N --key KEY [--reason TEXT]"
 		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)", "configure --automatic-hosted true|false (project manager; authorizes future automatic Hosted requests)", "pause|resume --pr N (writer; holds new/undispatched reviews without changing rounds)", "--reason TEXT (optional with pause, at most 256 UTF-8 bytes)"}
 		out.Optional = append(out.Optional, "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
-		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI reviews remain explicitly requested; quota waiting preserves accepted requests without selecting extra PRs or rounds.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted selection under all existing comparison, obligation, round and provider guards."}
+		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI automation is separately opt-in via --automatic-cli; omission preserves its current value. Existing grants and taper remain unchanged.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted or CLI selection under all existing comparison, obligation, round and provider guards."}
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews scheduling read":
 		out.Usage = "<bound launcher> reviews scheduling read [--pr N]"
@@ -355,9 +355,10 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Example = "<bound launcher> reviews scheduling read --pr 42"
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews scheduling configure":
-		out.Usage = "<bound launcher> reviews scheduling configure --automatic-hosted true|false --expect-revision N --key KEY"
+		out.Usage = "<bound launcher> reviews scheduling configure --automatic-hosted true|false [--automatic-cli true|false] --expect-revision N --key KEY"
 		out.Required = []string{"--automatic-hosted true|false", "--expect-revision N (current project scheduling revision, including 0)", "--key KEY"}
-		out.Semantics = []string{"Requires project-management authority. Read reviews scheduling for the current project scheduling revision. Enabling authorizes future automatic Hosted requests through this connection's active bound worker under the existing review guards; CLI reviews remain explicitly requested.", recovery}
+		out.Semantics = []string{"Requires project-management authority. Read reviews scheduling for the current project scheduling revision. Enabling authorizes future automatic Hosted or CLI requests through this connection's active bound worker under the existing review guards. Both default off; CLI omission preserves the current value. Automation does not adjudicate findings or increase grants.", recovery}
+		out.Optional = []string{"--automatic-cli true|false (separate opt-in; omission preserves the current CLI setting)"}
 		out.Example = "<bound launcher> reviews scheduling configure --automatic-hosted true --expect-revision 0 --key automatic-hosted-1"
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews scheduling pause", "reviews scheduling resume":

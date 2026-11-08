@@ -123,6 +123,7 @@ type Engine struct {
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	automaticCursor            string
+	automaticCLICursor         string
 	automaticMu                sync.Mutex
 	automaticNext              time.Time
 	hostedObserverMu           sync.Mutex

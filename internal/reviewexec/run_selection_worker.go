@@ -421,7 +421,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	err := retryRunSelectionLocal(ctx, func() error {
 		project, id, expected = "", "", 0
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_selections WHERE state='queued' ORDER BY created_at,id LIMIT 1`).Scan(&project, &id, &expected)
+			err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_selections WHERE state='queued' ORDER BY CASE WHEN channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=project_id)='benhook1013/firemud' THEN 0 ELSE 1 END,created_at,id LIMIT 1`).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}

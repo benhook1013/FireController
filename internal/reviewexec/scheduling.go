@@ -1,6 +1,7 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -18,6 +19,7 @@ type Scheduling struct {
 	PausedPulls         []PullScheduling `json:"paused_pulls"`
 	ProjectID           string           `json:"project_id"`
 	Revision            int64            `json:"revision"`
+	AutomaticCLI        bool             `json:"automatic_cli"`
 	AutomaticHosted     bool             `json:"automatic_hosted"`
 	AuthorizingWorkerID string           `json:"authorizing_worker_id,omitempty"`
 	UpdatedAt           string           `json:"updated_at,omitempty"`
@@ -25,8 +27,30 @@ type Scheduling struct {
 }
 type SchedulingRequest struct {
 	ExpectedRevision *int64 `json:"expected_revision"`
+	AutomaticCLI     *bool  `json:"automatic_cli,omitempty"`
 	AutomaticHosted  *bool  `json:"automatic_hosted"`
 }
+
+// Omission preserves the CLI setting; explicit null is not a boolean choice.
+func (r *SchedulingRequest) UnmarshalJSON(data []byte) error {
+	type plain SchedulingRequest
+	var value plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if raw, exists := fields["automatic_cli"]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return invalid()
+	}
+	*r = SchedulingRequest(value)
+	return nil
+}
+
 type PullScheduling struct {
 	ProjectID  string `json:"project_id"`
 	PullNumber int64  `json:"pull_number"`
@@ -51,20 +75,20 @@ func schedulingUnavailable() error {
 }
 func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s schedulingRecord, err error) {
 	s.ProjectID = project
-	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&s.Revision, &s.AutomaticHosted, &s.actor, &s.AuthorizingWorkerID, &s.credential, &s.UpdatedAt)
+	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&s.Revision, &s.AutomaticHosted, &s.AutomaticCLI, &s.actor, &s.AuthorizingWorkerID, &s.credential, &s.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
 	if err != nil {
 		return s, err
 	}
-	if s.Revision < 1 || !identifier.MatchString(s.actor) || !roundTime(s.UpdatedAt) || s.AutomaticHosted && (!identifier.MatchString(s.AuthorizingWorkerID) || !identifier.MatchString(s.credential)) {
+	if s.Revision < 1 || !identifier.MatchString(s.actor) || !roundTime(s.UpdatedAt) || (s.AutomaticHosted || s.AutomaticCLI) && (!identifier.MatchString(s.AuthorizingWorkerID) || !identifier.MatchString(s.credential)) {
 		return s, schedulingUnavailable()
 	}
 	return s, nil
 }
 func schedulingAuthorizerAllowed(ctx context.Context, tx *sql.Tx, s schedulingRecord) (bool, error) {
-	if !s.AutomaticHosted {
+	if !s.AutomaticHosted && !s.AutomaticCLI {
 		return false, nil
 	}
 	var allowed bool
@@ -100,7 +124,7 @@ func (e *Engine) ReadScheduling(ctx context.Context, scope core.Scope) (Scheduli
 				}
 			}
 		}
-		if s.AutomaticHosted {
+		if s.AutomaticHosted || s.AutomaticCLI {
 			var held bool
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&held); err != nil {
 				return err
@@ -135,8 +159,12 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 		if old.Revision != *input.ExpectedRevision {
 			return nil, conflict()
 		}
+		automaticCLI := old.AutomaticCLI
+		if input.AutomaticCLI != nil {
+			automaticCLI = *input.AutomaticCLI
+		}
 		credential := ""
-		if *input.AutomaticHosted {
+		if *input.AutomaticHosted || automaticCLI {
 			if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
 				return nil, err
 			}
@@ -149,16 +177,16 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 				return nil, err
 			}
 			if !allowed {
-				return nil, core.Fail("forbidden", "An active bound project manager must authorize automatic Hosted scheduling.", 403)
+				return nil, core.Fail("forbidden", "An active bound project manager must authorize automatic review scheduling.", 403)
 			}
 		}
 		at := stamp()
 		worker := scope.WorkerID
-		_, err = tx.ExecContext(ctx, `INSERT INTO review_scheduling(project_id,revision,automatic_hosted,actor_id,worker_id,credential_id,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,automatic_hosted=excluded.automatic_hosted,actor_id=excluded.actor_id,worker_id=excluded.worker_id,credential_id=excluded.credential_id,updated_at=excluded.updated_at`, scope.ProjectID, old.Revision+1, *input.AutomaticHosted, scope.PrincipalID, worker, credential, at)
+		_, err = tx.ExecContext(ctx, `INSERT INTO review_scheduling(project_id,revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,automatic_hosted=excluded.automatic_hosted,automatic_cli=excluded.automatic_cli,actor_id=excluded.actor_id,worker_id=excluded.worker_id,credential_id=excluded.credential_id,updated_at=excluded.updated_at`, scope.ProjectID, old.Revision+1, *input.AutomaticHosted, automaticCLI, scope.PrincipalID, worker, credential, at)
 		if err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "review.scheduling_updated", scope.ProjectID, old.Revision+1, map[string]any{"automatic_hosted": *input.AutomaticHosted}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "review.scheduling_updated", scope.ProjectID, old.Revision+1, map[string]any{"automatic_hosted": *input.AutomaticHosted, "automatic_cli": automaticCLI}); err != nil {
 			return nil, err
 		}
 		return Receipt{ID: scope.ProjectID, State: "scheduling_configured", Revision: old.Revision + 1}, nil

@@ -48,6 +48,23 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 	if first != replay || first.ID != f.project || first.Revision != 1 {
 		t.Fatal(first, replay)
 	}
+	// CLI opt-in is independent; a legacy Hosted-only write preserves it.
+	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 1, "automatic_hosted": false, "automatic_cli": true, "idempotency_key": "manager-cli-enable"}), &first)
+	var automatic client.ReviewScheduling
+	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
+	if automatic.AutomaticHosted || !automatic.AutomaticCLI || automatic.AuthorizingWorkerID != f.sender {
+		t.Fatal("CLI opt-in lost shared authorization", automatic)
+	}
+	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 2, "automatic_hosted": true, "idempotency_key": "manager-legacy-preserve"}), &first)
+	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
+	if !automatic.AutomaticHosted || !automatic.AutomaticCLI {
+		t.Fatal("legacy configuration changed CLI opt-in", automatic)
+	}
+	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 3, "automatic_hosted": true, "automatic_cli": false, "idempotency_key": "manager-cli-disable"}), &first)
+	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
+	if !automatic.AutomaticHosted || automatic.AutomaticCLI {
+		t.Fatal("explicit CLI disable was lost", automatic)
+	}
 	var paused client.ReviewRequestReceipt
 	decodeResult(t, call(t, writer, "review_pull_scheduling_update", map[string]any{"pull_number": 7, "expected_revision": 0, "paused": true, "reason": "Preparing changes", "idempotency_key": "pause-before-intent"}), &paused)
 	if paused.ID != strconv.Itoa(7) || paused.Revision != 1 {

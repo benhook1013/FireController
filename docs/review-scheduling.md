@@ -1,6 +1,6 @@
 # Review scheduling
 
-Projects can optionally enable automatic new Hosted requests. The default is off. CLI reviews remain explicitly requested; a proven quota refusal retains that accepted request through [durable CLI waiting](review-execution.md#durable-cli-quota-waiting), without automatically choosing another PR or round. Automatic GitHub observation and automatic retry of an already authorized timer-backed request are independent of this setting; see [observation](github-observation.md) and [timer-backed waiting](review-execution.md#timer-backed-hosted-waiting).
+Projects can independently opt in to automatic new Hosted or CLI requests. Both default to off. Explicit CLI requests continue to work without enabling automatic selection; a proven quota refusal retains any accepted request through [durable CLI waiting](review-execution.md#durable-cli-quota-waiting), without replacing that operation. Automatic GitHub observation and automatic retry of an already authorized timer-backed request are independent of this setting; see [observation](github-observation.md) and [timer-backed waiting](review-execution.md#timer-backed-hosted-waiting).
 
 ## Automatic Hosted requests
 
@@ -10,7 +10,21 @@ The scheduler uses the existing configured queue and ordinary durable selection/
 
 Meaningful source, review or control changes can create another automatic intent. A waiting later PR does not prevent reconsideration of an earlier PR that becomes eligible; the earlier request can take priority while the later request retains its identity and cooldown. Existing queued work on a PR prevents a duplicate intent for that PR, and active provider work is not interrupted. Timer-backed requests retain their original operation and retry deadline. Ticks, restarts, observation timestamps and failed/cancelled operation transitions cannot recreate the same request. A clean CLI completion alone cannot restart a cancelled Hosted request. A dependent PR can become eligible when its actual predecessor completes at the same head. Cancellation stops that intent; use a PR pause to hold new reviews persistently.
 
+A pre-child automatic Hosted selection held only by `source_budget_exhausted`, `source_fetch_timeout` or `source_provider_unavailable` can retry its source selection after at least thirty seconds. It reuses the original selection and accepted configuration, policy, capability and authorizer, with the exact scheduling revision still current. At most two such delayed retries are permitted by a conservative durable transition budget; interrupted-selection recovery consumes that budget rather than resetting it. Existing recovery of an interrupted read remains separate from this bound on completed source holds. Restart and backup restore retain the budget and last-transition time. Restore/provider holds still prevent work.
+
+A later Hosted selection or direct operation fences off this recovery, including a cancelled, failed or uncertain request. Explicit held selections, linked children, exhausted budgets, refusals, rate limits and invalid source responses are never reopened by it. The retry performs ordinary fresh source selection and normal admission; success may link at most one ordinary child operation under the original authority. It neither grants rounds nor bypasses any dispatch guard. A meaningful source or control change can still authorize a new automatic intent through the normal scheduler.
+
 Results still require normal adjudication, finalization and fix evidence. Automation does not infer fixes or grant more reviews. Enabling it can spend existing authorized Hosted allowance; it is a deliberate project control, not a prerequisite for routine review use.
+
+## Automatic CLI requests
+
+A project manager can explicitly enable `automatic_cli` through CLI, MCP or the project scheduling API. The browser shows its current state; its Hosted editor preserves the CLI setting. Both settings use the retained manager credential and active worker, with the same authorization rechecks before selection and dispatch. Changing either setting uses the shared scheduling revision. Older Hosted-only writes omit `automatic_cli` and preserve its current value; explicit `false` disables new CLI automation.
+
+Automatic CLI uses the ordinary durable channel-front selection and execution path, without out-of-order or file-limit overrides. Existing grants, maxima, taper, channel closure, exact current-head checks, source-owned predecessor dependencies, publication and adjudication requirements remain in force. No setting increases grants or adjudicates findings. A meaningful completed result or source/control change can authorize another selection; ticks, restart, failed attempts and cancellation alone cannot. CLI and Hosted results have separate intent digests, so a clean completion in the other channel does not recreate a cancelled request.
+
+For competing CLI work on the same installed provider account, the configured repository `benhook1013/FireMUD` takes priority over other projects. The repository identity is case-insensitive; a project display name does not grant priority. Selection considers that repository first, and the serialized attempt claim also yields to its eligible queued requests. Paused, invalid, draft-waiting or not-yet-due requests do not reserve the account. Other accounts remain independent and active reviews are never preempted. This preference does not relax dependencies or change retained quota deadlines.
+
+An already queued explicit or automatic CLI operation prevents a duplicate request for its PR. Proven quota exhaustion keeps that operation and its original comparison through the existing shared-account backoff. Disable automatic CLI to stop new automatic selection and authorization of its undispatched children; explicit pending requests retain their original authorization. Use an operation cancellation or PR pause when the intent itself must stop. Results and merge decisions remain operator work.
 
 ## Pause a PR
 
@@ -24,7 +38,7 @@ Read the current scheduling revision before changing settings. Keep the exact re
 
 ```sh
 fc reviews scheduling
-fc reviews scheduling configure --automatic-hosted true --expect-revision 0 --key retained-enable-key
+fc reviews scheduling configure --automatic-hosted true --automatic-cli true --expect-revision 0 --key retained-enable-key
 fc reviews scheduling read --pr 123
 fc reviews scheduling pause --pr 123 --reason 'Preparing fixes' --expect-revision 0 --key retained-pause-key
 fc reviews scheduling resume --pr 123 --expect-revision 1 --key retained-resume-key
@@ -32,13 +46,13 @@ fc reviews scheduling resume --pr 123 --expect-revision 1 --key retained-resume-
 
 Normal `reviews execution` / `review_execution_read` output composes execution with this scheduling read, including its independent revision, automatic setting and authorizing worker. The authorizer is permission attribution, not lane ownership. Use [quiet review activity watch](review-operations.md#quiet-review-activity-watch) to discover automatic requests and subsequent native operation changes without manufacturing inbox messages.
 
-MCP equivalents are `review_scheduling_read`, `review_scheduling_configure`, `review_pull_scheduling_read` and `review_pull_scheduling_update`. The update takes explicit PR number, `paused`, expected revision and idempotency key; project configuration takes explicit `automatic_hosted`, expected revision and key. Use tools advertised by the running client. Neither read starts work. Project reads include only currently queued paused PRs; explicit PR reads can inspect pauses outside the queue.
+MCP equivalents are `review_scheduling_read`, `review_scheduling_configure`, `review_pull_scheduling_read` and `review_pull_scheduling_update`. The update takes explicit PR number, `paused`, expected revision and idempotency key; project configuration takes explicit `automatic_hosted`, optional `automatic_cli`, expected revision and key. Use tools advertised by the running client. Neither read starts work. Project reads include only currently queued paused PRs; explicit PR reads can inspect pauses outside the queue.
 
 ## HTTP and retention
 
-`GET`/`POST /api/v1/projects/{project_id}/reviews/scheduling` read/configure project scheduling. The write body is `{expected_revision, automatic_hosted}` and requires project management. `GET`/`POST /api/v1/projects/{project_id}/reviews/pulls/{number}/scheduling` read/update a PR pause. The write body is `{expected_revision, paused, reason?}` and requires project write access. Writes require the normal explicit idempotency key. Unconfigured records read as revision zero and off/unpaused; writes return a new revision. Project reads report unavailable authorization or provider holds without exposing credential identifiers or tokens.
+`GET`/`POST /api/v1/projects/{project_id}/reviews/scheduling` read/configure project scheduling. The write body is `{expected_revision, automatic_hosted, automatic_cli?}` and requires project management. `GET`/`POST /api/v1/projects/{project_id}/reviews/pulls/{number}/scheduling` read/update a PR pause. The write body is `{expected_revision, paused, reason?}` and requires project write access. Writes require the normal explicit idempotency key. Unconfigured records read as revision zero and off/unpaused; writes return a new revision. Project reads report unavailable authorization or provider holds without exposing credential identifiers or tokens.
 
-Backups retain scheduling, PR pauses and automatic-intent attribution. Older bundles without this optional domain remain off. Restore remains inactive with provider execution held. Historical authorizers remain valid historical evidence after revocation or retirement.
+Backups retain scheduling, PR pauses and automatic-intent attribution. Older bundles without this optional domain remain off; version-one Hosted-only records migrate with automatic CLI off. Restore remains inactive with provider execution held. Historical authorizers remain valid historical evidence after revocation or retirement.
 
 ## Validation
 

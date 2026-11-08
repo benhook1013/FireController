@@ -47,13 +47,18 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 		var wire struct {
 			Revision *int64 `json:"expected_revision"`
 			Enabled  *bool  `json:"automatic_hosted"`
+			CLI      *bool  `json:"automatic_cli,omitempty"`
 			Key      string `json:"idempotency_key"`
 		}
 		if strictjson.Decode(raw, &wire) != nil || wire.Revision == nil || wire.Enabled == nil || !client.ValidMutationKey(wire.Key) {
 			return args, invalidArguments()
 		}
+		var present map[string]json.RawMessage
+		if json.Unmarshal(raw, &present) != nil || present["automatic_cli"] != nil && wire.CLI == nil {
+			return args, invalidArguments()
+		}
 		args.key = wire.Key
-		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: *wire.Revision, AutomaticHosted: *wire.Enabled}
+		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: *wire.Revision, AutomaticHosted: *wire.Enabled, AutomaticCLI: wire.CLI}
 		if client.ValidateConfigureReviewScheduling(args.reviewScheduling) != nil {
 			return arguments{}, invalidArguments()
 		}
@@ -95,9 +100,9 @@ func reviewSchedulingDefinitions() []definition {
 	pull := map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
 	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit original idempotency key; retain with the exact request after unknown outcome."}
 	return []definition{
-		{"review_scheduling_read", "Read this project's automatic Hosted setting and current queued PR pauses in one provider-free call. No settings, review or allowance changes. See docs/review-scheduling.md.", object(map[string]any{})},
-		{"review_scheduling_configure", "Project manager: explicitly enable or disable automatic future Hosted requests under existing source, obligation, round and provider guards. Defaults off; CLI stays explicitly requested; accepted requests can automatically wait through quota exhaustion without selecting additional PRs or rounds. Enabling retains this connection's current credential and active bound worker; withdrawn authority stops new automatic actions. This setting can authorize asynchronous provider work. Current revision and explicit key required; no automatic mutation retry. See docs/review-scheduling.md.", object(map[string]any{"expected_revision": revision, "automatic_hosted": map[string]any{"type": "boolean"}, "idempotency_key": key}, "expected_revision", "automatic_hosted", "idempotency_key")},
+		{"review_scheduling_read", "Read this project's automatic Hosted and CLI settings and current queued PR pauses in one provider-free call. No settings, review or allowance changes. See docs/review-scheduling.md.", object(map[string]any{})},
+		{"review_scheduling_configure", "Project manager: explicitly enable or disable automatic future Hosted or CLI requests under existing source, obligation, round and provider guards. Both default off. Optional automatic_cli preserves the current CLI setting when omitted. Existing grants and taper apply; no automatic adjudication or grant increase. Enabling retains this connection's current credential and active bound worker; withdrawn authority stops new automatic actions. This setting can authorize asynchronous provider work. Current revision and explicit key required; no automatic mutation retry. See docs/review-scheduling.md.", object(map[string]any{"expected_revision": revision, "automatic_hosted": map[string]any{"type": "boolean"}, "automatic_cli": map[string]any{"type": "boolean", "description": "Optional CLI opt-in; omission preserves the current setting."}, "idempotency_key": key}, "expected_revision", "automatic_hosted", "idempotency_key")},
 		{"review_pull_scheduling_read", "Read one PR's temporary scheduling pause before or after an intent exists. Does not change Draft, grant, taper, closure or active provider work.", object(map[string]any{"pull_number": pull}, "pull_number")},
-		{"review_pull_scheduling_update", "Writer: explicitly pause or resume new and undispatched reviews for one PR, including automatic Hosted selection. Does not cancel already-issued reviews or stop collecting results, change round credit or clear a separate operation pause. Retain current revision/key; reason is optional plain text, cleared on resume. See docs/review-scheduling.md.", object(map[string]any{"pull_number": pull, "expected_revision": revision, "paused": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string", "maxLength": 256}, "idempotency_key": key}, "pull_number", "expected_revision", "paused", "idempotency_key")},
+		{"review_pull_scheduling_update", "Writer: explicitly pause or resume new and undispatched reviews for one PR, including automatic Hosted and CLI selection. Does not cancel already-issued reviews or stop collecting results, change round credit or clear a separate operation pause. Retain current revision/key; reason is optional plain text, cleared on resume. See docs/review-scheduling.md.", object(map[string]any{"pull_number": pull, "expected_revision": revision, "paused": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string", "maxLength": 256}, "idempotency_key": key}, "pull_number", "expected_revision", "paused", "idempotency_key")},
 	}
 }

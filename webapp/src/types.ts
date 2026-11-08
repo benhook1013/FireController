@@ -3,7 +3,7 @@ export interface Page<T> {items: T[]; cursor?: string; has_more: boolean}
 export interface Project {handle?: string; id: string; name: string; github_repository_id: number; repository: string}
 export interface Worker {id: string; project_id: string; name: string; retired?: boolean}
 export interface PullScheduling {project_id: string; pull_number: number; revision: number; paused: boolean; reason: string; actor_id?: string; updated_at?: string}
-export interface ReviewScheduling {project_id: string; revision: number; automatic_hosted: boolean; paused_pulls: PullScheduling[]; authorizing_worker_id?: string; updated_at?: string; reason?: 'authorizer_unavailable'|'provider_hold'}
+export interface ReviewScheduling {project_id: string; revision: number; automatic_hosted: boolean; automatic_cli?: boolean; paused_pulls: PullScheduling[]; authorizing_worker_id?: string; updated_at?: string; reason?: 'authorizer_unavailable'|'provider_hold'}
 export interface SchedulingReceipt {id: string; state: 'scheduling_configured'|'pull_scheduling_updated'; revision: number}
 export interface WorkerOptions extends PageOptions {include_retired?: boolean}
 export interface WorkerRetirementBlockers {count: number; ids: string[]}

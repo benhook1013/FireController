@@ -19,7 +19,8 @@ describe('review scheduling browser API',()=>{
     vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{paths.push(new URL(String(input)).pathname);expect(init?.method).toBe('GET');return json(String(input).includes('/pulls/')?paused:settings);}));
     expect(await api.reviewScheduling()).toEqual(settings);expect(paths).toHaveLength(1);
     expect(await api.pullScheduling(7)).toEqual(paused);
-    for(const value of [{...settings,project_id:'other'},{...settings,reason:'made_up'},{...settings,paused_pulls:[paused,paused]},{...settings,paused_pulls:[{...paused,project_id:'other'}]},{...settings,paused_pulls:[{...paused,paused:false}]},{...settings,revision:0}, {...settings,automatic_hosted:null}]) {
+    for(const automatic_cli of [true,false]) {const value={...settings,automatic_hosted:false,automatic_cli};vi.stubGlobal('fetch',vi.fn(async()=>json(value)));expect(await api.reviewScheduling()).toEqual(value);}
+    for(const value of [{...settings,project_id:'other'},{...settings,reason:'made_up'},{...settings,paused_pulls:[paused,paused]},{...settings,paused_pulls:[{...paused,project_id:'other'}]},{...settings,paused_pulls:[{...paused,paused:false}]},{...settings,revision:0}, {...settings,automatic_hosted:null}, {...settings,automatic_cli:null}, {...settings,automatic_cli:'true'}, {...settings,automatic_hosted:false,automatic_cli:true,authorizing_worker_id:undefined}]) {
       vi.stubGlobal('fetch',vi.fn(async()=>json(value)));await expect(api.reviewScheduling()).rejects.toMatchObject({code:'invalid_response'});
     }
     for(const value of [{...paused,pull_number:8},{...paused,paused:false},{...paused,revision:-1},{...paused,reason:'bad\nreason'}]) {vi.stubGlobal('fetch',vi.fn(async()=>json(value)));await expect(api.pullScheduling(7)).rejects.toMatchObject({code:'invalid_response'});}

@@ -200,6 +200,9 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		}
 		return Configuration{}, 0, "", err
 	}
+	if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
+		return Configuration{}, 0, reason, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
 		return c, 0, "", err
@@ -232,7 +235,7 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
 	}
-	if busy && r.Channel == "hosted" {
+	if busy {
 		var automatic bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic); err != nil {
 			return c, 0, "", err
@@ -240,7 +243,7 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		if automatic {
 			// Existing queued requests retain their turn; automatic front
 			// evaluation considers only the prefix before the earliest one.
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel='hosted' AND state IN ('preparing','posting','active','uncertain'))`, r.ProjectID).Scan(&busy); err != nil {
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 				return c, 0, "", err
 			}
 		}

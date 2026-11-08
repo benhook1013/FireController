@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/benhook1013/FireController/internal/strictjson"
 	"math"
 	"net/http"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 type ReviewScheduling struct {
 	ProjectID           string                 `json:"project_id"`
 	Revision            int64                  `json:"revision"`
+	AutomaticCLI        bool                   `json:"automatic_cli"`
 	AutomaticHosted     bool                   `json:"automatic_hosted"`
 	PausedPulls         []ReviewPullScheduling `json:"paused_pulls"`
 	AuthorizingWorkerID string                 `json:"authorizing_worker_id,omitempty"`
@@ -33,6 +36,7 @@ type ReviewPullScheduling struct {
 type ConfigureReviewSchedulingRequest struct {
 	ExpectedRevision int64 `json:"expected_revision"`
 	AutomaticHosted  bool  `json:"automatic_hosted"`
+	AutomaticCLI     *bool `json:"automatic_cli,omitempty"`
 }
 
 type ConfigureReviewPullSchedulingRequest struct {
@@ -82,19 +86,43 @@ func validPullScheduling(value ReviewPullScheduling, project string, pull int64)
 	return validID(value.ActorID) && validSchedulingTime(value.UpdatedAt)
 }
 
+// Older services omit automatic_cli. Accept that as off while always emitting
+// an explicit boolean in CLI/MCP output, including after an enabled read.
+func decodeReviewSchedulingResponse(data []byte, dst any) error {
+	if err := strictjson.Decode(data, dst); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return strictjson.ErrSyntax
+	}
+	if _, present := fields["automatic_cli"]; !present {
+		fields["automatic_cli"] = json.RawMessage("false")
+		var err error
+		data, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+	}
+	if !completeShape(data, dst) {
+		return strictjson.ErrSyntax
+	}
+	return nil
+}
+
 func (c *Client) ReviewScheduling(ctx context.Context) (ReviewScheduling, error) {
 	var value ReviewScheduling
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "scheduling"), nil, true, "", nil, http.StatusOK, false, &value, 128<<10, decodeResponse); err != nil {
+	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "scheduling"), nil, true, "", nil, http.StatusOK, false, &value, 128<<10, decodeReviewSchedulingResponse); err != nil {
 		return ReviewScheduling{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || value.Revision < 0 || value.PausedPulls == nil || len(value.PausedPulls) > 100 || value.Reason != "" && !safeCode(value.Reason) || value.AuthorizingWorkerID != "" && !validID(value.AuthorizingWorkerID) {
 		return ReviewScheduling{}, invalidResponse()
 	}
 	if value.Revision == 0 {
-		if value.AutomaticHosted || value.AuthorizingWorkerID != "" || value.UpdatedAt != "" || value.Reason != "" {
+		if value.AutomaticHosted || value.AutomaticCLI || value.AuthorizingWorkerID != "" || value.UpdatedAt != "" || value.Reason != "" {
 			return ReviewScheduling{}, invalidResponse()
 		}
-	} else if !validSchedulingTime(value.UpdatedAt) || value.AutomaticHosted && value.AuthorizingWorkerID == "" {
+	} else if !validSchedulingTime(value.UpdatedAt) || (value.AutomaticHosted || value.AutomaticCLI) && value.AuthorizingWorkerID == "" {
 		return ReviewScheduling{}, invalidResponse()
 	}
 	seen := make(map[int64]bool, len(value.PausedPulls))

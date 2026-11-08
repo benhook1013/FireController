@@ -25,7 +25,7 @@ export function ReviewSchedulingBar() {
   const value=query.data;
   if (!value) return query.error ? <span className="review-scheduling-status" title="Scheduling settings could not be loaded.">Scheduling unavailable</span> : null;
   const blocked=value.reason==='provider_hold'?'Provider hold':value.reason==='authorizer_unavailable'?'Authorizer unavailable':undefined;
-  return <div className="review-scheduling-bar"><span className="review-scheduling-status" title="Automatic Hosted requests only; CLI remains manual.">Automatic Hosted: {value.automatic_hosted?'On':'Off'}</span>{blocked && <span className="review-scheduling-warning" title={value.reason}>{blocked}</span>}
+  return <div className="review-scheduling-bar"><span className="review-scheduling-status" title="Each channel is separately opt-in under existing grants and review limits.">Automatic Hosted: {value.automatic_hosted?'On':'Off'} · Automatic CLI: {value.automatic_cli?'On':'Off'}</span>{blocked && <span className="review-scheduling-warning" title={value.reason}>{blocked}</span>}
     {session.api.browserCapabilities?.can_edit_presentation && <ProjectSchedulingEditor value={value} reload={async()=>{const result=await query.refetch();return result.data;}} />}
   </div>;
 }
@@ -48,16 +48,17 @@ function ProjectSchedulingEditor({value,reload}:{value:ReviewScheduling;reload()
     async()=>{setSavedDraft({automatic:desired,worker});await queryClient.invalidateQueries({queryKey:reviewSchedulingKey(key)});});
   useEffect(()=>{if(action.done){const details=form.current?.closest('details');if(details) details.open=false;}},[action.done]);
   const automatic=action.retained?.input.automatic ?? desired;
+  const needsAuthorizer=automatic || Boolean(value.automatic_cli);
   const authorizer=action.retained?.input.worker ?? (selected || worker);
-  const submit=(event:FormEvent)=>{event.preventDefault();void action.run({worker:automatic?authorizer:'',automatic,revision:observedRevision});};
+  const submit=(event:FormEvent)=>{event.preventDefault();void action.run({worker:needsAuthorizer?authorizer:'',automatic,revision:observedRevision});};
   const current=()=>{setDesired(value.automatic_hosted);setObservedRevision(value.revision);setSavedDraft({automatic:value.automatic_hosted,worker});};
-  return <SchedulingDetails label="Scheduling" onOpen={()=>{setChoose(true);if(!action.locked){current();action.clearNotice();}}}><form ref={form} data-browser-draft data-browser-dirty={desired!==savedDraft.automatic || worker!==savedDraft.worker} onSubmit={submit}><strong>Review scheduling</strong><label className="review-scheduling-checkbox"><input type="checkbox" checked={automatic} disabled={action.locked} onChange={event=>setDesired(event.target.checked)} />Automatic Hosted reviews</label><p>CLI stays manual. Existing grants and review limits still apply.</p>
-    {automatic && !selected && <label>Authorizing worker<select aria-label="Authorizing worker" value={action.retained?.input.worker ?? worker} disabled={action.locked} required onChange={event=>setWorker(event.target.value)}><option value="">Choose an active worker</option>{choices.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-    {automatic && selected && <p>Authorizing worker: {session.worker?.name}</p>}
-    {automatic && !selected && workers.isFetching && <small>Loading workers…</small>}
-    {automatic && !selected && workers.error && <p role="alert">Active workers could not be loaded. <button type="button" onClick={()=>void workers.refetch()}>Retry workers</button></p>}
-    {automatic && !selected && workers.data?.has_more && <button type="button" disabled={workers.isFetching} onClick={()=>{setLoaded(choices);setCursor(workers.data?.cursor ?? '');}}>Load more workers</button>}
-    <button type="submit" disabled={action.busy || automatic && !authorizer || !action.locked && !automatic && !value.automatic_hosted}>{action.busy?'Saving…':action.locked?'Retry exact scheduling change':automatic===value.automatic_hosted?(automatic?'Save authorization':'Save scheduling'):`${automatic?'Enable':'Disable'} automatic Hosted`}</button>
+  return <SchedulingDetails label="Scheduling" onOpen={()=>{setChoose(true);if(!action.locked){current();action.clearNotice();}}}><form ref={form} data-browser-draft data-browser-dirty={desired!==savedDraft.automatic || worker!==savedDraft.worker} onSubmit={submit}><strong>Review scheduling</strong><label className="review-scheduling-checkbox"><input type="checkbox" checked={automatic} disabled={action.locked} onChange={event=>setDesired(event.target.checked)} />Automatic Hosted reviews</label><p>This control changes Hosted scheduling only. CLI scheduling is preserved; use CLI or MCP to change it. Existing grants and review limits still apply.</p>
+    {needsAuthorizer && !selected && <label>Authorizing worker<select aria-label="Authorizing worker" value={action.retained?.input.worker ?? worker} disabled={action.locked} required onChange={event=>setWorker(event.target.value)}><option value="">Choose an active worker</option>{choices.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+    {needsAuthorizer && selected && <p>Authorizing worker: {session.worker?.name}</p>}
+    {needsAuthorizer && !selected && workers.isFetching && <small>Loading workers…</small>}
+    {needsAuthorizer && !selected && workers.error && <p role="alert">Active workers could not be loaded. <button type="button" onClick={()=>void workers.refetch()}>Retry workers</button></p>}
+    {needsAuthorizer && !selected && workers.data?.has_more && <button type="button" disabled={workers.isFetching} onClick={()=>{setLoaded(choices);setCursor(workers.data?.cursor ?? '');}}>Load more workers</button>}
+    <button type="submit" disabled={action.busy || needsAuthorizer && !authorizer || !action.locked && !automatic && !value.automatic_hosted}>{action.busy?'Saving…':action.locked?'Retry exact scheduling change':automatic===value.automatic_hosted?(automatic?'Save authorization':'Save scheduling'):`${automatic?'Enable':'Disable'} automatic Hosted`}</button>
     {Boolean(action.error) && !action.locked && <button type="button" onClick={()=>void reload().then(updated=>{if(updated){setObservedRevision(updated.revision);setDesired(updated.automatic_hosted);setSavedDraft({automatic:updated.automatic_hosted,worker});}})}>Reload current settings</button>}<ActionNotice error={action.error} done={action.done} />
   </form></SchedulingDetails>;
 }

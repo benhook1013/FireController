@@ -225,7 +225,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 1, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 1, "review_source_refusals": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -647,7 +647,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		if versions["review_selection"] == 0 || versions["review_execution"] == 0 {
 			return nil, invalid()
 		}
-		if err = validateSchedulingPhysicalSchema(ctx, db); err != nil {
+		if err = validateSchedulingPhysicalSchema(ctx, db, versions["review_scheduling"]); err != nil {
 			return nil, err
 		}
 	}
@@ -689,6 +689,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_scheduling" && versions["review_scheduling"] >= 2 {
+			columns += " automatic_cli"
+		}
 		if name == "inbox_messages" && versions["inbox"] >= 2 {
 			columns += " origin_kind"
 		}
@@ -1773,10 +1776,14 @@ func workerRetirementColumn(column, kind string, notnull, pk int, defaultValue a
 
 // Bind optional scheduling controls and attribution to their owning declarations.
 // Inspection never executes or repairs schema supplied by a bundle.
-func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader) error {
+func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
 	type object struct{ kind, definition string }
 	expected := map[string]object{}
-	for _, statement := range reviewexec.SchedulingSchemaSQL() {
+	statements := reviewexec.SchedulingSchemaSQL()
+	if version >= 2 {
+		statements = reviewexec.SchedulingSchemaV2SQL()
+	}
+	for _, statement := range statements {
 		fields := strings.Fields(statement)
 		if len(fields) < 4 || fields[0] != "CREATE" || fields[1] != "TABLE" && fields[1] != "INDEX" {
 			return invalid()

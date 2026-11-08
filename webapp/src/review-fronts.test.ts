@@ -126,8 +126,8 @@ describe('independent queued priority during source failure',()=>{
   const waiting=():ReviewFronts=>({...value(),channels:[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',checked_at:time,source_progress:{verified_pull_count:0,queue_pull_count:4,next_unverified_pull_number:1},queued_priority:{pull_number:2,head_sha:sha,base_sha:base,base_ref:'main'}}]});
   it('keeps priority visible without making a ready claim, including later queued work',()=>{
     const v=waiting();
-    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Hosted review priority',channels:['hosted']});
-    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Queue priority',description:expect.stringContaining('Source verification unavailable')});
+    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Source unverified',description:expect.stringContaining('Source verification unavailable')});
     expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
     expect(v.channels[0].state).toBe('unknown');
     expect(v.channels[0].pull_number).toBeUndefined();

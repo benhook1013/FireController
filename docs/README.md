@@ -21,7 +21,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Automatic GitHub observation](github-observation.md): service-owned PR/CI updates and pickup of Hosted reviews started directly on GitHub, independent of review requests.
 - [PR inbox notifications](review-notifications.md): durable review-ready and PR merge/close messages, automatic worker following and persistent opt-out.
 - [Per-PR review rounds](review-round-controls.md): retained round limits, taper, channel closure and independent queue scheduling for adoption.
-- [Review scheduling](review-scheduling.md): optional automatic Hosted requests and per-PR pauses over ordinary admission and execution.
+- [Review scheduling](review-scheduling.md): optional automatic Hosted/CLI requests and per-PR pauses over ordinary admission and execution.
 - [Public project website](public-site.md): shareable project showcase, publication selection and the public/private field boundary.
 - [Project presentation and metadata](project-presentation.md): selected appearance records, semantic theme validation and isolated live project updates.
 - [Project map](project-map.md): revisioned workstreams, return points and explicit job references, with implementation status at the owner.

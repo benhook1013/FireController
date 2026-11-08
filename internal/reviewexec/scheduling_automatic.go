@@ -15,7 +15,7 @@ import (
 )
 
 func automaticDenied() error {
-	return core.Fail("automation_authorization_changed", "Automatic Hosted scheduling is disabled or its original authorizer is no longer authorized.", 403)
+	return core.Fail("automation_authorization_changed", "Automatic review scheduling is disabled or its original authorizer is no longer authorized.", 403)
 }
 func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) error {
 	var revision int64
@@ -31,7 +31,7 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	if err != nil {
 		return err
 	}
-	if revision > s.Revision || !s.AutomaticHosted || s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential || r.ActorID != actor || r.WorkerID != worker || r.Channel != "hosted" {
+	if revision > s.Revision || !automaticChannelEnabled(s, r.Channel) || s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential || r.ActorID != actor || r.WorkerID != worker || !validChannel(r.Channel) {
 		return automaticDenied()
 	}
 	_, err = e.store.ProjectAutomationScope(ctx, tx, r.ProjectID, actor, worker, credential)
@@ -77,8 +77,15 @@ func automaticBasisQuery(query string, pinJoins bool) string {
 // therefore cannot create their own next automatic request. Only original source
 // facts and deliberate controls, completed results and finding work change it.
 func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull int64) (string, error) {
+	return automaticPullBasisChannel(ctx, tx, project, pull, "hosted")
+}
+
+func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
 	h := sha256.New()
 	appendRows := func(query string, pinJoins bool, args ...any) error {
+		if channel == "cli" {
+			query = strings.ReplaceAll(query, "revision,automatic_hosted", "revision,automatic_cli")
+		}
 		h.Write([]byte(query))
 		h.Write([]byte{0})
 		rows, err := tx.QueryContext(ctx, automaticBasisQuery(query, pinJoins), args...)
@@ -129,8 +136,8 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 		{`SELECT revision FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, []any{project}},
 		{`SELECT revision FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, []any{project}},
 		{`SELECT revision,paused,reason FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, []any{project, pull}},
-		{`SELECT epoch,grant_revision,closed,minimum,maximum,maximum_unbounded,used,dry,tapered FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel='hosted'`, []any{project, pull}},
-		{`SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='hosted' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`, []any{project, pull}},
+		{`SELECT epoch,grant_revision,closed,minimum,maximum,maximum_unbounded,used,dry,tapered FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel='` + channel + `'`, []any{project, pull}},
+		{`SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='` + channel + `' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`, []any{project, pull}},
 		{`SELECT id,revision,state,disposition,has_fix FROM review_finding_routes WHERE project_id=? AND (source_pull_number=? OR target_pull_number=?) ORDER BY id LIMIT 10001`, []any{project, pull, pull}},
 		{`SELECT o.id,o.revision,o.status FROM review_adoption_targets t JOIN review_adoption_obligations o ON o.id=t.obligation_id AND o.project_id=t.project_id WHERE t.project_id=? AND t.pull_number=? ORDER BY o.id LIMIT 10001`, []any{project, pull}},
 	}
@@ -147,14 +154,14 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 		if err := appendRows(`SELECT p.state,p.head_sha,p.base_ref,p.base_sha,json_extract(p.metadata_json,'$.is_draft') FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions p ON p.project_id=m.project_id AND p.number=m.number AND p.version_revision=m.version_revision WHERE c.project_id=? AND c.number=?`, false, project, pull); err != nil {
 			return "", err
 		}
-		if err := appendRows(automaticCurrentRunsBasisQuery, true, project, pull); err != nil {
+		if err := appendRows(strings.ReplaceAll(automaticCurrentRunsBasisQuery, "'hosted'", "'"+channel+"'"), true, project, pull); err != nil {
 			return "", err
 		}
 		if err := appendRows(automaticCurrentFindingsBasisQuery, true, project, pull); err != nil {
 			return "", err
 		}
 	}
-	dependencies, err := automaticDependencies(ctx, tx, project, pull)
+	dependencies, err := automaticDependenciesChannel(ctx, tx, project, pull, channel)
 	if err != nil {
 		return "", err
 	}
@@ -167,8 +174,12 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 // These local facts can make a distinct intent eligible; they never substitute
 // for the selection worker's fresh source or final predecessor guard.
 func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull int64) ([]any, error) {
+	return automaticDependenciesChannel(ctx, tx, project, pull, "hosted")
+}
+
+func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) ([]any, error) {
 	out := []any{}
-	frame, found, err := readFrontFrame(ctx, tx, project, "hosted")
+	frame, found, err := readFrontFrame(ctx, tx, project, channel)
 	if err != nil || !found {
 		return out, err
 	}
@@ -191,11 +202,11 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 			out = append(out, []any{parent, "source_prefix_incomplete"})
 			break
 		}
-		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, "hosted")
+		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
 		if err != nil {
 			return nil, err
 		}
-		control, err := readRoundRecord(ctx, tx, project, parent, "hosted")
+		control, err := readRoundRecord(ctx, tx, project, parent, channel)
 		if err != nil {
 			return nil, err
 		}
@@ -208,7 +219,7 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 			return nil, err
 		}
 		var completed int64
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='hosted' AND state='ready'`, project, parent).Scan(&completed); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
 			return nil, err
 		}
 		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes})
@@ -221,14 +232,18 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 // operation's state transition as a reason to recreate that operation. A
 // selected PR is suppressed by its own semantic basis, independently of peers.
 func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c Configuration, ignoreSelection string) (string, bool, error) {
-	limit, err := automaticHostedQueuedPrefix(ctx, tx, project, c)
+	return automaticPlanningBasisChannel(ctx, tx, project, c, ignoreSelection, "hosted")
+}
+
+func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project string, c Configuration, ignoreSelection string, channel string) (string, bool, error) {
+	limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, project, c, channel)
 	if err != nil {
 		return "", false, err
 	}
 	values := make([]any, 0, len(c.Queue))
 	remaining := []int64{}
 	for position, pull := range c.Queue {
-		basis, err := automaticPullBasis(ctx, tx, project, pull)
+		basis, err := automaticPullBasisChannel(ctx, tx, project, pull, channel)
 		if err != nil {
 			return "", false, err
 		}
@@ -243,7 +258,7 @@ func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c C
 		if p.Paused {
 			continue
 		}
-		pending, err := automaticHostedPendingPull(ctx, tx, project, pull)
+		pending, err := automaticHostedPendingPullChannel(ctx, tx, project, pull, channel)
 		if err != nil {
 			return "", false, err
 		}
@@ -266,20 +281,28 @@ func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c C
 // reconsider only earlier PRs, rather than duplicate that request or prefetch
 // farther successors merely because the request is not executing yet.
 func automaticHostedQueuedPrefix(ctx context.Context, tx *sql.Tx, project string, c Configuration) (int, error) {
+	return automaticHostedQueuedPrefixChannel(ctx, tx, project, c, "hosted")
+}
+
+func automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql.Tx, project string, c Configuration, channel string) (int, error) {
 	queue, err := json.Marshal(c.Queue)
 	if err != nil {
 		return 0, err
 	}
 	var limit int
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='hosted' AND o.state='queued'
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='`+channel+`' AND o.state='queued'
 AND NOT EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
 AND NOT EXISTS(SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)`, len(c.Queue), string(queue), project).Scan(&limit)
 	return limit, err
 }
 
 func automaticHostedPendingPull(ctx context.Context, tx *sql.Tx, project string, pull int64) (bool, error) {
+	return automaticHostedPendingPullChannel(ctx, tx, project, pull, "hosted")
+}
+
+func automaticHostedPendingPullChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (bool, error) {
 	var pending bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel='hosted' AND state IN('queued','preparing','posting','active','uncertain'))`, project, pull).Scan(&pending)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state IN('queued','preparing','posting','active','uncertain'))`, project, pull).Scan(&pending)
 	return pending, err
 }
 
@@ -291,7 +314,7 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	if !automatic {
 		return false, nil
 	}
-	pending, err := automaticHostedPendingPull(ctx, tx, r.ProjectID, pull)
+	pending, err := automaticHostedPendingPullChannel(ctx, tx, r.ProjectID, pull, r.Channel)
 	if err != nil || pending {
 		return pending, err
 	}
@@ -299,14 +322,14 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	if err != nil {
 		return false, err
 	}
-	limit, err := automaticHostedQueuedPrefix(ctx, tx, r.ProjectID, c)
+	limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 	if err != nil {
 		return false, err
 	}
 	if position := slices.Index(c.Queue, pull); position < 0 || position >= limit {
 		return true, nil
 	}
-	basis, err := automaticPullBasis(ctx, tx, r.ProjectID, pull)
+	basis, err := automaticPullBasisChannel(ctx, tx, r.ProjectID, pull, r.Channel)
 	if err != nil {
 		return false, err
 	}
@@ -326,13 +349,13 @@ func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pu
 	if err != nil {
 		return err
 	}
-	basis, _, err := automaticPlanningBasis(ctx, tx, r.ProjectID, c, r.ID)
+	basis, _, err := automaticPlanningBasisChannel(ctx, tx, r.ProjectID, c, r.ID, r.Channel)
 	if err != nil {
 		return err
 	}
 	pullBasis := ""
 	if pull > 0 {
-		pullBasis, err = automaticPullBasis(ctx, tx, r.ProjectID, pull)
+		pullBasis, err = automaticPullBasisChannel(ctx, tx, r.ProjectID, pull, r.Channel)
 		if err != nil {
 			return err
 		}
@@ -440,7 +463,8 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 				return err
 			}
 			if seen {
-				return nil
+				worked, err = e.retryAutomaticSourceTx(ctx, tx, project, basis, s.Revision, time.Now())
+				return err
 			}
 			// Use the same acceptance implementation as explicit Run, in this exact
 			// reauthorized snapshot, without manufacturing a credential or HTTP request.
@@ -477,9 +501,17 @@ func (e *Engine) coordinateAutomaticHosted(ctx context.Context, readers map[stri
 	}
 	e.automaticNext = now.Add(5 * time.Second)
 	worked, err := e.generateAutomaticHosted(ctx, readers)
+	if err == nil {
+		cliWorked, cliErr := e.generateAutomaticCLI(ctx, readers)
+		worked, err = worked || cliWorked, cliErr
+	}
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "overloaded" {
 		return false, nil
 	}
 	return worked, err
+}
+
+func automaticChannelEnabled(s schedulingRecord, channel string) bool {
+	return channel == "hosted" && s.AutomaticHosted || channel == "cli" && s.AutomaticCLI
 }

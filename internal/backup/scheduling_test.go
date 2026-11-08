@@ -262,3 +262,38 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 		t.Fatal("old bundle startup enabled automation", count, err)
 	}
 }
+
+func TestSchedulingCLIBackupAndV1Compatibility(t *testing.T) {
+	f, e, _ := schedulingBackupFixture(t)
+	one := int64(1)
+	on := true
+	if _, err := e.ConfigureScheduling(t.Context(), routePolicyInventoryScope(t, f), "enable-cli-backup", reviewexec.SchedulingRequest{ExpectedRevision: &one, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	var err error
+	if _, err = Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal("CLI scheduling backup rejected", err)
+	}
+	old := schedulingBundleCopy(t, bundle.Path)
+	mutateBundleSQL(t, old, `ALTER TABLE review_scheduling DROP COLUMN automatic_cli; UPDATE metadata SET value='1' WHERE key='schema:review_scheduling'`)
+	if _, err = Inspect(t.Context(), old); err != nil {
+		t.Fatal("v1 scheduling backup rejected", err)
+	}
+	dest := filepath.Join(t.TempDir(), "v1-inactive")
+	if _, err = Restore(t.Context(), old, dest); err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(t.Context(), dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = reviewexec.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	var cli, hosted bool
+	if err = store.DB().QueryRow(`SELECT automatic_cli,automatic_hosted FROM review_scheduling WHERE project_id=?`, f.project).Scan(&cli, &hosted); err != nil || cli || !hosted {
+		t.Fatal("migration changed opt-in", cli, hosted, err)
+	}
+}

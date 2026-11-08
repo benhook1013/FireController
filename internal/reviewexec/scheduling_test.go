@@ -72,7 +72,7 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 		return w
 	}
 	w := call("GET", "scheduling", f.reader, "", "")
-	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"paused_pulls":[],"project_id":"exec-project-one","revision":0,"automatic_hosted":false}` {
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"paused_pulls":[],"project_id":"exec-project-one","revision":0,"automatic_cli":false,"automatic_hosted":false}` {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	w = call("GET", "pulls/2/scheduling", f.reader, "", "")
@@ -80,7 +80,7 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Revision != 0 || p.Reason != "" {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
+	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
 		if w = call("POST", "scheduling", f.writer, core.NewID("key"), body); w.Code != 400 {
 			t.Fatal(w.Code, w.Body.String())
 		}
