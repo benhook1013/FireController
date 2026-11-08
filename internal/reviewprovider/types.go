@@ -11,8 +11,11 @@ type Error struct {
 	Message           string
 	Status            int
 	RetryAfterSeconds int64
-	OutcomeUnknown    bool
-	cause             error
+	// RetryTiming is independent of the legacy rounded/capped scheduling hint.
+	// Only proven evidence supplies a provider floor; it never authorizes retry.
+	RetryTiming    RetryTimingEvidence
+	OutcomeUnknown bool
+	cause          error
 }
 
 func (e *Error) Error() string { return e.Message }

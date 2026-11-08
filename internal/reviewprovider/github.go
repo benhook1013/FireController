@@ -462,27 +462,33 @@ func providerTransportTimeout(err error) bool {
 
 func statusError(response *http.Response, mutation bool) error {
 	status := response.StatusCode
-	retry := retryAfter(response.Header, time.Now())
+	now := time.Now()
+	retry := retryAfter(response.Header, now)
+	failure := func(code, message string, status int, retry int64, unknown bool) *Error {
+		result := providerError(code, message, status, retry, unknown)
+		result.RetryTiming = retryTiming(response.Header, now)
+		return result
+	}
 	unknown := mutation && (status == http.StatusRequestTimeout || status >= 200 && status < 300 || status >= 300 && status < 400 || status >= 500)
 	switch {
 	case status == http.StatusNotFound:
-		return providerError("provider_not_found", "The requested provider resource was not found.", status, retry, false)
+		return failure("provider_not_found", "The requested provider resource was not found.", status, retry, false)
 	case status == http.StatusTooManyRequests:
-		return providerError("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
+		return failure("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
 	case status == http.StatusForbidden && (response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""):
-		return providerError("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
+		return failure("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return providerError("provider_unauthorized", "The provider rejected authorization.", status, retry, false)
+		return failure("provider_unauthorized", "The provider rejected authorization.", status, retry, false)
 	case status >= 500:
-		return providerError("provider_unavailable", "The provider is temporarily unavailable.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider is temporarily unavailable.", status, retry, unknown)
 	case status == http.StatusRequestTimeout:
-		return providerError("provider_unavailable", "The provider request timed out.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider request timed out.", status, retry, unknown)
 	case status >= 300 && status < 400:
-		return providerError("provider_unavailable", "The provider returned an unsupported redirect.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider returned an unsupported redirect.", status, retry, unknown)
 	case status >= 200 && status < 300:
-		return providerError("provider_invalid_response", "The provider returned an unexpected success response.", status, retry, unknown)
+		return failure("provider_invalid_response", "The provider returned an unexpected success response.", status, retry, unknown)
 	default:
-		return providerError("provider_unavailable", "The provider request was rejected.", status, retry, false)
+		return failure("provider_unavailable", "The provider request was rejected.", status, retry, false)
 	}
 }
 
