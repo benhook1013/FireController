@@ -396,20 +396,7 @@ func publishExternalHostedInputs(ctx context.Context, tx *sql.Tx, target lifecyc
 func publishExternalHostedInputsBounded(ctx context.Context, tx *sql.Tx, target lifecycleTarget, runs []reviews.RunInput, limit int) (bool, error) {
 	held, appended := false, 0
 	for len(runs) > 0 && appended < limit {
-		batch := []reviews.RunInput{}
-		findings := 0
-		for len(batch) < len(runs) && len(batch) < limit-appended {
-			candidate := runs[len(batch)]
-			if findings+len(candidate.Findings) > 1000 {
-				break
-			}
-			encoded, err := json.Marshal(append(batch, candidate))
-			if err != nil || len(encoded) > 256<<10 {
-				break
-			}
-			batch = append(batch, candidate)
-			findings += len(candidate.Findings)
-		}
+		batch := externalHostedInputBatch(runs, limit-appended)
 		if len(batch) == 0 {
 			// The batching budget is an efficiency target, not the trusted per-run
 			// contract. The publisher checks a larger individual run in full.
@@ -443,6 +430,35 @@ func publishExternalHostedInputsBounded(ctx context.Context, tx *sql.Tx, target 
 	}
 	return held || len(runs) > 0, nil
 }
+
+// externalHostedInputBatch encodes each candidate once instead of repeatedly
+// encoding the accepted prefix while holding the background writer transaction.
+func externalHostedInputBatch(runs []reviews.RunInput, limit int) []reviews.RunInput {
+	batch := []reviews.RunInput{}
+	findings, size := 0, 2 // JSON array brackets, even for an empty batch.
+	for len(batch) < len(runs) && len(batch) < limit {
+		candidate := runs[len(batch)]
+		if findings+len(candidate.Findings) > 1000 {
+			break
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			break
+		}
+		nextSize := size + len(encoded)
+		if len(batch) > 0 {
+			nextSize++ // A comma only between adjacent array elements.
+		}
+		if nextSize > 256<<10 {
+			break
+		}
+		batch = append(batch, candidate)
+		findings += len(candidate.Findings)
+		size = nextSize
+	}
+	return batch
+}
+
 func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycleTarget, runs []reviews.RunInput) (changed, unsupported bool, err error) {
 	if _, err = tx.ExecContext(ctx, `SAVEPOINT external_hosted_candidate`); err != nil {
 		return false, false, err
