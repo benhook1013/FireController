@@ -173,6 +173,15 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 			return nil, err
 		}
 	}
+	if state.Finalized {
+		evidence, _, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, state.EvidenceID)
+		if err != nil {
+			return nil, err
+		}
+		if err := completeRoundControl(ctx, tx, scope.ProjectID, evidence.OperationID); err != nil {
+			return nil, err
+		}
+	}
 	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
 		return nil, err
 	}

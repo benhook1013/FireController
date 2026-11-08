@@ -101,7 +101,7 @@ func bundleNativeReferences(t *testing.T, f *restoreFixture) (string, string) {
 		t.Fatal(err)
 	}
 	previous := int64(1)
-	_, err = e.Configure(ctx, scope, "bundle-config", reviewexec.Configuration{ExpectedRevision: &previous, CapabilityID: "bundle-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}})
+	_, err = seedPreRoundBackupConfiguration(t, f, scope, "bundle-config", reviewexec.Configuration{ExpectedRevision: &previous, CapabilityID: "bundle-cli", Mode: "independent", Queue: []int64{4}, Channels: []string{"cli"}})
 	if err != nil {
 		t.Fatal(err)
 	}

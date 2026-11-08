@@ -82,6 +82,8 @@ Startup validates configuration without opening the credential or contacting the
 | `review_routes_list` | Required pull_number; optional limit/cursor; compact incoming routes in the bound project. |
 | `review_route_decide` | Required idempotency_key/route_id/expected_revision/disposition/reason; independent receiving decision. |
 | `review_route_fix` | Required idempotency_key/route_id/expected_revision/expected_sha/fix_sha/proof_note; guarded receiving fix reference. |
+| `review_rounds_read` | Required pull_number/channel; compact native per-PR/channel grant, limits, cumulative consumed and clean counts, taper and closure. No provider work. |
+| `review_rounds_configure` | Required idempotency_key/pull_number/channel/expected_revision/action; grant requires minimum/maximum, taper requires taper, and close omits allocation fields. Project-write permission; original-key replay does not buy another round. See [round controls](review-round-controls.md). |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
 | `review_queue_edit` | Administrator-only native `document` plus `idempotency_key`; selected metadata, explicit retirement/reactivation and relative ordering through [bounded queue edits](review-workspace.md#bounded-queue-edits). No provider work or automatic retry. |
 | `review_pull` | Required pull_number, optional snapshot; compact PR summary with latest attempts per channel. |

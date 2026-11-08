@@ -70,7 +70,12 @@ func (f *attemptFixture) configure(t *testing.T, project, capability string, pre
 	t.Helper()
 	c := Configuration{ExpectedRevision: &previous, CapabilityID: capability, Mode: "independent", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}, Paused: paused}
 	phaseStarted := time.Now()
-	_, err := f.e.Configure(context.Background(), f.scope(t, project, f.admin, true), fmt.Sprintf("config-%s-%d", project, previous), c)
+	var err error
+	if previous == 0 {
+		seedLegacyExecutionConfiguration(t, f, project, fmt.Sprintf("config-%s-%d", project, previous), c)
+	} else {
+		_, err = f.e.Configure(context.Background(), f.scope(t, project, f.admin, true), fmt.Sprintf("config-%s-%d", project, previous), c)
+	}
 	if err != nil {
 		t.Fatalf("fixture execution configuration after %s: %v", time.Since(phaseStarted), err)
 	}
