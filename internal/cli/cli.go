@@ -199,11 +199,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.command == "reviews" && call.subcommand == "operation" {
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
 	}
-	// Identity recovery gets up to ten seconds; operations keep their own limits.
-	timeout = max(timeout, 3*serviceTimeout)
 	if call.reviewRun != nil {
 		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)
 	}
+	// Identity recovery gets up to ten seconds; operations keep their own limits.
+	timeout = max(timeout, 3*serviceTimeout)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	service, err := client.New(requestCtx, binding)
