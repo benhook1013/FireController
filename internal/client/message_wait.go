@@ -89,6 +89,11 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			}
 			return MessageEventPage{Items: []MessageEvent{}, Cursor: lastCursor, TimedOut: true}, nil
 		}
+		if !ready && interruption != nil && errors.Is(context.Cause(stream), context.DeadlineExceeded) {
+			// Establishment expired after reconnectable failures; retain the last
+			// safe cause and saved-cursor guidance. Caller/outer expiry wins above.
+			return MessageEventPage{}, interruption
+		}
 		return MessageEventPage{}, contextError(context.Cause(stream))
 	}
 

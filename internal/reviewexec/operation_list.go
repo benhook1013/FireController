@@ -58,6 +58,11 @@ func validOperationSummary(o OperationSummary) bool {
 	return false
 }
 
+// pendingOperationCandidates starts with live-state index entries and retained
+// reservations, never with terminal history. CROSS JOIN preserves that traversal
+// order; the outer query sorts only candidates. Both branches are disjoint.
+const pendingOperationCandidates = `(SELECT p.id FROM review_operations p INDEXED BY review_operations_pending WHERE p.project_id=? AND p.state IN ('queued','preparing','posting','active','uncertain') UNION ALL SELECT p.id FROM review_execution_reservations r CROSS JOIN review_execution_attempts a ON a.id=r.attempt_id CROSS JOIN review_operations p ON p.id=a.operation_id WHERE p.project_id=? AND a.project_id=p.project_id AND p.attempt_id=a.id AND p.state='held') pending CROSS JOIN review_operations o ON o.id=pending.id`
+
 // ListOperations reads one authorized page. Mutable states are evaluated anew
 // on every page; a cursor does not promise a historical state snapshot.
 func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options OperationListOptions) (OperationsPage, error) {
@@ -87,8 +92,14 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 	}
 	result := OperationsPage{ProjectID: scope.ProjectID, Items: []OperationSummary{}}
 	err = e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
-		query := `SELECT o.id,o.pull_number,o.channel,o.head_sha,o.worker_id,o.state,o.reason,o.attempt_id,o.revision,o.created_at,o.updated_at FROM review_operations o WHERE o.project_id=?`
-		args := []any{scope.ProjectID}
+		from := "review_operations o"
+		args := []any{}
+		if options.Status == "pending" {
+			from = pendingOperationCandidates
+			args = append(args, scope.ProjectID, scope.ProjectID)
+		}
+		query := `SELECT o.id,o.pull_number,o.channel,o.head_sha,o.worker_id,o.state,o.reason,o.attempt_id,o.revision,o.created_at,o.updated_at FROM ` + from + ` WHERE o.project_id=?`
+		args = append(args, scope.ProjectID)
 		if options.PullNumber != 0 {
 			query += ` AND o.pull_number=?`
 			args = append(args, options.PullNumber)
@@ -96,9 +107,6 @@ func (e *Engine) ListOperations(ctx context.Context, scope core.Scope, options O
 		if options.Channel != "" {
 			query += ` AND o.channel=?`
 			args = append(args, options.Channel)
-		}
-		if options.Status == "pending" {
-			query += ` AND (o.state IN ('queued','preparing','posting','active','uncertain') OR (o.state='held' AND EXISTS (SELECT 1 FROM review_execution_reservations r JOIN review_execution_attempts a ON a.id=r.attempt_id WHERE a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id)))`
 		}
 		if position != "" {
 			query += ` AND (o.created_at,o.id)<(?,?)`
