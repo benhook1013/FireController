@@ -211,3 +211,26 @@ it('shows the same-operation timer instead of a historical Held attempt or pendi
     expect(active).toContain('>Reviewing<');expect(active).not.toContain('Cooldown ·');
   } finally {vi.useRealTimers();}
 });
+
+
+it('shows closed native rounds instead of historical Held while preserving unfinished work and attempt history', () => {
+  archive.items = []; archive.hasMore = false;
+  const attempt: ReviewAttemptSummary = {channel:'hosted',head_sha:'head',state:'held',reason:'hosted_allowance_cooldown',source_attempt_id:'old',source_run_id:'',trigger_id:'',provider_review_id:'',duration_seconds:null,finished_at:'2026-10-30T11:59:00Z',started_at:'2026-10-30T11:58:00Z'};
+  const closed: ReviewRoundProgress = {...progress,closed:true,tapered:false,pending:0};
+  const render = (value: ReviewRoundProgress | undefined, latest = attempt) => markup(false,[latest],false,undefined,<ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={[latest]} expected={0} channelTotals={{hosted:0,cli:0,manual:0,subagent:0}} progress={value && {pull_number:7,channels:[value]}} />);
+  expect(render(closed)).toContain('>Closed<');
+  expect(render(closed)).not.toContain('>Held<');
+  expect(render(closed)).toContain('Manually closed');
+  expect(render(undefined)).toContain('>Held<');
+  expect(render({...closed,closed:false})).toContain('>Held<');
+  expect(render({...closed,pending:1,pending_execution:0,pending_adjudication:1})).toContain('Needs adjudication');
+  expect(render({...closed,pending:1})).not.toContain('>Closed<');
+  expect(render(closed,{...attempt,state:'active',finished_at:''})).toContain('>Reviewing<');
+  expect(render(closed,{...attempt,state:'active',finished_at:''})).not.toContain('>Closed<');
+  expect(render({...closed,pending:1,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2099-10-30T12:30:00Z',paused:true}})).toContain('>Paused<');
+  expect(render({...closed,pending:1,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2099-10-30T12:30:00Z',paused:true}})).not.toContain('>Closed<');
+  archive.items = [{...attempt,source:'native'}];
+  const history = markup(false,[],true);
+  expect(history).toContain('Held');
+  expect(history).toContain('Waiting for hosted allowance');
+});
