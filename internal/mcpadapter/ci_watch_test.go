@@ -39,3 +39,17 @@ func TestCIWatchMCPArgumentsAndQuietBudget(t *testing.T) {
 		t.Fatal("CI discovery drifted from validation", wait)
 	}
 }
+
+func TestCIWatchMCPZeroWaitDiscoveryDoesNotPromiseCachedResults(t *testing.T) {
+	definition := ciWatchDefinition()
+	wait := definition.schema["properties"].(map[string]any)["wait_seconds"].(map[string]any)
+	description := wait["description"].(string)
+	for _, phrase := range []string{"does not wait for collection", "or reuse cached observations", "normally returns not_observed", "fresh observation completed during this call", "positive wait"} {
+		if !strings.Contains(description, phrase) {
+			t.Fatal("zero-wait discovery lost its fresh-only boundary", description)
+		}
+	}
+	if strings.Contains(description, "available results immediately") {
+		t.Fatal("zero wait still promises cached results", description)
+	}
+}
