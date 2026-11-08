@@ -73,3 +73,6 @@
 @media(prefers-reduced-motion:reduce){.review-round-pill.semantic-change-0,.review-round-pill.semantic-change-1{animation:none}}
 
 .review-state-draft{border:1px solid color-mix(in srgb,currentColor 55%,transparent)}
+
+/* Desktop queue jumps retain more of the preceding merged PR for context. */
+@media(min-width:651px){.review-queue>li.review-queue-row{scroll-margin-top:260px}}
