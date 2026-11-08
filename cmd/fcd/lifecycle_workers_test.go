@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -67,6 +68,11 @@ func TestLifecycleCombinedDriverRetainsHostedObservationIdentity(t *testing.T) {
 				t.Fatal("real daemon composition lost trusted hosted actor", reader)
 			}
 			if len(channels) == 2 {
+				if _, ok := reader.(interface {
+					ObserveRequiredCI(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error)
+				}); !ok {
+					t.Fatal("dual lifecycle reader lost CI capability")
+				}
 				combined, ok := driver.(*reviewChannelDriver)
 				if !ok || fallback != combined.cli.SourceReader() || reader == fallback {
 					t.Fatal("dual driver retained CLI-only lifecycle view")
