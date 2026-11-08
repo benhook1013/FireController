@@ -304,7 +304,7 @@ func TestHostedCooldownRetryDoesNotChangeInitialSourceFailure(t *testing.T) {
 	delete(f.provider.pulls, 2)
 	_, err := f.hosted.Prepare(t.Context(), op, config, attempt)
 	var refusal *core.Error
-	if err == nil || errors.As(err, &refusal) || err.Error() != "synthetic missing scoped PR" || f.provider.queries != 0 || f.provider.reviews != 0 {
+	if err == nil || errors.As(err, &refusal) || err.Error() != "preparation_source_resolution_other" || f.provider.queries != 0 || f.provider.reviews != 0 {
 		t.Fatal("initial source lookup gained retry-only behavior", err)
 	}
 }

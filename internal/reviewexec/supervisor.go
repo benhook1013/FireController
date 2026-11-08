@@ -237,6 +237,10 @@ func preparationReason(err error) string {
 			}
 		}
 	}
+	var diagnostic *preparationFailure
+	if errors.As(err, &diagnostic) {
+		return diagnostic.Error()
+	}
 	return "preparation_failed"
 }
 

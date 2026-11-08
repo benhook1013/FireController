@@ -95,7 +95,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	d.mu.Unlock()
 	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("execution_context", err)
 	}
 	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
 		return preparation, reviewHold("execution_binding_changed")
@@ -120,16 +120,16 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	reads := newSourceReads(d.reader)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)
 	}
 	workspace, changedFiles, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("workspace", err)
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("retry_baseline", err)
 	}
 	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
 		return preparation, reviewHold("source_changed")
@@ -165,14 +165,14 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	allowanceObservedAt := time.Now().UTC()
 	plan, err = refreshAgedMaterializedSource(ctx, d.reader, current.RepositoryID, current.Configuration, current.Operation, plan, allowanceObservedAt)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("source_refresh", err)
 	}
 	anchor.ObservedAt = plan.ObservedAt
 	if err := d.engine.RecordCLIAllowance(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: allowanceObservedAt.Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("allowance_recording", err)
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("attempt_publication", err)
 	}
 	d.mu.Lock()
 	d.prepared[attempt.ID] = &cliPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, expires: time.Now().Add(60 * time.Second)}

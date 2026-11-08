@@ -178,14 +178,14 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	defer cancel()
 	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("execution_context", err)
 	}
 	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "hosted" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
 		return preparation, reviewHold("execution_binding_changed")
 	}
 	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("retry_baseline", err)
 	}
 	d.mu.Lock()
 	d.purgePrepared()
@@ -211,18 +211,18 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) {
 			return preparation, reviewHold("source_unavailable")
 		}
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)
 	}
 	if err := d.checkIdle(ctx, plan); err != nil {
 		return preparation, err
 	}
 	workspace, fileCount, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("workspace", err)
 	}
 	plan, err = refreshMaterializedSource(ctx, d.provider, current.RepositoryID, current.Configuration, current.Operation, plan)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("source_refresh", err)
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
@@ -254,7 +254,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			return preparation, reviewHold("hosted_allowance_unproven")
 		}
 		if err := d.wait(ctx, 2*time.Second); err != nil {
-			return preparation, err
+			return preparation, reviewexec.PreparationFailureAt("allowance_wait", err)
 		}
 	}
 	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
@@ -264,11 +264,11 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		return preparation, reviewHold("standing_baseline_unproven")
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("attempt_publication", err)
 	}
 	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: operation.ID, AttemptID: attempt.ID, HeadSHA: operation.HeadSHA})
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("trigger_intent", err)
 	}
 	d.mu.Lock()
 	d.prepared[attempt.ID] = &hostedPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, postingActor: actor, expires: time.Now().Add(time.Minute)}
