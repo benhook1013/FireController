@@ -12,6 +12,8 @@ Pages default to five items, with an explicit `limit` from 1 to 100. Ordering is
 
 The response contains `project_id`, `items`, `has_more` and a `cursor` only when more items exist. Each item contains only `id`, `pull_number`, `channel`, `head_sha`, `worker_id`, `state`, `reason`, `attempt_id`, `revision`, `created_at` and `updated_at`. Empty pages return an empty items array. Credentials, raw captures, allowance payloads, actor identities, configuration and policy are excluded. Invalid filters, malformed or mismatched cursors, and corrupt selected summaries fail explicitly without adopting partial results.
 
+Explicit pending discovery traverses the existing live-state index and retained execution reservations, then sorts only matching candidates. Its work grows with live operations across projects and retained reservations, not completed or unreserved-held history. Project, PR, channel and cursor filtering remain exact. All-history pages use the project/time listing index. Attention discovery retains its separate completed-evidence obligation predicate and is not covered by this pending-only cost bound. These are query-plan guarantees, not a constant-time promise or a fleet throughput benchmark.
+
 ## Quiet review activity watch
 
 `reviews watch` / MCP `wait_for_reviews` discovers review activity without knowing an operation ID. Optional PR and channel filters select the interested work; leaving both absent watches the authorized project. This creates no assignment, inbox message, review request or provider read. An authorizing worker on an automatic request records authorization, not PR ownership or the worker who should handle its result.
