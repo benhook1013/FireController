@@ -130,6 +130,8 @@ Map source behavior tests to functional outcomes before implementation: addition
 
 ## Prepared operational adoption
 
+See [refusals and recovery](adoption-obligations.md#refusals-and-recovery) for round-adoption refusal codes and caller actions.
+
 An administrator can adopt one explicitly selected effective PR/channel rule through a prepared native preview/apply operation. The prepared record carries remaining minimum and maximum, initial dry streak, taper threshold, reached taper and explicit closure, together with repository identity, source identity/key and source digest. It is configuration provenance, never a captured review or completed native round. Native `used` begins at zero. A carried dry streak of two with an explicitly imported threshold of three needs one further eligible zero-accepted round; a later accepted native round resets that streak normally.
 
 Remaining maximum zero means already exhausted and does not grant a replacement round. The carried reached threshold remains explicit historical provenance and still waits for any remaining required minimum. On a deliberate cumulative edit, verified native streak contributions determine whether that earned proof remains valid; an accepted native completion resets it. Ordinary edits preserve the original imported baseline rather than erasing provenance. Closure, taper and exhaustion remain separate facts. Import does not satisfy current coverage, pending findings, CI or merge readiness.

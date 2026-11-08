@@ -121,7 +121,11 @@ func existingManagementDefinitions() []definition {
 			case "revision":
 				p = map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}
 			case "expected_revision":
-				p = map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}
+				minimum := 0
+				if s.name == "review_obligation_retarget" {
+					minimum = 1
+				}
+				p = map[string]any{"type": "integer", "minimum": minimum, "maximum": int64(math.MaxInt64 - 1)}
 			case "pull_number":
 				p = map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
 			case "target_pull_number":
@@ -189,7 +193,7 @@ func parseExistingManagementArguments(name string, raw json.RawMessage) (*existi
 	if _, ok := fields["preview_sha256"]; ok && !managementHash(in.PreviewSHA256) {
 		return nil, invalidArguments()
 	}
-	if in.ExpectedRevision != nil && (*in.ExpectedRevision < 0 || *in.ExpectedRevision == math.MaxInt64) {
+	if in.ExpectedRevision != nil && (*in.ExpectedRevision < 0 || *in.ExpectedRevision == math.MaxInt64 || name == "review_obligation_retarget" && *in.ExpectedRevision < 1) {
 		return nil, invalidArguments()
 	}
 	if _, ok := fields["revision"]; ok && (in.Revision < 1 || in.Revision == math.MaxInt64) {
