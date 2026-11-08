@@ -191,6 +191,9 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 	}
 	a, err := readAttempt(ctx, tx, target.project, o.AttemptID)
 	if err != nil {
+		if !externalNativeRecordMissing(err) {
+			return false, false, err
+		}
 		return false, true, nil
 	}
 	if a.OperationID != o.ID || a.ProjectID != target.project || a.Anchor == nil || a.Anchor.RepositoryID != target.repository || a.Anchor.PullNumber != target.number || a.Anchor.CandidateSHA != run.HeadSHA {
@@ -220,10 +223,16 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 		return false, false, nil
 	}
 	evidenceID, err := readHostedRecoveryEvidence(ctx, tx, a, o)
+	if err != nil && !externalNativeRecordMissing(err) {
+		return false, false, err
+	}
 	if err != nil || evidenceID == "" {
 		return false, true, nil
 	}
 	evidence, _, err := loadReviewAdjudication(ctx, tx, target.project, evidenceID)
+	if err != nil && !externalNativeRecordMissing(err) {
+		return false, false, err
+	}
 	if err != nil || evidence.Capture.Hosted == nil {
 		return false, true, nil
 	}
@@ -298,25 +307,40 @@ func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTar
 	}
 	captures := []externalNativeCapture{}
 	for _, b := range bindings {
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
 		if readCtx.Err() != nil {
 			return nil, true, nil
 		}
 		o, err := readOperationBase(readCtx, tx, target.project, b.operation)
 		if err != nil {
+			if !externalNativeRecordMissing(err) {
+				return nil, false, err
+			}
 			return nil, true, nil
 		}
 		a, err := readAttempt(readCtx, tx, target.project, b.attempt)
 		if err != nil {
+			if !externalNativeRecordMissing(err) {
+				return nil, false, err
+			}
 			return nil, true, nil
 		}
 		if o.Channel != "hosted" || o.PullNumber != target.number || a.Anchor == nil || a.Anchor.RepositoryID != target.repository || a.Anchor.PullNumber != target.number {
 			return nil, true, nil
 		}
 		id, err := readHostedRecoveryEvidence(readCtx, tx, a, o)
+		if err != nil && !externalNativeRecordMissing(err) {
+			return nil, false, err
+		}
 		if err != nil || id != b.id {
 			return nil, true, nil
 		}
 		evidence, _, err := loadReviewAdjudication(readCtx, tx, target.project, id)
+		if err != nil && !externalNativeRecordMissing(err) {
+			return nil, false, err
+		}
 		if err != nil || evidence.Capture.Hosted == nil {
 			return nil, true, nil
 		}
@@ -324,6 +348,14 @@ func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTar
 	}
 	return captures, false, nil
 }
+
+// Only absent records leave identity unproven; storage and cancellation errors
+// must reach the worker rather than becoming ordinary per-target diagnostics.
+func externalNativeRecordMissing(err error) bool {
+	var failure *core.Error
+	return errors.As(err, &failure) && failure.Code == "not_found"
+}
+
 func externalCapturedIdentity(captures []externalNativeCapture, run reviewprovider.ExternalHostedRun) (owned, held bool) {
 	for _, capture := range captures {
 		h := capture.hosted
