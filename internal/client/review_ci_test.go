@@ -115,3 +115,77 @@ func TestReviewCIRetainedClockRollbackDoesNotChangeApplicability(t *testing.T) {
 		t.Fatal("retained observation became unreadable after clock rollback", got, err)
 	}
 }
+
+func TestReviewCIMismatchCapabilityReadAndAgentProjection(t *testing.T) {
+	value := sampleCIAssessment()
+	value.State, value.Reason, value.Selection, value.SelectedCommitSHA, value.MergeState = "unproven", "ci_merge_base_mismatch", "", "", "unproven"
+	value.Required, value.Satisfied = 0, 0
+	value.MergeBaseMismatch = &client.CIMergeBaseMismatch{PRBaseSHA: value.Target.BaseSHA, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: value.Target.BaseSHA}
+	var response atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		if r.Method != "GET" || r.URL.Path != "/api/v1/projects/project-one/reviews/source/2/ci" || len(r.Header.Values("X-FC-CI-Watch")) != 1 || r.Header.Get("X-FC-CI-Watch") != "change-v3" || r.Header.Get("Prefer") != "" || r.Header.Get("X-FC-CI-Workflow-Details") != "" {
+			t.Error("assessment capability changed scope or wait semantics")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response.Load().([]byte))
+	}))
+	defer server.Close()
+	c := newClient(t, server)
+	for _, diagnostics := range []bool{false, true} {
+		if diagnostics {
+			checks := []client.ReviewCIContext{}
+			value.Checks = &checks
+		}
+		valid, _ := json.Marshal(value)
+		response.Store(valid)
+		read := c.ReviewSourceCIAssessment
+		if diagnostics {
+			read = c.ReviewSourceCIDiagnostics
+		}
+		got, err := read(t.Context(), 2)
+		if err != nil || got.MergeBaseMismatch == nil {
+			t.Fatal(got, err)
+		}
+		agent := client.AgentReviewCI(got)
+		for _, sha := range []string{value.MergeBaseMismatch.PRBaseSHA, value.MergeBaseMismatch.LiveBaseSHA, value.MergeBaseMismatch.MergeSHA, value.MergeBaseMismatch.MergeBaseParentSHA} {
+			if agent.Diagnostic == nil || !strings.Contains(agent.Diagnostic.Explanation, sha) {
+				t.Fatal("agent lost exact facts", agent)
+			}
+		}
+		for name, mutate := range map[string]func(map[string]any){
+			"wrong base": func(m map[string]any) {
+				m["merge_base_mismatch"].(map[string]any)["pr_base_sha"] = strings.Repeat("f", 40)
+			},
+			"same parent": func(m map[string]any) {
+				m["merge_base_mismatch"].(map[string]any)["live_base_sha"] = value.Target.BaseSHA
+			},
+			"malformed sha":        func(m map[string]any) { m["merge_base_mismatch"].(map[string]any)["merge_sha"] = "private" },
+			"unknown nested field": func(m map[string]any) { m["merge_base_mismatch"].(map[string]any)["raw_capture"] = "private" },
+			"wrong project":        func(m map[string]any) { m["project_id"] = "other" },
+			"wrong pull":           func(m map[string]any) { m["target"].(map[string]any)["pull_number"] = 3 },
+			"wrong reason":         func(m map[string]any) { m["reason"] = "ci_merge_pending" },
+		} {
+			t.Run(name, func(t *testing.T) {
+				var m map[string]any
+				_ = json.Unmarshal(valid, &m)
+				mutate(m)
+				body, _ := json.Marshal(m)
+				response.Store(body)
+				_, err := read(t.Context(), 2)
+				checkError(t, err, "invalid_response")
+			})
+		}
+		// Older services may omit the optional facts without a watch acknowledgement.
+		valueWithoutFacts := value
+		valueWithoutFacts.MergeBaseMismatch = nil
+		legacy, _ := json.Marshal(valueWithoutFacts)
+		response.Store(legacy)
+		if got, err := read(t.Context(), 2); err != nil || got.MergeBaseMismatch != nil {
+			t.Fatal("legacy read compatibility lost", got, err)
+		}
+	}
+}

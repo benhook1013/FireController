@@ -27,9 +27,8 @@ func TestCIMismatchFactsStrictReadsAndSharedAgentDiagnostic(t *testing.T) {
 			return
 		}
 		reads.Add(1)
-		expectedVersion := "change-v2"
+		expectedVersion := "change-v3"
 		if r.Method == http.MethodPost {
-			expectedVersion = "change-v3"
 			w.Header().Set("X-FC-CI-Watch", "change-v3")
 		}
 		if r.Header.Get("X-FC-CI-Watch") != expectedVersion || r.Header.Get("Idempotency-Key") != "" {

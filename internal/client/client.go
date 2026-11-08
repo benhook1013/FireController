@@ -390,6 +390,10 @@ func (c *Client) requestBoundedOptions(ctx context.Context, method string, segme
 }
 
 func (c *Client) requestWithTimeout(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration) error {
+	return c.requestWithCapabilities(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, wait, timeout, false)
+}
+
+func (c *Client) requestWithCapabilities(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration, ciAssessmentFacts bool) error {
 	operation := requestOperation(method, segments)
 	if err := ctx.Err(); err != nil {
 		if mutation {
@@ -429,8 +433,9 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 	r.Header.Set("Accept", "application/json")
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
-	if method == http.MethodGet && len(segments) >= 4 && segments[len(segments)-4] == "reviews" && segments[len(segments)-3] == "source" && segments[len(segments)-1] == "ci" {
-		r.Header.Set("X-FC-CI-Watch", "change-v2")
+	// Assessment facts are optional retained data, not a wait or watch handshake.
+	if ciAssessmentFacts {
+		r.Header.Set("X-FC-CI-Watch", "change-v3")
 	}
 	if wait != nil {
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
