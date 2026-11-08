@@ -63,6 +63,11 @@ describe('merge-head recent review rounds', () => {
     expect(hero).not.toContain(' · latest 3'); expect(hero).not.toContain('delivery-head-history');
     expect(hero).not.toContain('review-queue-position'); expect(hero).not.toContain('id="review-pr-7"');
     expect(normal).toContain('review-queue-position'); expect(normal).toContain('id="review-pr-7"');
+    const detail = markup(false, [], false, counts, <ul className="review-queue review-detail-overview"><ReviewQueueRow pull={pull} snapshot="snapshot" rail anchor={false} /></ul>);
+    expect(detail).toContain('review-queue-position');
+    expect(detail).not.toContain('review-row-without-order');
+    expect(detail).not.toContain('Queue distance');
+    expect(detail).not.toContain('id="review-pr-7"');
     expect(hero).toContain('&lt;Literal PR title&gt;');
     for (const value of [normal, hero]) {
       expect(value).toContain('class="badge review-fact-pill review-diff"');

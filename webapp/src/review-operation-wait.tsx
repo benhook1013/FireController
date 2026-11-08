@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { sessionExpiry } from './browser-session';
 import { relativeAge } from './relative-time';
 
@@ -41,6 +41,19 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
   const [now, setNow] = useState(Date.now);
   const [expanded, setExpanded] = useState(false);
   const detailsID = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  const [placement, setPlacement] = useState({ left: 8, top: 8, width: 360 });
+  useEffect(() => {
+    if (!expanded) return;
+    const place = () => {
+      const rect = button.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(360, window.innerWidth - 16);
+      setPlacement({ left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), top: Math.min(rect.bottom + 4, window.innerHeight - 80), width });
+    };
+    place(); window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [expanded]);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(timer); }, []);
   const description = wait.paused
     ? 'This review request is paused before dispatch. Its retry deadline is retained; resume is explicit.'
@@ -58,9 +71,9 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     const minutes = Math.ceil((stamp - now) / 60000);
     return `in ${minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`}`;
   };
-  return <span className="review-quota-wait">
-    <button type="button" className="badge review-channel-position" aria-expanded={expanded} aria-controls={detailsID} onClick={() => setExpanded(value => !value)}>{operationWaitLabel(wait, now, channel)}</button>
-    <span id={detailsID} className="review-quota-details" hidden={!expanded} role="note">
+  return <span className="review-quota-wait" onPointerEnter={event => { if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (!event.currentTarget.contains(document.activeElement)) setExpanded(false); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') setExpanded(false); }}>
+    <button ref={button} type="button" onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} className="badge review-channel-position" aria-expanded={expanded} aria-controls={detailsID} onClick={() => setExpanded(value => !value)}>{operationWaitLabel(wait, now, channel)}</button>
+    <span id={detailsID} className="review-quota-details" style={placement} hidden={!expanded} role="note">
       <span>{description}</span>
       {estimate !== undefined && <span>Provider full-capacity estimate: <time dateTime={new Date(estimate).toISOString()} title={new Date(estimate).toLocaleString()}>{relative(estimate)}</time>{estimate <= now ? ' (past estimate)' : ''}. <small>{new Date(estimate).toLocaleString()}</small></span>}
       <span>{wait.paused ? 'Retained recheck' : 'Next quota recheck'}: <time dateTime={wait.retry_not_before} title={new Date(retry).toLocaleString()}>{relative(retry)}</time>{retry <= now ? ' (awaiting recheck)' : ''}. <small>{new Date(retry).toLocaleString()}</small></span>
