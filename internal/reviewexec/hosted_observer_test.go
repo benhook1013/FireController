@@ -112,7 +112,7 @@ func TestHostedObserverConcurrentChecksBindingAndRestart(t *testing.T) {
 }
 
 func TestHostedObserverSafeCodesAndRace(t *testing.T) {
-	for _, reason := range []string{"attribution_window_closed", "publication_not_proven", "hosted_observation_capacity", "observation_incomplete"} {
+	for _, reason := range []string{"comparison_unproven", "attribution_window_closed", "publication_not_proven", "hosted_observation_capacity", "observation_incomplete"} {
 		if hostedObserverReason(reason) != reason {
 			t.Fatal(reason)
 		}
