@@ -8,10 +8,14 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) error {
+	if target.watch != nil {
+		return e.observeCIWatch(ctx, target, s)
+	}
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false
@@ -105,13 +109,14 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	ciReason := ""
 	// CI is less frequent than lifecycle reads. Same-comparison retained status
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
-	collectCI := state == "open" && (target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
+	collectCI := state == "open" && (target.forceCI || target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
+		target.due.ciCommit = ""
 		ciCollected = true
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
 		if reader, ok := target.reader.(sourceCIReader); ok {
-			ciCtx, ciCancel := context.WithTimeout(ctx, 30*time.Second)
+			ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
 			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
 			if readErr != nil {
 				providerErr = readErr
@@ -119,20 +124,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 				// ordinary provider failure would look like caller cancellation.
 				ciReason = sourceCIErrorReason(ciCtx, readErr)
 			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
+				target.due.ciCommit = observation.SelectedCommitSHA
 				ciReason = observation.Reason
 				if ciReason == "" && observation.State == "unproven" {
 					ciReason = "ci_unproven"
 				}
-				switch observation.State {
-				case "satisfied":
-					ciState = "success"
-				case "failed":
-					ciState = "failure"
-				case "pending":
-					ciState = "pending"
-				case "not_required":
-					ciState = "not_required"
-				}
+				ciState = sourceCIQueueState(observation.State)
 			}
 			ciCancel()
 		}
@@ -140,7 +137,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if ctx.Err() != nil {
 		return nil
 	}
-	external, hostedCollected, externalErr := collectExternalHosted(ctx, target, repo.FullName, providerErr)
+	var external []reviewprovider.ExternalHostedRun
+	var hostedCollected bool
+	var externalErr error
+	if !target.ciOnly {
+		external, hostedCollected, externalErr = collectExternalHosted(ctx, target, repo.FullName, providerErr)
+	}
 	if externalErr != nil && (providerErr == nil || lifecycleProviderDelay(externalErr, 0) > lifecycleProviderDelay(providerErr, 0)) {
 		providerErr = externalErr
 	}

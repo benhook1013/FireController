@@ -46,6 +46,7 @@ type options struct {
 }
 
 type invocation struct {
+	ciWatch               *ciWatchInvocation
 	reviewRun             *reviewRunInvocation
 	operationHelp         string
 	reviewOperations      client.ReviewOperationsOptions
@@ -93,7 +94,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	call, ok := parseInvocation(args)
 	if !ok {
 		action := "Use fc version, fc context, fc doctor, or a documented service command."
-		if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") {
+		if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") {
 			action = "Use fc reviews " + call.subcommand + " --help."
 		}
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", action)
@@ -187,6 +188,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return report(stderr, ExitCancelled, "cancelled", "The command was cancelled before connecting.", "No service operation was sent; retry when cancellation is no longer requested.")
 	}
 	timeout := serviceTimeout
+	if call.ciWatch != nil {
+		timeout = client.ReviewOperationBudget(call.ciWatch.seconds) + 2*serviceTimeout
+	}
 	if call.command == "inbox" && call.subcommand == "wait" {
 		timeout = client.MessageWaitBudget(call.waitSeconds)
 	}
@@ -404,7 +408,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
-	if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
+	if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		call.operationHelp = call.subcommand
 		return call, true
 	}

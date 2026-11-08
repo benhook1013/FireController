@@ -11,6 +11,11 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "ci-wait" {
+		var ok bool
+		call.ciWatch, ok = parseCIWatch(args)
+		return call, ok
+	}
 	if call.subcommand == "start" || call.subcommand == "run-read" {
 		return parseReviewRun(call, args)
 	}
@@ -148,6 +153,10 @@ func reviewID(value, prefix string) bool {
 }
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
+	if call.ciWatch != nil {
+		value, err := service.WatchCI(ctx, call.ciWatch.targets, call.ciWatch.seconds)
+		return client.AgentCIWatch(value), err
+	}
 	switch call.subcommand {
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])

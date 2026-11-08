@@ -335,9 +335,10 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
-	hostedObserver bool
-	seconds        int
-	status         *int
+	ciWatchChange, ciWorkflowDetails bool
+	hostedObserver                   bool
+	seconds                          int
+	status                           *int
 }
 
 func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
@@ -379,6 +380,12 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 	r.Header.Set("Authorization", "Bearer "+c.token)
 	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 	if wait != nil {
+		if wait.ciWatchChange {
+			r.Header.Set("X-FC-CI-Watch", "change-v3")
+		}
+		if wait.ciWorkflowDetails {
+			r.Header.Set("X-FC-CI-Workflow-Details", "3")
+		}
 		if wait.hostedObserver && method == http.MethodGet {
 			r.Header.Set("X-FC-Hosted-Observer", "1")
 		}
@@ -498,6 +505,9 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 		}
 		return invalidResponse()
 	}
+	if wait != nil && wait.ciWatchChange && (len(response.Header.Values("X-FC-CI-Watch")) != 1 || response.Header.Get("X-FC-CI-Watch") != "change-v3") {
+		return fail("unsupported_operation", "The service did not acknowledge CI watch change-v3.", "Use matching deployed server and client releases; deploy the backend before installing this client. Passed-result rearming is unconfirmed. No automatic retry or fallback was attempted.", response.StatusCode)
+	}
 	return nil
 }
 
@@ -522,6 +532,30 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "overloaded" || result.Code == "storage_unavailable" {
+		if details, ok := result.Details.(map[string]any); ok {
+			switch details["reason"] {
+			case "ci_watch_scope_read":
+				result.Message = "The controller could not complete the CI watch's scoped authentication read."
+			case "ci_watch_binding_read":
+				result.Message = "The controller could not complete a fresh CI watch source-binding read."
+			case "ci_watch_capacity":
+				result.Message = "The controller's bounded CI watch capacity is occupied."
+			case "ci_watch_observer_unavailable":
+				result.Message = "The configured CI observer is unavailable."
+			case "ci_watch_canceled":
+				result.Message = "The CI watch request context ended at the controller; no CI result was returned."
+			}
+			if ciWatchRefusalReason(details["reason"]) {
+				result.Action = "If still needed when the controller is available, retry this same bounded CI read with the original PR/head/base pins. This does not establish CI failure or a changed comparison. Keep request_id and reason for persistent failures."
+				if details["reason"] == "ci_watch_capacity" {
+					result.Action = "Let existing watches complete before starting one later bounded read with the same PR/head/base pins if still needed; avoid repeatedly rearming. No CI failure or comparison change was established."
+				} else if details["reason"] == "ci_watch_canceled" {
+					result.Action = "If waiting is still needed, start one new bounded CI read with the same PR/head/base pins. This does not identify who ended the request or establish CI failure."
+				}
+			}
+		}
+	}
 	if result.Code == "review_busy" {
 		if status != http.StatusConflict {
 			result.Details = nil
@@ -586,7 +620,7 @@ func (c *Client) safeDetails(value any, code string) any {
 	for key, item := range object {
 		switch key {
 		case "reason":
-			if reason, ok := item.(string); ok && code == "overloaded" && reason == "result_wait_lifetime" {
+			if reason, ok := item.(string); ok && (code == "overloaded" && reason == "result_wait_lifetime" || (code == "overloaded" || code == "storage_unavailable") && ciWatchRefusalReason(reason)) {
 				result[key] = reason
 			}
 		case "current_revision":

@@ -60,3 +60,5 @@ The [Hosted source foundation](delivery.md#hosted-source-foundation) records the
 - [Delivery plan](delivery.md) records implementation sequence and actual validation status.
 
 Public documentation must not contain live messages, private job briefs, credentials, installed user paths, or provider captures. Historical code references use the pinned public source snapshot.
+
+- [Waiting for CI](ci-wait.md): bounded pinned-comparison observation through the client, CLI and MCP.

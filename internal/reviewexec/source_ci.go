@@ -18,6 +18,20 @@ const sourceCIMaxBytes = 8 << 20
 
 const sourceCILatestQuery = `SELECT id FROM review_source_refreshes WHERE project_id=? AND pull_number=? AND state='completed' AND (include_ci=1 OR include_readiness=1) ORDER BY created_at DESC,id DESC LIMIT 1`
 
+// Queue status reports collected CI independently of conflict-free merging.
+func sourceCIQueueState(state string) string {
+	switch state {
+	case "satisfied":
+		return "success"
+	case "failed":
+		return "failure"
+	case "pending", "not_required":
+		return state
+	default:
+		return "unknown"
+	}
+}
+
 // SourceCISummary is an as-of CI observation, never permission to merge. Zero
 // required with state unproven means unknown requirements, not absence.
 type SourceCISummary struct {
@@ -35,14 +49,15 @@ type SourceCISummary struct {
 }
 
 type SourceCIAssessment struct {
-	Checks                *[]SourceCIContext `json:"checks,omitempty"`
-	ProjectID             string             `json:"project_id"`
-	RefreshID             string             `json:"refresh_id"`
-	Source                string             `json:"source"`
-	ConfigurationRevision int64              `json:"configuration_revision"`
-	SourceObservedAt      string             `json:"source_observed_at"`
-	EvaluatedAt           string             `json:"evaluated_at"`
-	Target                SourceObservation  `json:"target"`
+	MergeBaseMismatch     *reviewprovider.CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
+	Checks                *[]SourceCIContext                  `json:"checks,omitempty"`
+	ProjectID             string                              `json:"project_id"`
+	RefreshID             string                              `json:"refresh_id"`
+	Source                string                              `json:"source"`
+	ConfigurationRevision int64                               `json:"configuration_revision"`
+	SourceObservedAt      string                              `json:"source_observed_at"`
+	EvaluatedAt           string                              `json:"evaluated_at"`
+	Target                SourceObservation                   `json:"target"`
 	SourceCISummary
 }
 
@@ -171,7 +186,11 @@ func validSourceCI(o reviewprovider.CIObservation, source SourceObservation) boo
 	return validSourceCIWithRetainedAssessment(o, source, false)
 }
 
-func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source SourceObservation, retained bool) bool {
+func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source SourceObservation, allowLegacyOriginHold bool) bool {
+	return validCIWithAuthorityBranch(o, source, source.BaseRef, allowLegacyOriginHold)
+}
+
+func validCIWithAuthorityBranch(o reviewprovider.CIObservation, source SourceObservation, gateRef string, allowLegacyOriginHold bool) bool {
 	if !refreshTime(source.ObservedAt) || o.Target != sourceCITarget(source) || o.StartedAt.IsZero() || o.ObservedAt.IsZero() || o.Reason != "" && !identifier.MatchString(o.Reason) {
 		return false
 	}
@@ -219,7 +238,7 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 	if len(o.Authority.Checks) > 128 || len(o.Attempts) > 16 {
 		return false
 	}
-	if o.Authority.State == "complete" && (!strings.EqualFold(o.Authority.Repository, source.RepositoryName) || o.Authority.Branch != source.BaseRef || o.Authority.ObservedAt.IsZero() || o.Authority.Checks == nil) {
+	if o.Authority.State == "complete" && (!strings.EqualFold(o.Authority.Repository, source.RepositoryName) || o.Authority.Branch != gateRef || o.Authority.ObservedAt.IsZero() || o.Authority.Checks == nil) {
 		return false
 	}
 	if o.State != "unproven" {
@@ -260,7 +279,7 @@ func validSourceCIWithRetainedAssessment(o reviewprovider.CIObservation, source 
 			return false
 		}
 		matches := reflect.DeepEqual(assessment, o.Assessment)
-		if !matches && retained {
+		if !matches && allowLegacyOriginHold {
 			matches = reviewprovider.ValidRetainedRequiredCIAssessment(o.Authority, inventory, actions, o.Attempts, o.Assessment)
 		}
 		if !matches {
@@ -373,6 +392,10 @@ func (e *Engine) readSourceCIAssessment(ctx context.Context, scope core.Scope, n
 			if sourceCITarget(*latest.Observation) != sourceCITarget(*r.Observation) {
 				result.State, result.Reason = "held", "source_comparison_changed"
 			}
+		}
+		if result.State == "unproven" && result.Reason == "ci_merge_base_mismatch" && r.ciObservation.Candidate != nil && r.ciObservation.Candidate.MergeBaseMismatch != nil {
+			facts := *r.ciObservation.Candidate.MergeBaseMismatch
+			result.MergeBaseMismatch = &facts
 		}
 		return nil
 	})

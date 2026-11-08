@@ -57,6 +57,9 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if name == "wait_for_ci" {
+		return ciWatchArguments(data)
+	}
 	var args arguments
 	if len(data) == 0 {
 		data = []byte("{}")
