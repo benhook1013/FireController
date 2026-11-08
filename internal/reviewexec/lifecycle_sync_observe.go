@@ -200,6 +200,10 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			target.due.ciCheckedAt = s.options.Now()
 			target.due.ciError = ciReason
 		}
+		if target.hostedRefusal != "" {
+			target.due.hostedCheckedAt = s.options.Now()
+			target.due.hostedError = target.hostedRefusal
+		}
 		if hostedCollected {
 			target.due.hostedCheckedAt = s.options.Now()
 			target.due.hostedError = lifecycleErrorCode(externalErr)

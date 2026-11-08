@@ -155,8 +155,10 @@ func TestLifecycleFrontierRefusalConsumesDivergentSchedulerWake(t *testing.T) {
 		t.Fatal("invalid metadata retained")
 	}
 	admissionSQL(t, f, `INSERT INTO review_hosted_discovery_state(project_id,repository_id,pull_number,cutoff_at,initialized_at) VALUES(?,999,2,'','2026-01-01T00:00:00Z')`, attemptProject)
-	if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || target != nil {
+	if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || target == nil {
 		t.Fatal(target, err)
+	} else if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+		t.Fatal(err)
 	}
 	due := s.due[lifecycleKey{attemptProject, 2}]
 	if due.enrichmentHead != due.head || due.enrichmentBaseSHA != due.baseSHA || due.enrichmentBaseRef != due.baseRef || !due.enrichmentNext.After(clock.Now()) {
