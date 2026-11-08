@@ -43,12 +43,18 @@ func roundRead(t *testing.T, f *attemptFixture, pull int64, channel string) Roun
 	}
 	return c
 }
-func roundTables(t *testing.T, f *attemptFixture) string {
+func roundTables(t *testing.T, f *attemptFixture, exceptEvent ...int64) string {
 	t.Helper()
 	tables := []string{"review_round_controls", "review_round_changes", "review_round_operation_bindings", "review_round_completions", "events", "receipts"}
 	out := []any{}
 	for _, table := range tables {
-		rows, err := f.store.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+		query := `SELECT * FROM ` + table
+		var args []any
+		if table == "events" && len(exceptEvent) == 1 {
+			query += ` WHERE sequence != ?`
+			args = append(args, exceptEvent[0])
+		}
+		rows, err := f.store.DB().Query(query+` ORDER BY rowid`, args...)
 		if err != nil {
 			t.Fatal(err)
 		}

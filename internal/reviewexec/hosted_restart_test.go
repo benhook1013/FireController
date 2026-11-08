@@ -41,7 +41,14 @@ func TestHostedRestartConfirmedTriggerKeepsWaitingAndOriginalAuthority(t *testin
 	if err = f.store.DB().QueryRow(`SELECT group_concat(revision||'/'||state||'/'||reason||'/'||external_id||'/'||created_at,'|') FROM review_execution_transitions WHERE attempt_id=? AND revision<=? ORDER BY revision`, a.ID, a.Revision).Scan(&retained); err != nil || retained != prefix {
 		t.Fatal("restart rewrote original journal", retained, err)
 	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND action_class='hosted' AND repository_id=? AND pull_number=?`, a.ID, a.Provider, a.Account, a.Anchor.RepositoryID, a.Anchor.PullNumber) != 1 || rounds != roundTables(t, f) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+	// Resumption commits one operation lifecycle event, but no review credit,
+	// receipt or round mutation. Exclude only that exact new event from the
+	// full retained-table comparison, preserving all older event bytes.
+	var resumedEvent int64
+	if err := f.store.DB().QueryRow(`SELECT sequence FROM events WHERE event_type='review.operation_updated' AND project_id=? AND resource_id=? AND revision=? AND actor_id=? AND payload_json='{}'`, attemptProject, a.OperationID, after.Operation.Revision, original.Operation.ActorID).Scan(&resumedEvent); err != nil {
+		t.Fatal("missing exact resumption event", err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND action_class='hosted' AND repository_id=? AND pull_number=?`, a.ID, a.Provider, a.Account, a.Anchor.RepositoryID, a.Anchor.PullNumber) != 1 || rounds != roundTables(t, f, resumedEvent) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 		t.Fatal("restart changed reservation or review credit")
 	}
 	status, err := f.e.ReadOperationStatus(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), a.OperationID)
@@ -58,7 +65,7 @@ func TestHostedRestartConfirmedTriggerKeepsWaitingAndOriginalAuthority(t *testin
 			t.Fatal(err)
 		}
 	}
-	if before != hostedObservationState(t, f, a) || rounds != roundTables(t, f) {
+	if before != hostedObservationState(t, f, a) || rounds != roundTables(t, f, resumedEvent) {
 		t.Fatal("repeated startup duplicated handoff or credit")
 	}
 }

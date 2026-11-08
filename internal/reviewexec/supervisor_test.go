@@ -1254,8 +1254,13 @@ func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
 		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
 	}
-	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
-		t.Fatal("configuration failure dispatched, settled or added journal effects")
+	// Preparation committed before the failing configuration read, including its
+	// lifecycle event. The failure itself must add no event or dispatch effect.
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+		t.Fatal("configuration failure dispatched, settled or added unexpected journal effects")
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.operation_updated' AND project_id=? AND resource_id=? AND revision=2 AND actor_id=? AND payload_json='{}'`, attemptProject, receipt.ID, f.scope(t, attemptProject, f.writer, false).PrincipalID) != 1 {
+		t.Fatal("missing exact committed preparation event")
 	}
 }
 
