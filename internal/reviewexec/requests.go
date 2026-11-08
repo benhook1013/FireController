@@ -188,6 +188,11 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 	return result, err
 }
 
+const (
+	requestProjectCapacity = 32
+	requestGlobalCapacity  = 256
+)
+
 // enqueueRequestTx shares native acceptance after the caller has established
 // current authority. scope supplies checked attribution; it is not authentication.
 func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
@@ -239,7 +244,7 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
 		return Receipt{}, err
 	}
-	if local >= 32 || total >= 256 {
+	if local >= requestProjectCapacity || total >= requestGlobalCapacity {
 		return Receipt{}, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
 	}
 	id, at := core.NewID("review_operation"), stamp()

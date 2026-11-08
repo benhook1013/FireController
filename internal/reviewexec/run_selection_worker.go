@@ -442,7 +442,14 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	err := retryRunSelectionLocal(ctx, func() error {
 		project, id, expected = "", "", 0
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			err := tx.QueryRowContext(ctx, `SELECT project_id,id,revision FROM review_selections WHERE state='queued' ORDER BY CASE WHEN channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=project_id)='benhook1013/firemud' THEN 0 ELSE 1 END,created_at,id LIMIT 1`).Scan(&project, &id, &expected)
+			// Request capacity is a scheduling constraint, not a terminal hold.
+			// Skip saturated projects before source work so they cannot occupy
+			// both selection workers or repeatedly reacquire provider facts.
+			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,s.revision FROM review_selections s
+ WHERE s.state='queued'
+ AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
+ AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
+ ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)='benhook1013/firemud' THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -586,6 +593,12 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 				}
 				if _, releaseErr := tx.ExecContext(ctx, `RELEASE review_selection_child`); releaseErr != nil {
 					return releaseErr
+				}
+				if failure.Code == "overloaded" {
+					// Capacity filled after candidate admission. Yield this worker;
+					// the next eligible pass rechecks binding and acquires fresh
+					// source facts before attempting the same selection's child.
+					return updateRun(ctx, tx, current, "queued", "", "")
 				}
 				return updateRun(ctx, tx, current, "held", failure.Code, "")
 			}
