@@ -241,10 +241,10 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		timeout = client.MessageWaitBudget(call.waitSeconds) + 2*serviceTimeout
 	}
 	if call.mutation != nil && (call.mutation.operation == "reviews source-refresh" || call.mutation.operation == "reviews publish" || call.mutation.operation == "reviews publication-recover") {
-		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait)
+		timeout = client.SourceRefreshBudget(call.mutation.reviewSourceWait) + 2*serviceTimeout
 	}
 	if call.mutation != nil && call.mutation.operation == "reviews request" {
-		timeout = client.ReviewOperationBudget(call.mutation.reviewSourceWait)
+		timeout = client.ReviewOperationBudget(call.mutation.reviewSourceWait) + 2*serviceTimeout
 	}
 	if call.command == "reviews" && call.subcommand == "operation" {
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
