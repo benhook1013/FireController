@@ -159,6 +159,9 @@ func TestIdentityRetryCancellationAfterResponse(t *testing.T) {
 								cancel()
 							}
 							<-ctx.Done()
+							// Done closes before cancellation reaches child contexts.
+							// Let the deadline timer finish propagating before return.
+							synctest.Wait()
 						}
 					})
 					waits := 0
