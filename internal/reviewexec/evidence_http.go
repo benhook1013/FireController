@@ -24,6 +24,7 @@ type evidenceResponse struct {
 }
 
 type hostedPublicationResponse struct {
+	SubmittedReview   *HostedSubmittedReviewMetadata `json:"submitted_review,omitempty"`
 	PublicationID     string                         `json:"publication_id"`
 	ProviderAttemptID string                         `json:"provider_attempt_id"`
 	TriggerCommentID  int64                          `json:"trigger_comment_id"`
@@ -81,6 +82,10 @@ func publicEvidence(value ReviewEvidence) evidenceResponse {
 	var hosted *hostedPublicationResponse
 	if h := capture.Hosted; h != nil {
 		hosted = &hostedPublicationResponse{PublicationID: h.PublicationID, ProviderAttemptID: h.ProviderAttemptID, TriggerCommentID: h.TriggerCommentID, ReviewIDs: append([]int64{}, h.ReviewIDs...), ObservedBaseSHA: h.ObservedBaseSHA}
+		if h.SubmittedReview != nil {
+			submitted := *h.SubmittedReview
+			hosted.SubmittedReview = &submitted
+		}
 		if h.StandingSummary != nil {
 			standing := *h.StandingSummary
 			hosted.StandingSummary = &standing

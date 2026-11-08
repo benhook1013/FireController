@@ -4,12 +4,21 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
+)
+
+// Keep optional parent lookup available through both concrete production readers.
+var (
+	_ reviewexec.TargetReader = (*sourceReads)(nil)
+	_ reviewexec.ParentReader = (*sourceReads)(nil)
+	_ reviewexec.TargetReader = (*reviewprovider.GitHub)(nil)
+	_ reviewexec.ParentReader = (*reviewprovider.GitHub)(nil)
 )
 
 // SourceReader exposes only the operator-bound read adapter for explicit source
@@ -46,6 +55,7 @@ type sourceReads struct {
 	reader       reviewexec.TargetReader
 	repositories map[int64]reviewprovider.Repository
 	pulls        map[sourcePullKey]reviewprovider.Pull
+	parents      map[string]reviewprovider.Pull
 }
 type sourcePullKey struct {
 	repository string
@@ -53,7 +63,7 @@ type sourcePullKey struct {
 }
 
 func newSourceReads(reader reviewexec.TargetReader) *sourceReads {
-	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}}
+	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}, parents: map[string]reviewprovider.Pull{}}
 }
 func (r *sourceReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 	if value, ok := r.repositories[id]; ok {
@@ -77,6 +87,25 @@ func (r *sourceReads) Pull(ctx context.Context, repository string, number int64)
 	return value, err
 }
 
+func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	key := repository + "\x00" + branch
+	if value, ok := r.parents[key]; ok {
+		return value, nil
+	}
+	reader, ok := r.reader.(reviewexec.ParentReader)
+	if !ok {
+		return reviewprovider.Pull{}, reviewHold("parent_unavailable")
+	}
+	value, err := reader.ParentPull(ctx, repository, branch)
+	if err == nil {
+		r.parents[key] = value
+		if value.Number > 0 {
+			r.pulls[sourcePullKey{repository, value.Number}] = value
+		}
+	}
+	return value, err
+}
+
 func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, operationRequest(operation))
 	if err != nil {
@@ -89,15 +118,31 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if comparison.Pending {
 		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if comparison.Covered {
+	rounds := false
+	if comparison.RoundsConfigured {
+		rounds, err = engine.RoundAdmission(ctx, operation.ProjectID, operation.ID)
+		if err != nil {
+			return plan, nil, err
+		}
+	}
+	if comparison.Covered && !rounds {
 		return plan, nil, reviewHold("target_already_covered")
 	}
 	if configuration.Mode != "stacked" {
 		return plan, nil, nil
 	}
-	position := slices.Index(configuration.Queue, operation.PullNumber)
-	predecessors := make([]reviewexec.SourcePlan, 0, position)
-	for _, number := range configuration.Queue[:position] {
+
+	predecessors := []reviewexec.SourcePlan{}
+	seen := map[int64]bool{operation.PullNumber: true}
+	number := plan.ParentPullNumber
+	for number != 0 {
+		if seen[number] || len(predecessors) >= 100 {
+			return plan, nil, reviewHold("predecessor_identity_changed")
+		}
+		seen[number] = true
+		if !slices.Contains(configuration.Queue, number) {
+			return plan, nil, reviewPredecessorHold(number, "not_in_queue")
+		}
 		pull, err := reads.Pull(ctx, plan.Repository.FullName, number)
 		if err != nil {
 			return plan, nil, err
@@ -105,28 +150,41 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 		if pull.RepositoryID != repositoryID || pull.Number != number {
 			return plan, nil, reviewHold("predecessor_identity_changed")
 		}
-		if pull.Merged {
-			predecessors = append(predecessors, reviewexec.SourcePlan{Repository: plan.Repository, Pull: pull, ObservedAt: plan.ObservedAt})
-			continue
-		}
-		if pull.State != "open" {
+		if pull.State != "open" || pull.Merged {
 			return plan, nil, reviewHold("predecessor_unavailable")
 		}
 		request := operationRequest(operation)
 		request.PullNumber, request.HeadSHA = number, pull.HeadSHA
 		preceding, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
 		if err != nil {
+			var hold *core.Error
+			if errors.As(err, &hold) && hold.Code == "review_held" {
+				if details, ok := hold.Details.(map[string]string); ok {
+					switch details["reason"] {
+					case "pull_draft":
+						return plan, nil, reviewPredecessorHold(number, "pull_draft")
+					case "parent_moved":
+						refusal := map[string]string{"reason": "predecessor_parent_moved"}
+						for _, field := range []string{"pull_number", "parent_pull_number", "observed_base_sha", "expected_parent_sha"} {
+							refusal[field] = details[field]
+						}
+						return plan, nil, &core.Error{Code: "review_held", Message: "An ancestor's selected parent and observed base differ.", Status: 409, Details: refusal}
+					}
+				}
+			}
 			return plan, nil, err
 		}
-		covered, err := engine.Coverage(ctx, operation.ProjectID, preceding, operation.Channel)
+		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
 		if err != nil {
 			return plan, nil, err
 		}
 		if !covered {
-			return plan, nil, reviewHold("predecessor_unfinished")
+			return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
 		}
 		predecessors = append(predecessors, preceding)
+		number = preceding.ParentPullNumber
 	}
+
 	return plan, predecessors, nil
 }
 
@@ -172,4 +230,8 @@ func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, proj
 	metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
 	_, err = engine.PublishAttempt(ctx, project, attemptID, &metadata)
 	return err
+}
+
+func reviewPredecessorHold(number int64, cause string) error {
+	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }

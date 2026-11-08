@@ -19,6 +19,9 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	adoption                   *adoptionArgs
+	roundChannel               string
+	roundControl               client.ConfigureReviewRoundControlRequest
 	queueEdit                  json.RawMessage
 	reviewCIDiagnostics        bool
 	notes                      *noteToolCall
@@ -59,6 +62,8 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, roundControlDefinitions()...)
+	definitions = append(definitions, adoptionDefinitions()...)
 	definitions = append(definitions, queueEditDefinition())
 	definitions = append(definitions, jobProgressDefinitions()...)
 	definitions = append(definitions, primaryJobDefinitions()...)
@@ -69,13 +74,17 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	known := make(map[string]bool)
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if projectMapTool(tool.name) {
+			if adoptionTool(tool.name) {
+				args.adoption, err = parseAdoptionArguments(tool.name, request.Params.Arguments)
+			} else if tool.name == "review_rounds_read" || tool.name == "review_rounds_configure" {
+				args, err = roundControlArguments(tool.name, request.Params.Arguments)
+			} else if projectMapTool(tool.name) {
 				args, err = projectMapArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "wait_for_messages" {
 				args, err = messageWaitArguments(request.Params.Arguments)
@@ -114,6 +123,12 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
+			case "review_round_adoption_preview", "review_round_adoption_apply", "review_obligations_list", "review_obligation_read", "review_obligations_import_preview", "review_obligations_import_apply", "review_obligation_retarget", "review_obligation_resolve":
+				value, err = executeAdoption(ctx, service, args.adoption)
+			case "review_rounds_read":
+				value, err = service.ReviewRoundControl(ctx, args.pullNumber, args.roundChannel)
+			case "review_rounds_configure":
+				value, err = service.ConfigureReviewRoundControl(ctx, args.pullNumber, args.roundChannel, args.key, args.roundControl)
 			case "review_queue_edit":
 				value, err = service.EditReviewQueue(ctx, args.key, args.queueEdit)
 			case "map_entry_create", "map_entry_replace", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history":

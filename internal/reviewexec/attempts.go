@@ -113,6 +113,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if reason != "" {
 			return holdOperation(ctx, tx, o, reason, at)
 		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			var refusal *core.Error
+			if errors.As(err, &refusal) && roundControlRefusal(refusal.Code) {
+				return holdOperation(ctx, tx, o, refusal.Code, at)
+			}
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -153,7 +160,7 @@ func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at stri
 	return err
 }
 
-func readAttempt(ctx context.Context, tx *sql.Tx, project, id string) (Attempt, error) {
+func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
 	var a Attempt
 	var anchor string
 	err := tx.QueryRowContext(ctx, `SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE project_id=? AND id=?`, project, id).Scan(&a.ID, &a.OperationID, &a.ProjectID, &a.Provider, &a.Account, &a.State, &a.Revision, &anchor, &a.Intent, &a.ExternalID)
@@ -189,6 +196,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
 		}
+		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
 		var repositoryID int64
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
@@ -217,6 +227,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if reason != "" {
 			return policyAdmissionConflict()
+		}
+		if _, err := admitRoundControl(ctx, tx, o); err != nil {
+			return err
 		}
 		state := "active"
 		if o.Channel == "hosted" {
@@ -320,6 +333,14 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		}
 		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 			return err
+		}
+		if state == "completed" {
+			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
+			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil

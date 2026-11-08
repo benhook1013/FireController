@@ -47,8 +47,21 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 		"pending channel": func(v map[string]any) {
 			v["channels"] = []any{map[string]any{"channel": "cli", "covered": true, "pending": true}}
 		},
+		"carried false ready":          func(v map[string]any) { v["source_obligations_pending"] = 1 },
+		"carried negative":             func(v map[string]any) { v["source_obligations_pending"] = -1 },
+		"carried unsafe":               func(v map[string]any) { v["source_obligations_pending"] = int64(1 << 53) },
+		"carried fractional":           func(v map[string]any) { v["source_obligations_pending"] = 1.5 },
+		"carried null":                 func(v map[string]any) { v["source_obligations_pending"] = nil },
+		"carried reason without count": func(v map[string]any) { v["state"] = "held"; v["reasons"] = []string{"source_obligations_pending"} },
+		"carried count without reason": func(v map[string]any) {
+			v["state"] = "held"
+			v["reasons"] = []string{"routed_findings_pending"}
+			v["source_obligations_pending"] = 1
+		},
 		"incoming pending":       func(v map[string]any) { v["incoming_routes_pending"] = 1 },
 		"incoming capacity":      func(v map[string]any) { v["incoming_routes_capacity"] = true },
+		"incoming inexact":       func(v map[string]any) { v["incoming_routes_pending"] = int64(1 << 53) },
+		"incoming fractional":    func(v map[string]any) { v["incoming_routes_pending"] = 1.5 },
 		"incoming negative":      func(v map[string]any) { v["incoming_routes_pending"] = -1 },
 		"incoming null":          func(v map[string]any) { v["incoming_routes_pending"] = nil },
 		"positive reason":        func(v map[string]any) { v["reasons"] = []string{"unknown_hold"} },
@@ -110,6 +123,30 @@ func TestReadinessClientRejectsFalseGreenAndMalformedObservations(t *testing.T) 
 	response.Store(string(body))
 	if got, err := c.ReviewSourceReadiness(t.Context(), 2); err != nil || got.State != "held" || got.ReviewState.UnresolvedOutdated != 1 {
 		t.Fatal(got, err)
+	}
+	for _, pending := range []int64{101, 103, (1 << 53) - 1} {
+		held := sampleReadiness()
+		held.State = "held"
+		held.Reasons = []string{"routed_findings_pending"}
+		held.IncomingRoutesPending = pending
+		body, _ := json.Marshal(held)
+		response.Store(string(body))
+		got, err := c.ReviewSourceReadiness(t.Context(), 2)
+		if err != nil || got.IncomingRoutesPending != pending || !got.Channels[0].Covered || got.IncomingRoutesCapacity {
+			t.Fatal("exact count hold lost", got, err)
+		}
+	}
+	for _, pending := range []int64{1, 101, (1 << 53) - 1} {
+		held := sampleReadiness()
+		held.State = "held"
+		held.Reasons = []string{"source_obligations_pending"}
+		held.SourceObligationsPending = pending
+		body, _ := json.Marshal(held)
+		response.Store(string(body))
+		got, err := c.ReviewSourceReadiness(t.Context(), 2)
+		if err != nil || got.SourceObligationsPending != pending || !got.Channels[0].Covered {
+			t.Fatal("carried hold or captured coverage lost", got, err)
+		}
 	}
 	before := calls.Load()
 	_, err := c.ReviewSourceReadiness(t.Context(), 0)

@@ -132,7 +132,7 @@ describe('native routed finding browser reads', () => {
 describe('incoming-route captured policy facts', () => {
   it('keeps incoming obligations separate from already covered channels, including exact capacity and omitted zeros', async () => {
     const client = await connected();
-    for (const optional of [{}, { incoming_routes_pending: 0, incoming_routes_capacity: false }, { state: 'held', incoming_routes_pending: 1, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 100, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_capacity: true, reason: 'routed_findings_capacity' }, { state: 'unconfigured', policy_revision: 0, channels: [] }]) {
+    for (const optional of [{}, { incoming_routes_pending: 0, incoming_routes_capacity: false }, { state: 'held', incoming_routes_pending: 1, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 100, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 101, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: 103, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_pending: Number.MAX_SAFE_INTEGER, reason: 'routed_findings_pending' }, { state: 'held', incoming_routes_capacity: true, reason: 'routed_findings_capacity' }, { state: 'unconfigured', policy_revision: 0, channels: [] }]) {
       const value = { ...assessment(), ...optional };
       const fetchMock = vi.fn().mockResolvedValueOnce(json(value)); vi.stubGlobal('fetch', fetchMock);
       const got = await client.reviewPolicyAssessment(evidenceID);
@@ -150,7 +150,7 @@ describe('incoming-route captured policy facts', () => {
     ['false sufficient with incoming', v => { Object.assign(v, { incoming_routes_pending: 1, reason: 'routed_findings_pending' }); }],
     ['false sufficient with capacity', v => { Object.assign(v, { incoming_routes_capacity: true, reason: 'routed_findings_capacity' }); }],
     ['negative count', v => { v.incoming_routes_pending = -1; }],
-    ['over 100 exact count', v => { Object.assign(v, { state: 'held', incoming_routes_pending: 101, reason: 'routed_findings_pending' }); }],
+    ['inexact count', v => { Object.assign(v, { state: 'held', incoming_routes_pending: Number.MAX_SAFE_INTEGER + 1, reason: 'routed_findings_pending' }); }],
     ['fraction count', v => { v.incoming_routes_pending = 1.5; }],
     ['null count', v => { v.incoming_routes_pending = null; }],
     ['string count', v => { v.incoming_routes_pending = '1'; }],
@@ -184,6 +184,52 @@ describe('incoming-route captured policy facts', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(raw, { headers: { 'content-type': 'application/json' } })));
       await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
     }
+    client.close();
+  });
+});
+
+
+describe('carried captured policy facts', () => {
+  const channel = { channel: 'hosted', covered: true, pending: false };
+  it.each([
+    { state: 'held', source_obligations_pending: 1, reason: 'source_obligations_pending' },
+    { state: 'held', source_obligations_pending: Number.MAX_SAFE_INTEGER, incoming_routes_pending: 2, reason: 'routed_findings_pending' },
+    { state: 'held', source_obligations_pending: 1, incoming_routes_capacity: true, reason: 'routed_findings_capacity' },
+    { state: 'unconfigured', policy_revision: 0, channels: [], source_obligations_pending: 1, reason: 'source_obligations_pending' },
+    { source_obligations_pending: 0 },
+    { state: 'held', channels: [{ ...channel, rounds_configured: true }] },
+    { state: 'held', channels: [{ ...channel, rounds_configured: true, rounds_complete: false }] },
+    { channels: [{ ...channel, rounds_configured: true, rounds_complete: true }] },
+    { channels: [{ ...channel, rounds_configured: false, rounds_complete: false }] },
+    { state: 'held', channels: [{ ...channel, pending: true, rounds_configured: true, rounds_complete: true }] },
+  ])('accepts server obligation and round facts %j', async optional => {
+    const client = await connected();
+    const value = { ...assessment(), ...optional };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(value)));
+    await expect(client.reviewPolicyAssessment(evidenceID)).resolves.toEqual(value);
+    client.close();
+  });
+  it.each([
+    ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1, null, '1'].map(source_obligations_pending => ({ source_obligations_pending })),
+    { state: 'held', source_obligations_pending: 1 },
+    { source_obligations_pending: 1, reason: 'source_obligations_pending' },
+    { state: 'held', reason: 'source_obligations_pending' },
+    { state: 'held', source_obligations_pending: 1, incoming_routes_pending: 2, reason: 'source_obligations_pending' },
+    { state: 'held', source_obligations_pending: 1, incoming_routes_capacity: true, reason: 'source_obligations_pending' },
+    { state: 'unconfigured', policy_revision: 0, channels: [], source_obligations_pending: 1 },
+    { state: 'unconfigured', policy_revision: 0, channels: [], source_obligations_pending: 1, incoming_routes_pending: 1, reason: 'routed_findings_pending' },
+    ...[null, 1, 'true'].flatMap(value => [
+      { channels: [{ ...channel, rounds_configured: value }] },
+      { channels: [{ ...channel, rounds_configured: true, rounds_complete: value }] },
+    ]),
+    { channels: [{ ...channel, rounds_complete: true }] },
+    { channels: [{ ...channel, rounds_configured: false, rounds_complete: true }] },
+    { channels: [{ ...channel, rounds_configured: true }] },
+    { state: 'held', channels: [{ ...channel, rounds_configured: true, rounds_complete: true }] },
+  ])('rejects inconsistent carried facts %j', async optional => {
+    const client = await connected();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...assessment(), ...optional })));
+    await expect(client.reviewPolicyAssessment(evidenceID)).rejects.toMatchObject({ code: 'invalid_response' });
     client.close();
   });
 });

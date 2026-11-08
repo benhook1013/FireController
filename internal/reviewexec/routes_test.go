@@ -462,6 +462,9 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	f, a, id := routeFixture(t, 1)
 	adjudicationDecide(t, f, id, "legacy-decision", 0, 0, "accepted")
 	before := adjudicationState(t, f, a)
+	// The predecessor had neither route tables nor the later derived domain.
+	// Remove only that optional domain before constructing its genuine shape.
+	routePolicyPreDomain(t, f)
 	admissionSQL(t, f, `DROP TABLE review_finding_route_revisions`)
 	admissionSQL(t, f, `DROP TABLE review_finding_routes`)
 	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_adjudication'`)
@@ -473,6 +476,9 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	}
 	raw, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), "legacy-decision", id, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Explicit reason <script>literal</script>"})
 	adjudicationReceipt(t, raw, err, id, "adjudicated", 1)
+	if err := ensureRoutePolicySchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	r := routeCreate(t, f, id, "route-after-migration", routeRequest(1, 0, 4))
 	initial := routeRead(t, f, r.ID)
 	var file string
@@ -500,7 +506,7 @@ func TestFindingRouteAdjudicationV1MigrationAndRestartRetention(t *testing.T) {
 	}
 }
 
-func TestFindingRoutePendingBoundAt100And101UsesIndexedActiveHistory(t *testing.T) {
+func TestFindingRoutePendingCountAt100And101KeepsPageBound(t *testing.T) {
 	f, a, id := routeFixture(t, 100)
 	for i := range 100 {
 		routeCreate(t, f, id, fmt.Sprintf("capacity-route-%d", i), routeRequest(int64(i), int64(i), 4))
@@ -534,11 +540,12 @@ func TestFindingRoutePendingBoundAt100And101UsesIndexedActiveHistory(t *testing.
 		t.Fatal(err)
 	}
 	routeCreate(t, f, retained.ID, "capacity-101", routeRequest(0, 0, 4))
-	_, err = routePending(t, f, 4)
-	attemptCode(t, err, "review_capacity")
+	if count, err := routePending(t, f, 4); err != nil || count != 101 {
+		t.Fatal("101 valid pending routes not assessed exactly", count, err)
+	}
 	page, err := f.e.ListFindingRoutes(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), 4, 100, "")
 	if err != nil || len(page.Items) != 100 || !page.HasMore {
-		t.Fatal("capacity prevents explicit inspection", len(page.Items), page.HasMore, err)
+		t.Fatal("exact assessment changed the explicit page bound", len(page.Items), page.HasMore, err)
 	}
 }
 

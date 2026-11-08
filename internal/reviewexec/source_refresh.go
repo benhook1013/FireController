@@ -255,7 +255,11 @@ func (e *Engine) refreshBinding(ctx context.Context, tx *sql.Tx, r sourceRefresh
 	if err != nil {
 		return c, "", err
 	}
-	if !sameSourceConfiguration(c, retained) || repo != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
+	parent := int64(0)
+	if r.Observation != nil {
+		parent = r.Observation.ParentPullNumber
+	}
+	if !sameSourceTargetConfiguration(c, retained, r.PullNumber, parent) || repo != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, r.PullNumber) {
 		return c, "source_configuration_changed", nil
 	}
 	allowed, err := actorAllowed(ctx, tx, r.ProjectID, r.actor, r.worker)
@@ -265,8 +269,22 @@ func (e *Engine) refreshBinding(ctx context.Context, tx *sql.Tx, r sourceRefresh
 	if !allowed {
 		return c, "authorization_changed", nil
 	}
-	return c, "", nil
+	// The observed request keeps its original source-resolution plan.
+	return retained, "", nil
 }
+
+// Source applicability depends on this target's prefix and actual parent
+// membership, not unrelated later queue entries. Pause never forbids source
+// reads. The actual parent can lie after the target or outside the queue; its
+// identity comes from provider facts, while its enrollment must remain stable.
+func sameSourceTargetConfiguration(a, b Configuration, number, parent int64) bool {
+	if a.CapabilityID != b.CapabilityID || a.Mode != b.Mode || !slices.Equal(a.Channels, b.Channels) {
+		return false
+	}
+	left, right := slices.Index(a.Queue, number), slices.Index(b.Queue, number)
+	return left >= 0 && right == left && slices.Equal(a.Queue[:left+1], b.Queue[:right+1]) && (parent == 0 || slices.Contains(a.Queue, parent) == slices.Contains(b.Queue, parent))
+}
+
 func sameSourceConfiguration(a, b Configuration) bool {
 	return a.CapabilityID == b.CapabilityID && a.Mode == b.Mode && slices.Equal(a.Queue, b.Queue) && slices.Equal(a.Channels, b.Channels)
 }
@@ -573,7 +591,12 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			if current.State != r.State || current.Revision != r.Revision {
 				return conflict()
 			}
-			_, reason, err := e.refreshBinding(ctx, tx, r)
+			observation := SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}
+			checked := r
+			if readErr == nil {
+				checked.Observation = &observation
+			}
+			_, reason, err := e.refreshBinding(ctx, tx, checked)
 			if err != nil {
 				return err
 			}
@@ -582,7 +605,6 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			state := "held"
 			var retained *SourceObservation
-			observation := SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}
 			if reason == "" {
 				if !validSourceObservation(observation) || observation.RepositoryID != r.repositoryID || observation.PullNumber != r.PullNumber || observation.HeadSHA != r.HeadSHA {
 					reason = "source_unavailable"
@@ -603,11 +625,14 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 	return true, err
 }
 func sourceRefreshReason(err error) string {
+	if errors.Is(err, reviewprovider.ErrParentAmbiguous) {
+		return "parent_ambiguous"
+	}
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "review_held" {
 		if details, ok := failure.Details.(map[string]string); ok {
 			switch reason := details["reason"]; reason {
-			case "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "default_base_changed", "parent_moved", "observation_incomplete":
+			case "repository_changed", "target_changed", "parent_identity_changed", "parent_unavailable", "parent_ambiguous", "default_base_changed", "parent_moved", "observation_incomplete":
 				return reason
 			}
 		}
@@ -616,19 +641,20 @@ func sourceRefreshReason(err error) string {
 }
 
 type SourcePolicyAssessment struct {
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
-	ProjectID              string                    `json:"project_id"`
-	RefreshID              string                    `json:"refresh_id"`
-	Source                 string                    `json:"source"`
-	ConfigurationRevision  int64                     `json:"configuration_revision"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	SourceObservedAt       string                    `json:"source_observed_at"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	State                  string                    `json:"state"`
-	Reason                 string                    `json:"reason,omitempty"`
-	Target                 SourceObservation         `json:"target"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	RefreshID                string                    `json:"refresh_id"`
+	Source                   string                    `json:"source"`
+	ConfigurationRevision    int64                     `json:"configuration_revision"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	SourceObservedAt         string                    `json:"source_observed_at"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	State                    string                    `json:"state"`
+	Reason                   string                    `json:"reason,omitempty"`
+	Target                   SourceObservation         `json:"target"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
 }
 
 func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scope, number int64) (SourcePolicyAssessment, error) {
@@ -651,29 +677,19 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		}
 		observation := *r.Observation
 		result = SourcePolicyAssessment{ProjectID: scope.ProjectID, RefreshID: r.ID, Source: "observed_comparison", ConfigurationRevision: r.ConfigurationRevision, SourceObservedAt: observation.ObservedAt, EvaluatedAt: stamp(), State: "unconfigured", Target: observation, Channels: []PolicyAssessmentChannel{}}
-		// Read access is current, not inherited from the actor who refreshed. Only
-		// repository/configuration/capability identity determines source applicability.
-		c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
-		var currentRepository int64
-		if err == nil {
-			err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&currentRepository)
-		}
+		// Source applicability shares CI/readiness's target-scoped binding.
+		revision, bindingReason, err := e.assessmentSourceBinding(ctx, tx, r)
 		if err != nil {
-			var failure *core.Error
-			if !errors.As(err, &failure) || failure.Code != "reviews_unconfigured" {
-				return err
-			}
+			return err
 		}
-		cap, ok := e.capabilities[c.CapabilityID]
-		var retained Configuration
-		if err == nil {
-			retained, err = sourceConfiguration(ctx, tx, r.ProjectID, r.ConfigurationRevision)
+		result.ConfigurationRevision = revision
+		stale := bindingReason != ""
+		if !stale {
+			result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, number)
 			if err != nil {
 				return err
 			}
 		}
-		result.ConfigurationRevision = revision
-		stale := err != nil || !sameSourceConfiguration(c, retained) || currentRepository != r.repositoryID || !ok || e.validateConfiguration(c) != nil || c.CapabilityID != r.capability || cap.Fingerprint != r.fingerprint || !slices.Contains(c.Queue, number)
 		policy, err := readPolicy(ctx, tx, scope.ProjectID)
 		if err != nil {
 			var failure *core.Error
@@ -683,6 +699,8 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			if stale {
 				result.State = "held"
 				result.Reason = "source_configuration_changed"
+			} else if result.SourceObligationsPending > 0 {
+				result.Reason = "source_obligations_pending"
 			}
 			return nil
 		}
@@ -693,7 +711,6 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 			return nil
 		}
 		result.State = "sufficient"
-		anchor := Anchor{RepositoryID: observation.RepositoryID, Repository: observation.RepositoryName, PullNumber: number, CandidateSHA: observation.HeadSHA, BaseSHA: observation.BaseSHA, BaseRef: observation.BaseRef, ParentPullNumber: observation.ParentPullNumber, ParentSHA: observation.ParentSHA, ObservedAt: observation.ObservedAt}
 		result.IncomingRoutesPending, result.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
 		if err != nil {
 			return err
@@ -703,13 +720,19 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
 		}
+		if result.SourceObligationsPending > 0 {
+			result.State = "held"
+			if result.Reason == "" {
+				result.Reason = "source_obligations_pending"
+			}
+		}
 		for _, channel := range policy.Policy.RequiredChannels {
-			state, err := comparison(ctx, tx, scope.ProjectID, r.repositoryID, number, anchor, channel)
+			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {
 				return err
 			}
-			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending})
-			if !state.Covered || state.Pending {
+			result.Channels = append(result.Channels, PolicyAssessmentChannel{Channel: channel, Covered: state.Covered, Pending: state.Pending, RoundsConfigured: state.RoundsConfigured, RoundsComplete: state.RoundsComplete})
+			if !state.Covered || state.Pending || state.RoundsConfigured && !state.RoundsComplete {
 				result.State = "held"
 			}
 		}

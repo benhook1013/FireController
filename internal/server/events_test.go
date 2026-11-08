@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -393,6 +394,18 @@ func TestMessageEventWaitCapacityReleasesCanceledPrincipalSlot(t *testing.T) {
 	f, project, _, recipient, _ := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
 	path := "/api/v1/projects/" + project + "/message-events?cursor=" + url.QueryEscape(cursor) + "&wait_ms=4000"
+	// Resolve the principal before the reader gate. The later replacement must
+	// exercise waiter admission, rather than fail earlier in HTTP authentication.
+	scopeRequest := httptest.NewRequest(http.MethodGet, path, nil)
+	scopeRequest.SetPathValue("project_id", project)
+	scopeRequest.Header.Set("Authorization", "Bearer "+eventClientToken)
+	scopeRequest.Header.Set("X-FC-Worker", recipient)
+	scope, err := f.store.Scope(scopeRequest, "read")
+	if err != nil {
+		t.Fatal("replacement scope", err)
+	}
+	replacementCtx, replacementCancel := context.WithCancel(context.Background())
+	replacementCancel()
 	type completed struct {
 		index    int
 		response *httptest.ResponseRecorder
@@ -427,29 +440,60 @@ func TestMessageEventWaitCapacityReleasesCanceledPrincipalSlot(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("principal wait capacity was not enforced")
 	}
+	// A canceled caller must still receive the admission refusal while full.
+	// This negative control proves cancellation cannot bypass the slot check.
+	_, err = f.store.MessageEvents(replacementCtx, scope, cursor, 20, 4*time.Second)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Status != http.StatusServiceUnavailable || !strings.Contains(failure.Message, "bounded event wait capacity") {
+		t.Fatalf("full pool did not refuse real replacement admission: %v", err)
+	}
 	canceledIndex := 0
 	if rejected.index == 0 {
 		canceledIndex = 1
+	}
+	// Capacity proves all sixteen subscriptions exist, but their initial SQL
+	// reads may still be running. Drain and hold the reader pool so cancellation
+	// tests slot release while idle or waiting for a connection, independently
+	// of driver-specific interruption of an in-flight SQLite statement.
+	gateCtx, gateCancel := context.WithTimeout(context.Background(), time.Second)
+	defer gateCancel()
+	var readers []*sql.Conn
+	releaseReaders := func() {
+		for _, conn := range readers {
+			_ = conn.Close()
+		}
+		readers = nil
+	}
+	defer releaseReaders()
+	slots := f.store.DB().Stats().MaxOpenConnections
+	if slots < 1 {
+		t.Fatal("fixture reader pool must be bounded")
+	}
+	for i := 0; i < slots; i++ {
+		conn, err := f.store.DB().Conn(gateCtx)
+		if err != nil {
+			t.Fatal("reader cancellation gate", err)
+		}
+		readers = append(readers, conn)
 	}
 	cancels[canceledIndex]()
 	select {
 	case released := <-done:
 		if released.index != canceledIndex || released.response.Code != http.StatusServiceUnavailable {
-			t.Fatalf("unexpected canceled wait: %+v", released)
+			t.Fatalf("unexpected canceled wait: index=%d want=%d status=%d body=%s", released.index, canceledIndex, released.response.Code, released.response.Body.String())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancellation did not release the request")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
-	r.Header.Set("Authorization", "Bearer "+eventClientToken)
-	r.Header.Set("X-FC-Worker", recipient)
-	f.handler.ServeHTTP(w, r)
-	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "bounded event wait capacity") {
-		t.Fatalf("replacement did not acquire released slot: %d %s", w.Code, w.Body.String())
+	// Use the same already-canceled caller while the SQL gate is still held.
+	// Success through admission reaches the canceled durable read and releases
+	// its temporary waiter. A leaked principal slot would return capacity again.
+	_, err = f.store.MessageEvents(replacementCtx, scope, cursor, 20, 4*time.Second)
+	failure = nil
+	if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Status != http.StatusServiceUnavailable || strings.Contains(failure.Message, "bounded event wait capacity") {
+		t.Fatalf("replacement did not acquire released slot: %v", err)
 	}
+	releaseReaders()
 	for _, cancel := range cancels {
 		cancel()
 	}

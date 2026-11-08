@@ -277,10 +277,13 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	// through the original trigger and reservation, without another post.
 	observed, err := observeHostedAttempt(ctx, d.provider, d.captures, d.engine, operation.ProjectID, attempt.ID, d.capability.ID, prepared.postingActor, d.providerActor(), false)
 	if err == nil {
+		if observed.State == "rate_limited" || observed.State == "failed" {
+			return reviewexec.Result{State: observed.State, Reason: observed.Reason, ExternalID: externalID}, nil
+		}
 		if observed.State == "completed" {
 			return reviewexec.Result{State: "completed", Reason: "hosted_evidence_retained", ExternalID: externalID}, nil
 		}
-		if observed.Reason == "hosted_observation_capacity" {
+		if observed.Reason == "hosted_observation_capacity" || observed.Reason == "hosted_finished_inventory_unproven" {
 			return reviewexec.Result{State: "uncertain", Reason: observed.Reason, ExternalID: externalID}, nil
 		}
 		if observed.Reason == "conflicting_trigger_evidence" || observed.Reason == "trigger_identity_changed" {

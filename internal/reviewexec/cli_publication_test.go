@@ -202,8 +202,13 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	current.Title, current.HeadSHA = "Newer current title", strings.Repeat("9", 40)
 	current.BaseRef, current.BaseSHA = "current-base", strings.Repeat("8", 40)
 	current.CIState, current.Mergeability = "pending", "conflicting"
+	currentDraft := false
+	current.Diff = &reviews.PullDiff{Files: 3, Additions: 11, Deletions: 7}
+	current.IsDraft = &currentDraft
 	merged := projectionPull(1)
 	merged.State = "merged"
+	merged.Diff = &reviews.PullDiff{}
+	merged.MergedAt = "2026-01-01T00:00:00.123456789Z"
 	imported := projectionRun(evidence)
 	imported.Channel = "manual"
 	merged.Runs = []reviews.RunInput{imported}

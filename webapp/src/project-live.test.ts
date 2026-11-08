@@ -99,7 +99,7 @@ describe('live private project views', () => {
 
   it('accepts only the bounded explicit change vocabulary without messages or payloads', () => {
     const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: 'record_one' })));
-    expect(validMetadataPage(complete, 25)).toBe(true);
+    expect(validMetadataPage(complete, projectEventTypes.length)).toBe(true);
     for (const kind of ['message.sent', 'credentials.revoked', 'review.cli_preflight', 'review.future_kind']) {
       expect(validMetadataPage({ ...complete, items: [{ ...complete.items[0], event_type: kind }] }, 25)).toBe(false);
     }

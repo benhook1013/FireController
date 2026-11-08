@@ -157,6 +157,9 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			p = f.reader.pulls[4]
 			p.HeadSHA, p.BaseSHA, p.BaseRef = strings.Repeat("9", 40), f.headSHA, "parent-branch"
 			f.reader.pulls[4] = p
+			parent := f.reader.pulls[2]
+			parent.HeadRef = "parent-branch"
+			f.reader.pulls[2] = parent
 			config := sourceConfiguration("stacked", 2, 3, 4)
 			operation := sourceOperation(f, 4, "hosted")
 			before := sourceState(t, f)
@@ -169,7 +172,7 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(predecessors) != 2 || predecessors[0].Pull.Number != 2 || predecessors[1].Pull.Number != 3 || !predecessors[1].Pull.Merged || plan.ParentPullNumber != 2 {
+			if err != nil || len(predecessors) != 1 || predecessors[0].Pull.Number != 2 || plan.ParentPullNumber != 2 {
 				t.Fatal("hosted stack scope/order changed", plan, predecessors, err)
 			}
 			// Recheck and repeated selection share only this phase's provider facts.
@@ -179,10 +182,10 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			if _, _, err = resolveReviewSource(t.Context(), f.engine, reads, 901, config, operation); err != nil {
 				t.Fatal(err)
 			}
-			if f.reader.repositoryCalls != 1 || len(f.reader.calls) != 3 {
+			if f.reader.repositoryCalls != 1 || len(f.reader.calls) != 2 {
 				t.Fatal("unbounded source calls", f.reader.repositoryCalls, f.reader.calls)
 			}
-			for _, number := range []int64{2, 3, 4} {
+			for _, number := range []int64{2, 4} {
 				if f.reader.calls[number] != 1 {
 					t.Fatal("repeated reads within phase", f.reader.calls)
 				}
@@ -193,13 +196,65 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			f.reader.pulls[4] = p
 			_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, config, operation)
 			sourceHoldReason(t, err, "target_changed")
-			if f.reader.repositoryCalls != 2 || f.reader.calls[4] != 2 || f.reader.calls[2] != 1 || f.reader.calls[3] != 1 {
+			if f.reader.repositoryCalls != 2 || f.reader.calls[4] != 2 || f.reader.calls[2] != 1 || f.reader.calls[3] != 0 {
 				t.Fatal("new phase reused old facts or read unrelated targets", f.reader.repositoryCalls, f.reader.calls)
 			}
 			if sourceState(t, f) != before {
 				t.Fatal("source selection changed durable state")
 			}
 		})
+	}
+}
+
+func TestResolveReviewSourceDraftHoldIdentifiesTargetOrAncestor(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, draftSubject := range []string{"target", "ancestor"} {
+			t.Run(channel+"/"+draftSubject, func(t *testing.T) {
+				f := newCLIDriverFixture(t)
+				parent := f.reader.pulls[2]
+				parent.HeadRef = "parent-branch"
+				f.reader.pulls[2] = parent
+				target := f.reader.pulls[4]
+				target.HeadSHA, target.BaseSHA, target.BaseRef = strings.Repeat("9", 40), parent.HeadSHA, parent.HeadRef
+				ready := false
+				target.IsDraft = &ready
+				isDraft := true
+				if draftSubject == "target" {
+					target.IsDraft = &isDraft
+				} else {
+					parent.IsDraft = &isDraft
+					f.reader.pulls[2] = parent
+				}
+				f.reader.pulls[4] = target
+				before := sourceState(t, f)
+				plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", 2, 4), sourceOperation(f, 4, channel))
+				if draftSubject == "target" {
+					sourceHoldReason(t, err, "pull_draft")
+					if plan != (reviewexec.SourcePlan{}) || len(f.reader.calls) != 1 || f.reader.calls[4] != 1 {
+						t.Fatal("target draft inspected ancestors or fabricated a comparison", plan, f.reader.calls)
+					}
+				} else {
+					sourceHoldReason(t, err, "predecessor_unfinished")
+					var failure *core.Error
+					if !errors.As(err, &failure) {
+						t.Fatal(err)
+					}
+					details := failure.Details.(map[string]string)
+					if details["pull_number"] != "2" || details["cause"] != "pull_draft" {
+						t.Fatal("ancestor draft hold lost responsible PR or cause", details)
+					}
+					if plan.Pull != target || plan.Repository != f.reader.repository || plan.ParentPullNumber != 2 || plan.ParentSHA != parent.HeadSHA || plan.ObservedAt == "" {
+						t.Fatal("ancestor draft changed original target comparison", plan)
+					}
+					if len(f.reader.calls) != 2 || f.reader.calls[2] != 1 || f.reader.calls[4] != 1 {
+						t.Fatal("ancestor draft repeated source reads or inspected unrelated PRs", f.reader.calls)
+					}
+				}
+				if predecessors != nil || f.reader.repositoryCalls != 1 || sourceState(t, f) != before || f.fetches.Load() != 0 {
+					t.Fatal("draft hold retained partial dependencies, changed state or materialized work", predecessors, f.reader.repositoryCalls)
+				}
+			})
+		}
 	}
 }
 

@@ -56,6 +56,29 @@ func (r *cliDriverReader) Pull(ctx context.Context, _ string, number int64) (rev
 	return p, nil
 }
 
+func (r *cliDriverReader) ParentPull(ctx context.Context, _ string, branch string) (reviewprovider.Pull, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return reviewprovider.Pull{}, err
+	}
+	var selected reviewprovider.Pull
+	for _, pull := range r.pulls {
+		if pull.HeadRef != branch {
+			continue
+		}
+		if selected.Number != 0 {
+			return reviewprovider.Pull{}, errors.New("synthetic ambiguous published parent")
+		}
+		selected = pull
+	}
+	if selected.Number == 0 {
+		return selected, errors.New("synthetic missing published parent")
+	}
+	r.calls[selected.Number]++
+	return selected, nil
+}
+
 type cliDriverFixture struct {
 	*cliEvidenceFixture
 	driver     *CLIDriver
@@ -116,7 +139,7 @@ printf '%s\n' '{"type":"complete","status":"review_completed","outcome":"complet
 	}
 	f.reader = &cliDriverReader{repository: reviewprovider.Repository{ID: 901, FullName: "owner/repo", DefaultBranch: "main"}, pulls: map[int64]reviewprovider.Pull{}, calls: map[int64]int{}}
 	for number := int64(2); number <= 9; number++ {
-		f.reader.pulls[number] = reviewprovider.Pull{Number: number, RepositoryID: 901, Title: fmt.Sprintf("Fresh synthetic PR %d", number), State: "open", HeadSHA: f.headSHA, BaseSHA: f.baseSHA, BaseRef: "main", ChangedFiles: 999}
+		f.reader.pulls[number] = reviewprovider.Pull{Number: number, RepositoryID: 901, Title: fmt.Sprintf("Fresh synthetic PR %d", number), State: "open", HeadSHA: f.headSHA, HeadRef: fmt.Sprintf("source-%d", number), BaseSHA: f.baseSHA, BaseRef: "main", ChangedFiles: 999}
 	}
 	f.driver, err = NewCLIDriver(f.store, f.engine, f.capability, f.manager, f.captures, f.reader, f.runner)
 	if err != nil {
@@ -399,7 +422,7 @@ func TestCLIDriverGitFileCeilingAndPreparationBinding(t *testing.T) {
 }
 
 func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
-	for _, mode := range []string{"independent", "merged-prefix", "earlier-uncovered", "closed-prefix"} {
+	for _, mode := range []string{"independent", "merged-prefix", "actual-parent-uncovered", "closed-parent"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			configurationMode := "stacked"
@@ -415,16 +438,22 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 					f.reader.pulls[number] = p
 				}
 			}
-			if mode == "earlier-uncovered" {
+			if mode == "actual-parent-uncovered" {
+				parent := f.reader.pulls[2]
+				parent.HeadRef = "feature-parent"
+				f.reader.pulls[2] = parent
 				p := f.reader.pulls[4]
 				p.BaseSHA = f.headSHA
 				p.BaseRef = "feature-parent"
 				f.reader.pulls[4] = p
 			}
-			if mode == "closed-prefix" {
+			if mode == "closed-parent" {
 				p := f.reader.pulls[3]
-				p.State = "closed"
+				p.State, p.HeadRef = "closed", "closed-parent"
 				f.reader.pulls[3] = p
+				target := f.reader.pulls[4]
+				target.BaseRef, target.BaseSHA = p.HeadRef, p.HeadSHA
+				f.reader.pulls[4] = target
 			}
 			op, a, c := f.start(t, 4, 2, "stack-driver")
 			_, err := f.driver.Prepare(context.Background(), op, c, a)
@@ -443,11 +472,11 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 					t.Fatal("PR reads were repeated within phase", f.reader.calls)
 				}
 			}
-			if mode == "independent" && len(f.reader.calls) != 1 {
+			if (mode == "independent" || mode == "merged-prefix") && len(f.reader.calls) != 1 {
 				t.Fatal("independent review inspected predecessors", f.reader.calls)
 			}
-			if mode == "earlier-uncovered" && f.reader.calls[2] != 1 {
-				t.Fatal("driver checked only nearest parent, not earlier prefix", f.reader.calls)
+			if mode == "actual-parent-uncovered" && (f.reader.calls[2] != 1 || f.reader.calls[3] != 0) {
+				t.Fatal("driver did not check only the explicitly published parent", f.reader.calls)
 			}
 		})
 	}
@@ -534,13 +563,16 @@ func TestCLIDriverStackAcceptsActualNativePredecessorCoverage(t *testing.T) {
 	p = f.reader.pulls[4]
 	p.HeadSHA, p.BaseSHA, p.BaseRef = third, f.headSHA, "covered-parent"
 	f.reader.pulls[4] = p
+	parent := f.reader.pulls[2]
+	parent.HeadRef = "covered-parent"
+	f.reader.pulls[2] = parent
 	f.configure(t, "stacked", []int64{2, 3, 4})
 	op, a, c := f.start(t, 4, 2, "covered-stack-target")
 	prepared, err := f.driver.Prepare(context.Background(), op, c, a)
 	if err != nil {
 		t.Fatal("native-covered predecessor blocked target", err)
 	}
-	if prepared.Anchor.ParentPullNumber != 2 || prepared.Anchor.ParentSHA != f.headSHA || prepared.Anchor.CandidateSHA != third || f.reader.repositoryCalls != 1 || f.reader.calls[2] != 1 || f.reader.calls[3] != 1 || f.reader.calls[4] != 1 {
+	if prepared.Anchor.ParentPullNumber != 2 || prepared.Anchor.ParentSHA != f.headSHA || prepared.Anchor.CandidateSHA != third || f.reader.repositoryCalls != 1 || f.reader.calls[2] != 1 || f.reader.calls[3] != 0 || f.reader.calls[4] != 1 {
 		t.Fatal("stack selected wrong source or repeated provider observations", prepared.Anchor, f.reader.calls)
 	}
 }
@@ -660,6 +692,9 @@ func TestCLIDriverPendingEvidenceBlocksRepeatSpendAcrossHeads(t *testing.T) {
 				f.reader.pulls[2] = p
 			}
 			if phase == "stacked-predecessor" {
+				parent := f.reader.pulls[2]
+				parent.HeadRef = "parent"
+				f.reader.pulls[2] = parent
 				f.configure(t, "stacked", []int64{2, 4})
 				number, revision = 4, 2
 				p := f.reader.pulls[4]
@@ -700,19 +735,29 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
-	// The same Git objects under a different explicit base comparison have no
-	// current coverage. Correct an older closed finding after Prepare's first
-	// comparison read; Dispatch must still refuse before invoking review.
-	f.reader.repository.DefaultBranch = "new-main"
-	p := f.reader.pulls[2]
-	p.BaseRef = "new-main"
-	f.reader.pulls[2] = p
+	// Review a genuine child of the completed parent. Its own channel has no
+	// credit; the older parent's later correction must stop Dispatch after Prepare.
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "third.txt")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
+	third := gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+	parent := f.reader.pulls[2]
+	parent.HeadRef = "covered-parent"
+	f.reader.pulls[2] = parent
+	child := f.reader.pulls[4]
+	child.HeadSHA, child.BaseSHA, child.BaseRef = third, f.headSHA, "covered-parent"
+	f.reader.pulls[4] = child
+	f.configure(t, "stacked", []int64{2, 4})
 	usage := f.driver.usage
 	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
 		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
 		return usage(ctx, w, repo, org)
 	}
-	op, a := f.prepareAdmit(t, 2, 1, "changed-comparison")
+	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
 	before, _ := os.ReadFile(f.log)
 	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
 	if err != nil || result.State != "failed" || result.Reason != "source_admission_changed" {
@@ -745,6 +790,9 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 			merged := f.reader.pulls[3]
 			merged.Merged, merged.State = true, "closed"
 			f.reader.pulls[3] = merged
+			parent := f.reader.pulls[2]
+			parent.HeadRef = "covered-parent"
+			f.reader.pulls[2] = parent
 			child := f.reader.pulls[4]
 			child.HeadSHA, child.BaseSHA, child.BaseRef = third, f.headSHA, "covered-parent"
 			f.reader.pulls[4] = child
@@ -781,7 +829,7 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 			if string(before) != string(after) {
 				t.Fatal("fixture invoked unexpected CLI executable")
 			}
-			if f.reader.repositoryCalls != 4 || f.reader.calls[2] != 4 || f.reader.calls[3] != 2 || f.reader.calls[4] != 2 {
+			if f.reader.repositoryCalls != 4 || f.reader.calls[2] != 4 || f.reader.calls[3] != 0 || f.reader.calls[4] != 2 {
 				t.Fatal("final admission duplicated provider source reads", f.reader.calls, f.reader.repositoryCalls)
 			}
 			// The corrected predecessor is still the original finalized source count;

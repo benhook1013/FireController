@@ -13,10 +13,11 @@ import (
 // ExecutionContext is trusted local admission state, not dispatch permission.
 // Source identity, fresh allowance and workspace checks remain the driver's job.
 type ExecutionContext struct {
-	Operation     Operation
-	Configuration Configuration
-	Policy        PolicyRecord
-	RepositoryID  int64
+	Operation        Operation
+	Configuration    Configuration
+	Policy           PolicyRecord
+	RepositoryID     int64
+	RoundsConfigured bool
 }
 
 func boundPolicy(ctx context.Context, tx *sql.Tx, operation Operation) (PolicyRecord, string, error) {
@@ -46,6 +47,9 @@ func policyAdmissionConflict() error {
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
+	if err := requireSourceObligationsClear(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
+		return ExecutionContext{}, err
+	}
 	configuration, revision, err := readConfiguration(ctx, tx, operation.ProjectID)
 	if err != nil {
 		return ExecutionContext{}, err
@@ -76,6 +80,10 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	}
 	if result.RepositoryID < 1 {
 		return ExecutionContext{}, conflict()
+	}
+	result.RoundsConfigured, err = admitRoundControl(ctx, tx, operation)
+	if err != nil {
+		return ExecutionContext{}, err
 	}
 	result.Configuration, result.Policy = configuration, policy
 	return result, nil
@@ -170,58 +178,59 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if reserved != 1 {
 		return conflict()
 	}
-	if err := verifyPredecessors(ctx, tx, project, current, predecessors); err != nil {
+	if err := verifyPredecessors(ctx, tx, project, current, *attempt.Anchor, predecessors); err != nil {
 		return err
 	}
-	state, err := comparison(ctx, tx, project, current.RepositoryID, operation.PullNumber, *attempt.Anchor, operation.Channel)
+	state, err := channelProgress(ctx, tx, project, current.RepositoryID, operation.PullNumber, operation.Channel)
 	if err != nil {
 		return err
 	}
 	if state.Pending {
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
-	if state.Covered {
-		return &core.Error{Code: "review_held", Message: "The selected native comparison already has completed coverage in this channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
+	if state.Covered && !current.RoundsConfigured {
+		return &core.Error{Code: "review_held", Message: "The selected PR/channel already has completed native review progress.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}
 	return nil
 }
 
 // verifyPredecessors uses the final action's existing SQL snapshot. Fresh
 // provider facts are supplied by the driver; no provider work occurs here.
-func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, predecessors []SourcePlan) error {
+func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current ExecutionContext, target Anchor, predecessors []SourcePlan) error {
 	if current.Configuration.Mode == "independent" {
 		if len(predecessors) != 0 {
 			return invalid()
 		}
 		return nil
 	}
-	position := slices.Index(current.Configuration.Queue, current.Operation.PullNumber)
-	if position < 0 || len(predecessors) != position {
+	if !slices.Contains(current.Configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
 		return invalid()
 	}
-	for i, plan := range predecessors {
-		number := current.Configuration.Queue[i]
+	number, head, branch := target.ParentPullNumber, target.ParentSHA, target.BaseRef
+	seen := map[int64]bool{current.Operation.PullNumber: true}
+	for _, plan := range predecessors {
+		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head || plan.Pull.HeadRef != branch {
+			return invalid()
+		}
+		seen[number] = true
 		observed, err := time.Parse(time.RFC3339Nano, plan.ObservedAt)
-		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) {
+		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
-		if plan.Pull.Merged {
-			if plan.Pull.State != "closed" {
-				return invalid()
-			}
-			continue
+		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
+			return err
 		}
-		if !validCoverageSource(plan) {
-			return invalid()
-		}
-		anchor := Anchor{RepositoryID: current.RepositoryID, PullNumber: number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef}
-		comparison, err := comparison(ctx, tx, project, current.RepositoryID, number, anchor, current.Operation.Channel)
+		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
 		if err != nil {
 			return err
 		}
-		if comparison.Pending || !comparison.Covered {
+		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
 			return sourceHold("predecessor_unfinished")
 		}
+		number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
+	}
+	if number != 0 {
+		return invalid()
 	}
 	return nil
 }
