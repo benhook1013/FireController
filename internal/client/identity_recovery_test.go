@@ -131,7 +131,7 @@ func TestIdentityPreflightRecoversSeveralReadsThenSendsOriginalWriteOnce(t *test
 	}
 }
 
-func TestIdentityPreflightTemporaryFailureDoesNotBlameBindingOrSendOperation(t *testing.T) {
+func TestIdentityPreflightCallerDeadlinePreservesCauseAndRecovery(t *testing.T) {
 	var calls atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -148,18 +148,18 @@ func TestIdentityPreflightTemporaryFailureDoesNotBlameBindingOrSendOperation(t *
 	if c != nil || !errors.As(err, &failure) || failure.Code != "deadline_exceeded" || failure.OutcomeUnknown || calls.Load() != 1 {
 		t.Fatal(err, calls.Load())
 	}
-	for _, phrase := range []string{"temporarily unavailable", "did not send the selected operation"} {
+	for _, phrase := range []string{"deadline expired", "requested operation was not sent"} {
 		if !strings.Contains(failure.Message, phrase) {
 			t.Fatal(failure.Message)
 		}
 	}
-	for _, phrase := range []string{"earlier uncertain write", "exact same request body, idempotency key and binding", "this failed identity check does not establish its outcome"} {
+	for _, phrase := range []string{"Check the service connection", "earlier uncertain attempt", "exact request, idempotency key and binding", "This attempt sent no write"} {
 		if !strings.Contains(failure.Action, phrase) {
 			t.Fatal(failure.Action)
 		}
 	}
-	for _, word := range []string{"maintainer", "profile change", "credential change", "this failed read"} {
-		if strings.Contains(failure.Action, word) {
+	for _, word := range []string{"temporarily unavailable", "maintainer", "profile change", "credential change", "this failed read"} {
+		if strings.Contains(failure.Action+failure.Message, word) {
 			t.Fatal("transient failure required unrelated repair", failure.Action)
 		}
 	}
@@ -188,5 +188,58 @@ func TestIdentityPreflightDoesNotRepeatAnUnknownPost(t *testing.T) {
 	var failure *client.Error
 	if !errors.As(err, &failure) || !failure.OutcomeUnknown || posts.Load() != 1 || !strings.Contains(failure.Action, "exact same idempotency key") {
 		t.Fatal("unknown POST repeated or lost original-key recovery", err, posts.Load())
+	}
+}
+
+func TestIdentityPreflightPreservesPermanentCauseGuidance(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		code, action string
+	}{
+		{"unauthorized", 401, "unauthorized", "Check the selected instance, project, worker and current access."},
+		{"forbidden", 403, "forbidden", "Check the selected instance, project, worker and current access."},
+		{"mismatch", 409, "instance_mismatch", "explicitly update the private profile if its identity changed"},
+		{"redirect", 302, "redirect_rejected", "Configure the final service address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != "GET" || r.URL.Path != "/api/v1/instance" {
+					t.Error("identity failure dispatched another operation")
+				}
+				write(w, tc.status, map[string]any{"error": map[string]string{"code": tc.code, "message": "synthetic refusal"}, "request_id": "request-one"})
+			}))
+			defer s.Close()
+			c, err := client.New(t.Context(), binding(t, s.URL))
+			var failure *client.Error
+			if c != nil || !errors.As(err, &failure) || failure.Code != tc.code || failure.OutcomeUnknown || calls.Load() != 1 {
+				t.Fatal(c, err, calls.Load())
+			}
+			if !strings.Contains(failure.Action, tc.action) || !strings.Contains(failure.Action, "exact request, idempotency key and binding") || !strings.Contains(failure.Message, "requested operation was not sent") {
+				t.Fatal("lost cause or recovery guidance", failure)
+			}
+		})
+	}
+}
+
+func TestIdentityPreflightCallerCancellationPreservesCause(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var calls atomic.Int64
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer s.Close()
+	c, err := client.New(ctx, binding(t, s.URL))
+	var failure *client.Error
+	if c != nil || !errors.As(err, &failure) || failure.Code != "canceled" || failure.OutcomeUnknown || calls.Load() != 1 {
+		t.Fatal(c, err, calls.Load())
+	}
+	if strings.Contains(failure.Message, "temporarily unavailable") || !strings.Contains(failure.Action, "Retry the read when needed") || !strings.Contains(failure.Message, "requested operation was not sent") {
+		t.Fatal("lost caller cancellation cause", failure)
 	}
 }
