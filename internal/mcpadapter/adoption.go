@@ -76,7 +76,7 @@ func adoptionDefinitions() []definition {
 			case "document":
 				p = map[string]any{"type": "object", "description": "Strict native operation document. The existing typed client validates its exact fields, values and byte budget before any service call."}
 			case "expected_revision":
-				p = map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}
+				p = map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}
 			case "pull_number":
 				p = map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
 			case "target_pull_number":
@@ -140,7 +140,7 @@ func parseAdoptionArguments(name string, raw json.RawMessage) (*adoptionArgs, er
 	if _, ok := fields["preview_sha256"]; ok && !adoptionHash(in.PreviewSHA256) {
 		return nil, invalidArguments()
 	}
-	if in.ExpectedRevision != nil && (*in.ExpectedRevision < 0 || *in.ExpectedRevision == math.MaxInt64) {
+	if in.ExpectedRevision != nil && (*in.ExpectedRevision < 1 || *in.ExpectedRevision == math.MaxInt64) {
 		return nil, invalidArguments()
 	}
 	if _, ok := fields["pull_number"]; ok && (in.PullNumber < 1 || in.PullNumber > 2147483647) {

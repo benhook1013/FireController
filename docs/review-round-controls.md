@@ -95,3 +95,5 @@ The prepared record retains remaining minimum and maximum, dry streak, taper thr
 Version-two records can preserve an absent maximum using maximum_unbounded true and maximum_remaining zero. This differs from an exhausted finite allowance. Remaining minimum may reach 9,007,199,254,740,991; native counters refuse overflow. Finite prepared limits remain at most 1,000, and dry/taper limits retain their native bounds. Unknown source rules must refuse rather than invent a cap or reset.
 
 Use fc reviews rounds adopt preview --file PATH, then apply with the same file, --preview SHA256 and --key KEY. Files must be bounded owner-private regular JSON files. MCP exposes review_round_adoption_preview and review_round_adoption_apply with the same native guards. The [carried-obligation contract](adoption-obligations.md) owns source-policy linkage, admission holds, guarded resolution and retargeting. Source acquisition and offline preparation are separate tooling work; prepared input never grants live review authority.
+
+See [refusals and recovery](adoption-obligations.md#refusals-and-recovery) for round-adoption refusal codes and caller actions.
