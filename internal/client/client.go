@@ -114,7 +114,15 @@ func (c *Client) verifyInstanceWithWait(ctx context.Context, instance any, wait 
 		// than being abandoned at the ordinary operation's five-second limit.
 		err := c.requestWithTimeout(ctx, http.MethodGet, []string{"api", "v1", "instance"}, nil, false, "", nil, http.StatusOK, false, instance, maxResponseBytes, decodeResponse, nil, bootstrapTimeout)
 		var failure *Error
-		if err == nil || attempt >= 6 || ctx.Err() != nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
+		if err == nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
+			return err
+		}
+		// Cancellation can arrive after a transient response was classified.
+		// Preserve its cause even when this was the final allowed attempt.
+		if err := ctx.Err(); err != nil {
+			return contextError(err)
+		}
+		if attempt >= 6 {
 			return err
 		}
 		if err := wait(ctx, delay); err != nil {
