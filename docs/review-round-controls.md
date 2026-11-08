@@ -96,6 +96,8 @@ Version-two records can preserve an absent maximum using maximum_unbounded true 
 
 Use fc reviews rounds adopt preview --file PATH, then apply with the same file, --preview SHA256 and --key KEY. Files must be bounded owner-private regular JSON files. MCP exposes review_round_adoption_preview and review_round_adoption_apply with the same native guards. The [carried-obligation contract](adoption-obligations.md) owns source-policy linkage, admission holds, guarded resolution and retargeting. Source acquisition and offline preparation are separate tooling work; prepared input never grants live review authority.
 
+See [refusals and recovery](adoption-obligations.md#refusals-and-recovery) for round-adoption refusal codes and caller actions.
+
 ## One explicit channel-front run
 
 `reviews start --channel cli --key KEY` accepts one durable selection before provider reads and authorizes at most one ordinary exact-head child operation. Hosted uses the same independent contract. The service considers configured queue priority while preserving actual published parent dependencies: a Draft, comparison-local refusal or pending earlier PR does not block independent later work, but cannot be bypassed by its real dependent. Incoming routes and retained source obligations remain guards even after round completion or captured coverage. Verified external Hosted results still awaiting native reconciliation hold that PR's Hosted channel; imported labels alone are not authority, and old-head obligations survive metadata movement. Fresh verified merged entries can be skipped. Closed, tapered or exhausted grants do not erase unfinished evidence or fix obligations.
