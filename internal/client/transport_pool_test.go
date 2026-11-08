@@ -123,3 +123,61 @@ func TestTransportPoolPendingStreamsDoNotOccupyFiniteSlots(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportPoolFiniteWaitsDoNotBlockOtherCalls(t *testing.T) {
+	entered := make(chan struct{}, 4)
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		if r.URL.Query().Get("wait_ms") == "4000" {
+			entered <- struct{}{}
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[],"cursor":"saved-cursor","has_more":false,"timed_out":false}`))
+	}))
+	defer service.Close()
+	pool := client.NewTransportPool()
+	defer pool.Close()
+	b := binding(t, service.URL)
+	c, err := client.NewWithTransportPool(t.Context(), b, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 4)
+	for range 4 {
+		go func() { _, err := c.MessageEvents(ctx, "saved-cursor", 5, 4000); done <- err }()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("finite waits did not enter")
+		}
+	}
+	finite, stop := context.WithTimeout(t.Context(), time.Second)
+	defer stop()
+	other, err := client.NewWithTransportPool(finite, b, pool)
+	if err != nil {
+		t.Fatal("identity queued behind unrelated finite waits", err)
+	}
+	defer other.Close()
+	if _, err := other.MessageEvents(finite, "saved-cursor", 5, 0); err != nil {
+		t.Fatal("ordinary operation queued behind finite waits", err)
+	}
+	cancel()
+	for range 4 {
+		select {
+		case err := <-done:
+			checkError(t, err, "canceled")
+		case <-time.After(time.Second):
+			t.Fatal("finite wait did not cancel")
+		}
+	}
+}
