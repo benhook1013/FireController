@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import './review-queue.css';
 
 // These shells receive presentation only. Reads, authority and navigation belong
@@ -45,7 +45,7 @@ export function ReviewRowFrame({ id, lifecycle, position, positionLabel, rail = 
   </li>;
 }
 
-export function ReviewLaneDisplay({ title, label = typeof title === 'string' ? title : undefined, metadata, metadataTitle, status, children, readingAnchor, className = '', channel }: {
+export function ReviewLaneDisplay({ title, label = typeof title === 'string' ? title : undefined, metadata, metadataTitle, status, children, readingAnchor, className = '', channel, laneRef }: {
   title: ReactNode;
   label?: string;
   metadata: ReactNode;
@@ -55,8 +55,9 @@ export function ReviewLaneDisplay({ title, label = typeof title === 'string' ? t
   readingAnchor?: string;
   className?: string;
   channel?: 'hosted' | 'cli';
+  laneRef?: RefObject<HTMLElement | null>;
 }) {
-  return <section className={className ? `review-lane ${className}` : 'review-lane'} data-channel={channel} data-reading-anchor={readingAnchor} aria-label={label}><div className="review-lane-heading"><h4>{title}{status}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
+  return <section ref={laneRef} className={className ? `review-lane ${className}` : 'review-lane'} data-channel={channel} data-reading-anchor={readingAnchor} aria-label={label}><div className="review-lane-heading"><h4>{title}{status}</h4><span title={metadataTitle}>{metadata}</span></div>{children}</section>;
 }
 
 type RoundPillContent = { className: string; title: string; 'aria-label': string; children: ReactNode };

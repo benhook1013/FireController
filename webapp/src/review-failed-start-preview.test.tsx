@@ -36,8 +36,8 @@ function pills(html: string) { return [...html.matchAll(/aria-label="Open cli ru
 describe('completed round previews retain failed-start history separately', () => {
   it('shows six actual runs from eight raw records and caps after filtering failures', () => {
     const compact = render(true), queue = render(false);
-    expect(compact).toContain('6 runs · latest 3'); expect(compact).not.toContain('8 runs');
-    expect(pills(compact)).toEqual(['completed_4', 'completed_5', 'completed_6']);
+    expect(compact).toContain('6 runs'); expect(compact).not.toContain('8 runs');
+    expect(pills(compact)).toEqual(['completed_1', 'completed_2', 'completed_3', 'completed_4', 'completed_5', 'completed_6']);
     expect(pills(queue)).toEqual(['completed_1', 'completed_2', 'completed_3', 'completed_4', 'completed_5', 'completed_6']);
     expect(queue).toContain('review-pill-zero'); expect(queue).not.toContain('Counts not finalized'); expect(queue).toContain('<strong>0/?/?</strong>');
     for (const html of [compact, queue]) { expect(html).not.toMatch(/failed_7|failed_8|review-pill-failed/u); }
@@ -59,6 +59,15 @@ describe('completed round previews retain failed-start history separately', () =
     expect(calls).toEqual([undefined, 'next_six']);
     expect(page.items.map(item => item.source_run_id)).toEqual(['completed_6', 'completed_5', 'completed_4', 'completed_3', 'completed_2', 'completed_1']);
     expect(page.has_more).toBe(false); expect(page.previewLimited).toBeUndefined(); expect(JSON.stringify(mixed)).toBe(before);
+  });
+  it('fills a width-sized preview beyond six and retains bounded failed-start refills', async () => {
+    let reads = 0;
+    const page = await readCompletedRunPreview(async () => {
+      const start = reads++ * 8;
+      return { ...metadata, items: Array.from({ length: 8 }, (_, i) => i === 0 ? failed(100 + start) : run(100 - start - i)), has_more: true, cursor: `page_${reads}` };
+    }, new AbortController().signal, 8);
+    expect(reads).toBe(2); expect(page.items).toHaveLength(8);
+    expect(page.items.every(item => item.outcome === 'completed')).toBe(true);
   });
   it('stops after eighteen raw records and marks the preview limited instead of walking growing history', async () => {
     let reads = 0;

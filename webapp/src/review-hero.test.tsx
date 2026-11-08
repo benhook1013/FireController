@@ -38,17 +38,17 @@ function markup(compact = true, attempts: ReviewAttemptSummary[] = [], expanded 
 function links(html: string) { return [...html.matchAll(/aria-label="Open (?:hosted|cli) run ([^:]+):/gu)].map(match => match[1]); }
 
 describe('merge-head recent review rounds', () => {
-  it('shows the latest three independently per channel in producer order, retaining totals and limits', () => {
+  it('shows the available preview independently per channel in producer order, retaining totals and limits', () => {
     archive.items = [run('h5', 'hosted'), run('h4', 'hosted'), run('c4', 'cli'), run('h3', 'hosted'), run('c3', 'cli'), run('c2', 'cli'), run('h2', 'hosted'), run('c1', 'cli'), run('h1', 'hosted')];
     archive.hasMore = false;
     const html = markup();
-    expect(links(html)).toEqual(['h3', 'h4', 'h5', 'c2', 'c3', 'c4']);
-    expect(html).toContain('5 runs · latest 3'); expect(html).toContain('4 runs · latest 3');
+    expect(links(html)).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'c1', 'c2', 'c3', 'c4']);
+    expect(html).toContain('5 runs'); expect(html).toContain('4 runs');
     expect(html).not.toContain('Up to 3 more reviews'); expect(html).not.toContain('5 of 8 used'); expect(html).toContain('Taper met');
     expect(html).toContain('<strong>5/2/1</strong>'); expect(html).not.toContain('Load more');
     expect(links(markup(false))).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'c1', 'c2', 'c3', 'c4']);
   });
-  it('renders the actual normal PR item in the hero with the same six-round preview and contextual footer', () => {
+  it('renders the actual normal PR item in the hero with the same initial preview and contextual footer', () => {
     archive.items = Array.from({length: 8}, (_, index) => run(`h${8-index}`, 'hosted'));
     archive.hasMore = true;
     const counts = {hosted: 27, cli: 1, manual: 8, subagent: 2};
@@ -131,10 +131,10 @@ describe('merge-head recent review rounds', () => {
     archive.hasMore = true;
     const totals = { hosted: 27, cli: 1, manual: 8, subagent: 2 };
     const hero = markup(true, [], false, totals);
-    expect(hero).toContain('27 runs · latest 3');
+    expect(hero).toContain('27 runs');
     expect(hero).toContain('1 run</span>');
     expect(hero).not.toContain('4 runs loaded');
-    expect(links(hero)).toEqual(['h2', 'h3', 'h4']);
+    expect(links(hero)).toEqual(['h1', 'h2', 'h3', 'h4']);
     const queue = markup(false, [], false, totals);
     for (const label of ['27 runs', '1 run', '8 runs', '2 runs']) expect(queue).toContain(`${label}</span>`);
     expect(queue).not.toContain(' · latest 3');
@@ -146,8 +146,8 @@ describe('merge-head recent review rounds', () => {
     archive.items = [run('unknown', 'hosted', { head_sha: '', finished_at: '', complete: false, attributable: false, finalized: false }), run('h3', 'hosted'), run('h2', 'hosted'), run('h1', 'hosted')];
     archive.hasMore = true;
     const html = markup();
-    expect(links(html)).toEqual(['h2', 'h3', 'unknown']);
-    expect(html).toContain('4 runs · latest 3'); expect(html).not.toContain(' loaded</span>'); expect(html).not.toContain('No rounds recorded. Coverage is unknown.');
+    expect(links(html)).toEqual(['h1', 'h2', 'h3', 'unknown']);
+    expect(html).toContain('4 runs'); expect(html).not.toContain(' loaded</span>'); expect(html).not.toContain('No rounds recorded. Coverage is unknown.');
     for (const text of ['Date unknown', 'Incomplete record', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
     expect(html).not.toContain('Counts not finalized');
     expect(html).toContain('<strong>5/?/?</strong>');

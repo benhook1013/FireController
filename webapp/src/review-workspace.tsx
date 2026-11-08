@@ -1,10 +1,11 @@
+import { useReviewPillCapacity } from './review-pill-capacity';
 import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
 import { ReviewSchedulingBar, ReviewPullSchedulingControl } from './review-scheduling';
 import { ReviewOperationWaitBadge } from './review-operation-wait';
 import { CompactReviewFinding } from './review-finding-display';
 import { ReviewObligations } from './review-obligations';
 import { ReviewRoutedFindings } from './review-routed-findings';
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { Link, useLocation, useNavigationType, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from './api';
@@ -273,14 +274,14 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
   const navigation = { ...paging, reloadRetained: windowSaved && validQueueWindow(window) };
   return <section id="review-queue" data-reading-region="reviews" data-reading-ready={!query.isPending} className={embedded ? 'delivery-reviews' : ''} aria-labelledby="review-queue-title"><div className="delivery-section-heading tab-heading"><h2 id="review-queue-title">{history ? 'Queue history' : label}</h2><div className="review-queue-tools">{!history && <ReviewSchedulingBar />}{history ? <Link className="review-details-link review-queue-history-link" to={`${home}/reviews`}>Back to review queue ↗</Link> : <Link className="review-details-link review-queue-history-link" to={`${home}/reviews/history`}>Queue history ↗</Link>}{page?.configured && <ReviewQueueTechnicalDetails value={page} />}</div></div><div className={embedded ? undefined : 'panel review-page-body'}><>{windowNotice && <p className="notice" role="status">{windowNotice}</p>}<ReadState error={query.error} loading={query.isPending} empty={false} retained={!!page}>{page && (page.configured ? <>{!history && <ReviewRoutedFindings />}<ReviewNotice history={history} />{!history && fronts.error && <p className="notice">Review position could not be loaded.</p>}{!history && progress.error && <p className="notice">Current round limits could not be loaded. Retained review history remains available.</p>}<section className={embedded ? 'panel review-queue-panel' : 'review-queue-panel'}>{sections.map((section, sectionIndex) => <section key={section.key} className={`review-queue-group${section.title ? '' : ' review-queue-ungrouped'}`} {...(section.title ? { 'aria-labelledby': `review-group-${sectionIndex}` } : {})}>{section.title && <h3 id={`review-group-${sectionIndex}`} className="review-queue-group-title">{section.title}</h3>}<ul className="review-queue">{section.rows.map(({ pull, index }) => <ReviewQueueRow key={pull.number} pull={pull} snapshot={page.snapshot_id} order={{distance: distances[index], index}} progress={history ? undefined : progress.data?.items.find(item => item.pull_number === pull.number)} fronts={currentFronts} channels={channels} />)}</ul></section>)}{page.items.length === 0 && <p className="empty">{history ? 'No merged pull requests in queue history.' : 'No pull requests in the review queue.'}</p>}{(page.has_more || paging.number > 1) && <Pager paging={navigation} page={page} label={history ? 'queue history' : 'review queue'} busy={query.isFetching} />}</section></> : <section className="panel empty"><h3>No review queue yet</h3></section>)}</ReadState></></div></section>;
 }
-// A normal round preview reads at most eighteen retained summaries. Failed
-// starts remain in the archive, but cannot consume the six completed slots.
+// Read a width-sized preview with bounded refill pages. Failed starts stay
+// in full history and cannot consume completed-round preview slots.
 type CompletedPreviewPage = ReviewArchivePage<ReviewRunSummary> & { previewLimited?: boolean };
-export async function readCompletedRunPreview(read: (cursor: string | undefined, signal: AbortSignal) => Promise<ReviewArchivePage<ReviewRunSummary>>, signal: AbortSignal): Promise<CompletedPreviewPage> {
+export async function readCompletedRunPreview(read: (cursor: string | undefined, signal: AbortSignal) => Promise<ReviewArchivePage<ReviewRunSummary>>, signal: AbortSignal, capacity = 6): Promise<CompletedPreviewPage> {
   let first: ReviewArchivePage<ReviewRunSummary> | undefined;
   let cursor: string | undefined;
   const cursors = new Set<string>(), ids = new Set<string>(), completed: ReviewRunSummary[] = [];
-  for (let pages = 0; pages < 3; pages++) {
+  for (let pages = 0; pages < Math.ceil(capacity / 100) * 3; pages++) {
     signal.throwIfAborted();
     const page = await read(cursor, signal);
     signal.throwIfAborted();
@@ -288,22 +289,22 @@ export async function readCompletedRunPreview(read: (cursor: string | undefined,
     first ??= page;
     for (const run of page.items) { ids.add(run.id); if (run.outcome === 'completed') completed.push(run); }
     if (page.cursor) cursors.add(page.cursor);
-    if (completed.length >= 6 || !page.has_more || pages === 2) return { ...page, items: completed.slice(0, 6), ...(completed.length < 6 && page.has_more ? { previewLimited: true } : {}) };
+    if (completed.length >= capacity || !page.has_more || pages === Math.ceil(capacity / 100) * 3 - 1) return { ...page, items: completed.slice(0, capacity), ...(completed.length < capacity && page.has_more ? { previewLimited: true } : {}) };
     cursor = page.cursor;
   }
   throw new ApiError('invalid_response', 'The retained round preview is unavailable.');
 }
-function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number, channel?: ReviewChannel, limit = pageSize, view?: 'timeline', completedPreview = false) {
+function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number, channel?: ReviewChannel, limit = pageSize, view?: 'timeline', completedPreview: number | false = false) {
   const { session, key } = useWorkspace();
   const read = useCallback((cursor: string | undefined, signal: AbortSignal) => {
     const options = { snapshot, limit, ...(view ? { view } : {}), ...(channel ? { channel } : {}), ...(cursor ? { cursor } : {}) };
-    return (completedPreview ? readCompletedRunPreview((next, selectedSignal) => session.api.reviewRuns(number, { ...options, ...(next ? { cursor: next } : {}) }, selectedSignal), signalFor(session, signal)) : feed === 'runs' ? session.api.reviewRuns(number, options, signalFor(session, signal)) : session.api.reviewAttempts(number, options, signalFor(session, signal))) as Promise<ReviewArchivePage<T> & { previewLimited?: boolean }>;
+    return (completedPreview ? readCompletedRunPreview((next, selectedSignal) => session.api.reviewRuns(number, { ...options, ...(next ? { cursor: next } : {}) }, selectedSignal), signalFor(session, signal), completedPreview) : feed === 'runs' ? session.api.reviewRuns(number, options, signalFor(session, signal)) : session.api.reviewAttempts(number, options, signalFor(session, signal))) as Promise<ReviewArchivePage<T> & { previewLimited?: boolean }>;
   }, [session.api, session.controller, feed, number, snapshot, channel, limit, view, completedPreview]);
-  const scope = JSON.stringify([key, number, feed, channel, limit, view]);
+  const scope = JSON.stringify([key, number, feed, channel, limit, view, completedPreview]);
   const readCurrent = useRef(read);
   useLayoutEffect(() => { readCurrent.current = read; }, [read]);
   const archive = useMemo(() => new ReviewArchive<T>((cursor, signal) => readCurrent.current(cursor, signal), item => 'id' in item ? item.id : JSON.stringify([item.source, item.source_attempt_id])), [scope]);
-  const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, feed, ...(channel ? [channel] : []), ...(view ? [view] : []), 'archive-first', limit], queryFn: ({ signal }) => read(undefined, signal), enabled: expected > 0, staleTime: Infinity });
+  const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, feed, ...(channel ? [channel] : []), ...(view ? [view] : []), 'archive-first', limit, ...(completedPreview && completedPreview !== limit ? [completedPreview] : [])], queryFn: ({ signal }) => read(undefined, signal), enabled: expected > 0, staleTime: Infinity });
   const first = useRetainedRead(scope, query.data, expected > 0);
   const missing = useMemo(() => expected > 0 && first?.items.length === 0 && !first.previewLimited ? new ApiError('invalid_response', 'The retained review history is missing its expected rounds.') : undefined, [expected, first]);
   const error = query.error ?? missing;
@@ -357,7 +358,7 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
 }
-function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, progress, total, positionHint, readingAnchor, updateFailed, notice }: { notice?: ReactNode; updateFailed?: boolean; readingAnchor?: string; channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition }) {
+function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef }: { capacity?: number; laneRef?: RefObject<HTMLElement | null>; notice?: ReactNode; updateFailed?: boolean; readingAnchor?: string; channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition }) {
   const laneRuns = runs.filter(run => run.channel === channel && run.outcome === 'completed');
   const attempt = [...attempts].reverse().find(item => item.channel === channel);
   const attemptLabel = attempt && ({ preparing: 'Active', prepared: 'Active', posting: 'Active', active: 'Active', rate_limited: 'Cooldown', held: 'Held', failed: 'Failed', uncertain: 'Uncertain', cancelled: 'Cancelled' } as Partial<Record<ReviewAttemptSummary['state'], string>>)[attempt.state];
@@ -366,16 +367,18 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const position = waiting ? undefined : reviewing ? {text:'Reviewing'} : (progress?.pending ?? 0) > 0 ? {text:progress?.pending_adjudication && !progress.pending_execution ? 'Needs adjudication' : 'Pending'} : positionHint;
   const reason = attempt && reviewAttemptReason(attempt);
   const attemptDescription = attemptLabel + (reason ? ` · ${reason}` : '');
-  return <ReviewLaneDisplay readingAnchor={readingAnchor} title={title} status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{position && <span className="badge review-channel-position" title={position.description}>{position.text}</span>}{attemptLabel && !reviewing && !waiting && <span className={`review-attempt-state review-attempt-${attempt!.state}`} title={`Latest retained attempt: ${attemptDescription}`} aria-label={`Latest retained ${channel} attempt: ${attemptDescription}`}>{attemptLabel}</span>}</>} metadata={`${total} ${total === 1 ? 'run' : 'runs'}${compact && laneRuns.length > 3 ? ' · latest 3' : ''}`} metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details"><ReviewProgressView value={progress} />{loading ? <ReviewRoundsSkeleton count={total} /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className={compact ? 'review-round-pills' : 'review-round-pills review-recent-rounds'}>{laneRuns.slice(compact ? -3 : -6).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : total > 0 && !notice ? <p className="review-lane-empty">Round history could not be loaded.</p> : null}{notice}</ReviewLaneDisplay>;
+  return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title} status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{position && <span className="badge review-channel-position" title={position.description}>{position.text}</span>}{attemptLabel && !reviewing && !waiting && <span className={`review-attempt-state review-attempt-${attempt!.state}`} title={`Latest retained attempt: ${attemptDescription}`} aria-label={`Latest retained ${channel} attempt: ${attemptDescription}`}>{attemptLabel}</span>}</>} metadata={`${total} ${total === 1 ? 'run' : 'runs'}`} metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details"><ReviewProgressView value={progress} />{loading ? <ReviewRoundsSkeleton count={total} /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className="review-round-pills review-recent-rounds">{laneRuns.slice(-capacity).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : total > 0 && !notice ? <p className="review-lane-empty">Round history could not be loaded.</p> : null}{notice}</ReviewLaneDisplay>;
 }
 function ChannelReviewLane({ number, ...props }: Omit<Parameters<typeof ReviewLane>[0], 'runs' | 'loading' | 'failed' | 'partial' | 'highlights'> & { number: number }) {
-  // Hero and queue share the six newest completed channel summaries.
+  // Hero and queue read only as many completed summaries as fit their lane.
   // Finding bodies stay behind deliberate run expansion/detail reads.
-  const archive = useReviewArchive<ReviewRunSummary>('runs', number, props.snapshot, props.total, props.channel, 6, undefined, true);
+  const { ref, capacity } = useReviewPillCapacity();
+  const wanted = capacity;
+  const archive = useReviewArchive<ReviewRunSummary>('runs', number, props.snapshot, props.total, props.channel, Math.min(100, wanted), undefined, wanted);
   const highlights = useRef(new Map<string, string>()).current;
   const runs = [...archive.items].reverse();
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
-  return <ReviewLane {...props} total={archive.expected} snapshot={archive.snapshot} updateFailed={!!archive.error && runs.length > 0} runs={runs} loading={archive.loading} failed={!!archive.error && runs.length === 0} partial={archive.hasMore || runs.length !== props.total} highlights={highlights} notice={archive.previewLimited ? <p className="notice">Recent-round preview is limited. <ReviewHistoryLink number={number} snapshot={archive.snapshot} /></p> : undefined} />;
+  return <ReviewLane {...props} laneRef={ref} capacity={capacity} total={archive.expected} snapshot={archive.snapshot} updateFailed={!!archive.error && runs.length > 0} runs={runs} loading={archive.loading} failed={!!archive.error && runs.length === 0} partial={archive.hasMore || runs.length !== props.total} highlights={highlights} notice={archive.previewLimited ? <p className="notice">Recent-round preview is limited. <ReviewHistoryLink number={number} snapshot={archive.snapshot} /></p> : undefined} />;
 }
 export function ReviewRunsView({ number, snapshot, head, attempts, detail = false, compact = false, progress, channelTotals, positions = {}, readingPrefix }: { readingPrefix?: string; number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts; positions?: Partial<Record<ReviewChannel, ReviewChannelPosition>> }) {
   const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} snapshot={snapshot} head={head} compact={compact} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} positionHint={positions[channel]} />;

@@ -1,3 +1,4 @@
+import { useReviewPillCapacity } from './review-pill-capacity';
 import { publicURL, type PublicReview, type PublicRound } from './public-site-api';
 import { RelativeTime } from './relative-time';
 import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay } from './review-display';
@@ -15,9 +16,10 @@ function PublicRoundPill({ round, channel, url }: { round: PublicRound; channel:
 function PublicReviewLane({ title, rounds, hasMore, url, browseHistory }: { title: string; rounds: PublicRound[]; hasMore: boolean; url?: string; browseHistory?: () => void }) {
   // The approved projection owns chronology (including undated/tied records).
   // Keep its order; observation clocks and opaque keys are not a browser sort.
-  const recent = rounds.slice(-6), outside = hasMore || rounds.length > recent.length;
+  const { ref, capacity } = useReviewPillCapacity();
+  const recent = rounds.slice(-capacity), outside = hasMore || rounds.length > recent.length;
   const metadata = `${rounds.length} published ${rounds.length === 1 ? 'round' : 'rounds'}`;
-  return <ReviewLaneDisplay title={title} label={`${title} review rounds`} metadata={metadata} metadataTitle="Published historical rounds; not current-head coverage">
+  return <ReviewLaneDisplay laneRef={ref} title={title} label={`${title} review rounds`} metadata={metadata} metadataTitle="Published historical rounds; not current-head coverage">
     {outside && <p className="notice">Other finalized {title} rounds are outside this view. <a href="#published-history" onClick={browseHistory}>Browse retained published revisions</a>; these snapshots may not contain every round.</p>}
     {recent.length ? <div className="review-round-pills review-recent-rounds">{recent.map(round => <PublicRoundPill key={round.key} round={round} channel={title} url={url} />)}</div> : <p className="review-lane-empty">{hasMore ? 'No finalized rounds fit in this view.' : 'No finalized rounds published.'}</p>}
   </ReviewLaneDisplay>;
