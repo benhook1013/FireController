@@ -237,7 +237,12 @@ class DevelopmentSchedulingTests(unittest.TestCase):
 
     def test_proposed_interleaving_slow_tail_gate_and_publish_all_count(self):
         s = Scheduler()
-        runs = [DevelopmentRun(s, self.jobs, 'PR-A', publish=False, slow='Go race (backup-0)'),
+        slow = 'Go race (backup-0)'
+        names = {name for name, _, _ in self.jobs}
+        self.assertIn(slow, names)
+        self.assertIn('Go race (backup-5)', names)
+        slow_lane, = [lane for name, lane, _ in self.jobs if name == slow]
+        runs = [DevelopmentRun(s, self.jobs, 'PR-A', publish=False, slow=slow),
                 DevelopmentRun(s, self.jobs, 'develop-B', slow='Go race (backup-5)'),
                 DevelopmentRun(s, self.jobs, 'develop-website', website=True)]
         self.finish(s, runs)
@@ -248,7 +253,17 @@ class DevelopmentSchedulingTests(unittest.TestCase):
                                 for snapshot in s.snapshots), name)
         progressed = {job.lane for start, _, job in s.intervals
                       if job.run == 'develop-B' and start < 100}
-        self.assertEqual(progressed, set(range(1, 20)))
+        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
+
+    def test_slow_tail_follows_reassigned_inventory_lanes(self):
+        self.jobs = [(name, (lane + 7) % 20, family) for name, lane, family in self.jobs]
+        self.test_proposed_interleaving_slow_tail_gate_and_publish_all_count()
+
+    def test_overlap_refuses_missing_slow_job(self):
+        self.jobs = [('renamed' if name == 'Go race (backup-0)' else name, lane, family)
+                     for name, lane, family in self.jobs]
+        with self.assertRaises(AssertionError):
+            self.test_proposed_interleaving_slow_tail_gate_and_publish_all_count()
 
     def test_proposed_interleaving_all_publishers_share_a_counted_lane(self):
         publish_lane = next(lane for _, lane, family in self.jobs if family == 'publish')
