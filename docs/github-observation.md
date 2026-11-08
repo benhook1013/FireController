@@ -28,7 +28,7 @@ Manual external-result settlement, pending-result dispatch holds, explicit pendi
 
 ## Runtime health reads
 
-`GET /reviews/queue?include_observation=true` adds process-local `observer` state and per-PR `observation` facts. The typed queue client requests these for CLI and MCP queue reads. Existing callers that omit the selector receive the unchanged response shape.
+`GET /reviews/queue?include_observation=true` adds process-local `observer` state and per-PR `observation` facts. The typed queue client requests these for CLI and MCP queue reads. Existing callers that omit the selector receive the unchanged response shape. If the supplementary health configuration read is overloaded or storage is unavailable, the already-read queue remains available with observer state `unavailable` and no per-PR health claims. Caller cancellation and other errors, including authorization refusals, still fail the request.
 
 Health distinguishes unconfigured or stopped observers, unenrolled PRs, startup waiting, current checks, changed comparisons, overdue checks and retry/backoff. Lifecycle attempt/success times are separate from CI and Hosted collection times and safe error codes. An unchanged successful poll updates health without creating history. A Hosted collection skipped because CI encountered account throttling does not advance its check time. Snapshot `observed_at` remains the snapshot origin, not the last automatic check. Health resets on restart and never performs provider work or grants readiness.
 
