@@ -85,7 +85,8 @@ func resumptionSummary(status RecoveryStatus, release providerRelease) ProviderR
 	return ProviderResumptionSummary{InstanceID: status.InstanceID, SourceInstanceID: status.SourceInstanceID, BundleID: status.BundleID, State: status.State, ReleasedAt: release.ReleasedAt, Counts: release.Counts}
 }
 
-// Only pre-write validation failures use this normalization. In particular,
+// Validation and reconciliation failures before commit use this normalization.
+// In particular,
 // commit failures retain their uncertain-outcome diagnostic, and successful
 // commits must never be reported as interrupted if cancellation arrives later.
 func providerResumptionValidationError(ctx context.Context, err error) error {
@@ -160,10 +161,7 @@ func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionR
 	}
 	selections, err := reviewexec.AbandonReviewRuns(ctx, tx, at)
 	if err != nil {
-		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return zero, core.Fail("restore_reconciliation_interrupted", "Restore reconciliation was interrupted; no provider release was recorded. Retry the exact reconciliation command.", 503)
-		}
-		return zero, err
+		return zero, providerResumptionValidationError(ctx, err)
 	}
 	counts, err := reviewexec.AbandonRestoredProviderWork(ctx, tx, status.InstanceID, at)
 	if err != nil {

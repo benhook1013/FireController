@@ -342,7 +342,7 @@ func (c *resumptionValidationCancellation) Done() <-chan struct{} {
 		selected, sqlCall, nestedValidation := false, false, false
 		for {
 			frame, more := frames.Next()
-			selected = selected || frame.Function == "github.com/benhook1013/FireController/internal/backup."+c.phase
+			selected = selected || frame.Function == "github.com/benhook1013/FireController/internal/backup."+c.phase || frame.Function == "github.com/benhook1013/FireController/internal/reviewexec."+c.phase
 			sqlCall = sqlCall || strings.HasPrefix(frame.Function, "database/sql.")
 			// readRecoveryStatus is also called by validateSchema. Select the
 			// independent later call in ResumeProviders, not the earlier nested one.
