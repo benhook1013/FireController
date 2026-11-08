@@ -165,6 +165,7 @@ type runChoice struct {
 	state, reason string
 	sourceReason  string
 	prefix        []SourcePlan
+	pausedSuffix  []int64
 	number        int64
 	head          string
 }
@@ -277,9 +278,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		var target int64
 		var reason string
 		bindingHeld := false
+		pausedSuffix := false
 		err = retryRunSelectionLocal(ctx, func() error {
 			target, reason = 0, ""
 			bindingHeld = false
+			pausedSuffix = false
 			return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 				current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 				if err != nil {
@@ -301,6 +304,9 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					return nil
 				}
 				target, reason, err = e.runFront(ctx, tx, current, repo, choice.prefix)
+				if err == nil && reason != "" && !globalFrontHold(reason) {
+					pausedSuffix, err = pausedRunSuffix(ctx, tx, r.ProjectID, choice.prefix, queue[i+1:])
+				}
 				return err
 			})
 		})
@@ -309,6 +315,13 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if reason != "" {
 			choice.state, choice.reason = "held", reason
+			if pausedSuffix {
+				choice.pausedSuffix = slices.Clone(queue[i+1:])
+				if r.ExpectedPullNumber != 0 {
+					choice.reason = "expected_pr_mismatch"
+				}
+				return choice, nil
+			}
 			if bindingHeld || globalFrontHold(reason) {
 				return choice, nil
 			}
@@ -522,6 +535,15 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			}
 			if reason != "" {
 				return updateRun(ctx, tx, current, "held", reason, "")
+			}
+			if len(choice.pausedSuffix) > 0 {
+				paused, err := pausedRunSuffix(ctx, tx, current.ProjectID, choice.prefix, choice.pausedSuffix)
+				if err != nil {
+					return err
+				}
+				if !paused {
+					return updateRun(ctx, tx, current, "held", "selection_changed", "")
+				}
 			}
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err
