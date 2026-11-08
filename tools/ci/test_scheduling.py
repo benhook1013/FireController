@@ -125,6 +125,54 @@ class Scheduler:
         return done
 
 
+class LegacyRun:
+    """Pre-lane admission: 16 Linux shards plus independent non-matrix jobs.
+
+    The unchanged job inventory comes from the current workflow. The historical
+    linux max-parallel is 16; validate needs every other family to finish. Jobs
+    consume runners directly, never a shared lane, with immediate availability.
+    """
+    def __init__(self, jobs, run, duration=lambda name: 1):
+        self.now = 0
+        self.active = {}
+        self.pending_linux = deque()
+        self.intervals = []
+        self.snapshots = []
+        self.families = {name: family for name, _, family in jobs}
+        self.completed = set()
+        self.required = {name for name, _, family in jobs if family != 'validate'}
+        self.gate = Job(run, 'validate', -1, duration('validate'))
+        for name, _, family in jobs:
+            job = Job(run, name, -1, duration(name))
+            if family == 'linux':
+                self.pending_linux.append(job)
+            elif family != 'validate':
+                self.start(job)
+        self.admit_linux()
+
+    def start(self, job):
+        assert job.name not in self.active and job.name not in self.completed
+        self.active[job.name] = (job, self.now + job.duration)
+        self.intervals.append((self.now, self.now + job.duration, job))
+        self.snapshots.append(tuple(job for job, _ in self.active.values()))
+
+    def admit_linux(self):
+        running = sum(self.families[name] == 'linux' for name in self.active)
+        while self.pending_linux and running < 16:
+            self.start(self.pending_linux.popleft())
+            running += 1
+
+    def step(self):
+        self.now = min(end for _, end in self.active.values())
+        for name in [name for name, (_, end) in self.active.items() if end == self.now]:
+            del self.active[name]
+            self.completed.add(name)
+        self.admit_linux()
+        if self.completed == self.required:
+            self.start(self.gate)
+        self.snapshots.append(tuple(job for job, _ in self.active.values()))
+
+
 class ProposedWorkflowAdmission:
     """Captured group selection is immutable for an already submitted run.
 
@@ -325,10 +373,49 @@ class SchedulingTests(unittest.TestCase):
         self.assertIn('rollback-B', gate.active.values())
 
     def test_proposed_interleaving_legacy_workflow_is_outside_new_lane_bound(self):
+        admission = ProposedWorkflowAdmission()
+        admission.submit('legacy', legacy=True)
+        admission.submit('new', variable='true')
+        self.assertEqual(set(admission.active.values()), {'legacy', 'new'})
         s = Scheduler()
         self.offer_run(s, 'new')
-        legacy_running = 20  # Old workflow uses its unrelated workflow-wide lock.
-        self.assertEqual(len(s.active) + legacy_running, 40)
+        legacy = LegacyRun(self.jobs, 'legacy')
+        families = Counter(legacy.families[name] for name in legacy.active)
+        self.assertEqual(families, {'linux': 16, 'static': 1, 'qualification': 1, 'native-smoke': 2})
+        self.assertEqual(len(legacy.pending_linux), 6)
+        self.assertNotIn('validate', legacy.active)
+        self.assertEqual(len(s.active), 20)
+        # Both admitted runs start at model time zero. Legacy jobs occupy real
+        # modeled runner intervals but bypass the new run's shared lane budget.
+        self.assertGreater(len(s.active) + len(legacy.active), 20)
+        self.finish_runs(s, ['new'])
+        while legacy.active:
+            legacy.step()
+        self.assertEqual(legacy.completed, {name for name, _, _ in self.jobs})
+        intervals = s.intervals + legacy.intervals
+        times = {start for start, _, _ in intervals}
+        peak = max(sum(start <= now < end for start, end, _ in intervals) for now in times)
+        self.assertEqual(peak, 40)
+
+    def test_legacy_matrix_refills_and_validation_waits_for_every_family(self):
+        # Long non-matrix work must not consume Linux matrix permits or let the
+        # gate start early after all race shards finish.
+        legacy = LegacyRun(self.jobs, 'legacy', lambda name: 5 if name == 'Packaged qualification' else 1)
+        legacy.step()
+        self.assertEqual(sum(legacy.families[name] == 'linux' for name in legacy.active), 6)
+        self.assertFalse(legacy.pending_linux)
+        legacy.step()
+        self.assertEqual(set(legacy.active), {'Packaged qualification'})
+        while legacy.active:
+            legacy.step()
+        self.assertEqual(len(legacy.intervals), len(self.jobs))
+        self.assertEqual(legacy.completed, {name for name, _, _ in self.jobs})
+        self.assertEqual(max(map(len, legacy.snapshots)), 20)
+        self.assertLessEqual(max(sum(legacy.families[j.name] == 'linux' for j in snapshot)
+                                 for snapshot in legacy.snapshots), 16)
+        gate_start = next(start for start, _, job in legacy.intervals if job.name == 'validate')
+        self.assertTrue(all(end <= gate_start for _, end, job in legacy.intervals
+                            if job.name != 'validate'))
 
 
 if __name__ == '__main__':
