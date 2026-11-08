@@ -61,7 +61,8 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	check := engine.BeginHostedObserver(capabilityID, project, attempt.OperationID, attempt.ID)
 	var sourceAt time.Time
 	defer func() {
-		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, result.Reason, hostedObserverFailure(result.Reason, failure))
+		reason := hostedRecoveryObserverReason(result.Reason, failure)
+		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, reason, hostedObserverFailure(reason, failure))
 		if failure == nil && (result.State == "completed" || result.State == "rate_limited" || result.State == "failed") {
 			engine.ForgetHostedObserver(check)
 		}
@@ -228,6 +229,13 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 }
 
 // Diagnostic classification does not change execution or retry semantics.
+func hostedRecoveryObserverReason(reason string, failure error) string {
+	if reason == "" && failure != nil {
+		return "observation_unavailable"
+	}
+	return reason
+}
+
 func hostedObserverFailure(reason string, failure error) error {
 	if failure == nil && reason == "observation_incomplete" {
 		return &reviewprovider.Error{Code: "provider_invalid_response"}
