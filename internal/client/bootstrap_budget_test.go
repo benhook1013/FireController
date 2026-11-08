@@ -194,3 +194,34 @@ func TestIdentityBootstrapRetriesShareDeadlineAndRespectCaller(t *testing.T) {
 		})
 	}
 }
+
+func TestIdentityConnectionFailureRetainsConfigurationGuidance(t *testing.T) {
+	credential := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(credential, []byte("synthetic-credential"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		transport := newTransport()
+		var calls atomic.Int64
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
+			calls.Add(1)
+			return nil, errors.New("PRIVATE_DIAL_DETAIL")
+		}
+		pool := &TransportPool{transport: transport}
+		defer pool.Close()
+		b := profile.Binding{Context: profile.Context{Profile: "selected", ServerURL: "http://127.0.0.1:1", InstanceID: "instance-one", ProjectID: "project-one", WorkerID: "worker-one"}, CredentialFile: credential}
+		c, err := NewWithTransportPool(t.Context(), b, pool)
+		var failure *Error
+		if c != nil || !errors.As(err, &failure) || failure.Code != "connection_failed" || failure.OutcomeUnknown || calls.Load() != 7 {
+			t.Fatal("connection retry contract changed", c, err, calls.Load())
+		}
+		if strings.Contains(failure.Message, "temporarily unavailable") || strings.Contains(err.Error(), "PRIVATE") {
+			t.Fatal("connection error overstated transience or exposed details", err)
+		}
+		for _, phrase := range []string{"service address", "TLS", "transport", "idempotency key", "earlier uncertain write"} {
+			if !strings.Contains(failure.Action, phrase) {
+				t.Fatal("missing configuration/recovery guidance", phrase, failure.Action)
+			}
+		}
+	})
+}

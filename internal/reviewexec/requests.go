@@ -210,15 +210,17 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
 		return Receipt{}, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 	}
-	if r.Channel == "cli" {
-		var pending string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND channel='cli' AND state IN ('queued','preparing','posting','active','uncertain') ORDER BY created_at,id LIMIT 1`, scope.ProjectID, r.PullNumber).Scan(&pending)
-		if err == nil {
-			return Receipt{}, &core.Error{Code: "review_inflight", Message: "This PR already has a pending CLI review request; keep or control that original operation.", Status: 409, Details: map[string]string{"operation_id": pending}}
+	var pending string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain') ORDER BY created_at,id LIMIT 1`, scope.ProjectID, r.PullNumber, r.Channel).Scan(&pending)
+	if err == nil {
+		channelName := "CLI"
+		if r.Channel == "hosted" {
+			channelName = "Hosted"
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return Receipt{}, err
-		}
+		return Receipt{}, &core.Error{Code: "review_inflight", Message: "This PR already has a pending " + channelName + " review request; keep or control that original operation.", Status: 409, Details: map[string]string{"operation_id": pending}}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Receipt{}, err
 	}
 	if err := requireSourceObligationsClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
 		return Receipt{}, err

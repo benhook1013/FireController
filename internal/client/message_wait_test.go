@@ -238,16 +238,10 @@ func TestMessageWaitNonJSONServerErrorsPreservePrivacyAndReconnect(t *testing.T)
 					return
 				}
 				wantCode, wantStatus := "invalid_response", 0
-				if status >= 500 {
-					wantCode, wantStatus = "service_unavailable", status
-				}
 				checkError(t, err, wantCode, "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
 				var failure *client.Error
 				if !errors.As(err, &failure) || failure.Status != wantStatus || failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() != 1 || page.Items != nil || page.Cursor != "" || page.TimedOut || page.HasMore {
 					t.Fatalf("wait error classification, cursor or no-retry changed: %#v page=%+v calls=%d", failure, page, calls.Load())
-				}
-				if status >= 500 && (!strings.Contains(failure.Action, "saved cursor") || !strings.Contains(failure.Action, "inbox") || strings.Contains(failure.Action, "compatibility")) {
-					t.Fatal("server outage lost saved-cursor recovery guidance")
 				}
 			})
 		}
@@ -477,5 +471,33 @@ func TestMessageWaitManyDataLinesRespectExactFrameBudget(t *testing.T) {
 				t.Fatalf("bounded many-line frame failed: page=%+v err=%v", page, err)
 			}
 		})
+	}
+}
+
+func TestMessageWaitPersistentNonJSONOutageRetainsCursorGuidance(t *testing.T) {
+	var calls atomic.Int64
+	s := waitServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, waitFrame(waitPage("saved-cursor")))
+			return
+		}
+		if r.URL.Query().Get("cursor") != "saved-cursor" {
+			t.Error("reconnect lost cursor")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("X-Request-ID", "PRIVATE_PROXY_REQUEST")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, "PRIVATE_PROXY_BODY")
+	})
+	c := newClient(t, s)
+	page, err := c.WaitForMessages(t.Context(), "saved-cursor", 5, 1)
+	checkError(t, err, "service_unavailable", "PRIVATE_PROXY_BODY", "PRIVATE_PROXY_REQUEST")
+	var failure *client.Error
+	if !errors.As(err, &failure) || failure.Status != 503 || failure.OutcomeUnknown || failure.RequestID != "" || failure.Details != nil || calls.Load() < 2 || page.Items != nil || page.Cursor != "" || page.TimedOut {
+		t.Fatal("unrecovered outage returned partial success or unsafe error", page, err, calls.Load())
+	}
+	if !strings.Contains(failure.Action, "saved cursor") || !strings.Contains(failure.Action, "inbox") || strings.Contains(failure.Action, "compatibility") {
+		t.Fatal("outage lost saved-cursor recovery guidance", failure.Action)
 	}
 }

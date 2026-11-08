@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -57,9 +58,8 @@ func TestReservationScopeHostedPerRepositoryAndPending(t *testing.T) {
 	}
 	// A different account cannot acquire the same external target.
 	f.configure(t, attemptProject, "other-account", 1, false)
-	target := f.enqueue(t, attemptProject, "hosted-exact-target-other-account", "hosted", 2, 2)
-	_, err = f.e.StartAttempt(t.Context(), attemptProject, target.ID)
-	attemptCode(t, err, "review_busy")
+	_, err = f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-exact-target-other-account", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})
+	requirePendingRequest(t, err, first.OperationID)
 	// A separate account can use another target alongside the second repo's
 	// reservation, without changing the first project's retained queued order.
 	f.configure(t, otherAttemptProject, "other-account", 1, false)

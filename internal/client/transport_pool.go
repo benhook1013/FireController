@@ -56,6 +56,9 @@ func (p *TransportPool) borrow() (*http.Transport, string, *waitTransportCache, 
 			return nil, "", nil, err
 		}
 		p.transport = newTransport()
+		// The pool is shared by independent finite calls, including bounded
+		// waits. Limit retained idle sockets, not concurrent request admission.
+		p.transport.MaxConnsPerHost = 0
 	}
 	return p.transport, p.sessionID, &p.waits, nil
 }
