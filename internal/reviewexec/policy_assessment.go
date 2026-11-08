@@ -11,17 +11,18 @@ import (
 // PolicyAssessment describes current local policy against an immutable captured
 // comparison. It does not establish externally current source, CI or readiness.
 type PolicyAssessment struct {
-	Reason                 string                    `json:"reason,omitempty"`
-	IncomingRoutesPending  int64                     `json:"incoming_routes_pending,omitempty"`
-	IncomingRoutesCapacity bool                      `json:"incoming_routes_capacity,omitempty"`
-	ProjectID              string                    `json:"project_id"`
-	EvidenceID             string                    `json:"evidence_id"`
-	Anchor                 Anchor                    `json:"anchor"`
-	Source                 string                    `json:"source"`
-	PolicyRevision         int64                     `json:"policy_revision"`
-	EvaluatedAt            string                    `json:"evaluated_at"`
-	State                  string                    `json:"state"`
-	Channels               []PolicyAssessmentChannel `json:"channels"`
+	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
+	Reason                   string                    `json:"reason,omitempty"`
+	IncomingRoutesPending    int64                     `json:"incoming_routes_pending,omitempty"`
+	IncomingRoutesCapacity   bool                      `json:"incoming_routes_capacity,omitempty"`
+	ProjectID                string                    `json:"project_id"`
+	EvidenceID               string                    `json:"evidence_id"`
+	Anchor                   Anchor                    `json:"anchor"`
+	Source                   string                    `json:"source"`
+	PolicyRevision           int64                     `json:"policy_revision"`
+	EvaluatedAt              string                    `json:"evaluated_at"`
+	State                    string                    `json:"state"`
+	Channels                 []PolicyAssessmentChannel `json:"channels"`
 }
 
 type PolicyAssessmentChannel struct {
@@ -84,11 +85,19 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			return sourceHold("repository_changed")
 		}
 		result = PolicyAssessment{ProjectID: scope.ProjectID, EvidenceID: evidenceID, Anchor: evidence.Anchor, Source: "captured_comparison", State: "unconfigured", Channels: []PolicyAssessmentChannel{}}
+		// Carried obligations hold the PR independently of configured channels.
+		result.SourceObligationsPending, err = sourceObligationCount(ctx, tx, scope.ProjectID, evidence.Anchor.PullNumber)
+		if err != nil {
+			return err
+		}
 		policy, err := readPolicy(ctx, tx, scope.ProjectID)
 		if err != nil {
 			var failure *core.Error
 			if !errors.As(err, &failure) || failure.Code != "reviews_policy_unconfigured" {
 				return err
+			}
+			if result.SourceObligationsPending > 0 {
+				result.Reason = "source_obligations_pending"
 			}
 			result.EvaluatedAt = stamp()
 			return nil
@@ -105,6 +114,12 @@ func (e *Engine) ReadPolicyAssessment(ctx context.Context, scope core.Scope, evi
 			result.State, result.Reason = "held", "routed_findings_capacity"
 		} else if result.IncomingRoutesPending > 0 {
 			result.State, result.Reason = "held", "routed_findings_pending"
+		}
+		if result.SourceObligationsPending > 0 {
+			result.State = "held"
+			if result.Reason == "" {
+				result.Reason = "source_obligations_pending"
+			}
 		}
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := channelProgress(ctx, tx, scope.ProjectID, repositoryID, evidence.Anchor.PullNumber, channel)

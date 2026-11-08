@@ -158,6 +158,9 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
 			return nil, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 		}
+		if err := requireSourceObligationsClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+			return nil, err
+		}
 		policy, err := readPolicy(ctx, tx, scope.ProjectID)
 		if err != nil {
 			return nil, err

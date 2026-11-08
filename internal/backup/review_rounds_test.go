@@ -184,6 +184,13 @@ func TestRoundInventoryExactPhysicalSchemaAndLegacyOptionality(t *testing.T) {
 	}
 	t.Run("predecessor-without-domain", func(t *testing.T) {
 		f := newRestoreFixture(t)
+		var adoptions int
+		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_round_adoptions`).Scan(&adoptions); err != nil || adoptions != 0 {
+			t.Fatal("predecessor adoption fixture not empty", err)
+		}
+		if _, err := f.store.DB().Exec(`DROP TABLE review_round_adoptions; DELETE FROM metadata WHERE key='schema:review_round_adoption'`); err != nil {
+			t.Fatal(err)
+		}
 		for _, table := range []string{"review_round_completions", "review_round_operation_bindings", "review_round_controls", "review_round_changes"} {
 			var count int
 			if err := f.store.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 0 {

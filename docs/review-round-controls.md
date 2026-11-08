@@ -8,9 +8,9 @@ Set defaults through the existing guarded project policy configuration, using it
 
 ## Implementation status
 
-This slice introduces the native service, bound CLI and MCP contract for explicit per-PR/channel grants, minimum and maximum requirements, settings-only taper, closure/reopening and persistent native completion accounting. Source preparation and final admission recheck the grant independently of captured coverage. Policy/readiness reads expose outstanding round requirements; backup validation preserves control history and native completion links.
+The native service, bound CLI and MCP implement the contract for explicit per-PR/channel grants, minimum and maximum requirements, settings-only taper, closure/reopening and persistent native completion accounting. Source preparation and final admission recheck the grant independently of captured coverage. Policy/readiness reads expose outstanding round requirements; backup validation preserves control history and native completion links.
 
-Operational adoption, external Hosted settlement and credit, browser progress and automatic channel-front scheduling are separate consumers and are not implemented by this slice. The retained schema representations support native historical validation but do not expose an adoption endpoint or manufacture imported completion credit. Carried origin, initial-credit and unbounded-control records are refused without their independent adoption authority. A grant performs no provider action and does not weaken the separate [review policy](reviews.md#project-policy).
+Carried operational adoption is supported through independently guarded preview/apply, retaining source provenance and minimum-only policy. External Hosted settlement/credit, browser progress and automatic channel-front scheduling remain separate consumers. A grant performs no provider action and does not weaken the separate [review policy](reviews.md#project-policy).
 
 ## Operational controls
 
@@ -44,7 +44,7 @@ Per-PR changes use their own revision and actor attribution rather than changing
 
 If a queued request’s target no longer matches its original comparison, preparation holds that request rather than rebinding it. Follow the [review-execution](review-execution.md) contract with a qualified current comparison and fresh authorized request/key; preserve retained rounds and known cooldowns instead of resetting grants. The recovery does not itself change configured PR queue order.
 
-Control reads are local, compact and provider-free. Project write mutations use the ordinary authorization, expected revision, idempotency and atomic event/receipt rules. Their compact change events identify the affected PR/channel resource and its revision; the durable event cursor remains the delivery deduplication identity. Storing a grant does not authorize provider calls. Operational adoption and channel-front selection remain separate consumers.
+Control reads are local, compact and provider-free. Project write mutations use the ordinary authorization, expected revision, idempotency and atomic event/receipt rules. Their compact change events identify the affected PR/channel resource and its revision; the durable event cursor remains the delivery deduplication identity. Storing a grant does not authorize provider calls. Carried adoption uses the separate administrator controls below; channel-front selection remains outside this slice.
 
 ## Refusals and recovery
 
@@ -85,3 +85,15 @@ MCP `review_rounds_read` and project-write `review_rounds_configure` use the sha
 ## Validation boundary
 
 Focused tests exercise native grant, close, taper, replay, permission and admission behavior; immutable cumulative history and backup corruption refusal; and bound CLI/MCP transport contracts. The packaged round-controls smoke exercises real built clients and daemon with synthetic local review behavior. Validation results and remaining limits are recorded in the [delivery plan](delivery.md); these checks do not establish live provider behavior, installed cutover or completion of deferred consumers.
+
+## Carried rule adoption
+
+An administrator can preview and apply one prepared effective PR/channel rule before execution enrollment. Adoption requires revision zero, no configured destination control and no unresolved native operation for that channel. Enrollment preserves the adopted rule. Preview binds the normalized input to the instance, project, administrator and worker; apply rechecks repository identity, authority and guards transactionally. Exact-key replay returns its original receipt without overwriting subsequent changes.
+
+The prepared record retains remaining minimum and maximum, dry streak, taper threshold, reached taper and closure with source identity/key and digest. Native used starts at zero: imported configuration is not a native attempt, captured result or completed round. Genuine native completions advance the carried policy. Explicit additional grants stay finite and clear minimum-only state while retaining the carried origin and cumulative history.
+
+Version-two records can preserve an absent maximum using maximum_unbounded true and maximum_remaining zero. This differs from an exhausted finite allowance. Remaining minimum may reach 9,007,199,254,740,991; native counters refuse overflow. Finite prepared limits remain at most 1,000, and dry/taper limits retain their native bounds. Unknown source rules must refuse rather than invent a cap or reset.
+
+Use fc reviews rounds adopt preview --file PATH, then apply with the same file, --preview SHA256 and --key KEY. Files must be bounded owner-private regular JSON files. MCP exposes review_round_adoption_preview and review_round_adoption_apply with the same native guards. The [carried-obligation contract](adoption-obligations.md) owns source-policy linkage, admission holds, guarded resolution and retargeting. Source acquisition and offline preparation are separate tooling work; prepared input never grants live review authority.
+
+See [refusals and recovery](adoption-obligations.md#refusals-and-recovery) for round-adoption refusal codes and caller actions.
