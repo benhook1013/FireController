@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -209,6 +210,48 @@ func TestAdoptionObligationFullDetailEncodedBudget(t *testing.T) {
 			checkError(t, err, "invalid_response")
 		} else if err != nil || !reflect.DeepEqual(got, detail) {
 			t.Fatalf("full detail at %d bytes was not preserved: %v", size, err)
+		}
+	}
+}
+
+func TestAdoptionObligationMaximumEncodedListPage(t *testing.T) {
+	pulls := make([]int64, 101)
+	for i := range pulls {
+		pulls[i] = 2147483547 + int64(i)
+	}
+	page := client.AdoptionObligationPage{Items: make([]client.AdoptionObligationItem, 100), NextCursor: strings.Repeat("a", 4096)}
+	for i := range page.Items {
+		page.Items[i] = client.AdoptionObligationItem{ID: fmt.Sprintf("adoption_obligation_%032x", i), Namespace: strings.Repeat("<", 200), SourceKey: strings.Repeat(">", 193) + strings.NewReplacer("0", "<", "1", ">").Replace(fmt.Sprintf("%07b", i)), Kind: "route", Status: "open", Revision: 9223372036854775807, AffectedPullNumbers: pulls}
+		if !adoptionholdsmodel.ValidSourceKey(page.Items[i].Namespace) || !adoptionholdsmodel.ValidSourceKey(page.Items[i].SourceKey) {
+			t.Fatal("inadmissible key fixture")
+		}
+	}
+	body := append(adoptionholdsmodel.Encode(page), '\n')
+	if len(body) <= 256<<10 || len(body) >= 512<<10 {
+		t.Fatal("fixture must cross old budget but fit finite replacement", len(body))
+	}
+	t.Logf("encoded maximum page=%d bytes", len(body))
+	var response atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/instance") {
+			handshake(w)
+			return
+		}
+		if r.URL.Query().Get("limit") != "100" {
+			t.Error("maximum list limit lost")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response.Load().([]byte))
+	}))
+	defer server.Close()
+	service := newClient(t, server)
+	for _, size := range []int{len(body), 512 << 10, (512 << 10) + 1} {
+		response.Store(append(append([]byte(nil), body...), bytes.Repeat([]byte(" "), size-len(body))...))
+		got, err := service.AdoptionObligations(t.Context(), 0, "open", client.PageOptions{Limit: 100})
+		if size > 512<<10 {
+			checkError(t, err, "invalid_response")
+		} else if err != nil || !reflect.DeepEqual(got, page) {
+			t.Fatalf("maximum page at %d bytes not preserved: %v", size, err)
 		}
 	}
 }
