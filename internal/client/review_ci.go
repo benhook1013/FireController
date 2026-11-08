@@ -131,7 +131,7 @@ func (c *Client) reviewSourceCIAssessment(ctx context.Context, number int64, dia
 		query = url.Values{"diagnostics": {"true"}}
 		budget = 512 << 10
 	}
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "ci"), query, true, "", nil, http.StatusOK, false, &value, budget, decodeReviewResponse); err != nil {
+	if err := c.requestWithCapabilities(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "ci"), query, true, "", nil, http.StatusOK, false, &value, budget, decodeReviewResponse, nil, requestTimeout, true); err != nil {
 		return ReviewSourceCIAssessment{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_ci" || value.ConfigurationRevision < 0 || value.ConfigurationRevision == 0 && (value.State != "held" || value.Reason != "source_configuration_changed") || !validSourceObservation(value.Target) || value.Target.PullNumber != number || value.SourceObservedAt != value.Target.ObservedAt || !controlTime(value.EvaluatedAt) || !validCISummary(value.summary(), true) || value.Selection == "head" && value.SelectedCommitSHA != value.Target.HeadSHA {

@@ -33,25 +33,37 @@ func TestSourceCIMismatchFactsRetainedAndWireOptInOnly(t *testing.T) {
 	if want.MergeBaseMismatch == nil || want.Required != 0 || want.State != "unproven" || want.SelectedCommitSHA != "" {
 		t.Fatal("retained mismatch lost or credited", want)
 	}
-	for _, version := range []string{"", "change-v1", "change-v2"} {
-		r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/source/2/ci?diagnostics=true", nil)
-		r.Header.Set("Authorization", "Bearer "+f.reader)
-		if version != "" {
-			r.Header.Set("X-FC-CI-Watch", version)
-		}
-		w := httptest.NewRecorder()
-		f.handler.ServeHTTP(w, r)
-		var got SourceCIAssessment
-		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Reason != want.Reason || got.RefreshID != want.RefreshID {
-			t.Fatal("mismatch projection lost original observation", version, w.Code, w.Body.String())
-		}
-		if version == "change-v2" {
-			if !reflect.DeepEqual(got.MergeBaseMismatch, want.MergeBaseMismatch) {
-				t.Fatal("exact retained identities missing", got)
+	for _, diagnostics := range []string{"", "?diagnostics=true"} {
+		for _, version := range []string{"", "change-v1", "change-v2", "change-v3", "change-v4", " change-v3", "change-v3, change-v2", "duplicate"} {
+			r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/source/2/ci"+diagnostics, nil)
+			r.Header.Set("Authorization", "Bearer "+f.reader)
+			if version != "" {
+				r.Header.Set("X-FC-CI-Watch", version)
 			}
-		} else if got.MergeBaseMismatch != nil || strings.Contains(w.Body.String(), "merge_base_mismatch\":") {
-			t.Fatal("old strict response shape changed", version, w.Body.String())
+			if version == "duplicate" {
+				r.Header["X-Fc-Ci-Watch"] = []string{"change-v3", "change-v3"}
+			}
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			var got SourceCIAssessment
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Reason != want.Reason || got.RefreshID != want.RefreshID {
+				t.Fatal("mismatch projection lost original observation", version, w.Code, w.Body.String())
+			}
+			if version == "change-v2" || version == "change-v3" {
+				if !reflect.DeepEqual(got.MergeBaseMismatch, want.MergeBaseMismatch) {
+					t.Fatal("exact retained identities missing", got)
+				}
+			} else if got.MergeBaseMismatch != nil || strings.Contains(w.Body.String(), "merge_base_mismatch\":") {
+				t.Fatal("old strict response shape changed", version, w.Body.String())
+			}
 		}
+	}
+	r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/source/2/ci", nil)
+	r.Header.Set("X-FC-CI-Watch", "change-v3")
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code == 200 || strings.Contains(w.Body.String(), want.MergeBaseMismatch.LiveBaseSHA) {
+		t.Fatal("capability bypassed read authorization", w.Code, w.Body.String())
 	}
 	if sourceCITestState(t, f) != before || reader.ciCalls.Load() != 1 {
 		t.Fatal("diagnostic read changed history or fetched provider")
