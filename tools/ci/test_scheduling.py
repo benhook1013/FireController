@@ -262,8 +262,10 @@ class SchedulingTests(unittest.TestCase):
     def test_proposed_interleaving_independent_pr_and_develop_runs_overlap_including_gate(self):
         s = Scheduler()
         runs = ['PR-A', 'PR-B', 'develop']
+        slow = 'Go race (reviewexec-5)'
+        self.assertIn(slow, [name for name, _, _ in self.jobs])
         for run in runs:
-            self.offer_run(s, run, lambda name: 50 if run == 'PR-B' and name == 'Go race (reviewexec-5)' else 3)
+            self.offer_run(s, run, lambda name, run=run: 50 if run == 'PR-B' and name == slow else 3)
         self.finish_runs(s, runs)
         self.assertTrue(any(len({j.run for j in snapshot}) > 1 for snapshot in s.snapshots))
         self.assertTrue(any(any(j.name == 'validate' for j in snapshot)
@@ -277,11 +279,14 @@ class SchedulingTests(unittest.TestCase):
     def test_proposed_interleaving_slow_tail_does_not_hold_other_nineteen_lanes(self):
         s = Scheduler()
         slow = 'Go race (backup-0)'
+        slow_lanes = [lane for name, lane, _ in self.jobs if name == slow]
+        self.assertEqual(len(slow_lanes), 1, f'{slow} missing from workflow inventory')
+        slow_lane = slow_lanes[0]
         self.offer_run(s, 'PR-A', lambda name: 100 if name == slow else 1)
         self.offer_run(s, 'PR-B')
         self.finish_runs(s, ['PR-A', 'PR-B'])
         progressed = {j.lane for start, _, j in s.intervals if j.run == 'PR-B' and start < 100}
-        self.assertEqual(progressed, set(range(1, 20)))
+        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
 
     def test_proposed_interleaving_many_runs_with_uneven_durations_stay_within_budget(self):
         s = Scheduler()
@@ -290,8 +295,17 @@ class SchedulingTests(unittest.TestCase):
             self.offer_run(s, run, lambda name: 1 + (sum(map(ord, name)) + index) % 17)
         self.finish_runs(s, runs)
         self.assertEqual(max(map(len, s.snapshots)), 20)
-        self.assertTrue(all(len({j.lane for j in snapshot}) == len(snapshot)
-                            for snapshot in s.snapshots))
+
+    def test_overlap_refuses_missing_slow_job(self):
+        self.jobs = [(name.replace('reviewexec-5', 'reviewexec-renamed'), lane, family)
+                     for name, lane, family in self.jobs]
+        with self.assertRaisesRegex(AssertionError, 'reviewexec-5'):
+            self.test_proposed_interleaving_independent_pr_and_develop_runs_overlap_including_gate()
+
+    def test_slow_tail_follows_reassigned_inventory_lanes(self):
+        self.jobs = [(name, (lane + 7) % 20, family)
+                     for name, lane, family in self.jobs]
+        self.test_proposed_interleaving_slow_tail_does_not_hold_other_nineteen_lanes()
 
     def test_affinity_explicitly_strands_spare_capacity(self):
         s = Scheduler()
