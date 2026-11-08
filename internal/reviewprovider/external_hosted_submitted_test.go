@@ -206,7 +206,7 @@ func TestExternalHostedCurrentRootClockAllowanceIsNarrow(t *testing.T) {
 }
 
 func TestNativeHostedMarkedOmittedCountRequiresTerminalEvidence(t *testing.T) {
-	for _, mode := range []string{"complete", "missing reply", "wrong author", "early reply", "competing submission", "malformed count", "unclassified finding", "unknown reply markup", "unproven root", "late annotation"} {
+	for _, mode := range []string{"complete", "missing reply", "wrong author", "early reply", "competing submission", "malformed count", "unclassified finding", "unknown reply markup", "unproven root", "late annotation", "older reused run", "updated standing run", "other actor old run", "older distinct run"} {
 		t.Run(mode, func(t *testing.T) {
 			f := submittedCurrentFixture(t)
 			review, reply := &f.snapshot.Reviews[0], &f.snapshot.IssueComments[1]
@@ -245,6 +245,18 @@ func TestNativeHostedMarkedOmittedCountRequiresTerminalEvidence(t *testing.T) {
 				reply.Body = strings.Replace(reply.Body, "<br>", "<blockquote>", 1)
 			case "unproven root":
 				baseline.ReviewComments = []ReviewComment{}
+			case "older reused run", "updated standing run", "other actor old run", "older distinct run":
+				standing := IssueComment{ID: 990, Author: f.bot, CreatedAt: trigger.Add(-time.Hour), UpdatedAt: trigger.Add(-time.Minute), Body: strings.ReplaceAll(standingTestBody(f.intent.HeadSHA, strings.Repeat("b", 40)), standingTestRun, externalZeroRun)}
+				if mode == "updated standing run" {
+					standing.UpdatedAt = trigger.Add(time.Second)
+				}
+				if mode == "other actor old run" {
+					standing.Author.ID++
+				}
+				if mode == "older distinct run" {
+					standing.Body = strings.ReplaceAll(standing.Body, externalZeroRun, standingTestRun)
+				}
+				f.snapshot.IssueComments = append(f.snapshot.IssueComments, standing)
 			case "late annotation":
 				f.snapshot.ReviewComments[0].UpdatedAt = reply.UpdatedAt.Add(500 * time.Millisecond)
 			}
@@ -253,7 +265,7 @@ func TestNativeHostedMarkedOmittedCountRequiresTerminalEvidence(t *testing.T) {
 				t.Fatal("edited historical root should require baseline proof")
 			}
 			got, err := ExtractHostedFindingsWithBaseline(f.snapshot, baseline, f.intent, f.poster, f.bot, f.earliest)
-			if err != nil || got.Complete != (mode == "complete") {
+			if err != nil || got.Complete != (mode == "complete" || mode == "updated standing run" || mode == "other actor old run" || mode == "older distinct run") {
 				t.Fatal("unexpected marked zero attribution", got.Reason, err)
 			}
 			if got.Complete {

@@ -201,5 +201,12 @@ func publicationMarkedZero(snapshot HostedPublicationSnapshot, result HostedPubl
 			return time.Time{}
 		}
 	}
+	for _, comment := range snapshot.IssueComments {
+		if publicationActor(comment.Author, provider) && comment.UpdatedAt.Before(result.Trigger.CreatedAt) {
+			if older, known := parseStandingZero(comment.Body); known && older.ProviderRunID == run {
+				return time.Time{}
+			}
+		}
+	}
 	return omittedHostedCountCompletions(snapshot, provider, externalNativeWindows{}, result.Trigger.CommentID, closing)[review.ID]
 }
