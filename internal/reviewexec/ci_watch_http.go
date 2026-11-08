@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -13,6 +14,7 @@ func (e *Engine) registerCIWatchHTTP(mux *http.ServeMux) {
 }
 
 func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-CI-Watch")
 	w.Header().Add("Vary", "X-FC-CI-Workflow-Details")
@@ -70,12 +72,17 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	if err = operationResponseDeadline(w, wait); err != nil {
+	responseStarted := started
+	if wait == 0 {
+		// Immediate reads retain their ordinary response-write allowance.
+		responseStarted = time.Now()
+	}
+	if err = operationResponseDeadlineAt(w, responseStarted.Add(time.Duration(wait+5)*time.Second)); err != nil {
 		core.WriteError(w, err)
 		return
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
-	result, err := e.WatchCI(r.Context(), scope, targets, wait)
+	result, err := e.watchCIFrom(r.Context(), scope, targets, wait, started)
 	if err != nil {
 		core.WriteError(w, err)
 		return

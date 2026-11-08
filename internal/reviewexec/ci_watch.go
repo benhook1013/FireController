@@ -138,12 +138,18 @@ func (e *Engine) ciWatchBinding(ctx context.Context, scope core.Scope) (ciWatchB
 // WatchCI is an authorized read with a temporary acquisition subscription. It
 // never enrolls PRs, changes review controls or retains a watch after return.
 func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatchTarget, waitSeconds int) (CIWatchResult, error) {
+	return e.watchCIFrom(ctx, scope, targets, waitSeconds, time.Now())
+}
+
+// The HTTP entry point includes scoped authentication and body parsing in its
+// selected wait. Direct callers start the same bounded wait at invocation.
+func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CIWatchTarget, waitSeconds int, started time.Time) (CIWatchResult, error) {
 	if ctx == nil || e == nil || e.store == nil || !validCIWatchTargets(targets) || waitSeconds < 0 || waitSeconds > 900 {
 		return CIWatchResult{}, invalid()
 	}
 	var deadline time.Time
 	if waitSeconds > 0 {
-		deadline = time.Now().Add(time.Duration(waitSeconds) * time.Second)
+		deadline = started.Add(time.Duration(waitSeconds) * time.Second)
 	}
 	ctx, cleanup := e.resultWaitContext(ctx)
 	defer cleanup()
