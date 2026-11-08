@@ -95,7 +95,8 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc jobs checklist ID` | Current ordered checklist, its revision and the current job revision. |
 | `fc jobs checklist-history ID` | Explicit newest-first full checklist revision page. |
 | `fc reviews execution` | Stored project execution configuration and revision; no provider check. |
-| `fc reviews operation ID` | Explicit retained native operation state and reason. |
+| `fc reviews operations` | One compact newest-first page of retained operations, default five pending; `--all` includes terminal and held history. |
+| `fc reviews operation ID` | Compact retained status, stage and next action; `--diagnostics` returns the full retained operation. |
 | `fc reviews queue` | Stored review queue; defaults to five compact PR entries. |
 | `fc reviews pull NUMBER` | Explicit PR summary and attempt history; optional `--snapshot`. |
 | `fc reviews runs NUMBER` | Stored run summaries, default five; optional `--snapshot`. |
