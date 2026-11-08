@@ -267,9 +267,23 @@ type externalNativeCapture struct {
 	hosted     *HostedEvidenceMetadata
 }
 
-func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTarget, run reviewprovider.ExternalHostedRun) ([]externalNativeCapture, bool, error) {
+func externalNativeCaptures(ctx context.Context, tx EvidenceQuery, target lifecycleTarget, run reviewprovider.ExternalHostedRun) ([]externalNativeCapture, bool, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	return externalNativeCapturesWithinBudget(ctx, readCtx, tx, target, run)
+}
+
+func externalNativeCapturesWithinBudget(ctx, readCtx context.Context, tx EvidenceQuery, target lifecycleTarget, run reviewprovider.ExternalHostedRun) (captures []externalNativeCapture, held bool, err error) {
+	// Classify every read, including the per-record validation queries. A local
+	// budget is inconclusive identity, never permission to suppress a real SQL
+	// failure that happens to race that budget or cancellation of the owner.
+	defer func() {
+		if ctx.Err() != nil {
+			captures, held, err = nil, false, ctx.Err()
+		} else if readCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			captures, held, err = nil, true, nil
+		}
+	}()
 	index, expression, identity := "review_evidence_hosted_publication", "json_extract(body_json,'$.capture.hosted.publication_id')", run.Inventory.Publication.PublicationID
 	if identity == "" {
 		index, expression, identity = "review_evidence_hosted_run", "coalesce(json_extract(body_json,'$.capture.hosted.submitted_review.provider_run_id'),json_extract(body_json,'$.capture.hosted.standing_summary.provider_run_id'))", run.ProviderRunID
@@ -279,9 +293,6 @@ func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTar
 	}
 	rows, err := tx.QueryContext(readCtx, `SELECT id,operation_id,attempt_id FROM review_execution_evidence INDEXED BY `+index+` WHERE project_id=? AND `+expression+`=? LIMIT 3`, target.project, identity)
 	if err != nil {
-		if readCtx.Err() != nil && ctx.Err() == nil {
-			return nil, true, nil
-		}
 		return nil, false, err
 	}
 	type binding struct{ id, operation, attempt string }
@@ -297,15 +308,12 @@ func externalNativeCaptures(ctx context.Context, tx *sql.Tx, target lifecycleTar
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		if readCtx.Err() != nil && ctx.Err() == nil {
-			return nil, true, nil
-		}
 		return nil, false, err
 	}
 	if len(bindings) > 1 {
 		return nil, true, nil
 	}
-	captures := []externalNativeCapture{}
+	captures = []externalNativeCapture{}
 	for _, b := range bindings {
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()

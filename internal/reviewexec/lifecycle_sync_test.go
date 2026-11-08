@@ -320,8 +320,15 @@ func TestLifecycleSyncCorruptMetadataRefusesPublication(t *testing.T) {
 	if _, err = f.store.DB().Exec(`UPDATE review_pull_versions SET metadata_json='{"is_draft":"corrupt"}' WHERE project_id=? AND number=2`, attemptProject); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.e.observeLifecycle(t.Context(), *target, s); err == nil {
-		t.Fatal("corrupt metadata concealed by CAS skip")
+	before := attemptCount(t, f.store, `SELECT count(*) FROM review_snapshots`)
+	if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+		t.Fatal("PR-local metadata corruption stopped the worker", err)
+	}
+	if d := s.due[lifecycleKey{attemptProject, 2}]; d.lastErrorCode != "stored_metadata_invalid" || !d.successAt.IsZero() {
+		t.Fatal("corrupt metadata concealed by CAS skip", d)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_snapshots`) != before {
+		t.Fatal("corrupt metadata published a snapshot")
 	}
 }
 
