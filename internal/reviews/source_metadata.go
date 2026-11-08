@@ -51,6 +51,9 @@ func PinSourceMetadata(ctx context.Context, tx *sql.Tx, project string, numbers 
 		if err != nil {
 			return nil, err
 		}
+		if err := validateSourceMetadataBody(project, n, body); err != nil {
+			return nil, err
+		}
 		pins[n] = SourceMetadataPin{project, n, sourceMetadataFingerprint(body)}
 	}
 	return pins, nil
@@ -111,7 +114,7 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		if err != nil {
 			return Receipt{}, err
 		}
-		if _, err := ReadPullMetadata(old[12].(string), old[1].(string)); err != nil {
+		if err := validateSourceMetadataBody(scope.ProjectID, pull.Number, old); err != nil {
 			return Receipt{}, err
 		}
 		if sourceMetadataFingerprint(old) != pin.fingerprint {

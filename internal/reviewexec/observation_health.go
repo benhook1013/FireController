@@ -41,11 +41,18 @@ func (e *Engine) ObservationHealth(ctx context.Context, project string, pulls []
 	var c Configuration
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		c, _, err = readConfiguration(ctx, tx, project)
+		c, err = readLifecycleConfiguration(ctx, tx, project)
 		return err
 	})
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+		return out, items, nil
+	}
+	if code := lifecycleStoredStateCode(err, project, 0); code != "" {
+		out.State = "unavailable"
+		for _, pull := range pulls {
+			items[pull.Number] = reviews.PullObservationHealth{State: "unavailable", Error: code}
+		}
 		return out, items, nil
 	}
 	if err != nil {

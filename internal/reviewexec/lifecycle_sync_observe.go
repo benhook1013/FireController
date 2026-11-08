@@ -12,12 +12,24 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) error {
+func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) (result error) {
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false
 	published := false
-	defer func() { s.finish(target, state, head, ciCollected, published, providerErr) }()
+	defer func() {
+		if result != nil {
+			// No health success may survive a rolled-back write. Isolate only
+			// errors explicitly attributed to this project's configuration or
+			// this PR's display metadata, never arbitrary history corruption.
+			published = false
+		}
+		s.finish(target, state, head, ciCollected, published, providerErr)
+		if ctx.Err() == nil && lifecycleStoredStateCode(result, target.project, target.number) != "" {
+			s.holdStoredState(target.project, target.number, target.lane, target.wakeComparison, result)
+			result = nil
+		}
+	}()
 	// Recheck selected configuration before provider work. A pause-only change
 	// is intentionally harmless; changing repository, enrollment or capability holds.
 	var bound bool
@@ -250,11 +262,7 @@ func mustLifecycleTime(value string) time.Time {
 }
 
 func (e *Engine) lifecycleBinding(ctx context.Context, tx *sql.Tx, target lifecycleTarget) (bool, error) {
-	_, revision, err := readConfiguration(ctx, tx, target.project)
-	if err != nil {
-		return false, err
-	}
-	c, err := sourceConfiguration(ctx, tx, target.project, revision)
+	c, err := readLifecycleConfiguration(ctx, tx, target.project)
 	if err != nil {
 		return false, err
 	}
