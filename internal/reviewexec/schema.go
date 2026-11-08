@@ -60,7 +60,7 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}
 	// Index maintenance has its own version so newer execution-table
 	// migrations retain their existing positions in deployed databases.
-	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}); err != nil {
+	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}, []string{`CREATE INDEX review_operations_listing ON review_operations(project_id,created_at DESC,id DESC)`}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {

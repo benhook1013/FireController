@@ -18,6 +18,7 @@ func TestCoverageIndexRemovalRetainsJournalAndReplayAcrossRestart(t *testing.T) 
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&beforeVersion); err != nil {
 		t.Fatal(err)
 	}
+	admissionSQL(t, f, `DROP INDEX review_operations_listing`)
 	admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_execution_indexes'`)
 	journal := attemptState(t, f, a)
 	var original []byte
