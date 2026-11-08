@@ -131,6 +131,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	for _, capability := range e.capabilities {
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
+	args = append(args, e.sampleExecutionTime().UTC().Format(time.RFC3339Nano))
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
@@ -139,7 +140,9 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel)
+	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
+	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
 	ORDER BY o.created_at,o.id LIMIT 256`
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -168,6 +171,32 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			return nil, err
 		}
 		if o.State == "queued" {
+			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+			earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
+			if err != nil {
+				return nil, err
+			}
+			if earlier != nil {
+				continue
+			}
+			if o.Channel == "cli" {
+				c, _, err := readConfiguration(ctx, tx, o.ProjectID)
+				if err != nil {
+					return nil, err
+				}
+				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
+					due, err := cliAccountRetryDeadline(ctx, tx, capability)
+					if err != nil {
+						return nil, err
+					}
+					if e.sampleExecutionTime().Before(due) {
+						continue
+					}
+				}
+			}
 			out = append(out, o)
 		}
 	}
@@ -184,6 +213,8 @@ func preparationReason(err error) string {
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
+			case "pull_draft", "source_changed":
+				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
 			}
@@ -204,7 +235,25 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if ctx.Err() != nil {
 			return nil
 		}
-		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
+		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
+				continue
+			}
+			return persistenceFailure()
+		}
+		if !proceed {
+			continue
+		}
+		var draftReadyRevision int64
+		if draftReady {
+			draftReadyRevision = o.Revision
+		}
+		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -240,6 +289,19 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			state := "held"
 			reason := preparationReason(err)
+			if explicitCLI && reason == "pull_draft" {
+				reason = cliDraftWait
+			}
+			if ctx.Err() == nil && (o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted") {
+				_, scheduleErr := e.persistCooldown(ctx, o, a)
+				if scheduleErr == nil {
+					return nil
+				}
+				var refusal *core.Error
+				if !(o.Channel == "cli" && errors.Is(scheduleErr, sql.ErrNoRows)) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
+					return scheduleErr
+				}
+			}
 			if ctx.Err() != nil {
 				state = "cancelled"
 				reason = "supervisor_stopping"

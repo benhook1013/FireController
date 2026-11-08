@@ -221,8 +221,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 2, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 2, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_operation_waits":           {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
 	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_hosted_discovery_state":    {"reviews", 11, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
@@ -647,6 +648,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			if versions[spec.domain] >= 3 {
 				columns += " policy_revision"
 			}
+			if versions[spec.domain] >= 7 {
+				columns += " allow_out_of_order"
+			}
+			if versions[spec.domain] >= 8 {
+				columns += " override_file_limit"
+			}
 		}
 		if name == "review_runs" && versions[spec.domain] >= 2 {
 			columns += " snapshot_revision"
@@ -707,6 +714,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if name == "review_operations" && (col == "allow_out_of_order" || col == "override_file_limit") && !reviewOrderColumn(kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			present[col] = true
 		}
 		e = columnRows.Err()
@@ -733,6 +744,16 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if name == "job_updates" {
 			if err = validateJobUpdateIdentity(ctx, db); err != nil {
+				return nil, err
+			}
+		}
+		if name == "review_execution_reservations" && versions[spec.domain] >= 10 {
+			if err = validateReservationScopeSchema(ctx, db); err != nil {
+				return nil, err
+			}
+		}
+		if name == "review_operations" && versions[spec.domain] >= 7 {
+			if err = validateReviewOrderPhysicalSchema(ctx, db, versions[spec.domain]); err != nil {
 				return nil, err
 			}
 		}
@@ -892,6 +913,30 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["public_site"] > 0 {
 		if err = publicsite.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 4 {
+		if err := reviewexec.ValidateAllowanceSnapshot(ctx, tx, versions["review_execution"]); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 9 {
+		if err := reviewexec.ValidateOperationWaitsSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_execution"] >= 7 {
+		if err := validateReviewOrderRows(ctx, tx, versions["review_execution"]); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
@@ -1126,6 +1171,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_operation_waits":        {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "baseline_attempt_id", "id", "NO ACTION")},
 	"review_selections":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_hosted_discovery_state": {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"review_pull_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},

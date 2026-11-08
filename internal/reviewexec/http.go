@@ -16,6 +16,8 @@ import (
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
 	e.registerCIWatchHTTP(mux)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/rounds/progress", e.readRoundProgressHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control", e.controlOperationHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/selections", e.enqueueRunHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/selections/{selection_id}", e.readRunHTTP)
 	adoptionholds.New(e.store).Register(mux)
@@ -82,6 +84,7 @@ func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	scope, err := e.store.Scope(r, "write")
 	if err != nil {
@@ -150,6 +153,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
+			operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -158,6 +162,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "X-FC-Hosted-Observer")
 	w.Header().Add("Vary", "Prefer")
 	scope, err := e.store.Scope(r, "read")
@@ -191,6 +196,10 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
 		operation.Observer = e.observerStatus(operation)
+	}
+	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
+	if operation.Channel == "cli" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
+		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
 	core.WriteJSON(w, http.StatusOK, operation)
 }

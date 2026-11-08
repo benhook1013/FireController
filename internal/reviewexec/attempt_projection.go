@@ -10,7 +10,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func probeAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
 		return err
@@ -64,6 +64,31 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	operation, err := readOperation(ctx, tx, attempt.ProjectID, attempt.OperationID)
 	if err != nil {
 		return reviews.Receipt{}, err
+	}
+	if operation.AttemptID != attempt.ID {
+		// History may retain an unused preparation that detached before dispatch.
+		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
+		if err != nil {
+			return reviews.Receipt{}, publicationConflict()
+		}
+		if !draft {
+			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			if operation.Channel == "cli" {
+				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil || record.Observation.Remaining != 0 {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			} else {
+				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil || record.Input.Observation.State != "cooldown_observed" {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			}
+		}
+		operation = original
 	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, publicationConflict()

@@ -54,7 +54,11 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	if err != nil {
 		return ExecutionContext{}, err
 	}
-	if configuration.Paused || revision != operation.ConfigurationRevision || e.validateConfiguration(configuration) != nil || !slices.Contains(configuration.Queue, operation.PullNumber) || !slices.Contains(configuration.Channels, operation.Channel) {
+	compatible, err := compatibleQueuedConfiguration(ctx, tx, operation, configuration, revision)
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	if !compatible || e.validateConfiguration(configuration) != nil || !slices.Contains(configuration.Queue, operation.PullNumber) || !slices.Contains(configuration.Channels, operation.Channel) {
 		return ExecutionContext{}, conflict()
 	}
 	capability := e.capabilities[configuration.CapabilityID]
@@ -85,7 +89,11 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	if err != nil {
 		return ExecutionContext{}, err
 	}
-	result.Configuration, result.Policy = configuration, policy
+	original, err := sourceConfiguration(ctx, tx, operation.ProjectID, operation.ConfigurationRevision)
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	result.Configuration, result.Policy = original, policy
 	return result, nil
 }
 

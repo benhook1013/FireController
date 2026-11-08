@@ -49,7 +49,7 @@ func TestHostedQueryMigrationConcurrentBeginAndRetainedReplay(t *testing.T) {
 	admissionSQL(t, f, `UPDATE metadata SET value='5' WHERE key='schema:review_execution'`)
 	cliAllowanceReopen(t, f)
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "6" || evidenceState(t, f, a) != original {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "10" || evidenceState(t, f, a) != original {
 		t.Fatal("v5 upgrade changed retained state", version, err)
 	}
 	type result struct {

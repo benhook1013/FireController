@@ -335,6 +335,8 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
+	operationWait                    bool
+	queuedCause                      *string
 	ciWatchChange, ciWorkflowDetails bool
 	hostedObserver                   bool
 	seconds                          int
@@ -386,6 +388,9 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 		if wait.ciWorkflowDetails {
 			r.Header.Set("X-FC-CI-Workflow-Details", "3")
 		}
+		if wait.operationWait {
+			r.Header.Set("X-FC-Operation-Wait", "2")
+		}
 		if wait.hostedObserver && method == http.MethodGet {
 			r.Header.Set("X-FC-Hosted-Observer", "1")
 		}
@@ -432,6 +437,12 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
 	defer response.Body.Close()
+	if wait != nil && wait.queuedCause != nil {
+		*wait.queuedCause = ""
+		if response.Header.Get("X-FC-Review-Queued") == "cli_quota_wait" {
+			*wait.queuedCause = "cli_quota_wait"
+		}
+	}
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		if mutation {
 			return unknownRequest("redirect_rejected", operation, "request was redirected", response.StatusCode)

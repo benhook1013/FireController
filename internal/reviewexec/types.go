@@ -64,7 +64,21 @@ type Anchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 
+type AllowanceObservation struct {
+	Kind             string `json:"kind"`
+	ObservedAt       string `json:"observed_at"`
+	Remaining        *int64 `json:"remaining,omitempty"`
+	Limit            *int64 `json:"limit,omitempty"`
+	FullCapacityInMS *int64 `json:"full_capacity_in_ms,omitempty"`
+	RollingWindowMS  *int64 `json:"rolling_window_ms,omitempty"`
+	RetryNotBefore   string `json:"retry_not_before,omitempty"`
+}
+
 type Operation struct {
+	Wait                  *OperationWait        `json:"wait,omitempty"`
+	Allowance             *AllowanceObservation `json:"allowance,omitempty"`
+	AllowOutOfOrder       bool                  `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool                  `json:"override_file_limit,omitempty"`
 	Observer              *HostedObserverStatus `json:"observer,omitempty"`
 	ID                    string                `json:"id"`
 	ProjectID             string                `json:"project_id"`
@@ -98,6 +112,9 @@ type Attempt struct {
 }
 
 type Engine struct {
+	schedulingNow              func() time.Time
+	draftProbeMu               sync.Mutex
+	draftProbeNext             map[string]time.Time
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
 	hostedObserverMu           sync.Mutex
@@ -225,3 +242,10 @@ func actorAllowed(ctx context.Context, tx *sql.Tx, project, actor, worker string
 	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials c WHERE c.principal_id=? AND c.revoked=0 AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_write=1)) AND (?='' OR EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=?))`, actor, project, worker, project, worker).Scan(&n)
 	return n == 1, err
 }
+
+func WithExecutionClock(now func() time.Time) EngineOption {
+	return func(e *Engine) { e.schedulingNow = now }
+}
+
+// WithResultWaitLifetime binds only HTTP result waits to an application
+// lifecycle. It never cancels an accepted operation or its provider work.
