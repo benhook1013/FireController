@@ -318,31 +318,35 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		t.Fatal("archive browser exceeded bounded workload")
 	}
 	var result struct {
-		State            string `json:"state"`
-		Phase            string `json:"phase"`
-		DriverLine       int    `json:"driver_line"`
-		ProjectStatus    int    `json:"project_status"`
-		FailureKind      string `json:"failure_kind"`
-		ArchiveRequests  int    `json:"archive_requests"`
-		MaxLimit         int    `json:"max_limit"`
-		SourceCollisions bool   `json:"source_collisions"`
-		PinnedTail       bool   `json:"pinned_tail"`
-		CurrentReset     bool   `json:"current_reset"`
-		InlineFindings   bool   `json:"inline_findings"`
-		DetailRequests   int    `json:"detail_requests"`
-		FixtureWrites    int    `json:"fixture_writes"`
-		QueueWindow      bool   `json:"queue_window"`
-		MergedHistory    bool   `json:"merged_history"`
+		State                   string `json:"state"`
+		Phase                   string `json:"phase"`
+		DriverLine              int    `json:"driver_line"`
+		ProjectStatus           int    `json:"project_status"`
+		FailureKind             string `json:"failure_kind"`
+		ArchiveRequests         int    `json:"archive_requests"`
+		ExplicitArchiveRequests int    `json:"explicit_archive_requests"`
+		PreviewRequests         int    `json:"preview_requests"`
+		ExplicitPagesVerified   bool   `json:"explicit_pages_verified"`
+		MaxLimit                int    `json:"max_limit"`
+		SourceCollisions        bool   `json:"source_collisions"`
+		PinnedTail              bool   `json:"pinned_tail"`
+		CurrentReset            bool   `json:"current_reset"`
+		InlineFindings          bool   `json:"inline_findings"`
+		DetailRequests          int    `json:"detail_requests"`
+		FixtureWrites           int    `json:"fixture_writes"`
+		QueueWindow             bool   `json:"queue_window"`
+		MergedHistory           bool   `json:"merged_history"`
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	if len(lines) == 2 {
 		_ = json.Unmarshal(lines[1], &result)
 	}
-	// Twenty-five-row timeline pages and twenty-row attempt pages are read
-	// only on explicit continuation. Separate six-row channel summaries serve
-	// the hero and queue, including the old merged PR and bounded reload;
-	// no automatic archive walking.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || result.ArchiveRequests < 26 || result.ArchiveRequests > 27 || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+	// Explicit pages are pinned by resource, snapshot and cursor in the driver:
+	// current PR123 3 timeline + 3 attempt pages, pinned PR123 5 + 7, and
+	// merged PR201 one timeline page with no attempts. Width-sized channel
+	// previews are verified separately against measured demand, without cursors
+	// or automatic archive walking, including the bounded reload.
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
 		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
@@ -381,7 +385,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if external.Load() != 0 || observations.Load() != 1 {
 		t.Fatal("archive workload attempted provider/external HTTP")
 	}
-	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/channel6/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/width-sized-channel/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
 }
 
 func seedArchiveRoutedWork(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) {

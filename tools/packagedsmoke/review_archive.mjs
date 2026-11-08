@@ -396,10 +396,25 @@ try {
   const previewKeys = new Map();
   for (const item of previews) { const key=JSON.stringify([item.name,item.pull,item.snapshot,item.channel,item.limit]); previewKeys.set(key,(previewKeys.get(key) ?? 0)+1); }
   need([...previewKeys.values()].every(reads=>reads<=2));
-  need(archives.length-previews.length === 20); // Explicit full-history reads are unchanged.
+  const explicit = archives.filter(item=>item.feed === 'attempts' || item.view === 'timeline');
+  const explicitKey = item=>JSON.stringify([item.name,item.pull,item.feed,item.snapshot === config.snapshot ? 'original' : 'current',item.cursor !== null]);
+  const explicitPages = new Map();
+  for (const item of explicit) { const key=explicitKey(item); explicitPages.set(key,(explicitPages.get(key) ?? 0)+1); }
+  // Pin each resource, snapshot and first/continuation page count. PR201 has
+  // one retained run and no attempts, so its explicit detail adds one read.
+  const expectedPages = [
+    ['current',number,'runs','original',false,1], ['current',number,'runs','original',true,1],
+    ['current',number,'attempts','original',false,1], ['current',number,'attempts','original',true,1],
+    ['current',number,'runs','current',false,1], ['current',number,'attempts','current',false,1],
+    ['pinned',number,'runs','original',false,1], ['pinned',number,'runs','original',true,4],
+    ['pinned',number,'attempts','original',false,1], ['pinned',number,'attempts','original',true,6],
+    ['current',201,'runs','current',false,1],
+  ];
+  need(explicitPages.size === expectedPages.length && expectedPages.every(row=>explicitPages.get(JSON.stringify(row.slice(0,5))) === row[5]));
+  need(explicit.length === 19 && archives.length === explicit.length+previews.length);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && details.length === 3);
   await Promise.all(contexts.map(context=>context.close())); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,explicit_archive_requests:explicit.length,preview_requests:previews.length,explicit_pages_verified:true,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch (error) {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');
