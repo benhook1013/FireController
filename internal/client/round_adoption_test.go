@@ -29,7 +29,9 @@ func adoptionRaw(t *testing.T) []byte {
 }
 
 func TestRoundAdoptionDocumentStrictBeforeAnyService(t *testing.T) {
-	good := adoptionRaw(t)
+	original := adoptionRaw(t)
+	good := make([]byte, len(original), len(original)+64)
+	copy(good, original)
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(good, &fields); err != nil {
 		t.Fatal(err)
@@ -53,7 +55,14 @@ func TestRoundAdoptionDocumentStrictBeforeAnyService(t *testing.T) {
 			})
 		}
 	}
-	for _, raw := range [][]byte{[]byte("null"), append(good[:len(good)-1], []byte(`,"closed":false}`)...), append(good[:len(good)-1], []byte(`,"unknown":0}`)...), []byte(strings.Repeat(" ", 16<<10) + string(good))} {
+	withTail := func(tail string) []byte {
+		return append(append([]byte(nil), good[:len(good)-1]...), []byte(tail)...)
+	}
+	malformed := [][]byte{[]byte("null"), withTail(`,"closed":false}`), withTail(`,"unknown":0}`), []byte(strings.Repeat(" ", 16<<10) + string(good))}
+	if string(good) != string(original) || !json.Valid(malformed[1]) || !json.Valid(malformed[2]) || !strings.HasSuffix(string(malformed[1]), `,"closed":false}`) || !strings.HasSuffix(string(malformed[2]), `,"unknown":0}`) {
+		t.Fatal("malformed fixtures alias or no longer isolate duplicate/unknown fields")
+	}
+	for _, raw := range malformed {
 		if client.ValidateReviewRoundAdoptionDocument(raw) == nil {
 			t.Fatal("accepted ambiguous/oversized prepared control")
 		}
