@@ -48,6 +48,9 @@ func (p *TransportPool) borrow() (*http.Transport, error) {
 	}
 	if p.transport == nil {
 		p.transport = newTransport()
+		// The pool is shared by independent finite calls, including bounded
+		// waits. Limit retained idle sockets, not concurrent request admission.
+		p.transport.MaxConnsPerHost = 0
 	}
 	return p.transport, nil
 }

@@ -81,6 +81,10 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 			if transientIdentityFailure(failure) {
 				copy.Message = "The service is temporarily unavailable; this attempt did not send the selected operation."
 				copy.Action = "Retry the selected operation when the service is available, retaining its original request, idempotency key and binding. For any earlier uncertain write, recover that write using its exact same request body, idempotency key and binding; this failed identity check does not establish its outcome."
+				if failure.Code == "connection_failed" {
+					copy.Message = "The service connection failed after bounded retries; this attempt did not send the selected operation."
+					copy.Action = "Check the configured service address, TLS and transport. " + copy.Action
+				}
 			}
 			err = &copy
 		}
