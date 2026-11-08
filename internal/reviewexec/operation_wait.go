@@ -171,7 +171,11 @@ func operationPreference(r *http.Request, defaultSeconds int) (int, error) {
 }
 
 func operationResponseDeadline(w http.ResponseWriter, seconds int) error {
-	err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Duration(seconds+5) * time.Second))
+	return operationResponseDeadlineAt(w, time.Now().Add(time.Duration(seconds+5)*time.Second))
+}
+
+func operationResponseDeadlineAt(w http.ResponseWriter, deadline time.Time) error {
+	err := http.NewResponseController(w).SetWriteDeadline(deadline)
 	if err != nil && !errors.Is(err, http.ErrNotSupported) {
 		return core.Fail("internal_error", "The review result response deadline could not be established; no action was accepted.", 500)
 	}
