@@ -166,3 +166,57 @@ func TestVerifyRetainedSourceSeparatesQueryFailureAndOversizedBody(t *testing.T)
 		t.Fatal("oversized retained provenance lost protective classification", err)
 	}
 }
+
+func TestRetargetAggregateStoredTypesRemainProtective(t *testing.T) {
+	for _, tc := range []struct {
+		name, storedType string
+		value            any
+	}{
+		{"text", "text", "broken"},
+		{"blob", "blob", []byte("broken")},
+		{"numeric-blob", "blob", []byte("2")},
+		{"real", "real", 2.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fresh(t)
+			id := retargetRoute(t, f, []int64{2898, 3105}, []string{"target-pr:3105"})
+			decode[map[string]any](t, f.call("POST", base+"/"+id+"/retarget", f.token, "worker_one", "retarget-aggregate", retargetInput(1, 3341)), 200)
+			f.exec(`DROP TRIGGER review_adoption_retargets_immutable`)
+			f.exec(`UPDATE review_adoption_retargets SET revision=? WHERE obligation_id=?`, tc.value, id)
+			var storedType string
+			if err := f.store.DB().QueryRow(`SELECT typeof(revision) FROM review_adoption_retargets WHERE obligation_id=?`, id).Scan(&storedType); err != nil || storedType != tc.storedType {
+				t.Fatal("fixture did not retain malformed revision type", storedType, err)
+			}
+			for _, read := range []struct {
+				name string
+				call func() error
+			}{
+				{"facts", func() error { _, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 3341); return err }},
+				{"admission", func() error { _, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 3341); return err }},
+			} {
+				t.Run(read.name, func(t *testing.T) {
+					var failure *core.Error
+					if err := read.call(); !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+						t.Fatal("corrupt aggregate escaped protective classification", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRetargetAggregatePreservesQueryFailure(t *testing.T) {
+	f := fresh(t)
+	id := retargetRoute(t, f, []int64{2898, 3105}, []string{"target-pr:3105"})
+	decode[map[string]any](t, f.call("POST", base+"/"+id+"/retarget", f.token, "worker_one", "retarget-query-failure", retargetInput(1, 3341)), 200)
+	q := obligationQueryFailure{Query: f.store.DB(), match: "SELECT count(*),COALESCE(min(revision)", row: true}
+	for _, read := range []func() error{
+		func() error { _, err := h.ReadFacts(t.Context(), q, "project_one", 3341); return err },
+		func() error { _, err := h.HasOpen(t.Context(), q, "project_one", 3341); return err },
+	} {
+		var code interface{ Code() int }
+		if err := read(); !errors.As(err, &code) || code.Code()&255 != 1 {
+			t.Fatal("aggregate query failure became a retained-data hold", err)
+		}
+	}
+}
