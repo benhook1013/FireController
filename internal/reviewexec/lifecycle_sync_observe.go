@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -37,7 +38,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	}
 	if repo.ID != target.repository || !repository.MatchString(repo.FullName) {
 		cancel()
-		providerErr = invalid()
+		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
 		return nil
 	}
 	pull, err := target.reader.Pull(readCtx, repo.FullName, target.number)
@@ -47,7 +48,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		return nil
 	}
 	if !sameTarget(pull, target.repository, target.number) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" || pull.ChangedFiles < 0 || strings.TrimSpace(pull.Title) == "" {
-		providerErr = invalid()
+		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
 		return nil
 	}
 	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: stamp()}
