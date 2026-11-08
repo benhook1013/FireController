@@ -127,6 +127,9 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 			if stream.Err() != nil {
 				return interrupted()
 			}
+			if tlsVerificationFailure(err) {
+				return MessageEventPage{}, fail("tls_verification_failed", "The service certificate could not be verified.", "Check the configured service address, TLS and transport before resuming with the saved cursor; messages remain unacknowledged.", 0)
+			}
 			return MessageEventPage{}, messageWaitConnectionFailure("The service connection failed.")
 		}
 		defer response.Body.Close()
