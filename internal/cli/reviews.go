@@ -47,7 +47,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	}
 	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "routes"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "attempts", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes", "publication":
+	case "queue", "pull", "runs", "attempts", "run", "evidence", "adjudication", "assess", "source-operation", "route", "routes", "publication":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -64,7 +64,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || call.subcommand == "operation" && flag == "--wait-seconds" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "run") && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -76,12 +76,6 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			value = args[i]
 		}
 		switch flag {
-		case "--wait-seconds":
-			seconds, err := strconv.Atoi(value)
-			if err != nil || strconv.Itoa(seconds) != value || client.ValidateReviewOperationWait(seconds) != nil {
-				return call, false
-			}
-			call.waitSeconds = seconds
 		case "--pr":
 			number, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || number < 1 || number > 2147483647 || strconv.FormatInt(number, 10) != value {
@@ -120,9 +114,6 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	}
 	if call.subcommand == "route" {
 		return call, client.ValidateReviewRouteID(call.position[0]) == nil
-	}
-	if call.subcommand == "operation" {
-		return call, client.ValidateReviewOperationID(call.position[0]) == nil
 	}
 	if call.subcommand == "source-operation" {
 		return call, client.ValidateReviewSourceRefreshID(call.position[0]) == nil
