@@ -11,6 +11,15 @@ import (
 )
 
 func TestRetainHostedOutsideOnlyAnnotationsAndParserDiagnostic(t *testing.T) {
+	testRetainHostedSummaryAnnotationsAndParserDiagnostic(t, false)
+}
+
+func TestRetainHostedAdditionalOnlyAnnotationsAndParserDiagnostic(t *testing.T) {
+	testRetainHostedSummaryAnnotationsAndParserDiagnostic(t, true)
+}
+
+func testRetainHostedSummaryAnnotationsAndParserDiagnostic(t *testing.T, additional bool) {
+	t.Helper()
 	var report reviewprovider.IssueComment
 	f, record := runtimeAnnotatedStandingFixture(t, func(b *HostedCaptureRecord) {
 		report = reviewprovider.IssueComment{ID: 9001, Author: reviewprovider.Author{ID: 9002, Login: "synthetic-status[bot]", Kind: "Bot"}, CreatedAt: b.StartedAt.Add(-time.Hour), UpdatedAt: b.StartedAt.Add(-time.Minute), Body: "Build pending."}
@@ -31,6 +40,11 @@ func TestRetainHostedOutsideOnlyAnnotationsAndParserDiagnostic(t *testing.T) {
 	report.UpdatedAt = trigger.Add(time.Second)
 	record.Snapshot.IssueComments = []reviewprovider.IssueComment{record.Snapshot.IssueComments[0], report}
 	outside := "> [!CAUTION]\n> Some comments are outside the diff and are listed below.\n>\n> **⚠️ Outside diff range comments (1)**\n>\n> <details>\n> <summary><strong>🟡 Minor</strong> · Preserve source. · <code>events.go:19</code></summary><blockquote>\n>\n> `engine/events.go:19`\n> **📐 Maintainability & Code Quality** | **🟡 Minor**\n>\n> **Preserve the outside finding.**\n>\n> Keep its original source text.\n>\n> <!-- cr-comment:v1:000000000000000000000002 -->\n>\n> </blockquote></details>\n\n"
+	wantSeverity, wantKind := "low", "outside_diff"
+	if additional {
+		outside = "<details>\n<summary>🔇 Additional comments: 1</summary><blockquote>\n<dl>\n<dd>\n<details>\n<summary>source/optional.go-24-24: 1</summary><blockquote>\n<dl>\n<dd>\n`24-24`: **Trivial** · **Maintainability & Code Quality** · **Quick win**\n\n⚠️ **Unverified finding**\nVerification did not confirm this synthetic observation.\n\n**Preserve the optional annotation.**\n\nIndependent rationale.\n</dd>\n</dl>\n</blockquote></details>\n</dd>\n</dl>\n</blockquote></details>\n\n"
+		wantSeverity, wantKind = "info", "additional"
+	}
 	current := reviewprovider.HostedReview{ID: 901, Author: record.ProviderActor, State: "commented", HeadSHA: record.Intent.HeadSHA, SubmittedAt: trigger.Add(2 * time.Second), Body: outside + hostedRetainScope(f.f.baseSHA, f.f.headSHA) + "\n\n" + hostedRetainPublicationMarker()}
 	record.Snapshot.Reviews = append(record.Snapshot.Reviews, current)
 	before, _ := json.Marshal(record)
@@ -38,21 +52,24 @@ func TestRetainHostedOutsideOnlyAnnotationsAndParserDiagnostic(t *testing.T) {
 	bad := record
 	bad.Snapshot.Reviews = append([]reviewprovider.HostedReview(nil), record.Snapshot.Reviews...)
 	bad.Snapshot.Reviews[1].Body = strings.Replace(current.Body, "comments (1)", "comments (2)", 1)
+	if additional {
+		bad.Snapshot.Reviews[1].Body = strings.Replace(current.Body, "Additional comments: 1", "Additional comments: 2", 1)
+	}
 	blocked, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, bad)
 	if err != nil || blocked.Complete || blocked.Reason != "invalid_actionable_count" || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliAttemptState(t, f.f.store, f.a.ID) != state {
 		t.Fatal("qualified parser failure hidden or credited", blocked, err)
 	}
 	result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	if err != nil || !result.Complete || result.Reason != "capture_recorded" {
-		t.Fatal("proven old annotations blocked valid outside result", result, err)
+		t.Fatal("proven old annotations blocked valid summary result", result, err)
 	}
 	evidence, err := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), result.Receipt.ID)
 	if err != nil || evidence.AttemptID != f.a.ID || evidence.OperationID != f.a.OperationID || evidence.Capture.Hosted == nil || evidence.Capture.Hosted.TriggerCommentID != 100 || !reflect.DeepEqual(evidence.Capture.Hosted.ReviewIDs, []int64{901}) || evidence.Capture.Review.ReportedFindings != 1 || len(evidence.Capture.Review.Findings) != 1 || len(evidence.Capture.Hosted.Sources) != 1 {
 		t.Fatal("original result identity or finding count changed", err)
 	}
 	finding, source := evidence.Capture.Review.Findings[0], evidence.Capture.Hosted.Sources[0]
-	if finding.Severity != "low" || source.Kind != "outside_diff" || source.ReviewID != 901 || source.CommentID != 0 || !strings.Contains(current.Body, finding.Detail) {
-		t.Fatal("old root counted or literal outside finding changed")
+	if finding.Severity != wantSeverity || source.Kind != wantKind || source.ReviewID != 901 || source.CommentID != 0 || !strings.Contains(current.Body, finding.Detail) {
+		t.Fatal("old root counted or literal summary finding changed")
 	}
 	replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	after, _ := json.Marshal(record)

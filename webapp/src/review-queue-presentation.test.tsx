@@ -28,6 +28,21 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
+  it('shows current recovery instead of a failed PR verdict while retaining six completed rounds', () => {
+    const attempt = { channel: 'cli', head_sha: 'b'.repeat(40), state: 'failed', reason: 'admission_changed', finished_at: '2026-10-22T00:00:20Z', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'stopped' } as ReviewAttemptSummary;
+    const row = { ...pull(2), run_count: 6, run_counts: { ...pull(2).run_counts, cli: 6 }, attempt_count: 7, latest_attempts: [attempt] };
+    const rounds: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'cli', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 7, taper: 2, used: 6, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 }] };
+    const stopped = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={rounds} />);
+    expect(stopped).toContain('>Needs agent attention</span>'); expect(stopped).toContain('failed (admission_changed)');
+    expect(stopped).not.toContain('>Failed</span>'); expect(stopped).toContain('6 runs');
+    const retry = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={{ ...rounds, channels: [{ ...rounds.channels[0], pending: 1, pending_execution: 1 }] }} />);
+    expect(retry).toContain('>Retry pending</span>'); expect(retry).not.toContain('>Needs agent attention</span>'); expect(retry).toContain('6 runs');
+    const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={rounds} />);
+    expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Needs agent attention</span>'); expect(historical).not.toContain('>Retry pending</span>');
+    const held = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, state: 'held', reason: 'predecessor_unfinished' }] }} snapshot="snapshot" progress={rounds} />);
+    expect(held).toContain('>Dependency pending</span>'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
+  });
+
   it('keeps Hosted priority visible alongside a waiting operation and unknown source', () => {
     const v=fronts();v.channels=[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',queued_priority:{pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'}}];
     const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:1,pending_execution:1,pending_adjudication:0,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2026-10-30T12:30:00Z',paused:false}}]};
@@ -314,15 +329,17 @@ describe('truthful stored review presentation', () => {
     session.controller.abort();
     expect(read.mock.calls.every(call => call[1].aborted)).toBe(true);
   });
-  it('omits completed attempt prose and shows a concise retained rate-limit signal only with evidence', () => {
+  it('omits completed attempt prose and does not imply a current cooldown from an old stopped attempt', () => {
     const attempt: ReviewAttemptSummary = { source_attempt_id: 'attempt', channel: 'cli', head_sha: 'a'.repeat(40), state: 'completed', started_at: '', finished_at: '', duration_seconds: 1, source_run_id: '', trigger_id: '', provider_review_id: '' };
     const props = { number: 1, snapshot: 'snapshot', head: 'a'.repeat(40), attempts: [attempt], expected: 0, channelTotals: { hosted: 0, cli: 0, manual: 0, subagent: 0 } };
     const completed = markup(<ReviewRunsView {...props} />);
     expect(completed).not.toContain('Latest attempt:'); expect(completed).not.toContain('review-attempt-state');
-    expect(markup(<ReviewRunsView {...props} attempts={[{ ...attempt, state: 'rate_limited' }]} />)).toContain('Latest retained cli attempt: Cooldown');
+    expect(markup(<ReviewRunsView {...props} attempts={[{ ...attempt, state: 'rate_limited' }]} />)).toContain('Retained attempt: rate_limited.');
     expect(markup(<ReviewRunsView {...props} attempts={[]} />)).not.toContain('review-attempt-state');
     const held = markup(<ReviewRunsView {...props} attempts={[{ ...attempt, channel: 'hosted', state: 'held', reason: 'hosted_allowance_cooldown' }]} />);
-    expect(held).toMatch(/<h4>Hosted CodeRabbit<span[^>]*title="Latest retained attempt: Held · Waiting for hosted allowance"[^>]*>Held<\/span><\/h4>/u);
+    expect(held).toContain('>Needs agent attention</span>');
+    expect(held).toContain('held (hosted_allowance_cooldown)');
+    expect(held).not.toContain('>Cooldown</span>');
   });
   it('renders full finding Markdown safely while leaving titles and commit IDs literal', () => {
     const finding: ReviewFinding = { source_finding_id: 'id', title: '**Literal title**', detail: 'Useful **detail**\n\n- A step\n\n[unsafe](javascript:alert(1)) ![image](https://outside.invalid/image.png)', severity: 'low', disposition: 'accepted', decision_reason: 'Keep *context*.', actor: '', decided_at: '', fix_sha: '', proof_note: '`tested` with **evidence**', resolved_at: '' };

@@ -163,13 +163,13 @@ describe('retained attempt diagnostics', () => {
     ['rate_limited', 'allowance_exhausted', 'Cooldown', 'CLI allowance exhausted'],
     ['failed', 'another_safe_code', 'Failed', 'Another safe code'],
     ['failed', 'constructor', 'Failed', 'Constructor'],
-  ] as const)('shows %s reason in the same compact pill and expanded attempt without fetching', (state, reason, label, text) => {
+  ] as const)('shows %s process attention and preserves the original reason in attempt history without fetching', (state, reason, label, text) => {
     const value = { ...attempt, state, reason };
     archive.items = []; archive.hasMore = false;
     const compact = markup(true, [value]);
-    expect(compact).toContain(`aria-label="Latest retained hosted attempt: ${label} · ${text}"`);
-    expect(compact).toContain(`title="Latest retained attempt: ${label} · ${text}"`);
-    expect(compact).toContain(`>${label}</span>`);
+    expect(compact).toContain(`Retained attempt: ${state} (${reason})`);
+    expect(compact).toContain(`>Needs agent attention</span>`);
+    expect(compact).not.toContain(`>${label}</span>`);
     expect(compact.match(/class="review-attempt-state /gu)).toHaveLength(1);
     archive.items = [value];
     const expanded = markup(false, [], true);
@@ -221,8 +221,8 @@ it('shows closed native rounds instead of historical Held while preserving unfin
   expect(render(closed)).toContain('>Closed<');
   expect(render(closed)).not.toContain('>Held<');
   expect(render(closed)).toContain('Manually closed');
-  expect(render(undefined)).toContain('>Held<');
-  expect(render({...closed,closed:false})).toContain('>Held<');
+  expect(render(undefined)).toContain('>Needs agent attention<');
+  expect(render({...closed,closed:false})).toContain('>Needs agent attention<');
   expect(render({...closed,pending:1,pending_execution:0,pending_adjudication:1})).toContain('Needs adjudication');
   expect(render({...closed,pending:1})).not.toContain('>Closed<');
   expect(render(closed,{...attempt,state:'active',finished_at:''})).toContain('>Reviewing<');

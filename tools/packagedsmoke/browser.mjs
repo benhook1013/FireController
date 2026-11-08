@@ -979,7 +979,7 @@ try {
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   const reasonCode = 'hosted_finished_inventory_unproven';
   const reasonText = 'Finished response could not be verified';
-  const reasonPillText = `Uncertain · ${reasonText}`;
+  const reasonPillText = `The provider outcome is unconfirmed. Reconcile it before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
   const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:finished,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
   checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
@@ -1019,9 +1019,9 @@ try {
   const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
   for (const pill of reasonPills) {
     await expect(pill).toHaveCount(1);
-    await expect(pill).toHaveText('Uncertain');
-    await expect(pill).toHaveAttribute('title',`Latest retained attempt: ${reasonPillText}`);
-    await expect(pill).toHaveAttribute('aria-label',`Latest retained hosted attempt: ${reasonPillText}`);
+    await expect(pill).toHaveText('Needs agent attention');
+    await expect(pill).toHaveAttribute('title',reasonPillText);
+    await expect(pill).toHaveAttribute('aria-label',`hosted execution: Needs agent attention. ${reasonPillText}`);
   }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
@@ -1074,7 +1074,7 @@ try {
   checkpoint = 'attempt-reason-layout';
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
-      await expect(pill).toHaveText('Uncertain');
+      await expect(pill).toHaveText('Needs agent attention');
       need(await pill.evaluate(element => {
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
         return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;

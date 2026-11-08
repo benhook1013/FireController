@@ -76,15 +76,15 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 	if fallbackErr == nil && !fallback.Complete {
 		fallback = extractHostedSettledSubmission(projected, baseline, fallback, intent, postingActor, providerActor)
 	}
-	outsideOnly := len(fallback.Findings) > 0 && len(fallback.Publication.Roots) == 0 && len(fallback.Publication.Batches) == 1
+	summaryOnly := len(fallback.Findings) > 0 && len(fallback.Publication.Roots) == 0 && len(fallback.Publication.Batches) == 1
 	for _, finding := range fallback.Findings {
-		outsideOnly = outsideOnly && finding.Kind == "outside_diff"
+		summaryOnly = summaryOnly && (finding.Kind == "outside_diff" || finding.Kind == "additional")
 	}
 	// The strict resolver owns later-command attribution. Requiring every
 	// omitted edit no later than its finished acknowledgment keeps annotations
 	// inside that proven window without duplicating the closing-window logic.
 	positiveInline := len(fallback.Findings) > 0 && publicationInlineInventory(fallback.Publication)
-	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || fallback.Publication.markedZero || outsideOnly || positiveInline) &&
+	if fallbackErr == nil && fallback.Complete && (fallback.Publication.StandingZero != nil || fallback.Publication.markedZero || summaryOnly || positiveInline) &&
 		!lastOmitted.After(fallback.Publication.FinishedAt) {
 		return fallback, nil
 	}
