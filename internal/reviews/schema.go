@@ -2,6 +2,8 @@ package reviews
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -10,10 +12,55 @@ import (
 // Request handlers never perform DDL or compatibility migrations.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
 	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), ExternalHostedSchemaSQL(), deliverySelectionMigrationSQL(), completedChannelRunCountsMigrationSQL())
-	if err := store.EnsureSchemaWithCompatibility(ctx, "reviews", migrations, reconcileReviewSchemaLineage, backfillCurrentReviewIndexes); err != nil {
+	if err := store.EnsureSchemaWithCompatibility(ctx, "reviews", migrations, reconcileReviewSchemaLineage, ensureCurrentReviewIndexes); err != nil {
 		return err
 	}
 	return EnsureNotificationSchema(ctx, store)
+}
+
+// ensureCurrentReviewIndexes runs after pending DDL, in the same exclusive
+// transaction. A schema-only upgrade need not rewrite already-correct caches,
+// but the version stamp alone proves neither their integrity nor authority.
+func ensureCurrentReviewIndexes(ctx context.Context, conn *sql.Conn) error {
+	if err := ValidateHistoryReferences(ctx, conn); err != nil {
+		return err
+	}
+	// Validators compare all current values with retained authority. Check
+	// orphan rows and SQLite storage classes first: an orphan can be invisible
+	// to those joins, and a malformed cache value must be rebuilt, not mistaken
+	// for a failed SQL read. No retained body or current reference is repaired.
+	for _, query := range []string{
+		`SELECT EXISTS(SELECT 1 FROM review_current_totals t LEFT JOIN review_current_pulls p ON p.project_id=t.project_id AND p.number=t.pull_number
+ WHERE p.project_id IS NULL OR typeof(t.project_id)!='text' OR typeof(t.pull_number)!='integer'
+ OR typeof(t.run_count)!='integer' OR typeof(t.attempt_count)!='integer' OR typeof(t.incomplete_run_count)!='integer'
+ OR typeof(t.hosted_run_count)!='integer' OR typeof(t.cli_run_count)!='integer' OR typeof(t.subagent_run_count)!='integer' OR typeof(t.manual_run_count)!='integer')`,
+		`SELECT EXISTS(SELECT 1 FROM review_current_attempt_order o LEFT JOIN review_current_attempts c ON c.project_id=o.project_id AND c.source=o.source AND c.source_attempt_id=o.source_attempt_id
+ WHERE c.project_id IS NULL OR typeof(o.project_id)!='text' OR typeof(o.source)!='text' OR typeof(o.source_attempt_id)!='text'
+ OR typeof(o.pull_number)!='integer' OR typeof(o.channel)!='text' OR typeof(o.sort_key)!='text' OR typeof(o.position)!='integer')`,
+		`SELECT EXISTS(SELECT 1 FROM review_current_run_order o LEFT JOIN review_current_runs c ON c.project_id=o.project_id AND c.id=o.id
+ WHERE c.project_id IS NULL OR typeof(o.project_id)!='text' OR typeof(o.id)!='text' OR typeof(o.pull_number)!='integer'
+ OR typeof(o.channel)!='text' OR typeof(o.outcome)!='text' OR typeof(o.finalized)!='integer' OR typeof(o.run_order)!='integer')`,
+	} {
+		var damaged bool
+		if err := conn.QueryRowContext(ctx, query).Scan(&damaged); err != nil {
+			return err
+		}
+		if damaged {
+			return backfillCurrentReviewIndexes(ctx, conn)
+		}
+	}
+	for _, validate := range []func(context.Context, HistoryQuery) error{ValidateCurrentSummaries, ValidateCurrentRunOrder} {
+		if err := validate(ctx, conn); err != nil {
+			var inconsistent *core.Error
+			if !errors.As(err, &inconsistent) || inconsistent.Code != "storage_unavailable" {
+				return err
+			}
+			// Only an integrity refusal can request repair. SQL failures and
+			// context cancellation do not become a successful cache rebuild.
+			return backfillCurrentReviewIndexes(ctx, conn)
+		}
+	}
+	return nil
 }
 
 func reviewSchemaMigrations() [][]string {
