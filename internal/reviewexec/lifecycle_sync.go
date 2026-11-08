@@ -13,7 +13,6 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
-	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // LifecycleSyncOptions are trusted process configuration, never browser or
@@ -228,6 +227,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		id                   string
 		revision, repository int64
 		config               Configuration
+		invalid              bool
 	}
 	var projects []project
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -238,13 +238,12 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		defer rows.Close()
 		for rows.Next() {
 			var p project
-			var body string
+			var body any
 			if err = rows.Scan(&p.id, &p.revision, &body, &p.repository); err != nil {
 				return err
 			}
-			if len(body) > 8192 || strictjson.Decode([]byte(body), &p.config) != nil || validateConfigurationShape(p.config) != nil {
-				return refreshStorageError()
-			}
+			p.config, err = decodeLifecycleConfiguration(p.id, body)
+			p.invalid = err != nil
 			projects = append(projects, p)
 		}
 		return rows.Err()
@@ -256,6 +255,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		s.mu.Lock()
 		s.lanes[lane].lastProject = p.id
 		s.mu.Unlock()
+		if p.invalid {
+			continue
+		}
 		cap, ok := e.capabilities[p.config.CapabilityID]
 		if !ok || readers[p.config.CapabilityID] == nil || e.validateConfiguration(p.config) != nil {
 			continue
@@ -361,6 +363,13 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			})
 		}
 		if err != nil {
+			if ctx.Err() == nil && lifecycleStoredStateCode(err, p.id, number) != "" {
+				s.holdStoredState(p.id, number, lane, lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, err)
+				s.mu.Lock()
+				s.lanes[lane].lastPull[p.id] = number
+				s.mu.Unlock()
+				continue
+			}
 			return nil, err
 		}
 

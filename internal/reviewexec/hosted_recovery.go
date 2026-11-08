@@ -79,7 +79,7 @@ func (e *Engine) ReadHostedRecovery(ctx context.Context, project, attemptID, cap
 
 // A final capture may have committed before publication or settlement failed.
 // Its identity is recovery input, independent of any finding/finalization credit.
-func readHostedRecoveryEvidence(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (string, error) {
+func readHostedRecoveryEvidence(ctx context.Context, tx EvidenceQuery, a Attempt, o Operation) (string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id,project_id,operation_id FROM review_execution_evidence WHERE attempt_id=? ORDER BY id LIMIT 2`, a.ID)
 	if err != nil {
 		return "", err
