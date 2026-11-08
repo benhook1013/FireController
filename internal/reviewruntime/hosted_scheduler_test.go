@@ -540,3 +540,37 @@ func TestHostedSchedulerObservationCapacityBacksOffWithoutProviderWork(t *testin
 	cancel()
 	schedulerDone(t, done, false)
 }
+
+func TestHostedSchedulerNormalizesEmptyRecoveryFailureReason(t *testing.T) {
+	f, a, p := schedulerUncertainFixture(t)
+	// Candidate and allowance reads remain valid, but recovery cannot trust the
+	// retained admission boundary. It returns an error with no result reason.
+	if _, err := f.store.DB().Exec(`UPDATE review_execution_transitions SET created_at='invalid admission time' WHERE attempt_id=? AND reason='admitted'`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	query, err := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RecoverHosted(t.Context(), p, f.hostedCaptures, f.engine, f.project, a.ID, f.capability.ID, query.PostingActor, query.ProviderActor)
+	if err == nil || result.Reason != "" {
+		t.Fatal("fixture did not produce an empty-reason recovery failure", result, err)
+	}
+	gate := newSchedulerGate(f.hosted)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := f.hosted.StartRecovery(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.interval(t, 30*time.Second)
+	observer := readHostedObserver(t, f, a)
+	if observer.State != "retrying" || observer.Reason != "observation_unavailable" || observer.Error != "observer_unavailable" || observer.LastCheckAt == "" || observer.NextCheckAt == "" {
+		t.Fatal("outer scheduler lost the recovery failure reason or error", observer)
+	}
+	if p.repositories.Load() != 0 || f.provider.observations != 0 || f.provider.queries != 1 || f.provider.reviews != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
+		t.Fatal("failed recovery performed provider work or released its reservation")
+	}
+	cancel()
+	schedulerDone(t, done, false)
+}

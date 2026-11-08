@@ -153,7 +153,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 			} else {
 				var observed RecoveredHosted
 				observed, err = RecoverHosted(ctx, d.provider, d.captures, d.engine, candidate.ProjectID, candidate.AttemptID, d.capability.ID, query.PostingActor, actor)
-				reason = observed.Reason
+				reason = hostedRecoveryObserverReason(observed.Reason, err)
 				recoveryFailed = err != nil && observed.Reason != ""
 				ended = err == nil && (observed.State == "completed" || observed.State == "rate_limited")
 				normal = ended
