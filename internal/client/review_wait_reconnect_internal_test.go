@@ -26,7 +26,7 @@ func TestResultWaitReconnectPreservesOriginalTransportBudget(t *testing.T) {
 }
 
 func TestResultWaitReconnectLimitsFailuresAndHonorsCancellation(t *testing.T) {
-	for _, failure := range []*Error{{Code: "service_unavailable", Status: 500}, {Code: "overloaded", Status: 503}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "capacity"}}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime_extra"}}, {Code: "forbidden", Status: 403}, {Code: "unauthorized", Status: 401}, {Code: "instance_mismatch", Status: 409}, {Code: "invalid_response"}, {Code: "canceled"}, {Code: "deadline_exceeded"}} {
+	for _, failure := range []*Error{{Code: "tls_verification_failed"}, {Code: "service_unavailable", Status: 500}, {Code: "overloaded", Status: 503}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "capacity"}}, {Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime_extra"}}, {Code: "forbidden", Status: 403}, {Code: "unauthorized", Status: 401}, {Code: "instance_mismatch", Status: 409}, {Code: "invalid_response"}, {Code: "canceled"}, {Code: "deadline_exceeded"}} {
 		calls := 0
 		err := resumeResultWait(t.Context(), 10, func(context.Context, int) error { calls++; return failure })
 		if err != failure || calls != 1 {
