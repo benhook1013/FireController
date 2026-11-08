@@ -8,6 +8,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -107,7 +108,14 @@ func validateRoundAdoptions(ctx context.Context, q EvidenceQuery) error {
 			if p.Obligations != nil {
 				ref := p.Obligations
 				if err := adoptionholds.VerifyRetainedSource(ctx, q, r.project, adoptionholdsmodel.Source{Namespace: ref.Namespace, RepositoryID: p.RepositoryID, SnapshotSHA256: ref.SnapshotSHA256}, ref.Revision); err != nil {
-					return roundUnavailable()
+					var failure *core.Error
+					if errors.As(err, &failure) {
+						switch failure.Code {
+						case "storage_unavailable", "not_found", "repository_changed", "adoption_obligations_conflict", "validation_failed":
+							return roundUnavailable()
+						}
+					}
+					return err
 				}
 			}
 			var action, baseline string

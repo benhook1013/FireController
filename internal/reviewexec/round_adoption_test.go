@@ -2,8 +2,12 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -636,6 +640,107 @@ func TestRoundAdoptionRejectsUnlatchedCarriedThreshold(t *testing.T) {
 			if roundTables(t, f) != before {
 				t.Fatal("invalid preview mutated retained state")
 			}
+		})
+	}
+}
+
+// Route only the retained-source read to a failing database/sql connector. The
+// snapshot's context and all preceding reads remain healthy, including for I/O
+// failures that a context-only check would conceal.
+type roundAdoptionReadFailure struct {
+	EvidenceQuery
+	failure *sql.DB
+	match   string
+	missing bool
+	hits    int
+}
+
+func (q *roundAdoptionReadFailure) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, q.match) {
+		q.hits++
+		if q.missing {
+			return q.EvidenceQuery.QueryRowContext(ctx, query+" AND 0", args...)
+		}
+		return q.failure.QueryRowContext(ctx, query, args...)
+	}
+	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
+}
+
+type roundAdoptionFailureConnector struct{ err error }
+
+func (c roundAdoptionFailureConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, c.err
+}
+func (c roundAdoptionFailureConnector) Driver() driver.Driver { return nil }
+
+func TestRoundAdoptionSnapshotRetainedSourcePreservesOperationalErrors(t *testing.T) {
+	f := adoptionFixture(t)
+	source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+	adoptRound(t, f, v2Adoption(source, 1), "snapshot-source-errors")
+	if err := ValidateRoundAdoptionSnapshot(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		failure error
+	}{
+		{"canceled", context.Canceled},
+		{"deadline", context.DeadlineExceeded},
+		{"io", fmt.Errorf("retained read: %w", io.ErrUnexpectedEOF)},
+		{"driver", errors.New("controlled driver read failure")},
+		{"overloaded", core.Fail("overloaded", "Controlled transient failure.", 503)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := sql.OpenDB(roundAdoptionFailureConnector{err: tc.failure})
+			defer db.Close()
+			q := &roundAdoptionReadFailure{EvidenceQuery: f.store.DB(), failure: db, match: "CASE WHEN length(CAST(batch_json"}
+			err := ValidateRoundAdoptionSnapshot(t.Context(), q)
+			if q.hits != 1 || !errors.Is(err, tc.failure) || t.Context().Err() != nil {
+				t.Fatalf("retained read erased operational failure: hits=%d error=%v", q.hits, err)
+			}
+		})
+	}
+}
+
+func TestRoundAdoptionSnapshotCorruptRetainedSourceRemainsUnavailable(t *testing.T) {
+	for _, tc := range []struct{ name, query string }{
+		{"missing-source", ""},
+		{"missing-import", ""},
+		{"source-repository", `UPDATE review_adoption_sources SET repository_id=999 WHERE project_id=?`},
+		{"source-snapshot", `UPDATE review_adoption_sources SET snapshot_sha256='` + strings.Repeat("c", 64) + `' WHERE project_id=?`},
+		{"source-revision", `UPDATE review_adoption_sources SET revision='broken' WHERE project_id=?`},
+		{"malformed-import", `UPDATE review_adoption_imports SET batch_json='{}' WHERE project_id=?`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := adoptionFixture(t)
+			source := retainObligationSource(t, f, attemptProject, "source-worker", "sealed-source", strings.Repeat("b", 64), 0)
+			adoptRound(t, f, v2Adoption(source, 1), "snapshot-source-corruption")
+			if err := ValidateRoundAdoptionSnapshot(t.Context(), f.store.DB()); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "missing-source" || tc.name == "missing-import" {
+				// Return no row at the actual retained read without weakening the
+				// fixture's foreign keys or deleting its immutable history.
+				match := "SELECT repository_id,snapshot_sha256,revision"
+				if tc.name == "missing-import" {
+					match = "CASE WHEN length(CAST(batch_json"
+				}
+				q := &roundAdoptionReadFailure{EvidenceQuery: f.store.DB(), match: match, missing: true}
+				attemptCode(t, ValidateRoundAdoptionSnapshot(t.Context(), q), "storage_unavailable")
+				if q.hits != 1 {
+					t.Fatal("missing-row fixture did not reach retained source", q.hits)
+				}
+				return
+			}
+			if tc.name == "malformed-import" {
+				if _, err := f.store.DB().Exec(`DROP TRIGGER review_adoption_imports_immutable`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.store.DB().Exec(tc.query, attemptProject); err != nil {
+				t.Fatal(err)
+			}
+			attemptCode(t, ValidateRoundAdoptionSnapshot(t.Context(), f.store.DB()), "storage_unavailable")
 		})
 	}
 }

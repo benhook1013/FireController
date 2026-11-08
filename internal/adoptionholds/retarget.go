@@ -45,8 +45,12 @@ func readRetargetState(ctx context.Context, q Query, detail *m.Detail, version s
 		return 0, unavailable()
 	}
 	var count, first, last int64
-	if err := q.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(revision),1),COALESCE(max(revision),1) FROM review_adoption_retargets WHERE obligation_id=?`, detail.ID).Scan(&count, &first, &last); err != nil {
+	var countValue, firstValue, lastValue any
+	if err := q.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(revision),1),COALESCE(max(revision),1) FROM review_adoption_retargets WHERE obligation_id=?`, detail.ID).Scan(&countValue, &firstValue, &lastValue); err != nil {
 		return 0, err
+	}
+	if !retainedInteger(countValue, &count) || !retainedInteger(firstValue, &first) || !retainedInteger(lastValue, &last) {
+		return 0, unavailable()
 	}
 	if count == 0 {
 		if !slices.Equal(detail.AffectedPullNumbers, detail.Original.AffectedPullNumbers) {
