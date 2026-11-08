@@ -101,7 +101,11 @@ func (d *HostedDriver) HostedObservationReader() reviewexec.ExternalHostedReader
 	if d == nil || d.provider == nil || !validHostedSettings(d.capability.Hosted) {
 		return nil
 	}
-	return &hostedArchiveSource{provider: d.provider, actor: d.providerActor()}
+	source := &hostedArchiveSource{provider: d.provider, actor: d.providerActor()}
+	if ci, ok := d.provider.(hostedCIReader); ok {
+		return &hostedArchiveCISource{hostedArchiveSource: source, ci: ci}
+	}
+	return source
 }
 
 func (d *HostedDriver) checkIdle(ctx context.Context, plan reviewexec.SourcePlan) error {
