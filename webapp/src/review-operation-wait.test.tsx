@@ -64,9 +64,11 @@ describe('retained CLI full-capacity estimate',()=>{
     const html=renderToStaticMarkup(<ReviewOperationWaitBadge wait={value} channel="cli"/>);
     expect(html).toContain('Provider full-capacity estimate:');expect(html).toContain('Next quota recheck:');
     expect(html.match(/class="badge /gu)).toHaveLength(1);
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('hidden="" role="note"');
-    expect(html).toMatch(/<button[^>]+>Quota wait<\/button>/u);
+    expect(html).toContain('aria-describedby=');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('hidden="" role="tooltip"');
+    expect(html).toMatch(/<span[^>]+review-quota-label[^>]+>Quota wait<\/span>/u);
+    expect(html).not.toContain('<button');
     expect(html).toContain('>in 45m</time>');expect(html).toContain('>in 15m</time>');
     expect(html).toContain('dateTime="2026-10-30T13:00:00.000Z"');
     expect(html).toContain('does not establish the next available slot, refill pattern or review start');
