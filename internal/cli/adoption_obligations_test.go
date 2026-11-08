@@ -1,12 +1,15 @@
 package cli_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 	"github.com/benhook1013/FireController/internal/cli"
@@ -66,5 +69,30 @@ func TestAdoptionObligationResolveRequiresEvidenceBeforeProfile(t *testing.T) {
 	code, _, diagnostic = run(append(base, "--evidence", "native:proof"), nil)
 	if code != cli.ExitConfig || !strings.Contains(diagnostic, "profile") {
 		t.Fatal("valid resolution did not reach profile boundary", code, diagnostic)
+	}
+}
+
+func TestAdoptionObligationCancelledPreparationKeepsContextDiagnostic(t *testing.T) {
+	for _, operation := range []string{"preview", "apply"} {
+		for _, deadline := range []bool{false, true} {
+			t.Run(operation+map[bool]string{false: "/cancelled", true: "/deadline"}[deadline], func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				}
+				cancel()
+				file := filepath.Join(t.TempDir(), "not-read.json")
+				args := []string{"--profiles-file", "/missing/profiles", "reviews", "obligations", "adopt", operation, "--file", file}
+				if operation == "apply" {
+					args = append(args, "--preview", strings.Repeat("a", 64), "--key", "cancelled-adoption")
+				}
+				var out, diagnostic bytes.Buffer
+				code := cli.RunContext(ctx, args, nil, &out, &diagnostic)
+				if code != cli.ExitCancelled || out.Len() != 0 || !strings.Contains(diagnostic.String(), `"code":"cancelled"`) || strings.Contains(diagnostic.String(), "invalid_import_file") || strings.Contains(diagnostic.String(), file) {
+					t.Fatal("context error became a file or profile failure", code, diagnostic.String())
+				}
+			})
+		}
 	}
 }

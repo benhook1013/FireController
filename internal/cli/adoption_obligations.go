@@ -192,6 +192,9 @@ func prepareAdoptionObligations(ctx context.Context, in *adoptionObligationsInvo
 	}
 	document, err := readOwnerPrivateJSON(ctx, in.file)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return &client.Error{Code: "invalid_import_file", Message: "The selected adoption batch must be one owner-private regular JSON file within 256 KiB.", Action: "Correct the private file before loading credentials or contacting the service.", Status: 400}
 	}
 	canonical, err := client.NormalizeAdoptionObligationDocument(document)
