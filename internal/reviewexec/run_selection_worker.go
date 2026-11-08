@@ -226,6 +226,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	}
 	var window []runPullResult
 	windowStart := 0
+	windowSize := 4
 	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
@@ -233,7 +234,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		if i >= windowStart+len(window) {
 			windowStart = i
 			err = source.read(ctx, func(ctx context.Context) error {
-				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+4, len(queue))])
+				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+windowSize, len(queue))])
 				return nil
 			})
 			if err != nil {
@@ -246,6 +247,13 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
 			return sourceFailure("source_response_invalid"), nil
+		}
+		// Fresh lifecycle guides only speculative width, never eligibility or
+		// coverage. Live tails otherwise repeatedly cancel and refetch three
+		// successors per candidate. Resume batching when merged history resumes.
+		windowSize = 1
+		if pull.Merged {
+			windowSize = 4
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {

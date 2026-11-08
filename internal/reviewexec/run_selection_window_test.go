@@ -167,3 +167,58 @@ func TestRunSelectionEarlyMismatchCancelsLookaheadAndFailureRetainsPrefix(t *tes
 		t.Fatal("source failure lost verified prefix, leaked lookahead or created work", held, frame, err)
 	}
 }
+
+// A held live tail still needs fresh source and real comparison checks. It
+// should not repeatedly launch and discard three overlapping successor reads.
+func TestRunSelectionLiveTailAvoidsRepeatedSpeculativeReads(t *testing.T) {
+	queue := make([]int64, 40)
+	for i := range queue {
+		queue[i] = int64(i + 1)
+	}
+	f := selectionFixtureWithQueue(t, queue)
+	receipt, _ := selectionEnqueue(t, f, "held-live-tail", "hosted", nil)
+	r := selectionRead(t, f, receipt.ID)
+	c, err := f.e.configurationRevision(t.Context(), r.ProjectID, r.ConfigurationRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	reopened := false
+	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+		calls.Add(1)
+		p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1, IsDraft: new(true)}
+		if n <= 8 {
+			p.State, p.Merged, p.IsDraft = "closed", true, new(false)
+		}
+		if reopened && n == 1 {
+			p.State, p.Merged, p.IsDraft = "open", false, new(false)
+		}
+		return p, nil
+	}}
+	choice, err := f.e.chooseRun(t.Context(), r, 801, c, reader)
+	if err != nil || choice.state != "held" || choice.reason != "pull_draft" || len(choice.prefix) != len(queue) || choice.sourceReason != "" {
+		t.Fatal("live holds lost full fresh ordered coverage", choice, err)
+	}
+	t.Logf("raw pull reads: %d for %d verified PRs", calls.Load(), len(choice.prefix))
+	// Eight merged reads, one four-wide transition, then single live reads.
+	if got := calls.Load(); got != int32(len(queue)+3) {
+		t.Fatalf("raw pull reads=%d, want %d", got, len(queue)+3)
+	}
+	for i, p := range choice.prefix {
+		if p.Pull.Number != queue[i] || p.ObservedAt == "" || (i >= 8 && p.SourceReason != "pull_draft") {
+			t.Fatal("unverified or reordered prefix", i, p)
+		}
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatal("selection manufactured execution")
+	}
+
+	// Width is phase-local, not a stored lifecycle claim: a formerly merged
+	// predecessor reopening must win freshly, ahead of the previously held tail.
+	reopened = true
+	calls.Store(0)
+	choice, err = f.e.chooseRun(t.Context(), r, 801, c, reader)
+	if err != nil || choice.state != "selected" || choice.number != 1 || len(choice.prefix) != 1 || choice.prefix[0].Pull.Merged || calls.Load() != 4 {
+		t.Fatal("freshly reopened predecessor did not regain priority", choice, calls.Load(), err)
+	}
+}
