@@ -94,7 +94,9 @@ func TestLifecycleSyncWorkersFairAcrossProjectsAndSerializeEachAccountLane(t *te
 	lifecycleProject(t, f, otherAttemptProject, "other-account", 802)
 	lifecycleProject(t, f, "exec-project-three", "test-capability", 803)
 	gate := make(chan struct{})
-	r := &lifecycleBlockingReader{perProject: map[int64]int{}, entered: make(chan int64, 16), blocked: map[int64]<-chan struct{}{801: gate, 803: gate}}
+	// Keep both account claims in flight: this tests capacity and fairness,
+	// not whether enrichment finishes before metadata's first comparison wake.
+	r := &lifecycleBlockingReader{perProject: map[int64]int{}, entered: make(chan int64, 16), blocked: map[int64]<-chan struct{}{801: gate, 802: gate, 803: gate}}
 	cancel, done := lifecycleWorkerStart(t, f, map[string]TargetReader{"test-capability": r, "other-account": r})
 	seen := map[int64]int{}
 	for range 4 {
@@ -172,5 +174,52 @@ func TestLifecycleSyncDisabledProjectionAndNoEnrollmentStayLocal(t *testing.T) {
 	refreshStop(t, cancel, done)
 	if reader.calls.Load() != 0 {
 		t.Fatal("unenrolled target fetched")
+	}
+}
+
+// The startup schedule has no comparison markers. An enrichment claim made
+// before metadata's first successful poll consumes that empty wake, so metadata
+// legitimately makes one more claim eligible even when the stored head agrees.
+func TestLifecycleStartupComparisonWakeOrdering(t *testing.T) {
+	for _, first := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
+		t.Run(fmt.Sprint(first), func(t *testing.T) {
+			f, s, _ := lifecycleFixture(t)
+			r := &sourceCITestReader{refreshTestReader: refreshTestReader{pull: func(context.Context, string, int64) (reviewprovider.Pull, error) { return lifecyclePull(2), nil }}}
+			readers := map[string]TargetReader{"test-capability": r}
+			observe := func(lane lifecycleLane) {
+				t.Helper()
+				target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane)
+				if err != nil || target == nil {
+					t.Fatal("missing expected claim", target, err)
+				}
+				if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observe(first)
+			observe(1 - first)
+			target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first == lifecycleMetadata {
+				if target != nil {
+					t.Fatal("unchanged comparison duplicated enrichment")
+				}
+			} else {
+				if target == nil {
+					t.Fatal("first metadata comparison lost its immediate wake")
+				}
+				if err := f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if next, err := f.e.claimLifecycleLane(t.Context(), readers, s, lifecycleEnrichment); err != nil || next != nil {
+				t.Fatal("startup wake did not settle", next, err)
+			}
+			if r.ciCalls.Load() != 1 {
+				t.Fatal("same-comparison CI was collected twice", r.ciCalls.Load())
+			}
+		})
 	}
 }
