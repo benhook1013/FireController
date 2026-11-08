@@ -62,7 +62,9 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		mergeability = "unknown"
 	}
 	mergeState := pull.MergeStateStatus
-	if mergeState == "" {
+	switch mergeState {
+	case "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE":
+	default:
 		mergeState = "UNKNOWN"
 	}
 	target.due.baseSHA, target.due.baseRef = pull.BaseSHA, pull.BaseRef
