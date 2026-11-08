@@ -139,6 +139,49 @@ An optional capability field `cli_allowance_timeout_seconds` selects the CLI all
 
 The service obtains source through the verified project repository and creates its own bare object cache and per-attempt immutable workspace under its private data directory. A developer checkout is not the execution workspace. Git commands disable ambient hooks and configuration; source preparation does not execute repository install/build hooks. The CLI receives a minimal explicit environment and only its required authentication context, never the service's GitHub credential or another project's profile. This is a trusted local executor capability, not a hostile multi-customer sandbox.
 
+### Named CLI authentication profiles
+
+The private version-1 operator catalog optionally stores up to 32 `cli_authentication_profiles`. Each profile has an `id`, provider `account`, `organization`, and `authentication_environment`. It describes one explicitly established server-side login context. The map must include an absolute `HOME` or `USERPROFILE`; its other permitted keys remain `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME`. Values are directory paths, never tokens, shell expressions, or arbitrary environment overrides. The entire catalog retains its 64 KiB bound and owner-private regular-file requirement.
+
+A CLI capability selects a profile with `cli_authentication_profile` instead of inline `authentication_environment`. Its account and organization must exactly match the named profile. Missing references, simultaneous inline/reference configuration, null or empty references, duplicate profile IDs, unknown fields and hosted-only references are rejected. Multiple capabilities may reference the same profile, with independent in-memory environment copies. Different configured accounts cannot use overlapping authentication paths in named profiles or loaded capabilities. This is a lexical path check; the operator must also verify that symlinks, mounts and provider credential storage do not alias different account contexts.
+
+```json
+{
+  "version": 1,
+  "cli_authentication_profiles": [
+    {
+      "id": "developer-one",
+      "account": "developer-one",
+      "organization": "example-team",
+      "authentication_environment": {
+        "HOME": "/accounts/developer-one"
+      }
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "team-cli",
+      "account": "developer-one",
+      "organization": "example-team",
+      "channels": ["cli"],
+      "git_executable": "/usr/bin/git",
+      "cli_executable": "/opt/coderabbit/coderabbit",
+      "cli_authentication_profile": "developer-one"
+    }
+  ]
+}
+```
+
+The server owns this named connection once. A service operator links it to one or more projects by selecting its capability ID in each project's existing revision-guarded execution configuration. Project managers can preserve that binding while managing ordinary execution settings; they cannot register login contexts or select another operator capability. A FireController client profile still selects the service, project and worker. It does not import the client's local CodeRabbit session into the server or grant provider access. Project records and client responses do not contain the private profile definition or its paths.
+
+Loading a profile only resolves configuration. It never creates directories, reads login files, signs in, copies credentials, requests a review or verifies provider identity. Inline catalogs remain supported. Moving identical inline settings into a named profile or renaming that profile preserves the capability's effective fingerprint. Changing its authentication directories changes the fingerprint for every referencing capability, so existing request and recovery guards retain their normal `capability_changed` hold instead of switching identities silently. Profile changes take effect through ordinary catalog reload on service restart, not live mutable environment updates.
+
+For onboarding, establish a separate private home under the service's numeric owner and mount that same home into the CLI runtime. The account owner explicitly completes the supported CodeRabbit login for that context and verifies `auth status --agent` there. Browser OAuth with `auth login --agent --no-browser` needs a reachable localhost callback, including port forwarding for a remote server. A provider-issued agentic API key is another documented headless option, but its creation, storage and scope are separate operator actions; do not put its value in the catalog, project data, command logs or chat. Never copy a developer's whole local home or replace the primary server login to establish a second profile. Verify the actual account, organization, repository authorization and inactive usage billing before enabling dispatch. [Container runtime](container-runtime.md#optional-review-capabilities) owns mount and runtime setup.
+
+CodeRabbit [organization selection](https://docs.coderabbit.ai/cli#organization-selection) resolves a local review's repository to its accessible organization; the login still identifies the developer. Agentic keys use their assigned user's plan allowance. A shared project is not a new provider quota pool. Account reservations and quota waits therefore remain global to the configured provider account across projects, while source access and project configuration stay project-scoped. The current project configuration selects one capability, not an automatic account pool. Exhaustion does not rotate developers, override provider refusals or enable paid reviews. A later multi-account scheduler must preserve explicit contributor attribution, per-project connection permission, exact attempt identity and fresh per-account allowance proof; registering a second profile alone supplies none of those permissions.
+
+### Account scheduling and source guards
+
 One service process supervises two global work slots. Startup validates driver bindings and commits interrupted-attempt recovery before accepting HTTP requests; asynchronous worker completion has a single retained result. Shutdown cancels owned work and waits within a finite budget before closing storage. CLI reservations allow at most one active action per provider account across repositories. Hosted reservations allow at most one active action per provider account and repository, so another repository on the same account can proceed. Both channels independently exclude another action against the same repository, PR and channel across accounts. Finite deadlines bound each action. One project can occupy both slots; per-project scheduling fairness is not implemented. Coordination remains usable when provider work is slow or unavailable. Multiple active service replicas and remote executors remain outside this delivery.
 
 ## Admission and provider boundaries

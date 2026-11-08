@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -78,9 +79,21 @@ func (c OperatorCapability) GoString() string         { return c.String() }
 func (c OperatorCapability) GitHubCredential() string { return c.githubCredential }
 
 type catalogFile struct {
-	Version      int              `json:"version"`
-	Capabilities []capabilityFile `json:"capabilities"`
+	Version                   int                            `json:"version"`
+	Capabilities              []capabilityFile               `json:"capabilities"`
+	CLIAuthenticationProfiles []cliAuthenticationProfileFile `json:"cli_authentication_profiles,omitempty"`
 }
+
+// Named profiles are private operator configuration, not client profiles or
+// provider credentials. They resolve to the same closed process environment as
+// an inline capability. No login or provider command runs while loading them.
+type cliAuthenticationProfileFile struct {
+	ID                        string            `json:"id"`
+	Account                   string            `json:"account"`
+	Organization              string            `json:"organization"`
+	AuthenticationEnvironment map[string]string `json:"authentication_environment"`
+}
+
 type capabilityFile struct {
 	ID                         string            `json:"id"`
 	Account                    string            `json:"account"`
@@ -91,6 +104,7 @@ type capabilityFile struct {
 	CLIExecutable              string            `json:"cli_executable"`
 	CLIAllowanceTimeoutSeconds *int              `json:"cli_allowance_timeout_seconds,omitempty"`
 	AuthenticationEnvironment  map[string]string `json:"authentication_environment"`
+	CLIAuthenticationProfile   string            `json:"cli_authentication_profile,omitempty"`
 	Hosted                     *HostedSettings   `json:"hosted,omitempty"`
 }
 
@@ -122,12 +136,33 @@ func LoadCatalog(path string) (Catalog, error) {
 	if err := validateCapabilityShapes(data, file.Capabilities); err != nil {
 		return Catalog{}, configurationError()
 	}
+	profiles, err := loadCLIAuthenticationProfiles(data, file.CLIAuthenticationProfiles)
+	if err != nil {
+		return Catalog{}, configurationError()
+	}
 	result := Catalog{Version: 1, Capabilities: make([]OperatorCapability, 0, len(file.Capabilities))}
 	ids := make(map[string]bool, len(file.Capabilities))
 	for _, input := range file.Capabilities {
+		if input.CLIAuthenticationProfile != "" {
+			profile, ok := profiles[input.CLIAuthenticationProfile]
+			if !ok || !slices.Contains(input.Channels, "cli") || input.Account != profile.Account || input.Organization != profile.Organization {
+				return Catalog{}, configurationError()
+			}
+			input.AuthenticationEnvironment = profile.AuthenticationEnvironment
+		}
 		capability, err := loadCapability(input, filepath.Dir(absolute))
 		if err != nil || ids[capability.ID] {
 			return Catalog{}, configurationError()
+		}
+		for _, profile := range profiles {
+			if capability.Account != profile.Account && overlappingAuthenticationPaths(capability.AuthenticationEnvironment, profile.AuthenticationEnvironment) {
+				return Catalog{}, configurationError()
+			}
+		}
+		for _, other := range result.Capabilities {
+			if capability.Account != other.Account && overlappingAuthenticationPaths(capability.AuthenticationEnvironment, other.AuthenticationEnvironment) {
+				return Catalog{}, configurationError()
+			}
 		}
 		ids[capability.ID] = true
 		result.Capabilities = append(result.Capabilities, capability)
@@ -154,8 +189,15 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 				return errors.New("shape")
 			}
 		}
-		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "hosted", "cli_allowance_timeout_seconds"} {
+		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "cli_authentication_profile", "hosted", "cli_allowance_timeout_seconds"} {
 			if value, ok := fields[name]; ok && isNull(value) {
+				return errors.New("shape")
+			}
+		}
+		if rawProfile, ok := fields["cli_authentication_profile"]; ok {
+			var id string
+			_, inline := fields["authentication_environment"]
+			if json.Unmarshal(rawProfile, &id) != nil || !validIdentifier(id) || inline {
 				return errors.New("shape")
 			}
 		}
@@ -184,6 +226,54 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 		}
 	}
 	return nil
+}
+
+func loadCLIAuthenticationProfiles(data []byte, inputs []cliAuthenticationProfileFile) (map[string]cliAuthenticationProfileFile, error) {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil || len(inputs) > 32 {
+		return nil, configurationError()
+	}
+	if raw, present := root["cli_authentication_profiles"]; present && (isNull(raw) || inputs == nil) {
+		return nil, configurationError()
+	}
+	profiles := make(map[string]cliAuthenticationProfileFile, len(inputs))
+	for _, profile := range inputs {
+		if !validIdentifier(profile.ID) || !validIdentifier(profile.Account) || !validOrganization(profile.Organization) || len(profile.AuthenticationEnvironment) > 7 || profile.AuthenticationEnvironment["HOME"] == "" && profile.AuthenticationEnvironment["USERPROFILE"] == "" {
+			return nil, configurationError()
+		}
+		if _, duplicate := profiles[profile.ID]; duplicate {
+			return nil, configurationError()
+		}
+		for key, value := range profile.AuthenticationEnvironment {
+			if !allowedAuthenticationEnvironment[key] || !validAbsolutePath(value) {
+				return nil, configurationError()
+			}
+		}
+		for _, other := range profiles {
+			if profile.Account != other.Account && overlappingAuthenticationPaths(profile.AuthenticationEnvironment, other.AuthenticationEnvironment) {
+				return nil, configurationError()
+			}
+		}
+		profiles[profile.ID] = profile
+	}
+	return profiles, nil
+}
+
+// Check the configured paths without opening authentication files or following
+// symlinks. Filesystem/mount aliases still require operator verification.
+func overlappingAuthenticationPaths(first, second map[string]string) bool {
+	for _, a := range first {
+		for _, b := range second {
+			a, b = filepath.Clean(a), filepath.Clean(b)
+			for _, pair := range [][2]string{{a, b}, {b, a}} {
+				relative, err := filepath.Rel(pair[0], pair[1])
+				if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapability, error) {

@@ -16,6 +16,10 @@ Let a user ask their AI to add FireController to an existing project and receive
 
 Onboarding should use a few meaningful questions, not a long setup checklist or repeated permissions for routine reversible steps already authorized. A read-only preview never grants permission to publish private history. Default imported data remains private; enabling public status requires an explicit visibility choice.
 
+## Server-side CodeRabbit connections
+
+CodeRabbit authentication is separate from the FireController client profile created below. A local developer login does not become the server's login when an agent connects to a project. A service operator can register one [named CLI authentication profile](review-execution.md#named-cli-authentication-profiles), establish its isolated server-side login with the account owner, and link its capability to one or more projects. Keep credential custody in the private service runtime; project data contains only the capability reference. Registering a connection does not itself authenticate it, prove repository access, grant another developer's allowance or enable automatic failover. The execution owner defines profile validation, account-wide scheduling and the supported manual onboarding boundary; a browser account-connection wizard remains unimplemented.
+
 ## Private agent setup commands
 
 Private client setup is local filesystem work, separate from project registration, historical import and service authorization. The selected commands are:
