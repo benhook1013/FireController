@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/profile"
@@ -22,7 +23,7 @@ func identityBootstrapFixture(t *testing.T, status int, media, body string) (*Cl
 	t.Helper()
 	base, _ := url.Parse("https://synthetic.invalid")
 	calls := new(int)
-	c := &Client{base: base, token: "synthetic-private-credential", identity: profile.Context{InstanceID: "instance-one"}}
+	c := &Client{base: base, token: "synthetic-private-credential", credentialFile: "/synthetic/credential", identity: profile.Context{InstanceID: "instance-one"}}
 	c.http = &http.Client{Transport: identityBootstrapTransport(func(r *http.Request) (*http.Response, error) {
 		*calls++
 		if r.Method != "GET" || r.URL.Path != "/api/v1/instance" || r.Header.Get("Authorization") != "Bearer synthetic-private-credential" || r.Header.Get("X-FC-Instance") != "instance-one" || r.Header.Get("Idempotency-Key") != "" {
@@ -105,6 +106,102 @@ func TestIdentityRetryNeverReplaysPermanentOrMalformedReplies(t *testing.T) {
 			err := c.verifyInstanceWithWait(t.Context(), new(any), func(context.Context, time.Duration) error { waits++; return nil })
 			if err == nil || *calls != 1 || waits != 0 {
 				t.Fatal("permanent or malformed reply retried", err, *calls, waits)
+			}
+		})
+	}
+}
+
+// Close runs after the response has been classified but before the retry loop
+// examines it, so cancellation never depends on HTTP or scheduler timing.
+type identityBootstrapCloseBody struct {
+	io.ReadCloser
+	onClose func()
+}
+
+func (b identityBootstrapCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.onClose()
+	return err
+}
+
+func identityBootstrapOnClose(c *Client, onClose func()) {
+	transport := c.http.Transport
+	c.http.Transport = identityBootstrapTransport(func(r *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(r)
+		if err == nil {
+			response.Body = identityBootstrapCloseBody{ReadCloser: response.Body, onClose: onClose}
+		}
+		return response, err
+	})
+}
+
+func TestIdentityRetryCancellationAfterResponse(t *testing.T) {
+	for _, code := range []string{"canceled", "deadline_exceeded"} {
+		for _, attempt := range []int{1, 7} {
+			name := code + "/first_attempt"
+			if attempt == 7 {
+				name = code + "/last_attempt"
+			}
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					c, calls := identityBootstrapFixture(t, 503, "text/plain", "synthetic unavailable")
+					var ctx context.Context
+					var cancel context.CancelFunc
+					if code == "canceled" {
+						ctx, cancel = context.WithCancel(t.Context())
+					} else {
+						ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+					}
+					defer cancel()
+					identityBootstrapOnClose(c, func() {
+						if *calls == attempt {
+							if code == "canceled" {
+								cancel()
+							}
+							<-ctx.Done()
+						}
+					})
+					waits := 0
+					err := c.verifyInstanceWithWait(ctx, new(any), func(context.Context, time.Duration) error {
+						waits++
+						return nil
+					})
+					var failure *Error
+					if !errors.As(err, &failure) || failure.Code != code || failure.Status != 0 || failure.OutcomeUnknown || *calls != attempt || waits != attempt-1 {
+						t.Fatalf("response hid %s: error=%#v calls=%d waits=%d", code, err, *calls, waits)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestIdentityRetryPreservesTerminalResponseAfterCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		media, body string
+		code        string
+	}{
+		{"success", 200, "application/json", `{"instance_id":"instance-one"}`, ""},
+		{"malformed-json", 503, "application/json", `{"broken"`, "invalid_response"},
+		{"unauthorized", 401, "application/json", `{"error":{"code":"unauthorized","message":"synthetic refusal"},"request_id":"request-one"}`, "unauthorized"},
+		{"mismatch", 503, "application/json", `{"error":{"code":"instance_mismatch","message":"synthetic mismatch"},"request_id":"request-one"}`, "instance_mismatch"},
+		{"redirect", 302, "text/plain", "redirect", "redirect_rejected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, calls := identityBootstrapFixture(t, tc.status, tc.media, tc.body)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			identityBootstrapOnClose(c, cancel)
+			waits := 0
+			err := c.verifyInstanceWithWait(ctx, new(any), func(context.Context, time.Duration) error { waits++; return nil })
+			var failure *Error
+			if tc.code == "" && err != nil || tc.code != "" && (!errors.As(err, &failure) || failure.Code != tc.code || failure.OutcomeUnknown) {
+				t.Fatalf("cancellation replaced a terminal response: %#v", err)
+			}
+			if *calls != 1 || waits != 0 {
+				t.Fatal("terminal response retried", *calls, waits)
 			}
 		})
 	}
