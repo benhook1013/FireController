@@ -18,6 +18,7 @@ type TransportPool struct {
 	transport *http.Transport
 	sessionID string
 	closed    bool
+	waits     waitTransportCache
 }
 
 func NewTransportPool() *TransportPool { return &TransportPool{} }
@@ -42,27 +43,28 @@ func newTransport() *http.Transport {
 	return transport
 }
 
-func (p *TransportPool) borrow() (*http.Transport, string, error) {
+func (p *TransportPool) borrow() (*http.Transport, string, *waitTransportCache, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return nil, "", contextError(context.Canceled)
+		return nil, "", nil, contextError(context.Canceled)
 	}
 	if p.transport == nil {
 		var err error
 		p.sessionID, err = newConnectionID()
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		p.transport = newTransport()
 	}
-	return p.transport, p.sessionID, nil
+	return p.transport, p.sessionID, &p.waits, nil
 }
 
 func (p *TransportPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
+	p.waits.close()
 	if p.transport != nil {
 		p.transport.CloseIdleConnections()
 	}

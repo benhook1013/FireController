@@ -527,14 +527,7 @@ func (s *lifecycleSchedule) finishAccountLocked(target lifecycleTarget, provider
 	a := s.accounts[target.account]
 	delete(s.lanes[target.lane].projects, target.project)
 	delete(s.lanes[target.lane].accounts, target.account)
-	errorCode := ""
-	if providerErr != nil {
-		errorCode = "provider_unavailable"
-		var failure *reviewprovider.Error
-		if errors.As(providerErr, &failure) {
-			errorCode = failure.Code
-		}
-	}
+	errorCode := lifecycleErrorCode(providerErr)
 	if lifecycleInventoryInconclusive(providerErr) {
 		// Unsupported or malformed inventory is retried at this PR's normal cadence. It is
 		// not evidence that the provider account should stop serving other targets.

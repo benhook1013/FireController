@@ -10,7 +10,7 @@ import (
 // Request handlers never perform DDL or compatibility migrations.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
 	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), ExternalHostedSchemaSQL(), deliverySelectionMigrationSQL(), completedChannelRunCountsMigrationSQL())
-	if err := store.EnsureSchemaWithBackfill(ctx, "reviews", migrations, backfillCurrentReviewIndexes); err != nil {
+	if err := store.EnsureSchemaWithCompatibility(ctx, "reviews", migrations, reconcileReviewSchemaLineage, backfillCurrentReviewIndexes); err != nil {
 		return err
 	}
 	return EnsureNotificationSchema(ctx, store)

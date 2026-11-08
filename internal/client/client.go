@@ -41,6 +41,7 @@ type Client struct {
 	http                  *http.Client
 	transport             *http.Transport
 	borrowedTransport     bool
+	waitTransports        *waitTransportCache
 }
 
 func New(ctx context.Context, binding profile.Binding) (*Client, error) {
@@ -62,6 +63,7 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 	}
 	var transport *http.Transport
 	var sessionID string
+	waitTransports := &waitTransportCache{}
 	if pool == nil {
 		sessionID, err = newConnectionID()
 		if err != nil {
@@ -69,12 +71,12 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 		}
 		transport = newTransport()
 	} else {
-		transport, sessionID, err = pool.borrow()
+		transport, sessionID, waitTransports, err = pool.borrow()
 		if err != nil {
 			return nil, err
 		}
 	}
-	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, waitTransports: waitTransports, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -161,6 +163,7 @@ func newConnectionID() (string, error) {
 func (c *Client) Close() {
 	if !c.borrowedTransport {
 		c.transport.CloseIdleConnections()
+		c.waitTransports.close()
 	}
 }
 func (c *Client) Identity() profile.Context { return c.identity }
@@ -453,10 +456,13 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 		ownedClient := *c.http
 		ownedClient.Timeout = timeout
 		if wait != nil && timeout > requestTimeout {
-			ownedTransport := c.transport.Clone()
-			ownedTransport.ResponseHeaderTimeout = timeout
-			defer ownedTransport.CloseIdleConnections()
-			ownedClient.Transport = ownedTransport
+			var cache *waitTransportCache
+			if !mutation {
+				cache = c.waitTransports
+			}
+			waitTransport, release := cache.lease(c.transport, timeout)
+			defer release()
+			ownedClient.Transport = waitTransport
 		}
 		httpClient = &ownedClient
 	}

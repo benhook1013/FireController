@@ -207,7 +207,10 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',reason='',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
 			return err
 		}
-		return e.transitionRow(ctx, tx, result, "preparing", at)
+		if err = e.transitionRow(ctx, tx, result, "preparing", at); err != nil {
+			return err
+		}
+		return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 	})
 	if err == nil {
 		e.notifyOperation(id)
@@ -330,10 +333,8 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
 			return err
 		}
-		if state != "posting" && state != "active" && state != "uncertain" {
-			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
-				return err
-			}
+		if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+			return err
 		}
 		result = a
 		return nil
@@ -443,10 +444,8 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 				return err
 			}
 		}
-		if state != "posting" && state != "active" && state != "uncertain" {
-			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
-				return err
-			}
+		if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+			return err
 		}
 		result = a
 		return nil
@@ -597,10 +596,8 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
 				return err
 			}
-			if state == "cancelled" {
-				if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
-					return err
-				}
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
 			}
 			changed = append(changed, a.OperationID)
 		}
