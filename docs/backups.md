@@ -16,6 +16,12 @@ Operator credentials, bootstrap token files, profiles, executables and external 
 
 Retained capture validation checks immutable structure, canonical fingerprints and raw-artifact references. New-capture coverage-warning limits are admission policy and do not retroactively invalidate retained metadata. Backup acceptance grants no current review coverage, publication eligibility or provider authority.
 
+### Hosted chat cooldown reader compatibility
+
+The retained `provider_chat_cooldown_observed` observation and `hosted_chat_cooldown` hold require readers that understand their negative-only semantics, even though they do not change the SQLite schema version. Older backup validators reject these records rather than treating them as review allowance. Upgrade standalone backup, inspection and restore helpers together with the service and clients before the service can write chat cooldown observations. Keep a compatible recovery executable with each backup generation; an old helper is not a valid rollback plan for a database or bundle containing these records.
+
+`TestChatCooldownCanonicalBackupRestore` exercises parser-produced chat observations through bundle creation, inspection and inactive restore, preserves canonical allowance/query/transition/receipt rows, and rejects resealed malformed observations. `FC_CHAT_COMPAT_BUNDLE_ROOT` optionally exports synthetic ordinary and chat cooldown bundles for cross-version reader qualification. Restore remains inactive, chat cooldown expiry supplies no review allowance, and retained held work is never automatically replayed.
+
 ### Derived native review facts
 
 Manual and scheduled backup creation, inspection, and inactive restore validate the optional `review_comparison` and `review_route_policy` domains. Each present domain requires its matching `schema:<domain>` metadata marker and canonical tables, indexes, foreign keys and triggers. Validation independently rederives proof or receiving-route facts from retained authority and refuses missing, dirty, mismatched or forged facts, including in resealed bundles. Creation refuses invalid state before publishing a completed bundle. A supported predecessor bundle may omit a domain’s marker and tables together. Inspecting or restoring such a bundle leaves that domain absent. For persistent failures, see the recovery guidance for [completion proofs](reviews.md#pr-and-channel-completion) and [receiving-route facts](review-routes.md#indexed-receiving-policy).

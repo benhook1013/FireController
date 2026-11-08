@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,6 +15,15 @@ import (
 )
 
 func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
+	testCooldownCanonicalBackupRestore(t, false)
+}
+
+func TestChatCooldownCanonicalBackupRestore(t *testing.T) {
+	testCooldownCanonicalBackupRestore(t, true)
+}
+
+func testCooldownCanonicalBackupRestore(t *testing.T, chat bool) {
+	t.Helper()
 	f := newRestoreFixture(t)
 	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}})
 	if err != nil {
@@ -37,6 +47,9 @@ func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	reply := reviewprovider.IssueComment{ID: 72, Author: q.ProviderActor, CreatedAt: at, UpdatedAt: at, Body: "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). More reviews will be available in 2 minutes."}
+	if chat {
+		reply.Body = "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated reply by CodeRabbit -->\n### Rate Limit Exceeded\n\n`@fixture-user` have exceeded the limit for the number of chat messages per hour. Please wait **44 minutes and 5 seconds** before sending another message."
+	}
 	now := time.Now().UTC()
 	intent := reviewprovider.HostedTriggerIntent{OperationID: q.OperationID, AttemptID: q.AttemptID, HeadSHA: q.Anchor.CandidateSHA}
 	snapshot := reviewprovider.HostedPublicationSnapshot{Complete: true, ObservedAt: now, IssueComments: []reviewprovider.IssueComment{queryComment, reply}, Reviews: []reviewprovider.HostedReview{}, ReviewComments: []reviewprovider.ReviewComment{}}
@@ -60,7 +73,14 @@ func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
 	if err := e.RecordHostedCooldown(t.Context(), f.project, attemptID, 1, in); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Advance(t.Context(), f.project, attemptID, 1, "held", "hosted_allowance_cooldown", ""); err != nil {
+	reason := "hosted_allowance_cooldown"
+	if chat {
+		reason = "hosted_chat_cooldown"
+		if observation.Reason != "provider_chat_cooldown_observed" {
+			t.Fatal("lost chat distinction", observation)
+		}
+	}
+	if _, err := e.Advance(t.Context(), f.project, attemptID, 1, "held", reason, ""); err != nil {
 		t.Fatal(err)
 	}
 	e, err = reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"cli", "hosted"}, Fingerprint: strings.Repeat("f", 64)}})
@@ -105,6 +125,13 @@ func TestAllowanceObservationsCanonicalBackupRestore(t *testing.T) {
 	}
 	before := backupRows(t, f.store.DB())
 	bundle := restoreBundle(t, f)
+	if root := os.Getenv("FC_CHAT_COMPAT_BUNDLE_ROOT"); root != "" {
+		exported, err := Create(t.Context(), f.store, f.dir, filepath.Join(root, reason))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Log("Synthetic compatibility bundle:", exported.Path)
+	}
 	immutable := restoreTree(t, bundle.Path)
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 		t.Fatal(err)
