@@ -116,6 +116,7 @@ type lifecycleTarget struct {
 	due                lifecycleDue
 	lane               lifecycleLane
 	comparison         lifecycleComparison
+	wakeComparison     lifecycleComparison
 }
 
 type lifecycleComparison struct{ head, baseSHA, baseRef, state string }
@@ -354,7 +355,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				d := s.due[key]
 				d.enrichmentError = frontierRefusal.Code
 				d.enrichmentNext = now.Add(s.options.OpenInterval)
-				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = comparison.head, comparison.baseSHA, comparison.baseRef
+				d.enrichmentHead, d.enrichmentBaseSHA, d.enrichmentBaseRef = due.head, due.baseSHA, due.baseRef
 				s.due[key] = d
 				s.lanes[lane].lastPull[p.id] = number
 				s.mu.Unlock()
@@ -370,7 +371,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		s.lanes[lane].accounts[account] = true
 		s.lanes[lane].lastPull[p.id] = number
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}}, nil
 	}
 	return nil, nil
 }
@@ -446,9 +447,10 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 		}
 	} else {
 		due.enrichmentNext, due.enrichmentError = now.Add(interval), errorCode
-		if published && head != "" {
-			due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = head, target.due.baseSHA, target.due.baseRef
-		}
+		// Consume the scheduler comparison that caused this claim even when
+		// collection could not publish. Reading current due here would swallow
+		// a newer metadata comparison that arrived while this read was in flight.
+		due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = target.wakeComparison.head, target.wakeComparison.baseSHA, target.wakeComparison.baseRef
 		if published && ci {
 			due.ci = now.Add(s.options.CIInterval)
 			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
