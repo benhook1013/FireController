@@ -10,9 +10,9 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func publishStatus(t *testing.T, f *apiFixture, pins map[int64]SourceMetadataPin, p PullInput, ci, merge string) (Receipt, error) {
+func publishStatus(t *testing.T, f *apiFixture, pins map[int64]SourceMetadataPin, p PullInput, ci, merge string) (SourcePublication, error) {
 	t.Helper()
-	var receipt Receipt
+	var receipt SourcePublication
 	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		receipt, err = PublishSourceStatus(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "service-lifecycle-sync"}, 701, pins, []SourceStatus{{Pull: p, CIState: ci, Mergeability: merge}})

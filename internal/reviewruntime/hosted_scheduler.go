@@ -79,6 +79,21 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 				return err
 			}
 			selectionBackoff = min(max(selectionBackoff*2, hostedRecoveryBackoffMinimum), hostedRecoveryBackoffMaximum)
+			if actual := time.Now(); actual.After(now) {
+				now = actual
+			}
+			retryAt := now.Add(selectionBackoff)
+			accountDue := d.engine.HostedRecoveryNotBefore(d.capability.ID)
+			for _, slot := range slots {
+				next := slot.due
+				if retryAt.After(next) {
+					next = retryAt
+				}
+				if accountDue.After(next) {
+					next = accountDue
+				}
+				d.engine.ScheduleHostedObserver(slot.check, next)
+			}
 			if err = pause(selectionBackoff); err != nil {
 				if ctx.Err() != nil {
 					return nil

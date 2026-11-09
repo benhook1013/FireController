@@ -59,24 +59,38 @@ func PinSourceMetadata(ctx context.Context, tx *sql.Tx, project string, numbers 
 	return pins, nil
 }
 
+// SourcePublication reports invalid provider display records separately from
+// committed valid peers. An empty receipt alone must not imply every PR was read.
+type SourcePublication struct {
+	Receipt
+	InvalidPulls []int64
+}
+
+// ValidSourceDisplayMetadata checks provider display fields without permitting
+// them to hide mandatory comparison facts. Identity and retained-state checks
+// remain the publisher's responsibility.
+func ValidSourceDisplayMetadata(pull PullInput) bool {
+	return validText(pull.Title, 500, true) && validText(pull.BaseRef, 256, false) && pullMetadata(pull).Validate(pull.State) == nil
+}
+
 // PublishSourceMetadata reuses fresh, already-read source facts. It performs no
 // provider work and grants no review permission. Only existing visible entries
 // whose display facts still match their pre-I/O pin can change. Every evidence
 // record, queue position, retirement and historical snapshot remains retained.
-func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput) (Receipt, error) {
+func PublishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput) (SourcePublication, error) {
 	return publishSourceMetadata(ctx, tx, scope, repositoryID, pins, pulls, nil)
 }
 
-func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput, statuses map[int64]SourceStatus) (Receipt, error) {
+func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, pulls []PullInput, statuses map[int64]SourceStatus) (SourcePublication, error) {
 	if len(pulls) > maxQueuePulls {
-		return Receipt{}, validationError("Select a bounded source prefix.")
+		return SourcePublication{}, validationError("Select a bounded source prefix.")
 	}
 	var actualRepo int64
 	if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, scope.ProjectID).Scan(&actualRepo); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
 	if actualRepo != repositoryID {
-		return Receipt{}, validationError("Source repository identity changed.")
+		return SourcePublication{}, validationError("Source repository identity changed.")
 	}
 	type change struct {
 		number   int64
@@ -85,13 +99,14 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		notice   bool
 	}
 	changes := []change{}
+	invalid := []int64{}
 	seen := map[int64]bool{}
 	for _, pull := range pulls {
 		if pull.Number < 1 || pull.Number > 2147483647 || !validSHA(pull.HeadSHA) || !validSHA(pull.BaseSHA) || !oneOf(pull.State, "open", "merged", "closed", "unknown") {
-			return Receipt{}, validationError("Source metadata contains invalid pull identity or state.")
+			return SourcePublication{}, validationError("Source metadata contains invalid pull identity or state.")
 		}
 		if seen[pull.Number] || len(pull.Runs) != 0 || len(pull.Attempts) != 0 || pull.Complete || pull.CIState != "" || pull.Mergeability != "" || pull.MergeStateStatus != "" {
-			return Receipt{}, validationError("Source metadata contains unsupported evidence or summary fields.")
+			return SourcePublication{}, validationError("Source metadata contains unsupported evidence or summary fields.")
 		}
 		seen[pull.Number] = true
 		pin, ok := pins[pull.Number]
@@ -99,11 +114,11 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 			continue
 		}
 		if pin.project != scope.ProjectID || pin.number != pull.Number {
-			return Receipt{}, validationError("Source baseline belongs to another project or PR.")
+			return SourcePublication{}, validationError("Source baseline belongs to another project or PR.")
 		}
 		var retired bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_current_retired WHERE project_id=? AND number=?)`, scope.ProjectID, pull.Number).Scan(&retired); err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 		if retired {
 			continue
@@ -113,10 +128,10 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 			continue
 		}
 		if err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 		if err := validateSourceMetadataBody(scope.ProjectID, pull.Number, old); err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 		if sourceMetadataFingerprint(old) != pin.fingerprint {
 			continue
@@ -128,9 +143,10 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		// worker from settling. Validate retained same-head metadata first so
 		// omitting a candidate cannot conceal corrupt inherited facts.
 		if _, err := inheritedPullMetadata(old, PullInput{HeadSHA: pull.HeadSHA, State: pull.State}); err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
-		if !validText(pull.Title, 500, true) || !validText(pull.BaseRef, 256, false) || pullMetadata(pull).Validate(pull.State) != nil {
+		if !ValidSourceDisplayMetadata(pull) {
+			invalid = append(invalid, pull.Number)
 			continue
 		}
 		pull.CIState, pull.Mergeability = "unknown", "unknown"
@@ -148,11 +164,11 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 			}
 		}
 		if err = validateObservationContent([]PullInput{pull}, nil, true); err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 		metadata, err := inheritedPullMetadata(old, pull)
 		if err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 		body := append([]any(nil), old...)
 		body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[12] = pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, metadata
@@ -164,44 +180,44 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		}
 	}
 	if len(changes) == 0 {
-		return Receipt{}, nil
+		return SourcePublication{InvalidPulls: invalid}, nil
 	}
 	var previous, observed string
 	var revision int64
 	if err := tx.QueryRowContext(ctx, `SELECT w.snapshot_id,w.revision,s.observed_at FROM review_workspace w JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id WHERE w.project_id=?`, scope.ProjectID).Scan(&previous, &revision, &observed); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
 	if revision == int64(^uint64(0)>>1) {
-		return Receipt{}, core.Fail("revision_exhausted", "The review workspace revision cannot advance further.", 409)
+		return SourcePublication{}, core.Fail("revision_exhausted", "The review workspace revision cannot advance further.", 409)
 	}
 	id := core.NewID("review_snapshot")
 	next := revision + 1
 	fingerprint := sha256.Sum256([]byte(previous + "\x00" + mustJSON(pulls)))
 	// A partial source refresh does not refresh other rows' observation age.
 	if _, err := tx.ExecContext(ctx, `INSERT INTO review_snapshots(project_id,snapshot_id,revision,repository_id,source,observed_at,recorded_at,payload_sha256) VALUES(?,?,?,?,?,?,?,?)`, scope.ProjectID, id, next, repositoryID, nativeSource, observed, time.Now().UTC().Format(time.RFC3339Nano), hex.EncodeToString(fingerprint[:])); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
 	write := newHistorySnapshotWrite(scope.ProjectID, next)
 	for _, c := range changes {
 		if err := write.pull(ctx, tx, c.number, c.position, c.body); err != nil {
-			return Receipt{}, err
+			return SourcePublication{}, err
 		}
 	}
 	if err := write.applyCurrent(ctx, tx, id, revision); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
 	for _, c := range changes {
 		if c.notice {
 			if err := publishTerminalNotices(ctx, tx, scope, id, c.number, c.body[1].(string), c.body[0].(string)); err != nil {
-				return Receipt{}, err
+				return SourcePublication{}, err
 			}
 		}
 	}
 	if err := core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "source": nativeSource}); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
 	if err := publicsite.Refresh(ctx, tx, scope.ProjectID, PublicSiteReviewFacts); err != nil {
-		return Receipt{}, err
+		return SourcePublication{}, err
 	}
-	return Receipt{ID: id, Revision: next, Outcome: "source_observed"}, nil
+	return SourcePublication{Receipt: Receipt{ID: id, Revision: next, Outcome: "source_observed"}, InvalidPulls: invalid}, nil
 }

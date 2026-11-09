@@ -23,15 +23,15 @@ type SourceStatus struct {
 // PublishSourceStatus shares source metadata's pre-I/O CAS, evidence retention
 // and public publication boundary. The ordinary metadata API still refuses
 // caller-supplied CI and mergeability; only this internal path can replace them.
-func PublishSourceStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, observations []SourceStatus) (Receipt, error) {
+func PublishSourceStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repositoryID int64, pins map[int64]SourceMetadataPin, observations []SourceStatus) (SourcePublication, error) {
 	if len(observations) > maxQueuePulls {
-		return Receipt{}, validationError("Select bounded source observations.")
+		return SourcePublication{}, validationError("Select bounded source observations.")
 	}
 	pulls := make([]PullInput, 0, len(observations))
 	statuses := make(map[int64]SourceStatus, len(observations))
 	for _, observation := range observations {
 		if !oneOf(observation.CIState, "", "unknown", "pending", "success", "failure", "not_required") || !oneOf(observation.Mergeability, "", "unknown", "mergeable", "conflicting") || !oneOf(observation.MergeStateStatus, "", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE") {
-			return Receipt{}, validationError("Source status contains an unsupported observation.")
+			return SourcePublication{}, validationError("Source status contains an unsupported observation.")
 		}
 		pulls = append(pulls, observation.Pull)
 		statuses[observation.Pull.Number] = observation
