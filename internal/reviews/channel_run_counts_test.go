@@ -131,7 +131,9 @@ func TestChannelRunCountsSchemaEightMigrationAndRestart(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
 		t.Fatal("genuine populated v8 required", version, err)
 	}
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`); err != nil {
+	// A schema-only upgrade reuses valid caches. Damage a derived total so this
+	// fixture exercises backfill failure and rollback rather than a valid no-op.
+	if _, err := f.store.DB().Exec(`UPDATE review_current_totals SET run_count=run_count+1; CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	before := historyMigrationDatabaseDigest(t, f)
