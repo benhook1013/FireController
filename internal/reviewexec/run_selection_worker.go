@@ -322,7 +322,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			return choice, nil
 		}
 	}
-	if r.ExpectedPullNumber != 0 {
+	if r.ExpectedPullNumber != 0 && (choice.state == "empty" || !slices.Contains(c.Queue, r.ExpectedPullNumber)) {
 		choice.state, choice.reason = "held", "expected_pr_mismatch"
 	}
 	return choice, nil

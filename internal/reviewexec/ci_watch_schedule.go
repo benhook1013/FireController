@@ -42,7 +42,11 @@ type ciWatchClaim struct {
 func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBinding, targets []CIWatchTarget) (*ciWatchSubscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.readers[binding.capability].(ciGateReader); !ok {
+	reader, ok := s.readers[binding.capability].(ciGateReader)
+	if !ok {
+		return nil, ciWatchUnavailable()
+	}
+	if available, known := reader.(interface{ SupportsCIGate() bool }); known && !available.SupportsCIGate() {
 		return nil, ciWatchUnavailable()
 	}
 	if len(s.watchers) >= 64 || s.watchPrincipals[scope.PrincipalID] >= 8 {

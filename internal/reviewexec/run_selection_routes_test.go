@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -80,14 +79,10 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 	f, sourceID := runRouteSetup(t)
 	runRouteQueue(t, f, []int64{2, 4, 6})
 	r, _ := selectionEnqueue(t, f, "late-receiving-route", "cli", nil)
-	var routeOnce sync.Once
 	reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 		p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
 		if n == 2 {
 			p.State, p.Merged = "closed", true
-		}
-		if n == 6 {
-			routeOnce.Do(func() { routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 6)) })
 		}
 		return p, nil
 	}}
@@ -95,7 +90,11 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	selectionNext(t, f, reader)
+	if worked, err := runNextWithSourceMutation(t, f, reader, 6, func() {
+		routeCreate(t, f, sourceID, "late-route-write", routeRequest(0, 0, 6))
+	}); err != nil || !worked {
+		t.Fatal(worked, err)
+	}
 	got := selectionRead(t, f, r.ID)
 	var after int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&after); err != nil {
