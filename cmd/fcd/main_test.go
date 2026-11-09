@@ -424,7 +424,7 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 		}()
 		return done
 	}
-	postDone := startRequest(http.MethodPost, postPath, "shutdown-post", string(body))
+	postDone := startRequest(http.MethodPost, "/api/v1/projects/sibling/reviews/requests", "shutdown-post", string(body))
 	getDone := startRequest(http.MethodGet, getPath, "", "")
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

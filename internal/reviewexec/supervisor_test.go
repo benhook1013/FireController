@@ -59,16 +59,32 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 
 func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 	f := supervisorFixture(t)
-	f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
-	f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
+
+	busy := f.enqueue(t, attemptProject, "reserved", "cli", 2, 1)
+	f.start(t, attemptProject, busy)
+	original := f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
 	f.configure(t, attemptProject, "other-account", 1, false)
-	f.enqueue(t, attemptProject, "reserved-target-other-account", "cli", 2, 2)
-	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 4, 2)
+	// Public admission forbids a second intent for the same target. Seed legacy
+	// pending rows directly to exercise retained-account filtering independently.
+	schedulerQueuedCopy(t, f, busy.ID, "reserved-target-other-account")
+	schedulerQueuedCopy(t, f, original.ID, "free-target-other-account")
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET configuration_revision=2,capability_fingerprint=? WHERE id IN ('reserved-target-other-account','free-target-other-account')`, f.e.capabilities["other-account"].Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	free := Receipt{ID: "free-target-other-account"}
 	hosted := f.enqueue(t, attemptProject, "independent-channel", "hosted", 2, 2)
 	if _, err := f.store.DB().Exec(`UPDATE projects SET repository='renamed/repository' WHERE id=?`, attemptProject); err != nil {
 		t.Fatal(err)
 	}
 	operations, err := f.e.pending(context.Background())
+	// The retained earlier CLI intent also preserves project queue priority.
+	if err != nil || len(operations) != 1 || operations[0].ID != hosted.ID {
+		t.Fatalf("reserved target or earlier queue intent was bypassed: %v %v", operations, err)
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET state='held',reason='synthetic_release' WHERE id='reserved-target-other-account'`); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = f.e.pending(context.Background())
 	if err != nil || len(operations) != 2 {
 		t.Fatalf("retained account/target filtering failed: %d %v", len(operations), err)
 	}
@@ -84,7 +100,7 @@ func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, err = withoutCapabilities.pending(context.Background())
-	if err != nil || len(operations) != 4 {
+	if err != nil || len(operations) != 3 {
 		t.Fatalf("unavailable capabilities were silently hidden: %d %v", len(operations), err)
 	}
 }
@@ -105,12 +121,15 @@ func TestSupervisorBusyQueueDoesNotEnterWriterAndCoordinationStaysUsable(t *test
 	if _, err := f.e.Admit(context.Background(), attemptProject, busy.ID, busy.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 31 {
-		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", 4, 1)
+
+	seed := f.enqueue(t, attemptProject, "busy-seed", "cli", 4, 1)
+	for i := range 30 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("busy-%02d", i))
 	}
 	f.configure(t, otherAttemptProject, "test-capability", 0, false)
-	for i := range 8 {
-		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", 2, 1)
+	other := f.enqueue(t, otherAttemptProject, "other-project-seed", "cli", 2, 1)
+	for i := range 7 {
+		schedulerQueuedCopy(t, f, other.ID, fmt.Sprintf("other-project-busy-%02d", i))
 	}
 	// Occupy the real writer admission slot. A read-only busy scan must finish
 	// without waiting for it; a failed StartAttempt would still wait here.
@@ -1119,7 +1138,7 @@ func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
 		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
 	}
-	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
 		t.Fatal("configuration failure dispatched, settled or added journal effects")
 	}
 }
@@ -1202,5 +1221,14 @@ func TestSupervisorAdmissionWriterOverloadRetainsPreparation(t *testing.T) {
 	attemptCode(t, err, "review_persistence_failed")
 	if ctx.Err() != nil || f.e.running.Load() || supervisorOperationState(t, f, receipt.ID) != "preparing" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 {
 		t.Fatal("writer overload was hidden as changed admission facts or retried externally")
+	}
+}
+
+// schedulerQueuedCopy creates historical contention fixtures independently of
+// the public one-pending-intent-per-target admission boundary.
+func schedulerQueuedCopy(t *testing.T, f *attemptFixture, seed, id string) {
+	t.Helper()
+	if _, err := f.store.DB().Exec(`INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,'queued',1,'','',created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, id, seed); err != nil {
+		t.Fatal(err)
 	}
 }

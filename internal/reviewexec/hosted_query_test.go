@@ -44,6 +44,7 @@ func TestHostedQueryMigrationConcurrentBeginAndRetainedReplay(t *testing.T) {
 	f, a, anchor, poster, provider := hostedQueryFixture(t)
 	originalAttempt := attemptState(t, f, a)
 	original := evidenceState(t, f, a)
+	restorePreSelectionExecutionSchema(t, f)
 	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `UPDATE metadata SET value='5' WHERE key='schema:review_execution'`)

@@ -81,7 +81,9 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 	if err != nil || !reflect.DeepEqual(operation, retained) {
 		t.Fatal("replay silently adopted new policy", retained, err)
 	}
-	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", request)
+	pausedRequest := request
+	pausedRequest.PullNumber = 4
+	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", pausedRequest)
 	attemptCode(t, err, "reviews_paused")
 	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 		t.Fatal("paused new key changed journal")
@@ -309,6 +311,7 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
+	restorePreSelectionExecutionSchema(t, f)
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)

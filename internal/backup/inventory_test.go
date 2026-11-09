@@ -480,6 +480,37 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				// The independent original physical schema is already installed.
 
 			case "review_execution":
+
+				conn, err := store.DB().Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy := []string{
+					`PRAGMA foreign_keys=OFF`,
+					`DROP TABLE review_operation_waits`,
+					`DROP TABLE review_execution_reservations`,
+					`DROP TABLE review_execution_attempts`,
+					`CREATE TABLE review_execution_attempts(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE REFERENCES review_operations(id),project_id TEXT NOT NULL REFERENCES projects(id),provider TEXT NOT NULL,account TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,anchor_json TEXT NOT NULL,intent TEXT NOT NULL,external_id TEXT NOT NULL)`,
+					`CREATE TABLE review_execution_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`,
+					`ALTER TABLE review_operations DROP COLUMN allow_out_of_order`,
+					`ALTER TABLE review_operations DROP COLUMN override_file_limit`,
+					`PRAGMA foreign_keys=ON`,
+				}
+				for _, statement := range legacy {
+					if _, err := conn.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(statement, err)
+					}
+				}
+				conn.Close()
+				// DROP TABLE removed its derived-proof triggers. Preserve the
+				// independently current comparison domain on this predecessor.
+				for _, statement := range reviewexec.ComparisonSchemaSQL() {
+					if strings.HasPrefix(statement, "CREATE TRIGGER ") {
+						if _, err := store.DB().Exec(strings.Replace(statement, "CREATE TRIGGER ", "CREATE TRIGGER IF NOT EXISTS ", 1)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				statements = []string{`DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`}
 				if test.version < 4 {
 					statements = append(statements, `DROP TABLE review_cli_preflight`)

@@ -711,3 +711,20 @@ func TestCooldownDetachedAttemptPublicationRepairsLedgerOnlyHistory(t *testing.T
 		t.Fatal("historical attempt projection created evidence")
 	}
 }
+
+// restorePreSelectionExecutionSchema reconstructs the physical predecessor in
+// an owned migration fixture, including pre-cooldown attempt cardinality and
+// pre-repository hosted reservation cardinality.
+func restorePreSelectionExecutionSchema(t *testing.T, f *attemptFixture) {
+	t.Helper()
+	restorePreCooldownAttemptSchema(t, f)
+	admissionSQL(t, f, `CREATE TABLE old_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`)
+	admissionSQL(t, f, `INSERT INTO old_reservations SELECT * FROM review_execution_reservations`)
+	admissionSQL(t, f, `DROP TABLE review_execution_reservations`)
+	admissionSQL(t, f, `ALTER TABLE old_reservations RENAME TO review_execution_reservations`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+	// Rebuilding the attempt table removed its derived-proof triggers, as on
+	// deployed predecessors; the independent comparison repair restores them.
+	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
+}

@@ -74,6 +74,7 @@ func cliAllowanceReopen(t *testing.T, f *attemptFixture) {
 func TestCLIAllowanceVersionThreeMigrationRetainsFactsAndReplayAcrossRestart(t *testing.T) {
 	f, a, input := cliAllowanceFixture(t)
 	journal := attemptState(t, f, a)
+	restorePreSelectionExecutionSchema(t, f)
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP TABLE review_hosted_preflight`)
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)

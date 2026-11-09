@@ -204,6 +204,7 @@ func TestCapabilitySchemaUpgradeRetainsUnboundOperationsAndReplay(t *testing.T) 
 	before := bindingOperation(t, f, scope, oldReceipt.ID)
 	instance := f.store.InstanceID()
 	// Reconstruct the actual version1 table shape only in this owned fixture.
+	restorePreSelectionExecutionSchema(t, f)
 	if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_preflight`); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,16 +19,16 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	f, handler, _ := reviewControlsFixture(t)
 	var posts atomic.Int64
 	preferences := make(chan string, 4)
-	readStarted := make(chan struct{}, 1)
+	readStarted := make(chan string, 1)
 	readDetached := make(chan struct{}, 1)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/reviews/requests") {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=50"
+		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") != "wait=0"
 		if waiting {
-			readStarted <- struct{}{}
+			readStarted <- r.Header.Get("Prefer")
 		}
 		handler.ServeHTTP(w, r)
 		if waiting {
@@ -56,7 +57,11 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-readStarted:
+	case preference := <-readStarted:
+		seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
+		if err != nil || seconds <= 5 || seconds > 50 {
+			t.Fatal("forwarded wait lost the caller budget or ordinary-deadline coverage", preference, err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("long review read did not start")
 	}

@@ -336,16 +336,17 @@ func TestComparisonInventoryAbsentOptionalDomainRemainsSupported(t *testing.T) {
 func TestNativeInventoryVersionOneSchemaDefinitionsPinned(t *testing.T) {
 	for _, tc := range []struct {
 		domain     string
+		version    int
 		statements []string
 		counts     map[string]int
 		digest     string
 	}{
-		{"review_comparison", reviewexec.ComparisonSchemaSQL(), map[string]int{"TABLE": 1, "INDEX": 2, "TRIGGER": 20}, "584a984a5981c377eda89cafdfb48f4893eb969cd5e006af52651f29f422d69f"},
-		{"review_route_policy", reviewexec.RoutePolicySchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
+		{"review_comparison", 2, reviewexec.ComparisonSchemaSQL(), map[string]int{"TABLE": 1, "INDEX": 2, "TRIGGER": 20}, "584a984a5981c377eda89cafdfb48f4893eb969cd5e006af52651f29f422d69f"},
+		{"review_route_policy", 1, reviewexec.RoutePolicySchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
 	} {
 		t.Run(tc.domain, func(t *testing.T) {
-			if got := supportedDomains[tc.domain]; got != 1 {
-				t.Fatalf("supported version = %d; retain v1 fixtures and add explicit versioned inventory coverage", got)
+			if got := supportedDomains[tc.domain]; got != tc.version {
+				t.Fatalf("supported version = %d, want %d; retain the pinned v1 physical definitions", got, tc.version)
 			}
 			counts := map[string]int{}
 			seen := map[string]bool{}
@@ -373,6 +374,40 @@ func TestNativeInventoryVersionOneSchemaDefinitionsPinned(t *testing.T) {
 			got := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(definitions, "\x00"))))
 			if got != tc.digest {
 				t.Errorf("version-one schema digest = %s, want %s; live definitions changed without preserving the backup contract", got, tc.digest)
+			}
+		})
+	}
+}
+
+// Version two repairs missing attempt invalidation triggers without changing
+// physical definitions. Both retained versions keep the same pinned inventory.
+func TestComparisonInventoryRepairPreservesVersionOneBundles(t *testing.T) {
+	for _, version := range []string{"1", "2"} {
+		t.Run(version, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			if _, err := f.store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_comparison'`, version); err != nil {
+				t.Fatal(err)
+			}
+			before := backupRows(t, f.store.DB())
+			bundle := restoreBundle(t, f)
+			if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+				t.Fatal(err)
+			}
+			destination := filepath.Join(t.TempDir(), "inactive")
+			if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+				t.Fatal(err)
+			}
+			db, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var retained string
+			if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&retained); err != nil || retained != version {
+				t.Fatal("restore migrated comparison marker", retained, err)
+			}
+			if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+				t.Fatal("inspection mutated source")
 			}
 		})
 	}
