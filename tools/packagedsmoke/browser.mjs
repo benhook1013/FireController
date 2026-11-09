@@ -1023,6 +1023,17 @@ try {
     await expect(pill).toHaveAttribute('title',reasonPillText);
     await expect(pill).toHaveAttribute('aria-label',`hosted execution: Needs agent attention. ${reasonPillText}`);
   }
+  checkpoint = 'attempt-visible-reason';
+  for (const lane of [queueHosted, heroHosted]) {
+    const details = lane.locator('.review-attempt-explanation');
+    await expect(details.locator('summary')).toBeVisible();
+    await expect(details.locator('summary')).toHaveText('The finished review could not be verified');
+    await details.locator('summary').click();
+    await expect(details.locator('p')).toBeVisible();
+    await expect(details.locator('p')).toContainText(reasonCode);
+    await details.locator('summary').press('Enter');
+    await expect(details.locator('p')).not.toBeVisible();
+  }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
   await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
@@ -1077,9 +1088,10 @@ try {
       await expect(pill).toHaveText('Needs agent attention');
       need(await pill.evaluate(element => {
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
+        return getComputedStyle(element).borderTopLeftRadius === '20px' && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
       }));
     }
+    for (const lane of [queueHosted, heroHosted]) await expect(lane.locator('.review-attempt-explanation summary')).toBeVisible();
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
       const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);};

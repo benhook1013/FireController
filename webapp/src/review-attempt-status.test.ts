@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reviewAttemptStatus } from './review-attempt-status';
+import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
 import type { ReviewAttemptSummary } from './types';
 import type { ReviewRoundProgress } from './review-progress';
 
@@ -56,4 +56,34 @@ describe('attempt activity is separate from a PR review verdict', () => {
     expect(reviewAttemptStatus({ ...attempt, state: 'unknown' }, progress)).toMatchObject({ text: 'Status unknown', kind: 'attention' });
     expect(reviewAttemptStatus({ ...attempt, state: 'completed' }, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
   });
+});
+
+
+describe('visible attempt reasons', () => {
+  it.each([
+    ['admission_changed', 'Review eligibility changed before start'],
+    ['predecessor_unfinished', 'Waiting for earlier PR work'],
+    ['hosted_finished_inventory_unproven', 'The finished review could not be verified'],
+    ['allowance_exhausted', 'Included CLI quota was exhausted'],
+    ['constructor', 'Constructor'],
+    ['new_safe_reason', 'New safe reason'],
+  ])('explains %s without hiding the diagnostic', (reason, cause) => {
+    const value = { ...attempt, reason };
+    expect(reviewAttemptCause(value)).toBe(cause);
+    const status = reviewAttemptStatus(value, progress);
+    expect(status?.cause).toBe(cause); expect(status?.description).toContain(reason);
+  });
+  it('makes absent reasons explicit and keeps a past failure separate from pending recovery', () => {
+    expect(reviewAttemptStatus({ ...attempt, reason: undefined }, progress)?.cause).toBe('No reason was recorded');
+    expect(reviewAttemptStatus({ ...attempt, state: 'uncertain', reason: undefined }, progress)?.cause).toBe('The provider outcome is unconfirmed');
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })?.cause).toBe('Previous attempt: Review eligibility changed before start');
+    expect(reviewAttemptStatus({ ...attempt, state: 'completed', reason: undefined }, progress)?.cause).toBeUndefined();
+  });
+});
+
+it('does not infer that a changed source prevented provider execution', () => {
+  const value = reviewAttemptStatus({ ...attempt, state: 'uncertain', reason: 'source_changed' }, progress);
+  expect(value?.cause).toBe('The review comparison changed');
+  expect(value?.cause).not.toContain('before start');
+  expect(value?.description).toContain('provider outcome is unconfirmed');
 });
