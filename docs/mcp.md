@@ -75,8 +75,8 @@ Startup validates configuration without opening the credential or contacting the
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
 | `review_operations_list` | Optional pull_number/channel/status/limit/cursor; one bounded page of retained operations, default five pending. No provider work or automatic continuation. |
 | `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) and diagnostics (default false). Compact retained status and original Hosted observer freshness, or explicit full detail, without provider polling. |
-| `review_start` | Required channel/idempotency_key; optional expected_pull_number, expected_configuration_revision and wait_seconds select at most one ordinary child. |
-| `review_selection_read` | Required selection_id; optional wait_seconds follows the original selection and linked operation without new work. |
+| `review_start` | Required channel/idempotency_key; optional expected_pull_number, expected_configuration_revision and wait_seconds (0–50/default 2) select at most one ordinary child. |
+| `review_selection_read` | Required selection_id; optional wait_seconds (0–50/default 0) follows the original selection and linked operation without new work. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; optional wait_seconds (0–50/default 2) returns terminal state or a compact pending receipt authorizing background provider work. |
 | `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–50), include_ci (default false) and include_readiness (default false). Returns a completed or held outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
 | `review_source_refresh_read` | Required refresh_id; stored operation and observed comparison, no provider calls. |

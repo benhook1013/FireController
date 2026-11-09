@@ -316,52 +316,33 @@ func TestRunSelectionRechecksAfterSourceAndRollsBackLinkedChild(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := selectionFixture(t)
 			r, _ := selectionEnqueue(t, f, "one", "cli", nil)
-			var mutationOnce sync.Once
-			reader := &refreshTestReader{}
-			reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-				if n == 2 {
-					mutationOnce.Do(func() {
-						switch mode {
-						case "configuration":
-							f.configure(t, attemptProject, "test-capability", 1, false)
-						case "revoked":
-							if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
-								t.Fatal(err)
-							}
-						case "deleted-worker":
-							if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
-								t.Fatal(err)
-							}
-						case "round-close":
-							zero := int64(0)
-							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-								t.Fatal(err)
-							}
-						case "event-failure":
-							if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
-								t.Fatal(err)
-							}
-						}
-					})
-				}
-				return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
-			}
-			// The source phase can still finish local classification; a changed grant
-			// may finish the whole queue only if the remaining prefix is also complete.
-			if mode == "round-close" {
-				reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-					zero := int64(0)
-					if n == 2 {
-						mutationOnce.Do(func() {
-							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-								t.Fatal(err)
-							}
-						})
+			reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+				p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
+				return p, nil
+			}}
+			worked, err := runNextWithSourceMutation(t, f, reader, 2, func() {
+				switch mode {
+				case "configuration":
+					f.configure(t, attemptProject, "test-capability", 1, false)
+				case "revoked":
+					if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
+						t.Fatal(err)
 					}
-					return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				case "deleted-worker":
+					if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
+						t.Fatal(err)
+					}
+				case "round-close":
+					zero := int64(0)
+					if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+						t.Fatal(err)
+					}
+				case "event-failure":
+					if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
+			})
 			if !worked {
 				t.Fatal("no selection work")
 			}
@@ -568,4 +549,42 @@ func TestRunSelectionNativeCoverageAndAdditionalGrantRemainChannelLocal(t *testi
 			}
 		})
 	}
+}
+
+// Keep fixture helpers (and their Fatal calls) on the test goroutine while the
+// selection worker is paused at a deterministic source-read checkpoint.
+func runNextWithSourceMutation(t *testing.T, f *attemptFixture, reader *refreshTestReader, number int64, mutate func()) (bool, error) {
+	t.Helper()
+	request, resume, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	pull := reader.pull
+	reader.pull = func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+		if n == number {
+			once.Do(func() { close(request); <-resume })
+		}
+		return pull(ctx, repo, n)
+	}
+	var worked bool
+	var err error
+	go func() {
+		defer close(finished)
+		worked, err = f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
+	}()
+	released := false
+	defer func() {
+		if !released {
+			close(resume)
+		}
+		<-finished
+	}()
+	select {
+	case <-request:
+		mutate()
+	case <-finished:
+		t.Fatal("selection ended before source mutation", worked, err)
+	}
+	close(resume)
+	released = true
+	<-finished
+	return worked, err
 }

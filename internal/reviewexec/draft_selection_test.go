@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -76,6 +77,28 @@ func TestDraftFrontSelectionSkipsOnlyIndependentDraft(t *testing.T) {
 				if err := f.store.DB().QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
 					t.Fatal("selection executed or credited a review", table, count, err)
 				}
+			}
+		})
+	}
+}
+
+func TestDraftExpectedSelectionRetainsHoldReason(t *testing.T) {
+	for _, expected := range []int64{2, 4, 6} {
+		t.Run(fmt.Sprint(expected), func(t *testing.T) {
+			f := selectionFixture(t)
+			draft := true
+			reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+				return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+			}}
+			receipt, _ := selectionEnqueue(t, f, "asserted-draft", "cli", &expected)
+			selectionNext(t, f, reader)
+			got := selectionRead(t, f, receipt.ID)
+			want := "pull_draft"
+			if expected == 6 {
+				want = "expected_pr_mismatch"
+			}
+			if got.State != "held" || got.Reason != want || got.OperationID != "" {
+				t.Fatal(got, want)
 			}
 		})
 	}
