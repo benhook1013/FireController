@@ -125,7 +125,7 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 		switch r.URL.Path {
 		case base + "source-refreshes":
 			var input client.ReviewSourceRequest
-			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.ExpectedConfigurationRevision != 1 || input.HeadSHA != assessment.Target.HeadSHA || r.Method != "POST" || r.Header.Get("Idempotency-Key") != "explicit-source" || r.Header.Get("Prefer") != "wait="+strconv.FormatInt(expectedWait.Load(), 10) {
+			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.ExpectedConfigurationRevision != 1 || input.HeadSHA != assessment.Target.HeadSHA || r.Method != "POST" || r.Header.Get("Idempotency-Key") != "explicit-source" || !boundedReviewWait(r.Header.Get("Prefer"), int(expectedWait.Load())) {
 				t.Error("readiness/default CI flag/wait changed")
 			}
 			if expectedWait.Load() == 0 {

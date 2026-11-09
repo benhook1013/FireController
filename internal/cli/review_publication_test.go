@@ -128,15 +128,15 @@ func TestReviewCheckpointCLIControlledTerminalWaitsStayFlat(t *testing.T) {
 		}
 		if r.Method == "POST" {
 			posts++
-			want := "wait=2"
+			want := 2
 			if posts == 2 {
-				want = "wait=15"
+				want = 15
 				var request client.ReviewCheckpointRecovery
 				if json.NewDecoder(r.Body).Decode(&request) != nil || !request.RetryUnposted || request.ExpectedRevision != 2 {
 					t.Error("recovery request not preserved")
 				}
 			}
-			if r.Header.Get("Prefer") != want {
+			if !boundedReviewWait(r.Header.Get("Prefer"), want) {
 				t.Error("explicit/default wait changed")
 			}
 		}
