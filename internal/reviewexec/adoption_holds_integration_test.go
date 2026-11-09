@@ -586,10 +586,6 @@ func TestAdoptionHoldsIntegrationSelectionRechecksActualParent(t *testing.T) {
 	reader := &refreshTestReader{parents: map[string]reviewprovider.Pull{"actual-parent": {Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), HeadRef: "actual-parent", BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}}, pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
 		// The first check found actual parent2 complete. A source hold arrives
 		// while its explicitly branch-dependent child is being read.
-		if number == 4 && !imported {
-			integrationImportHold(t, f, 2)
-			imported = true
-		}
 		pull := reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
 		if number == 4 {
 			pull.HeadSHA, pull.BaseSHA, pull.BaseRef = strings.Repeat("c", 40), strings.Repeat("a", 40), "actual-parent"
@@ -597,7 +593,12 @@ func TestAdoptionHoldsIntegrationSelectionRechecksActualParent(t *testing.T) {
 		return pull, nil
 	}}
 	r, _ := selectionEnqueue(t, f, "late-prefix-hold", "cli", nil)
-	selectionNext(t, f, reader)
+	if worked, err := runNextWithSourceMutation(t, f, reader, 4, func() {
+		integrationImportHold(t, f, 2)
+		imported = true
+	}); err != nil || !worked {
+		t.Fatal(worked, err)
+	}
 	got := selectionRead(t, f, r.ID)
 	if !imported || got.State != "held" || got.Reason != "source_obligations_pending" || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 		t.Fatal("late actual-parent hold escaped transactional child admission", got)

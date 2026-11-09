@@ -22,6 +22,7 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 	for _, command := range []string{"start", "run-read"} {
 		for _, wait := range []string{"default", "0", "2", "cancel-before", "cancel-after", "earlier-deadline"} {
 			t.Run(command+"/"+wait, func(t *testing.T) {
+				t.Parallel()
 				var identities, operations atomic.Int64
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
