@@ -216,7 +216,7 @@ func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
 		t.Fatal("current-summary schema not installed", version, err)
 	}
 	for i, route := range routes {

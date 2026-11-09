@@ -119,6 +119,9 @@ type Engine struct {
 	wake                       chan struct{}
 	sourceWake                 chan struct{}
 	sourceRunning              atomic.Bool
+	lifecycleRunning           atomic.Bool
+	lifecycleMu                sync.RWMutex
+	lifecycleSchedule          *lifecycleSchedule
 	sourceMu                   sync.Mutex
 	sourceWaiters              map[string]map[*sourceRefreshWaiter]struct{}
 	sourceWaiterPrincipals     map[string]int
