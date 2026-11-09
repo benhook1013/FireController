@@ -375,6 +375,16 @@ func (c *Client) requestWithTimeout(ctx context.Context, method string, segments
 	u.RawPath = escaped
 	u.RawQuery = query.Encode()
 	if wait != nil {
+		if parent, ok := ctx.Deadline(); mutation && ok && wait.seconds > 0 {
+			// Bootstrap shares the caller budget. Leave an ordinary response
+			// margin so committed work can return its original pending receipt.
+			fit := int(max(0, time.Until(parent)-requestTimeout) / time.Second)
+			if fit < wait.seconds {
+				reduced := *wait
+				reduced.seconds = fit
+				wait = &reduced
+			}
+		}
 		timeout = providerWaitBudget(wait.seconds)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
