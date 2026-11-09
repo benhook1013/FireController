@@ -236,11 +236,11 @@ func assessmentFacts(inventory CIResultInventory, actions, latest ActionsHeadInv
 	return facts, nil
 }
 
-// Skipped checks do not execute. GitHub can return a synthetic start after
-// their completion; preserve those timestamps without treating them as duration
-// or current-attempt evidence. Actual execution intervals remain ordered.
+// GitHub can report a start after completion for skipped or cancelled checks
+// and jobs. Preserve those provider timestamps without treating them as duration
+// or current-attempt evidence. Other conclusion intervals remain ordered.
 func validCIInterval(status, conclusion string, start, end time.Time) bool {
-	return start.IsZero() || end.IsZero() || !end.Before(start) || status == "completed" && conclusion == "skipped"
+	return start.IsZero() || end.IsZero() || !end.Before(start) || status == "completed" && (conclusion == "skipped" || conclusion == "cancelled")
 }
 
 // Unknown provider lifecycle tokens remain unproven, but malformed temporal or
