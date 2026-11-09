@@ -239,3 +239,71 @@ func TestLifecycleStoredStateHoldPreservesNewerComparison(t *testing.T) {
 		t.Fatal("scoped hold swallowed concurrent metadata movement", d)
 	}
 }
+
+func TestLifecycleInvalidProviderMetadataIsVisibleIsolatedAndRecovers(t *testing.T) {
+	for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
+		for _, field := range []string{"title", "base_ref", "merged_at", "diff"} {
+			t.Run(map[lifecycleLane]string{lifecycleMetadata: "metadata", lifecycleEnrichment: "enrichment"}[lane]+"/"+field, func(t *testing.T) {
+				f, s, clock := lifecycleFixture(t)
+				configureLifecycleTwoPulls(t, f)
+				f.e.lifecycleSchedule = s
+				f.e.lifecycleRunning.Store(true)
+				bad := true
+				r := &sourceCITestReader{refreshTestReader: refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					p := lifecyclePull(n)
+					p.Title = "Valid provider title"
+					if n == 2 && bad {
+						switch field {
+						case "title":
+							p.Title = "bad\x7ftitle"
+						case "base_ref":
+							p.BaseRef = "bad\x00ref"
+						case "merged_at":
+							p.MergedAt = "invalid-date"
+						case "diff":
+							negative, zero := int64(-1), int64(0)
+							p.Additions, p.Deletions = &negative, &zero
+						}
+					}
+					return p, nil
+				}}}
+				readers := map[string]TargetReader{"test-capability": r}
+				claim := func(number int64) {
+					t.Helper()
+					target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane)
+					if err != nil || target == nil || target.number != number {
+						t.Fatal("unexpected target", target, err)
+					}
+					if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := lifecycleRead(t, f)
+				claim(2)
+				_, health, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{{Number: 2}})
+				if err != nil || health[2].Error != "provider_invalid_response" || health[2].State != "retrying" || health[2].LastSuccessAt != "" || health[2].CICheckedAt != "" {
+					t.Fatal("invalid provider facts claimed success or hid refusal", health, err)
+				}
+				if got := lifecycleRead(t, f); got.Title != before.Title || got.HeadSHA != before.HeadSHA || got.BaseRef != before.BaseRef || got.State != before.State {
+					t.Fatal("invalid provider facts changed retained comparison", got)
+				}
+				claim(4)
+				var peer reviews.PullResponse
+				projectionRead(t, f, "/pulls/4", &peer)
+				if peer.Pull.Title != "Valid provider title" {
+					t.Fatal("invalid provider facts blocked peer", peer.Pull)
+				}
+				if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane); err != nil || target != nil {
+					t.Fatal("invalid provider facts caused busy retry", target, err)
+				}
+				bad = false
+				clock.Add(time.Minute)
+				claim(2)
+				_, health, err = f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{{Number: 2}})
+				if err != nil || health[2].Error != "" || lifecycleRead(t, f).Title != "Valid provider title" {
+					t.Fatal("valid provider facts did not recover", health, err)
+				}
+			})
+		}
+	}
+}
