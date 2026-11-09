@@ -57,3 +57,41 @@ func TestHostedSchedulerKeepsAmbiguousOriginalTriggerPendingWithoutLongBackoff(t
 	cancel()
 	schedulerDone(t, done, false)
 }
+
+func TestHostedSchedulerIncompleteGraceKeepsCadenceAndProviderLimits(t *testing.T) {
+	f, a, p := schedulerUncertainFixture(t)
+	query, err := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.alterSnapshot = func(s *reviewprovider.HostedPublicationSnapshot) {
+		unsupportedFinishedSnapshot(s, query.ProviderActor, 200)
+	}
+	gate := newSchedulerGate(f.hosted)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := f.hosted.StartRecovery(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		if i > 0 {
+			gate.resume(t)
+		}
+		gate.interval(t, 30*time.Second)
+		if hostedDriverJournal(t, f, a.ID) != "uncertain" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+			t.Fatal("grace gained credit or lost original reservation")
+		}
+	}
+	p.repositoryError = &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 180, Message: "Synthetic provider limit"}
+	gate.resume(t)
+	gate.interval(t, 180*time.Second)
+	p.repositoryError = nil
+	gate.resume(t)
+	gate.interval(t, 30*time.Second)
+	if f.provider.queries != 1 || f.provider.reviews != 1 {
+		t.Fatal("grace retriggered provider work")
+	}
+	cancel()
+	schedulerDone(t, done, false)
+}

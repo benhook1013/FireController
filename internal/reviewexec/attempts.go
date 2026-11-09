@@ -384,6 +384,15 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 }
 
 func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string, refusal *SourceRefusal) (Attempt, error) {
+	return e.advanceGuarded(ctx, project, id, expectedRevision, state, reason, externalID, refusal, nil)
+}
+
+type attemptAdvanceGuard func(context.Context, *sql.Tx, Attempt, Operation) error
+
+func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string, refusal *SourceRefusal, guard attemptAdvanceGuard) (Attempt, error) {
+	if reason == HostedFinishedIncompleteReason && (state != "failed" || guard == nil) {
+		return Attempt{}, invalid()
+	}
 	if !identifier.MatchString(reason) || externalID != "" && !identifier.MatchString(externalID) {
 		return Attempt{}, invalid()
 	}
@@ -405,6 +414,11 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 		}
 		if !validSourceRefusal(refusal, state, reason, o.PullNumber) {
 			return invalid()
+		}
+		if guard != nil {
+			if err := guard(ctx, tx, a, o); err != nil {
+				return err
+			}
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
 		if err != nil {

@@ -21,6 +21,7 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     execution_binding_changed: 'The execution binding changed before start',
     preparation_missing: 'The prepared review is no longer available',
     hosted_finished_inventory_unproven: 'The finished review could not be verified',
+    hosted_finished_incomplete: 'Review output was incomplete; capacity released',
     hosted_allowance_cooldown: 'Hosted allowance stopped this attempt',
     allowance_exhausted: 'Included CLI quota was exhausted',
     allowance_unavailable: 'CLI quota could not be checked',

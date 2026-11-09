@@ -170,8 +170,13 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 				observed, err = RecoverHosted(ctx, d.provider, d.captures, d.engine, candidate.ProjectID, candidate.AttemptID, d.capability.ID, query.PostingActor, actor)
 				reason = hostedRecoveryObserverReason(observed.Reason, err)
 				recoveryFailed = err != nil && observed.Reason != ""
-				ended = err == nil && (observed.State == "completed" || observed.State == "rate_limited")
+				ended = err == nil && (observed.State == "completed" || observed.State == "rate_limited" || observed.State == "failed")
 				normal = ended
+				if err == nil && observed.State == "uncertain" && observed.Reason == "hosted_finished_inventory_unproven" {
+					// Continue bounded grace checks without exponential liveness
+					// delay; provider/account retry deadlines still take precedence.
+					normal, delay = true, hostedRecoveryBackoffMinimum
+				}
 				if err == nil && observed.State == "active" && (observed.Reason == "publication_not_proven" || observed.Reason == "missing_publication_batches" || observed.Reason == "attribution_window_closed" && observed.TriggerCommentID > 0) {
 					normal, delay = true, hostedRecoveryBackoffMinimum
 				}

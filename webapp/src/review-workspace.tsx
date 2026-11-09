@@ -55,6 +55,7 @@ function reviewAttemptReason(attempt: ReviewAttemptSummary): string | undefined 
   if (!attempt.reason || !['held', 'uncertain', 'rate_limited', 'failed'].includes(attempt.state)) return undefined;
   const labels: Record<string, string> = {
     hosted_finished_inventory_unproven: 'Finished response could not be verified',
+    hosted_finished_incomplete: 'Review output was incomplete; capacity released',
     hosted_allowance_cooldown: 'Waiting for hosted allowance',
     allowance_exhausted: 'CLI allowance exhausted',
   };

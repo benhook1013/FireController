@@ -159,6 +159,7 @@ describe('retained attempt diagnostics', () => {
   const attempt: ReviewAttemptItem = { source: 'native', source_attempt_id: 'attempt_one', channel: 'hosted', head_sha: 'head', state: 'uncertain', started_at: '', finished_at: '', duration_seconds: null, source_run_id: '', trigger_id: '', provider_review_id: '' };
   it.each([
     ['uncertain', 'hosted_finished_inventory_unproven', 'Uncertain', 'Finished response could not be verified'],
+    ['failed', 'hosted_finished_incomplete', 'Failed', 'Review output was incomplete; capacity released'],
     ['held', 'hosted_allowance_cooldown', 'Held', 'Waiting for hosted allowance'],
     ['rate_limited', 'allowance_exhausted', 'Cooldown', 'CLI allowance exhausted'],
     ['failed', 'another_safe_code', 'Failed', 'Another safe code'],

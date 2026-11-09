@@ -47,7 +47,7 @@ func hostedRetainFixture(t *testing.T, wrongStoredIntent bool) (*cliEvidenceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err = f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, "active", "synthetic_posted", "100")
+	attempt, err = f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, "active", "trigger_recorded", "100")
 	if err != nil {
 		t.Fatal(err)
 	}

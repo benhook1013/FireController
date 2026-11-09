@@ -54,7 +54,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "already_completed"
 		return result, nil
 	}
-	if attempt.State == "rate_limited" || attempt.State == "failed" && bound.Operation.Reason == "hosted_review_skipped" {
+	if attempt.State == "rate_limited" || attempt.State == "failed" && (bound.Operation.Reason == "hosted_review_skipped" || bound.Operation.Reason == reviewexec.HostedFinishedIncompleteReason) {
 		result.Reason = bound.Operation.Reason
 		return result, nil
 	}
@@ -221,6 +221,19 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			if settle && !finishedUnproven {
 				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, externalID)
+			} else if settle && finishedUnproven && captured.Reason == "hosted_finished_inventory_unproven" {
+				// A fresh, complete collection has again proved the original
+				// provider command finished. Missing inventory remains incomplete,
+				// but cannot occupy the repository lane indefinitely.
+				_, err = engine.ReleaseFinishedHosted(ctx, project, attempt.ID, attempt.Revision, reviewexec.HostedIncompleteCapture{
+					CaptureID: captured.Capture.ID, SHA256: captured.Capture.SHA256, Bytes: captured.Capture.Bytes,
+				})
+				var refusal *core.Error
+				if errors.As(err, &refusal) && refusal.Code == "hosted_incomplete_grace" {
+					err = nil
+				} else if err == nil {
+					result.State, result.Reason = "failed", reviewexec.HostedFinishedIncompleteReason
+				}
 			}
 		}
 		return result, err

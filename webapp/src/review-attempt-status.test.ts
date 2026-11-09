@@ -64,6 +64,7 @@ describe('visible attempt reasons', () => {
     ['admission_changed', 'Review eligibility changed before start'],
     ['predecessor_unfinished', 'Waiting for earlier PR work'],
     ['hosted_finished_inventory_unproven', 'The finished review could not be verified'],
+    ['hosted_finished_incomplete', 'Review output was incomplete; capacity released'],
     ['allowance_exhausted', 'Included CLI quota was exhausted'],
     ['constructor', 'Constructor'],
     ['new_safe_reason', 'New safe reason'],
