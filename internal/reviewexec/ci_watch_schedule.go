@@ -91,7 +91,6 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 			s.watches[key] = entry
 		}
 		entry.owners[sub] = true
-		entry.wanted++
 		sub.entries = append(sub.entries, entry)
 		// No pre-existing observation, including an older mismatch, can settle
 		// a new watch. Overlapping subscribers before a claim share its check.
@@ -242,7 +241,17 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		now := s.options.Now()
 		s.mu.Lock()
 		lane := &s.lanes[lifecycleEnrichment]
-		eventDue := entry.wanted != entry.done && (entry.lastAttempt.IsZero() || !now.Before(entry.lastAttempt.Add(5*time.Second)))
+		// Subscriber freshness belongs to that owner. Only real CI hints
+		// invalidate proof already fresh enough for other subscribers.
+		needsFresh := false
+		for sub := range entry.owners {
+			for i, owned := range sub.entries {
+				if owned == entry && sub.minimum[i] > entry.version {
+					needsFresh = true
+				}
+			}
+		}
+		eventDue := (entry.wanted != entry.done || needsFresh) && (entry.lastAttempt.IsZero() || !now.Before(entry.lastAttempt.Add(5*time.Second)))
 		eligible := s.watches[entry.key] == entry && !entry.inflight && len(entry.owners) > 0 && (eventDue || !now.Before(entry.next)) && !lane.projects[b.project] && !lane.accounts[b.account] && !now.Before(s.accounts[b.account].until)
 		owners := make([]*ciWatchSubscription, 0, len(entry.owners))
 		if eligible {
