@@ -103,6 +103,9 @@ func TestExternalHostedReaderUsesActorBoundPassiveArchive(t *testing.T) {
 func TestExternalHostedReaderDoesNotAdvertiseUnsupportedCI(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	reader := f.hosted.HostedObservationReader()
+	if reader.(interface{ SupportsCIGate() bool }).SupportsCIGate() {
+		t.Fatal("unsupported gate observer advertised as available")
+	}
 	if _, ok := reader.(hostedCIReader); ok {
 		t.Fatal("unsupported CI must follow the observer's local ci_reader_unavailable path, not account backoff")
 	}
@@ -126,6 +129,9 @@ func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	p := &externalGateProvider{driverHostedProvider: f.provider}
 	f.hosted.provider = p
+	if !f.hosted.HostedObservationReader().(interface{ SupportsCIGate() bool }).SupportsCIGate() {
+		t.Fatal("available gate observer lost")
+	}
 	reader := f.hosted.HostedObservationReader().(interface {
 		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
 	})
@@ -146,4 +152,3 @@ func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
 		t.Fatal("unsupported provider invented CI gate results")
 	}
 }
-
