@@ -73,7 +73,8 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
-| `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) collects retained native operation state without polling. |
+| `review_operations_list` | Optional pull_number/channel/status/limit/cursor; one bounded page of retained operations, default five pending. No provider work or automatic continuation. |
+| `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) and diagnostics (default false). Compact retained status and original Hosted observer freshness, or explicit full detail, without provider polling. |
 | `review_request` | Required idempotency_key/expected_configuration_revision/pull_number/channel/head_sha; optional wait_seconds (0–50/default 2) returns terminal state or a compact pending receipt authorizing background provider work. |
 | `review_source_refresh` | Required idempotency_key/expected_configuration_revision/pull_number/head_sha; optional wait_seconds (default 2, range 0–50), include_ci (default false) and include_readiness (default false). Returns a completed or held outcome within the wait, otherwise an operation receipt; schedules selected source/CI reads, never a review. |
 | `review_source_refresh_read` | Required refresh_id; stored operation and observed comparison, no provider calls. |
@@ -150,3 +151,7 @@ The [worker primary-job contract](worker-focus.md) owns focus semantics and proo
 The bounded current catalog fits on the first `tools/list` page (configured page size 128), including messaging, worker listing and pause tools. Cursor-aware clients still follow `nextCursor` for a larger catalog. Default discovery checks compare the complete expected tool set; a synthetic 129-tool server exercises actual 128-plus-one SDK pagination without changing production tools.
 
 Clean source `e65315f3141fcba180499110cb0a5ad6f4948d6c` passed the actual packaged daemon/CLI/MCP stdio workload on its first run in 0.208 seconds, including first-page critical-tool assertions. All 567 tracked source/asset hashes and three clean CGO-free executable hashes stayed unchanged. The tested `fcmcp` SHA-256 was `36f9954648d3c12cbc45fd26212d22bf3cb8a234a90e603f258971c73ad2cf75`. Focused discovery/map and documentation-inventory checks, race and vet passed separately. This establishes the supplied server and official SDK behavior; it makes no claim about a particular installed agent host's pagination.
+
+## Retained operation reads
+
+`review_operations_list` discovers one bounded page; `review_operation_read` returns compact status and original Hosted observer freshness by default, with `diagnostics: true` for full retained detail. See [retained review operations](review-operations.md) for the provider-free contract and proof boundaries.

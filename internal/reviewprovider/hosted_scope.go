@@ -156,7 +156,14 @@ func (s *hostedComparisonScanner) token(token string) bool {
 }
 
 func (s *hostedComparisonScanner) body(body string) bool {
+	open, close := currentReviewHeadingOffsets(body)
+	position := 0
 	for _, raw := range strings.Split(body, "\n") {
+		wrapper := position == open || position == close
+		position += len(raw) + 1
+		if wrapper && len(s.frames) == 0 && s.fence == 0 && !s.comment && !s.summary {
+			continue
+		}
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)

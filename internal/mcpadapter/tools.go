@@ -19,6 +19,8 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	reviewOperations           client.ReviewOperationsOptions
+	operationStatus            *operationStatusInput
 	adoption                   *adoptionArgs
 	roundChannel               string
 	roundControl               client.ConfigureReviewRoundControlRequest
@@ -62,6 +64,7 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, operationListDefinition())
 	definitions = append(definitions, roundControlDefinitions()...)
 	definitions = append(definitions, adoptionDefinitions()...)
 	definitions = append(definitions, queueEditDefinition())
@@ -150,8 +153,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				}
 			case "review_execution_read":
 				value, err = service.ReviewExecution(ctx)
+			case "review_operations_list":
+				value, err = service.ReviewOperations(ctx, args.reviewOperations)
 			case "review_operation_read":
-				value, err = service.WaitReviewOperation(ctx, args.id, args.reviewSourceWait)
+				value, err = executeOperationStatus(ctx, service, args.operationStatus)
 			case "review_request":
 				value, err = service.RequestReview(ctx, args.key, args.reviewRequest, args.reviewSourceWait)
 			case "review_checkpoint_publish":

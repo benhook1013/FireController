@@ -8,7 +8,8 @@ import (
 
 // The Additional comments envelope uses explicit dl/dd presentation wrappers.
 // Hide only balanced standalone wrappers at their original details/quote depth;
-// source offsets and finding text remain verbatim for extraction.
+// each dd may have one leading visible break. Source offsets and finding text
+// remain verbatim for extraction.
 func findingAdditionalLayout(lines []findingLine, start, end int) ([]findingLine, bool) {
 	projected := append([]findingLine(nil), lines...)
 	type frame struct {
@@ -17,12 +18,18 @@ func findingAdditionalLayout(lines []findingLine, start, end int) ([]findingLine
 	}
 	var stack []frame
 	details, quotes := 0, 0
+	previous := ""
 	for i := start; i <= end; i++ {
 		l := lines[i]
 		if l.hidden || l.quote != 0 {
 			continue
 		}
 		switch l.text {
+		case "<br>":
+			if len(stack) == 0 || stack[len(stack)-1] != (frame{"<dd>", details, quotes}) || previous != "<dd>" {
+				return nil, false
+			}
+			projected[i].hidden = true
 		case "<dl>", "<dd>":
 			if l.text == "<dd>" && (len(stack) == 0 || stack[len(stack)-1].tag != "<dl>" || stack[len(stack)-1].details != details || stack[len(stack)-1].quotes != quotes) {
 				return nil, false
@@ -44,6 +51,9 @@ func findingAdditionalLayout(lines []findingLine, start, end int) ([]findingLine
 			if len(stack) > 0 && (details < stack[len(stack)-1].details || quotes < stack[len(stack)-1].quotes) {
 				return nil, false
 			}
+		}
+		if l.text != "" {
+			previous = l.text
 		}
 	}
 	return projected, len(stack) == 0 && details == 0 && quotes == 0

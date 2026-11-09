@@ -50,22 +50,23 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
-	ID                    string `json:"id"`
-	ProjectID             string `json:"project_id"`
-	ActorID               string `json:"actor_id"`
-	WorkerID              string `json:"worker_id"`
-	ConfigurationRevision int64  `json:"configuration_revision"`
-	PolicyRevision        int64  `json:"policy_revision"`
-	CapabilityFingerprint string `json:"capability_fingerprint"`
-	PullNumber            int64  `json:"pull_number"`
-	Channel               string `json:"channel"`
-	HeadSHA               string `json:"head_sha"`
-	State                 string `json:"state"`
-	Revision              int64  `json:"revision"`
-	Reason                string `json:"reason"`
-	AttemptID             string `json:"attempt_id"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	Observer              *ReviewHostedObserverStatus `json:"observer,omitempty"`
+	ID                    string                      `json:"id"`
+	ProjectID             string                      `json:"project_id"`
+	ActorID               string                      `json:"actor_id"`
+	WorkerID              string                      `json:"worker_id"`
+	ConfigurationRevision int64                       `json:"configuration_revision"`
+	PolicyRevision        int64                       `json:"policy_revision"`
+	CapabilityFingerprint string                      `json:"capability_fingerprint"`
+	PullNumber            int64                       `json:"pull_number"`
+	Channel               string                      `json:"channel"`
+	HeadSHA               string                      `json:"head_sha"`
+	State                 string                      `json:"state"`
+	Revision              int64                       `json:"revision"`
+	Reason                string                      `json:"reason"`
+	AttemptID             string                      `json:"attempt_id"`
+	CreatedAt             string                      `json:"created_at"`
+	UpdatedAt             string                      `json:"updated_at"`
 }
 
 func validExecutionIdentifier(value string) bool {
@@ -170,7 +171,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	}
 	var value ReviewOperation
 	var status int
-	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: waitSeconds, status: &status, hostedObserver: true}); err != nil {
 		return ReviewOperation{}, err
 	}
 	if value.ID != id || !c.validReviewOperation(value) {
@@ -180,5 +181,8 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 }
 
 func (c *Client) validReviewOperation(value ReviewOperation) bool {
+	if !validReviewHostedObserver(value.Observer, value.Channel, value.State, value.AttemptID) {
+		return false
+	}
 	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt)
 }

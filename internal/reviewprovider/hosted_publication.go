@@ -34,6 +34,7 @@ type HostedPublication struct {
 	FinishedAt        time.Time
 	StandingZero      *HostedStandingZero
 	SubmittedReview   *HostedSubmittedReview
+	markedZero        bool
 }
 
 const publicationUUID = `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
@@ -427,19 +428,23 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 	}
 	count, ok := publicationRootCount(batches[1].Body)
 	if !ok {
-		// A complete single batch may omit the count only when strict decoding
-		// proves positive findings. Known inline roots never imply a clean zero.
-		// Unknown collections and fresh orphan roots cannot prove completeness.
-		positiveInventory := total == 1 && snapshot.ReviewComments != nil
+		// Omitted counts require one complete batch. Unknown collections and
+		// fresh orphan roots cannot prove positive or empty inventory.
+		completeInventory := total == 1 && snapshot.ReviewComments != nil
 		inside := func(at time.Time) bool {
 			return !at.Before(trigger.CreatedAt) && (closing.IsZero() || at.Before(closing))
 		}
 		for _, comment := range snapshot.ReviewComments {
 			if comment.InReplyToID == 0 && !reviewIDs[comment.ReviewID] && publicationActor(comment.Author, providerAuthor) && (inside(comment.CreatedAt) || inside(comment.UpdatedAt)) {
-				positiveInventory = false
+				completeInventory = false
 			}
 		}
-		if !positiveInventory || !publicationSummaryOnly(result) && !publicationInlineInventory(result) {
+		if completeInventory && !publicationSummaryOnly(result) && !publicationInlineInventory(result) {
+			result.FinishedAt = publicationMarkedZero(snapshot, result, providerAuthor, closing)
+			result.markedZero = !result.FinishedAt.IsZero()
+			completeInventory = result.markedZero
+		}
+		if !completeInventory {
 			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
 			return result, nil
 		}

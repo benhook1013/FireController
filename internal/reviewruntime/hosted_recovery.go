@@ -38,7 +38,7 @@ func RecoverHosted(ctx context.Context, reader HostedRecoveryReader, captures *H
 // A live driver leaves terminal settlement to its supervising journal owner.
 // Restart recovery uses the identical observation and publication path, then
 // settles itself because no live supervisor owns that interrupted dispatch.
-func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author, settle bool) (RecoveredHosted, error) {
+func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author, settle bool) (result RecoveredHosted, failure error) {
 	if ctx == nil || reader == nil || captures == nil || engine == nil {
 		return RecoveredHosted{}, core.Fail("validation_failed", "Use the configured hosted recovery capability.", 400)
 	}
@@ -49,7 +49,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		return RecoveredHosted{}, err
 	}
 	attempt := bound.Attempt
-	result := RecoveredHosted{State: attempt.State, Reason: "observation_pending", EvidenceID: bound.EvidenceID}
+	result = RecoveredHosted{State: attempt.State, Reason: "observation_pending", EvidenceID: bound.EvidenceID}
 	if attempt.State == "completed" {
 		result.Reason = "already_completed"
 		return result, nil
@@ -58,6 +58,12 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = bound.Operation.Reason
 		return result, nil
 	}
+	check := engine.BeginHostedObserver(capabilityID, project, attempt.OperationID, attempt.ID)
+	var sourceAt time.Time
+	defer func() {
+		reason := hostedRecoveryObserverReason(result.Reason, failure)
+		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, reason, hostedObserverFailure(reason, failure))
+	}()
 	if !settle && attempt.State != "active" {
 		result.Reason = "trigger_recording_pending"
 		return result, core.Fail("review_conflict", "The live hosted trigger has not been recorded by its supervisor.", 409)
@@ -172,6 +178,9 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "observation_unavailable"
 		return result, err
 	}
+	// Claim fresh source only after its capture and journal references validate.
+	// Reused immutable source still proves a fresh check, not provider activity.
+	sourceAt = snapshot.ObservedAt
 	trigger, err := reviewprovider.RecoverHostedTrigger(retained.Snapshot.IssueComments, true, intent, retained.PostingActor, retained.EarliestPosting, retained.Snapshot.ObservedAt)
 	if err != nil || trigger.State != "adopted" {
 		result.Reason = trigger.Reason
@@ -214,4 +223,19 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		return result, err
 	}
 	return finish(captured.Receipt.ID)
+}
+
+// Diagnostic classification does not change execution or retry semantics.
+func hostedRecoveryObserverReason(reason string, failure error) string {
+	if reason == "" && failure != nil {
+		return "observation_unavailable"
+	}
+	return reason
+}
+
+func hostedObserverFailure(reason string, failure error) error {
+	if failure == nil && reason == "observation_incomplete" {
+		return &reviewprovider.Error{Code: "provider_invalid_response"}
+	}
+	return failure
 }

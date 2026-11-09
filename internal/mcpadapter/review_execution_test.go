@@ -50,6 +50,9 @@ func TestReviewExecutionStdioDiscoveryAndStrictArgumentsBeforeCredentials(t *tes
 		if tool.Name == "review_request" || tool.Name == "review_operation_read" {
 			properties++
 		}
+		if tool.Name == "review_operation_read" {
+			properties++
+		}
 		if json.Unmarshal(data, &schema) != nil || len(schema.Properties) != properties || len(schema.Required) != count || schema.Additional {
 			t.Fatal("execution schema fields changed", tool.Name)
 		}
@@ -171,7 +174,7 @@ func TestReviewExecutionStdioConfiguredReadsAndQueuedReplayNoProviders(t *testin
 		t.Fatal("queued receipt changed on replay")
 	}
 	var operation client.ReviewOperation
-	decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": first.ID}), &operation)
+	decodeResult(t, call(t, session, "review_operation_read", map[string]any{"operation_id": first.ID, "diagnostics": true}), &operation)
 	if operation.ProjectID != f.project || operation.WorkerID != f.sender || operation.State != "queued" || operation.AttemptID != "" {
 		t.Fatal("operation read invented provider progress or changed worker")
 	}

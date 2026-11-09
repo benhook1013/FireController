@@ -381,6 +381,10 @@ func TestRecoverHostedLaterCompleteObservationDoesNotRepostTrigger(t *testing.T)
 	if err != nil || first.State != "active" || first.Reason != "comparison_unproven" || first.EvidenceID != "" {
 		t.Fatal("incomplete observation was not retained pending", first, err)
 	}
+	status, err := f.engine.ReadOperationStatus(t.Context(), f.scope(t, f.writer, false), a.OperationID)
+	if err != nil || status.Observer == nil || status.Observer.State != "waiting" || status.Observer.Reason != "comparison_unproven" || status.Observer.Error != "" {
+		t.Fatal("unproven comparison lost its observer cause", status, err)
+	}
 	reader.record.Snapshot.Reviews[0].Body = complete
 	second, err := recoverRuntime(t, f, captures, a, reader)
 	if err != nil || second.State != "completed" || second.TriggerCommentID != first.TriggerCommentID || recoveryRuntimeCount(t, f, "review_hosted_observations") != 2 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 {
@@ -638,4 +642,22 @@ func nativeHostedCredit(t *testing.T, f *cliEvidenceFixture) int {
 		}
 	}
 	return credit
+}
+
+func TestHostedRecoveryObserverReasonPreservesSuccessfulAndKnownStates(t *testing.T) {
+	failure := errors.New("private provider detail")
+	for _, tc := range []struct {
+		reason  string
+		failure error
+		want    string
+	}{
+		{"", failure, "observation_unavailable"}, {"", nil, ""},
+		{"observation_pending", failure, "observation_pending"},
+		{"publication_not_proven", failure, "publication_not_proven"},
+		{"already_completed", nil, "already_completed"},
+	} {
+		if got := hostedRecoveryObserverReason(tc.reason, tc.failure); got != tc.want {
+			t.Fatalf("reason %q, failure=%t: got %q want %q", tc.reason, tc.failure != nil, got, tc.want)
+		}
+	}
 }
