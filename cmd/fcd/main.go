@@ -197,7 +197,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	projectmap.Register(mux, store)
 	presentation.Register(mux, store)
 	inbox.Register(mux, store)
-	reviews.Register(mux, store)
+	reviews.Register(mux, store, execution.ObservationHealth)
 	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
 	execution.Register(mux)
 	server.RegisterMessageStream(mux, store, ctx)

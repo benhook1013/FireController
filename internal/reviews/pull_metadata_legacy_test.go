@@ -302,6 +302,7 @@ func metadataPre8Attempts(store *core.Store) http.HandlerFunc {
 
 func removeReasonForPre8Fixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	removeExternalHostedForLegacyFixture(t, store)
 	for _, name := range channelRunCountNames {
 		if _, err := store.DB().Exec(`ALTER TABLE review_current_totals DROP COLUMN ` + name); err != nil {
 			t.Fatal("genuine predecessor count fixture", err)

@@ -98,7 +98,7 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 		}
 		defer s.Close()
 		var result []int64
-		for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_evidence", "review_execution_reservations", "events"} {
+		for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_evidence", "review_execution_reservations", "review_snapshots", "review_hosted_discovery_state", "events"} {
 			var n int64
 			if err = s.DB().QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
 				t.Fatal(err)
@@ -140,9 +140,18 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 			t.Fatal("packaged explicit diagnostics lost original identity")
 		}
 	}
+	checkHealth := func(raw json.RawMessage) {
+		t.Helper()
+		var value client.ReviewQueue
+		decode(t, raw, &value)
+		if value.ProjectID != project || value.Configured || len(value.Items) != 0 || value.Observer == nil || value.Observer.State != "unavailable" || value.Observer.StartedAt != "" {
+			t.Fatal("packaged queue health did not report the absent runtime capability")
+		}
+	}
 	checkPage(cliCall("reviews", "operations"))
 	checkCompact(cliCall("reviews", "operation", id))
 	checkFull(cliCall("reviews", "operation", id, "--diagnostics"))
+	checkHealth(cliCall("reviews", "queue"))
 	cmd := exec.CommandContext(ctx, binaries["fcmcp"], prefix...)
 	cmd.Env = env
 	stderr := &boundedOutput{}
@@ -168,6 +177,7 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	checkPage(tool("review_operations_list", map[string]any{}))
 	checkCompact(tool("review_operation_read", map[string]any{"operation_id": id}))
 	checkFull(tool("review_operation_read", map[string]any{"operation_id": id, "diagnostics": true}))
+	checkHealth(tool("review_queue", map[string]any{}))
 	if err = session.Close(); err != nil || stderr.len() != 0 {
 		t.Fatal("packaged MCP shutdown failed")
 	}
@@ -175,5 +185,5 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	if !reflect.DeepEqual(before, state()) || external.Load() != 0 {
 		t.Fatal("packaged reads changed durable records or contacted a provider")
 	}
-	t.Log("three packaged CLI reads and three official-SDK MCP reads preserved operation, attempt, evidence, reservation and event counts; no provider requests")
+	t.Log("four packaged CLI reads and four official-SDK MCP reads, including negotiated runtime health, preserved operation, attempt, evidence, reservation, snapshot, frontier and event counts; no provider requests")
 }

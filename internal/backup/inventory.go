@@ -221,8 +221,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 10, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 2, "review_evidence": 3, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 2, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_hosted_discovery_state":    {"reviews", 11, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
 	"review_run_versions":              {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
 	"review_finding_versions":          {"reviews", 4, "project_id run_id run_version_revision pull_number position source_finding_id title detail severity disposition decision_reason actor decided_at fix_sha proof_note resolved_at route_json"},
@@ -579,6 +580,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if err = validateExternalHostedEvidenceIndexes(ctx, db, versions["review_evidence"]); err != nil {
+		return nil, err
+	}
 	if versions["review_comparison"] > 0 {
 		if err = validateComparisonPhysicalSchema(ctx, db); err != nil {
 			return nil, err
@@ -849,6 +853,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		{6, reviews.ValidateCurrentRunOrder},
 		{7, reviews.ValidatePullMetadataHistory},
 		{8, reviews.ValidateAttemptReasonsHistory},
+		{11, reviews.ValidateExternalHostedFrontiers},
 	} {
 		if versions["reviews"] < check.since {
 			continue
@@ -1112,30 +1117,31 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
-	"review_pull_versions":         {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
-	"review_run_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
-	"review_finding_versions":      {canonicalFK("review_run_versions", "project_id,run_id,run_version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
-	"review_attempt_versions":      {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
-	"review_retired_versions":      {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
-	"review_pull_memberships":      {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_pull_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
-	"review_run_memberships":       {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_run_versions", "project_id,id,version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
-	"review_attempt_memberships":   {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_attempt_versions", "project_id,source,source_attempt_id,version_revision,pull_number", "project_id,source,source_attempt_id,version_revision,pull_number", "NO ACTION")},
-	"review_retired_memberships":   {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_retired_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
-	"review_current_pulls":         {canonicalFK("review_pull_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
-	"review_current_runs":          {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
-	"review_current_attempts":      {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
-	"review_current_retired":       {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
-	"review_current_totals":        {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
-	"review_current_attempt_order": {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
-	"review_current_run_order":     {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
-	"project_publications":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"public_project_snapshots":     {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
-	"project_presentations":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"project_presentation_history": {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
-	"project_map_entries":          {canonicalFK("projects", "project_id", "id", "CASCADE")},
-	"project_map_entry_history":    {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
-	"job_workstreams":              {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
-	"job_workstream_history":       {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"review_hosted_discovery_state": {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"review_pull_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_run_versions":           {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_finding_versions":       {canonicalFK("review_run_versions", "project_id,run_id,run_version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_versions":       {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_retired_versions":       {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
+	"review_pull_memberships":       {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_pull_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_run_memberships":        {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_run_versions", "project_id,id,version_revision,pull_number", "project_id,id,version_revision,pull_number", "NO ACTION")},
+	"review_attempt_memberships":    {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_attempt_versions", "project_id,source,source_attempt_id,version_revision,pull_number", "project_id,source,source_attempt_id,version_revision,pull_number", "NO ACTION")},
+	"review_retired_memberships":    {canonicalFK("review_snapshots", "project_id,start_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_snapshots", "project_id,end_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_retired_versions", "project_id,number,version_revision", "project_id,number,version_revision", "NO ACTION")},
+	"review_current_pulls":          {canonicalFK("review_pull_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_runs":           {canonicalFK("review_run_memberships", "project_id,id,start_revision,pull_number,run_order", "project_id,id,start_revision,pull_number,run_order", "NO ACTION")},
+	"review_current_attempts":       {canonicalFK("review_attempt_memberships", "project_id,source,source_attempt_id,start_revision,pull_number,position", "project_id,source,source_attempt_id,start_revision,pull_number,position", "NO ACTION")},
+	"review_current_retired":        {canonicalFK("review_retired_memberships", "project_id,number,start_revision,position", "project_id,number,start_revision,position", "NO ACTION")},
+	"review_current_totals":         {canonicalFK("review_current_pulls", "project_id,pull_number", "project_id,number", "CASCADE")},
+	"review_current_attempt_order":  {canonicalFK("review_current_attempts", "project_id,source,source_attempt_id", "project_id,source,source_attempt_id", "CASCADE")},
+	"review_current_run_order":      {canonicalFK("review_current_runs", "project_id,id", "project_id,id", "CASCADE")},
+	"project_publications":          {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"public_project_snapshots":      {canonicalFK("project_publications", "project_id", "project_id", "CASCADE")},
+	"project_presentations":         {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_presentation_history":  {canonicalFK("project_presentations", "project_id", "project_id", "CASCADE")},
+	"project_map_entries":           {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"project_map_entry_history":     {canonicalFK("project_map_entries", "project_id,entry_id", "project_id,id", "CASCADE")},
+	"job_workstreams":               {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
+	"job_workstream_history":        {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 
 	"notes":                             {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
 	"note_revisions":                    {canonicalFK("notes", "project_id,note_id", "project_id,id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},
@@ -1325,6 +1331,11 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
 		expectedTables, expectedObjects = 16, 27
 	}
+	if version >= 11 {
+		definitions = append(definitions, reviews.ExternalHostedSchemaSQL()...)
+		expectedTables, expectedObjects = 17, 29
+	}
+
 	for _, definition := range definitions {
 		fields := strings.Fields(definition)
 		if len(fields) < 4 || fields[0] != "CREATE" {
@@ -1445,4 +1456,37 @@ func validateDomainPhysicalSchema(ctx context.Context, db sqlReader, statements 
 		return invalid()
 	}
 	return validatePhysicalSchemaObjects(ctx, db, expected, names)
+}
+
+// Only schema four owns these exact JSON identity indexes. Older evidence
+// bundles keep their genuine layout and are never upgraded during inspection.
+func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, version int) error {
+	expected := map[string]string{}
+	if version >= 4 {
+		for _, definition := range reviewexec.ExternalHostedEvidenceIndexSQL() {
+			fields := strings.Fields(definition)
+			if len(fields) < 3 {
+				return invalid()
+			}
+			expected[fields[2]] = historyDefinitionSQL(definition)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name,CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql ELSE NULL END FROM sqlite_schema WHERE name IN ('review_evidence_hosted_publication','review_evidence_hosted_run') LIMIT 3`)
+	if err != nil {
+		return invalid()
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var definition sql.NullString
+		if rows.Scan(&name, &definition) != nil || !definition.Valid || seen[name] || expected[name] == "" || expected[name] != historyDefinitionSQL(definition.String) {
+			return invalid()
+		}
+		seen[name] = true
+	}
+	if rows.Err() != nil || len(seen) != len(expected) {
+		return invalid()
+	}
+	return nil
 }

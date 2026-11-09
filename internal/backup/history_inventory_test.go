@@ -35,8 +35,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "10" {
-		t.Fatal("owning startup must install reviews v10", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
+		t.Fatal("owning startup must install reviews v11", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +45,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 10 {
+	if err != nil || versions["reviews"] != 11 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -545,6 +545,9 @@ func TestHistoryInventoryV4ThroughV9RemainSupportedWithoutFutureMetadata(t *test
 	for _, version := range []int{4, 5, 6, 7, 8, 9} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
+			if _, err := f.store.DB().Exec(`DROP INDEX review_run_versions_external_source; DROP TABLE review_hosted_discovery_state`); err != nil {
+				t.Fatal(err)
+			}
 			if version < 9 {
 				removeChannelRunCountsForLegacyFixture(t, f.store)
 			} else {
@@ -658,7 +661,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 10 {
+			if err != nil || versions["reviews"] != 11 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
@@ -895,6 +898,9 @@ func installLegacyReviewInventorySchema(ctx context.Context, store *core.Store, 
 
 func removeChannelRunCountsForLegacyFixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"hosted_run_count", "cli_run_count", "subagent_run_count", "manual_run_count"} {
 		if _, err := store.DB().Exec(`ALTER TABLE review_current_totals DROP COLUMN ` + name); err != nil {
 			t.Fatal(err)
