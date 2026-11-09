@@ -101,7 +101,7 @@ func TestOperationWaitPreAttemptHoldAndRecovery(t *testing.T) {
 			if recovery {
 				f.start(t, attemptProject, r)
 			} else {
-				f.configure(t, attemptProject, "test-capability", 1, true)
+				f.configure(t, attemptProject, "other-account", 1, false)
 			}
 			done, _ := startOperationWait(t, f, operationReadScope(t, f), r.ID, 900)
 			operationWaitRegistered(t, f.e, 1)

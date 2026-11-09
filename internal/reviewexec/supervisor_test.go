@@ -361,9 +361,15 @@ func TestSupervisorReceiptsAndCoordinationRemainFastDuringProviderWait(t *testin
 		t.Fatal("dispatch did not begin")
 	}
 	proveOrdinaryCoordination(t, f, "write-during-dispatch", receipt.ID)
-	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-dispatch", "cli", 4)
-	if supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
-		t.Fatal("new receipt waited for or bypassed occupied account during dispatch")
+	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-preparation", "cli", 4)
+	if queuedDuringDispatch.ID != queuedDuringPrepare.ID || supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
+		t.Fatal("original queued receipt was not replayed during dispatch")
+	}
+	started := time.Now()
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "duplicate-during-dispatch", Request{ExpectedConfigurationRevision: 1, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
+	if time.Since(started) > time.Second {
+		t.Fatal("duplicate refusal waited for provider dispatch")
 	}
 	_, replay = supervisorRequest(t, f, "fast-receipt", "cli", 2)
 	if !bytes.Equal(original, replay) || driver.calls.Load() != 1 {

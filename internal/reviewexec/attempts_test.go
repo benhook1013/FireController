@@ -212,8 +212,12 @@ func TestAttemptReservationsSerializeAccountAndExactTarget(t *testing.T) {
 	f.configure(t, attemptProject, "test-capability", 0, false)
 	f.configure(t, otherAttemptProject, "test-capability", 0, false)
 	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "first", "cli", 2, 1))
+	var queued Receipt
 	for _, project := range []string{attemptProject, otherAttemptProject} {
 		r := f.enqueue(t, project, "account-busy-"+project, "cli", 4, 1)
+		if project == attemptProject {
+			queued = r
+		}
 		_, err := f.e.StartAttempt(context.Background(), project, r.ID)
 		attemptCode(t, err, "review_busy")
 		if strings.Contains(err.Error(), first.ID) || strings.Contains(err.Error(), first.ProjectID) {
@@ -230,11 +234,20 @@ func TestAttemptReservationsSerializeAccountAndExactTarget(t *testing.T) {
 	}
 	// Changing configured accounts does not bypass an already occupied target.
 	f.configure(t, attemptProject, "other-account", 1, false)
-	r := f.enqueue(t, attemptProject, "same-target-other-account", "cli", 2, 2)
-	_, err := f.e.StartAttempt(context.Background(), attemptProject, r.ID)
-	attemptCode(t, err, "review_busy")
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "same-target-other-account", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 2 {
 		t.Fatal("busy calls created attempts")
+	}
+	// Settle the existing queued request against its changed capability before
+	// authorizing another request for that same target.
+	held, err := f.e.StartAttempt(t.Context(), attemptProject, queued.ID)
+	if err != nil || held.ID != "" {
+		t.Fatal(held, err)
+	}
+	operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), queued.ID)
+	if err != nil || operation.State != "held" || operation.Reason != "configuration_changed" {
+		t.Fatal(operation, err)
 	}
 	// A different target with the new account is independent.
 	f.start(t, attemptProject, f.enqueue(t, attemptProject, "different-target-other-account", "cli", 4, 2))
