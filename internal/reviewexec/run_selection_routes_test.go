@@ -69,7 +69,7 @@ func TestRunSelectionReceivingRoutesHoldCoveredOrClosedFront(t *testing.T) {
 				t.Fatal("fixed receiving obligation still blocked", got)
 			}
 			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
-			if err != nil || op.PullNumber != 6 || reader.calls.Load() != 4 {
+			if err != nil || op.PullNumber != 6 || reader.calls.Load() != 3 {
 				t.Fatal("did not advance exactly to suffix", op, err, reader.calls.Load())
 			}
 		})
@@ -101,7 +101,7 @@ func TestRunSelectionReceivingRouteArrivingDuringSourcePreventsChild(t *testing.
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if got.State != "held" || got.Reason != "routed_findings_pending" || got.OperationID != "" || after != before || reader.calls.Load() != 5 {
+	if got.State != "held" || got.Reason != "routed_findings_pending" || got.OperationID != "" || after != before || reader.calls.Load() != 4 {
 		t.Fatal("final selection transaction missed incoming route", got, before, after, reader.calls.Load())
 	}
 }

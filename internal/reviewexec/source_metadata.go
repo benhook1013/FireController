@@ -38,6 +38,9 @@ func publishSourcePlans(ctx context.Context, tx *sql.Tx, scope core.Scope, repo 
 	}
 	observations := make([]reviews.SourceStatus, 0, len(plans))
 	for _, plan := range plans {
+		if plan.retainedMerged || plan.schedulingPaused {
+			continue
+		}
 		if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
 			return invalid()
 		}

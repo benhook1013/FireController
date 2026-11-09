@@ -31,6 +31,8 @@ type SourcePlan struct {
 	ParentSHA        string
 	ObservedAt       string
 	SourceReason     string
+	retainedMerged   bool
+	schedulingPaused bool
 }
 
 // ResolveSource refreshes only the asserted target and its actual base-branch

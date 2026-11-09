@@ -47,11 +47,8 @@ func TestSourceMetadataRefreshAndSelectionReuseBoundedReads(t *testing.T) {
 				t.Fatal("fresh metadata did not reach ordinary stored read", got.Pull)
 			}
 			wantCalls, wantLookahead := int64(2), int64(0)
-			if mode == "selection" {
-				wantCalls, wantLookahead = 3, 1
-			}
 			if reader.calls.Load() != wantCalls || selectedReads.Load() != 1 || lookaheadReads.Load() != wantLookahead {
-				t.Fatal("metadata publication repeated source reads beyond the bounded selection window", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
+				t.Fatal("metadata publication repeated source reads beyond the selected candidate", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
 			}
 			var unchanged reviews.PullResponse
 			projectionRead(t, f, "/pulls/4", &unchanged)
@@ -112,16 +109,13 @@ func TestSourceMetadataInvalidDisplayDoesNotStrandWorkers(t *testing.T) {
 					t.Fatal("invalid display replaced retained facts", got.Pull)
 				}
 				wantCalls, wantLookahead := int64(2), int64(0)
-				if mode == "selection" {
-					wantCalls, wantLookahead = 3, 1
-				}
 				if reader.calls.Load() != wantCalls || selectedReads.Load() != 1 || lookaheadReads.Load() != wantLookahead {
-					t.Fatal("display refusal repeated source reads beyond the bounded selection window", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
+					t.Fatal("display refusal repeated source reads beyond the selected candidate", reader.calls.Load(), selectedReads.Load(), lookaheadReads.Load())
 				}
 				var suffix reviews.PullResponse
 				projectionRead(t, f, "/pulls/4", &suffix)
 				if suffix.Pull.Title != "Synthetic PR 4" || suffix.Pull.Diff != nil {
-					t.Fatal("discarded lookahead changed stored suffix", suffix.Pull)
+					t.Fatal("unread lookahead changed stored suffix", suffix.Pull)
 				}
 			})
 		}

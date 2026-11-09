@@ -132,9 +132,16 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 				value.Reason = "configuration_changed"
 			case frame.sourceReason != "":
 				value.Reason = frame.sourceReason
-				value.SourceProgress = &FrontSourceProgress{VerifiedPullCount: len(frame.prefix), QueuePullCount: len(c.Queue)}
-				if len(frame.prefix) < len(c.Queue) {
-					value.SourceProgress.NextUnverifiedPullNumber = c.Queue[len(frame.prefix)]
+				verified := 0
+				for _, p := range frame.prefix {
+					if p.SourceReason == "pull_scheduling_paused" {
+						break
+					}
+					verified++
+				}
+				value.SourceProgress = &FrontSourceProgress{VerifiedPullCount: verified, QueuePullCount: len(c.Queue)}
+				if verified < len(c.Queue) {
+					value.SourceProgress.NextUnverifiedPullNumber = c.Queue[verified]
 				}
 			default:
 				matches, visible, err := frontVisibleMatches(ctx, tx, scope.ProjectID, out.SnapshotID, frame.prefix)
@@ -214,6 +221,9 @@ func frontVisibleMatches(ctx context.Context, tx *sql.Tx, project, snapshot stri
 		return false, nil, err
 	}
 	for _, p := range prefix {
+		if p.SourceReason == "pull_scheduling_paused" {
+			continue
+		}
 		if !hasProjection {
 			if p.VisibleAtAcquisition {
 				return false, nil, nil

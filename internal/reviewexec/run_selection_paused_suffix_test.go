@@ -164,7 +164,7 @@ func TestRunSelectionPausedSuffixCompletionRejectsConcurrentUnpause(t *testing.T
 	for _, channel := range []string{"cli", "hosted"} {
 		t.Run(channel, func(t *testing.T) {
 			f := schedulingFixtureWithQueue(t, []int64{2, 4})
-			schedulingPause(t, f, 2, 0, true)
+			frontClose(t, f, 2, channel, "close-current-head")
 			schedulingPause(t, f, 4, 0, true)
 			receipt, _ := selectionEnqueue(t, f, "unpause-before-completion", channel, nil)
 			reader, entered, release := selectionContentionReader()
@@ -176,7 +176,7 @@ func TestRunSelectionPausedSuffixCompletionRejectsConcurrentUnpause(t *testing.T
 			tx := selectionContentionLock(t, f)
 			close(release)
 			selectionContentionAlive(t, done, 250*time.Millisecond)
-			if got := selectionContentionRead(t, f, receipt.ID); got.State != "selecting" || reader.calls.Load() != 3 {
+			if got := selectionContentionRead(t, f, receipt.ID); got.State != "selecting" || reader.calls.Load() != 2 {
 				t.Fatal("selection did not retain its acquired source behind the writer", got, reader.calls.Load())
 			}
 			if _, err := tx.ExecContext(t.Context(), `UPDATE review_pull_scheduling SET paused=0,reason='',revision=revision+1 WHERE project_id=? AND pull_number=4`, attemptProject); err != nil {
@@ -187,7 +187,7 @@ func TestRunSelectionPausedSuffixCompletionRejectsConcurrentUnpause(t *testing.T
 			}
 			got := selectionContentionWait(t, f, receipt.ID, "held")
 			selectionContentionStop(t, cancel, done)
-			if got.Reason != "selection_changed" || got.OperationID != "" || got.Revision != 3 || reader.calls.Load() != 3 {
+			if got.Reason != "selection_changed" || got.OperationID != "" || got.Revision != 3 || reader.calls.Load() != 2 {
 				t.Fatal("completion reused stale paused-suffix proof or repeated source", got, reader.calls.Load())
 			}
 			if _, found, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, channel); err != nil || found {

@@ -93,7 +93,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 	before := selectionCounts(t, f)
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, r.ID)
-	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 3 {
+	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 2 {
 		t.Fatal("selection did not create exactly one bounded child", got, reader.calls.Load())
 	}
 	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
@@ -105,7 +105,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 		t.Fatal("no durable child")
 	}
 	worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
-	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 3 {
+	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 2 {
 		t.Fatal("completion autonomously repeated selection", err)
 	}
 	f.configure(t, attemptProject, "test-capability", 1, false)
@@ -224,7 +224,7 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, r.ID)
 			want := int64(2)
-			wantCalls := map[int64]int{2: 1, 4: 1}
+			wantCalls := map[int64]int{2: 1}
 			if mode == "merged-prefix" || mode == "stopped-prefix" || mode == "closed-prefix" {
 				want = 4
 				wantCalls = map[int64]int{2: 1, 4: 1}
@@ -244,9 +244,6 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 				if err != nil || got.State != "selected" || op.PullNumber != want {
 					t.Fatal(got, op, err)
 				}
-			}
-			if mode == "closed-prefix" || mode == "stopped-prefix" {
-				wantCalls[4] = 2
 			}
 			gotCalls := map[int64]int{}
 			for _, number := range calls {

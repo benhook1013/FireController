@@ -15,6 +15,16 @@ type evaluatedFront struct {
 }
 
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
+	if plan.schedulingPaused {
+		control, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
+		if err != nil {
+			return evaluatedFront{}, err
+		}
+		if !control.Paused {
+			return evaluatedFront{state: "unknown", reason: "source_prefix_incomplete"}, nil
+		}
+		return evaluatedFront{state: "held", reason: "pull_scheduling_paused"}, nil
+	}
 	if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
 		return evaluatedFront{state: "unknown", reason: "source_unavailable"}, nil
 	}

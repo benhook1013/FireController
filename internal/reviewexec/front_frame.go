@@ -39,7 +39,7 @@ type frontFrame struct {
 func (f frontFrame) plans() []SourcePlan {
 	out := make([]SourcePlan, 0, len(f.prefix))
 	for _, p := range f.prefix {
-		out = append(out, SourcePlan{Repository: reviewprovider.Repository{ID: f.repository}, Pull: reviewprovider.Pull{RepositoryID: f.repository, Number: p.Number, State: p.State, Merged: p.Merged, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef}, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason})
+		out = append(out, SourcePlan{Repository: reviewprovider.Repository{ID: f.repository}, Pull: reviewprovider.Pull{RepositoryID: f.repository, Number: p.Number, State: p.State, Merged: p.Merged, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef}, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason, schedulingPaused: p.SourceReason == "pull_scheduling_paused"})
 	}
 	return out
 }
@@ -47,12 +47,19 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	if f.repository < 1 || f.configuration < 1 || !roundTime(f.checkedAt) || validateConfigurationShape(c) != nil || c.Paused || !slices.Contains(c.Channels, channel) || *c.ExpectedRevision != f.configuration-1 || len(f.prefix) > len(c.Queue) || len(f.prefix) > 100 || f.prefix == nil || (f.sourceReason != "" && (!identifier.MatchString(f.sourceReason) || len(f.sourceReason) > 128)) {
 		return false
 	}
-	if f.complete != (len(f.prefix) == len(c.Queue) && f.sourceReason == "") || len(f.prefix) == 0 && f.sourceReason == "" && len(c.Queue) > 0 {
+	hasPaused := slices.ContainsFunc(f.prefix, func(p frontPull) bool { return p.SourceReason == "pull_scheduling_paused" })
+	if f.complete != (len(f.prefix) == len(c.Queue) && f.sourceReason == "" && !hasPaused) || len(f.prefix) == 0 && f.sourceReason == "" && len(c.Queue) > 0 {
 		return false
 	}
 	observed := ""
 	var latest time.Time
 	for i, p := range f.prefix {
+		if p.SourceReason == "pull_scheduling_paused" {
+			if p.Number != c.Queue[i] || p.State != "" || p.Merged || p.HeadSHA != "" || p.BaseSHA != "" || p.BaseRef != "" || p.ParentPullNumber != 0 || p.ParentSHA != "" || p.ObservedAt != "" {
+				return false
+			}
+			continue
+		}
 		if p.Number != c.Queue[i] || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) || p.SourceReason != "" && !perPullSourceHold(p.SourceReason) {
 			return false
 		}
@@ -89,6 +96,9 @@ func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Confi
 			}
 		}
 		f.prefix = append(f.prefix, frontPull{Number: p.Pull.Number, VisibleAtAcquisition: visible, State: p.Pull.State, Merged: p.Pull.Merged, HeadSHA: p.Pull.HeadSHA, BaseSHA: p.Pull.BaseSHA, BaseRef: p.Pull.BaseRef, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason})
+		if p.ObservedAt == "" {
+			continue
+		}
 		if f.observedAt == "" {
 			f.observedAt = p.ObservedAt
 		} else {
@@ -99,7 +109,7 @@ func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Confi
 			}
 		}
 	}
-	f.complete = len(f.prefix) == len(c.Queue) && f.sourceReason == ""
+	f.complete = len(f.prefix) == len(c.Queue) && f.sourceReason == "" && !slices.ContainsFunc(choice.prefix, func(p SourcePlan) bool { return p.schedulingPaused })
 	body, err := json.Marshal(f.prefix)
 	if err != nil {
 		return err

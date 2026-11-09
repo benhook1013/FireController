@@ -79,63 +79,6 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 	return v, err
 }
 
-type runPullResult struct {
-	pull reviewprovider.Pull
-	err  error
-}
-
-// At most four raw metadata GETs are in flight per selection (eight across its
-// two workers). Results remain ordered; only joined successes enter phase-local
-// caches. Lookahead never supplies a selection or publication by itself.
-func (r *runReads) pullWindow(ctx context.Context, repo string, repositoryID int64, numbers []int64) []runPullResult {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make([]runPullResult, len(numbers))
-	completed := make([]chan struct{}, len(numbers))
-	var workers sync.WaitGroup
-	for i, number := range numbers {
-		completed[i] = make(chan struct{})
-		if value, ok := r.pulls[repo][number]; ok {
-			results[i].pull = value
-			close(completed[i])
-			continue
-		}
-		workers.Go(func() {
-			defer close(completed[i])
-			results[i].pull, results[i].err = r.reader.Pull(ctx, repo, number)
-		})
-	}
-	consumed := len(numbers)
-	for i, number := range numbers {
-		select {
-		case <-ctx.Done():
-			consumed = i
-		case <-completed[i]:
-			result := results[i]
-			if result.err == nil && sameTarget(result.pull, repositoryID, number) && result.pull.Merged && result.pull.State == "closed" {
-				continue
-			}
-			// A live/closed-unmerged candidate (or ordered error) needs local
-			// evaluation before any farther source work can matter. Cancel
-			// discarded lookahead, including a slow reader, then join it.
-			consumed = i + 1
-		}
-		cancel()
-		break
-	}
-	workers.Wait()
-	results = results[:consumed]
-	for i, result := range results {
-		if result.err == nil {
-			if r.pulls[repo] == nil {
-				r.pulls[repo] = map[int64]reviewprovider.Pull{}
-			}
-			r.pulls[repo][numbers[i]] = result.pull
-		}
-	}
-	return results
-}
-
 func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
 	key := repository + "\x00" + branch
 	if value, ok := r.parents[key]; ok {
@@ -225,56 +168,54 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	if index := slices.Index(queue, r.ExpectedPullNumber); index >= 0 {
 		queue = queue[:index+1]
 	}
-	var window []runPullResult
-	windowStart := 0
-	windowSize := 4
+	var history map[int64]SourcePlan
+	err = retryRunSelectionLocal(ctx, func() error {
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			history, err = readRunHistory(ctx, tx, r.ProjectID, repo, queue)
+			return err
+		})
+	})
+	if err != nil {
+		return runChoice{}, err
+	}
 	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
 		}
-		if i >= windowStart+len(window) {
-			windowStart = i
-			err = source.read(ctx, func(ctx context.Context) error {
-				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+windowSize, len(queue))])
-				return nil
-			})
-			if err != nil {
-				return sourceFailure(runReason(err)), nil
+		plan, retained := history[n]
+		neededParent := false
+		for _, previous := range choice.prefix {
+			if previous.ParentPullNumber == n {
+				neededParent = true
+				break
 			}
 		}
-		pull, err := window[i-windowStart].pull, window[i-windowStart].err
-		if err != nil {
-			return sourceFailure(runReason(err)), nil
-		}
-		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
-			return sourceFailure("source_response_invalid"), nil
-		}
-		// Fresh lifecycle guides only speculative width, never eligibility or
-		// coverage. Live tails otherwise repeatedly cancel and refetch three
-		// successors per candidate. Resume batching when merged history resumes.
-		windowSize = 1
-		if pull.Merged {
-			windowSize = 4
-		}
-		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
-		if !pull.Merged && pull.State == "open" {
-			err = source.read(ctx, func(ctx context.Context) error {
-				var err error
-				plan, err = ResolveSource(ctx, reads, repo, c, Request{PullNumber: n, HeadSHA: pull.HeadSHA, Channel: r.Channel})
-				return err
+		if !retained || neededParent {
+			var paused bool
+			err = retryRunSelectionLocal(ctx, func() error {
+				return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+					control, err := readPullScheduling(ctx, tx, r.ProjectID, n)
+					paused = control.Paused
+					return err
+				})
 			})
 			if err != nil {
-				reason := runReason(err)
-				var refusal *core.Error
-				if !errors.As(err, &refusal) || refusal.Code != "review_held" || !perPullSourceHold(reason) {
-					return sourceFailure(reason), nil
+				return runChoice{}, err
+			}
+			if paused && !neededParent {
+				plan = SourcePlan{Repository: repository, Pull: reviewprovider.Pull{RepositoryID: repo, Number: n}, SourceReason: "pull_scheduling_paused", schedulingPaused: true}
+			} else {
+				plan, err = readRunPlan(ctx, &source, reads, repo, c, r.Channel, n)
+				if err != nil {
+					return sourceFailure(runReason(err)), nil
 				}
-				// The failed comparison stays an explicit held row. It supplies
-				// no coverage, but cannot block an unrelated verified candidate.
-				plan = SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp(), SourceReason: reason}
 			}
 		}
 		choice.prefix = append(choice.prefix, plan)
+		if err = e.resolveRunParents(ctx, &source, reads, repo, c, r.Channel, choice.prefix); err != nil {
+			return sourceFailure(runReason(err)), nil
+		}
 		var target int64
 		var reason string
 		bindingHeld := false
@@ -542,6 +483,13 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			}
 			if reason != "" {
 				return updateRun(ctx, tx, current, "held", reason, "")
+			}
+			validHistory, err := runHistoryCurrent(ctx, tx, current, repo, c, choice)
+			if err != nil {
+				return err
+			}
+			if !validHistory {
+				return updateRun(ctx, tx, current, "held", "selection_changed", "")
 			}
 			if len(choice.pausedSuffix) > 0 {
 				paused, err := pausedRunSuffix(ctx, tx, current.ProjectID, choice.prefix, choice.pausedSuffix)
