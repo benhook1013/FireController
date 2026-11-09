@@ -1025,14 +1025,11 @@ try {
   }
   checkpoint = 'attempt-visible-reason';
   for (const lane of [queueHosted, heroHosted]) {
-    const details = lane.locator('.review-attempt-explanation');
-    await expect(details.locator('summary')).toBeVisible();
-    await expect(details.locator('summary')).toHaveText('The finished review could not be verified');
-    await details.locator('summary').click();
-    await expect(details.locator('p')).toBeVisible();
-    await expect(details.locator('p')).toContainText(reasonCode);
-    await details.locator('summary').press('Enter');
-    await expect(details.locator('p')).not.toBeVisible();
+    const reason = lane.locator('p.review-attempt-explanation');
+    await expect(reason).toBeVisible();
+    await expect(reason).toHaveText('The finished review could not be verified');
+    await expect(lane.locator('.review-attempt-explanation details, .review-attempt-explanation summary, .review-attempt-explanation button')).toHaveCount(0);
+    need(await reason.evaluate(element => element.tabIndex === -1 && !element.closest('details,summary,button,[role="button"]')));
   }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
@@ -1057,11 +1054,14 @@ try {
   const headJumpPosition = () => headRow.evaluate(element => {
     const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
     const margin = getComputedStyle(element).scrollMarginTop;
+    const rows = [...element.closest('#review-queue').querySelectorAll('.review-queue-row')];
+    const previous = rows[rows.indexOf(element) - 1];
+    const context = innerWidth > 650 && previous?.classList.contains('review-row-merged') ? previous.getBoundingClientRect() : undefined;
     const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-    const target = Math.max(0, Math.min(maximum, scrollY + box.top - parseFloat(margin)));
-    return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, margin};
+    const target = Math.max(0, Math.min(maximum, scrollY + (context ? context.top - mast.bottom - 12 : box.top - parseFloat(margin))));
+    return {belowHeader:box.top >= mast.bottom - 1, inViewport:box.top < innerHeight && box.bottom > mast.bottom, atRowTarget:Math.abs(scrollY - target) <= 2, contextVisible:!context || context.top >= mast.bottom && context.bottom <= innerHeight, margin:context ? 'merged-card' : margin};
   });
-  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, margin:page.viewportSize().width <= 650 ? '160px' : '260px'};
+  const expectedHeadPosition = {belowHeader:true, inViewport:true, atRowTarget:true, contextVisible:true, margin:page.viewportSize().width <= 650 ? '160px' : 'merged-card'};
   await expect(hero.getByRole('region', {name:'Hosted CodeRabbit', exact:true}).locator('.review-lane-heading')).toContainText('1 run');
   checkpoint = 'current-round-limits-shared';
   await expect(hero.locator('[aria-label="Current hosted round limits"]')).toContainText('Up to 5 more reviews');
@@ -1087,11 +1087,25 @@ try {
     for (const pill of reasonPills) {
       await expect(pill).toHaveText('Needs agent attention');
       need(await pill.evaluate(element => {
+        // Compare to the actual shared channel badge in the same heading,
+        // including geometry, so a radius-only fix cannot satisfy this proof.
+        const standard=document.createElement('span');
+        standard.className='badge review-channel-position'; standard.textContent=element.textContent;
+        element.parentElement.append(standard);
+        const style=getComputedStyle(element),reference=getComputedStyle(standard);
+        const properties=['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','textTransform','paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopLeftRadius'];
+        const matching=properties.every(property=>style[property]===reference[property]) && Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
+        standard.remove();
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return getComputedStyle(element).borderTopLeftRadius === '20px' && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
+        return matching && style.textTransform === 'uppercase' && style.borderTopLeftRadius === '20px' && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
       }));
     }
-    for (const lane of [queueHosted, heroHosted]) await expect(lane.locator('.review-attempt-explanation summary')).toBeVisible();
+    for (const lane of [queueHosted, heroHosted]) {
+      const reason=lane.locator('p.review-attempt-explanation');
+      await expect(reason).toBeVisible();
+      await expect(reason).toHaveText('The finished review could not be verified');
+      need(await reason.evaluate(element => { const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect(); return element.tabIndex===-1 && !element.closest('details,summary,button,[role="button"]') && box.left>=lane.left-1 && box.right<=lane.right+1 && element.scrollWidth<=element.clientWidth+1; }));
+    }
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
       const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);};
@@ -1111,6 +1125,17 @@ try {
   await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
   checkpoint = 'queue-jump-visible';
   await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
+  checkpoint = 'queue-jump-desktop-context';
+  for (const viewport of [{width:1440,height:900},{width:1920,height:1080},{width:320,height:900},{width:390,height:900}]) {
+    await page.setViewportSize(viewport);
+    await page.evaluate(() => scrollTo(0,0));
+    await jump.click();
+    await expect.poll(headJumpPosition).toEqual({...expectedHeadPosition, margin:viewport.width > 650 ? 'merged-card' : '160px'});
+    if (config.diagnostic_directory) {
+      await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
+      await page.screenshot({path:config.diagnostic_directory + `/delivery-head-jump-${viewport.width}.png`, timeout:2000});
+    }
+  }
   if (config.diagnostic_directory) {
     await fs.mkdir(config.diagnostic_directory, {recursive:true, mode:0o700});
     await page.screenshot({path:config.diagnostic_directory + '/delivery-head-jump-390.png', timeout:2000});

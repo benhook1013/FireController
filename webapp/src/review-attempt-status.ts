@@ -10,7 +10,7 @@ export interface ReviewAttemptStatus {
 }
 
 // Keep the reason readable without requiring a mouse hover. Raw codes remain
-// in the expanded diagnostic text, including for unknown future reason codes.
+// in the existing Attempts details, including unknown future reason codes.
 export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
   const causes: Record<string, string> = {
     predecessor_unfinished: 'Waiting for earlier PR work',

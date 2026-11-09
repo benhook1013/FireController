@@ -28,12 +28,19 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
 
 describe('truthful stored review presentation', () => {
-  it('shows the cause in a native tap/keyboard disclosure, not only a hover title', () => {
+  it('shows the cause as plain visible text without another control or hidden diagnostic', () => {
     const html = markup(<ReviewAttemptExplanation status={{ text: 'Needs agent attention', kind: 'attention', cause: 'Review eligibility changed before start', description: 'Retained attempt: failed (admission_changed).' }} />);
-    expect(html).toContain('<details class="review-attempt-explanation"><summary>Review eligibility changed before start</summary>');
-    expect(html).toContain('<p>Retained attempt: failed (admission_changed).</p>');
-    expect(html).not.toContain('hidden'); expect(html).not.toContain('title=');
+    expect(html).toBe('<p class="review-attempt-explanation">Review eligibility changed before start</p>');
+    expect(html).not.toMatch(/details|summary|button|tabindex|title=|admission_changed/u);
     expect(markup(<ReviewAttemptExplanation status={{ text: 'Reviewing' }} />)).toBe('');
+  });
+
+  it('uses the standard channel badge for process attention and keeps quota reasons noninteractive', () => {
+    const attempt = { channel: 'cli', state: 'failed', reason: 'allowance_exhausted', finished_at: '2026-10-22T00:00:20Z' } as ReviewAttemptSummary;
+    const html = markup(<ReviewRunsView number={2} snapshot="snapshot" head={pull(2).head_sha} attempts={[attempt]} expected={0} channelTotals={pull(2).run_counts} />);
+    expect(html).toContain('class="badge review-channel-position review-attempt-state review-attempt-attention"');
+    expect(html).toContain('<p class="review-attempt-explanation">Included CLI quota was exhausted</p>');
+    expect(html).not.toMatch(/<details|<summary|<button|tabindex=/u);
   });
 
   it('shows current recovery instead of a failed PR verdict while retaining six completed rounds', () => {
@@ -43,13 +50,13 @@ describe('truthful stored review presentation', () => {
     const stopped = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={rounds} />);
     expect(stopped).toContain('>Needs agent attention</span>'); expect(stopped).toContain('failed (admission_changed)');
     expect(stopped).not.toContain('>Failed</span>'); expect(stopped).toContain('6 runs');
-    expect(stopped).toContain('<summary>Review eligibility changed before start</summary>');
+    expect(stopped).toContain('<p class="review-attempt-explanation">Review eligibility changed before start</p>');
     const retry = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={{ ...rounds, channels: [{ ...rounds.channels[0], pending: 1, pending_execution: 1 }] }} />);
     expect(retry).toContain('>Retry pending</span>'); expect(retry).not.toContain('>Needs agent attention</span>'); expect(retry).toContain('6 runs');
     const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={rounds} />);
     expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Needs agent attention</span>'); expect(historical).not.toContain('>Retry pending</span>');
     const held = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, state: 'held', reason: 'predecessor_unfinished' }] }} snapshot="snapshot" progress={rounds} />);
-    expect(held).toContain('>Dependency pending</span>'); expect(held).toContain('<summary>Waiting for earlier PR work</summary>'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
+    expect(held).toContain('>Dependency pending</span>'); expect(held).toContain('<p class="review-attempt-explanation">Waiting for earlier PR work</p>'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
   });
 
   it('keeps Hosted priority visible alongside a waiting operation and unknown source', () => {

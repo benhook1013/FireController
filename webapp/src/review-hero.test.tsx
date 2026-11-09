@@ -170,7 +170,7 @@ describe('retained attempt diagnostics', () => {
     expect(compact).toContain(`Retained attempt: ${state} (${reason})`);
     expect(compact).toContain(`>Needs agent attention</span>`);
     expect(compact).not.toContain(`>${label}</span>`);
-    expect(compact.match(/class="review-attempt-state /gu)).toHaveLength(1);
+    expect(compact.match(/class="badge review-channel-position review-attempt-state /gu)).toHaveLength(1);
     archive.items = [value];
     const expanded = markup(false, [], true);
     expect(expanded).toContain(`<small>Reason</small><span title="${reason}">${text}</span>`);

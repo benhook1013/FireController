@@ -16,7 +16,8 @@ import { usePresentation, useProjectHeading } from './presentation-context';
 import { ReviewArchive, type ReviewArchivePage } from './review-archive';
 import { PageSkeleton, ReviewRoundsSkeleton } from './loading';
 import { useRetainedRead } from './retained-read';
-import { RestoringReadingPosition, scrollToReadingTarget } from './reading-position';
+import { RestoringReadingPosition } from './reading-position';
+import { scrollToReviewQueueTarget } from './review-queue-navigation';
 import { RelativeTime } from './relative-time';
 import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay, reviewRoundCountText } from './review-display';
 import { EditorialMarkdown } from './editorial-markdown';
@@ -271,7 +272,7 @@ function ReviewQueueWindow({ embedded, history }: { embedded: boolean; history: 
     if (lastJump.current === jump) return;
     const frame = requestAnimationFrame(() => {
       const row = document.getElementById(target);
-      if (row) { scrollToReadingTarget(row); lastJump.current = jump; }
+      if (row) { scrollToReviewQueueTarget(row); lastJump.current = jump; }
     });
     return () => cancelAnimationFrame(frame);
   }, [page, location.hash, location.key, restoringPosition]);
@@ -369,14 +370,14 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{run.outcome !== 'completed' && <span className="review-pill-state">{reviewLabel(run.outcome)}</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
 }
 export function ReviewAttemptExplanation({ status }: { status: ReviewAttemptStatus }) {
-  return status.cause ? <details className="review-attempt-explanation"><summary>{status.cause}</summary><p>{status.description}</p></details> : null;
+  return status.cause ? <p className="review-attempt-explanation">{status.cause}</p> : null;
 }
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, partial, highlights, compact = false, historical = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef }: { historical?: boolean; capacity?: number; laneRef?: RefObject<HTMLElement | null>; notice?: ReactNode; updateFailed?: boolean; readingAnchor?: string; channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[]; snapshot: string; head: string; loading: boolean; failed: boolean; partial: boolean; highlights: Map<string, string>; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition }) {
   const laneRuns = runs.filter(run => run.channel === channel && run.outcome === 'completed');
   const attempt = [...attempts].reverse().find(item => item.channel === channel);
   const waiting = historical ? undefined : progress?.wait;
   const status = reviewAttemptStatus(attempt, progress, positionHint, historical);
-  return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title} status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{status && <span className={status.kind ? `review-attempt-state review-attempt-${status.kind}` : 'badge review-channel-position'} title={status.description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${status.description ?? ''}` : undefined}>{status.text}</span>}</>} metadata={`${total} ${total === 1 ? 'run' : 'runs'}`} metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">{status && <ReviewAttemptExplanation status={status} />}<ReviewProgressView value={progress} />{loading ? <ReviewRoundsSkeleton count={total} /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className="review-round-pills review-recent-rounds">{laneRuns.slice(-capacity).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : total > 0 && !notice ? <p className="review-lane-empty">Round history could not be loaded.</p> : null}{notice}</ReviewLaneDisplay>;
+  return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title} status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{status && <span className={status.kind ? `badge review-channel-position review-attempt-state review-attempt-${status.kind}` : 'badge review-channel-position'} title={status.description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${status.description ?? ''}` : undefined}>{status.text}</span>}</>} metadata={`${total} ${total === 1 ? 'run' : 'runs'}`} metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">{status && <ReviewAttemptExplanation status={status} />}<ReviewProgressView value={progress} />{loading ? <ReviewRoundsSkeleton count={total} /> : failed ? <p className="review-lane-empty">Round history could not be loaded.</p> : laneRuns.length ? <div className="review-round-pills review-recent-rounds">{laneRuns.slice(-capacity).map(run => <CompactRunPill key={JSON.stringify([run.source, run.source_run_id])} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}</div> : total > 0 && !notice ? <p className="review-lane-empty">Round history could not be loaded.</p> : null}{notice}</ReviewLaneDisplay>;
 }
 function ChannelReviewLane({ number, ...props }: Omit<Parameters<typeof ReviewLane>[0], 'runs' | 'loading' | 'failed' | 'partial' | 'highlights'> & { number: number }) {
   // Hero and queue read only as many completed summaries as fit their lane.
