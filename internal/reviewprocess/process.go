@@ -154,7 +154,7 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 		return Usage{}, err
 	}
 	if usage.Remaining == 0 {
-		return Usage{}, processError("rate_limited", false)
+		return usage, processError("rate_limited", false)
 	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {

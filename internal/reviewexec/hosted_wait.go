@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -50,13 +51,17 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil {
 		return nil, err
 	}
-	if version != "9" && version != "10" {
+	schemaVersion, err := strconv.Atoi(version)
+	if err != nil || schemaVersion < 1 || strconv.Itoa(schemaVersion) != version {
+		return nil, waitUnavailable()
+	}
+	if schemaVersion < 9 {
 		return nil, nil
 	}
 	var result OperationWait
 	var baseline sql.NullString
 	var paused int64
-	err := q.QueryRowContext(ctx, `SELECT baseline_attempt_id,retry_not_before,paused FROM review_operation_waits WHERE operation_id=?`, o.ID).Scan(&baseline, &result.RetryNotBefore, &paused)
+	err = q.QueryRowContext(ctx, `SELECT baseline_attempt_id,retry_not_before,paused FROM review_operation_waits WHERE operation_id=?`, o.ID).Scan(&baseline, &result.RetryNotBefore, &paused)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

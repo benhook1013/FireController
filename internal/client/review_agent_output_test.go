@@ -51,3 +51,16 @@ func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
 		}
 	}
 }
+
+func TestPausedReviewGuidanceRequiresRecordedDeadline(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		absent := operationWaitDiagnostic(&ReviewOperationWait{Paused: true}, channel)
+		if !strings.Contains(absent.Explanation, "no retry deadline is recorded") || strings.Contains(absent.Explanation, "retry deadline and review intent are retained") {
+			t.Fatal(channel, absent)
+		}
+		present := operationWaitDiagnostic(&ReviewOperationWait{Paused: true, RetryNotBefore: "2026-11-09T09:00:00Z"}, channel)
+		if strings.Contains(present.Explanation, "no retry deadline is recorded") {
+			t.Fatal(channel, present)
+		}
+	}
+}

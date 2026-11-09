@@ -183,10 +183,6 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 				continue
 			}
 			if o.Channel == "cli" {
-				c, _, err := readConfiguration(ctx, tx, o.ProjectID)
-				if err != nil {
-					return nil, err
-				}
 				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
 					due, err := cliAccountRetryDeadline(ctx, tx, capability)
 					if err != nil {

@@ -349,6 +349,21 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if err != nil {
 		return reportClientError(stderr, err, ctx)
 	}
+	if call.reviewOperationControl != nil {
+		encoded, err := json.Marshal(value)
+		if err == nil {
+			encoded = append(encoded, '\n')
+			var written int
+			written, err = stdout.Write(encoded)
+			if err == nil && written != len(encoded) {
+				err = io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The review control receipt could not be written.", Action: "Retry the exact same key, request and bound instance; do not use a replacement key.", OutcomeUnknown: true})
+		}
+		return ExitSuccess
+	}
 	return emit(stdout, stderr, value)
 }
 

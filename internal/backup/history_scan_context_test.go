@@ -57,6 +57,7 @@ func TestHistoryScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
 	bundle := restoreBundle(t, f)
 	before := restoreTree(t, bundle.Path)
 	for _, phase := range []string{
+		"backup.validateReservationScopeSchema",
 		"reviews.ValidateHistoryReferences",
 		"reviews.ValidateCurrentSummaries",
 		"reviews.ValidateCurrentRunOrder",

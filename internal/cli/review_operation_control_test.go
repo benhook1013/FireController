@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
@@ -80,5 +81,30 @@ func TestReviewOperationControlCLIHelpAndMalformedOffline(t *testing.T) {
 		if code != cli.ExitUsage || out != "" || !strings.Contains(stderr, "invalid_arguments") {
 			t.Fatal(code, out, stderr)
 		}
+	}
+}
+
+func TestReviewControlOutputFailureRetainsSameKeyRecovery(t *testing.T) {
+	f, project, worker := reviewExecutionFixture(t)
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"builder": {project, worker}})
+	code, out, stderr := mutationInvoke(t, profiles, "builder", reviewRequestArgs()...)
+	var queued struct {
+		ID string `json:"id"`
+	}
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &queued) != nil {
+		t.Fatal(code, out, stderr)
+	}
+	args := []string{"--profiles-file", profiles, "--profile", "builder", "reviews", "operation-control", queued.ID, "--action", "pause", "--expect-revision", "1", "--key", "original-control-key"}
+	var diagnostic strings.Builder
+	code = cli.RunContext(context.Background(), args, map[string]string{}, roundFailWriter{}, &diagnostic)
+	if code != cli.ExitConfig || !strings.Contains(diagnostic.String(), `"outcome_unknown":true`) || !strings.Contains(diagnostic.String(), "exact same key") {
+		t.Fatal(code, diagnostic.String())
+	}
+	code, out, stderr = mutationInvoke(t, profiles, "builder", args[4:]...)
+	var receipt client.ReviewOperationControlReceipt
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &receipt) != nil || !receipt.Paused || receipt.Revision != 2 {
+		t.Fatal("same-key recovery changed effect", code, out, stderr)
 	}
 }

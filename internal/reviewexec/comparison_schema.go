@@ -62,8 +62,23 @@ func ComparisonSchemaSQL() []string {
 	return statements
 }
 
+// Rebuilding the attempts table in execution migration nine drops its three
+// dirty-proof triggers. A versioned repair also covers already-upgraded stores;
+// the migration backfill re-derives proofs that may have missed invalidation.
+func comparisonAttemptTriggerRepairSQL() []string {
+	var statements []string
+	const prefix = "CREATE TRIGGER review_comparison_dirty_review_execution_attempts_"
+	for _, statement := range ComparisonSchemaSQL() {
+		if strings.HasPrefix(statement, prefix) {
+			name := strings.Fields(statement)[2]
+			statements = append(statements, "DROP TRIGGER IF EXISTS "+name, statement)
+		}
+	}
+	return statements
+}
+
 func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
-	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs); err != nil {
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL(), comparisonAttemptTriggerRepairSQL()}, backfillComparisonProofs); err != nil {
 		return err
 	}
 	return nil

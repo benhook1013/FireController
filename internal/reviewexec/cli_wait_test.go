@@ -380,3 +380,15 @@ func TestCLIWaitConcurrentAccountClaimsStartOnlyOneAttempt(t *testing.T) {
 	}
 	assertCLIWaitNoCredit(t, f)
 }
+
+func TestOperationWaitReadsLaterExecutionSchemaWithoutLosingPause(t *testing.T) {
+	f := roundFixture(t)
+	receipt := f.enqueue(t, attemptProject, "paused-future-schema", "cli", 2, 1)
+	admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,'',1)`, receipt.ID)
+	before := cliWaitRead(t, f, receipt.ID)
+	admissionSQL(t, f, `UPDATE metadata SET value='11' WHERE key='schema:review_execution'`)
+	after, err := readOperationWait(t.Context(), f.store.DB(), before)
+	if err != nil || !reflect.DeepEqual(before.Wait, after) || after == nil || !after.Paused {
+		t.Fatal("later execution schema dropped retained pause", before.Wait, after, err)
+	}
+}

@@ -24,8 +24,8 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 		failure error
 		want    string
 	}{
-		{"rate", &reviewprocess.Error{Code: "rate_limited"}, "allowance_exhausted"},
-		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), "allowance_exhausted"},
+		{"rate", &reviewprocess.Error{Code: "rate_limited"}, "allowance_unavailable"},
+		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), "allowance_unavailable"},
 		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, "allowance_unavailable"},
 		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), "allowance_unavailable"},
 		{"raw text", errors.New("rate_limited private token diagnostic"), "allowance_unavailable"},
@@ -126,7 +126,7 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if operation.State == "held" {
+				if operation.State == "held" || mode == "exhausted" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
 					break
 				}
 				select {
@@ -136,10 +136,18 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				}
 			}
 			stop()
+			expectedPreflight := 0
+			if mode == "exhausted" {
+				expectedPreflight = 1
+				if operation.State != "queued" || operation.Wait == nil || operation.Wait.RetryNotBefore == "" {
+					t.Fatal("real runner exhaustion did not retain queued wait", operation)
+				}
+				expected = ""
+			}
 			if operation.Reason != expected || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
 				t.Fatal("safe hold reason missing or review dispatched", operation, reviews.Load())
 			}
-			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 {
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != expectedPreflight {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
 			}
 			log, err := os.ReadFile(f.log)

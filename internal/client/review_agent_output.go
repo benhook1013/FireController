@@ -100,7 +100,11 @@ func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOper
 		candidates = " Other authorized candidates still need their own admission and fresh provider checks."
 	}
 	if w.Paused {
-		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. Its retry deadline and review intent are retained; no review is running." + scope, "Resume/cancel only this undispatched operation with current revision/key. Pause/resume cannot edit head or out-of-order intent. For an authorized replacement, follow review_operation_control guidance and respect any known cooldown; its timer is not transferred." + candidates}
+		retained := "Its review intent is retained; no retry deadline is recorded and no review is running."
+		if w.RetryNotBefore != "" {
+			retained = "Its retry deadline and review intent are retained; no review is running."
+		}
+		return &ReviewOperationDiagnostic{"This same operation is paused before provider dispatch. " + retained + scope, "Resume/cancel only this undispatched operation with current revision/key. Pause/resume cannot edit head or out-of-order intent. For an authorized replacement, follow review_operation_control guidance and respect any known cooldown; its timer is not transferred." + candidates}
 	}
 	if w.RetryNotBefore != "" {
 		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Keep this request for automatic retry. For an authorized intent change, see queued-only review_operation_control cancellation (CLI reviews operation-control); respect the known cooldown because its timer is not transferred. Pause/resume cannot edit head or out-of-order intent." + candidates}

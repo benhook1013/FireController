@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -116,7 +117,7 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*OperationWait, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, `SELECT o.id FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='queued' AND o.attempt_id='' ORDER BY o.created_at,o.id LIMIT 1`, project, number, channel).Scan(&id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

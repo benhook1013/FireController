@@ -139,7 +139,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 				return preparation, reviewHold("allowance_unavailable")
 			}
 			// A negative observation never grants dispatch permission.
-			_ = d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles})
+			if err := d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}); err != nil {
+				return preparation, reviewHold("allowance_unavailable")
+			}
 			return preparation, reviewHold("allowance_exhausted")
 		}
 		return preparation, reviewHold("allowance_unavailable")

@@ -474,3 +474,38 @@ func TestComparisonMigrationRetainedHistoryLongerBudgetAndRollback(t *testing.T)
 		assertSource() // Corruption is retained for diagnosis, never repaired.
 	})
 }
+
+func TestAttemptRebuildRepairRestoresInvalidationAndProofs(t *testing.T) {
+	for _, stage := range []string{"schema-eight-upgrade", "already-schema-ten"} {
+		t.Run(stage, func(t *testing.T) {
+			f, a, id, _ := coverageFixture(t, 0, false)
+			coverageFinalize(t, f, a, id, 0)
+			for _, event := range []string{"insert", "update", "delete"} {
+				admissionSQL(t, f, "DROP TRIGGER review_comparison_dirty_review_execution_attempts_"+event)
+			}
+			admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
+			// A retained dirty proof must be re-derived from unchanged valid source.
+			admissionSQL(t, f, `UPDATE review_comparison_proofs SET state='dirty'`)
+			if stage == "schema-eight-upgrade" {
+				restorePreCooldownAttemptSchema(t, f)
+				admissionSQL(t, f, `UPDATE metadata SET value='8' WHERE key='schema:review_execution'`)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'review_comparison_dirty_review_execution_attempts_%'`); n != 3 {
+				t.Fatal("attempt triggers lost", n)
+			}
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE state='ready'`); n != 1 {
+				t.Fatal("repair failed to rederive retained proof", n)
+			}
+			admissionSQL(t, f, `UPDATE review_execution_attempts SET revision=revision WHERE id=?`, a.ID)
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE state='dirty'`); n != 1 {
+				t.Fatal("repaired trigger did not invalidate proof", n)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal("idempotent repaired startup", err)
+			}
+		})
+	}
+}

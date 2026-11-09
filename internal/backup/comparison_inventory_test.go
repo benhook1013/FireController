@@ -144,7 +144,7 @@ func TestComparisonInventoryCanonicalSchemaAndInvalidationTriggersRequired(t *te
 		{"wrong-trigger", `DROP TRIGGER review_comparison_repository_changed; CREATE TRIGGER review_comparison_repository_changed AFTER UPDATE ON projects BEGIN SELECT 1; END`},
 		{"unknown-trigger", `CREATE TRIGGER unexpected_comparison BEFORE INSERT ON review_comparison_proofs BEGIN SELECT 1; END`},
 		{"extra-column", `ALTER TABLE review_comparison_proofs ADD COLUMN fabricated_credit INTEGER`},
-		{"wrong-domain-version", `UPDATE metadata SET value='2' WHERE key='schema:review_comparison'`},
+		{"wrong-domain-version", `UPDATE metadata SET value='3' WHERE key='schema:review_comparison'`},
 	}
 	var table, retain, stateIndex, anchorIndex string
 	for _, statement := range reviewexec.ComparisonSchemaSQL() {

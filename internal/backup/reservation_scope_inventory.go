@@ -10,27 +10,33 @@ import (
 // restore. Uniqueness must remain account-wide for CLI and repository-scoped
 // for Hosted, alongside the exact-target and attempt identities.
 func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
+	readError := func() error {
+		if checkContext(ctx) != nil {
+			return unavailable()
+		}
+		return invalid()
+	}
 	type index struct {
 		name, origin string
 		partial      int
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name,origin,partial FROM pragma_index_list('review_execution_reservations') WHERE "unique"=1`)
 	if err != nil {
-		return err
+		return readError()
 	}
 	var indexes []index
 	for rows.Next() {
 		var x index
 		if err = rows.Scan(&x.name, &x.origin, &x.partial); err != nil {
 			rows.Close()
-			return err
+			return readError()
 		}
 		indexes = append(indexes, x)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return err
+		return readError()
 	}
 	if len(indexes) != 4 {
 		return invalid()
@@ -56,7 +62,7 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
 		seen[identity] = true
 		columns, err := db.QueryContext(ctx, `SELECT name,coll,cid FROM pragma_index_xinfo(?) WHERE key=1 ORDER BY seqno`, x.name)
 		if err != nil {
-			return err
+			return readError()
 		}
 		var names []string
 		for columns.Next() {
@@ -64,7 +70,7 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
 			var cid int
 			if err = columns.Scan(&name, &coll, &cid); err != nil {
 				columns.Close()
-				return err
+				return readError()
 			}
 			if !name.Valid || !coll.Valid || coll.String != "BINARY" || cid < 0 {
 				columns.Close()
@@ -75,7 +81,7 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
 		err = columns.Err()
 		columns.Close()
 		if err != nil {
-			return err
+			return readError()
 		}
 		if strings.Join(names, " ") != want {
 			return invalid()
@@ -83,7 +89,7 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
 		if x.partial == 1 {
 			var definition sql.NullString
 			if err = db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=4096 THEN sql END FROM sqlite_schema WHERE type='index' AND name=? AND tbl_name='review_execution_reservations'`, x.name).Scan(&definition); err != nil {
-				return err
+				return readError()
 			}
 			expected := "CREATE UNIQUE INDEX " + x.name + " ON review_execution_reservations(" + strings.ReplaceAll(want, " ", ",") + ") WHERE action_class='" + identity + "'"
 			if !definition.Valid || strings.Join(strings.Fields(definition.String), " ") != expected {
