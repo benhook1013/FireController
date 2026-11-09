@@ -15,8 +15,24 @@ import (
 // scheduler selection and the serialized attempt claim use this same snapshot
 // check; allow_out_of_order concerns dependencies, not scheduling priority.
 func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64) (*Operation, error) {
+	return e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, nil)
+}
+
+type queuePriorityKey struct {
+	project string
+	channel string
+	pull    int64
+}
+
+// An empty predecessor set can be reused only inside one read transaction.
+// Binding-dependent decisions still run separately for every candidate.
+func (e *Engine) earlierQueuedReviewIntentInSnapshot(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool) (*Operation, error) {
 	position := slices.Index(c.Queue, o.PullNumber)
 	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
+		return nil, nil
+	}
+	key := queuePriorityKey{o.ProjectID, o.Channel, o.PullNumber}
+	if empty[key] {
 		return nil, nil
 	}
 	queue, err := json.Marshal(c.Queue)
@@ -48,6 +64,9 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 	// An exact empty predecessor set needs no applicability decision. The
 	// selected operation still faces all normal guards at actual claim.
 	if len(ids) == 0 {
+		if empty != nil {
+			empty[key] = true
+		}
 		return nil, nil
 	}
 	// Inapplicable requests must still reach normal StartAttempt hold handling,

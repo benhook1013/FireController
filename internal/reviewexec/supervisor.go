@@ -164,6 +164,12 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	if err != nil {
 		return nil, err
 	}
+	type configurationSnapshot struct {
+		configuration Configuration
+		revision      int64
+	}
+	configurations := map[string]configurationSnapshot{}
+	emptyPredecessors := map[queuePriorityKey]bool{}
 	out := make([]Operation, 0, len(ids))
 	for _, i := range ids {
 		o, err := readOperation(ctx, tx, i.project, i.operation)
@@ -171,11 +177,17 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			return nil, err
 		}
 		if o.State == "queued" {
-			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
-			if err != nil {
-				return nil, err
+			configuration, ok := configurations[o.ProjectID]
+			if !ok {
+				c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+				if err != nil {
+					return nil, err
+				}
+				configuration = configurationSnapshot{c, revision}
+				configurations[o.ProjectID] = configuration
 			}
-			earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
+			c, revision := configuration.configuration, configuration.revision
+			earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 			if err != nil {
 				return nil, err
 			}
