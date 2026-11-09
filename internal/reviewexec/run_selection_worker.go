@@ -343,11 +343,12 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 		}
 		owned[id] = reader
 	}
-	if len(owned) == 0 {
-		return nil, e.RecoverReviewRuns(ctx)
-	}
 	if !e.runRunning.CompareAndSwap(false, true) {
 		return nil, conflict()
+	}
+	if len(owned) == 0 {
+		defer e.runRunning.Store(false)
+		return nil, e.RecoverReviewRuns(ctx)
 	}
 	if err := e.RecoverReviewRuns(ctx); err != nil {
 		e.runRunning.Store(false)
