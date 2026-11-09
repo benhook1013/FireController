@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -118,7 +117,7 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 		switch r.URL.Path {
 		case base + "source-refreshes":
 			var input client.ReviewSourceRequest
-			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.HeadSHA != assessment.Target.HeadSHA || input.ExpectedConfigurationRevision != 1 || r.Method != "POST" || r.Header.Get("Prefer") != "wait="+strconv.FormatInt(expectedWait.Load(), 10) || r.Header.Get("Idempotency-Key") != "source-once" {
+			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.HeadSHA != assessment.Target.HeadSHA || input.ExpectedConfigurationRevision != 1 || r.Method != "POST" || !boundedReviewWait(r.Header.Get("Prefer"), int(expectedWait.Load())) || r.Header.Get("Idempotency-Key") != "source-once" {
 				t.Error("SDK readiness request/default CI/wait changed")
 			}
 			if expectedWait.Load() == 0 {

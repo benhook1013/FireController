@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		if strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=900" {
+		if strings.Contains(r.URL.Path, "/reviews/operations/") && boundedReviewWait(r.Header.Get("Prefer"), 900) {
 			readStarted <- struct{}{}
 		}
 		f.handler.ServeHTTP(w, r)
@@ -92,4 +93,11 @@ func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 	if posts.Load() != 2 {
 		t.Fatal("invalid selection sent another request")
 	}
+}
+
+// Setup consumes the original result-wait deadline, so the forwarded positive
+// preference may shrink. These fast fixtures must still select a bounded wait.
+func boundedReviewWait(preference string, selected int) bool {
+	seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
+	return err == nil && preference == "wait="+strconv.Itoa(seconds) && seconds <= selected && (seconds > 0 || seconds == 0 && selected == 0)
 }
