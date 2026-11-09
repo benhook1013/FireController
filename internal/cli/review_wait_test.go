@@ -18,6 +18,7 @@ import (
 func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 	f, project, worker := reviewExecutionFixture(t)
 	var posts atomic.Int64
+	var setupStarted atomic.Pointer[time.Time]
 	preferences := make(chan string, 4)
 	readStarted := make(chan struct{}, 1)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +26,10 @@ func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		if strings.Contains(r.URL.Path, "/reviews/operations/") && boundedReviewWait(r.Header.Get("Prefer"), 900) {
+		if strings.Contains(r.URL.Path, "/reviews/operations/") {
+			if !boundedReviewWait(r.Header.Get("Prefer"), 900, setupStarted.Load()) {
+				t.Error("operation wait was shortened beyond elapsed setup time")
+			}
 			readStarted <- struct{}{}
 		}
 		f.handler.ServeHTTP(w, r)
@@ -44,6 +48,8 @@ func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 	if <-preferences != "wait=0" || encodeString(first) != encodeString(replay) || posts.Load() != 2 {
 		t.Fatal("detaching changed the durable request or original receipt")
 	}
+	readStartedAt := time.Now()
+	setupStarted.Store(&readStartedAt)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan struct {
@@ -95,9 +101,17 @@ func TestReviewResultCLIWaitAndDetachUseOneRetainedAction(t *testing.T) {
 	}
 }
 
-// Setup consumes the original result-wait deadline, so the forwarded positive
-// preference may shrink. These fast fixtures must still select a bounded wait.
-func boundedReviewWait(preference string, selected int) bool {
+// Setup consumes the original result-wait deadline. A forwarded wait may lose
+// only that elapsed setup time plus the rounding to whole wire seconds.
+func boundedReviewWait(preference string, selected int, started *time.Time) bool {
+	if started == nil {
+		return false
+	}
+	elapsed := time.Since(*started)
+	if elapsed < 0 {
+		return false
+	}
+	minimum := max(0, selected-int((elapsed+time.Second-1)/time.Second))
 	seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
-	return err == nil && preference == "wait="+strconv.Itoa(seconds) && seconds <= selected && (seconds > 0 || seconds == 0 && selected == 0)
+	return err == nil && preference == "wait="+strconv.Itoa(seconds) && seconds >= minimum && seconds <= selected
 }
