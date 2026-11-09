@@ -22,8 +22,8 @@ func sourcePins(t *testing.T, f *apiFixture, numbers ...int64) map[int64]SourceM
 	}
 	return pins
 }
-func sourcePublish(f *apiFixture, pins map[int64]SourceMetadataPin, pulls ...PullInput) (Receipt, error) {
-	var receipt Receipt
+func sourcePublish(f *apiFixture, pins map[int64]SourceMetadataPin, pulls ...PullInput) (SourcePublication, error) {
+	var receipt SourcePublication
 	err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		receipt, err = PublishSourceMetadata(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "source-fixture"}, 701, pins, pulls)
@@ -213,6 +213,9 @@ func TestSourceMetadataInvalidOptionalEntryPreservesOtherPublication(t *testing.
 			r, err := sourcePublish(f, sourcePins(t, f, 1, 2), bad, good)
 			if err != nil || r.ID == "" {
 				t.Fatal("optional refusal blocked valid peer publication", r, err)
+			}
+			if !reflect.DeepEqual(r.InvalidPulls, []int64{1}) {
+				t.Fatal("invalid provider record was silently dropped", r)
 			}
 			if got := metadataRead(t, f, 1, "").Pull; !reflect.DeepEqual(before, got) {
 				t.Fatal("invalid candidate changed current facts", got)

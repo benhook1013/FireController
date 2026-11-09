@@ -65,6 +65,13 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	}
 	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: stamp()}
 	display := sourceDisplayPull(plan)
+	// Reject invalid display fields before claiming a current comparison or
+	// doing enrichment. The publisher can omit invalid records in a batch,
+	// but a skipped PR must never count as a successful lifecycle observation.
+	if !reviews.ValidSourceDisplayMetadata(display) {
+		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
+		return nil
+	}
 	state, head = display.State, pull.HeadSHA
 	mergeability := pull.Mergeability
 	if mergeability != "mergeable" && mergeability != "conflicting" {

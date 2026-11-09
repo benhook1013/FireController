@@ -98,7 +98,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 				delay = max(delay, retry)
 			}
 		}
-		if candidate != nil {
+		if candidate != nil || err != nil && lastCheck != nil {
 			d.engine.ScheduleHostedObserver(lastCheck, time.Now().UTC().Add(delay))
 		}
 		if err := wait(ctx, delay); err != nil {
