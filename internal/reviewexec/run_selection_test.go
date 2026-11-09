@@ -588,3 +588,115 @@ func runNextWithSourceMutation(t *testing.T, f *attemptFixture, reader *refreshT
 	<-finished
 	return worked, err
 }
+
+func TestRunSelectionReaderlessRecoveryCannotResetLiveWorker(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "live-readerless-guard", "cli", nil)
+	entered := make(chan struct{})
+	var once sync.Once
+	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := f.e.StartReviewRuns(ctx, map[string]TargetReader{"test-capability": reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("live selection worker did not join")
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("live selection reader did not start")
+	}
+	before := selectionRead(t, f, receipt.ID)
+	counts := selectionCounts(t, f)
+	recovery, err := f.e.StartReviewRuns(t.Context(), nil)
+	attemptCode(t, err, "review_conflict")
+	if recovery != nil || !f.e.runRunning.Load() || !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
+		t.Fatal("reader-less start changed a live selection or its owner")
+	}
+}
+
+func TestRunSelectionReaderlessRecoveryOwnsLifetimeAndReleasesAfterFailure(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "readerless-recovery-owner", "cli", nil)
+	claim, cancelClaim := context.WithCancel(t.Context())
+	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+		cancelClaim()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	if _, err := f.e.runNext(claim, map[string]TargetReader{"test-capability": reader}); err != nil {
+		t.Fatal(err)
+	}
+	cancelClaim()
+	if selectionRead(t, f, receipt.ID).State != "selecting" {
+		t.Fatal("fixture did not retain an interrupted read")
+	}
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_readerless_recovery BEFORE UPDATE ON review_selections BEGIN SELECT RAISE(ABORT,'synthetic recovery failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	before := selectionRead(t, f, receipt.ID)
+	counts := selectionCounts(t, f)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWriter := func() { releaseOnce.Do(func() { close(release) }) }
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- f.store.BackgroundWrite(t.Context(), func(context.Context, *sql.Tx) error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	t.Cleanup(func() {
+		releaseWriter()
+		select {
+		case <-writerDone:
+		case <-time.After(5 * time.Second):
+			t.Error("fixture writer did not join")
+		}
+	})
+	recoveryDone := make(chan error, 1)
+	go func() {
+		defer close(recoveryDone)
+		_, err := f.e.StartReviewRuns(t.Context(), nil)
+		recoveryDone <- err
+	}()
+	t.Cleanup(func() {
+		releaseWriter()
+		select {
+		case <-recoveryDone:
+		case <-time.After(5 * time.Second):
+			t.Error("reader-less recovery did not join")
+		}
+	})
+	// The reader-less starter must own the same lifetime while blocked on local
+	// writer admission, so a second starter cannot recover the same live rows.
+	waitSupervisor(t, "reader-less recovery did not acquire ownership", func() bool { return f.e.runRunning.Load() })
+	other, err := f.e.StartReviewRuns(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+	attemptCode(t, err, "review_conflict")
+	if other != nil {
+		t.Fatal("second starter acquired recovery ownership")
+	}
+	releaseWriter()
+	if err := <-recoveryDone; err == nil || f.e.runRunning.Load() {
+		t.Fatal("failed recovery leaked ownership", err)
+	}
+	if !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
+		t.Fatal("failed recovery retained partial journal changes")
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_readerless_recovery`); err != nil {
+		t.Fatal(err)
+	}
+	done, err := f.e.StartReviewRuns(t.Context(), nil)
+	if err != nil || done != nil || f.e.runRunning.Load() || selectionRead(t, f, receipt.ID).State != "queued" {
+		t.Fatal("reader-less recovery did not release successful ownership", err)
+	}
+}

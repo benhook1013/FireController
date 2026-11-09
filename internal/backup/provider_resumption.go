@@ -161,7 +161,12 @@ func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionR
 	}
 	selections, err := reviewexec.AbandonReviewRuns(ctx, tx, at)
 	if err != nil {
-		return zero, providerResumptionValidationError(ctx, err)
+		err = providerResumptionValidationError(ctx, err)
+		var failure *core.Error
+		if !errors.As(err, &failure) {
+			err = core.Fail("restore_reconciliation_invalid", "Retained provider work is inconsistent; no provider release was authorized.", 409)
+		}
+		return zero, err
 	}
 	counts, err := reviewexec.AbandonRestoredProviderWork(ctx, tx, status.InstanceID, at)
 	if err != nil {
