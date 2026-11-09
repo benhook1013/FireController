@@ -245,6 +245,9 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 		t.Fatal("packaged quiet wait lost cursor, deadline or reconnect", page, streams.Load())
 	}
 	recoverInbox.Store(false)
+	if identities.Load() < 2 {
+		t.Fatal("injected identity outage was not retried", identities.Load())
+	}
 
 	if err = session.Close(); err != nil || stderr.len() != 0 {
 		t.Fatal("packaged MCP shutdown failed")

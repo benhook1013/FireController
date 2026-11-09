@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -70,8 +71,11 @@ func TestResultWaitReconnectLimitsFailuresAndHonorsCancellation(t *testing.T) {
 			ctx, cancel = context.WithTimeout(t.Context(), 10*time.Millisecond)
 		}
 		calls = 0
-		err := resumeResultWait(ctx, 10, func(context.Context, int) error {
+		err := resumeResultWait(ctx, 10, func(ctx context.Context, _ int) error {
 			calls++
+			if deadline {
+				<-ctx.Done()
+			}
 			if !deadline {
 				cancel()
 			}
@@ -86,5 +90,41 @@ func TestResultWaitReconnectLimitsFailuresAndHonorsCancellation(t *testing.T) {
 		if !errors.As(err, &failure) || failure.Code != code || calls != 1 {
 			t.Fatal("caller interruption retried or became quiet expiry", err, calls)
 		}
+	}
+}
+
+func TestResultWaitReservesFinalReadWithinCallerBudget(t *testing.T) {
+	for _, remaining := range []time.Duration{3 * time.Second, 8 * time.Second, 46 * time.Second} {
+		t.Run(remaining.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), remaining)
+				defer cancel()
+				want := int(max(0, remaining-requestTimeout) / time.Second)
+				var waits []int
+				err := resumeResultWait(ctx, 50, func(ctx context.Context, seconds int) error {
+					waits = append(waits, seconds)
+					if ctx.Err() != nil {
+						t.Fatal("read escaped caller budget", ctx.Err())
+					}
+					if len(waits) == 1 {
+						if seconds != want {
+							t.Fatalf("first read wait=%d, want %d", seconds, want)
+						}
+						if seconds == 0 {
+							return nil
+						}
+						time.Sleep(time.Duration(seconds) * time.Second)
+						return &Error{Code: "overloaded", Status: 503, Details: map[string]any{"reason": "result_wait_lifetime"}}
+					}
+					if seconds != 0 || len(waits) != 2 {
+						t.Fatal("final read repeated or reset wait", waits)
+					}
+					return nil
+				})
+				if err != nil || ctx.Err() != nil || len(waits) != 1 && len(waits) != 2 {
+					t.Fatal(err, ctx.Err(), waits)
+				}
+			})
+		})
 	}
 }

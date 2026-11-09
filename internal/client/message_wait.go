@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -174,11 +173,11 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 				return interrupted()
 			}
 			if err != nil {
-				var transport net.Error
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &transport) {
-					return MessageEventPage{}, messageWaitConnectionFailure("The message connection was lost.")
+				var invalid *Error
+				if errors.As(err, &invalid) {
+					return MessageEventPage{}, invalidResponse()
 				}
-				return MessageEventPage{}, invalidResponse()
+				return MessageEventPage{}, messageWaitConnectionFailure("The message connection was lost.")
 			}
 			if frame.event == "error" {
 				if frame.id != "" {
