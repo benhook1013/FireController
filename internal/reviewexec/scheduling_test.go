@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -234,7 +233,7 @@ func TestSchedulingAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) {
 		t.Fatal("withdrawn manager claimed attempt", a, err)
 	}
 }
-func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
+func TestSchedulingPausedFrontKeepsCLIHoldAndHostedLookahead(t *testing.T) {
 	f := schedulingFixture(t)
 	schedulingPause(t, f, 2, 0, true)
 	r, _ := selectionEnqueue(t, f, "independent-paused", "hosted", nil)
@@ -247,7 +246,8 @@ func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
 	if err != nil || op.PullNumber != 4 {
 		t.Fatal(op, err)
 	}
-	// The same evaluator cannot turn a paused parent into earned completion.
+	// Pausing the parent still holds CLI dependants. Hosted discovery can
+	// advance without turning the paused parent into earned completion.
 	err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		base := strings.Repeat("b", 40)
 		head := strings.Repeat("a", 40)
@@ -260,8 +260,15 @@ func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if front != 4 || reason != "" {
+			t.Fatalf("Hosted child did not pass paused parent: %d %s", front, reason)
+		}
+		front, reason, err = f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "cli"}, 801, plans)
+		if err != nil {
+			return err
+		}
 		if front != 0 || reason != "pull_scheduling_paused" {
-			t.Fatalf("dependent PR passed paused parent: %d %s", front, reason)
+			t.Fatalf("CLI dependency bypassed paused parent: %d %s", front, reason)
 		}
 		return nil
 	})
@@ -451,18 +458,12 @@ func TestSchedulingAutomaticIndependentProgressAcrossRetainedEvidence(t *testing
 			}
 			selectionNext(t, f, reader)
 			r := schedulingLatest(t, f)
-			if dependent {
-				if r.State != "held" || r.OperationID != "" {
-					t.Fatal("dependency bypassed", r)
-				}
-			} else {
-				if r.State != "selected" {
-					t.Fatal(r)
-				}
-				op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), r.OperationID)
-				if err != nil || op.PullNumber != 4 {
-					t.Fatal(op, err)
-				}
+			if r.State != "selected" {
+				t.Fatal(r)
+			}
+			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), r.OperationID)
+			if err != nil || op.PullNumber != 4 || op.AllowOutOfOrder {
+				t.Fatal("Hosted selected an incorrect target or bypass intent", op, err)
 			}
 			schedulingGenerate(t, f, false)
 		})
@@ -675,7 +676,7 @@ func schedulingStackReader() *refreshTestReader {
 	r.parents = map[string]reviewprovider.Pull{"branch-two": func() reviewprovider.Pull { p := schedulingPull(2); p.HeadRef = "branch-two"; return p }()}
 	return r
 }
-func TestSchedulingDependentHeldChildReleasesAfterParentTapersAtSameHead(t *testing.T) {
+func TestSchedulingHistoricalDependencyHoldReconsidersAfterParentChange(t *testing.T) {
 	f := schedulingFixture(t)
 	schedulingCleanHosted(t, f, 1, 81)
 	one := int64(1)
@@ -716,15 +717,11 @@ func TestSchedulingDependentHeldChildReleasesAfterParentTapersAtSameHead(t *test
 		}
 		return verifyPredecessors(ctx, tx, attemptProject, current, anchor, []SourcePlan{parent})
 	})
-	attemptCode(t, err, "review_held")
-	var failure *core.Error
-	if !errors.As(err, &failure) {
-		t.Fatal(err)
+	if err != nil {
+		t.Fatal("ancestor round reopening blocked Hosted look-ahead", err)
 	}
-	details, ok := failure.Details.(map[string]string)
-	if !ok || details["reason"] != "predecessor_unfinished" {
-		t.Fatal("not the genuine dependency hold", failure)
-	}
+	// Retain a pre-look-ahead historical hold. The new policy must not rewrite
+	// its outcome; a meaningful parent change can still authorize a new intent.
 	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "predecessor_unfinished", ""); err != nil {
 		t.Fatal(err)
 	}

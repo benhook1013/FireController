@@ -115,13 +115,24 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 					break
 				}
 				seen[parentNumber] = true
-				parentState, err := e.evaluateFrontPlan(ctx, q, r, repo, parent)
-				if err != nil {
-					return evaluatedFront{}, err
-				}
-				if parentState.state != "complete" {
-					result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
-					break
+				if r.Channel == "hosted" {
+					// Hosted can discover a child's own diff while ancestor
+					// findings await handling. Only the verified source chain is
+					// required here; none of its review obligations is cleared.
+					// Cached frames intentionally omit rich provider metadata.
+					if parent.Repository.ID != repo || !sameTarget(parent.Pull, repo, parentNumber) || parent.SourceReason != "" || parent.Pull.State != "open" || parent.Pull.Merged || parent.Pull.IsDraft != nil && *parent.Pull.IsDraft {
+						result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
+						break
+					}
+				} else {
+					parentState, err := e.evaluateFrontPlan(ctx, q, r, repo, parent)
+					if err != nil {
+						return evaluatedFront{}, err
+					}
+					if parentState.state != "complete" {
+						result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
+						break
+					}
 				}
 				parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
 			}

@@ -230,6 +230,15 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
+		if current.Operation.Channel == "hosted" {
+			// Look-ahead removes ancestor progress as a dispatch prerequisite,
+			// not the exact source witness or the target's own admission gates.
+			if plan.Pull.IsDraft != nil && *plan.Pull.IsDraft {
+				return invalid()
+			}
+			number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
+			continue
+		}
 		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
 			return err
 		}

@@ -208,12 +208,17 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			}
 			return plan, nil, err
 		}
-		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
-		if err != nil {
-			return plan, nil, err
-		}
-		if !covered {
-			return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
+		// Hosted discovery can advance while ancestor findings or rounds are
+		// unfinished. Keep every fresh source witness for final admission;
+		// the selected PR's own evidence guards above still apply.
+		if operation.Channel != "hosted" {
+			covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
+			if err != nil {
+				return plan, nil, err
+			}
+			if !covered {
+				return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
+			}
 		}
 		predecessors = append(predecessors, preceding)
 		number = preceding.ParentPullNumber

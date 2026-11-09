@@ -8,7 +8,7 @@ The service stores bounded source frames from native queue selection and exposes
 
 Expose a provider-free, as-of explanation of each configured channel's current position. Hosted and CLI can have different fronts. This display does not reserve capacity, authorize dispatch, establish CI readiness or permit a merge. Actual requests continue to acquire fresh source facts and use the canonical native admission path.
 
-The native queue-selection evaluator owns ordering and holds. Completed local requirements and merged PRs are skipped. Unresolved routes, evidence or comparison-local source problems hold that PR and its actual dependants, while an independent verified PR later in the priority queue can become the front. Account, transport and configuration failures remain source-wide holds. The first eligible open PR is the front. The display reuses that evaluator rather than implementing another interpretation of the rules.
+The native queue-selection evaluator owns ordering and holds. Completed local requirements and merged PRs are skipped. Unresolved routes or evidence hold that PR. They also hold its CLI dependants, but Hosted can advance to a ready child whose full named-parent source chain remains verified. Comparison-local source problems still hold actual dependants in both channels. An independent verified PR later in the priority queue can also become the front. Account, transport and configuration failures remain source-wide holds. The first eligible open PR is the front. The display reuses that evaluator rather than implementing another interpretation of the rules.
 
 ## Bounded source cache
 

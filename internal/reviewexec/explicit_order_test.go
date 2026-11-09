@@ -206,7 +206,11 @@ func TestExplicitOrderFinalGuardBypassesOnlyProgressionBothChannels(t *testing.T
 					hostedAdmissionVerify(t, f, a, "validation_failed", "", predecessor)
 				} else {
 					hostedAdmissionVerify(t, f, a, "validation_failed", "")
-					hostedAdmissionVerify(t, f, a, "review_held", "predecessor_unfinished", predecessor)
+					if channel == "hosted" {
+						hostedAdmissionVerify(t, f, a, "", "", predecessor)
+					} else {
+						hostedAdmissionVerify(t, f, a, "review_held", "predecessor_unfinished", predecessor)
+					}
 				}
 				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`)+attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
 					t.Fatal("bypass manufactured credit")
