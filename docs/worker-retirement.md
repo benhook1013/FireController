@@ -14,7 +14,7 @@ GET `/api/v1/projects/{project_id}/workers/{worker_id}/retirement` reads preview
 
 CLI exposes `workers retirement WORKER_ID`, `workers retire WORKER_ID --key KEY`, and `workers list --include-retired`. MCP exposes `worker_retirement_read`, `worker_retire` and the explicit `workers_list.include_retired` option. Cursors are bound to active versus archive views. Direct worker reads retain historical identities.
 
-A manager may inspect another worker's inbox and explicitly acknowledge a selected message using `inbox ack MESSAGE_ID --worker WORKER_ID --key KEY` or MCP `inbox_ack` with `worker_id`. The selected recipient is in the request body; the authenticated principal and actual acting worker are unchanged. Current management is checked before receipt replay and inside the mutation. Ordinary empty-body acknowledgement keeps its original wire and receipt identity. Added durable acting-worker audit detail is not exposed through the legacy incoming-message feed.
+Any project reader may inspect a selected worker's inbox. Acknowledging a message for another recipient requires project management, using `inbox ack MESSAGE_ID --worker WORKER_ID --key KEY` or MCP `inbox_ack` with `worker_id`. The selected recipient is in the request body; the authenticated principal and actual acting worker are unchanged. Current management is checked before receipt replay and inside the mutation. Ordinary empty-body acknowledgement keeps its original wire and receipt identity. Added durable acting-worker audit detail is not exposed through the legacy incoming-message feed.
 
 ## Persistence and scope
 

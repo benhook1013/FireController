@@ -158,6 +158,38 @@ func allDiscoveredTools(t *testing.T, session *mcp.ClientSession) (*mcp.ListTool
 	return nil, nil
 }
 
+func TestAdministrationDiscoveryDescribesAuthority(t *testing.T) {
+	path := profiles(t, map[string]profile.Context{"alpha": localContext()}, "missing-private-token")
+	for _, version := range mcp.SupportedProtocolVersions() {
+		t.Run(version, func(t *testing.T) {
+			cs := connect(t, adapter(t, path, "alpha"), version)
+			tools, err := allDiscoveredTools(t, cs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contracts := map[string][]string{
+				"inbox_list":                     {"bound worker", "worker_id", "project read permission", "acting identity unchanged", "never mark seen or acknowledged"},
+				"inbox_ack":                      {"bound recipient", "worker_id", "another recipient requires project management", "acting identity unchanged", "also establishing seen", "supplied key"},
+				"publication_configuration_read": {"Requires instance administration"},
+				"publication_preview":            {"Requires instance administration"},
+				"publication_apply":              {"Requires instance administration"},
+				"publication_unpublish":          {"Requires instance administration"},
+			}
+			for _, tool := range tools.Tools {
+				for _, fragment := range contracts[tool.Name] {
+					if !strings.Contains(tool.Description, fragment) {
+						t.Errorf("%s discovery omits %q: %s", tool.Name, fragment, tool.Description)
+					}
+				}
+				delete(contracts, tool.Name)
+			}
+			if len(contracts) != 0 {
+				t.Fatal("authority-described tools missing from discovery", contracts)
+			}
+		})
+	}
+}
+
 func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 	c := localContext()
 	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing-private-token")
