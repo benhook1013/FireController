@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -130,5 +131,103 @@ func TestCIWatchClientInvalidTargetsStayLocal(t *testing.T) {
 	}
 	if client.ValidateCIWatchTargets(max) != nil || client.ValidateCIWatchTargets(append(max, client.CIWatchTarget{PullNumber: 21, HeadSHA: strings.Repeat("a", 40)})) == nil {
 		t.Fatal("target bound changed")
+	}
+}
+
+func TestCIWatchFailedTransportRetainsCompleteOriginalPins(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{"connection", 0, "connection_failed"},
+		{"bad-gateway", 502, "service_unavailable"},
+		{"unavailable", 503, "service_unavailable"},
+		{"gateway-timeout", 504, "service_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var posts atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				posts.Add(1)
+				if test.status == 0 {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_ = conn.Close()
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("temporary upstream failure"))
+			}))
+			defer service.Close()
+			pins := ciWatchPins()
+			pins[0].AfterObservationKey = strings.Repeat("c", 64)
+			pins[0].FailureWorkflowIDs = []int64{17, 19}
+			c := newClient(t, service)
+			defer c.Close()
+			_, err := c.WatchCI(t.Context(), pins, 0)
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Code != test.code || failure.Status != test.status || failure.OutcomeUnknown {
+				t.Fatal("transport classification changed", err)
+			}
+			details, ok := failure.Details.(map[string]any)
+			if !ok || !reflect.DeepEqual(details["targets"], pins) {
+				t.Fatal("terminal transport failure lost original pins", failure)
+			}
+			if test.status == 0 && details["transport"] == nil {
+				t.Fatal("pin enrichment discarded transport proof")
+			}
+			if posts.Load() != 1 {
+				t.Fatal("immediate read retried", posts.Load())
+			}
+		})
+	}
+}
+
+func TestCIWatchCapabilityRefusalPrecedesStrictSuccessDecode(t *testing.T) {
+	for _, test := range []struct {
+		name, ack, body, code string
+		status                int
+		duplicate             bool
+	}{
+		{"legacy-shape", "", `{"legacy_result":true}`, "unsupported_operation", 200, false},
+		{"old-version", "change-v2", `{malformed`, "unsupported_operation", 200, false},
+		{"ambiguous-ack", "change-v3", `{malformed`, "unsupported_operation", 200, true},
+		{"acknowledged-malformed", "change-v3", `{malformed`, "invalid_response", 200, false},
+		{"auth-refusal", "", `{"error":{"code":"unauthorized","message":"Access refused."},"request_id":"request-one"}`, "unauthorized", 401, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var posts atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				posts.Add(1)
+				if test.ack != "" {
+					w.Header().Add("X-FC-CI-Watch", test.ack)
+				}
+				if test.duplicate {
+					w.Header().Add("X-FC-CI-Watch", test.ack)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			defer c.Close()
+			_, err := c.WatchCI(t.Context(), ciWatchPins(), 0)
+			checkError(t, err, test.code)
+			if posts.Load() != 1 {
+				t.Fatal("capability refusal retried", posts.Load())
+			}
+		})
 	}
 }

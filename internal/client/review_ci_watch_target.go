@@ -28,7 +28,9 @@ func ciWatchTargetError(err error, operationID string, targets []CIWatchTarget) 
 	local := failure.Status == 0 && oneReviewOf(failure.Code, "canceled", "deadline_exceeded")
 	ciRefusal := operationID == "" && ValidateCIWatchTargets(targets) == nil && ciWatchRefusalReason(details["reason"]) &&
 		(failure.Code == "overloaded" && failure.Status == http.StatusServiceUnavailable || failure.Code == "storage_unavailable" && failure.Status == http.StatusInternalServerError)
-	if !shutdown && !local && !ciRefusal {
+	transport := failure.Status == 0 && failure.Code == "connection_failed"
+	gateway := failure.Code == "service_unavailable" && (failure.Status == http.StatusBadGateway || failure.Status == http.StatusServiceUnavailable || failure.Status == http.StatusGatewayTimeout)
+	if !shutdown && !local && !ciRefusal && !transport && !gateway {
 		return err
 	}
 	if operationID != "" {

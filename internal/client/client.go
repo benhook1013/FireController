@@ -534,14 +534,14 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 	if wait != nil {
 		*wait.status = response.StatusCode
 	}
+	if wait != nil && wait.ciWatchChange && (len(response.Header.Values("X-FC-CI-Watch")) != 1 || response.Header.Get("X-FC-CI-Watch") != "change-v3") {
+		return fail("unsupported_operation", "The service did not acknowledge CI watch change-v3.", "Use matching deployed server and client releases; deploy the backend before installing this client. Passed-result rearming is unconfirmed. No automatic retry or fallback was attempted.", response.StatusCode)
+	}
 	if decode(data, dst) != nil || c.hasSensitive(dst) {
 		if mutation {
 			return unknownRequest("invalid_response", operation, "receipt was invalid", response.StatusCode)
 		}
 		return invalidResponse()
-	}
-	if wait != nil && wait.ciWatchChange && (len(response.Header.Values("X-FC-CI-Watch")) != 1 || response.Header.Get("X-FC-CI-Watch") != "change-v3") {
-		return fail("unsupported_operation", "The service did not acknowledge CI watch change-v3.", "Use matching deployed server and client releases; deploy the backend before installing this client. Passed-result rearming is unconfirmed. No automatic retry or fallback was attempted.", response.StatusCode)
 	}
 	return nil
 }
