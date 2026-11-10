@@ -421,7 +421,7 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 			r.Header.Set("X-FC-CI-Workflow-Details", "3")
 		}
 		if wait.operationWait {
-			r.Header.Set("X-FC-Operation-Wait", "2")
+			r.Header.Set("X-FC-Operation-Wait", "3")
 		}
 		if wait.hostedObserver && method == http.MethodGet {
 			r.Header.Set("X-FC-Hosted-Observer", "1")

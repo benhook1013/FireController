@@ -407,3 +407,47 @@ func TestCLIDraftAfterThrottledProbeRetainsExplicitIntent(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIDraftWaitMissingDriverSettlesOriginalIntent(t *testing.T) {
+	for _, kind := range []string{"missing", "nil", "without-source-interface", "nil-source-reader"} {
+		t.Run(kind, func(t *testing.T) {
+			f := supervisorFixture(t)
+			request := f.enqueue(t, attemptProject, "draft-driver-original", "cli", 2, 1)
+			original := cliWaitRead(t, f, request.ID)
+			if err := f.e.recordCLIDraftDecision(t.Context(), original, cliDraftWait); err != nil {
+				t.Fatal(err)
+			}
+			drivers := map[string]Driver{}
+			switch kind {
+			case "nil":
+				drivers["test-capability"] = nil
+			case "without-source-interface":
+				drivers["test-capability"] = &controlledDriver{}
+			case "nil-source-reader":
+				drivers["test-capability"] = &draftWaitDriver{}
+			}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal(err)
+			}
+			got := cliWaitRead(t, f, request.ID)
+			missing := kind == "missing" || kind == "nil"
+			if missing {
+				if got.State != "held" || got.Reason != "capability_unavailable" || got.AttemptID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+					t.Fatal("missing driver stranded Draft intent", got)
+				}
+				// The terminal original no longer blocks another authorized exact request.
+				if next := f.enqueue(t, attemptProject, "draft-driver-next", "cli", 2, 1); next.ID == request.ID {
+					t.Fatal("new key adopted old intent")
+				}
+			} else if got.State != "queued" || got.Reason != cliDraftWait || got.AttemptID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+				t.Fatal("registered source-less driver changed Draft wait", got)
+			}
+			if replay := f.enqueue(t, attemptProject, "draft-driver-original", "cli", 2, 1); replay.ID != request.ID {
+				t.Fatal("original request identity lost")
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("missing or source-less driver retained capacity")
+			}
+		})
+	}
+}

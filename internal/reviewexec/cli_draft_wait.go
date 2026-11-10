@@ -78,7 +78,16 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	if selected {
 		return true, false, false, nil
 	}
-	driver, ok := drivers[execution.Configuration.CapabilityID].(interface{ SourceReader() TargetReader })
+	registered := drivers[execution.Configuration.CapabilityID]
+	if registered == nil {
+		if waiting {
+			// A missing driver cannot establish Draft readiness. Settle the
+			// local capability hold without inventing readiness or an attempt.
+			return false, false, false, e.recordCLIDraftDecision(ctx, o, "capability_unavailable")
+		}
+		return true, false, false, nil
+	}
+	driver, ok := registered.(interface{ SourceReader() TargetReader })
 	if !ok || driver.SourceReader() == nil {
 		return !waiting, false, false, nil
 	}
