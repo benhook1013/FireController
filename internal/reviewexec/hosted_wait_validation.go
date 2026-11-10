@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -13,6 +14,7 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `SELECT coalesce(o.project_id,''),w.operation_id FROM review_operation_waits w LEFT JOIN review_operations o ON o.id=w.operation_id
 		UNION SELECT project_id,id FROM review_operations WHERE reason=?
 		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE t.reason=?
+		UNION SELECT o.project_id,o.id FROM review_operations o JOIN review_execution_attempts a ON a.operation_id=o.id JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE a.id<>o.attempt_id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed')
 		ORDER BY 2`, cliDraftWait, cliDraftWait)
 	if err != nil {
 		return err
@@ -92,8 +94,11 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			foundCurrent = true
 			continue
 		}
-		_, draft, err := historicalCLIDraftOperation(ctx, tx, o, a)
+		_, draft, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return waitUnavailable()
+			}
 			return err
 		}
 		if draft {
@@ -118,7 +123,13 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 		var due time.Time
 		if o.Channel == "cli" {
 			record, err := readCLIAllowanceRecord(ctx, tx, historical, a)
-			if err != nil || record.Observation.Remaining != 0 {
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+					return waitUnavailable()
+				}
+				return err
+			}
+			if record.Observation.Remaining != 0 {
 				return waitUnavailable()
 			}
 			due, err = cliExhaustionDeadline(ctx, tx, a)
@@ -127,7 +138,13 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			}
 		} else {
 			record, err := readHostedAllowanceRecord(ctx, tx, historical, a)
-			if err != nil || record.Input.Observation.State != "cooldown_observed" {
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+					return waitUnavailable()
+				}
+				return err
+			}
+			if record.Input.Observation.State != "cooldown_observed" {
 				return waitUnavailable()
 			}
 			var at string

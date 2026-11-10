@@ -121,6 +121,11 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if _, ok := initial.tables["review_front_frames"]; !ok || initial.counts["review_front_frames"] != 0 {
 		t.Fatal("fresh packaged front cache is absent or already populated")
 	}
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		if _, ok := initial.tables[name]; !ok || initial.counts[name] != 0 {
+			t.Fatal("fresh selection fixture must have empty notification tables", name)
+		}
+	}
 	// The enabled automatic observer starts independently of explicit selection.
 	// Hold both lanes' first source GETs before submitting any selection, so exact
 	// selection counts and metadata conservation have a deterministic boundary.
@@ -224,6 +229,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		}
 	}
 	assertSelected(selected)
+	// The deliberate preparation refusal is actionable, so it must create one
+	// requester-only Controller notice, not review completion or PR2 credit.
+	originalNotice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID)
 	gitBefore, err := os.ReadFile(gitLog)
 	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 1 || bytes.Contains(gitBefore, []byte(providerToken)) {
 		t.Fatal("trusted Git fixture was not invoked safely")
@@ -385,6 +393,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	daemon.stop(t)
 	firstObserver.awaitCancelled(t, ctx)
 	beforeRestart := readUpgradeState(t, ctx, data)
+	if notice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID); notice != originalNotice {
+		t.Fatal("reads, exact replay or lost-output recovery changed the original stopped notice")
+	}
 	// Explicit selection follows only the PR whose native child was admitted.
 	// Inspect the stopped daemon's database read-only, without adding API traffic.
 	if initial.counts["review_pr_followers"] != 0 || beforeRestart.counts["review_pr_followers"] != 1 {
@@ -405,8 +416,13 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 1, []int64{3, 2}, false)
 	afterConfig := readUpgradeState(t, ctx, data)
-	if afterConfig.tables["review_pr_followers"] != beforeRestart.tables["review_pr_followers"] || afterConfig.counts["review_pr_followers"] != 1 {
-		t.Fatal("configuration edit changed the original selection's follower")
+	for _, name := range []string{"review_pr_followers", "inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		if beforeRestart.counts[name] != 1 || afterConfig.tables[name] != beforeRestart.tables[name] || afterConfig.counts[name] != 1 {
+			t.Fatal("configuration edit changed the original selection's follower or stopped notice", name)
+		}
+	}
+	if notice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID); notice != originalNotice {
+		t.Fatal("configuration edit changed the original stopped-notice event")
 	}
 	secondObserver := provider.holdNextObserver(t)
 	restarted := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
@@ -452,6 +468,11 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	// The exact one-row follower delta was asserted above; final deep equality
 	// still protects it through configuration changes, replay, reads and restart.
 	changed["review_pr_followers"] = true
+	// Only the three exact one-row stopped-notice deltas proved above are
+	// allowed; their contents and event remain immutable through recovery.
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		changed[name] = true
+	}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
@@ -481,7 +502,71 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 stopped_notices=1 notice_conversations=1 notice_recipients=1 notice_events=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
+}
+
+// Exact immutable values outside the fixed fields checked by the joined query.
+// Comparing this record before and after replay also protects the notice event
+// while unrelated operation/configuration events legitimately advance.
+type runSelectionStoppedNotice struct {
+	messageID, conversationID, messageAt, eventAt, actor, payload string
+	messageSequence, eventSequence                                int64
+}
+
+func readRunSelectionStoppedNotice(t *testing.T, ctx context.Context, data, project, worker, operation string) runSelectionStoppedNotice {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, stepTimeout)
+	defer cancel()
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(data, "firecontroller.sqlite")), RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal("selection notification snapshot unavailable")
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal("selection notification snapshot transaction unavailable")
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`SELECT count(*) FROM inbox_conversations`,
+		`SELECT count(*) FROM inbox_messages`,
+		`SELECT count(*) FROM inbox_recipient_state`,
+		`SELECT count(*) FROM events WHERE event_type='message.sent'`,
+	} {
+		var count int
+		if err = tx.QueryRowContext(ctx, query).Scan(&count); err != nil || count != 1 {
+			t.Fatal("selection did not retain exactly one stopped notice, root, recipient and event")
+		}
+	}
+	body := "CLI review request stopped for PR #3.\nThis review request stopped before review dispatch.\nOperation: " + operation + "\nRead the original operation and current PR state before acting. Acknowledge this notice once handled."
+	var notice runSelectionStoppedNotice
+	// Every table has exactly one notice row. Require its real requester,
+	// one-way root, untouched pending receipt and original held operation.
+	err = tx.QueryRowContext(ctx, `SELECT m.id,m.conversation_id,m.sequence,m.created_at,e.sequence,e.created_at,e.actor_id,e.payload_json
+ FROM inbox_messages m
+ JOIN inbox_conversations c ON c.project_id=m.project_id AND c.id=m.conversation_id AND c.root_message_id=m.id
+ JOIN inbox_recipient_state r ON r.project_id=m.project_id AND r.message_id=m.id AND r.worker_id=m.recipient_worker_id
+ JOIN review_operations o ON o.project_id=m.project_id AND o.id=? AND o.worker_id=m.recipient_worker_id
+ JOIN events e ON e.project_id=m.project_id AND e.resource_id=m.id AND e.actor_id=o.actor_id AND e.event_type='message.sent' AND e.revision=1
+ WHERE m.project_id=? AND m.recipient_worker_id=? AND m.origin_kind='controller' AND m.sender_worker_id IS NULL AND m.reply_to_message_id IS NULL AND m.body=?
+ AND r.seen=0 AND r.acknowledged=0 AND r.revision=1
+ AND o.pull_number=3 AND o.channel='cli' AND o.state='held' AND o.reason='source_unavailable'`, operation, project, worker, body).Scan(&notice.messageID, &notice.conversationID, &notice.messageSequence, &notice.messageAt, &notice.eventSequence, &notice.eventAt, &notice.actor, &notice.payload)
+	if err != nil || !strings.HasPrefix(notice.messageID, "msg_") || !strings.HasPrefix(notice.conversationID, "conv_") || notice.messageSequence != 1 || notice.eventSequence <= 0 || notice.actor == "" {
+		t.Fatal("selection stopped notice lost its original scope, content or pending recipient")
+	}
+	for _, value := range []string{notice.messageAt, notice.eventAt} {
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || at.IsZero() {
+			t.Fatal("selection stopped notice has invalid creation time")
+		}
+	}
+	var payload map[string]string
+	if json.Unmarshal([]byte(notice.payload), &payload) != nil || !reflect.DeepEqual(payload, map[string]string{"conversation_id": notice.conversationID, "recipient_worker_id": worker, "sender_worker_id": "", "origin_kind": "controller"}) {
+		t.Fatal("selection stopped-notice event lost its exact recipient or Controller origin")
+	}
+	return notice
 }
 
 func runSelectionShellQuote(value string) string {

@@ -81,10 +81,30 @@ func TestExistingManagementOfficialSDKNativePublicationAndCurrentAuthority(t *te
 	if disabled.Revision != 3 {
 		t.Fatal(disabled)
 	}
+	// Project management authorizes publication and exact recovery without
+	// any instance-administrator promotion of the selected credential.
+	var recovered client.PublicationReceipt
+	decodeResult(t, call(t, session, "publication_apply", apply), &recovered)
+	if recovered != published {
+		t.Fatal("project manager lost original apply receipt", recovered)
+	}
+	unpublish := map[string]any{"expected_revision": 2, "idempotency_key": "unpublish-one"}
+	decodeResult(t, call(t, session, "publication_unpublish", unpublish), &recovered)
+	if recovered != disabled {
+		t.Fatal("project manager lost original unpublish receipt", recovered)
+	}
+	decodeResult(t, call(t, session, "publication_configuration_read", map[string]any{}), &configuration)
+	if configuration.Revision != 3 || configuration.Enabled {
+		t.Fatal("historical apply replay republished content", configuration)
+	}
 	if _, err := f.store.DB().Exec(`UPDATE grants SET can_manage=0 WHERE project_id=?`, f.project); err != nil {
 		t.Fatal(err)
 	}
 	diagnosticResult(t, call(t, session, "presentation_replace", replace), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_configuration_read", map[string]any{}), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_preview", map[string]any{"document": input}), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_apply", apply), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_unpublish", unpublish), "forbidden", false)
 	var retained client.PresentationRevision
 	decodeResult(t, call(t, session, "presentation_revision_read", map[string]any{"revision": 1}), &retained)
 	if retained.State.Name != "Selected display" {

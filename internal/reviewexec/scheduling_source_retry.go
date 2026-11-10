@@ -16,7 +16,7 @@ const automaticSourceRetryDelay = 30 * time.Second
 // recovery consumes this budget too, never replenishes it. Existing backup/restore retains both the
 // revision and updated_at, so neither process restarts nor restore reset it.
 func transientAutomaticSourceHold(r Run) bool {
-	if r.Channel != "hosted" || r.State != "held" || r.OperationID != "" || r.Revision < 3 || r.Revision > 6 {
+	if !validChannel(r.Channel) || r.State != "held" || r.OperationID != "" || r.Revision < 3 || r.Revision > 6 {
 		return false
 	}
 	switch r.Reason {
@@ -31,8 +31,15 @@ func transientAutomaticSourceHold(r Run) bool {
 // active-operation checks, and only for an already suppressed semantic basis.
 // No operation, attempt, grant or new selection is created here.
 func (e *Engine) retryAutomaticSourceTx(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time) (bool, error) {
+	return e.retryAutomaticSourceChannelTx(ctx, tx, project, basis, schedulingRevision, now, "hosted")
+}
+
+func (e *Engine) retryAutomaticSourceChannelTx(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time, channel string) (bool, error) {
+	if !validChannel(channel) {
+		return false, schedulingUnavailable()
+	}
 	var id string
-	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel='hosted' AND s.state='held' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision=? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, schedulingRevision, basis, basis).Scan(&id)
+	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel=? AND s.state='held' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision=? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, channel, schedulingRevision, basis, basis).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -71,7 +78,7 @@ func (e *Engine) retryAutomaticSourceTx(ctx context.Context, tx *sql.Tx, project
 // source I/O. Revision >= 4 conservatively includes interrupted initial reads;
 // it never excludes a requeued terminal source hold (whose first claim is 5).
 func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (string, error) {
-	if r.Channel != "hosted" || r.Revision < 4 {
+	if !validChannel(r.Channel) || r.Revision < 4 {
 		return "", nil
 	}
 	var accepted, current int64
@@ -96,7 +103,7 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 }
 
 func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
-	// Any later or simultaneous Hosted intent supersedes this recovery, even if
+	// Any later or simultaneous same-channel intent supersedes this recovery, even if
 	// that intent was cancelled, denied, held or completed. A directly submitted
 	// operation is also a fence; never recover behind its cancellation/uncertainty.
 	// Compare parsed times, not RFC3339 text with variable fractional precision.
@@ -112,6 +119,6 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 		return false, err
 	}
 	var superseded bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel='hosted' AND id<>? AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel='hosted' AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.selection_requested' AND s.channel='hosted') OR EXISTS(SELECT 1 FROM events e JOIN review_operations o ON o.project_id=e.project_id AND o.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.requested' AND o.channel='hosted')`, r.ProjectID, r.ID, r.CreatedAt, r.ProjectID, r.CreatedAt, r.ProjectID, accepted, r.ProjectID, accepted).Scan(&superseded)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND id<>? AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.selection_requested' AND s.channel=?) OR EXISTS(SELECT 1 FROM events e JOIN review_operations o ON o.project_id=e.project_id AND o.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.requested' AND o.channel=?)`, r.ProjectID, r.Channel, r.ID, r.CreatedAt, r.ProjectID, r.Channel, r.CreatedAt, r.ProjectID, accepted, r.Channel, r.ProjectID, accepted, r.Channel).Scan(&superseded)
 	return superseded, err
 }

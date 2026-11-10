@@ -436,7 +436,8 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 			return err
 		}
 		operationState, operationAttempt := state, o.AttemptID
-		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed"
+		if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
 			operationState, operationAttempt = "queued", ""
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
@@ -516,6 +517,13 @@ func allowedTransition(from, to string) bool {
 	return false
 }
 
+func interruptedAllowanceUnavailable(err error) bool {
+	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+		return true
+	}
+	return isStoredUnavailable(err, storedHostedObservation)
+}
+
 // RecoverInterrupted runs once before a new supervisor accepts work. It never
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; confirmed Hosted work hands off to its observer without changing
@@ -557,7 +565,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if a.State == "preparing" && o.Channel == "hosted" {
 				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
-				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
 					return readErr
 				}
 				if readErr == nil && record.Input.Observation.State == "cooldown_observed" && record.Input.Observation.RetryNotBefore.After(e.sampleExecutionTime()) {
@@ -574,7 +582,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if a.State == "preparing" && o.Channel == "cli" {
 				record, readErr := readCLIAllowanceRecord(ctx, tx, o, a)
-				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
 					return readErr
 				}
 				if readErr == nil && record.Observation.Remaining == 0 {

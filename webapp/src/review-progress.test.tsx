@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { Api } from './api';
 import { roundProgressState, roundProgressStopReason, validRoundProgress, type ReviewRoundProgress } from './review-progress';
 import { ReviewProgressView } from './review-progress-view';
+import { ReviewOperationWaitBadge, reviewWaitExpandedForKey } from './review-operation-wait';
 
 const project = { id: 'project_one', name: 'Progress', github_repository_id: 1, repository: 'owner/project' };
 const current: ReviewRoundProgress = { channel: 'hosted', configured: true, revision: 3, epoch: 2, closed: false, minimum: 0, maximum: 5, taper: 1, used: 2, dry: 0, tapered: false, pending: 1 };
@@ -155,5 +156,34 @@ describe('pending review stages', () => {
     const mixed = renderToStaticMarkup(<ReviewProgressView value={{...current, pending:2, pending_execution:1, pending_adjudication:1}} />);
     expect(mixed).toContain('1 awaiting review result'); expect(mixed).toContain('1 awaiting adjudication');
     expect(mixed).not.toContain('awaiting fixes');
+  });
+});
+
+
+describe('operation wait accessibility', () => {
+  it('exposes CLI quota details as a keyboard-focusable expandable button', () => {
+    const html = renderToStaticMarkup(<ReviewOperationWaitBadge channel="cli" wait={{
+      baseline_attempt_id: `review_attempt_${'a'.repeat(32)}`,
+      retry_not_before: '2026-11-11T00:00:00Z', paused: false,
+    }} />);
+    expect(html).toContain('role="button"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('tabindex="0"');
+    const controlled = /aria-controls="([^"]+)"/u.exec(html)?.[1];
+    expect(controlled).toBeTruthy();
+    expect(html).toContain(`aria-describedby="${controlled}"`);
+    expect(html).toContain(`id="${controlled}"`);
+    expect(html).toContain('role="tooltip"');
+  });
+
+  it('toggles wait details on Enter and Space and closes them on Escape', () => {
+    for (const key of ['Enter', ' ']) {
+      expect(reviewWaitExpandedForKey(key, false)).toBe(true);
+      expect(reviewWaitExpandedForKey(key, true)).toBe(false);
+    }
+    expect(reviewWaitExpandedForKey('Escape', true)).toBe(false);
+    expect(reviewWaitExpandedForKey('Escape', false)).toBe(false);
+    expect(reviewWaitExpandedForKey('ArrowDown', false)).toBeUndefined();
+    expect(reviewWaitExpandedForKey('Tab', true)).toBeUndefined();
   });
 });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"math"
 	"time"
 
@@ -90,6 +91,7 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	defer cancel()
 	repo, err := reader.Repository(readCtx, execution.RepositoryID)
 	if err != nil {
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "repository", "reason", lifecycleErrorCode(err))
 		return !waiting, false, true, nil
 	}
 	if repo.ID != execution.RepositoryID || !repository.MatchString(repo.FullName) {
@@ -100,6 +102,7 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	}
 	pull, err := reader.Pull(readCtx, repo.FullName, o.PullNumber)
 	if err != nil {
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", lifecycleErrorCode(err))
 		return !waiting, false, true, nil
 	}
 	if !sameTarget(pull, execution.RepositoryID, o.PullNumber) || pull.HeadSHA != o.HeadSHA || pull.State != "open" || pull.Merged {
@@ -113,7 +116,8 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, reason)
 	}
 	if pull.IsDraft == nil && waiting {
-		return false, false, false, nil
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", "draft_state_unknown")
+		return false, false, true, nil
 	}
 	if pull.IsDraft != nil && *pull.IsDraft {
 		if waiting {
@@ -157,14 +161,19 @@ func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason
 // historicalCLIDraftOperation identifies an unused preparation detached when
 // GitHub returned the PR to Draft. It supplies attribution for history only.
 func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, bool, error) {
+	return historicalUnusedPreparationOperation(ctx, q, o, a, false)
+}
+
+func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, scheduling bool) (Operation, bool, error) {
 	var reason string
 	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
 		return Operation{}, false, err
 	}
-	if reason != cliDraftWait {
+	draft := reason == cliDraftWait
+	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
 		return Operation{}, false, nil
 	}
-	if o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, false, waitUnavailable()
 	}
 	var startedAt, heldAt string
@@ -173,16 +182,19 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 		EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=first.attempt_id AND revision NOT IN (1,2))
 		OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=first.attempt_id)
 		OR EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=first.attempt_id)
-		OR EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id)
+		OR (? AND EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id))
 		FROM review_execution_transitions first
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
-		AND last.state='held' AND first.external_id='' AND last.external_id=''`, a.ID).Scan(&startedAt, &heldAt, &occupied)
+		AND last.state='held' AND first.external_id='' AND last.external_id=''`, draft, a.ID).Scan(&startedAt, &heldAt, &occupied)
+	if err != nil {
+		return Operation{}, false, err
+	}
 	started, validStart := attemptRecordedTime(startedAt)
 	held, validHold := attemptRecordedTime(heldAt)
-	if err != nil || occupied || !validStart || !validHold || held.Before(started) {
+	if occupied || !validStart || !validHold || held.Before(started) {
 		return Operation{}, false, waitUnavailable()
 	}
-	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
+	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", reason, nil
 	return o, true, nil
 }

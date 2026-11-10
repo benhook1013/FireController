@@ -67,9 +67,12 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	}
 	if operation.AttemptID != attempt.ID {
 		// History may retain an unused preparation that detached before dispatch.
-		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
+		original, draft, err := historicalUnusedPreparationOperation(ctx, tx, operation, attempt, true)
 		if err != nil {
-			return reviews.Receipt{}, publicationConflict()
+			if errors.Is(err, sql.ErrNoRows) {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			return reviews.Receipt{}, err
 		}
 		if !draft {
 			var source bool
@@ -82,16 +85,31 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		if !draft {
 			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
 			if err != nil {
-				return reviews.Receipt{}, publicationConflict()
+				if isWaitUnavailable(err) {
+					return reviews.Receipt{}, publicationConflict()
+				}
+				return reviews.Receipt{}, err
 			}
 			if operation.Channel == "cli" {
 				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
-				if err != nil || record.Observation.Remaining != 0 {
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Observation.Remaining != 0 {
 					return reviews.Receipt{}, publicationConflict()
 				}
 			} else {
 				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
-				if err != nil || record.Input.Observation.State != "cooldown_observed" {
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Input.Observation.State != "cooldown_observed" {
 					return reviews.Receipt{}, publicationConflict()
 				}
 			}

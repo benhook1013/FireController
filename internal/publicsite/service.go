@@ -233,6 +233,7 @@ func preserveReviewFacts(ctx context.Context, tx *sql.Tx, project string, m Mani
 }
 
 func (s *Service) Configuration(ctx context.Context, scope core.Scope) (Configuration, error) {
+	scope = scope.RequireAdministration()
 	out := Configuration{}
 	err := s.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		r, found, err := readRecord(ctx, tx, scope.ProjectID)
@@ -250,6 +251,7 @@ func (s *Service) Configuration(ctx context.Context, scope core.Scope) (Configur
 }
 
 func (s *Service) Preview(ctx context.Context, scope core.Scope, input Approved) (Preview, error) {
+	scope = scope.RequireAdministration()
 	input, err := approved(input)
 	if err != nil {
 		return Preview{}, err
@@ -273,6 +275,7 @@ func (s *Service) Preview(ctx context.Context, scope core.Scope, input Approved)
 }
 
 func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input Approved, preview string) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	input, err := approved(input)
 	if err != nil {
 		return nil, err
@@ -338,6 +341,7 @@ func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input
 }
 
 func (s *Service) Unpublish(ctx context.Context, scope core.Scope, key string, revision int64) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	if revision < 0 || revision >= math.MaxInt64 {
 		return nil, invalid()
 	}

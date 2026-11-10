@@ -49,7 +49,11 @@ type OperationWait struct {
 }
 
 func waitUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review waiting intent is unavailable.", 500)
+	return newStoredUnavailable(storedWaitingIntent, "Stored review waiting intent is unavailable.")
+}
+
+func isWaitUnavailable(err error) bool {
+	return isStoredUnavailable(err, storedWaitingIntent)
 }
 
 func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*OperationWait, error) {

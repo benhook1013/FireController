@@ -42,7 +42,7 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 			out.Required = append(out.Required, "--key KEY")
 			out.Semantics = append(out.Semantics, "Project writer; atomic blocker checks run again at retirement. Retain the exact request/key after an uncertain result; no automatic retry.")
 		} else {
-			out.Semantics = append(out.Semantics, "Read-only preview reports total blocker counts and up to20 IDs per category. It is not a reservation or a guarantee a later retirement will succeed.")
+			out.Semantics = append(out.Semantics, "Read-only preview reports total blocker counts and up to 20 IDs per category. It is not a reservation or a guarantee a later retirement will succeed.")
 		}
 		out.Documentation = "docs/worker-retirement.md"
 	case "workers create":

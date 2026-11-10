@@ -47,8 +47,11 @@ type ConfigureReviewPullSchedulingRequest struct {
 
 func validSchedulingRevision(revision int64) bool { return revision >= 0 && revision < math.MaxInt64 }
 func validSchedulingTime(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
 	at, err := time.Parse(time.RFC3339Nano, value)
-	return err == nil && !at.IsZero() && value == at.UTC().Format(time.RFC3339Nano)
+	return err == nil && !at.IsZero()
 }
 func validSchedulingReason(reason string) bool {
 	if len(reason) > 256 || !utf8.ValidString(reason) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -53,6 +54,18 @@ func TestOperationReadsRetainSanitizedTransportOnInterruption(t *testing.T) {
 					defer c.Close()
 					ctx, cancel := context.WithCancelCause(t.Context())
 					defer cancel(nil)
+					responseStarted := make(chan struct{}, 1)
+					if phase == "body" && kind == "canceled" {
+						// A server Flush does not prove that the client has observed
+						// any response bytes. Wait for the same HTTP trace event that
+						// defines response_started before cancelling that phase.
+						ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotFirstResponseByte: func() {
+							select {
+							case responseStarted <- struct{}{}:
+							default:
+							}
+						}})
+					}
 					if kind == "deadline_exceeded" {
 						var stop context.CancelFunc
 						ctx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
@@ -74,6 +87,13 @@ func TestOperationReadsRetainSanitizedTransportOnInterruption(t *testing.T) {
 						t.Fatal("read never arrived")
 					}
 					if kind == "canceled" {
+						if phase == "body" {
+							select {
+							case <-responseStarted:
+							case <-time.After(2 * time.Second):
+								t.Fatal("client did not observe the response before cancellation")
+							}
+						}
 						cancel(errors.New("PRIVATE_CALLER_CAUSE"))
 					}
 					select {

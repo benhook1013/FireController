@@ -32,7 +32,7 @@ type HostedAllowanceQuery struct {
 }
 
 func hostedQueryUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored hosted allowance query is unavailable.", 500)
+	return newStoredUnavailable(storedHostedQuery, "Stored hosted allowance query is unavailable.")
 }
 func hostedQueryIntent(a Attempt, o Operation) (reviewprovider.HostedTriggerIntent, string, error) {
 	intent := reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA}

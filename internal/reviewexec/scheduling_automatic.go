@@ -14,6 +14,8 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+var errAutomaticParentCycle = errors.New("automatic scheduling retained parent cycle")
+
 func automaticDenied() error {
 	return core.Fail("automation_authorization_changed", "Automatic review scheduling is disabled or its original authorizer is no longer authorized.", 403)
 }
@@ -203,7 +205,7 @@ func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project strin
 	seen := map[int64]bool{pull: true}
 	for parent := current.ParentPullNumber; parent != 0; {
 		if seen[parent] || len(seen) > 100 {
-			return nil, schedulingUnavailable()
+			return nil, errors.Join(errAutomaticParentCycle, schedulingUnavailable())
 		}
 		seen[parent] = true
 		p, exists := byNumber[parent]
@@ -462,6 +464,9 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 			}
 			basis, candidates, err := automaticPlanningBasis(ctx, tx, project, c, "")
 			if err != nil {
+				if errors.Is(err, errAutomaticParentCycle) {
+					return nil
+				}
 				return err
 			}
 			if !candidates {

@@ -232,7 +232,7 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "external_hosted_pending" || failure.Code == "review_capacity" || roundControlRefusal(failure.Code) {
+		if failure.Code == "review_evidence_pending" || failure.Code == "external_hosted_pending" || failure.Code == "review_capacity" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed" || roundControlRefusal(failure.Code) {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
