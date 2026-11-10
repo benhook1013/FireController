@@ -211,6 +211,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_queue_edit"] = true
 			expected["review_operation_control"] = true
 			expected["review_scheduling_read"], expected["review_scheduling_configure"] = true, true
+			expected["review_lane_diagnostic"] = true
 			expected["review_pull_scheduling_read"], expected["review_pull_scheduling_update"] = true, true
 			expected["wait_for_ci"] = true
 			expected["review_rounds_read"], expected["review_rounds_configure"] = true, true

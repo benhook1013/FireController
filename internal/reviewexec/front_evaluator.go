@@ -10,8 +10,10 @@ import (
 // evaluatedFront is shared with admission. A diagnostic hold retains the actual
 // blocking predecessor, whereas the legacy adapter intentionally returns zero.
 type evaluatedFront struct {
-	state, reason string
-	plan          *SourcePlan
+	state, reason  string
+	plan           *SourcePlan
+	blockingPull   int64
+	blockingReason string
 }
 
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
@@ -93,6 +95,50 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	return evaluatedFront{state: "ready", plan: plan}, nil
 }
 
+// evaluateCandidatePlan shares actual-parent checks with the read-only lane
+// diagnostic. A local hold never supplies completion for its real descendants.
+func (e *Engine) evaluateCandidatePlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan, byNumber map[int64]*SourcePlan) (evaluatedFront, error) {
+	return evaluateCandidateLocalState(plan, byNumber, func(p *SourcePlan) (evaluatedFront, error) { return e.evaluateFrontPlan(ctx, q, r, repo, p) })
+}
+
+func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePlan, evaluate func(*SourcePlan) (evaluatedFront, error)) (evaluatedFront, error) {
+	result, err := evaluate(plan)
+	if err != nil || result.state != "ready" {
+		return result, err
+	}
+	seen := map[int64]bool{plan.Pull.Number: true}
+	parentNumber, parentSHA := plan.ParentPullNumber, plan.ParentSHA
+	for parentNumber != 0 {
+		parent := byNumber[parentNumber]
+		reason := ""
+		switch {
+		case seen[parentNumber]:
+			reason = "parent_cycle"
+		case parent == nil:
+			reason = "parent_source_unavailable"
+		case parent.Pull.HeadSHA != parentSHA:
+			reason = "parent_moved"
+		}
+		if reason != "" {
+			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
+		}
+		seen[parentNumber] = true
+		parentState, err := evaluate(parent)
+		if err != nil {
+			return evaluatedFront{}, err
+		}
+		if parentState.state != "complete" {
+			reason := parentState.reason
+			if reason == "" {
+				reason = "review_rounds_pending"
+			}
+			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
+		}
+		parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
+	}
+	return result, nil
+}
+
 func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan, complete bool) (evaluatedFront, error) {
 	byNumber := map[int64]*SourcePlan{}
 	for i := range prefix {
@@ -101,7 +147,7 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 	var firstHeld *evaluatedFront
 	for i := range prefix {
 		plan := &prefix[i]
-		result, err := e.evaluateFrontPlan(ctx, q, r, repo, plan)
+		result, err := e.evaluateCandidatePlan(ctx, q, r, repo, plan, byNumber)
 		if err != nil {
 			return evaluatedFront{}, err
 		}
@@ -110,27 +156,6 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 		}
 		if result.state == "complete" {
 			continue
-		}
-		if result.state == "ready" {
-			seen := map[int64]bool{plan.Pull.Number: true}
-			parentNumber, parentSHA := plan.ParentPullNumber, plan.ParentSHA
-			for parentNumber != 0 {
-				parent := byNumber[parentNumber]
-				if seen[parentNumber] || parent == nil || parent.Pull.HeadSHA != parentSHA {
-					result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
-					break
-				}
-				seen[parentNumber] = true
-				parentState, err := e.evaluateFrontPlan(ctx, q, r, repo, parent)
-				if err != nil {
-					return evaluatedFront{}, err
-				}
-				if parentState.state != "complete" {
-					result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
-					break
-				}
-				parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
-			}
 		}
 		if result.state == "ready" {
 			return result, nil

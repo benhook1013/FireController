@@ -93,6 +93,7 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
+| `review_lane_diagnostic` | Required channel; provider-free [per-PR lane diagnostics](review-lane-diagnostics.md) with retained source timestamps/completeness, local holds and exact parent blockers. Not fresh admission or a dispatch promise. |
 | `review_scheduling_read` | No fields; stored project scheduling settings, revision and paused queued PRs, without provider work. |
 | `review_scheduling_configure` | Required idempotency_key/expected_revision/automatic_hosted; optional automatic_cli preserves its existing value when omitted. Project management capability configures [default-off automatic scheduling](review-scheduling.md), including authorization for later provider work within existing review limits. |
 | `review_pull_scheduling_read` | Required pull_number; reads the per-PR automatic scheduling pause and revision. |

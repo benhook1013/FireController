@@ -1,0 +1,202 @@
+package reviewexec
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+)
+
+func laneDiagnosticFrame(t *testing.T, f *attemptFixture, channel string, plans []SourcePlan) {
+	t.Helper()
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		c, rev, err := readConfiguration(ctx, tx, attemptProject)
+		if err != nil {
+			return err
+		}
+		return writeFrontFrame(ctx, tx, Run{ProjectID: attemptProject, Channel: channel, ConfigurationRevision: rev}, 801, c, runChoice{prefix: plans})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+func laneDiagnosticPlan(n int64) SourcePlan {
+	p := schedulingPull(n)
+	return SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "acme/repo", DefaultBranch: "main"}, Pull: p, ParentSHA: p.BaseSHA, ObservedAt: stamp()}
+}
+func TestLaneDiagnosticIndependentSkipAndDependentHold(t *testing.T) {
+	for _, dependent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "independent", true: "dependent"}[dependent], func(t *testing.T) {
+			f := schedulingFixture(t)
+			// A genuine completed native CLI capture still awaiting adjudication holds
+			// its own PR, even after a later head or a closed allowance.
+			roundCapture(t, f, 1, false)
+			one := int64(1)
+			if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "diagnostic-stack", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+				t.Fatal(err)
+			}
+			p2, p4 := laneDiagnosticPlan(2), laneDiagnosticPlan(4)
+			if dependent {
+				p4.ParentPullNumber = 2
+				p4.ParentSHA = p2.Pull.HeadSHA
+				p4.Pull.BaseSHA = p2.Pull.HeadSHA
+				p4.Pull.BaseRef = "branch-two"
+			}
+			laneDiagnosticFrame(t, f, "cli", []SourcePlan{p2, p4})
+			before := selectionCounts(t, f)
+			out, err := f.e.ReadLaneDiagnostic(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), "cli")
+			if err != nil || !out.SourceComplete || len(out.Candidates) != 2 {
+				t.Fatal(out, err)
+			}
+			if out.Candidates[0].LocalReason != "review_evidence_pending" {
+				t.Fatal(out)
+			}
+			later := out.Candidates[1]
+			if dependent {
+				if later.LocalReason != "predecessor_unfinished" || later.BlockingPullNumber != 2 || later.BlockingReason != "review_evidence_pending" {
+					t.Fatal(later)
+				}
+			} else if later.LocalState != "locally_ready" || later.BlockingPullNumber != 0 {
+				t.Fatal(later)
+			}
+			// The exact shared selector agrees, rather than a duplicated approximation.
+			err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				got, reason, err := f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "cli"}, 801, []SourcePlan{p2, p4})
+				if err != nil {
+					return err
+				}
+				if dependent {
+					if got != 0 || reason != "review_evidence_pending" {
+						t.Fatal(got, reason)
+					}
+				} else if got != 4 || reason != "" {
+					t.Fatal(got, reason)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selectionCounts(t, f) != before {
+				t.Fatal("read mutated selection, provider, event or receipt state")
+			}
+		})
+	}
+}
+func TestLaneDiagnosticSourceBoundariesAndHTTP(t *testing.T) {
+	f := schedulingFixture(t)
+	scope := selectionScope(t, f, attemptProject, f.reader, "read")
+	before := selectionCounts(t, f)
+	out, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
+	if err != nil || out.SourceComplete || out.SourceReason != "source_unavailable" || out.Candidates[1].LocalState != "unknown" {
+		t.Fatal(out, err)
+	}
+	laneDiagnosticFrame(t, f, "cli", []SourcePlan{laneDiagnosticPlan(2)})
+	out, err = f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
+	if err != nil || out.SourceComplete || out.Candidates[1].LocalReason != "source_not_observed" {
+		t.Fatal(out, err)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	w := runHTTPCall(t, f, mux, "GET", "/api/v1/projects/"+attemptProject+"/reviews/lanes/cli/diagnostics", "", "", "")
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Candidates) != 2 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	for _, suffix := range []string{"manual/diagnostics", "cli/diagnostics?refresh=true"} {
+		if w = runHTTPCall(t, f, mux, "GET", "/api/v1/projects/"+attemptProject+"/reviews/lanes/"+suffix, "", "", ""); w.Code != 400 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	if selectionCounts(t, f) != before {
+		t.Fatal("diagnostic changed state")
+	}
+	one := int64(1)
+	if _, err = f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "changed-queue", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{4, 2}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
+	if err != nil || out.SourceReason != "configuration_changed" || out.SourceComplete || out.Candidates[0].HeadSHA != "" {
+		t.Fatal(out, err)
+	}
+	// Source decode damage remains an error, never a healthy empty lane.
+	admissionSQL(t, f, `UPDATE review_front_frames SET prefix_json=?`, strings.Repeat("x", 128*1024+1))
+	if _, err = f.e.ReadLaneDiagnostic(t.Context(), scope, "cli"); err == nil {
+		t.Fatal("damaged frame accepted")
+	}
+}
+
+// Many ready siblings share one long completed ancestry. This exercises the
+// advertised 100-row bound inside the real two-second Store.Read deadline.
+func TestLaneDiagnosticMaximumSharedCompletedAncestry(t *testing.T) {
+	queue := make([]int64, 100)
+	for i := range queue {
+		queue[i] = int64(i + 1)
+	}
+	f := schedulingFixtureWithQueue(t, queue)
+	one := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "maximum-stack", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: queue, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	plans := make([]SourcePlan, len(queue))
+	zero := int64(0)
+	for i, n := range queue {
+		plans[i] = laneDiagnosticPlan(n)
+		if i > 0 {
+			parent := int64(i)
+			if i >= 50 {
+				parent = 50
+			}
+			plans[i].ParentPullNumber = parent
+			plans[i].ParentSHA = strings.Repeat("a", 40)
+			plans[i].Pull.BaseSHA = plans[i].ParentSHA
+			plans[i].Pull.BaseRef = "ancestor"
+		}
+		if i < 50 {
+			if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "complete-"+strconv.FormatInt(n, 10), n, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	laneDiagnosticFrame(t, f, "cli", plans)
+	started := time.Now()
+	out, err := f.e.ReadLaneDiagnostic(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), "cli")
+	t.Logf("100-row shared ancestry read: %s", time.Since(started))
+	if err != nil || !out.SourceComplete || len(out.Candidates) != 100 {
+		t.Fatal(out, err)
+	}
+	for i, c := range out.Candidates {
+		want := "complete"
+		if i >= 50 {
+			want = "locally_ready"
+		}
+		if c.LocalState != want {
+			t.Fatal(i, c)
+		}
+	}
+}
+
+func TestLaneDiagnosticRepositoryChangeAndRevokedRead(t *testing.T) {
+	f := schedulingFixture(t)
+	scope := selectionScope(t, f, attemptProject, f.reader, "read")
+	laneDiagnosticFrame(t, f, "cli", []SourcePlan{laneDiagnosticPlan(2), laneDiagnosticPlan(4)})
+	admissionSQL(t, f, `UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject)
+	out, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
+	if err != nil || out.SourceReason != "repository_changed" || out.SourceComplete {
+		t.Fatal(out, err)
+	}
+	for _, c := range out.Candidates {
+		if c.LocalState != "unknown" || c.HeadSHA != "" {
+			t.Fatal(c)
+		}
+	}
+	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-reader-cred'`)
+	if _, err = f.e.ReadLaneDiagnostic(t.Context(), scope, "cli"); err == nil {
+		t.Fatal("retained read scope bypassed credential revocation")
+	}
+}

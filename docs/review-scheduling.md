@@ -42,6 +42,8 @@ The existing queue and PR detail views show current round allowance, closure or 
 
 ## CLI and MCP
 
+The provider-free [lane diagnostic](review-lane-diagnostics.md) explains each configured PR against retained source and current local evidence/dependency facts, including exact parent blockers and unknown source suffixes. It does not authorize selection or claim fresh admission.
+
 Read the current scheduling revision before changing settings. Keep the exact request and key after an uncertain mutation outcome; replaying the same key cannot enable or pause twice.
 
 ```sh
