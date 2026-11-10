@@ -1,6 +1,6 @@
 # Worker retirement
 
-Retirement removes a worker from ordinary active lists and new coordination targets while preserving its identity and history. Completed jobs, conversations, focus and pause history remain readable. Credentials remain separate project access controls; retirement never revokes them or cancels review operations.
+Retirement removes a worker from ordinary active lists and new coordination targets while preserving its identity and history. Completed jobs, conversations, focus and pause history remain readable. Fresh focus and pause mutations are rejected after retirement; exact earlier receipts remain replayable without another effect. Credentials remain separate project access controls; retirement never revokes them or cancels review operations.
 
 ## Clear unfinished work first
 

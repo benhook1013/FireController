@@ -58,6 +58,16 @@ func primaryWorker(ctx context.Context, tx *sql.Tx, project, worker string) erro
 	}
 	return err
 }
+
+func activePrimaryWorker(ctx context.Context, tx *sql.Tx, project, worker string) error {
+	err := core.CheckActiveWorker(ctx, tx, project, worker)
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "not_found" {
+		return core.Fail("worker_not_found", "The target worker is unavailable in this project.", 404)
+	}
+	return err
+}
+
 func primaryAssignment(ctx context.Context, tx *sql.Tx, project, worker, job string) error {
 	var assigned string
 	err := tx.QueryRowContext(ctx, `SELECT COALESCE(worker_id,'') FROM jobs WHERE project_id=? AND id=?`, project, job).Scan(&assigned)
@@ -162,7 +172,7 @@ func replacePrimaryJob(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.primary-job", Target: worker, Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			if err := primaryWorker(ctx, tx, scope.ProjectID, worker); err != nil {
+			if err := activePrimaryWorker(ctx, tx, scope.ProjectID, worker); err != nil {
 				return nil, err
 			}
 			current, err := readPrimaryJob(ctx, tx, scope.ProjectID, worker)
