@@ -398,6 +398,25 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	var followerProject, followerWorker, followerMode, followerUpdated string
 	var followerPull, followerRevision int64
 	followerErr := followerDB.QueryRowContext(ctx, `SELECT project_id,pull_number,worker_id,mode,revision,updated_at FROM review_pr_followers`).Scan(&followerProject, &followerPull, &followerWorker, &followerMode, &followerRevision, &followerUpdated)
+	// The deliberate source hold produces one stopped-request notice for the
+	// actual participant. Assert its exact scope and unread state before allowing
+	// only those three inbox-table deltas in the conservation check below.
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		if initial.counts[name] != 0 || beforeRestart.counts[name] != 1 {
+			t.Fatalf("selection must produce exactly one stopped notice in %s", name)
+		}
+	}
+	var noticeBody, noticeAt string
+	noticeErr := followerDB.QueryRowContext(ctx, `SELECT m.body,m.created_at FROM inbox_messages m
+ JOIN inbox_conversations c ON c.project_id=m.project_id AND c.id=m.conversation_id AND c.root_message_id=m.id
+ JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id
+ WHERE m.project_id=? AND m.recipient_worker_id=? AND m.origin_kind='controller'
+ AND m.sender_worker_id IS NULL AND m.reply_to_message_id IS NULL
+ AND s.worker_id=? AND s.seen=0 AND s.acknowledged=0 AND s.revision=1`, project, worker, worker).Scan(&noticeBody, &noticeAt)
+	_, noticeTimeErr := time.Parse(time.RFC3339Nano, noticeAt)
+	if noticeErr != nil || noticeTimeErr != nil || !strings.HasPrefix(noticeBody, "CLI review request stopped for PR #3.\n") || !strings.Contains(noticeBody, "Operation: "+selected.Operation.ID+"\n") || !strings.Contains(noticeBody, "Read the original operation and current PR state before acting.") || strings.Contains(noticeBody, "review results ready") || strings.Contains(noticeBody, providerToken) || strings.Contains(noticeBody, private) {
+		t.Fatal("selection stopped notice lost its original operation, participant or safe recovery guidance", noticeErr)
+	}
 	followerCloseErr := followerDB.Close()
 	followerAt, followerTimeErr := time.Parse(time.RFC3339Nano, followerUpdated)
 	if followerErr != nil || followerCloseErr != nil || followerProject != project || followerWorker != worker || followerPull != 3 || followerMode != "auto" || followerRevision != 1 || followerTimeErr != nil || followerAt.IsZero() {
@@ -452,6 +471,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	// The exact one-row follower delta was asserted above; final deep equality
 	// still protects it through configuration changes, replay, reads and restart.
 	changed["review_pr_followers"] = true
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		changed[name] = true
+	}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}

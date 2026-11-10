@@ -391,7 +391,9 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	}()
 
 	project := "failed"
-	postPath := "/api/v1/projects/failed/reviews/requests"
+	// Independent projects allow both waits to be admitted while preserving
+	// the one-unfinished-request guard for each project/PR/channel.
+	postPath := "/api/v1/projects/sibling/reviews/requests"
 	getReceipt, err := engine.Enqueue(t.Context(), f.scope(t, project), "shutdown-get-seed", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +402,7 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	if json.Unmarshal(getReceipt, &getOperation) != nil {
 		t.Fatal("GET wait fixture receipt is invalid")
 	}
-	getPath := postPath[:len(postPath)-len("requests")] + "operations/" + getOperation.ID
+	getPath := "/api/v1/projects/" + project + "/reviews/operations/" + getOperation.ID
 	body, err := json.Marshal(reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("b", 40)})
 	if err != nil {
 		t.Fatal(err)
@@ -492,9 +494,12 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	if err = <-serveDone; !errors.Is(err, http.ErrServerClosed) {
 		t.Fatal("server did not finish graceful shutdown", err)
 	}
-	var queued, receipts int
+	var queued, receipts, queuedProjects int
 	if err = f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE state='queued'`).Scan(&queued); err != nil || queued != 2 {
 		t.Fatal("shutdown changed accepted operations", queued, err)
+	}
+	if err = f.store.DB().QueryRow(`SELECT count(DISTINCT project_id) FROM review_operations WHERE state='queued' AND project_id IN ('failed','sibling')`).Scan(&queuedProjects); err != nil || queuedProjects != 2 {
+		t.Fatal("shutdown changed the independent accepted project scopes", queuedProjects, err)
 	}
 	if err = f.store.DB().QueryRow(`SELECT count(*) FROM receipts WHERE operation='reviews.request'`).Scan(&receipts); err != nil || receipts != 2 {
 		t.Fatal("shutdown changed accepted receipts", receipts, err)

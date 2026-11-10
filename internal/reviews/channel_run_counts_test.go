@@ -131,6 +131,15 @@ func TestChannelRunCountsSchemaEightMigrationAndRestart(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
 		t.Fatal("genuine populated v8 required", version, err)
 	}
+	// A valid derived cache is preserved across this upgrade. Damage one total
+	// so the failure trigger exercises a required rebuild and its rollback.
+	result, err := f.store.DB().Exec(`UPDATE review_current_totals SET run_count=run_count+1 WHERE project_id=? AND pull_number=7`, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		t.Fatal("rollback fixture must damage exactly one derived total", count, err)
+	}
 	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`); err != nil {
 		t.Fatal(err)
 	}
