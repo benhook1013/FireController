@@ -156,7 +156,7 @@ func prepareOwnerManagement(ctx context.Context, in *ownerManagementInvocation) 
 			return bad()
 		}
 		token := strings.TrimSpace(string(rawToken))
-		if len(token) < 1 {
+		if len(token) < 32 || len(token) > 256 {
 			return bad()
 		}
 		for _, r := range token {

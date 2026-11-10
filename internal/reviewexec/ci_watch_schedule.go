@@ -389,8 +389,10 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		var warning *reviewprovider.CIWorkflowAttentionError
 		if len(claim.workflowIDs) > 0 && errors.As(err, &warning) && warning.Cause != nil {
 			// Optional observation can fail without invalidating proven gate
-			// facts. Its actual provider limit still governs the shared account.
-			providerErr = warning
+			// facts. A local attempt cap is not a provider-account failure.
+			if !errors.Is(warning.Cause, reviewprovider.ErrCIWorkflowAttemptLimit) {
+				providerErr = warning
+			}
 		} else {
 			providerErr = err
 			item.Reason = sourceCIErrorReason(readCtx, err)
