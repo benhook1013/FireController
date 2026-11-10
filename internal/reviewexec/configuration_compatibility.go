@@ -3,8 +3,9 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"slices"
+
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // Retained requests may survive pause-only or successor-only configuration
@@ -31,8 +32,8 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 		if err := rows.Scan(&n, &body); err != nil {
 			return false, err
 		}
-		if n != expected || json.Unmarshal([]byte(body), &c) != nil {
-			return false, conflict()
+		if n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+			return false, refreshStorageError()
 		}
 		expected++
 		index := slices.Index(c.Queue, o.PullNumber)
@@ -62,5 +63,8 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	return expected == revision+1, nil
+	if expected != revision+1 {
+		return false, refreshStorageError()
+	}
+	return true, nil
 }

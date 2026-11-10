@@ -102,11 +102,12 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 				return err
 			}
 			if capability, ok := e.capabilities[latest.CapabilityID]; compatible && ok && e.validateConfiguration(latest) == nil && capability.Fingerprint == op.CapabilityFingerprint {
-				due, err := cliAccountRetryDeadline(ctx, tx, capability)
+				now := e.sampleExecutionTime()
+				due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 				if err != nil {
 					return err
 				}
-				if e.sampleExecutionTime().Before(due) {
+				if now.Before(due) {
 					cause = "cli_quota_wait"
 					return nil
 				}

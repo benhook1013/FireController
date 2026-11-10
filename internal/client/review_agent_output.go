@@ -78,7 +78,9 @@ func retainedWaitDiagnostic(wait *ReviewOperationWait, channel, state, reason, q
 		return hint
 	}
 	if wait != nil {
-		return operationWaitDiagnostic(wait, channel)
+		if diagnostic := operationWaitDiagnostic(wait, channel); diagnostic != nil {
+			return diagnostic
+		}
 	}
 	if state == "queued" && channel == "cli" && queuedCause == "cli_quota_wait" {
 		return &ReviewOperationDiagnostic{"This request is queued for shared CLI quota rechecks; no review is running.", "Keep this original request queued and continue other work. Do not submit a duplicate or reset rounds."}

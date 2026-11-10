@@ -127,11 +127,12 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
+	now := e.sampleExecutionTime()
 	args := make([]any, 0, 4*len(e.capabilities))
 	for _, capability := range e.capabilities {
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
-	args = append(args, e.sampleExecutionTime().UTC().Format(time.RFC3339Nano))
+	args = append(args, now.UTC().Format(time.RFC3339Nano))
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
@@ -199,13 +200,13 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
 					due, cached := cliRetryDeadlines[capability.ID]
 					if !cached {
-						due, err = cliAccountRetryDeadline(ctx, tx, capability)
+						due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
 						if err != nil {
 							return nil, err
 						}
 						cliRetryDeadlines[capability.ID] = due
 					}
-					if e.sampleExecutionTime().Before(due) {
+					if now.Before(due) {
 						continue
 					}
 				}
