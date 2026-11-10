@@ -68,6 +68,12 @@ export function operationWaitLabel(wait: ReviewOperationWait, now = Date.now(), 
   return minutes > 0 ? `Cooldown · ${remaining}` : 'Waiting';
 }
 
+export function reviewWaitExpandedForKey(key: string, expanded: boolean): boolean | undefined {
+  if (key === 'Escape') return false;
+  if (key === 'Enter' || key === ' ') return !expanded;
+  return undefined;
+}
+
 export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: ReviewOperationWait; channel?: string }) {
   const behind = channel === 'hosted' && wait.queue_ahead_pull_number !== undefined && !wait.paused;
   const [now, setNow] = useState(Date.now);
@@ -115,8 +121,8 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     const minutes = Math.ceil((stamp - now) / 60000);
     return `in ${minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`}`;
   };
-  return <span className="review-quota-wait" onPointerEnter={event => { if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) setExpanded(false); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') setExpanded(false); }}>
-    <span ref={trigger} tabIndex={0} className="badge review-channel-position review-quota-label" aria-describedby={detailsID} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onPointerUp={event => { if (event.pointerType !== 'mouse') { event.stopPropagation(); setExpanded(value => !value); } }} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(value => !value); } }}>{operationWaitLabel(wait, now, channel)}</span>
+  return <span className="review-quota-wait" onPointerEnter={event => { if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) setExpanded(false); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') setExpanded(reviewWaitExpandedForKey(event.key, expanded)!); }}>
+    <span ref={trigger} role="button" aria-expanded={expanded} aria-controls={detailsID} tabIndex={0} className="badge review-channel-position review-quota-label" aria-describedby={detailsID} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onPointerUp={event => { if (event.pointerType !== 'mouse') { event.stopPropagation(); setExpanded(value => !value); } }} onClick={event => event.stopPropagation()} onKeyDown={event => { const next = reviewWaitExpandedForKey(event.key, expanded); if (next !== undefined && event.key !== 'Escape') { event.preventDefault(); event.stopPropagation(); setExpanded(next); } }}>{operationWaitLabel(wait, now, channel)}</span>
     <span id={detailsID} className="review-quota-details" style={placement} hidden={!expanded} role="tooltip">
       <span>{description}</span>
       {estimate !== undefined && <span>Provider full-capacity estimate: <time dateTime={new Date(estimate).toISOString()} title={new Date(estimate).toLocaleString()}>{relative(estimate)}</time>{estimate <= now ? ' (past estimate)' : ''}. <small>{new Date(estimate).toLocaleString()}</small></span>}

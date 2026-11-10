@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
 	"slices"
+	"time"
 )
 
 func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]TargetReader) (bool, error) {
@@ -95,6 +96,9 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 			}
 			basis, candidates, err := automaticPlanningBasisChannel(ctx, tx, project, c, "", "cli")
 			if err != nil {
+				if errors.Is(err, errAutomaticParentCycle) {
+					return nil
+				}
 				return err
 			}
 			if !candidates {
@@ -105,7 +109,8 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 				return err
 			}
 			if seen {
-				return nil
+				worked, err = e.retryAutomaticSourceChannelTx(ctx, tx, project, basis, s.Revision, time.Now(), "cli")
+				return err
 			}
 			// Use the same acceptance implementation as explicit Run, in this exact
 			// reauthorized snapshot, without manufacturing a credential or HTTP request.

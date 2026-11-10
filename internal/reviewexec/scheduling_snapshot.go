@@ -3,8 +3,9 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"github.com/benhook1013/FireController/internal/core"
 	"strings"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 // ValidateSchedulingSnapshot checks retained control/attribution, not current
@@ -17,9 +18,14 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	}
 	cli := "0"
 	channels := "'hosted'"
-	if version == "2" {
+	switch version {
+	case "1":
+		// Version one predates automatic CLI scheduling.
+	case "2":
 		cli = "automatic_cli"
 		channels = "'hosted','cli'"
+	default:
+		return schedulingUnavailable()
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT project_id,revision,automatic_hosted,`+cli+`,actor_id,worker_id,credential_id,updated_at FROM review_scheduling`)
 	if err != nil {

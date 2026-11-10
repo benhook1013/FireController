@@ -179,7 +179,7 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=15 session_posts=2 session_deletes=2 browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 injected_console_errors=%d presentation_reads=4 metadata_streams=3 inbox_streams=2 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.InjectedConsoleErrors, engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 fixture_writes=%d session_posts=2 session_deletes=2 browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 injected_console_errors=%d presentation_reads=4 metadata_streams=3 inbox_streams=2 daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.FixtureWrites, result.InjectedConsoleErrors, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output

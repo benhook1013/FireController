@@ -18,6 +18,7 @@ var projectEventTypes = [...]string{
 	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
 	"workers.created", "workers.retired", "worker.pause_changed", "worker.primary_job_changed",
 	"note.created", "note.updated",
+	"review.requested", "review.operation_updated",
 	"review.observed", "reviews.policy_configured", "reviews.rounds_configured",
 	"reviews.adoption_obligations_imported", "reviews.adoption_obligation_resolved", "reviews.adoption_obligation_retargeted",
 	"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",

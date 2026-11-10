@@ -65,6 +65,9 @@ export function validPresentationSnapshot(v: unknown, project: string): v is Pre
   return object(v) && exact(v, ['presentation', 'event_cursor']) && validPresentation(v.presentation, project) && cursor(v.event_cursor);
 }
 function metadataResource(kind: string, value: unknown): value is string {
+  if (kind === 'review.requested' || kind === 'review.operation_updated') {
+    return typeof value === 'string' && /^review_operation_[a-f0-9]{32}$/u.test(value);
+  }
   if (kind !== 'reviews.rounds_configured') return identity(value);
   // Native round controls address a canonical PR/channel pair, not a record ID.
   if (typeof value !== 'string' || !/^[1-9]\d{0,9}\/(?:hosted|cli)$/u.test(value)) return false;

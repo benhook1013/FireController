@@ -193,7 +193,11 @@ func TestReviewSchedulingClientRejectsMalformedWireAndKeepsUnknownMutationsSingl
 		{"negative-revision", func(v map[string]any) { v["revision"] = -1 }},
 		{"fractional-revision", func(v map[string]any) { v["revision"] = 1.5 }},
 		{"bad-date", func(v map[string]any) { v["revision"] = 1; v["updated_at"] = "PRIVATE_INVALID_DATE" }},
-		{"noncanonical-date", func(v map[string]any) { v["revision"] = 1; v["updated_at"] = "2026-11-01T00:00:00+00:00" }},
+		{"zero-date", func(v map[string]any) { v["revision"] = 1; v["updated_at"] = "0001-01-01T00:00:00Z" }},
+		{"oversized-date", func(v map[string]any) {
+			v["revision"] = 1
+			v["updated_at"] = "2026-11-01T00:00:00." + strings.Repeat("1", 50) + "Z"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := map[string]any{}
@@ -207,6 +211,23 @@ func TestReviewSchedulingClientRejectsMalformedWireAndKeepsUnknownMutationsSingl
 			checkError(t, err, "invalid_response", "PRIVATE_INVALID_DATE")
 		})
 	}
+	for _, tc := range []struct{ name, timestamp string }{
+		{"offset", "2026-11-01T05:30:00+05:30"},
+		{"redundant-precision", "2026-11-01T00:00:00.000000000Z"},
+	} {
+		t.Run("project-valid-date-"+tc.name, func(t *testing.T) {
+			v := map[string]any{}
+			for k, x := range defaultProject {
+				v[k] = x
+			}
+			v["revision"], v["updated_at"] = 1, tc.timestamp
+			b, _ := json.Marshal(v)
+			response.Store(string(b))
+			if _, err := c.ReviewScheduling(t.Context()); err != nil {
+				t.Fatalf("valid RFC3339Nano timestamp %q was rejected: %v", tc.timestamp, err)
+			}
+		})
+	}
 	for _, tc := range []struct {
 		name   string
 		change func(map[string]any)
@@ -216,7 +237,8 @@ func TestReviewSchedulingClientRejectsMalformedWireAndKeepsUnknownMutationsSingl
 		{"default-paused", func(v map[string]any) { v["revision"] = 0 }},
 		{"missing-actor", func(v map[string]any) { delete(v, "actor_id") }},
 		{"unpaused-reason", func(v map[string]any) { v["paused"] = false }},
-		{"noncanonical-date", func(v map[string]any) { v["updated_at"] = "2026-11-01T00:00:00+00:00" }},
+		{"bad-date", func(v map[string]any) { v["updated_at"] = "PRIVATE_INVALID_DATE" }},
+		{"zero-date", func(v map[string]any) { v["updated_at"] = "0001-01-01T00:00:00Z" }},
 	} {
 		t.Run("pull-"+tc.name, func(t *testing.T) {
 			v := map[string]any{}
@@ -228,6 +250,23 @@ func TestReviewSchedulingClientRejectsMalformedWireAndKeepsUnknownMutationsSingl
 			response.Store(string(b))
 			_, err := c.ReviewPullScheduling(t.Context(), 2)
 			checkError(t, err, "invalid_response")
+		})
+	}
+	for _, tc := range []struct{ name, timestamp string }{
+		{"offset", "2026-11-01T05:30:00+05:30"},
+		{"redundant-precision", "2026-11-01T00:00:00.000000000Z"},
+	} {
+		t.Run("pull-valid-date-"+tc.name, func(t *testing.T) {
+			v := map[string]any{}
+			for k, x := range validPaused {
+				v[k] = x
+			}
+			v["updated_at"] = tc.timestamp
+			b, _ := json.Marshal(v)
+			response.Store(string(b))
+			if _, err := c.ReviewPullScheduling(t.Context(), 2); err != nil {
+				t.Fatalf("valid RFC3339Nano timestamp %q was rejected: %v", tc.timestamp, err)
+			}
 		})
 	}
 	for _, pull := range []bool{false, true} {

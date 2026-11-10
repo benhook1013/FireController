@@ -15,6 +15,8 @@ export const projectEventTypes = [
   'worker.primary_job_changed',
   'note.created',
   'note.updated',
+  'review.requested',
+  'review.operation_updated',
   'review.observed',
   'reviews.policy_configured',
   'reviews.rounds_configured',

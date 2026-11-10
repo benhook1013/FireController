@@ -118,8 +118,46 @@ describe('live private project views', () => {
     } finally { f.close(); }
   });
 
+  it('validates operation resources and refreshes only active current progress queries', async () => {
+    const f = fixture();
+    const operation = `review_operation_${'a'.repeat(32)}`;
+    const progress = f.add(['reviews', 'current', 'round-progress', '32']);
+    const otherProgress = f.add(['reviews', 'current', 'round-progress', '7']);
+    const inactiveProgress = f.add(['reviews', 'current', 'round-progress', '18'], false);
+    const currentQueue = f.add(['reviews', 'current', 'queue', '']);
+    const assessment = f.add(['reviews', 'policy-assessment', 'evidence_one']);
+    const captured = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const inbox = f.add(['inbox', '']);
+    const otherProject = f.add(['reviews', 'current', 'round-progress', '32'], true, ['fc', 'session', 'instance', 'other', 'worker']);
+    try {
+      for (const event_type of ['review.requested', 'review.operation_updated'] as const) {
+        const change = page([{ event_type, resource_id: operation }]);
+        expect(validMetadataPage(change, 25)).toBe(true);
+        await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
+      }
+      for (const query of [progress, otherProgress]) expect(query.reads()).toBe(2);
+      expect(inactiveProgress.reads()).toBe(0);
+      expect(inactiveProgress.state()?.isInvalidated).toBe(true);
+      for (const query of [currentQueue, assessment, captured, inbox]) {
+        expect(query.reads()).toBe(0);
+        expect(query.state()?.isInvalidated).toBe(false);
+      }
+      expect(otherProject.reads()).toBe(0);
+      expect(otherProject.state()?.isInvalidated).toBe(false);
+      for (const resource_id of ['record_one', 'review_operation_abc', `review_operation_${'A'.repeat(32)}`, `review_attempt_${'a'.repeat(32)}`]) {
+        for (const event_type of ['review.requested', 'review.operation_updated'] as const) {
+          expect(validMetadataPage(page([{ event_type, resource_id }]), 25)).toBe(false);
+        }
+      }
+    } finally { f.close(); }
+  });
+
   it('accepts only the bounded explicit change vocabulary without messages or payloads', () => {
-    const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: event_type === 'reviews.rounds_configured' ? '32/hosted' : 'record_one' })));
+    const complete = page(projectEventTypes.map(event_type => ({
+      event_type,
+      resource_id: event_type === 'reviews.rounds_configured' ? '32/hosted' :
+        event_type === 'review.requested' || event_type === 'review.operation_updated' ? `review_operation_${'a'.repeat(32)}` : 'record_one',
+    })));
     expect(validMetadataPage(complete, projectEventTypes.length)).toBe(true);
     for (const kind of ['message.sent', 'credentials.revoked', 'review.cli_preflight', 'review.future_kind']) {
       expect(validMetadataPage({ ...complete, items: [{ ...complete.items[0], event_type: kind }] }, 25)).toBe(false);
