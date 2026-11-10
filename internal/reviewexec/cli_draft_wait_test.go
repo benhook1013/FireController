@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -313,5 +314,53 @@ func TestExplicitCLIRedraftProjectsUnusedAttemptAndPreservesRestore(t *testing.T
 			}
 			assertCLIWaitSnapshot(t, f)
 		})
+	}
+}
+
+func TestCLIDraftProbeThrottleOnlyBlocksWaitingRequests(t *testing.T) {
+	for _, cause := range []string{"recent", "capacity"} {
+		for _, waiting := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/waiting=%t", cause, waiting), func(t *testing.T) {
+				f := supervisorFixture(t)
+				now := time.Now()
+				f.e.schedulingNow = func() time.Time { return now }
+				request := f.enqueue(t, attemptProject, "probe-throttled", "cli", 2, 1)
+				if waiting {
+					o, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.e.recordCLIDraftDecision(t.Context(), o, cliDraftWait); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.e.draftProbeNext = map[string]time.Time{}
+				if cause == "recent" {
+					f.e.draftProbeNext[request.ID] = now.Add(cliDraftProbeInterval)
+				} else {
+					for i := range 256 {
+						f.e.draftProbeNext[fmt.Sprintf("other-%d", i)] = now.Add(cliDraftProbeInterval)
+					}
+				}
+				d := &draftWaitDriver{reader: &refreshTestReader{pull: func(context.Context, string, int64) (reviewprovider.Pull, error) {
+					t.Error("throttled probe still read the provider")
+					return reviewprovider.Pull{}, nil
+				}}}
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": d}); err != nil {
+					t.Fatal(err)
+				}
+				o, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					if o.State != "queued" || o.Reason != cliDraftWait || o.AttemptID != "" || d.prepares.Load() != 0 {
+						t.Fatal("waiting request bypassed probe throttle", o)
+					}
+				} else if o.State != "completed" || d.prepares.Load() != 1 || d.calls.Load() != 1 {
+					t.Fatal("ordinary request was delayed by draft probe throttle", o, d.prepares.Load(), d.calls.Load())
+				}
+			})
+		}
 	}
 }

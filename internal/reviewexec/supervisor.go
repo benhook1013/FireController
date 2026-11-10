@@ -169,6 +169,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 		revision      int64
 	}
 	configurations := map[string]configurationSnapshot{}
+	cliRetryDeadlines := map[string]time.Time{}
 	emptyPredecessors := map[queuePriorityKey]bool{}
 	out := make([]Operation, 0, len(ids))
 	for _, i := range ids {
@@ -196,9 +197,13 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			}
 			if o.Channel == "cli" {
 				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
-					due, err := cliAccountRetryDeadline(ctx, tx, capability)
-					if err != nil {
-						return nil, err
+					due, cached := cliRetryDeadlines[capability.ID]
+					if !cached {
+						due, err = cliAccountRetryDeadline(ctx, tx, capability)
+						if err != nil {
+							return nil, err
+						}
+						cliRetryDeadlines[capability.ID] = due
 					}
 					if e.sampleExecutionTime().Before(due) {
 						continue

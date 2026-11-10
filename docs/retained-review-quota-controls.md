@@ -34,7 +34,13 @@ that a review can start. Older clients continue receiving their existing shapes.
 The public control endpoint is
 `POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control`.
 The body contains `expected_revision` and `action` (`pause`, `resume`, `cancel`).
-The usual project write permission and idempotency header are required.
+Any credential with write permission in this project may control an undispatched queued request, including another worker's request, while retaining its own authenticated identity. The idempotency header is required.
+
+- `review_conflict` refuses a stale `expected_revision`; read the current operation before deciding whether a new action is appropriate.
+- `review_operation_started` refuses preparing, posting, active, uncertain or terminal operations; the control cannot stop issued provider work.
+- `idempotency_conflict` refuses reuse of the same key for a different action or request.
+
+After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
 
 ## Recovery and scope
 

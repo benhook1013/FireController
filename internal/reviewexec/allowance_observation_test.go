@@ -392,3 +392,52 @@ func TestHeldAllowancePositiveObservationRemainsReadable(t *testing.T) {
 		})
 	}
 }
+
+func TestHeldAllowanceLegacyPolicyZeroWithoutFacts(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "pre-policy-no-facts", channel, 2, 1))
+			reason := "allowance_exhausted"
+			table := "review_cli_preflight"
+			if channel == "hosted" {
+				reason, table = "hosted_allowance_cooldown", "review_hosted_preflight"
+			}
+			var err error
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Execution schema v3 adds this column with default zero to older rows.
+			if _, err := f.store.DB().Exec(`UPDATE review_operations SET policy_revision=0 WHERE id=?`, a.OperationID); err != nil {
+				t.Fatal(err)
+			}
+			before := attemptState(t, f, a)
+			check := func() {
+				t.Helper()
+				w := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, f.reader, "", "")
+				var o Operation
+				if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &o) != nil || o.PolicyRevision != 0 || o.State != "held" || o.Reason != reason || o.Allowance != nil {
+					t.Fatal("legacy operation without optional facts became unreadable", w.Code, w.Body.String())
+				}
+				if attemptState(t, f, a) != before {
+					t.Fatal("legacy read rewrote retained history")
+				}
+			}
+			check()
+			cliAllowanceReopen(t, f)
+			mux := http.NewServeMux()
+			f.e.Register(mux)
+			f.handler = mux
+			check()
+			// Absence is compatible; a present malformed record must still fail closed.
+			if _, err := f.store.DB().Exec(`INSERT INTO `+table+`(project_id,attempt_id,body_json) VALUES(?,?,?)`, attemptProject, a.ID, `{}`); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, f.reader, "", ""); w.Code != 500 {
+				t.Fatal("present invalid facts were hidden", w.Code, w.Body.String())
+			}
+		})
+	}
+}
