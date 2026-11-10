@@ -1,6 +1,8 @@
 package mcpadapter_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/publicsite"
 	"net/http"
@@ -42,12 +44,32 @@ func TestExistingManagementOfficialSDKNativePublicationAndCurrentAuthority(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Project management still permits presentation changes, but publication
+	// requires the selected credential's current instance-administrator grant.
+	diagnosticResult(t, call(t, session, "publication_configuration_read", map[string]any{}), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_preview", map[string]any{"document": input}), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_unpublish", map[string]any{"expected_revision": 0, "idempotency_key": "manager-unpublish"}), "forbidden", false)
+	digest := sha256.Sum256([]byte(token))
+	setAdministrator := func(enabled bool) {
+		t.Helper()
+		result, err := f.store.DB().Exec(`UPDATE credentials SET is_admin=? WHERE token_sha256=?`, enabled, hex.EncodeToString(digest[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+			t.Fatal("selected fixture credential was not updated", rows, err)
+		}
+	}
+	setAdministrator(true)
 	var preview client.PublicationPreview
 	decodeResult(t, call(t, session, "publication_preview", map[string]any{"document": input}), &preview)
 	if preview.SHA256 == "" {
 		t.Fatal("preview lost native guard")
 	}
 	apply := map[string]any{"document": input, "preview_sha256": preview.SHA256, "idempotency_key": "publish-one"}
+	setAdministrator(false)
+	diagnosticResult(t, call(t, session, "publication_apply", apply), "forbidden", false)
+	setAdministrator(true)
 	var published client.PublicationReceipt
 	decodeResult(t, call(t, session, "publication_apply", apply), &published)
 	if published.Revision != 1 {
@@ -62,6 +84,15 @@ func TestExistingManagementOfficialSDKNativePublicationAndCurrentAuthority(t *te
 	decodeResult(t, call(t, session, "publication_unpublish", map[string]any{"expected_revision": 1, "idempotency_key": "unpublish-one"}), &disabled)
 	if disabled.Revision != 2 {
 		t.Fatal(disabled)
+	}
+	// Demotion must reject the exact retained publication receipts without
+	// taking away the independent project-management presentation permission.
+	setAdministrator(false)
+	diagnosticResult(t, call(t, session, "publication_apply", apply), "forbidden", false)
+	diagnosticResult(t, call(t, session, "publication_unpublish", map[string]any{"expected_revision": 1, "idempotency_key": "unpublish-one"}), "forbidden", false)
+	decodeResult(t, call(t, session, "presentation_replace", replace), &replay)
+	if replay != first {
+		t.Fatal("instance-admin demotion changed project-management replay", replay)
 	}
 	if _, err := f.store.DB().Exec(`UPDATE grants SET can_manage=0 WHERE project_id=?`, f.project); err != nil {
 		t.Fatal(err)

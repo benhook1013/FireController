@@ -142,7 +142,7 @@ Startup validates configuration without opening the credential or contacting the
 | `note_update` | Required idempotency_key/note_id/expected_revision plus selected scope/kind/body/status/status_reason fields; compact changed/unchanged receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
-| `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
+| `inbox_ack` | Required idempotency_key/message_id; optional worker_id selects a recipient. Acknowledgment also establishes seen; another recipient requires project management. |
 
 Review queue/run/attempt lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 

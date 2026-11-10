@@ -131,7 +131,8 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, reason)
 	}
 	if pull.IsDraft == nil {
-		return false, false, false, nil
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", "draft_state_unknown")
+		return false, false, true, nil
 	}
 	if *pull.IsDraft {
 		return false, false, false, nil

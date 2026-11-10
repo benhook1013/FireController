@@ -21,7 +21,7 @@ review round.
 Pause, resume and cancel apply only to an undispatched queued operation and use
 an expected revision plus an idempotency key. They cannot cancel an issued
 provider review or reopen terminal history. Explicit CLI requests made while a
-PR is draft remain queued until a bounded fresh source check observes readiness. A failed repository or pull probe leaves the request queued and emits a diagnostic with the operation ID, failed read and safe provider error code, at most once per operation per 30-second probe interval; provider bodies and credentials are excluded.
+PR is draft remain queued until a bounded fresh source check observes readiness. A failed repository or pull probe leaves the request queued and emits a diagnostic with the operation ID, failed read and safe provider error code, at most once per operation per 30-second probe interval; provider bodies and credentials are excluded. An unknown Draft field uses the same bounded diagnostic with reason `draft_state_unknown`, without treating the PR as ready.
 
 ## Reading state
 
