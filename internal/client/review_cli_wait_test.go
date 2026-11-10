@@ -153,3 +153,66 @@ func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
 		})
 	}
 }
+
+func TestCLISharedQuotaGuidanceSurvivesResumedWait(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, sharedQuota := range []bool{false, true} {
+			t.Run(strings.Join([]string{boolName(compact), boolName(sharedQuota)}, "/"), func(t *testing.T) {
+				op := sampleReviewOperation()
+				// Pause/resume leaves a valid retained row with no baseline or deadline.
+				op.Wait = &client.ReviewOperationWait{Paused: false}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					if r.Method != http.MethodGet {
+						t.Error("reading quota guidance started a mutation", r.Method)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if sharedQuota {
+						w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
+					}
+					if compact {
+						_ = json.NewEncoder(w).Encode(client.ReviewOperationStatus{ID: op.ID, PullNumber: op.PullNumber, Channel: op.Channel, State: op.State, Revision: op.Revision, Stage: "queued", UpdatedAt: op.UpdatedAt, NextAction: "wait", Wait: op.Wait})
+					} else {
+						_ = json.NewEncoder(w).Encode(op)
+					}
+				}))
+				defer server.Close()
+				c := newClient(t, server)
+				var diagnostic *client.ReviewOperationDiagnostic
+				if compact {
+					got, err := c.ReviewOperationStatus(t.Context(), op.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out := client.AgentReviewOperationStatus(got)
+					if !reflect.DeepEqual(out.Wait, op.Wait) || out.ID != op.ID || out.State != "queued" || out.AttemptID != "" || out.NextAction != "wait" {
+						t.Fatal("resumed request changed", out)
+					}
+					diagnostic = out.Diagnostic
+				} else {
+					got, err := c.ReviewOperation(t.Context(), op.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out := client.AgentReviewOperation(got)
+					if !reflect.DeepEqual(out.Wait, op.Wait) || out.ID != op.ID || out.State != "queued" || out.AttemptID != "" {
+						t.Fatal("resumed request changed", out)
+					}
+					diagnostic = out.Diagnostic
+				}
+				if !sharedQuota {
+					if diagnostic != nil {
+						t.Fatal("empty wait invented quota guidance", diagnostic)
+					}
+					return
+				}
+				if diagnostic == nil || !strings.Contains(diagnostic.Explanation, "quota") || !strings.Contains(diagnostic.NextAction, "original request queued") || strings.Contains(diagnostic.NextAction, "new request") {
+					t.Fatal("resumed wait lost original-request quota guidance", diagnostic)
+				}
+			})
+		}
+	}
+}

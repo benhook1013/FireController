@@ -3,6 +3,8 @@ package reviewexec
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -258,5 +260,94 @@ func TestSourceConfigurationChannelSetsPreserveApplicability(t *testing.T) {
 				t.Fatal("source comparison mutated retained plans")
 			}
 		})
+	}
+}
+
+func TestWaitingReviewRejectsDamagedConfigurationHistory(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, damage := range []string{"revision gap", "malformed JSON", "oversized JSON", "unknown field", "duplicate field", "invalid shape"} {
+			t.Run(channel+"/"+damage, func(t *testing.T) {
+				f := supervisorFixture(t)
+				request := f.enqueue(t, attemptProject, "queued-original", channel, 2, 1)
+				for revision := int64(1); revision <= 2; revision++ {
+					c := Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli", "hosted"}}
+					if revision == 2 {
+						c.Queue = append(c.Queue, 8)
+					}
+					if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), fmt.Sprintf("suffix-%d", revision), c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var body string
+				if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=2`, attemptProject).Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				switch damage {
+				case "revision gap":
+					admissionSQL(t, f, `DELETE FROM review_execution_config WHERE project_id=? AND revision=2`, attemptProject)
+				case "malformed JSON":
+					body = `{`
+				case "oversized JSON":
+					body += strings.Repeat(" ", 8192)
+				case "unknown field":
+					body = strings.TrimSuffix(body, "}") + `,"unknown":true}`
+				case "duplicate field":
+					body = strings.TrimSuffix(body, "}") + `,"paused":false}`
+				case "invalid shape":
+					body = strings.Replace(body, `"expected_revision":1`, `"expected_revision":null`, 1)
+				}
+				if damage != "revision gap" {
+					admissionSQL(t, f, `UPDATE review_execution_config SET body_json=? WHERE project_id=? AND revision=2`, body, attemptProject)
+				}
+				attempt, err := f.e.StartAttempt(t.Context(), attemptProject, request.ID)
+				attemptCode(t, err, "storage_unavailable")
+				if attempt.ID != "" {
+					t.Fatal("damaged history created an attempt", attempt)
+				}
+				driver := &controlledDriver{}
+				attemptCode(t, f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}), "review_persistence_failed")
+				op, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+				if err != nil || op.State != "queued" || op.Reason != "" || op.Revision != request.Revision || op.ConfigurationRevision != 1 || op.AttemptID != "" {
+					t.Fatal("storage damage became a normal configuration hold or changed original request", op, err)
+				}
+				if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+					t.Fatal("damaged history acquired capacity or invoked the provider")
+				}
+			})
+		}
+	}
+}
+
+func TestQueuedConfigurationRejectsTruncatedHistory(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	request := f.enqueue(t, attemptProject, "queued-original", "cli", 2, 1)
+	revision := int64(1)
+	c := Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli", "hosted"}}
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "suffix", c); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	o, err := readOperation(t.Context(), tx, attemptProject, request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, revision, err := readConfiguration(t.Context(), tx, attemptProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The caller's retained upper revision must be present, even when no later
+	// row exists to reveal a gap inside the loop.
+	if _, err := tx.ExecContext(t.Context(), `DELETE FROM review_execution_config WHERE project_id=? AND revision=?`, attemptProject, revision); err != nil {
+		t.Fatal(err)
+	}
+	compatible, err := compatibleQueuedConfiguration(t.Context(), tx, o, current, revision)
+	attemptCode(t, err, "storage_unavailable")
+	if compatible {
+		t.Fatal("truncated history was compatible")
 	}
 }
