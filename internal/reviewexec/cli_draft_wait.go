@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"math"
 	"time"
 
@@ -109,6 +110,9 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	defer cancel()
 	repo, err := reader.Repository(readCtx, execution.RepositoryID)
 	if err != nil {
+		// claimDraftProbe bounds these diagnostics to one probe per operation
+		// every 30 seconds. Never log provider bodies or credential details.
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "repository", "reason", lifecycleErrorCode(err))
 		return false, false, true, nil
 	}
 	if repo.ID != execution.RepositoryID || !repository.MatchString(repo.FullName) {
@@ -116,6 +120,7 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	}
 	pull, err := reader.Pull(readCtx, repo.FullName, o.PullNumber)
 	if err != nil {
+		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", lifecycleErrorCode(err))
 		return false, false, true, nil
 	}
 	if !sameTarget(pull, execution.RepositoryID, o.PullNumber) || pull.HeadSHA != o.HeadSHA || pull.State != "open" || pull.Merged {
@@ -188,9 +193,12 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
 		AND last.state='held' AND first.external_id='' AND last.external_id=''`, a.ID).Scan(&startedAt, &heldAt, &occupied)
+	if err != nil {
+		return Operation{}, false, err
+	}
 	started, validStart := attemptRecordedTime(startedAt)
 	held, validHold := attemptRecordedTime(heldAt)
-	if err != nil || occupied || !validStart || !validHold || held.Before(started) {
+	if occupied || !validStart || !validHold || held.Before(started) {
 		return Operation{}, false, waitUnavailable()
 	}
 	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil

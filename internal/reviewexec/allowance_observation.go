@@ -118,7 +118,7 @@ func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, 
 	var position, size int64
 	err := q.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=24576 THEN body_json END FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, a.ID, in.CaptureSHA256).Scan(&id, &project, &attempt, &operation, &position, &checksum, &size, &body)
 	if err != nil {
-		return allowanceUnavailable()
+		return allowanceDependencyError(err)
 	}
 	observation, err := decodeHostedObservation(body, id, project, attempt, operation, position, checksum, size, a, o)
 	if err != nil {
