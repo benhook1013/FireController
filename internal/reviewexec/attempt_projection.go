@@ -79,8 +79,7 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 			if err != nil {
 				// The helper returns this error only for a missing or mismatched
 				// historical cooldown. Its storage lookup failures pass through.
-				var failure *core.Error
-				if errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored review waiting intent is unavailable." {
+				if isWaitUnavailable(err) {
 					return reviews.Receipt{}, publicationConflict()
 				}
 				return reviews.Receipt{}, err

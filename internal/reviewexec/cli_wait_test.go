@@ -2,6 +2,8 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -385,10 +387,136 @@ func TestOperationWaitReadsLaterExecutionSchemaWithoutLosingPause(t *testing.T) 
 	f := roundFixture(t)
 	receipt := f.enqueue(t, attemptProject, "paused-future-schema", "cli", 2, 1)
 	admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,'',1)`, receipt.ID)
-	before := cliWaitRead(t, f, receipt.ID)
-	admissionSQL(t, f, `UPDATE metadata SET value='11' WHERE key='schema:review_execution'`)
-	after, err := readOperationWait(t.Context(), f.store.DB(), before)
-	if err != nil || !reflect.DeepEqual(before.Wait, after) || after == nil || !after.Paused {
-		t.Fatal("later execution schema dropped retained pause", before.Wait, after, err)
+	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=1,override_file_limit=1 WHERE id=?`, receipt.ID)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	before, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil || before.Wait == nil || !before.Wait.Paused || !before.AllowOutOfOrder || !before.OverrideFileLimit {
+		t.Fatal("invalid paused operation baseline", before, err)
+	}
+	for _, version := range []string{"9", "10", "11", "12", "100"} {
+		t.Run(version, func(t *testing.T) {
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_execution'`, version)
+			after, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("later execution schema changed retained operation", before, after, err)
+			}
+			status, err := f.e.ReadOperationStatus(t.Context(), scope, receipt.ID)
+			if err != nil || status.ID != receipt.ID || !reflect.DeepEqual(before.Wait, status.Wait) {
+				t.Fatal("compact status dropped retained pause", status, err)
+			}
+		})
+	}
+}
+
+func TestOperationReadsSchemaFlagBoundaries(t *testing.T) {
+	f := roundFixture(t)
+	receipt := f.enqueue(t, attemptProject, "schema-flag-boundaries", "cli", 2, 1)
+	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=1,override_file_limit=1 WHERE id=?`, receipt.ID)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	for _, tc := range []struct {
+		version      string
+		order, limit bool
+	}{{"1", false, false}, {"6", false, false}, {"7", true, false}, {"8", true, true}} {
+		t.Run(tc.version, func(t *testing.T) {
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_execution'`, tc.version)
+			o, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+			if err != nil || o.ID != receipt.ID || o.AllowOutOfOrder != tc.order || o.OverrideFileLimit != tc.limit || o.Wait != nil {
+				t.Fatal("incorrect legacy flags", o, err)
+			}
+		})
+	}
+}
+
+func TestOperationReadsRejectMalformedExecutionSchema(t *testing.T) {
+	f := roundFixture(t)
+	receipt := f.enqueue(t, attemptProject, "malformed-execution-schema", "cli", 2, 1)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	for _, version := range []string{"", "0", "-1", "+11", "011", " 11", "11 ", "11\n", "1.1", "eleven", "999999999999999999999999999999"} {
+		t.Run(version, func(t *testing.T) {
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_execution'`, version)
+			o, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+			if err == nil || !reflect.DeepEqual(o, Operation{}) {
+				t.Fatal("malformed schema returned operation", o, err)
+			}
+			attemptCode(t, err, "storage_unavailable")
+			status, err := f.e.ReadOperationStatus(t.Context(), scope, receipt.ID)
+			if err == nil || !reflect.DeepEqual(status, OperationStatus{}) {
+				t.Fatal("malformed schema returned compact status", status, err)
+			}
+			attemptCode(t, err, "storage_unavailable")
+		})
+	}
+}
+
+func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
+	for _, mode := range []string{"shared", "cancelled-origin", "expired", "other-account", "changed-binding", "changed-fingerprint"} {
+		t.Run(mode, func(t *testing.T) {
+			f, a, _, now := cliWaitFixture(t)
+			capability := "test-capability"
+			if mode == "other-account" {
+				capability = "other-account"
+			}
+			f.configure(t, otherAttemptProject, capability, 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			other := f.enqueue(t, otherAttemptProject, "diagnostic-cli", "cli", 2, 1)
+			if mode == "cancelled-origin" {
+				timerControl(t, f, a.OperationID, "cancel", "cancel-diagnostic-origin")
+			}
+			if mode == "expired" {
+				*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+			}
+			if mode == "changed-binding" {
+				f.configure(t, otherAttemptProject, "other-account", 1, false)
+			}
+			if mode == "changed-fingerprint" {
+				changed := f.e.capabilities[capability]
+				changed.Fingerprint = strings.Repeat("f", 64)
+				f.e.capabilities[capability] = changed
+			}
+			mux := http.NewServeMux()
+			f.e.Register(mux)
+			tables := []string{"review_operations", "review_execution_attempts", "review_operation_waits", "review_cli_preflight", "review_execution_reservations", "events", "receipts"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			for _, suffix := range []string{"", "/status"} {
+				for _, version := range []string{"", "1", "2", "3"} {
+					req := httptest.NewRequest("GET", "/api/v1/projects/"+otherAttemptProject+"/reviews/operations/"+other.ID+suffix, nil)
+					req.Header.Set("Authorization", "Bearer "+f.other)
+					req.Header.Set(operationWaitHeader, version)
+					w := httptest.NewRecorder()
+					mux.ServeHTTP(w, req)
+					want := ""
+					if mode == "shared" || mode == "cancelled-origin" {
+						want = "cli_quota_wait"
+					}
+					if w.Code != http.StatusOK || w.Header().Get("X-FC-Review-Queued") != want {
+						t.Fatalf("%s schema %q: %d %v %s", suffix, version, w.Code, w.Header(), w.Body.String())
+					}
+					var body map[string]any
+					if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if body["state"] != "queued" || body["wait"] != nil || body["allowance"] != nil {
+						t.Fatal("diagnostic fabricated operation facts", body)
+					}
+					req = httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+other.ID+suffix, nil)
+					req.Header.Set("Authorization", "Bearer "+f.writer)
+					w = httptest.NewRecorder()
+					mux.ServeHTTP(w, req)
+					if w.Code == http.StatusOK || w.Header().Get("X-FC-Review-Queued") != "" {
+						t.Fatal("cross-project diagnostic leaked", w.Code, w.Header())
+					}
+				}
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("read changed state", table)
+				}
+			}
+		})
 	}
 }

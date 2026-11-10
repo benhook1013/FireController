@@ -198,7 +198,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		operation.Observer = e.observerStatus(operation)
 	}
 	operation = operationForResponse(operation, r.Header.Get(operationWaitHeader))
-	if operation.Channel == "cli" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
+	if operation.Channel == "cli" && operation.State == "queued" && (operation.Wait != nil && operation.Wait.BaselineAttemptID != "" || e.sharedCLIQuotaWait(r.Context(), scope, operation.ID)) {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
 	core.WriteJSON(w, http.StatusOK, operation)
@@ -220,4 +220,38 @@ func (e *Engine) readExecutionConfigurationHTTP(w http.ResponseWriter, r *http.R
 		return
 	}
 	core.WriteJSON(w, http.StatusOK, configuration)
+}
+
+// sharedCLIQuotaWait supplies only a diagnostic for an already authorized read.
+// Invalid or unavailable bindings provide no account-level quota assertion.
+func (e *Engine) sharedCLIQuotaWait(ctx context.Context, scope core.Scope, id string) bool {
+	waiting := false
+	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
+		o, err := readOperationBase(ctx, tx, scope.ProjectID, id)
+		if err != nil {
+			return err
+		}
+		if o.Channel != "cli" || o.State != "queued" {
+			return nil
+		}
+		c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return err
+		}
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		capability, ok := e.capabilities[c.CapabilityID]
+		if !compatible || !ok || e.validateConfiguration(c) != nil || o.CapabilityFingerprint != capability.Fingerprint {
+			return nil
+		}
+		due, err := cliAccountRetryDeadline(ctx, tx, capability)
+		if err != nil {
+			return err
+		}
+		waiting = e.sampleExecutionTime().Before(due)
+		return nil
+	})
+	return err == nil && waiting
 }
