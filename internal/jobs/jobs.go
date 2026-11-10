@@ -148,7 +148,7 @@ func createJob(store *core.Store) http.HandlerFunc {
 			Operation: "jobs.create", Target: "jobs", Key: key, Request: req,
 		}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			if req.WorkerID != "" {
-				if err := core.CheckWorker(ctx, tx, scope.ProjectID, req.WorkerID); err != nil {
+				if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, req.WorkerID); err != nil {
 					return nil, err
 				}
 			}
@@ -327,7 +327,11 @@ func editJob(store *core.Store) http.HandlerFunc {
 				next.Status = *req.Status
 			}
 			if next.WorkerID != "" {
-				if err := core.CheckWorker(ctx, tx, scope.ProjectID, next.WorkerID); err != nil {
+				checkWorker := core.CheckWorker
+				if next.WorkerID != current.WorkerID || next.Status != "completed" {
+					checkWorker = core.CheckActiveWorker
+				}
+				if err := checkWorker(ctx, tx, scope.ProjectID, next.WorkerID); err != nil {
 					return nil, err
 				}
 			}

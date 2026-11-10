@@ -663,6 +663,16 @@ func (c *Client) safeDetails(value any, code string) any {
 		return nil
 	}
 	result := make(map[string]any)
+	if code == "credential_permissions_changed" {
+		for key, item := range safeCredentialPermissionDetails(object) {
+			result[key] = item
+		}
+	}
+	if code == "worker_retirement_blocked" {
+		if blocks := safeWorkerRetirementBlockers(object); blocks != nil {
+			return blocks
+		}
+	}
 	for key, item := range object {
 		switch key {
 		case "reason":

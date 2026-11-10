@@ -184,3 +184,9 @@ Use `reviews operations` to discover one page of retained operations and `review
 ## Explicit channel-front selection
 
 Use `fc reviews start --channel cli --key KEY` for one durable selection and at most one native child, or `--channel hosted` for the independent Hosted channel. Optional `--expect-pr NUMBER` and `--expected-configuration-revision REVISION` assert the selected target and accepted configuration. `fc reviews run-read --selection-id ID --wait-seconds SECONDS` observes the same selection and original child; it never starts another request. Keep the original key when stdout is lost. A terminal hold requires a fresh authorized request after its cause is resolved. The [selection contract](review-round-controls.md#one-explicit-channel-front-run) owns bounds, recovery and the deferred automatic-scheduling boundary.
+
+## Native administration
+
+Use `reviews policy`, `reviews policy-configure --file /absolute/private.json --key KEY`, `reviews execution-configure --file /absolute/private.json --key KEY`, `workers create --name NAME --key KEY`, and `credentials grant|update|revoke`. Operation `--help` is local and runs before profiles or private files are read. Credential grant accepts either `--token-sha256` or an owner-private `--credential-file`; only the digest is transmitted. Permission replacement uses a private JSON file with complete expected and desired permission sets. Retain the original key and arguments after uncertain output; mutations are never automatically reposted.
+
+Use `workers retirement WORKER_ID` before `workers retire WORKER_ID --key KEY`. `workers list --include-retired` explicitly includes historical identities. `inbox list --worker WORKER_ID` selects a recipient without changing the acting worker; `inbox ack MESSAGE_ID --worker WORKER_ID --key KEY` requires current project management when acknowledging for another recipient. See [retirement](worker-retirement.md) for blockers and race semantics.

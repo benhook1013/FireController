@@ -12,6 +12,11 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
+type workersInput struct {
+	Limit          *int   `json:"limit,omitempty"`
+	Cursor         string `json:"cursor,omitempty"`
+	IncludeRetired bool   `json:"include_retired,omitempty"`
+}
 type pageInput struct {
 	Limit  *int   `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
@@ -36,6 +41,7 @@ type historyInput struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 type inboxInput struct {
+	WorkerID       string `json:"worker_id,omitempty"`
 	Limit          *int   `json:"limit,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 	Unread         bool   `json:"unread,omitempty"`
@@ -128,7 +134,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	case "context", "doctor", "presentation_read":
 		dst = &struct{}{}
 	case "workers_list":
-		dst = new(pageInput)
+		dst = new(workersInput)
 	case "jobs_list":
 		dst = new(jobsInput)
 	case "jobs_assigned":
@@ -152,6 +158,8 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 		return args, invalidArguments()
 	}
 	switch v := dst.(type) {
+	case *workersInput:
+		limit, args.cursor, args.includeRetired = v.Limit, v.Cursor, v.IncludeRetired
 	case *pageInput:
 		limit, args.cursor = v.Limit, v.Cursor
 	case *jobsInput:
@@ -163,6 +171,10 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	case *historyInput:
 		limit, args.cursor, args.id = v.Limit, v.Cursor, v.JobID
 	case *inboxInput:
+		if name != "inbox_list" && v.WorkerID != "" {
+			return args, invalidArguments()
+		}
+		args.worker = v.WorkerID
 		limit, args.cursor, args.unread, args.unack = v.Limit, v.Cursor, v.Unread, v.Unacknowledged
 	case *inboxEventsInput:
 		limit, args.cursor, waitMS = v.Limit, v.Cursor, v.WaitMS
@@ -321,7 +333,28 @@ func mutationArguments(name string, data json.RawMessage) (arguments, error) {
 		}
 		args.key = input.Key
 		args.send = client.SendMessageRequest{RecipientWorkerID: input.Recipient, Body: input.Body, ReplyToMessageID: input.Reply}
-	case "inbox_seen", "inbox_ack":
+	case "inbox_ack":
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil {
+			return args, invalidArguments()
+		}
+		if v, ok := fields["worker_id"]; ok {
+			var id string
+			if json.Unmarshal(v, &id) != nil || !validID(id) {
+				return args, invalidArguments()
+			}
+		}
+		var input struct {
+			Key    string `json:"idempotency_key"`
+			ID     string `json:"message_id"`
+			Worker string `json:"worker_id,omitempty"`
+		}
+		if strictjson.Decode(data, &input) != nil || !validKey(input.Key) || !validID(input.ID) || input.Worker != "" && !validID(input.Worker) {
+			return args, invalidArguments()
+		}
+		args.key, args.id, args.worker = input.Key, input.ID, input.Worker
+		return args, nil
+	case "inbox_seen":
 		var input struct {
 			Key string `json:"idempotency_key"`
 			ID  string `json:"message_id"`
@@ -386,7 +419,7 @@ func toolDefinitions() []definition {
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
 		{"context", "Inspect the immutable local profile configuration; no service verification or credential read.", schema(map[string]any{})},
 		{"doctor", "Verify the configured service instance, project and worker without provider work.", schema(map[string]any{})},
-		{"workers_list", "Read one compact worker page in the bound project.", schema(map[string]any{"limit": limit, "cursor": cursor})},
+		{"workers_list", "Read one compact active-worker page; include_retired explicitly includes retained historical identities.", schema(map[string]any{"limit": limit, "cursor": cursor, "include_retired": map[string]any{"type": "boolean"}})},
 		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": status})},
 		{"jobs_assigned", "Read one compact job page assigned to the bound worker; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": status})},
 		{"job_read", "Read explicit full detail and brief for one job.", schema(map[string]any{"job_id": id}, "job_id")},
@@ -394,7 +427,7 @@ func toolDefinitions() []definition {
 		{"job_checkpoint_append", "Append an immutable checkpoint with an explicit key and current expected job revision; return a compact receipt without changing the job or automatically retrying.", schema(map[string]any{"job_id": id, "idempotency_key": key, "expected_job_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64)}, "done": checkpointText(8<<10, true), "next": checkpointText(8<<10, true), "blocker": checkpointText(4<<10, false), "evidence": map[string]any{"type": "array", "maxItems": 10, "items": checkpointText(1024, true)}}, "job_id", "idempotency_key", "expected_job_revision", "done", "next")},
 		{"job_checkpoint_latest", "Read the current job revision and latest checkpoint, or explicit null when none exists; the captured checkpoint revision may be older.", schema(map[string]any{"job_id": id}, "job_id")},
 		{"job_checkpoint_history", "Read one explicit full checkpoint archive page in descending sequence order; no automatic archive reads.", schema(map[string]any{"job_id": id, "limit": limit, "cursor": cursor}, "job_id")},
-		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
+		{"inbox_list", "Read one compact preview page for the bound worker; never mark seen or acknowledged.", schema(map[string]any{"worker_id": id, "limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_snapshot", "Read one bounded compact inbox page and its explicit scoped event cursor; no cursor is saved, no messages are marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"limit": limit, "cursor": cursor, "unread": map[string]any{"type": "boolean"}, "unacknowledged": map[string]any{"type": "boolean"}})},
 		{"inbox_events", "Read one bounded incoming-message event page after an explicit cursor, optionally waiting up to 4000 ms. No cursor is saved, no automatic polling or subscription occurs, messages are never marked seen or acknowledged, and no provider work occurs.", schema(map[string]any{"cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096, "description": "Required explicit cursor from a scoped snapshot or replay page."}, "limit": limit, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 4000, "description": "One bounded wait; omission returns immediately."}}, "cursor")},
 		{"inbox_thread", "Read one explicit conversation page with full immutable bodies; no receipt-state change.", schema(map[string]any{"conversation_id": id, "limit": limit, "cursor": cursor}, "conversation_id")},
@@ -402,6 +435,6 @@ func toolDefinitions() []definition {
 		{"job_edit", "Edit selected job fields with an explicit key and expected revision; empty brief/worker clears those fields. No automatic retry.", editSchema},
 		{"inbox_send", "Send an immutable message as the bound worker with an explicit key, optionally replying to a message; return a compact receipt.", schema(map[string]any{"idempotency_key": key, "recipient_worker_id": id, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 16 << 10}, "reply_to_message_id": id}, "idempotency_key", "recipient_worker_id", "body")},
 		{"inbox_seen", "Explicitly mark a message seen as its bound recipient worker using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
-		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
+		{"inbox_ack", "Explicitly acknowledge a message as its bound recipient worker, also establishing seen, using the supplied key.", schema(map[string]any{"worker_id": id, "idempotency_key": key, "message_id": id}, "idempotency_key", "message_id")},
 	}, reviewDefinitions()...)
 }

@@ -19,6 +19,7 @@ type Scope struct {
 	admin          bool
 	readOnly       bool
 	expiresAt      time.Time
+	sessionManage  bool
 	sessionProject string
 }
 

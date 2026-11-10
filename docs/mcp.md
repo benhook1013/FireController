@@ -37,9 +37,29 @@ Startup validates configuration without opening the credential or contacting the
 | `review_obligations_import_apply` | Administrator and valid project worker; required document/preview_sha256/idempotency_key. Apply the exact previewed [carried-obligation batch](adoption-obligations.md#bound-commands-and-authority). Existing source conflicts and evidence requirements remain enforced. |
 | `review_obligation_resolve` | Project write access and valid project worker; required obligation_id/document/idempotency_key. Resolve one carried obligation using the native {expected_revision,reason,evidence} document. Requires an evidence-backed [resolution](adoption-obligations.md#bound-commands-and-authority); grants no review credit. |
 | `context` | No fields; configured local identity, without service verification. |
+| `review_policy_read` | Read current policy including paused_channels. |
+| `review_policy_configure` | Complete policy replacement with expected_revision, paused_channels and explicit idempotency_key. |
+| `review_execution_configure` | Guarded existing capability/configuration replacement with nonempty queue and explicit key. |
+| `worker_create` | Create a named worker using an explicit key. |
+| `worker_retirement_read` | Read bounded unfinished-job, pending-note and incoming-message blockers. |
+| `worker_retire` | Guarded one-way retirement; explicit worker_id and key. |
+| `project_credential_grant` | Grant a distinct credential digest scoped permissions; explicit key. |
+| `project_credential_update` | Full expected_permissions/permissions CAS for credential_id and explicit key. |
+| `project_credential_revoke` | Revoke only this project grant for credential_id and explicit key. |
+| `presentation_replace` | Apply a strict native presentation document and key. |
+| `presentation_history` | One bounded retained history page. |
+| `presentation_revision_read` | Read one retained revision. |
+| `publication_configuration_read` | Read selected public publication configuration. |
+| `publication_preview` | Preview a complete native publication document without publishing. |
+| `publication_apply` | Apply exact native document, preview_sha256 and key. |
+| `publication_unpublish` | Disable publication using expected_revision and key. |
+| `review_import_preview` | Preview a complete native review import. |
+| `review_import_apply` | Apply exact native import, preview_sha256 and key. |
+| `review_transfer_preview` | Preview a bounded native review-history transfer. |
+| `review_transfer_apply` | Apply exact native transfer, preview_sha256 and key. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity. |
-| `workers_list` | Optional limit/cursor; one compact worker page. |
+| `workers_list` | Optional limit/cursor/include_retired; one compact active or explicitly historical worker page. |
 | `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
@@ -67,7 +87,7 @@ Startup validates configuration without opening the credential or contacting the
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
 | `note_revision_read` | Required note_id/revision; one full immutable note revision. |
-| `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
+| `inbox_list` | Optional unread/unacknowledged/limit/cursor/worker_id; selected recipient compact preview page without changing acting identity. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
@@ -163,3 +183,11 @@ Clean source `e65315f3141fcba180499110cb0a5ad6f4948d6c` passed the actual packag
 ## Explicit review selection tools
 
 `review_start` accepts one durable channel selection with the caller's key and optional target/configuration assertions. `review_selection_read` observes a retained selection ID and its original native child, with optional bounded waiting. A `review_busy` response identifies another pending selection but creates no receipt and does not satisfy the refused caller's target assertion. Reads and canceled waits never authorize replacement work. See the [selection contract](review-round-controls.md#one-explicit-channel-front-run) for exact lifetime, authority and recovery semantics.
+
+## Native project administration
+
+The bound service exposes `review_policy_read`, `review_policy_configure`, `review_execution_configure`, `worker_create`, `project_credential_grant`, `project_credential_update` and `project_credential_revoke`. Mutation schemas require explicit keys and complete CAS inputs. Policy replacement includes `paused_channels`; execution configuration keeps an existing operator-bound capability and a nonempty queue. Grant takes a digest, never a raw secret. Management permissions and receipt replay follow the [local API](local-api.md#project-management-and-guarded-retirement).
+
+`worker_retirement_read` reports bounded blockers; `worker_retire` rechecks them atomically with ordinary write permission. `workers_list` defaults to active identities and accepts explicit `include_retired`. `inbox_list` and `inbox_ack` accept a selected `worker_id`; only acknowledgement for another recipient requires management. The authenticated acting worker remains unchanged. The existing inbox snapshot and seen operations do not accept another worker selector.
+
+Native presentation replacement/history/revision, public publication configuration/preview/apply/unpublish, and review import/transfer preview/apply tools delegate strict native documents to the existing validators. Publication apply retains the explicit preview hash and revision. Existing round-adoption and adoption-obligation tools remain registered once. Read and preview tools perform no provider action; write/destructive annotations distinguish guarded mutations. New operation-control, settlement, history-collection and publication-prepare adapters are not part of this prerequisite.

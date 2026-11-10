@@ -46,6 +46,8 @@ type options struct {
 }
 
 type invocation struct {
+	ownerManagement        *ownerManagementInvocation
+	includeRetired         bool
 	ciWatch                *ciWatchInvocation
 	reviewRun              *reviewRunInvocation
 	operationHelp          string
@@ -99,6 +101,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			action = "Use fc reviews " + call.subcommand + " --help."
 		}
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", action)
+	}
+	if call.ownerManagement != nil {
+		if err := prepareOwnerManagement(ctx, call.ownerManagement); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
 	}
 	if call.operationHelp != "" {
 		return emitOperationHelp(call.operationHelp, stdout, stderr)
@@ -280,6 +287,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}
 		return emit(stdout, stderr, value)
 	}
+	if call.ownerManagement != nil {
+		return executeOwnerManagement(requestCtx, ctx, service, call.ownerManagement, stdout, stderr)
+	}
 	if call.mutation != nil {
 		value, err := executeMutation(requestCtx, service, call.mutation)
 		if err != nil {
@@ -308,7 +318,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	case call.command == "workers" && call.subcommand == "pause-history":
 		value, err = service.WorkerPauseHistory(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "workers":
-		value, err = service.Workers(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+		value, err = service.WorkersWithRetired(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, call.includeRetired)
 	case call.command == "jobs" && call.subcommand == "context":
 		value, err = service.JobContext(requestCtx, call.position[0], call.limit)
 	case call.command == "jobs" && call.subcommand == "primary":
@@ -334,7 +344,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	case call.command == "jobs" && call.subcommand == "checklist-history":
 		value, err = service.JobChecklistHistory(requestCtx, call.position[0], client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case call.command == "inbox" && call.subcommand == "list":
-		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
+		value, err = service.Inbox(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack}, call.worker)
 	case call.command == "inbox" && call.subcommand == "snapshot":
 		value, err = service.InboxSnapshot(requestCtx, client.PageOptions{Limit: call.limit, Cursor: call.cursor}, client.InboxFilter{Unread: call.unread, Unacknowledged: call.unack})
 	case call.command == "inbox" && call.subcommand == "wait":
@@ -403,6 +413,14 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	call.command = remaining[0]
+	if len(remaining) == 2 && (remaining[1] == "help" || remaining[1] == "--help") && (call.command == "credentials" || call.command == "workers" || call.command == "reviews") {
+		call.operationHelp = call.command + " help"
+		return call, true
+	}
+	if len(remaining) == 3 && remaining[0] == "help" && ownerManagementOperation(remaining[1]+" "+remaining[2]) {
+		call.operationHelp = remaining[1] + " " + remaining[2]
+		return call, true
+	}
 	if len(remaining) == 3 && remaining[0] == "help" && remaining[1] == "reviews" && (remaining[2] == "operations" || remaining[2] == "operation-control" || remaining[2] == "operation") {
 		call.operationHelp = remaining[2]
 		return call, true
@@ -419,11 +437,20 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" && call.command != "credentials" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
+	if ownerManagementOperation(call.command + " " + call.subcommand) {
+		if len(operationArgs) == 1 && operationArgs[0] == "--help" {
+			call.operationHelp = call.command + " " + call.subcommand
+			return call, true
+		}
+		var ok bool
+		call.ownerManagement, ok = parseOwnerManagement(call.command+" "+call.subcommand, operationArgs)
+		return call, ok
+	}
 	if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation-control" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		call.operationHelp = call.subcommand
 		return call, true
@@ -493,6 +520,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	case "jobs assigned":
 		allowed["--limit"], allowed["--cursor"], allowed["--status"] = true, true, true
 	case "inbox list":
+		allowed["--worker"] = true
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
 	case "inbox snapshot":
 		allowed["--limit"], allowed["--cursor"], allowed["--unread"], allowed["--unacknowledged"] = true, true, true, true
@@ -501,6 +529,9 @@ func parseInvocation(args []string) (invocation, bool) {
 	case "workers pause-state", "jobs primary", "jobs read", "jobs checkpoint-latest", "jobs checklist":
 	default:
 		return call, false
+	}
+	if call.command == "workers" && call.subcommand == "list" {
+		allowed["--include-retired"] = true
 	}
 	seen := make(map[string]bool)
 	for i := 0; i < len(operationArgs); i++ {
@@ -515,6 +546,11 @@ func parseInvocation(args []string) (invocation, bool) {
 		}
 		seen[flag] = true
 		switch flag {
+		case "--include-retired":
+			if assigned {
+				return call, false
+			}
+			call.includeRetired = true
 		case "--unread":
 			if assigned {
 				return call, false

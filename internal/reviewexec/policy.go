@@ -78,6 +78,7 @@ func clonePolicyConfiguration(value PolicyConfiguration) PolicyConfiguration {
 // ConfigurePolicy stores one immutable administrator-attributed revision. It
 // performs no admission, provider observation, execution or policy assessment.
 func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key string, input PolicyConfiguration) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	// Bound collection copying even for trusted direct callers.
 	if len(input.RequiredChannels) > 2 || len(input.PausedChannels) > 2 {
 		return nil, invalid()
@@ -88,14 +89,6 @@ func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key stri
 		return nil, invalid()
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.policy.configure", Target: "policy", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// A write-capable scope is insufficient even for direct Go callers.
-		var admin int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0`, scope.PrincipalID).Scan(&admin); err != nil {
-			return nil, err
-		}
-		if admin != 1 {
-			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-		}
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_policy_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
