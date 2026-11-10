@@ -30,7 +30,7 @@ try {
     });
     need(response.status === status);
     const receipt = await response.json();
-    need(receipt.id || receipt.project_id);
+    need(receipt.id || receipt.project_id || receipt.pull_number);
     fixtureWrites++;
     return receipt;
   };
@@ -243,6 +243,13 @@ try {
   await write('POST', '/reviews/observations', observation(0, [merged, open]), 201);
   await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  // Current round progress is an existing-event-driven, bounded local read.
+  // Exercise a real native write and observe its scoped browser invalidation.
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0, action:'grant', minimum:2, maximum:3});
+  const progress = page.getByLabel('Hosted current round progress', {exact:true});
+  await expect(progress).toContainText('Up to 3 more reviews');
+  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1, action:'close'});
+  await expect(progress).toContainText('Manually closed');
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   await write('POST', '/reviews/observations', observation(1, [merged, {...open, title:'Live review updated', runs:[run]}]), 201);

@@ -172,7 +172,7 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		MetadataStreams          int    `json:"metadata_streams"`
 		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 15 || result.SessionPosts != 2 || result.SessionDeletes != 2 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams != 3 || result.InboxStreams != 2 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureWrites != 17 || result.SessionPosts != 2 || result.SessionDeletes != 2 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams != 3 || result.InboxStreams != 2 {
 		t.Fatal("invalid packaged browser result")
 	}
 	daemon.stop(t)
