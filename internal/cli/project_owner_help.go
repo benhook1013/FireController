@@ -41,7 +41,7 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 	case "credentials grant":
 		out.Usage += " (--token-sha256 HASH | --credential-file PATH) --permission read [--permission write|manage] --key KEY"
 		out.Required = []string{"exactly one --token-sha256 (64 lowercase hex) or --credential-file (existing private absolute path)", "--permission (repeat for unique read/write/manage)", "--key KEY"}
-		out.Semantics = append(out.Semantics, "Project manager; create one distinct non-admin project credential grant. Only a SHA-256 digest is sent. An explicitly selected owner-private credential file is hashed locally; no raw token is accepted as an argument or printed. manage implies read/write. Existing credentials use update instead.")
+		out.Semantics = append(out.Semantics, "Project manager; create one distinct non-admin project credential grant. Only a SHA-256 digest is sent. An explicitly selected owner-private credential file is hashed locally; use a high-entropy token of 32-256 printable nonspace ASCII bytes after surrounding whitespace is trimmed. No raw token is accepted as an argument or printed. manage implies read/write. Existing credentials use update instead.")
 		out.Documentation = "docs/local-api.md"
 	case "credentials revoke":
 		out.Usage += " CREDENTIAL_ID --key KEY"

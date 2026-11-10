@@ -77,7 +77,22 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 				if headWalk > 1 && mode == "rerun during recheck" {
 					rows[1]["run_attempt"] = int64(2)
 				}
-				body = actionsEnvelope("workflow_runs", rows, len(rows))
+				if headWalk > 1 {
+					switch mode {
+					case "incomplete recheck":
+						body = actionsEnvelope("workflow_runs", rows, 1000)
+					case "rate-limited recheck":
+						w.Header().Set("Retry-After", "42")
+						http.Error(w, "PRIVATE_RECHECK_ERROR", http.StatusTooManyRequests)
+						return
+					case "unavailable recheck":
+						http.Error(w, "PRIVATE_RECHECK_ERROR", http.StatusServiceUnavailable)
+						return
+					}
+				}
+				if body == nil {
+					body = actionsEnvelope("workflow_runs", rows, len(rows))
+				}
 			}
 		case strings.HasPrefix(r.URL.Path, actionsRunsPath+"/6") || mode == "capacity" && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/") && r.URL.Path != actionsCurrentPath && r.URL.Path != actionsJobsPath:
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, actionsRunsPath+"/"), "/")
@@ -211,14 +226,56 @@ func TestWorkflowAttentionDoesNotReviveRepairedOrSupersededExecution(t *testing.
 }
 
 func TestWorkflowAttentionSkippedHistoryHasFiniteAttemptFanout(t *testing.T) {
+	base := ciSkippedRunFixture(t, "capacity")
+	ordinary, err := base.g.ObserveCIGate(t.Context(), ciObservationTarget(), "main")
+	if err != nil || ordinary.State != "pending" {
+		t.Fatal(ordinary.State, err)
+	}
 	f := ciSkippedRunFixture(t, "capacity")
 	gate, failures, err := f.g.ObserveCIGateWithWorkflows(t.Context(), ciObservationTarget(), "main", []int64{31})
 	var warning *CIWorkflowAttentionError
 	if !errors.As(err, &warning) || gate.State != "pending" || len(failures) != 0 || len(gate.Attempts)+len(gate.WorkflowAttempts) != 32 {
 		t.Fatal("unbounded or miscredited history walk", gate.State, len(gate.WorkflowAttempts), failures, err)
 	}
+	var provider *Error
+	if errors.As(err, &provider) || !errors.Is(err, ErrCIWorkflowAttemptLimit) || !strings.Contains(warning.Cause.Error(), "incomplete") {
+		t.Fatalf("local attempt cap lost its distinct incomplete-inventory warning: %v / %+v", err, provider)
+	}
+	if !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, gate)) {
+		t.Fatal("local attempt cap changed required gate facts")
+	}
 	_, counts := f.snapshot()
 	if counts[fmt.Sprintf("%s/60", actionsRunsPath)] != 0 {
 		t.Fatal("walk exceeded hard total attempt bound", counts)
+	}
+}
+
+func TestWorkflowAttentionRecheckProviderFailuresRemainProviderErrors(t *testing.T) {
+	base := ciSkippedRunFixture(t, "skip")
+	ordinary, err := base.g.ObserveCIGate(t.Context(), ciObservationTarget(), "main")
+	if err != nil || ordinary.State != "pending" {
+		t.Fatal(ordinary.State, err)
+	}
+	for _, test := range []struct {
+		mode  string
+		code  string
+		retry int64
+	}{
+		{"incomplete recheck", "provider_inventory_incomplete", 0},
+		{"rate-limited recheck", "provider_rate_limited", 42},
+		{"unavailable recheck", "provider_unavailable", 0},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			f := ciSkippedRunFixture(t, test.mode)
+			gate, failures, err := f.g.ObserveCIGateWithWorkflows(t.Context(), ciObservationTarget(), "main", []int64{31})
+			var warning *CIWorkflowAttentionError
+			var provider *Error
+			if !errors.As(err, &warning) || !errors.As(err, &provider) || provider.Code != test.code || provider.RetryAfterSeconds != test.retry || errors.Is(err, ErrCIWorkflowAttemptLimit) || strings.Contains(err.Error(), "PRIVATE_RECHECK_ERROR") {
+				t.Fatal("genuine provider failure became a local cap or lost its safe warning", err, provider)
+			}
+			if len(failures) != 0 || gate.WorkflowActions != nil || !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, gate)) {
+				t.Fatal("failed recheck credited old attention or changed required gate facts", failures, gate.State)
+			}
+		})
 	}
 }

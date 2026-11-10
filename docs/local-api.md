@@ -84,7 +84,7 @@ Statuses are `active`, `parked`, `blocked` and `completed`; creation defaults to
 | `GET /inbox/{worker_id}` | Compact previews and seen/ack state; optional `unread=true` and `unacknowledged=true` filters. |
 | `GET /conversations/{conversation_id}` | Explicit chronological full-body page with root/reply identities. |
 | `POST /messages/{message_id}/seen` | Strict `{}` body; only the selected actual recipient can mark seen. |
-| `POST /messages/{message_id}/ack` | Strict `{}` body; only the selected actual recipient can acknowledge, atomically establishing seen. |
+| `POST /messages/{message_id}/ack` | Strict object with optional recipient `worker_id`, defaulting to the acting worker. Acknowledging for another recipient requires current project management and preserves the acting worker. Atomically establishes seen. See [guarded retirement](#project-management-and-guarded-retirement). |
 
 Sender, recipient and reply references must belong to the selected project. Body is nonblank UTF-8, bounded to 16 KiB. Inbox previews contain at most 160 Unicode runes with explicit `preview_truncated`. Replies preserve conversation identity, and pages use a durable insertion sequence rather than timestamp ordering alone.
 
