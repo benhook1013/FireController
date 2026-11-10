@@ -389,7 +389,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 			return err
 		}
 		operationState, operationAttempt := state, o.AttemptID
-		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+		// Only an unused preparation may detach and retain the same queued intent.
+		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed"
+		if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
 			operationState, operationAttempt = "queued", ""
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {

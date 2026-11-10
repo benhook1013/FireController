@@ -221,7 +221,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed" {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {

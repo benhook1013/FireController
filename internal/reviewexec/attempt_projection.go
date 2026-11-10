@@ -67,7 +67,7 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	}
 	if operation.AttemptID != attempt.ID {
 		// History may retain an unused preparation that detached before dispatch.
-		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
+		original, draft, err := historicalUnusedPreparationOperation(ctx, tx, operation, attempt, true)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return reviews.Receipt{}, publicationConflict()

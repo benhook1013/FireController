@@ -76,15 +76,24 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		if !originalJSON.Valid || !latestJSON.Valid || json.Unmarshal([]byte(originalJSON.String), &original) != nil || json.Unmarshal([]byte(latestJSON.String), &latest) != nil || validateConfigurationShape(original) != nil || validateConfigurationShape(latest) != nil {
 			return adjudicationStorageError()
 		}
+		switch {
+		case op.Wait != nil && op.Wait.Paused:
+			cause = "operation_paused"
+			return nil
+		case latest.Paused:
+			cause = "project_paused"
+			return nil
+		}
+		scheduling, err := readPullScheduling(ctx, tx, op.ProjectID, op.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			cause = "pull_scheduling_paused"
+			return nil
+		}
 		if op.Reason == cliDraftWait {
-			switch {
-			case op.Wait != nil && op.Wait.Paused:
-				cause = "operation_paused"
-			case latest.Paused:
-				cause = "project_paused"
-			default:
-				cause = cliDraftWait
-			}
+			cause = cliDraftWait
 			return nil
 		}
 		if op.Channel == "cli" {
@@ -97,19 +106,11 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 				if err != nil {
 					return err
 				}
-				if e.sampleExecutionTime().Before(due) && !(op.Wait != nil && op.Wait.Paused) && !latest.Paused {
+				if e.sampleExecutionTime().Before(due) {
 					cause = "cli_quota_wait"
 					return nil
 				}
 			}
-		}
-		switch {
-		case op.Wait != nil && op.Wait.Paused:
-			cause = "operation_paused"
-			return nil
-		case latest.Paused:
-			cause = "project_paused"
-			return nil
 		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, op, latest, latestRevision)
 		if err != nil {
