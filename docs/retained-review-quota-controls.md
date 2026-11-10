@@ -42,6 +42,8 @@ Any credential with write permission in this project may control an undispatched
 
 After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
 
+Held-operation `allowance` facts and the compact held Hosted `retry_not_before` field require `X-FC-Operation-Wait: 3`, including terminal replies to request submission. Missing, older or unsupported versions omit these fields; engine-level retained facts and exact-key recovery remain unchanged.
+
 ## Recovery and scope
 
 Restart recovery only requeues preparations with retained proof that no review

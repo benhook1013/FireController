@@ -71,7 +71,7 @@ func TestReviewOperationControlCLIHelpAndMalformedOffline(t *testing.T) {
 	id := "review_operation_" + strings.Repeat("a", 32)
 	for _, args := range [][]string{{"reviews", "operation-control", "--help"}, {"help", "reviews", "operation-control"}} {
 		code, out, stderr := mutationInvoke(t, "/missing/private-profiles", "absent", args...)
-		if code != 0 || stderr != "" || !strings.Contains(out, "undispatched") || !strings.Contains(out, "--expect-revision") {
+		if code != 0 || stderr != "" || !strings.Contains(out, "undispatched") || !strings.Contains(out, "--expect-revision") || !strings.Contains(out, "docs/retained-review-quota-controls.md") {
 			t.Fatal(code, out, stderr)
 		}
 	}

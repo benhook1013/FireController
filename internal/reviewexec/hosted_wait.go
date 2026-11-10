@@ -33,6 +33,15 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 	return wait
 }
 
+// Keep engine-level held facts intact while preserving older strict HTTP shapes.
+func operationForResponse(operation Operation, version string) Operation {
+	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, version)
+	if version != "3" {
+		operation.Allowance = nil
+	}
+	return operation
+}
+
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {

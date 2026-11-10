@@ -178,6 +178,9 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		value.Observer = nil
 	}
 	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
+	if r.Header.Get(operationWaitHeader) != "3" {
+		value.RetryNotBefore = ""
+	}
 	if value.Channel == "cli" && value.State == "queued" && value.Wait != nil && value.Wait.BaselineAttemptID != "" {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}

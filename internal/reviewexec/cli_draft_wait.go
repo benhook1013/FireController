@@ -85,7 +85,8 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	if !e.claimDraftProbe(o.ID) {
 		// Only draft-waiting requests require a positive readiness probe.
 		// Ordinary preparation still resolves and validates the source.
-		return !waiting, false, false, nil
+		// Retain explicit intent if that preparation observes a Draft PR.
+		return !waiting, false, true, nil
 	}
 	reader := driver.SourceReader()
 	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

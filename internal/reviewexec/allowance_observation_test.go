@@ -68,7 +68,11 @@ func TestHeldAllowanceSQLReadHTTPReplayAndValidation(t *testing.T) {
 			if err := f.store.DB().QueryRow(`SELECT body_json FROM `+table+` WHERE attempt_id=?`, a.ID).Scan(&before); err != nil {
 				t.Fatal(err)
 			}
-			w := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, f.reader, "", "")
+			r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, nil)
+			r.Header.Set("Authorization", "Bearer "+f.reader)
+			r.Header.Set(operationWaitHeader, "3")
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
 			if w.Code != http.StatusOK {
 				t.Fatal("held HTTP read", w.Code, w.Body.String())
 			}
@@ -95,7 +99,7 @@ func TestHeldAllowanceSQLReadHTTPReplayAndValidation(t *testing.T) {
 					t.Fatal("cooldown returned as positive allowance proof")
 				}
 			}
-			compactHTTP := statusHTTP(t, f, a.OperationID, "", "wait=0")
+			compactHTTP := statusHTTP(t, f, a.OperationID, "", "wait=0", "3")
 			var compact OperationStatus
 			if compactHTTP.Code != 200 || json.Unmarshal(compactHTTP.Body.Bytes(), &compact) != nil || compact.State != "held" || compact.Reason != reason || len(compactHTTP.Body.Bytes()) > 1024 {
 				t.Fatal("compact held status unavailable or expanded", compactHTTP.Code, compactHTTP.Body.String())
@@ -437,6 +441,84 @@ func TestHeldAllowanceLegacyPolicyZeroWithoutFacts(t *testing.T) {
 			}
 			if w := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, f.reader, "", ""); w.Code != 500 {
 				t.Fatal("present invalid facts were hidden", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHeldAllowanceHTTPNegotiationPreservesLegacyShapes(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var err error
+			reason, key := "allowance_exhausted", "allowance-request"
+			if channel == "cli" {
+				var in CLIAllowanceObservation
+				f, a, in = cliAllowanceFixture(t)
+				in.Remaining = 0
+				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, 1, in)
+			} else {
+				var in HostedAllowanceInput
+				f, a, in = cooldownObservationFixture(t)
+				reason, key = "hosted_allowance_cooldown", "query-request"
+				err = f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, 1, in)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := attemptState(t, f, a)
+			counts := attemptCount(t, f.store, "SELECT count(*) FROM receipts")
+			body, err := json.Marshal(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, version := range []string{"", "1", "2", "3", "unknown"} {
+				for _, kind := range []string{"full", "status", "enqueue-replay"} {
+					t.Run(version+"/"+kind, func(t *testing.T) {
+						path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
+						method, token, payload := "GET", f.reader, ""
+						if kind == "status" {
+							path += "/status"
+						}
+						if kind == "enqueue-replay" {
+							method, token, payload, path = "POST", f.writer, string(body), "/api/v1/projects/"+attemptProject+"/reviews/requests"
+						}
+						r := httptest.NewRequest(method, path, strings.NewReader(payload))
+						r.Header.Set("Authorization", "Bearer "+token)
+						r.Header.Set("Prefer", "wait=1")
+						if version != "" {
+							r.Header.Set(operationWaitHeader, version)
+						}
+						if method == "POST" {
+							r.Header.Set("Idempotency-Key", key)
+						}
+						w := httptest.NewRecorder()
+						f.handler.ServeHTTP(w, r)
+						var fields map[string]json.RawMessage
+						if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &fields) != nil {
+							t.Fatal("held response", w.Code, w.Body.String())
+						}
+						_, allowance := fields["allowance"]
+						_, retry := fields["retry_not_before"]
+						wantAllowance := version == "3" && kind != "status"
+						wantRetry := version == "3" && kind == "status" && channel == "hosted"
+						if allowance != wantAllowance || retry != wantRetry {
+							t.Fatal("unnegotiated held fields or missing version3 facts", version, kind, w.Body.String())
+						}
+						if !strings.Contains(w.Header().Get("Vary"), operationWaitHeader) && !strings.Contains(strings.Join(w.Header().Values("Vary"), ","), operationWaitHeader) {
+							t.Fatal("missing negotiation cache boundary")
+						}
+					})
+				}
+			}
+			o, err := f.e.ReadOperation(t.Context(), operationReadScope(t, f), a.OperationID)
+			if err != nil || o.Allowance == nil || before != attemptState(t, f, a) || counts != attemptCount(t, f.store, "SELECT count(*) FROM receipts") {
+				t.Fatal("HTTP negotiation changed engine facts or replayed mutations", o, err)
 			}
 		})
 	}

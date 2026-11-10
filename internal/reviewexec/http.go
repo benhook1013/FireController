@@ -153,7 +153,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if terminal {
-			operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
+			operation = operationForResponse(operation, r.Header.Get(operationWaitHeader))
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -197,7 +197,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("X-FC-Hosted-Observer") == "1" {
 		operation.Observer = e.observerStatus(operation)
 	}
-	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, r.Header.Get(operationWaitHeader))
+	operation = operationForResponse(operation, r.Header.Get(operationWaitHeader))
 	if operation.Channel == "cli" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}

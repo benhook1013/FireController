@@ -364,3 +364,46 @@ func TestCLIDraftProbeThrottleOnlyBlocksWaitingRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIDraftAfterThrottledProbeRetainsExplicitIntent(t *testing.T) {
+	for _, cause := range []string{"recent", "capacity"} {
+		t.Run(cause, func(t *testing.T) {
+			f := supervisorFixture(t)
+			now := time.Now()
+			f.e.schedulingNow = func() time.Time { return now }
+			r := f.enqueue(t, attemptProject, "throttled-then-draft", "cli", 2, 1)
+			f.e.draftProbeNext = map[string]time.Time{}
+			if cause == "recent" {
+				f.e.draftProbeNext[r.ID] = now.Add(cliDraftProbeInterval)
+			} else {
+				for i := range 256 {
+					f.e.draftProbeNext[fmt.Sprintf("occupied-%d", i)] = now.Add(cliDraftProbeInterval)
+				}
+			}
+			d := &draftWaitDriver{reader: &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+				draft := false
+				return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+			}}}
+			d.prepare = func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+				return Preparation{}, sourceHold("pull_draft")
+			}
+			drivers := map[string]Driver{"test-capability": d}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal(err)
+			}
+			o, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), r.ID)
+			if err != nil || o.State != "queued" || o.Reason != cliDraftWait || o.AttemptID != "" || d.calls.Load() != 0 || d.prepares.Load() != 1 || attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
+				t.Fatal("throttled probe lost explicit intent after Draft refusal", o, err)
+			}
+			now = now.Add(cliDraftProbeInterval)
+			d.prepare = nil
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal(err)
+			}
+			o, err = f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), r.ID)
+			if err != nil || o.ID != r.ID || o.State != "completed" || d.calls.Load() != 1 || d.prepares.Load() != 2 {
+				t.Fatal("retained intent did not resume once after readiness", o, err)
+			}
+		})
+	}
+}
