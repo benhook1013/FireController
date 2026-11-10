@@ -34,7 +34,7 @@ Draft PRs are separately ineligible for dispatch. [Explicit CLI requests can wai
 
 ## Accepted queue priority
 
-Current queued diagnostics explain an earlier accepted Hosted request before the later request's independent cooldown. A row with remaining work but no accepted request does not reserve a turn. Paused, cancelled or invalid earlier requests do not retain priority. These are bounded local reads, not source scans or provider polling.
+Current queued diagnostics explain an earlier accepted Hosted request before the later request's independent cooldown. A row with remaining work but no accepted request does not reserve a turn. Paused, cancelled or invalid earlier requests do not retain priority. These are bounded local reads, not source scans or provider polling. CLI shared-account quota diagnostics retain `cli_quota_wait` across response versions only while the current configuration and capability still match the accepted operation. Paused or revoked work reports its own hold first. An expired or incompatible quota binding leaves the ordinary scheduling diagnostic; these headers do not invent retained wait or allowance facts.
 
 Version `5` of `X-FC-Operation-Wait` extends version `3` with optional `queue_ahead_pull_number` in the staged round-progress read. Older supported versions omit it and retained deadlines remain unchanged. The browser uses this hint for **Behind #PR**, without a visible or hidden timer; only the next accepted request shows its own countdown. This projection does not promise dispatch or change review accounting.
 

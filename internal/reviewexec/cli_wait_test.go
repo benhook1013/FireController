@@ -483,13 +483,13 @@ func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
 				before[table] = snapshotTable(t, f, table)
 			}
 			for _, suffix := range []string{"", "/status"} {
-				for _, version := range []string{"", "1", "2", "3"} {
+				for _, version := range []string{"", "1", "2", "3", "4", "5", "unsupported"} {
 					req := httptest.NewRequest("GET", "/api/v1/projects/"+otherAttemptProject+"/reviews/operations/"+other.ID+suffix, nil)
 					req.Header.Set("Authorization", "Bearer "+f.other)
 					req.Header.Set(operationWaitHeader, version)
 					w := httptest.NewRecorder()
 					mux.ServeHTTP(w, req)
-					want := ""
+					want := "awaiting_scheduler"
 					if mode == "shared" || mode == "cancelled-origin" {
 						want = "cli_quota_wait"
 					}
@@ -516,6 +516,42 @@ func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
 				if before[table] != snapshotTable(t, f, table) {
 					t.Fatal("read changed state", table)
 				}
+			}
+		})
+	}
+}
+
+func TestCLISharedQuotaHTTPDiagnosticsPreferPause(t *testing.T) {
+	for _, mode := range []string{"operation", "project"} {
+		t.Run(mode, func(t *testing.T) {
+			f, a, _, _ := cliWaitFixture(t)
+			f.configure(t, otherAttemptProject, "test-capability", 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			other := f.enqueue(t, otherAttemptProject, "paused-diagnostic-cli", "cli", 2, 1)
+			if mode == "operation" {
+				admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,'',1)`, other.ID)
+			} else {
+				f.configure(t, otherAttemptProject, "test-capability", 1, true)
+			}
+			mux := http.NewServeMux()
+			f.e.Register(mux)
+			before := snapshotTable(t, f, "review_operation_waits")
+			for _, suffix := range []string{"", "/status"} {
+				for _, version := range []string{"", "1", "2", "3", "4", "5", "unsupported"} {
+					req := httptest.NewRequest("GET", "/api/v1/projects/"+otherAttemptProject+"/reviews/operations/"+other.ID+suffix, nil)
+					req.Header.Set("Authorization", "Bearer "+f.other)
+					req.Header.Set(operationWaitHeader, version)
+					w := httptest.NewRecorder()
+					mux.ServeHTTP(w, req)
+					if w.Code != http.StatusOK || w.Header().Get(queuedDiagnosticHeader) != mode+"_paused" {
+						t.Fatalf("%s schema %q: quota diagnostic hid pause: %d %v", suffix, version, w.Code, w.Header())
+					}
+				}
+			}
+			if before != snapshotTable(t, f, "review_operation_waits") {
+				t.Fatal("pause diagnostic changed retained wait")
 			}
 		})
 	}

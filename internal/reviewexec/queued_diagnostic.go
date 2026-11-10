@@ -30,7 +30,7 @@ func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, sc
 		return
 	}
 	cause, reservation := e.queuedDiagnosticDetails(r.Context(), scope, id, revision)
-	if (cause == "cli_quota_wait" || cause == "queue_order" && channel == "cli") && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" && r.Header.Get(operationWaitHeader) != "5" {
+	if cause == "queue_order" && channel == "cli" && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" && r.Header.Get(operationWaitHeader) != "5" {
 		cause = "awaiting_scheduler"
 	}
 	if cause != "" {
@@ -88,7 +88,11 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			return nil
 		}
 		if op.Channel == "cli" {
-			if capability, ok := e.capabilities[original.CapabilityID]; ok && capability.Fingerprint == op.CapabilityFingerprint {
+			compatible, err := compatibleQueuedConfiguration(ctx, tx, op, latest, latestRevision)
+			if err != nil {
+				return err
+			}
+			if capability, ok := e.capabilities[latest.CapabilityID]; compatible && ok && e.validateConfiguration(latest) == nil && capability.Fingerprint == op.CapabilityFingerprint {
 				due, err := cliAccountRetryDeadline(ctx, tx, capability)
 				if err != nil {
 					return err
