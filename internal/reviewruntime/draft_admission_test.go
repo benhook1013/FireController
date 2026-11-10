@@ -25,11 +25,33 @@ func waitRuntimeDraftState(t *testing.T, f *cliDriverFixture, driver reviewexec.
 		cancel()
 		t.Fatal(err)
 	}
-	waitSeconds := 3
+	var operation reviewexec.Operation
+	var terminal bool
+	var readErr error
 	if channel == "cli" {
-		waitSeconds = 1
+		deadline := time.NewTimer(5 * time.Second)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer deadline.Stop()
+		defer ticker.Stop()
+	probe:
+		for {
+			operation, readErr = f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), id)
+			if readErr != nil || operation.Reason == "cli_draft_wait" {
+				break
+			}
+			select {
+			case <-deadline.C:
+				readErr = context.DeadlineExceeded
+				break probe
+			case <-t.Context().Done():
+				readErr = t.Context().Err()
+				break probe
+			case <-ticker.C:
+			}
+		}
+	} else {
+		operation, terminal, readErr = f.engine.WaitOperation(t.Context(), f.scope(t, f.writer, false), id, 3)
 	}
-	operation, terminal, readErr := f.engine.WaitOperation(t.Context(), f.scope(t, f.writer, false), id, waitSeconds)
 	cancel()
 	select {
 	case err := <-done:

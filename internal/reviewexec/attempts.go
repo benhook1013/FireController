@@ -418,6 +418,17 @@ func allowedTransition(from, to string) bool {
 	return false
 }
 
+// Optional allowance evidence can preserve a proven unused wait, but corrupt
+// evidence must not prevent safe cancellation of undispatched preparation.
+// Actual database and context failures still abort the recovery transaction.
+func interruptedAllowanceUnavailable(err error) bool {
+	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+		return true
+	}
+	var failure *core.Error
+	return errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored hosted allowance observation is unavailable."
+}
+
 // RecoverInterrupted runs once before a new supervisor accepts work. It never
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; interrupted CLI work remains uncertain until evidence settles it.
@@ -458,7 +469,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if a.State == "preparing" && o.Channel == "hosted" {
 				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
-				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
 					return readErr
 				}
 				if readErr == nil && record.Input.Observation.State == "cooldown_observed" && record.Input.Observation.RetryNotBefore.After(e.sampleExecutionTime()) {
@@ -475,7 +486,7 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			}
 			if a.State == "preparing" && o.Channel == "cli" {
 				record, readErr := readCLIAllowanceRecord(ctx, tx, o, a)
-				if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
 					return readErr
 				}
 				if readErr == nil && record.Observation.Remaining == 0 {

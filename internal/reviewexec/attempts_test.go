@@ -232,7 +232,7 @@ func TestAttemptReservationsSerializeAccountAndExactTarget(t *testing.T) {
 	if _, err := f.e.Admit(context.Background(), attemptProject, first.ID, 1, attemptAnchor(attemptProject, 2), ""); err != nil {
 		t.Fatal(err)
 	}
-	// Changing configured accounts does not bypass an already occupied target.
+	// Enqueue rejects a live same-target intent even after changing accounts.
 	f.configure(t, attemptProject, "other-account", 1, false)
 	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "same-target-other-account", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 	attemptCode(t, err, "review_inflight")
@@ -601,5 +601,124 @@ func TestAttemptTerminalStatesReleaseWithoutManufacturingCoverage(t *testing.T) 
 			attemptCode(t, err, "review_conflict")
 			f.start(t, attemptProject, f.enqueue(t, attemptProject, "explicit-new-"+state, "cli", 2, 1))
 		})
+	}
+}
+
+func TestAttemptExactTargetReservationRejectsDirectQueuedFixture(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved-target", "cli", 2, 1))
+	f.configure(t, attemptProject, "other-account", 1, false)
+	// Bypass Enqueue's review_inflight guard: a queued persisted operation
+	// on another account must still be stopped by StartAttempt's target lock.
+	id := core.NewID("review_operation")
+	admissionSQL(t, f, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,2,pull_number,channel,head_sha,'queued',1,'','',created_at,updated_at,?,policy_revision FROM review_operations WHERE id=?`, id, f.e.capabilities["other-account"].Fingerprint, first.OperationID)
+	before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations")
+	_, err := f.e.StartAttempt(t.Context(), attemptProject, id)
+	attemptCode(t, err, "review_busy")
+	if after := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations"); after != before {
+		t.Fatal("busy target changed retained work")
+	}
+}
+
+func TestAttemptRecoveryCancelsCorruptOptionalAllowance(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, corruption := range []string{"malformed", "binding"} {
+			t.Run(channel+"/"+corruption, func(t *testing.T) {
+				f, a := interruptedAllowanceFixture(t, channel)
+				table := "review_" + channel + "_preflight"
+				query := `UPDATE ` + table + ` SET body_json='{' WHERE attempt_id=?`
+				if corruption == "binding" {
+					query = `UPDATE ` + table + ` SET body_json=replace(body_json,'exec-project-one','exec-project-two') WHERE attempt_id=?`
+				}
+				admissionSQL(t, f, query, a.ID)
+				before := snapshotTable(t, f, table)
+				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				o := cliWaitRead(t, f, a.OperationID)
+				if o.State != "cancelled" || o.Reason != "supervisor_interrupted" || o.Wait != nil || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE id=? AND state='cancelled' AND revision=2`, a.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
+					t.Fatal("corrupt optional evidence did not safely cancel preparation", o)
+				}
+				if before != snapshotTable(t, f, table) {
+					t.Fatal("recovery rewrote evidence")
+				}
+				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func interruptedAllowanceFixture(t *testing.T, channel string) (*attemptFixture, Attempt) {
+	t.Helper()
+	if channel == "cli" {
+		f, a, _, _ := cliWaitFixture(t)
+		return f, a
+	}
+	f, a, in := cooldownObservationFixture(t)
+	if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	return f, a
+}
+
+func TestAttemptRecoveryPreservesAllowanceStorageAndContextFailures(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, failure := range []string{"storage", "context"} {
+			t.Run(channel+"/"+failure, func(t *testing.T) {
+				f, _ := interruptedAllowanceFixture(t, channel)
+				before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations")
+				ctx := t.Context()
+				if failure == "storage" {
+					admissionSQL(t, f, `ALTER TABLE review_`+channel+`_preflight RENAME TO unavailable_preflight`)
+				} else {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithCancel(ctx)
+					cancel()
+				}
+				err := f.e.RecoverInterrupted(ctx)
+				if err == nil || interruptedAllowanceUnavailable(err) {
+					t.Fatal("failure was suppressed", err)
+				}
+				if failure == "context" {
+					attemptCode(t, err, "overloaded")
+				}
+				if after := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations"); after != before {
+					t.Fatal("failed recovery changed work")
+				}
+			})
+		}
+	}
+}
+
+func TestAttemptRecoveryPreservesCooldownReferenceStorageFailure(t *testing.T) {
+	f, a := interruptedAllowanceFixture(t, "hosted")
+	admissionSQL(t, f, `ALTER TABLE review_hosted_observations RENAME TO unavailable_observations`)
+	before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations")
+	if err := f.e.RecoverInterrupted(t.Context()); err == nil || interruptedAllowanceUnavailable(err) {
+		t.Fatal("reference storage failure suppressed", err)
+	}
+	if after := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations"); after != before {
+		t.Fatal("failed recovery changed work", a.ID)
+	}
+}
+
+func TestCooldownReferencePreservesContextFailureAndClassifiesMissingEvidence(t *testing.T) {
+	f, a, in := cooldownObservationFixture(t)
+	o := cliWaitRead(t, f, a.OperationID)
+	query, err := readHostedQuery(t.Context(), f.store.DB(), a, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := validateCooldownReference(ctx, f.store.DB(), a, o, query, in); !errors.Is(err, context.Canceled) {
+		t.Fatal("reference lost cancellation", err)
+	}
+	admissionSQL(t, f, `DELETE FROM review_hosted_observations WHERE attempt_id=?`, a.ID)
+	if err := validateCooldownReference(t.Context(), f.store.DB(), a, o, query, in); !storedAllowanceUnavailable(err) {
+		t.Fatal("missing reference lost unavailable classification", err)
 	}
 }

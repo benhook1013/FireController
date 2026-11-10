@@ -60,3 +60,34 @@ func TestWorkspaceRetentionReportsCorruptTransitionTime(t *testing.T) {
 		t.Fatal("corruption lost safe storage error", allowed, err)
 	}
 }
+
+func TestWorkspaceRetentionProtectsDetachedCooldownIntentAndReservation(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, protection := range []string{"intent", "reservation"} {
+			t.Run(channel+"/"+protection, func(t *testing.T) {
+				f, a := interruptedAllowanceFixture(t, channel)
+				var err error
+				if channel == "cli" {
+					_, err = f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision)
+				} else {
+					_, err = f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				later := time.Now().Add(time.Hour)
+				if allowed, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, later); err != nil || !allowed {
+					t.Fatal("baseline detached cooldown is not disposable", allowed, err)
+				}
+				if protection == "intent" {
+					admissionSQL(t, f, `UPDATE review_execution_attempts SET intent='retained-dispatch-intent' WHERE id=?`, a.ID)
+				} else {
+					admissionSQL(t, f, `INSERT INTO review_execution_reservations(provider,repository_id,pull_number,action_class,account,attempt_id) SELECT a.provider,p.github_repository_id,o.pull_number,o.channel,a.account,a.id FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id JOIN projects p ON p.id=a.project_id WHERE a.id=?`, a.ID)
+				}
+				if allowed, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, later); err != nil || allowed {
+					t.Fatal("detached workspace protection ignored", allowed, err)
+				}
+			})
+		}
+	}
+}

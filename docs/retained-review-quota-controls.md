@@ -21,7 +21,7 @@ review round.
 Pause, resume and cancel apply only to an undispatched queued operation and use
 an expected revision plus an idempotency key. They cannot cancel an issued
 provider review or reopen terminal history. Explicit CLI requests made while a
-PR is draft remain queued until a bounded fresh source check observes readiness.
+PR is draft remain queued until a bounded fresh source check observes readiness. A failed repository or pull probe leaves the request queued and emits a diagnostic with the operation ID, failed read and safe provider error code, at most once per operation per 30-second probe interval; provider bodies and credentials are excluded.
 
 ## Reading state
 
@@ -36,12 +36,14 @@ The public control endpoint is
 The body contains `expected_revision` and `action` (`pause`, `resume`, `cancel`).
 Any credential with write permission in this project may control an undispatched queued request, including another worker's request, while retaining its own authenticated identity. The idempotency header is required.
 
-- `review_conflict` refuses a stale `expected_revision`; read the current operation before deciding whether a new action is appropriate.
+- `review_conflict` refuses a stale `expected_revision` or an operation whose revision has reached the maximum `int64` value. Read the current operation before deciding whether a new action is appropriate; rereading cannot resolve revision exhaustion.
 - `review_operation_started` refuses preparing, posting, active, uncertain or terminal operations; the control cannot stop issued provider work.
+- `idempotency_key_required` refuses a missing or invalid `Idempotency-Key`; supply a valid explicit key before submitting the intended request.
 - `idempotency_conflict` refuses reuse of the same key for a different action or request.
 - `forbidden` refuses a credential without write permission in this project; use an authorized project-write credential before retrying the intended action.
 - `not_found` refuses an operation that is not visible in this project; verify the selected project and operation ID. Do not retry with another key or guess another project's identity.
-- `review_inflight` refuses a new-key request while another operation for the same project, PR and channel is queued, preparing, posting, active or uncertain. Its `operation_id` detail names the existing request. Read and retain that operation; queued-only `review_operation_control` may cancel it when cancellation is intended, while issued work must finish or follow its original recovery path. Do not submit another key to bypass the pending request.
+
+Request submission can separately fail with `review_inflight`. It refuses a new-key request while another operation for the same project, PR and channel is queued, preparing, posting, active or uncertain. Its `operation_id` detail names the existing request. Read and retain that operation; queued-only `review_operation_control` may cancel it when cancellation is intended, while issued work must finish or follow its original recovery path. Do not submit another key to bypass the pending request.
 
 After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
 
