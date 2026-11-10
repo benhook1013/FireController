@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
@@ -103,6 +103,7 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 	var mode atomic.Int64
 	var requests atomic.Int64
 	var expectedWait atomic.Int64
+	var setupStarted atomic.Pointer[time.Time]
 	expectedWait.Store(2)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -118,7 +119,7 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 		switch r.URL.Path {
 		case base + "source-refreshes":
 			var input client.ReviewSourceRequest
-			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.HeadSHA != assessment.Target.HeadSHA || input.ExpectedConfigurationRevision != 1 || r.Method != "POST" || r.Header.Get("Prefer") != "wait="+strconv.FormatInt(expectedWait.Load(), 10) || r.Header.Get("Idempotency-Key") != "source-once" {
+			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.HeadSHA != assessment.Target.HeadSHA || input.ExpectedConfigurationRevision != 1 || r.Method != "POST" || !boundedReviewWait(r.Header.Get("Prefer"), int(expectedWait.Load()), setupStarted.Load()) || r.Header.Get("Idempotency-Key") != "source-once" {
 				t.Error("SDK readiness request/default CI/wait changed")
 			}
 			if expectedWait.Load() == 0 {
@@ -163,6 +164,8 @@ func TestReviewReadinessMCPControlledResultsAndWaitPreferences(t *testing.T) {
 			expectedWait.Store(int64(wait))
 			args["wait_seconds"] = wait
 		}
+		started := time.Now()
+		setupStarted.Store(&started)
 		result := call(t, session, "review_source_refresh", args)
 		data, _ := json.Marshal(result.StructuredContent)
 		if len(data) > 16<<10 || strings.Contains(string(data), `"operation":`) || strings.Contains(string(data), `"threads":`) || strings.Contains(string(data), `"checks":`) {

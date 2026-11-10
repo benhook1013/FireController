@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	f, handler, _ := reviewControlsFixture(t)
 	var posts atomic.Int64
+	var setupStarted atomic.Pointer[time.Time]
 	preferences := make(chan string, 4)
 	readStarted := make(chan struct{}, 1)
 	readDetached := make(chan struct{}, 1)
@@ -25,8 +27,11 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 			posts.Add(1)
 			preferences <- r.Header.Get("Prefer")
 		}
-		waiting := strings.Contains(r.URL.Path, "/reviews/operations/") && r.Header.Get("Prefer") == "wait=50"
+		waiting := strings.Contains(r.URL.Path, "/reviews/operations/")
 		if waiting {
+			if !boundedReviewWait(r.Header.Get("Prefer"), 50, setupStarted.Load()) {
+				t.Error("operation wait was shortened beyond elapsed setup time")
+			}
 			readStarted <- struct{}{}
 		}
 		handler.ServeHTTP(w, r)
@@ -48,6 +53,8 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	if <-preferences != "wait=0" || first != replay || posts.Load() != 2 {
 		t.Fatal("wait selection changed action identity")
 	}
+	readStartedAt := time.Now()
+	setupStarted.Store(&readStartedAt)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -87,4 +94,19 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE state='queued'`).Scan(&count); err != nil || count != 1 || posts.Load() != 2 {
 		t.Fatal("canceled read changed or retried provider request", count, err)
 	}
+}
+
+// Setup consumes the original result-wait deadline. A forwarded wait may lose
+// only that elapsed setup time plus the rounding to whole wire seconds.
+func boundedReviewWait(preference string, selected int, started *time.Time) bool {
+	if started == nil {
+		return false
+	}
+	elapsed := time.Since(*started)
+	if elapsed < 0 {
+		return false
+	}
+	minimum := max(0, selected-int((elapsed+time.Second-1)/time.Second))
+	seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
+	return err == nil && preference == "wait="+strconv.Itoa(seconds) && seconds >= minimum && seconds <= selected
 }

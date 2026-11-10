@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
@@ -110,6 +111,7 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 	var mode atomic.Int64
 	var requests atomic.Int64
 	var expectedWait atomic.Int64
+	var setupStarted atomic.Pointer[time.Time]
 	expectedWait.Store(2)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -125,7 +127,7 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 		switch r.URL.Path {
 		case base + "source-refreshes":
 			var input client.ReviewSourceRequest
-			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.ExpectedConfigurationRevision != 1 || input.HeadSHA != assessment.Target.HeadSHA || r.Method != "POST" || r.Header.Get("Idempotency-Key") != "explicit-source" || r.Header.Get("Prefer") != "wait="+strconv.FormatInt(expectedWait.Load(), 10) {
+			if json.NewDecoder(r.Body).Decode(&input) != nil || !input.IncludeReadiness || input.IncludeCI || input.PullNumber != 2 || input.ExpectedConfigurationRevision != 1 || input.HeadSHA != assessment.Target.HeadSHA || r.Method != "POST" || r.Header.Get("Idempotency-Key") != "explicit-source" || !boundedReviewWait(r.Header.Get("Prefer"), int(expectedWait.Load()), setupStarted.Load()) {
 				t.Error("readiness/default CI flag/wait changed")
 			}
 			if expectedWait.Load() == 0 {
@@ -169,6 +171,8 @@ func TestReviewReadinessCLIControlledResultsAndWaitPreferences(t *testing.T) {
 			expectedWait.Store(int64(wait))
 			args = append(args, "--wait-seconds", strconv.Itoa(wait))
 		}
+		started := time.Now()
+		setupStarted.Store(&started)
 		code, out, stderr := mutationInvoke(t, path, "builder", args...)
 		if code != 0 || stderr != "" || len(out) > 16<<10 || strings.Count(out, "\n") != 1 || strings.Contains(out, `"operation":`) || strings.Contains(out, `"threads":`) || strings.Contains(out, `"checks":`) {
 			t.Fatal("readiness result expanded/wrapped", code, out, stderr)

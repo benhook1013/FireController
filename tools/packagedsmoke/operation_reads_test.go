@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,13 +112,58 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	}
 	before := state()
 	daemon := startDaemon(t, ctx, binaries["fcd"], data, env)
+	// A loopback gateway injects bounded outages without changing daemon state.
+	target, _ := url.Parse("http://" + daemon.address)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	var connections, identities, statusReads, streams atomic.Int64
+	var recoverStatus, recoverInbox atomic.Bool
+	gateway := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" && identities.Add(1) == 1 {
+			http.Error(w, "synthetic identity outage", http.StatusServiceUnavailable)
+			return
+		}
+		if recoverStatus.Load() && strings.HasSuffix(r.URL.Path, "/status") {
+			n := statusReads.Add(1)
+			if r.Method != "GET" || r.Header.Get("Idempotency-Key") != "" {
+				t.Error("operation wait became a submission")
+			}
+			if n == 1 {
+				w.Header().Set("X-Request-ID", "synthetic-shutdown")
+				core.WriteError(w, &core.Error{Code: "overloaded", Status: 503, Message: "shutdown", Details: map[string]any{"reason": "result_wait_lifetime"}})
+				return
+			}
+			if n == 2 && r.Header.Get("Prefer") != "wait=0" {
+				t.Error("recovered wait restarted its lifetime")
+			}
+		}
+		if recoverInbox.Load() && strings.HasSuffix(r.URL.Path, "/message-events/stream") {
+			if streams.Add(1) == 1 {
+				// Valid readiness followed by EOF must reconnect using the same cursor.
+				cursor := r.URL.Query().Get("cursor")
+				body, _ := json.Marshal(client.MessageEventPage{Items: []client.MessageEvent{}, Cursor: cursor})
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: message-events\nid: " + cursor + "\ndata: " + string(body) + "\n\n"))
+				return
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	gateway.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	gateway.Start()
+	defer gateway.Close()
+
 	profilePath := filepath.Join(private, "operations.json")
 	prefix := []string{"--profiles-file", profilePath, "--profile", "operations"}
 	cliCall := func(args ...string) json.RawMessage {
 		t.Helper()
 		return runCLI(t, ctx, binaries["fc"], env, append(append([]string{}, prefix...), args...)...)
 	}
-	cliCall("profile", "create", "--server", "http://"+daemon.address, "--instance", daemon.instance, "--project", project, "--worker", worker, "--credential-file", credential)
+	cliCall("profile", "create", "--server", gateway.URL, "--instance", daemon.instance, "--project", project, "--worker", worker, "--credential-file", credential)
 	checkPage := func(raw json.RawMessage) {
 		t.Helper()
 		var page client.ReviewOperationsPage
@@ -152,6 +200,7 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	checkCompact(cliCall("reviews", "operation", id))
 	checkFull(cliCall("reviews", "operation", id, "--diagnostics"))
 	checkHealth(cliCall("reviews", "queue"))
+	beforeMCPConnections := connections.Load()
 	cmd := exec.CommandContext(ctx, binaries["fcmcp"], prefix...)
 	cmd.Env = env
 	stderr := &boundedOutput{}
@@ -178,6 +227,28 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	checkCompact(tool("review_operation_read", map[string]any{"operation_id": id}))
 	checkFull(tool("review_operation_read", map[string]any{"operation_id": id, "diagnostics": true}))
 	checkHealth(tool("review_queue", map[string]any{}))
+	if connections.Load() != beforeMCPConnections+1 {
+		t.Fatal("packaged MCP reads did not reuse their session connection", connections.Load(), beforeMCPConnections)
+	}
+	recoverStatus.Store(true)
+	checkCompact(tool("review_operation_read", map[string]any{"operation_id": id, "wait_seconds": 1}))
+	if statusReads.Load() != 2 {
+		t.Fatal("operation wait did not reconnect exactly once", statusReads.Load())
+	}
+	recoverStatus.Store(false)
+	var snapshot client.InboxSnapshot
+	decode(t, tool("inbox_snapshot", map[string]any{}), &snapshot)
+	recoverInbox.Store(true)
+	var page client.MessageEventPage
+	decode(t, tool("wait_for_messages", map[string]any{"cursor": snapshot.EventCursor, "wait_seconds": 1}), &page)
+	if !page.TimedOut || len(page.Items) != 0 || page.Cursor != snapshot.EventCursor || streams.Load() != 2 {
+		t.Fatal("packaged quiet wait lost cursor, deadline or reconnect", page, streams.Load())
+	}
+	recoverInbox.Store(false)
+	if identities.Load() < 2 {
+		t.Fatal("injected identity outage was not retried", identities.Load())
+	}
+
 	if err = session.Close(); err != nil || stderr.len() != 0 {
 		t.Fatal("packaged MCP shutdown failed")
 	}
@@ -185,5 +256,5 @@ func TestPackagedOperationReadsSmoke(t *testing.T) {
 	if !reflect.DeepEqual(before, state()) || external.Load() != 0 {
 		t.Fatal("packaged reads changed durable records or contacted a provider")
 	}
-	t.Log("four packaged CLI reads and four official-SDK MCP reads, including negotiated runtime health, preserved operation, attempt, evidence, reservation, snapshot, frontier and event counts; no provider requests")
+	t.Log("packaged CLI and official-SDK MCP reads preserved negotiated queue health, recovered identity, operation and inbox interruptions, reused session transport, and preserved operation, attempt, evidence, reservation, snapshot, frontier and event counts; no provider requests")
 }

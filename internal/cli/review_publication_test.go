@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
@@ -121,6 +122,7 @@ func TestReviewCheckpointCLIControlledTerminalWaitsStayFlat(t *testing.T) {
 	at := "2026-10-15T00:00:00Z"
 	operation := client.ReviewCheckpointPublication{ID: id, ProjectID: project, EvidenceID: evidence, State: "held", Revision: 2, Reason: "capability_unavailable", SourceRevision: 1, CreatedAt: at, UpdatedAt: at, Anchor: client.ReviewAnchor{RepositoryID: 1, Repository: "owner/repo", PullNumber: 2, CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("c", 64), BaseRef: "main", ObservedAt: at}}
 	var posts int
+	var setupStarted atomic.Pointer[time.Time]
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {
 			f.handler.ServeHTTP(w, r)
@@ -128,15 +130,15 @@ func TestReviewCheckpointCLIControlledTerminalWaitsStayFlat(t *testing.T) {
 		}
 		if r.Method == "POST" {
 			posts++
-			want := "wait=2"
+			want := 2
 			if posts == 2 {
-				want = "wait=15"
+				want = 15
 				var request client.ReviewCheckpointRecovery
 				if json.NewDecoder(r.Body).Decode(&request) != nil || !request.RetryUnposted || request.ExpectedRevision != 2 {
 					t.Error("recovery request not preserved")
 				}
 			}
-			if r.Header.Get("Prefer") != want {
+			if !boundedReviewWait(r.Header.Get("Prefer"), want, setupStarted.Load()) {
 				t.Error("explicit/default wait changed")
 			}
 		}
@@ -146,6 +148,8 @@ func TestReviewCheckpointCLIControlledTerminalWaitsStayFlat(t *testing.T) {
 	defer srv.Close()
 	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
 	for _, args := range [][]string{{"reviews", "publish", evidence, "--expect-revision", "1", "--key", "default"}, {"reviews", "publication-recover", id, "--expect-revision", "2", "--key", "recovery", "--retry-unposted", "--wait-seconds", "15"}} {
+		started := time.Now()
+		setupStarted.Store(&started)
 		code, out, stderr := mutationInvoke(t, path, "builder", args...)
 		if code != 0 || stderr != "" || strings.Count(out, "\n") != 1 || strings.Contains(out, `"Operation"`) || !strings.Contains(out, `"state":"held"`) {
 			t.Fatal("terminal result wrapped/refused", code, out, stderr)

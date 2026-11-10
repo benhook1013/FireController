@@ -50,6 +50,14 @@ func TestMessageWaitToolsSDKDiscoveryQuietConcurrentDeliveryAndCancel(t *testing
 			continue
 		}
 		found = true
+		for _, contract := range []string{"No acknowledgments or provider work", "last validated cursor", "original call budget", "Subsequent waits are explicit calls", "Background delivery depends on host"} {
+			if !strings.Contains(tool.Description, contract) {
+				t.Fatalf("wait description omits %q: %s", contract, tool.Description)
+			}
+		}
+		if strings.Contains(tool.Description, "No acknowledgments, provider work or auto-reconnect") {
+			t.Fatal("wait description forbids supported within-call reconnect")
+		}
 		if tool.Annotations.ReadOnlyHint {
 			reads++
 		} else {
