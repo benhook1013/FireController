@@ -876,11 +876,17 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if versions["project_management"] > 0 {
 		var bad int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE typeof(can_manage)<>'integer' OR can_manage NOT IN (0,1) OR (can_manage=1 AND (can_read<>1 OR can_write<>1))`).Scan(&bad); err != nil || bad != 0 {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
 	if versions["worker_retirements"] > 0 {
 		if err := core.ValidateWorkerRetirementsSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
 			return invalid()
 		}
 	}
