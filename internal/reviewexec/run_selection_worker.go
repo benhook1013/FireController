@@ -226,6 +226,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	}
 	var window []runPullResult
 	windowStart := 0
+	windowSize := 4
 	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
@@ -233,7 +234,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		if i >= windowStart+len(window) {
 			windowStart = i
 			err = source.read(ctx, func(ctx context.Context) error {
-				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+4, len(queue))])
+				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+windowSize, len(queue))])
 				return nil
 			})
 			if err != nil {
@@ -246,6 +247,13 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
 			return sourceFailure("source_response_invalid"), nil
+		}
+		// Fresh lifecycle guides only speculative width, never eligibility or
+		// coverage. Live tails otherwise repeatedly cancel and refetch three
+		// successors per candidate. Resume batching when merged history resumes.
+		windowSize = 1
+		if pull.Merged {
+			windowSize = 4
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {
@@ -375,7 +383,12 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 					if workerCtx.Err() != nil {
 						return
 					}
-					worked, err := e.runNext(workerCtx, owned)
+					generated, err := e.coordinateAutomaticHosted(workerCtx, owned)
+					var worked bool
+					if err == nil {
+						worked, err = e.runNext(workerCtx, owned)
+					}
+					worked = worked || generated
 					if err != nil {
 						if workerCtx.Err() != nil {
 							return
@@ -424,7 +437,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
  WHERE s.state='queued'
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
+ ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)='benhook1013/firemud' THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -492,7 +505,20 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 // finishRunChoice validates and records a source selection in one local write.
 func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadataPins map[int64]reviews.SourceMetadataPin, choice runChoice) (bool, error) {
 	err := retryRunSelectionLocal(ctx, func() error {
-		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) (resultErr error) {
+			defer func() {
+				if resultErr == nil {
+					var pull int64
+					var reason string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &reason); err != nil {
+						resultErr = err
+						return
+					}
+					if reason != "selection_changed" {
+						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
+					}
+				}
+			}()
 			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
 				return err
@@ -511,6 +537,9 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
+				return err
+			}
+			if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
 				return err
 			}
 			if choice.state == "held" {

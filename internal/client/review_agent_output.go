@@ -21,6 +21,9 @@ func draftReadinessDiagnostic() *ReviewOperationDiagnostic {
 }
 
 func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if hint := schedulingDiagnostic(reason); hint != nil {
+		return hint
+	}
 	if reason == "pull_draft" {
 		return draftReadinessDiagnostic()
 	}
@@ -66,6 +69,14 @@ type ReviewOperationStatusOutput struct {
 }
 
 func retainedWaitDiagnostic(wait *ReviewOperationWait, channel, state, reason, queuedCause string) *ReviewOperationDiagnostic {
+	if state == "queued" {
+		if hint := schedulingDiagnostic(queuedCause); hint != nil {
+			return hint
+		}
+	}
+	if hint := agentReviewOperationDiagnostic(channel, state, reason); hint != nil {
+		return hint
+	}
 	if wait != nil {
 		return operationWaitDiagnostic(wait, channel)
 	}
@@ -108,6 +119,13 @@ func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOper
 	}
 	if w.RetryNotBefore != "" {
 		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Keep this request for automatic retry. For an authorized intent change, see queued-only review_operation_control cancellation (CLI reviews operation-control); respect the known cooldown because its timer is not transferred. Pause/resume cannot edit head or out-of-order intent." + candidates}
+	}
+	return nil
+}
+
+func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	if state == "held" || state == "queued" {
+		return schedulingDiagnostic(reason)
 	}
 	return nil
 }

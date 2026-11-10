@@ -90,6 +90,20 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
+		scheduling, err := readPullScheduling(ctx, tx, project, o.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			return nil
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Status == 403 {
+				return nil
+			}
+			return err
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -144,6 +158,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 				return holdOperation(ctx, tx, o, refusal.Code, at)
 			}
 			return err
+		}
+		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
+			return err
+		} else if preferred {
+			return nil
 		}
 		var repositoryID int64
 		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {

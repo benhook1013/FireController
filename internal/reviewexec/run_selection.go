@@ -126,7 +126,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 	return out, err
 }
 
-// enqueueRunTx accepts one explicit durable selection.
+// enqueueRunTx is shared by explicit requests and the reauthorized automatic coordinator.
 func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope, input RunRequest) (Receipt, error) {
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
@@ -191,6 +191,16 @@ func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope,
 }
 
 func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configuration, int64, string, error) {
+	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status == 403 {
+			return Configuration{}, 0, "automation_authorization_changed", nil
+		}
+		return Configuration{}, 0, "", err
+	}
+	if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
+		return Configuration{}, 0, reason, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
 		return c, 0, "", err
@@ -222,6 +232,19 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 	var busy bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
+	}
+	if busy {
+		var automatic bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic); err != nil {
+			return c, 0, "", err
+		}
+		if automatic {
+			// Existing queued requests retain their turn; automatic front
+			// evaluation considers only the prefix before the earliest one.
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+				return c, 0, "", err
+			}
+		}
 	}
 	if busy {
 		return c, repository, "review_inflight", nil

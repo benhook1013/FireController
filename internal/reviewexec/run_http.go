@@ -159,6 +159,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
+			e.queuedRunResponseHeader(w, r, scope, state)
 			core.WriteJSON(w, http.StatusOK, state)
 			return
 		}
@@ -196,5 +197,6 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	e.queuedRunResponseHeader(w, r, scope, state)
 	core.WriteJSON(w, http.StatusOK, state)
 }

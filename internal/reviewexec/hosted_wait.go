@@ -18,14 +18,20 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 // Version 1 advertised Hosted cooldown baselines only. Keep its existing CLI
 // queued/pause shape; version 2 additionally understands CLI quota baselines.
 // Version 3 adds the retained provider allowance estimate, never a retry clock.
+// Version 5 extends version 3 with current same-project Hosted queue priority.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" && version != "3" {
+	if wait == nil || version != "1" && version != "2" && version != "3" && version != "5" {
 		return nil
 	}
+	copy := *wait
+	if version != "5" {
+		copy.QueueAheadPullNumber = 0
+	}
+	wait = &copy
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
-	if version != "3" {
+	if version != "3" && version != "5" {
 		copy := *wait
 		copy.CLIAllowance = nil
 		return &copy
@@ -36,7 +42,7 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 // Keep engine-level held facts intact while preserving older strict HTTP shapes.
 func operationForResponse(operation Operation, version string) Operation {
 	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, version)
-	if version != "3" {
+	if version != "3" && version != "5" {
 		operation.Allowance = nil
 	}
 	return operation
@@ -45,10 +51,11 @@ func operationForResponse(operation Operation, version string) Operation {
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {
-	CLIAllowance      *AllowanceObservation `json:"cli_allowance,omitempty"`
-	BaselineAttemptID string                `json:"baseline_attempt_id,omitempty"`
-	RetryNotBefore    string                `json:"retry_not_before,omitempty"`
-	Paused            bool                  `json:"paused"`
+	QueueAheadPullNumber int64                 `json:"queue_ahead_pull_number,omitempty"`
+	CLIAllowance         *AllowanceObservation `json:"cli_allowance,omitempty"`
+	BaselineAttemptID    string                `json:"baseline_attempt_id,omitempty"`
+	RetryNotBefore       string                `json:"retry_not_before,omitempty"`
+	Paused               bool                  `json:"paused"`
 }
 
 func waitUnavailable() error {

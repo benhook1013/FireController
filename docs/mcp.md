@@ -93,6 +93,10 @@ Startup validates configuration without opening the credential or contacting the
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
 | `wait_for_messages` | Required event cursor; optional limit 1–100 and wait_seconds 1–50, default 20/25. One new-message event page or quiet timeout over a call-owned persistent stream. |
 | `review_execution_read` | No fields; stored execution configuration and revision, without provider work. |
+| `review_scheduling_read` | No fields; stored project scheduling settings, revision and paused queued PRs, without provider work. |
+| `review_scheduling_configure` | Required idempotency_key/expected_revision/automatic_hosted; optional automatic_cli preserves its existing value when omitted. Project management capability configures [default-off automatic scheduling](review-scheduling.md), including authorization for later provider work within existing review limits. |
+| `review_pull_scheduling_read` | Required pull_number; reads the per-PR automatic scheduling pause and revision. |
+| `review_pull_scheduling_update` | Required idempotency_key/pull_number/expected_revision/paused; optional reason is accepted only when pausing. Changes the scheduling pause while preserving review limits and retained request controls. |
 | `review_operations_list` | Optional pull_number/channel/status/limit/cursor; one bounded page of retained operations, default five pending. No provider work or automatic continuation. |
 | `review_operation_read` | Required operation_id; optional wait_seconds (0–50/default 0) and diagnostics (default false). Compact retained status and original Hosted observer freshness, or explicit full detail, without provider polling. |
 | `review_operation_control` | Required operation_id/expected_revision/action/idempotency_key; action pause, resume or cancel applies guarded [retained request controls](retained-review-quota-controls.md#reading-state), preserving original authorization and attempt history. |

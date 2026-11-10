@@ -178,5 +178,6 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 	if value.Channel == "cli" && value.State == "queued" && value.Wait != nil && value.Wait.BaselineAttemptID != "" {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
+	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)
 	core.WriteJSON(w, http.StatusOK, value)
 }

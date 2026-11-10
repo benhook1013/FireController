@@ -18,6 +18,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	e.registerCIWatchHTTP(mux)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/rounds/progress", e.readRoundProgressHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control", e.controlOperationHTTP)
+	e.registerSchedulingHTTP(mux)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/selections", e.enqueueRunHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/selections/{selection_id}", e.readRunHTTP)
 	adoptionholds.New(e.store).Register(mux)
@@ -154,6 +155,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if terminal {
 			operation = operationForResponse(operation, r.Header.Get(operationWaitHeader))
+			e.queuedResponseHeader(w, r, scope, operation.ID, operation.State, operation.Channel, operation.Revision)
 			core.WriteJSON(w, http.StatusOK, operation)
 			return
 		}
@@ -201,6 +203,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 	if operation.Channel == "cli" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
+	e.queuedResponseHeader(w, r, scope, operation.ID, operation.State, operation.Channel, operation.Revision)
 	core.WriteJSON(w, http.StatusOK, operation)
 }
 

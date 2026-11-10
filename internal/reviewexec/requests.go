@@ -160,6 +160,9 @@ const (
 
 // enqueueRequestTx preserves ordinary admission inside a selection child transaction.
 func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
+	if err := requirePullScheduling(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err

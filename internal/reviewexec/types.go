@@ -112,6 +112,10 @@ type Attempt struct {
 }
 
 type Engine struct {
+	automaticCursor            string
+	automaticCLICursor         string
+	automaticMu                sync.Mutex
+	automaticNext              time.Time
 	runSourceBudget            time.Duration
 	schedulingNow              func() time.Time
 	draftProbeMu               sync.Mutex

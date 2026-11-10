@@ -73,6 +73,20 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	if state.RoundsConfigured && state.RoundsComplete || !state.RoundsConfigured && state.Covered {
 		return evaluatedFront{state: "complete", plan: plan}, nil
 	}
+	scheduling, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
+	if err != nil {
+		return evaluatedFront{}, err
+	}
+	if scheduling.Paused {
+		return evaluatedFront{state: "held", reason: "pull_scheduling_paused", plan: plan}, nil
+	}
+	suppressed, err := e.automaticPullSuppressed(ctx, q, r, plan.Pull.Number)
+	if err != nil {
+		return evaluatedFront{}, err
+	}
+	if suppressed {
+		return evaluatedFront{state: "held", reason: "automatic_intent_retained", plan: plan}, nil
+	}
 	if plan.Pull.State != "open" {
 		return evaluatedFront{state: "held", reason: "front_unavailable", plan: plan}, nil
 	}
