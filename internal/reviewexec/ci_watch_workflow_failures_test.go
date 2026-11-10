@@ -344,6 +344,89 @@ func TestCIWatchWorkflowWarningPreservesGateAndAccountBackoff(t *testing.T) {
 	}
 }
 
+// The queue's ordinary CI reader shares the same account as optional watches.
+type ciWatchWorkflowLifecycleReader struct{ *ciWatchWorkflowReader }
+
+func (r *ciWatchWorkflowLifecycleReader) ObserveRequiredCI(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+	return r.ObserveCIGate(ctx, target, target.BaseRef)
+}
+
+func TestCIWatchWorkflowWarningAccountScope(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cause error
+		code  string
+		delay time.Duration
+	}{
+		{"local attempt limit", reviewprovider.ErrCIWorkflowAttemptLimit, "", 0},
+		{"incomplete provider inventory", &reviewprovider.Error{Code: "provider_inventory_incomplete"}, "provider_inventory_incomplete", 30 * time.Second},
+		{"unavailable provider", &reviewprovider.Error{Code: "provider_unavailable"}, "provider_unavailable", 30 * time.Second},
+		{"provider rate limit", &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 120, Status: 429}, "provider_rate_limited", 120 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, s, clock := lifecycleFixture(t)
+			base := &ciWatchReader{pulls: map[int64]reviewprovider.Pull{}, states: map[int64]string{42: "pending", 43: "satisfied"}}
+			r := &ciWatchWorkflowLifecycleReader{&ciWatchWorkflowReader{ciWatchReader: base, conclusions: map[int64]string{10: "failure"}, warning: &reviewprovider.CIWorkflowAttentionError{Cause: test.cause}}}
+			s.readers = map[string]TargetReader{"test-capability": r}
+			attachLifecycleHints(t, f, s)
+			scope := operationReadScope(t, f)
+			out, stop := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), FailureWorkflowIDs: []int64{10}}})
+			defer stop()
+			ciWatchRegistered(t, s, 1)
+			s.mu.Lock()
+			s.watchTurn = true
+			s.mu.Unlock()
+			claimed := watchTick(t, f, s)
+			reply := receiveCIWatch(t, out)
+			if reply.err != nil || reply.value.State != "attention" || reply.value.Targets[0].State != "pending" || reply.value.Targets[0].Pending != 1 || len(reply.value.Targets[0].WorkflowFailures) != 1 {
+				t.Fatal("warning changed required gate or independently proven attention", reply)
+			}
+			s.mu.Lock()
+			account := s.accounts[claimed.account]
+			s.mu.Unlock()
+			until := time.Time{}
+			if test.delay != 0 {
+				until = clock.Now().Add(test.delay)
+			}
+			if account.lastErrorCode != test.code || account.backoff != test.delay || account.until != until {
+				t.Errorf("optional warning applied wrong account backoff: got %+v, want %q/%v/%v", account, test.code, test.delay, until)
+			}
+			// PR 2's metadata and ordinary CI enrichment are independent of
+			// PR 42's optional history walk, but share its provider account.
+			for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
+				next, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lane)
+				if err != nil || (next == nil) != (test.delay != 0) {
+					t.Errorf("wrong eligibility for unrelated lifecycle lane %d: target=%+v err=%v", lane, next, err)
+				}
+				if next != nil {
+					if next.account != claimed.account || next.number != 2 || next.watch != nil {
+						t.Fatal("control did not exercise unrelated same-account work", next)
+					}
+					s.finish(*next, "open", "", false, false, nil)
+				}
+			}
+			other, cancelOther := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 43, HeadSHA: strings.Repeat("a", 40)}})
+			defer cancelOther()
+			ciWatchRegistered(t, s, 1)
+			next, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+			if err != nil || (next == nil) != (test.delay != 0) {
+				t.Fatalf("wrong eligibility for unrelated watch: target=%+v err=%v", next, err)
+			}
+			if next != nil {
+				if next.account != claimed.account || next.number != 43 || next.watch == nil {
+					t.Fatal("control did not exercise unrelated same-account watch", next)
+				}
+				if err := f.e.observeLifecycle(t.Context(), *next, s); err != nil {
+					t.Fatal(err)
+				}
+				if reply := receiveCIWatch(t, other); reply.err != nil || reply.value.State != "passed" {
+					t.Fatal("local optional limit delayed unrelated watch", reply)
+				}
+			}
+		})
+	}
+}
+
 type ciWatchFinalRepositoryFailureReader struct {
 	*ciWatchWorkflowReader
 	repositoryMu sync.Mutex
@@ -367,6 +450,57 @@ func (r *ciWatchFinalRepositoryFailureReader) Repository(ctx context.Context, id
 		return reviewprovider.Repository{}, err
 	}
 	return r.ciWatchReader.Repository(ctx, id)
+}
+
+func TestCIWatchLocalAttemptLimitPreservesIndependentProviderBackoff(t *testing.T) {
+	for _, finalFailure := range []bool{false, true} {
+		name := "existing concurrent cooldown"
+		if finalFailure {
+			name = "final repository failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, s, clock, base, scope := ciWatchFixture(t)
+			base.states[42] = "pending"
+			r := &ciWatchWorkflowReader{ciWatchReader: base, conclusions: map[int64]string{10: "failure"}, warning: &reviewprovider.CIWorkflowAttentionError{Cause: reviewprovider.ErrCIWorkflowAttemptLimit}}
+			s.readers["test-capability"] = r
+			code, delay := "provider_rate_limited", 120*time.Second
+			if finalFailure {
+				code, delay = "provider_unavailable", 30*time.Second
+				s.readers["test-capability"] = &ciWatchFinalRepositoryFailureReader{ciWatchWorkflowReader: r, finalError: &reviewprovider.Error{Code: code}}
+			}
+			_, stop := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), FailureWorkflowIDs: []int64{10}}})
+			defer stop()
+			ciWatchRegistered(t, s, 1)
+			claim, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+			if err != nil || claim == nil || claim.watch == nil {
+				t.Fatal(claim, err)
+			}
+			if !finalFailure {
+				// Another lane can receive a provider limit after this watch
+				// is claimed but before its local-only warning completes.
+				s.mu.Lock()
+				account := s.accounts[claim.account]
+				account.lastErrorCode, account.backoff, account.until = code, delay, clock.Now().Add(delay)
+				s.accounts[claim.account] = account
+				s.mu.Unlock()
+			}
+			if err := f.e.observeLifecycle(t.Context(), *claim, s); err != nil {
+				t.Fatal(err)
+			}
+			s.mu.Lock()
+			account, item, next := s.accounts[claim.account], claim.watch.entry.result, claim.watch.entry.next
+			s.mu.Unlock()
+			if account.lastErrorCode != code || account.backoff != delay || account.until != clock.Now().Add(delay) {
+				t.Fatal("local attempt limit erased or increased independent provider backoff", account)
+			}
+			if next != clock.Now().Add(ciWatchFallbackInterval) {
+				t.Fatal("local limit changed ordinary watch fallback cadence", next)
+			}
+			if finalFailure && (item.Reason != "ci_provider_unavailable" || item.ObservationKey != "" || len(item.WorkflowFailures) != 0) {
+				t.Fatal("local limit bypassed the final provider/source guard", item)
+			}
+		})
+	}
 }
 
 func TestCIWatchWorkflowWarningSurvivesFinalRepositoryFailureAndCancellation(t *testing.T) {
