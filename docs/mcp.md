@@ -49,10 +49,10 @@ Startup validates configuration without opening the credential or contacting the
 | `presentation_replace` | Apply a strict native presentation document and key. |
 | `presentation_history` | One bounded retained history page. |
 | `presentation_revision_read` | Read one retained revision. |
-| `publication_configuration_read` | Read selected public publication configuration. |
-| `publication_preview` | Preview a complete native publication document without publishing. |
-| `publication_apply` | Apply exact native document, preview_sha256 and key. |
-| `publication_unpublish` | Disable publication using expected_revision and key. |
+| `publication_configuration_read` | Read selected public publication configuration; requires instance administration. |
+| `publication_preview` | Preview a complete native publication document without publishing; requires instance administration. |
+| `publication_apply` | Apply exact native document, preview_sha256 and key; requires instance administration. |
+| `publication_unpublish` | Disable publication using expected_revision and key; requires instance administration. |
 | `review_import_preview` | Preview a complete native review import. |
 | `review_import_apply` | Apply exact native import, preview_sha256 and key. |
 | `review_transfer_preview` | Preview a bounded native review-history transfer. |
@@ -190,4 +190,4 @@ The bound service exposes `review_policy_read`, `review_policy_configure`, `revi
 
 `worker_retirement_read` reports bounded blockers; `worker_retire` rechecks them atomically with ordinary write permission. `workers_list` defaults to active identities and accepts explicit `include_retired`. `inbox_list` and `inbox_ack` accept a selected `worker_id`; only acknowledgement for another recipient requires management. The authenticated acting worker remains unchanged. The existing inbox snapshot and seen operations do not accept another worker selector.
 
-Native presentation replacement/history/revision, public publication configuration/preview/apply/unpublish, and review import/transfer preview/apply tools delegate strict native documents to the existing validators. Publication apply retains the explicit preview hash and revision. Existing round-adoption and adoption-obligation tools remain registered once. Read and preview tools perform no provider action; write/destructive annotations distinguish guarded mutations. New operation-control, settlement, history-collection and publication-prepare adapters are not part of this prerequisite.
+Native presentation replacement/history/revision, public publication configuration/preview/apply/unpublish, and review import/transfer preview/apply tools delegate strict native documents to the existing validators. Public publication configuration, preview, apply and unpublish require instance administration; project management does not authorize them. Publication apply retains the explicit preview hash and revision. Existing round-adoption and adoption-obligation tools remain registered once. Read and preview tools perform no provider action; write/destructive annotations distinguish guarded mutations. New operation-control, settlement, history-collection and publication-prepare adapters are not part of this prerequisite.
