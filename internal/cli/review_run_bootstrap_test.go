@@ -36,10 +36,10 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/instance" {
-						if identities.Add(1) < 7 {
+						if identities.Add(1) < 6 {
 							http.Error(w, "synthetic gateway restart", http.StatusServiceUnavailable)
 							return
-						} // Seven attempts consume 7.75 seconds of bounded identity backoff.
+						} // Six attempts consume 5.75 seconds of bounded identity backoff, above the ordinary five-second limit.
 						f.handler.ServeHTTP(w, r)
 						return
 					}
@@ -96,7 +96,7 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					}
 					return
 				}
-				if identities.Load() != 7 || operations.Load() != 1 {
+				if identities.Load() != 6 || operations.Load() != 1 {
 					t.Fatal("slow bootstrap failed or selected operation replayed", code, identities.Load(), operations.Load(), diagnostic.String())
 				}
 				if wait == "cancel-after" {
