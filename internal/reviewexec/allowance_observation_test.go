@@ -6,6 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"net/http"
@@ -609,5 +612,71 @@ func TestHeldAllowanceHTTPNegotiationPreservesLegacyShapes(t *testing.T) {
 				t.Fatal("HTTP negotiation changed engine facts or replayed mutations", o, err)
 			}
 		})
+	}
+}
+
+func TestStoredUnavailableClassificationPreservesPublicErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		makeError func() error
+		kind      storedUnavailableKind
+	}{
+		{"waiting intent", waitUnavailable, storedWaitingIntent},
+		{"allowance", allowanceUnavailable, storedAllowanceObservation},
+		{"hosted query", hostedQueryUnavailable, storedHostedQuery},
+		{"hosted observation", hostedAllowanceUnavailable, storedHostedObservation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.makeError()
+			wrapped := fmt.Errorf("retained evidence: %w", err)
+			if !isStoredUnavailable(wrapped, tc.kind) || isStoredUnavailable(wrapped, tc.kind+1) {
+				t.Fatal("typed classification lost through wrapping", wrapped)
+			}
+			var failure *core.Error
+			if !errors.As(wrapped, &failure) || failure.Code != "storage_unavailable" || failure.Status != 500 || failure.Message != err.Error() {
+				t.Fatal("public error contract changed", failure)
+			}
+			recorder := httptest.NewRecorder()
+			core.WriteError(recorder, wrapped)
+			var body struct {
+				Error struct{ Code, Message string }
+			}
+			if recorder.Code != 500 || json.Unmarshal(recorder.Body.Bytes(), &body) != nil || body.Error.Code != failure.Code || body.Error.Message != failure.Message {
+				t.Fatal("typed classification escaped the public response", recorder.Code, recorder.Body.String())
+			}
+			// Human-facing wording is deliberately not classification authority.
+			failure.Message = "Reworded retained evidence diagnostic."
+			if !isStoredUnavailable(wrapped, tc.kind) {
+				t.Fatal("wording edit changed classification")
+			}
+			lookalike := core.Fail("storage_unavailable", failure.Message, 500)
+			if isStoredUnavailable(lookalike, tc.kind) || interruptedAllowanceUnavailable(lookalike) {
+				t.Fatal("actual storage error acquired retained-evidence classification")
+			}
+		})
+	}
+}
+
+func TestStoredUnavailableDependencyAndRecoveryClassification(t *testing.T) {
+	query := fmt.Errorf("lookup: %w", newStoredUnavailable(storedHostedQuery, "Reworded query diagnostic."))
+	if !storedAllowanceUnavailable(allowanceDependencyError(query)) {
+		t.Fatal("typed missing query did not become unusable allowance")
+	}
+	storage := core.Fail("storage_unavailable", "Stored hosted allowance query is unavailable.", 500)
+	if allowanceDependencyError(storage) != storage || storedAllowanceUnavailable(storage) {
+		t.Fatal("storage lookup failure was reclassified by wording")
+	}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, errors.New("database failed")} {
+		if allowanceDependencyError(err) != err || interruptedAllowanceUnavailable(err) {
+			t.Fatal("real lookup failure was suppressed", err)
+		}
+	}
+	for _, err := range []error{allowanceUnavailable(), newStoredUnavailable(storedHostedObservation, "Reworded hosted observation diagnostic.")} {
+		if !interruptedAllowanceUnavailable(fmt.Errorf("recovery: %w", err)) {
+			t.Fatal("unusable optional evidence did not allow safe cancellation", err)
+		}
+	}
+	if !isWaitUnavailable(fmt.Errorf("history: %w", newStoredUnavailable(storedWaitingIntent, "Reworded history diagnostic."))) || isWaitUnavailable(core.Fail("storage_unavailable", "Stored review waiting intent is unavailable.", 500)) {
+		t.Fatal("history classification still depends on message text")
 	}
 }

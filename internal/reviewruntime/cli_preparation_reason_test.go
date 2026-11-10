@@ -33,6 +33,8 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 		{"raw text", errors.New("rate_limited private token diagnostic"), reviewprocess.Usage{}, false, "allowance_unavailable"},
 		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), reviewprocess.Usage{}, false, "allowance_unavailable"},
 		{"rate with nonzero remaining", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Remaining: 1, Limit: 3, RollingWindowMS: 60000}, false, "allowance_unavailable"},
+		{"exhaustion file limit", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: 3, RollingWindowMS: 60000}, false, "project_file_limit"},
+		{"exhaustion validation fails", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: -1, RollingWindowMS: 60000}, false, "allowance_unavailable"},
 		{"exhaustion retention fails", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: 3, RollingWindowMS: 60000}, true, "allowance_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,6 +42,13 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			var usage atomic.Int64
 			f.driver.usage = func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error) {
 				usage.Add(1)
+				if tc.name == "exhaustion file limit" {
+					// Force the retained-policy guard after the workspace's earlier
+					// ceiling check, isolating RecordCLIExhaustion's typed refusal.
+					if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=json_set(body_json,'$.max_review_files',1)`); err != nil {
+						t.Fatal(err)
+					}
+				}
 				return tc.usage, tc.failure
 			}
 			op, a, c := f.start(t, 2, 1, "prepare-usage-refusal")

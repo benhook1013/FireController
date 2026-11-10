@@ -15,8 +15,36 @@ import (
 // that intentionally treat an absent observation as a normal no-op.
 var errAllowanceObservationAbsent = fmt.Errorf("allowance observation absent: %w", sql.ErrNoRows)
 
+// These private classifications describe unusable retained evidence. Keep the
+// public storage error unchanged while separating it from actual lookup errors.
+type storedUnavailableKind uint8
+
+const (
+	storedWaitingIntent storedUnavailableKind = iota + 1
+	storedAllowanceObservation
+	storedHostedQuery
+	storedHostedObservation
+)
+
+type storedUnavailableError struct {
+	kind  storedUnavailableKind
+	cause *core.Error
+}
+
+func (e *storedUnavailableError) Error() string { return e.cause.Error() }
+func (e *storedUnavailableError) Unwrap() error { return e.cause }
+
+func newStoredUnavailable(kind storedUnavailableKind, message string) error {
+	return &storedUnavailableError{kind: kind, cause: &core.Error{Code: "storage_unavailable", Message: message, Status: 500}}
+}
+
+func isStoredUnavailable(err error, kind storedUnavailableKind) bool {
+	var unavailable *storedUnavailableError
+	return errors.As(err, &unavailable) && unavailable.kind == kind
+}
+
 func allowanceUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored allowance observation is unavailable.", 500)
+	return newStoredUnavailable(storedAllowanceObservation, "Stored allowance observation is unavailable.")
 }
 
 func validAllowanceOwners(o Operation, a Attempt) bool {
@@ -102,15 +130,14 @@ func allowanceDependencyError(err error) error {
 		return allowanceUnavailable()
 	}
 	var failure *core.Error
-	if errors.As(err, &failure) && (failure.Code == "not_found" || failure.Code == "storage_unavailable" && failure.Message == "Stored hosted allowance query is unavailable.") {
+	if errors.As(err, &failure) && (failure.Code == "not_found" || isStoredUnavailable(err, storedHostedQuery)) {
 		return allowanceUnavailable()
 	}
 	return err
 }
 
 func storedAllowanceUnavailable(err error) bool {
-	var failure *core.Error
-	return errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored allowance observation is unavailable."
+	return isStoredUnavailable(err, storedAllowanceObservation)
 }
 
 func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, o Operation, query HostedAllowanceQuery, in HostedAllowanceInput) error {

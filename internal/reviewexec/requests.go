@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -250,15 +251,17 @@ func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string,
 	}
 	const order = `CASE WHEN typeof(allow_out_of_order)='integer' AND allow_out_of_order IN (0,1) THEN allow_out_of_order END`
 	const limit = `CASE WHEN typeof(override_file_limit)='integer' AND override_file_limit IN (0,1) THEN override_file_limit END`
-	switch version {
-	case "1", "2", "3", "4", "5", "6":
-		return "0", "0", nil
-	case "7":
-		return order, "0", nil
-	case "8", "9", "10":
-		return order, limit, nil
-	default:
+	schemaVersion, err := strconv.Atoi(version)
+	if err != nil || schemaVersion < 1 || strconv.Itoa(schemaVersion) != version {
 		return "", "", adjudicationStorageError()
+	}
+	switch {
+	case schemaVersion < 7:
+		return "0", "0", nil
+	case schemaVersion == 7:
+		return order, "0", nil
+	default:
+		return order, limit, nil
 	}
 }
 

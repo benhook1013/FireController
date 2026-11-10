@@ -175,7 +175,7 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 	if r.Header.Get(operationWaitHeader) != "3" {
 		value.RetryNotBefore = ""
 	}
-	if value.Channel == "cli" && value.State == "queued" && value.Wait != nil && value.Wait.BaselineAttemptID != "" {
+	if value.Channel == "cli" && value.State == "queued" && (value.Wait != nil && value.Wait.BaselineAttemptID != "" || e.sharedCLIQuotaWait(r.Context(), scope, value.ID)) {
 		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
 	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)
