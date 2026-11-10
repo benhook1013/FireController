@@ -54,7 +54,7 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 			previous = c
 			continue
 		}
-		if c.CapabilityID != original.CapabilityID || c.Mode != original.Mode || !slices.Equal(c.Channels, original.Channels) || !slices.Equal(c.Queue[:index+1], prefix) || slices.Equal(c.Queue, previous.Queue) {
+		if c.CapabilityID != original.CapabilityID || c.Mode != original.Mode || !sameChannelSet(c.Channels, original.Channels) || !slices.Equal(c.Queue[:index+1], prefix) || slices.Equal(c.Queue, previous.Queue) {
 			return false, nil
 		}
 		previous = c

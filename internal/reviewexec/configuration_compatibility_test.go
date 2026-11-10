@@ -82,6 +82,71 @@ func TestWaitingReviewSurvivesOnlyQueueChangesAfterItsTarget(t *testing.T) {
 	}
 }
 
+func TestWaitingReviewChannelSetCompatibilityAndUnchangedQueueBarrier(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		initialChannels []string
+		nextChannels    []string
+		nextQueue       []int64
+		pauseResume     bool
+		compatible      bool
+	}{
+		{name: "reordered channels with suffix edit", initialChannels: []string{"cli", "hosted"}, nextChannels: []string{"hosted", "cli"}, nextQueue: []int64{2, 6}, compatible: true},
+		{name: "reordered channels alone keeps unchanged queue barrier", initialChannels: []string{"cli", "hosted"}, nextChannels: []string{"hosted", "cli"}, nextQueue: []int64{2, 4}},
+		{name: "channel added", initialChannels: []string{"cli"}, nextChannels: []string{"cli", "hosted"}, nextQueue: []int64{2, 6}},
+		{name: "channel removed", initialChannels: []string{"cli", "hosted"}, nextChannels: []string{"cli"}, nextQueue: []int64{2, 6}},
+		{name: "pause resume with reorder and suffix edit", initialChannels: []string{"cli", "hosted"}, nextChannels: []string{"hosted", "cli"}, nextQueue: []int64{2, 6}, pauseResume: true, compatible: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			configure := func(key string, expected int64, c Configuration) int64 {
+				t.Helper()
+				c.ExpectedRevision = &expected
+				raw, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), key, c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var receipt Receipt
+				if json.Unmarshal(raw, &receipt) != nil {
+					t.Fatal("configuration receipt")
+				}
+				return receipt.Revision
+			}
+			c := Configuration{CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4}, Channels: append([]string(nil), test.initialChannels...)}
+			revision := configure("initial", 0, c)
+			request := f.enqueue(t, attemptProject, "queued", "cli", 2, revision)
+			if test.pauseResume {
+				c.Paused = true
+				revision = configure("pause", revision, c)
+				c.Paused = false
+				c.Channels = append([]string(nil), test.nextChannels...)
+				revision = configure("resume-reordered", revision, c)
+				c.Queue = append([]int64(nil), test.nextQueue...)
+			} else {
+				c.Channels = append([]string(nil), test.nextChannels...)
+				c.Queue = append([]int64(nil), test.nextQueue...)
+			}
+			configure("configuration-change", revision, c)
+
+			attempt, err := f.e.StartAttempt(t.Context(), attemptProject, request.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.compatible {
+				if attempt.ID == "" || attempt.State != "preparing" || operation.State != "preparing" {
+					t.Fatal("compatible channel-set change held original request", attempt, operation)
+				}
+			} else if attempt.ID != "" || operation.State != "held" || operation.Reason != "configuration_changed" {
+				t.Fatal("incompatible channel or unchanged-queue edit admitted stale request", attempt, operation)
+			}
+		})
+	}
+}
+
 func TestPreparingReviewRechecksEveryInterveningQueueRevision(t *testing.T) {
 	for _, meaningful := range []bool{false, true} {
 		t.Run(map[bool]string{false: "suffix only", true: "prefix moved then restored"}[meaningful], func(t *testing.T) {
@@ -153,5 +218,45 @@ func TestSupervisorKeepsOriginalRequestAcrossLaterQueueCleanup(t *testing.T) {
 	}
 	if driver.calls.Load() != 1 {
 		t.Fatal("completed original request dispatched again")
+	}
+}
+
+func TestSourceConfigurationChannelSetsPreserveApplicability(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		initial, next []string
+		valid         bool
+	}{
+		{name: "reordered", initial: []string{"cli", "hosted"}, next: []string{"hosted", "cli"}, valid: true},
+		{name: "added", initial: []string{"cli"}, next: []string{"cli", "hosted"}},
+		{name: "removed", initial: []string{"cli", "hosted"}, next: []string{"cli"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := Configuration{CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: test.initial}
+			current := original
+			current.Channels = test.next
+			beforeOriginal, beforeCurrent := encoded(original), encoded(current)
+			if got := sameSourceConfiguration(current, original); got != test.valid {
+				t.Fatal("whole source channel-set applicability", got, test.valid)
+			}
+			if got := sameSourceTargetConfiguration(current, original, 2, 4); got != test.valid {
+				t.Fatal("target source channel-set applicability", got, test.valid)
+			}
+			if encoded(original) != beforeOriginal || encoded(current) != beforeCurrent {
+				t.Fatal("source comparison mutated a channel list")
+			}
+			current.Queue = []int64{2, 4, 6}
+			current.Paused = true
+			beforeCurrent = encoded(current)
+			if got := sameSourceTargetConfiguration(current, original, 2, 4); got != test.valid {
+				t.Fatal("suffix and pause source applicability", got, test.valid)
+			}
+			if sameSourceConfiguration(current, original) {
+				t.Fatal("whole-queue pause guard was relaxed")
+			}
+			if encoded(original) != beforeOriginal || encoded(current) != beforeCurrent {
+				t.Fatal("source comparison mutated retained plans")
+			}
+		})
 	}
 }

@@ -83,14 +83,8 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		stage, next := operationStatusStage(o, evidence, complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: evidence, UpdatedAt: o.UpdatedAt, NextAction: next}
 		result.Wait = currentOperationWait(o)
-		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" {
-			allowance, readErr := readHeldAllowance(ctx, tx, o)
-			if readErr != nil {
-				return readErr
-			}
-			if allowance != nil {
-				result.RetryNotBefore = allowance.RetryNotBefore
-			}
+		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" && o.Allowance != nil {
+			result.RetryNotBefore = o.Allowance.RetryNotBefore
 		}
 		result.Observer = e.observerStatus(o)
 		return nil
