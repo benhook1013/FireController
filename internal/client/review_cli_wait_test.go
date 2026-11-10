@@ -2,10 +2,12 @@ package client_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -85,5 +87,54 @@ func TestHistoricalCLIQuotaHoldRemainsTerminal(t *testing.T) {
 	out := client.AgentReviewOperationStatus(status)
 	if out.State != "held" || out.Wait != nil || out.NextAction != "retry_later_with_new_request" {
 		t.Fatal("old terminal hold reopened", out)
+	}
+}
+
+func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
+	for _, tc := range []struct {
+		name, code string
+		details    any
+		keep       bool
+	}{
+		{"valid", "review_inflight", map[string]any{"operation_id": executionOperationID, "private": "UNTRUSTED_DETAIL"}, true},
+		{"missing", "review_inflight", nil, false},
+		{"wrong-kind", "review_inflight", map[string]any{"operation_id": "review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, false},
+		{"uppercase", "review_inflight", map[string]any{"operation_id": strings.ToUpper(executionOperationID)}, false},
+		{"numeric", "review_inflight", map[string]any{"operation_id": 1}, false},
+		{"wrong-code", "review_conflict", map[string]any{"operation_id": executionOperationID}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/reviews/requests") || r.Header.Get("Idempotency-Key") != "inflight-refusal" {
+					t.Error("inflight refusal caused unexpected follow-up work", r.Method, r.URL.Path)
+				}
+				posts.Add(1)
+				failure := map[string]any{"code": tc.code, "message": "Existing review request."}
+				if tc.details != nil {
+					failure["details"] = tc.details
+				}
+				write(w, http.StatusConflict, map[string]any{"error": failure, "request_id": "request-inflight"})
+			}))
+			defer srv.Close()
+			c := newClient(t, srv)
+			value, err := c.RequestReview(t.Context(), "inflight-refusal", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)}, 0)
+			var failure *client.Error
+			if value.Receipt != nil || value.Operation != nil || !errors.As(err, &failure) || failure.Code != tc.code || failure.OutcomeUnknown || posts.Load() != 1 {
+				t.Fatal("refusal was treated as acceptance or retried", value, err)
+			}
+			if tc.keep {
+				details, ok := failure.Details.(map[string]any)
+				if !ok || len(details) != 1 || details["operation_id"] != executionOperationID {
+					t.Fatal("validated pending-operation handle was dropped", failure.Details)
+				}
+			} else if failure.Details != nil {
+				t.Fatal("malformed or unrelated operation ID survived filtering", failure.Details)
+			}
+		})
 	}
 }
