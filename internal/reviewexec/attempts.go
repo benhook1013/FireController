@@ -85,9 +85,10 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.State != "queued" {
 			return conflict()
 		}
+		now := e.sampleExecutionTime()
 		// A retained quota timer is scheduling state, not permission to create
 		// another provider attempt before its recorded retry floor.
-		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
+		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
@@ -116,11 +117,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return holdOperation(ctx, tx, o, "capability_changed", at)
 		}
 		if o.Channel == "cli" {
-			due, err := cliAccountRetryDeadline(ctx, tx, capability)
+			due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 			if err != nil {
 				return err
 			}
-			if e.sampleExecutionTime().Before(due) {
+			if now.Before(due) {
 				return nil
 			}
 		}

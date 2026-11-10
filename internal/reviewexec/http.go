@@ -246,11 +246,12 @@ func (e *Engine) sharedCLIQuotaWait(ctx context.Context, scope core.Scope, id st
 		if !compatible || !ok || e.validateConfiguration(c) != nil || o.CapabilityFingerprint != capability.Fingerprint {
 			return nil
 		}
-		due, err := cliAccountRetryDeadline(ctx, tx, capability)
+		now := e.sampleExecutionTime()
+		due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 		if err != nil {
 			return err
 		}
-		waiting = e.sampleExecutionTime().Before(due)
+		waiting = now.Before(due)
 		return nil
 	})
 	return err == nil && waiting

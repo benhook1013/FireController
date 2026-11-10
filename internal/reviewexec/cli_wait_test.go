@@ -1,7 +1,10 @@
 package reviewexec
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -518,5 +521,200 @@ func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Retained audit history can be invalid without remaining a live account timer.
+// The same sampled instant governs candidate selection and the admission guard.
+func TestCLIAccountRetryDeadlineFutureHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		offset                time.Duration
+		corrupt, otherAccount bool
+	}{
+		{"before", -time.Nanosecond, false, false},
+		{"exact", 0, false, false},
+		{"after", time.Nanosecond, false, false},
+		{"corrupt-before", -time.Nanosecond, true, false},
+		{"corrupt-exact", 0, true, false},
+		{"corrupt-after", time.Nanosecond, true, false},
+		{"other-account-corrupt-before", -time.Nanosecond, true, true},
+		{"other-account-corrupt-after", time.Nanosecond, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, a, _, now := cliWaitFixture(t)
+			capability := "test-capability"
+			if tc.otherAccount {
+				capability = "other-account"
+			}
+			f.configure(t, otherAttemptProject, capability, 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			due := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+			other := f.enqueue(t, otherAttemptProject, "future-history-cli", "cli", 2, 1)
+			timerControl(t, f, a.OperationID, "cancel", "cancel-future-history")
+			if tc.corrupt {
+				admissionSQL(t, f, `UPDATE review_cli_preflight SET body_json='{}' WHERE attempt_id=?`, a.ID)
+			}
+			*now = due.Add(tc.offset)
+			live := tc.offset < 0 && !tc.otherAccount
+			invalid := live && tc.corrupt
+			tables := []string{"review_operations", "review_execution_attempts", "review_execution_transitions", "review_operation_waits", "review_cli_preflight", "review_execution_reservations", "events", "receipts"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			got, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities[capability], *now)
+			if invalid {
+				if !isWaitUnavailable(err) || !got.IsZero() {
+					t.Error("invalid live history was accepted", got, err)
+				}
+			} else if err != nil || live && !got.Equal(due) || !live && !got.IsZero() {
+				t.Error("deadline does not describe only future account history", got, due, err)
+			}
+			pending, err := f.e.pending(t.Context())
+			if invalid {
+				if !isWaitUnavailable(err) {
+					t.Error("pending accepted invalid live history", pending, err)
+				}
+			} else if err != nil || live && len(pending) != 0 || !live && (len(pending) != 1 || pending[0].ID != other.ID) {
+				t.Error("pending used expired or unrelated account history", pending, err)
+			}
+			scope := f.scope(t, otherAttemptProject, f.other, false)
+			if got := f.e.sharedCLIQuotaWait(t.Context(), scope, other.ID); got != (live && !invalid) {
+				t.Error("shared quota diagnostic differs from live validated deadline", got)
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("lookup changed retained history", table)
+				}
+			}
+			claim, err := f.e.StartAttempt(t.Context(), otherAttemptProject, other.ID)
+			if invalid {
+				if !isWaitUnavailable(err) || claim.ID != "" {
+					t.Error("claim accepted invalid live history", claim, err)
+				}
+			} else if err != nil || live && claim.ID != "" || !live && claim.ID == "" {
+				t.Error("claim used expired or unrelated account history", claim, err)
+			}
+			for _, table := range []string{"review_operation_waits", "review_cli_preflight"} {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("admission changed retained cooldown history", table)
+				}
+			}
+			if tc.corrupt {
+				if _, err := readOperationBase(t.Context(), f.store.DB(), attemptProject, a.OperationID); !isWaitUnavailable(err) {
+					t.Fatal("historical read stopped validating the corrupt audit record", err)
+				}
+			} else {
+				assertCLIWaitSnapshot(t, f)
+			}
+			assertCLIWaitNoCredit(t, f)
+		})
+	}
+}
+
+func TestCLIAccountRetryDeadlineLatestWithinSameMillisecond(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	// Leave room above creation times for two real retained exhaustion records.
+	*now = now.Add(10 * time.Second).Truncate(time.Second)
+	firstEnded := *now
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	firstDue := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+	timerControl(t, f, a.OperationID, "cancel", "cancel-first-deadline")
+	*now = firstDue
+	b := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "second-deadline", "cli", 2, 1))
+	in := CLIAllowanceObservation{Anchor: attemptAnchor(otherAttemptProject, 2), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}
+	if err := f.e.RecordCLIExhaustion(t.Context(), otherAttemptProject, b.ID, b.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	*now = firstEnded.Add(time.Nanosecond)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), otherAttemptProject, b.ID, b.Revision); err != nil {
+		t.Fatal(err)
+	}
+	second, err := readOperation(t.Context(), f.store.DB(), otherAttemptProject, b.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDue := cliWaitDue(t, second)
+	if !secondDue.Equal(firstDue.Add(time.Nanosecond)) {
+		t.Fatal("fixture did not retain adjacent deadlines", firstDue, secondDue)
+	}
+	assertCLIWaitSnapshot(t, f)
+	for _, at := range []time.Time{firstDue.Add(-time.Nanosecond), firstDue, secondDue, secondDue.Add(time.Nanosecond)} {
+		got, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities["test-capability"], at)
+		if err != nil || at.Before(secondDue) && !got.Equal(secondDue) || !at.Before(secondDue) && !got.IsZero() {
+			t.Error("same-millisecond ordering lost the latest live deadline", at, got, err)
+		}
+	}
+}
+
+type cliRetryFailureQuery struct {
+	EvidenceQuery
+	match  string
+	cancel bool
+}
+
+func (q cliRetryFailureQuery) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, q.match) {
+		if q.cancel {
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			return q.EvidenceQuery.QueryRowContext(canceled, query, args...)
+		}
+		return q.EvidenceQuery.QueryRowContext(ctx, `SELECT * FROM missing_cli_retry_history`)
+	}
+	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
+}
+
+func TestCLIAccountRetryDeadlinePreservesLookupErrors(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range []string{"SELECT o.project_id,o.id", "FROM metadata"} {
+		for _, canceled := range []bool{false, true} {
+			q := cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: match, cancel: canceled}
+			got, err := cliAccountRetryDeadline(t.Context(), q, f.e.capabilities["test-capability"], *now)
+			if !got.IsZero() || err == nil || isWaitUnavailable(err) || canceled && !errors.Is(err, context.Canceled) || !canceled && !strings.Contains(err.Error(), "missing_cli_retry_history") {
+				t.Error("account lookup concealed a real query failure", match, canceled, got, err)
+			}
+		}
+	}
+}
+
+func TestCLIAccountRetryDeadlineRejectsNoncanonicalFuture(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	future := cliWaitDue(t, cliWaitRead(t, f, a.OperationID)).Add(time.Hour).Truncate(time.Second)
+	for _, invalid := range []string{
+		future.Format("2006-01-02T15:04:05-07:00"),      // UTC offset is not canonical Z.
+		future.Format("2006-01-02T15:04:05.000000000Z"), // Redundant fractional zeros.
+		future.Format(time.RFC3339Nano) + "Z",           // Invalid timestamp, not an expiry.
+	} {
+		admissionSQL(t, f, `UPDATE review_operation_waits SET retry_not_before=? WHERE operation_id=?`, invalid, a.OperationID)
+		before := snapshotTable(t, f, "review_operation_waits")
+		got, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities["test-capability"], *now)
+		if !got.IsZero() || !isWaitUnavailable(err) {
+			t.Error("noncanonical future wait escaped retained validation", invalid, got, err)
+		}
+		tx, err := f.store.DB().BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ValidateOperationWaitsSnapshot(t.Context(), tx)
+		tx.Rollback()
+		if !isWaitUnavailable(err) {
+			t.Error("backup accepted noncanonical retained wait", invalid, err)
+		}
+		if before != snapshotTable(t, f, "review_operation_waits") {
+			t.Fatal("validation rewrote invalid history")
+		}
 	}
 }
