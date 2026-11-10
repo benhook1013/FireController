@@ -18,8 +18,15 @@ type CIWorkflowObservation struct {
 	Conclusion string `json:"conclusion,omitempty"`
 }
 
+// A non-strict authority can prove head CI while its cached test merge is
+// unproven. Optional workflow facts must keep that exact selected head binding.
+func ciWatchAllowsWorkflowCandidate(o reviewprovider.CIObservation) bool {
+	return o.Candidate != nil && (o.Candidate.State == "complete" ||
+		o.Selection == "head" && o.SelectedCommitSHA == o.Target.HeadSHA && reviewprovider.NonstrictHeadCICandidate(*o.Candidate, o.Target, o.Authority))
+}
+
 func ciWatchWorkflowObservations(o reviewprovider.CIObservation, ids []int64) []CIWorkflowObservation {
-	if len(ids) == 0 || len(ids) > 16 || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason || o.Actions == nil || o.Actions.RepositoryID != o.Target.RepositoryID || !strings.EqualFold(o.Actions.Repository, o.Target.Repository) || o.Actions.HeadSHA != o.SelectedCommitSHA {
+	if len(ids) == 0 || len(ids) > 16 || !ciWatchAllowsWorkflowCandidate(o) || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason || o.Actions == nil || o.Actions.RepositoryID != o.Target.RepositoryID || !strings.EqualFold(o.Actions.Repository, o.Target.Repository) || o.Actions.HeadSHA != o.SelectedCommitSHA {
 		return nil
 	}
 	latest, err := reviewprovider.LatestActionsRuns(*o.Actions)

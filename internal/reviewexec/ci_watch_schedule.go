@@ -516,7 +516,7 @@ func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int6
 	if len(rows) == 0 || len(rows) > 16 {
 		return nil
 	}
-	if reviewprovider.CIWorkflowAttentionBasis(o) != reviewprovider.CIWorkflowHeadOnlyBasis && (o.Results == nil || o.Actions == nil || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
+	if reviewprovider.CIWorkflowAttentionBasis(o) != reviewprovider.CIWorkflowHeadOnlyBasis && (o.Results == nil || o.Actions == nil || !ciWatchAllowsWorkflowCandidate(o) || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
 		return nil
 	}
 	wanted := map[int64]bool{}
