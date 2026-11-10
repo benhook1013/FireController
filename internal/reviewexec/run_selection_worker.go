@@ -193,6 +193,24 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 	}
 }
 
+// retryRunSelectionRead preserves brief contention recovery without letting a
+// repeatedly expired prefix read retain a selection worker indefinitely.
+func retryRunSelectionRead(ctx context.Context, local func() error) error {
+	attempts := 0
+	return retryRunSelectionLocal(ctx, func() error {
+		err := local()
+		attempts++
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var failure *core.Error
+		if attempts >= 3 && errors.As(err, &failure) && failure.Code == "overloaded" {
+			return core.Fail("local_read_unavailable", "Local selection verification remained unavailable after bounded retries.", 503)
+		}
+		return err
+	})
+}
+
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
 	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
@@ -277,7 +295,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		var target int64
 		var reason string
 		bindingHeld := false
-		err = retryRunSelectionLocal(ctx, func() error {
+		err = retryRunSelectionRead(ctx, func() error {
 			target, reason = 0, ""
 			bindingHeld = false
 			return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -305,6 +323,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			})
 		})
 		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "local_read_unavailable" {
+				choice.state, choice.reason = "held", "local_read_unavailable"
+				return choice, nil
+			}
 			return runChoice{}, err
 		}
 		if reason != "" {
@@ -543,7 +566,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return err
 			}
 			if choice.state == "held" {
-				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" {
+				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" && choice.reason != "local_read_unavailable" {
 					// Local readiness may have changed after chooseRun's read,
 					// even for a later PR masked by the first held reason. Do not
 					// settle that newer eligible basis behind a

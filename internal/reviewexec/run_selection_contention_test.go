@@ -483,3 +483,75 @@ func TestRunSelectionInjectedBudgetBoundsProviderReads(t *testing.T) {
 		t.Fatal("provider timeout changed local authority or canceled worker", got, reader.calls.Load())
 	}
 }
+
+func TestRunSelectionReadRetryLimit(t *testing.T) {
+	calls := 0
+	err := retryRunSelectionRead(t.Context(), func() error {
+		calls++
+		return core.Fail("overloaded", "Storage is busy.", 503)
+	})
+	attemptCode(t, err, "local_read_unavailable")
+	if calls != 3 {
+		t.Fatal("unbounded local read retries", calls)
+	}
+	calls = 0
+	err = retryRunSelectionRead(t.Context(), func() error {
+		calls++
+		if calls < 3 {
+			return core.Fail("overloaded", "Storage is busy.", 503)
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatal("transient recovery lost", calls, err)
+	}
+}
+
+func TestRunSelectionRepeatedReadDeadlineHoldsAndReleasesWorker(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "bounded-prefix-read", "cli", nil)
+	r, entered, release := selectionContentionReader()
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": r})
+		done <- err
+	}()
+	selectionContentionEntered(t, entered)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	close(release)
+	// The independently admitted writer remains usable while every read snapshot
+	// acquisition exceeds its actual two-second deadline.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("failed to persist bounded read hold", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("repeated local deadline retained selection worker")
+	}
+	conn.Close()
+	got := selectionContentionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != 3 || got.OperationID != "" || r.calls.Load() != 3 {
+		t.Fatal("invalid local deadline settlement", got, r.calls.Load())
+	}
+	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got = selectionContentionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Revision != 3 {
+		t.Fatal("restart reopened terminal hold", got)
+	}
+	next, _ := selectionEnqueue(t, f, "after-bounded-read", "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	if got := selectionContentionRead(t, f, next.ID); got.State != "selected" || got.OperationID == "" {
+		t.Fatal("later authorized selection stalled", got)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("held selection created a child")
+	}
+}

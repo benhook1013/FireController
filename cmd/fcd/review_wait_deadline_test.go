@@ -248,15 +248,20 @@ func TestHTTPShutdownDetachesSelectionWaitsAndKeepsAcceptedWork(t *testing.T) {
 			postDone := startRequest(http.MethodPost, postPath, "shutdown-post", string(body))
 			getDone := startRequest(http.MethodGet, getPath, "", "")
 			deadline := time.Now().Add(time.Second)
+			admitted := false
 			for time.Now().Before(deadline) {
 				var count int
 				if err = f.store.DB().QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count == 2 {
+					admitted = true
 					break
 				}
 				time.Sleep(time.Millisecond)
+			}
+			if !admitted {
+				t.Fatal("POST selection was not admitted before shutdown")
 			}
 			select {
 			case result := <-postDone:
