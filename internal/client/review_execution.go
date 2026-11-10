@@ -51,6 +51,8 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
+	AllowOutOfOrder       bool `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool `json:"override_file_limit,omitempty"`
 	queuedCause           string
 	Wait                  *ReviewOperationWait        `json:"wait,omitempty"`
 	Allowance             *ReviewAllowanceObservation `json:"allowance,omitempty"`

@@ -186,3 +186,85 @@ func TestReviewOperationControlActualWriterReadAndProjectIsolation(t *testing.T)
 		t.Fatal(done, err)
 	}
 }
+
+func TestReviewOperationRetainedOverrideFlagsWire(t *testing.T) {
+	for _, route := range []string{"read", "terminal-request"} {
+		for _, test := range []struct {
+			name, fields           string
+			valid, allow, override bool
+		}{
+			{"legacy", "", true, false, false},
+			{"both", `,"allow_out_of_order":true,"override_file_limit":true`, true, true, true},
+			{"allow", `,"allow_out_of_order":true`, true, true, false},
+			{"override", `,"override_file_limit":true`, true, false, true},
+			{"false", `,"allow_out_of_order":false,"override_file_limit":false`, true, false, false},
+			{"null-allow", `,"allow_out_of_order":null`, false, false, false},
+			{"null-override", `,"override_file_limit":null`, false, false, false},
+			{"string-allow", `,"allow_out_of_order":"true"`, false, false, false},
+			{"number-override", `,"override_file_limit":1`, false, false, false},
+			{"alias", `,"Allow_Out_Of_Order":true`, false, false, false},
+			{"duplicate", `,"allow_out_of_order":true,"allow_out_of_order":false`, false, false, false},
+		} {
+			t.Run(route+"/"+test.name, func(t *testing.T) {
+				operation := sampleReviewOperation()
+				operation.WorkerID, operation.State = "worker-one", "completed"
+				encoded, err := json.Marshal(operation)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := strings.TrimSuffix(string(encoded), "}") + test.fields + "}"
+				var posts atomic.Int64
+				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					if r.Method == "POST" {
+						posts.Add(1)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(body))
+				}))
+				defer service.Close()
+				c := newClient(t, service)
+				defer c.Close()
+				var got client.ReviewOperation
+				if route == "read" {
+					got, err = c.ReviewOperation(t.Context(), executionOperationID)
+				} else {
+					result, e := c.RequestReview(t.Context(), "retained-flags", client.ReviewRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: operation.HeadSHA}, 0)
+					err = e
+					if result.Operation != nil {
+						got = *result.Operation
+					}
+				}
+				if !test.valid {
+					checkError(t, err, "invalid_response")
+					var failure *client.Error
+					if !errors.As(err, &failure) || failure.OutcomeUnknown != (route == "terminal-request") {
+						t.Fatal("lost outcome semantics", err)
+					}
+				} else {
+					if err != nil {
+						t.Fatal("valid retained operation rejected", err)
+					}
+					b, e := json.Marshal(got)
+					if e != nil {
+						t.Fatal(e)
+					}
+					var fields map[string]any
+					if json.Unmarshal(b, &fields) != nil || (fields["allow_out_of_order"] == true) != test.allow || (fields["override_file_limit"] == true) != test.override {
+						t.Fatal("retained flags changed", string(b))
+					}
+				}
+				wantPosts := int64(0)
+				if route == "terminal-request" {
+					wantPosts = 1
+				}
+				if posts.Load() != wantPosts {
+					t.Fatal("request retried or read mutated", posts.Load())
+				}
+			})
+		}
+	}
+}
