@@ -19,15 +19,97 @@ type draftWaitDriver struct {
 
 func (d *draftWaitDriver) SourceReader() TargetReader { return d.reader }
 
+func markCLIDraftWait(t *testing.T, f *attemptFixture, operationID string) {
+	t.Helper()
+	o := cliWaitRead(t, f, operationID)
+	if err := f.e.recordCLIDraftDecision(t.Context(), o, cliDraftWait); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func draftProbeClaimed(e *Engine, operationID string) bool {
+	e.draftProbeMu.Lock()
+	defer e.draftProbeMu.Unlock()
+	_, claimed := e.draftProbeNext[operationID]
+	return claimed
+}
+
+func TestOrdinaryCLIRequestUsesPreparationWithoutDraftProbe(t *testing.T) {
+	f := supervisorFixture(t)
+	request := f.enqueue(t, attemptProject, "ordinary-cli-no-draft-probe", "cli", 2, 1)
+	reader := &refreshTestReader{}
+	d := &draftWaitDriver{reader: reader}
+	d.prepare = func(ctx context.Context, o Operation, c Configuration, _ Attempt) (Preparation, error) {
+		_, err := ResolveSource(ctx, reader, 801, c, Request{PullNumber: o.PullNumber, Channel: o.Channel, HeadSHA: o.HeadSHA})
+		if err != nil {
+			return Preparation{}, err
+		}
+		return Preparation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber)}, nil
+	}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": d}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliWaitRead(t, f, request.ID); got.State != "completed" || d.prepares.Load() != 1 || d.calls.Load() != 1 {
+		t.Fatal("ordinary CLI request did not use normal preparation", got, d.prepares.Load(), d.calls.Load())
+	}
+	if reader.calls.Load() != 2 {
+		t.Fatalf("ordinary request made %d provider reads, want only the repository and pull reads from preparation", reader.calls.Load())
+	}
+	if draftProbeClaimed(f.e, request.ID) {
+		t.Fatal("ordinary preparation consumed a draft-probe slot")
+	}
+}
+
+func TestOrdinaryCLIPreparationRetainsFirstDraftDiscovery(t *testing.T) {
+	f := supervisorFixture(t)
+	request := f.enqueue(t, attemptProject, "ordinary-cli-discovers-draft", "cli", 2, 1)
+	draft := true
+	reader := &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+		return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+	}}
+	d := &draftWaitDriver{reader: reader}
+	d.prepare = func(ctx context.Context, o Operation, c Configuration, _ Attempt) (Preparation, error) {
+		_, err := ResolveSource(ctx, reader, 801, c, Request{PullNumber: o.PullNumber, Channel: o.Channel, HeadSHA: o.HeadSHA})
+		return Preparation{}, err
+	}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": d}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliWaitRead(t, f, request.ID); got.State != "queued" || got.Reason != cliDraftWait || got.AttemptID != "" || d.prepares.Load() != 1 || d.calls.Load() != 0 {
+		t.Fatal("first draft discovery did not retain the explicit request through preparation", got, d.prepares.Load(), d.calls.Load())
+	}
+	if reader.calls.Load() != 2 || draftProbeClaimed(f.e, request.ID) {
+		t.Fatalf("first discovery used %d source reads or consumed a wait-probe slot", reader.calls.Load())
+	}
+	if attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
+		t.Fatal("draft discovered during preparation retained an unused reservation")
+	}
+}
+
+func TestSourceLessOrdinaryCLIDraftRefusalIsNotRetainedAsWait(t *testing.T) {
+	f := supervisorFixture(t)
+	request := f.enqueue(t, attemptProject, "ordinary-cli-source-less-draft", "cli", 2, 1)
+	d := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+		return Preparation{}, sourceHold("pull_draft")
+	}}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": d}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliWaitRead(t, f, request.ID); got.State != "held" || got.Reason != "pull_draft" || got.Reason == cliDraftWait || d.prepares.Load() != 1 || d.calls.Load() != 0 {
+		t.Fatal("source-less preparation gained an unprobeable retained Draft wait", got, d.prepares.Load(), d.calls.Load())
+	}
+}
+
 func TestExplicitCLIDraftWaitReusesIntentAndLeavesIndependentWorkEligible(t *testing.T) {
 	f := supervisorFixture(t)
 	now := time.Now()
 	f.e.schedulingNow = func() time.Time { return now }
 	draft := true
-	d := &draftWaitDriver{reader: &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+	reader := &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
 		isDraft := number == 2 && draft
 		return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", IsDraft: &isDraft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
-	}}}
+	}}
+	d := &draftWaitDriver{reader: reader}
 	drivers := map[string]Driver{"test-capability": d}
 	request := f.enqueue(t, attemptProject, "cli-wait-original", "cli", 2, 1)
 	run := func() {
@@ -44,9 +126,10 @@ func TestExplicitCLIDraftWaitReusesIntentAndLeavesIndependentWorkEligible(t *tes
 		}
 		return op
 	}
+	markCLIDraftWait(t, f, request.ID)
 	run()
 	waiting := read(request.ID)
-	if waiting.State != "queued" || waiting.Reason != cliDraftWait || waiting.AttemptID != "" || waiting.Wait != nil || d.prepares.Load() != 0 || attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
+	if waiting.State != "queued" || waiting.Reason != cliDraftWait || waiting.AttemptID != "" || waiting.Wait != nil || d.prepares.Load() != 0 || reader.calls.Load() != 2 || !draftProbeClaimed(f.e, request.ID) || attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
 		t.Fatal("Draft consumed preparation or quota", waiting)
 	}
 	if replay := f.enqueue(t, attemptProject, "cli-wait-original", "cli", 2, 1); replay.ID != request.ID {
@@ -106,6 +189,7 @@ func TestExplicitCLIDraftWaitRefusesMovedHeadAndLeavesOldTerminalHold(t *testing
 		t.Fatal(err)
 	}
 	request := f.enqueue(t, attemptProject, "new-draft-pinned", "cli", 2, 1)
+	markCLIDraftWait(t, f, request.ID)
 	now := time.Now()
 	f.e.schedulingNow = func() time.Time { return now }
 	draft := true
@@ -151,6 +235,9 @@ func TestExplicitCLIDraftWaitRechecksLocalAuthorityBeforeClaim(t *testing.T) {
 			}
 			drivers := map[string]Driver{"test-capability": d}
 			request := f.enqueue(t, attemptProject, "draft-local-guard", "cli", 2, 1)
+			if change != "redrafted" {
+				markCLIDraftWait(t, f, request.ID)
+			}
 			process := func() {
 				t.Helper()
 				if err := f.e.processNext(t.Context(), drivers); err != nil {
@@ -220,6 +307,7 @@ func TestExplicitCLIDraftWaitUsesRealQuotaBaselineOnlyAfterReadiness(t *testing.
 	}
 	drivers := map[string]Driver{"test-capability": d}
 	request := f.enqueue(t, attemptProject, "draft-wait-before-quota", "cli", 2, 1)
+	markCLIDraftWait(t, f, request.ID)
 	if err := f.e.processNext(t.Context(), drivers); err != nil {
 		t.Fatal(err)
 	}

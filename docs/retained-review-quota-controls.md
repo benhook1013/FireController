@@ -39,6 +39,8 @@ Any credential with write permission in this project may control an undispatched
 - `review_conflict` refuses a stale `expected_revision`; read the current operation before deciding whether a new action is appropriate.
 - `review_operation_started` refuses preparing, posting, active, uncertain or terminal operations; the control cannot stop issued provider work.
 - `idempotency_conflict` refuses reuse of the same key for a different action or request.
+- `forbidden` refuses a credential without write permission in this project; use an authorized project-write credential before retrying the intended action.
+- `not_found` refuses an operation that is not visible in this project; verify the selected project and operation ID. Do not retry with another key or guess another project's identity.
 - `review_inflight` refuses a new-key request while another operation for the same project, PR and channel is queued, preparing, posting, active or uncertain. Its `operation_id` detail names the existing request. Read and retain that operation; queued-only `review_operation_control` may cancel it when cancellation is intended, while issued work must finish or follow its original recovery path. Do not submit another key to bypass the pending request.
 
 After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.

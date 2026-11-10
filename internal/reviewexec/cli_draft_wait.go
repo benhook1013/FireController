@@ -89,52 +89,49 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		return true, false, false, nil
 	}
 	driver, ok := registered.(interface{ SourceReader() TargetReader })
-	if !ok || driver.SourceReader() == nil {
+	if !ok {
 		return !waiting, false, false, nil
 	}
-	if !e.claimDraftProbe(o.ID) {
-		// Only draft-waiting requests require a positive readiness probe.
-		// Ordinary preparation still resolves and validates the source.
-		// Retain explicit intent if that preparation observes a Draft PR.
-		return !waiting, false, true, nil
-	}
 	reader := driver.SourceReader()
+	if reader == nil {
+		return !waiting, false, false, nil
+	}
+	if !waiting {
+		// Ordinary preparation already refreshes this exact source and retains
+		// pull_draft as a wait. Do not duplicate those provider reads or spend
+		// a draft-wait probe slot before the preparation path gets its turn.
+		return true, false, true, nil
+	}
+	if !e.claimDraftProbe(o.ID) {
+		return false, false, true, nil
+	}
 	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	repo, err := reader.Repository(readCtx, execution.RepositoryID)
 	if err != nil {
-		return !waiting, false, true, nil
+		return false, false, true, nil
 	}
 	if repo.ID != execution.RepositoryID || !repository.MatchString(repo.FullName) {
-		if !waiting {
-			return true, false, true, nil
-		}
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, "repository_changed")
 	}
 	pull, err := reader.Pull(readCtx, repo.FullName, o.PullNumber)
 	if err != nil {
-		return !waiting, false, true, nil
+		return false, false, true, nil
 	}
 	if !sameTarget(pull, execution.RepositoryID, o.PullNumber) || pull.HeadSHA != o.HeadSHA || pull.State != "open" || pull.Merged {
-		if !waiting {
-			return true, false, true, nil
-		}
 		reason := "target_changed"
 		if obsolete := obsoleteTargetReason(pull, execution.RepositoryID, o.PullNumber, o.HeadSHA); obsolete != "" {
 			reason = obsolete
 		}
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, reason)
 	}
-	if pull.IsDraft == nil && waiting {
+	if pull.IsDraft == nil {
 		return false, false, false, nil
 	}
-	if pull.IsDraft != nil && *pull.IsDraft {
-		if waiting {
-			return false, false, false, nil
-		}
-		return false, false, true, e.recordCLIDraftDecision(ctx, o, cliDraftWait)
+	if *pull.IsDraft {
+		return false, false, false, nil
 	}
-	return true, waiting, true, nil
+	return true, true, true, nil
 }
 
 func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason string) error {
