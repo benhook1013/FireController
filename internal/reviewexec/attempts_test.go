@@ -722,3 +722,34 @@ func TestCooldownReferencePreservesContextFailureAndClassifiesMissingEvidence(t 
 		t.Fatal("missing reference lost unavailable classification", err)
 	}
 }
+
+func TestAttemptRecoveryCancelsCorruptCooldownReference(t *testing.T) {
+	for _, corruption := range []string{"malformed", "binding"} {
+		t.Run(corruption, func(t *testing.T) {
+			f, a := interruptedAllowanceFixture(t, "hosted")
+			query := `UPDATE review_hosted_observations SET body_json='{' WHERE attempt_id=?`
+			if corruption == "binding" {
+				query = `UPDATE review_hosted_observations SET capture_bytes=capture_bytes+1 WHERE attempt_id=?`
+			}
+			admissionSQL(t, f, query, a.ID)
+			before := snapshotTable(t, f, "review_hosted_observations")
+			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+				t.Fatal("corrupt optional reference blocked recovery", err)
+			}
+			o := cliWaitRead(t, f, a.OperationID)
+			if o.State != "cancelled" || o.Reason != "supervisor_interrupted" || o.Wait != nil || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE id=? AND state='cancelled' AND revision=2`, a.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
+				t.Fatal("corrupt reference did not safely cancel undispatched preparation", o)
+			}
+			if before != snapshotTable(t, f, "review_hosted_observations") {
+				t.Fatal("recovery rewrote referenced evidence")
+			}
+			settled := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_transitions")
+			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if settled != snapshotTable(t, f, "review_operations")+snapshotTable(t, f, "review_execution_attempts")+snapshotTable(t, f, "review_execution_transitions") {
+				t.Fatal("recovery was not idempotent")
+			}
+		})
+	}
+}

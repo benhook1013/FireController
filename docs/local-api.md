@@ -46,8 +46,9 @@ Receipt keys include their originating instance. Startup upgrades base schema ve
 | `POST /api/v1/projects/{project_id}/workers` | Scoped write sends `{name}`; returns compact worker receipt. |
 | `GET /api/v1/projects/{project_id}/workers` | Scoped bounded worker page. |
 | `GET /api/v1/projects/{project_id}/workers/{worker_id}` | Scoped worker detail. |
-| `POST /api/v1/projects/{project_id}/credentials` | Administrator sends `{token_sha256, permissions}`; returns credential/principal IDs and project ID. |
-| `DELETE /api/v1/projects/{project_id}/credentials/{credential_id}` | Administrator revokes access; requires an idempotency key. |
+| `POST /api/v1/projects/{project_id}/credentials` | Project manager or instance administrator sends `{token_sha256, permissions}`; returns credential/principal IDs and project ID. |
+| `PUT /api/v1/projects/{project_id}/credentials/{credential_id}` | Project manager or instance administrator sends `{expected_permissions, permissions}` with an idempotency key; stale permissions return `credential_permissions_changed`. |
+| `DELETE /api/v1/projects/{project_id}/credentials/{credential_id}` | Project manager or instance administrator revokes access; requires an idempotency key. |
 
 For a project client, generate a high-entropy secret privately and register its lowercase SHA-256 hex digest, with permissions such as `["read", "write"]`. Keep the raw secret in the client's protected credential file. The service stores its hash; API receipts do not return the raw secret. Each registered credential currently establishes a separate principal.
 

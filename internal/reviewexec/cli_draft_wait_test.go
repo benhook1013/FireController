@@ -553,7 +553,7 @@ func TestCLIDraftWaitMissingDriverSettlesOriginalIntent(t *testing.T) {
 }
 
 func TestCLIDraftProbeReadFailuresAreBoundedAndSafe(t *testing.T) {
-	for _, stage := range []string{"repository", "pull"} {
+	for _, stage := range []string{"repository", "pull", "unknown-draft"} {
 		t.Run(stage, func(t *testing.T) {
 			f := supervisorFixture(t)
 			now := time.Now()
@@ -570,9 +570,15 @@ func TestCLIDraftProbeReadFailuresAreBoundedAndSafe(t *testing.T) {
 				reader.repository = func(context.Context, int64) (reviewprovider.Repository, error) {
 					return reviewprovider.Repository{}, failure
 				}
-			} else {
+			} else if stage == "pull" {
 				reader.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) {
 					return reviewprovider.Pull{}, failure
+				}
+			} else {
+				reader.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) {
+					p := lifecyclePull(2)
+					p.IsDraft = nil
+					return p, nil
 				}
 			}
 			d := &draftWaitDriver{reader: reader}
@@ -583,7 +589,14 @@ func TestCLIDraftProbeReadFailuresAreBoundedAndSafe(t *testing.T) {
 				}
 			}
 			text := output.String()
-			if strings.Count(text, "CLI draft source probe failed") != 1 || !strings.Contains(text, r.ID) || !strings.Contains(text, `"provider_operation":"`+stage+`"`) || strings.Contains(text, "PRIVATE_PROVIDER_BODY") {
+			providerStage := stage
+			if stage == "unknown-draft" {
+				providerStage = "pull"
+				if !strings.Contains(text, `"reason":"draft_state_unknown"`) {
+					t.Fatal("missing unknown Draft reason", text)
+				}
+			}
+			if strings.Count(text, "CLI draft source probe failed") != 1 || !strings.Contains(text, r.ID) || !strings.Contains(text, `"provider_operation":"`+providerStage+`"`) || strings.Contains(text, "PRIVATE_PROVIDER_BODY") {
 				t.Fatal("probe failure was silent, unbounded or exposed a provider body", text)
 			}
 			now = now.Add(cliDraftProbeInterval)

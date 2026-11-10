@@ -149,7 +149,9 @@ func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, 
 	}
 	observation, err := decodeHostedObservation(body, id, project, attempt, operation, position, checksum, size, a, o)
 	if err != nil {
-		return err
+		// The optional capture is unusable; lookup failures above still retain
+		// their database or context classification.
+		return allowanceUnavailable()
 	}
 	source := observation.Input
 	if project != o.ProjectID || attempt != a.ID || operation != o.ID || source.Kind != "allowance_query" || source.CaptureID != in.CaptureID || source.CaptureBytes != in.CaptureBytes || source.CaptureSHA256 != in.CaptureSHA256 || source.ObservedAt != in.ObservedAt || source.ExpectedAnchor != query.Anchor || source.Intent != query.Intent {

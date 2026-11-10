@@ -75,7 +75,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | Command | Returned scope |
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
-| `fc workers list` | One compact worker page in the bound project. |
+| `fc workers list` | One compact active-worker page in the bound project; `--include-retired` also includes retired workers. |
 | `fc jobs context JOB_ID [--limit N]` | Complete current brief/checkpoint/checklist plus bound-worker focus/pause and pending previews, explicit omissions, continuation cursors and incoming-event watermark. |
 | `fc notes read NOTE_ID` | One full current note. |
 | `fc notes list` | One compact pending page for the bound worker and its currently assigned jobs; explicit scope/filter flags narrow or broaden selection. |
@@ -137,7 +137,7 @@ Quick local mutations use the same private profile and a five-second operation b
 | `fc jobs checklist-set ID --key KEY --expect-revision N --expect-checklist-revision C` | Exactly one of `--items JSON` or `--items-file PATH`; guarded ordered replacement, with unchanged content reported explicitly. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
-| `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |
+| `fc inbox ack MESSAGE_ID --key KEY [--worker WORKER_ID]` | Acknowledgment also establishes seen state; selecting another recipient requires project management. |
 
 The parser rejects incomplete, repeated, oversized and malformed arguments before opening profiles or credentials or contacting the service. Brief and body text remain exact UTF-8; selected title/assignment normalization follows the API. Omitted edit fields stay unchanged. Guarded edits return the current revision on conflict. A retained key replays the original receipt after current authorization; it never overwrites a newer revision.
 

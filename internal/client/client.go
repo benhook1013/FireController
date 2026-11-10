@@ -615,6 +615,13 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 			}
 		}
 	}
+	if result.Code == "review_inflight" && status == http.StatusConflict {
+		result.Message = "This PR and channel already have a pending review request; no new request was accepted."
+		result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations) and retain the original request. Do not submit another key to bypass it."
+		if details, ok := result.Details.(map[string]any); ok && details["operation_id"] != nil {
+			result.Action = "Read and retain the operation in details.operation_id with review_operation_read (CLI: reviews operation). Cancel only with queued-only review_operation_control when cancellation is intended; issued work must follow its original recovery path. Do not submit another key to bypass it."
+		}
+	}
 	if result.Status == http.StatusServiceUnavailable && result.Code == "overloaded" {
 		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
 			result.Message = "The controller ended this temporary wait during shutdown."
