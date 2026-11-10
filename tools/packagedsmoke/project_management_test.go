@@ -89,7 +89,7 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	managerFile := filepath.Join(private, "manager.token")
 	readerFile := filepath.Join(private, "reader.token")
 	const manager = "synthetic-packaged-management-token"
-	const reader = "synthetic-packaged-reader-token"
+	const reader = "synthetic-packaged-reader-token-v1"
 	for file, token := range map[string]string{managerFile: manager, readerFile: reader} {
 		if err := os.WriteFile(file, []byte(token), 0600); err != nil {
 			t.Fatal(err)
