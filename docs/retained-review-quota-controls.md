@@ -42,6 +42,8 @@ Any credential with write permission in this project may control an undispatched
 - `idempotency_conflict` refuses reuse of the same key for a different action or request.
 - `forbidden` refuses a credential without write permission in this project; use an authorized project-write credential before retrying the intended action.
 - `not_found` refuses an operation that is not visible in this project; verify the selected project and operation ID. Do not retry with another key or guess another project's identity.
+- `validation_failed` refuses a malformed operation ID or request body, an `expected_revision` below 1, or an action other than `pause`, `resume` or `cancel`; correct the invalid fields before submitting the intended control.
+- `storage_unavailable` refuses a control when retained wait data is damaged or unavailable; retain the original request and idempotency key and inspect the retained state before attempting recovery. Do not submit a new key to bypass the failure.
 
 Request submission can separately fail with `review_inflight`. It refuses a new-key request while another operation for the same project, PR and channel is queued, preparing, posting, active or uncertain. Its `operation_id` detail names the existing request. Read and retain that operation; queued-only `review_operation_control` may cancel it when cancellation is intended, while issued work must finish or follow its original recovery path. Do not submit another key to bypass the pending request.
 
