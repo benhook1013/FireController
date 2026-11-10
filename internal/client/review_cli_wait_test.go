@@ -93,15 +93,17 @@ func TestHistoricalCLIQuotaHoldRemainsTerminal(t *testing.T) {
 func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
 	for _, tc := range []struct {
 		name, code string
+		status     int
 		details    any
 		keep       bool
 	}{
-		{"valid", "review_inflight", map[string]any{"operation_id": executionOperationID, "private": "UNTRUSTED_DETAIL"}, true},
-		{"missing", "review_inflight", nil, false},
-		{"wrong-kind", "review_inflight", map[string]any{"operation_id": "review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, false},
-		{"uppercase", "review_inflight", map[string]any{"operation_id": strings.ToUpper(executionOperationID)}, false},
-		{"numeric", "review_inflight", map[string]any{"operation_id": 1}, false},
-		{"wrong-code", "review_conflict", map[string]any{"operation_id": executionOperationID}, false},
+		{"valid", "review_inflight", http.StatusConflict, map[string]any{"operation_id": executionOperationID, "private": "UNTRUSTED_DETAIL"}, true},
+		{"missing", "review_inflight", http.StatusConflict, nil, false},
+		{"wrong-kind", "review_inflight", http.StatusConflict, map[string]any{"operation_id": "review_attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, false},
+		{"uppercase", "review_inflight", http.StatusConflict, map[string]any{"operation_id": strings.ToUpper(executionOperationID)}, false},
+		{"numeric", "review_inflight", http.StatusConflict, map[string]any{"operation_id": 1}, false},
+		{"wrong-status", "review_inflight", http.StatusBadRequest, map[string]any{"operation_id": executionOperationID}, true},
+		{"wrong-code", "review_conflict", http.StatusConflict, map[string]any{"operation_id": executionOperationID}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var posts atomic.Int64
@@ -118,7 +120,7 @@ func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
 				if tc.details != nil {
 					failure["details"] = tc.details
 				}
-				write(w, http.StatusConflict, map[string]any{"error": failure, "request_id": "request-inflight"})
+				write(w, tc.status, map[string]any{"error": failure, "request_id": "request-inflight"})
 			}))
 			defer srv.Close()
 			c := newClient(t, srv)
@@ -126,6 +128,19 @@ func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
 			var failure *client.Error
 			if value.Receipt != nil || value.Operation != nil || !errors.As(err, &failure) || failure.Code != tc.code || failure.OutcomeUnknown || posts.Load() != 1 {
 				t.Fatal("refusal was treated as acceptance or retried", value, err)
+			}
+			if tc.code == "review_inflight" && tc.status == http.StatusConflict {
+				if !strings.Contains(failure.Action, "Do not submit another key") || strings.Contains(failure.Action, "current access") {
+					t.Fatal("pending work refusal lacks safe recovery guidance", failure.Action)
+				}
+				if tc.keep && (!strings.Contains(failure.Action, "details.operation_id") || !strings.Contains(failure.Action, "queued-only")) {
+					t.Fatal("valid handle lacks operation guidance", failure.Action)
+				}
+				if !tc.keep && strings.Contains(failure.Action, "details.operation_id") {
+					t.Fatal("guidance refers to a missing handle", failure.Action)
+				}
+			} else if strings.Contains(failure.Action, "Do not submit another key") {
+				t.Fatal("unrelated refusal acquired pending work guidance", failure.Action)
 			}
 			if tc.keep {
 				details, ok := failure.Details.(map[string]any)
