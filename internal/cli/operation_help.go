@@ -18,9 +18,6 @@ func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
 	if help, ok := ownerManagementHelp(operation); ok {
 		return emit(stdout, stderr, help)
 	}
-	if operation == "credentials help" || operation == "workers help" || operation == "reviews help" {
-		return emit(stdout, stderr, managementLocalHelp(operation))
-	}
 	usage := "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
 	semantics := "Read one compact newest-first page of retained project operations. Default five pending; --all includes held and terminal history. Reuse the same filters with a cursor. No provider reads, automatic pagination, execution or retry."
 	documentation := "docs/review-operations.md"
