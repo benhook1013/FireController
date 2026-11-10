@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -224,5 +226,41 @@ func TestProjectOwnerCLICredentialFileRejectsInvalidTokensBeforeHTTP(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestManagementGroupHelpIsStructuredAndLocal(t *testing.T) {
+	for _, tc := range []struct {
+		group, documentation string
+		operations           []string
+	}{
+		{"credentials", "docs/local-api.md", []string{"credentials grant --help", "credentials update --help", "credentials revoke --help"}},
+		{"workers", "docs/worker-retirement.md", []string{"workers create --help", "workers retirement --help", "workers retire --help", "workers list [--include-retired]"}},
+		{"reviews", "docs/review-execution.md", []string{"reviews policy --help", "reviews policy-configure --help", "reviews execution-configure --help", "reviews start --help", "reviews run-read --help"}},
+	} {
+		for _, argument := range []string{"help", "--help"} {
+			t.Run(tc.group+"/"+argument, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				var out, errout bytes.Buffer
+				code := cli.RunContext(ctx, []string{"--profiles-file", "/missing/private-profile.json", tc.group, argument}, nil, &out, &errout)
+				if code != cli.ExitSuccess || errout.Len() != 0 || out.Len() > 4096 || strings.Contains(out.String(), "private-profile") {
+					t.Fatalf("local group help: code=%d stdout=%s stderr=%s", code, &out, &errout)
+				}
+				var help struct {
+					Usage         string   `json:"usage"`
+					Required      []string `json:"required"`
+					Optional      []string `json:"optional"`
+					Semantics     []string `json:"semantics"`
+					Documentation string   `json:"documentation"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &help); err != nil {
+					t.Fatalf("help must be a structured object: %v; stdout=%s", err, &out)
+				}
+				if help.Usage != "<bound launcher> "+tc.group+" help" || help.Required == nil || len(help.Required) != 0 || !slices.Equal(help.Optional, tc.operations) || len(help.Semantics) == 0 || help.Documentation != tc.documentation {
+					t.Fatalf("group help lost its command contract: %+v", help)
+				}
+			})
+		}
 	}
 }

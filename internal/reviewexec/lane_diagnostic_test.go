@@ -30,7 +30,7 @@ func laneDiagnosticPlan(n int64) SourcePlan {
 	p := schedulingPull(n)
 	return SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "acme/repo", DefaultBranch: "main"}, Pull: p, ParentSHA: p.BaseSHA, ObservedAt: stamp()}
 }
-func TestLaneDiagnosticIndependentSkipAndDependentHold(t *testing.T) {
+func TestLaneDiagnosticIndependentAndStackedReviewProgress(t *testing.T) {
 	for _, dependent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "independent", true: "dependent"}[dependent], func(t *testing.T) {
 			f := schedulingFixture(t)
@@ -58,11 +58,7 @@ func TestLaneDiagnosticIndependentSkipAndDependentHold(t *testing.T) {
 				t.Fatal(out)
 			}
 			later := out.Candidates[1]
-			if dependent {
-				if later.LocalReason != "predecessor_unfinished" || later.BlockingPullNumber != 2 || later.BlockingReason != "review_evidence_pending" {
-					t.Fatal(later)
-				}
-			} else if later.LocalState != "locally_ready" || later.BlockingPullNumber != 0 {
+			if later.LocalState != "locally_ready" || later.BlockingPullNumber != 0 {
 				t.Fatal(later)
 			}
 			// The exact shared selector agrees, rather than a duplicated approximation.
@@ -71,11 +67,7 @@ func TestLaneDiagnosticIndependentSkipAndDependentHold(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if dependent {
-					if got != 0 || reason != "review_evidence_pending" {
-						t.Fatal(got, reason)
-					}
-				} else if got != 4 || reason != "" {
+				if got != 4 || reason != "" {
 					t.Fatal(got, reason)
 				}
 				return nil
@@ -198,5 +190,40 @@ func TestLaneDiagnosticRepositoryChangeAndRevokedRead(t *testing.T) {
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-reader-cred'`)
 	if _, err = f.e.ReadLaneDiagnostic(t.Context(), scope, "cli"); err == nil {
 		t.Fatal("retained read scope bypassed credential revocation")
+	}
+}
+
+func TestStackReviewSourceIdentityRemainsRequired(t *testing.T) {
+	for _, cause := range []string{"parent_source_unavailable", "parent_moved", "parent_identity_changed", "pull_draft", "parent_unavailable", "parent_cycle"} {
+		t.Run(cause, func(t *testing.T) {
+			parent, child := laneDiagnosticPlan(2), laneDiagnosticPlan(4)
+			child.ParentPullNumber, child.ParentSHA, child.Pull.BaseSHA = 2, parent.Pull.HeadSHA, parent.Pull.HeadSHA
+			byNumber := map[int64]*SourcePlan{2: &parent, 4: &child}
+			switch cause {
+			case "parent_source_unavailable":
+				delete(byNumber, 2)
+			case "parent_moved":
+				parent.Pull.HeadSHA = strings.Repeat("f", 40)
+			case "parent_identity_changed":
+				parent.Repository.ID++
+			case "pull_draft":
+				parent.SourceReason = cause
+			case "parent_unavailable":
+				parent.Pull.State = "closed"
+			case "parent_cycle":
+				parent.ParentPullNumber, parent.ParentSHA = 4, child.Pull.HeadSHA
+			}
+			calls := 0
+			out, err := evaluateCandidateLocalState(&child, byNumber, func(p *SourcePlan) (evaluatedFront, error) {
+				calls++
+				if p.Pull.Number != 4 {
+					t.Fatal("ancestor review state was evaluated")
+				}
+				return evaluatedFront{state: "ready", plan: p}, nil
+			})
+			if err != nil || out.state != "held" || out.blockingReason != cause || calls != 1 {
+				t.Fatal("source identity was bypassed", out, calls, err)
+			}
+		})
 	}
 }

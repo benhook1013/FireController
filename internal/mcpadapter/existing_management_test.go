@@ -2,6 +2,7 @@ package mcpadapter
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -26,5 +27,34 @@ func TestExistingManagementSchemasAndMalformedInputsStayLocal(t *testing.T) {
 		if _, err := parseExistingManagementArguments(name, []byte(raw)); err == nil {
 			t.Fatal("malformed native input accepted", name)
 		}
+	}
+}
+
+func TestReviewManagementToolDescriptionsStateAuthority(t *testing.T) {
+	want := map[string]bool{
+		"review_import_preview":             false,
+		"review_import_apply":               false,
+		"review_transfer_preview":           false,
+		"review_transfer_apply":             false,
+		"review_round_adoption_preview":     true,
+		"review_round_adoption_apply":       true,
+		"review_obligations_import_preview": true,
+		"review_obligations_import_apply":   true,
+		"review_queue_edit":                 false,
+	}
+	definitions := append(existingManagementDefinitions(), adoptionDefinitions()...)
+	definitions = append(definitions, queueEditDefinition())
+	for _, d := range definitions {
+		workerRequired, ok := want[d.name]
+		if !ok {
+			continue
+		}
+		if !strings.Contains(d.description, "Requires project management or instance administration") || workerRequired && !strings.Contains(d.description, "valid project worker") {
+			t.Errorf("%s omits its required authority: %s", d.name, d.description)
+		}
+		delete(want, d.name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("management tools missing from discovery: %v", want)
 	}
 }

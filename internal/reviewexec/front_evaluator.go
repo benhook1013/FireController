@@ -95,8 +95,8 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	return evaluatedFront{state: "ready", plan: plan}, nil
 }
 
-// evaluateCandidatePlan shares actual-parent checks with the read-only lane
-// diagnostic. A local hold never supplies completion for its real descendants.
+// evaluateCandidatePlan shares source-identity checks with lane diagnostics.
+// Ancestor review sufficiency is not permission to review a child's pinned diff.
 func (e *Engine) evaluateCandidatePlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan, byNumber map[int64]*SourcePlan) (evaluatedFront, error) {
 	return evaluateCandidateLocalState(plan, byNumber, func(p *SourcePlan) (evaluatedFront, error) { return e.evaluateFrontPlan(ctx, q, r, repo, p) })
 }
@@ -118,22 +118,19 @@ func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePla
 			reason = "parent_source_unavailable"
 		case parent.Pull.HeadSHA != parentSHA:
 			reason = "parent_moved"
+		case parent.Repository.ID != plan.Repository.ID || !sameTarget(parent.Pull, plan.Repository.ID, parentNumber):
+			reason = "parent_identity_changed"
+		case parent.SourceReason != "":
+			reason = parent.SourceReason
+		case parent.Pull.State != "open" || parent.Pull.Merged:
+			reason = "parent_unavailable"
 		}
 		if reason != "" {
 			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
 		}
 		seen[parentNumber] = true
-		parentState, err := evaluate(parent)
-		if err != nil {
-			return evaluatedFront{}, err
-		}
-		if parentState.state != "complete" {
-			reason := parentState.reason
-			if reason == "" {
-				reason = "review_rounds_pending"
-			}
-			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
-		}
+		// The parent supplies source identity, not review completion or allowance.
+		// Its findings, rounds and PR pause remain obligations on that parent.
 		parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
 	}
 	return result, nil
