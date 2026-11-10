@@ -437,4 +437,14 @@ func TestReviewWorkersSelectionAcquisitionCancellationJoins(t *testing.T) {
 	if driver.posts.Load() != 0 {
 		t.Fatal("cancellation dispatched review")
 	}
+	var state string
+	if err := f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "selecting" {
+		t.Fatal("canceled acquisition did not preserve its claimed selection", state, err)
+	}
+	if err := f.engine.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "queued" {
+		t.Fatal("restart could not recover the canceled selection", state, err)
+	}
 }
