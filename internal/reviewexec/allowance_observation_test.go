@@ -3,7 +3,9 @@ package reviewexec
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"net/http"
@@ -183,6 +185,92 @@ func TestHeldAllowanceLegacyMissingAndPositiveBytes(t *testing.T) {
 	old, err := f2.e.ReadOperation(context.Background(), f2.scope(t, attemptProject, f2.writer, false), b.OperationID)
 	if err != nil || old.Allowance != nil {
 		t.Fatal("missing legacy observation became zero", old, err)
+	}
+}
+
+func TestHeldAllowanceOnlyMissingPreflightIsCompatible(t *testing.T) {
+	ctx := context.Background()
+	f0, a0, _ := cliAllowanceFixture(t)
+	if _, err := f0.e.Advance(ctx, attemptProject, a0.ID, a0.Revision, "held", "allowance_exhausted", ""); err != nil {
+		t.Fatal(err)
+	}
+	op0, err := readOperationBase(ctx, f0.store.DB(), attemptProject, a0.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCLIAllowanceRecord(ctx, f0.store.DB(), op0, a0); !errors.Is(err, errAllowanceObservationAbsent) || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("absent top-level preflight lost its compatibility sentinel", err)
+	}
+	if allowance, err := readHeldAllowance(ctx, f0.store.DB(), op0); err != nil || allowance != nil {
+		t.Fatal("absent preflight was not treated as legacy no-facts", allowance, err)
+	}
+
+	f, a, input := cliAllowanceFixture(t)
+	input.Remaining = 0
+	if err := f.e.RecordCLIExhaustion(ctx, attemptProject, a.ID, a.Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(ctx, attemptProject, a.ID, a.Revision, "held", "allowance_exhausted", ""); err != nil {
+		t.Fatal(err)
+	}
+	op, err := readOperationBase(ctx, f.store.DB(), attemptProject, a.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRelatedRowWithoutForeignKeys(t, f.store.DB(), "projects", "id", attemptProject)
+	if _, err := readHeldAllowance(ctx, f.store.DB(), op); err == nil {
+		t.Fatal("missing related project row was hidden as no allowance")
+	} else {
+		attemptCode(t, err, "storage_unavailable")
+	}
+	if err := ValidateAllowanceSnapshot(ctx, f.store.DB(), 10); err == nil {
+		t.Fatal("snapshot validation accepted missing related project")
+	} else {
+		attemptCode(t, err, "storage_unavailable")
+	}
+}
+
+func TestHeldHostedAllowanceMissingQueryIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	f, a, input := cooldownObservationFixture(t)
+	if err := f.e.RecordHostedCooldown(ctx, attemptProject, a.ID, a.Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(ctx, attemptProject, a.ID, a.Revision, "held", "hosted_allowance_cooldown", ""); err != nil {
+		t.Fatal(err)
+	}
+	op, err := readOperationBase(ctx, f.store.DB(), attemptProject, a.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRelatedRowWithoutForeignKeys(t, f.store.DB(), "review_hosted_allowance_queries", "attempt_id", a.ID)
+	if _, err := readHeldAllowance(ctx, f.store.DB(), op); err == nil {
+		t.Fatal("missing hosted query was hidden as no allowance")
+	} else {
+		attemptCode(t, err, "storage_unavailable")
+	}
+	if err := ValidateAllowanceSnapshot(ctx, f.store.DB(), 10); err == nil {
+		t.Fatal("snapshot validation accepted missing hosted query")
+	} else {
+		attemptCode(t, err, "storage_unavailable")
+	}
+}
+
+func deleteRelatedRowWithoutForeignKeys(t *testing.T, db *sql.DB, table, column, key string) {
+	t.Helper()
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), `DELETE FROM `+table+` WHERE `+column+`=?`, key); err != nil {
+		t.Fatal("delete related fixture row", table, err)
+	}
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -477,7 +565,7 @@ func TestHeldAllowanceHTTPNegotiationPreservesLegacyShapes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, version := range []string{"", "1", "2", "3", "unknown"} {
+			for _, version := range []string{"", "1", "2", "3", "4", "unknown"} {
 				for _, kind := range []string{"full", "status", "enqueue-replay"} {
 					t.Run(version+"/"+kind, func(t *testing.T) {
 						path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID

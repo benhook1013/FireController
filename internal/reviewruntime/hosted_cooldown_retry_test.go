@@ -308,3 +308,13 @@ func TestHostedCooldownRetryDoesNotChangeInitialSourceFailure(t *testing.T) {
 		t.Fatal("initial source lookup gained retry-only behavior", err)
 	}
 }
+
+func TestRetainHostedCooldownRejectsAvailableResponseWithAccurateReason(t *testing.T) {
+	f, got, _ := hostedBridgeObserved(t)
+	before := hostedBridgeState(t, f)
+	err := RetainHostedCooldown(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, got.Capture)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "review_held" || failure.Message != "The retained query has no proven cooldown response for this attempt." || hostedBridgeState(t, f) != before {
+		t.Fatal("cooldown refusal lost its reason or changed retained state", err)
+	}
+}

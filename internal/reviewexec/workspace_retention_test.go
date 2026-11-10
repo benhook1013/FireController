@@ -41,3 +41,22 @@ func TestWorkspaceRetentionProtectsLiveUncertainReservedAndRecentAttempts(t *tes
 		}
 	}
 }
+
+func TestWorkspaceRetentionReportsCorruptTransitionTime(t *testing.T) {
+	f, a, _ := evidenceFixture(t, "cli", true)
+	for _, query := range []string{
+		`UPDATE review_execution_attempts SET state='completed' WHERE id=?`,
+		`UPDATE review_operations SET state='completed' WHERE attempt_id=?`,
+		`UPDATE review_execution_transitions SET state='completed',created_at='private-corrupt-time' WHERE attempt_id=? AND revision=2`,
+		`DELETE FROM review_execution_reservations WHERE attempt_id=?`,
+	} {
+		if _, err := f.store.DB().Exec(query, a.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowed, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, time.Now().Add(time.Hour))
+	attemptCode(t, err, "review_persistence_failed")
+	if allowed || err.Error() != persistenceFailure().Error() {
+		t.Fatal("corruption lost safe storage error", allowed, err)
+	}
+}

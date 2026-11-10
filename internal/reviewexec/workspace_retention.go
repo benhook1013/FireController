@@ -38,5 +38,8 @@ func (e *Engine) WorkspaceDisposable(ctx context.Context, capabilityID, attemptI
 		return false, err
 	}
 	at, err := time.Parse(time.RFC3339Nano, stamp)
-	return err == nil && !at.After(now.Add(-5*time.Minute)), nil
+	if err != nil {
+		return false, persistenceFailure()
+	}
+	return !at.After(now.Add(-5 * time.Minute)), nil
 }

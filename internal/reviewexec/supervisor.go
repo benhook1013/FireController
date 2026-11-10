@@ -311,7 +311,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 					return nil
 				}
 				var refusal *core.Error
-				if !(o.Channel == "cli" && errors.Is(scheduleErr, sql.ErrNoRows)) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
+				if ctx.Err() == nil && !(o.Channel == "cli" && errors.Is(scheduleErr, sql.ErrNoRows)) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
 					return scheduleErr
 				}
 			}

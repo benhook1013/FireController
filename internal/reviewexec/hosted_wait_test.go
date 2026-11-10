@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"net/http/httptest"
@@ -310,7 +311,7 @@ func TestCooldownWaitProgressAndWireOptIn(t *testing.T) {
 }
 
 func TestCooldownSnapshotRejectsCorruptWaitOwnership(t *testing.T) {
-	for _, scenario := range []string{"valid queued", "valid current retry", "deadline", "baseline", "queued pointer", "reservation", "evidence", "terminal held time"} {
+	for _, scenario := range []string{"valid queued", "valid current retry", "deadline", "baseline", "queued pointer", "reservation", "evidence", "terminal held time", "missing transition"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, a, in, now := queuedCooldown(t)
 			switch scenario {
@@ -329,6 +330,8 @@ func TestCooldownSnapshotRejectsCorruptWaitOwnership(t *testing.T) {
 				admissionSQL(t, f, `INSERT INTO review_execution_evidence(id,project_id,attempt_id,operation_id,body_json,fingerprint) VALUES('corrupt',?,?,?,'{}','corrupt')`, attemptProject, a.ID, a.OperationID)
 			case "terminal held time":
 				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=2`, in.Observation.RetryNotBefore.Format(time.RFC3339Nano), a.ID)
+			case "missing transition":
+				admissionSQL(t, f, `DELETE FROM review_execution_transitions WHERE attempt_id=? AND revision=2`, a.ID)
 			}
 			tx, err := f.store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 			if err != nil {
@@ -342,8 +345,27 @@ func TestCooldownSnapshotRejectsCorruptWaitOwnership(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("corrupt wait accepted")
+			} else if scenario == "missing transition" {
+				attemptCode(t, err, "storage_unavailable")
 			}
 		})
+	}
+}
+
+func TestHistoricalCooldownLookupPreservesCancellation(t *testing.T) {
+	f, staleAttempt, _, _ := queuedCooldown(t)
+	currentAttempt, err := readAttempt(context.Background(), f.store.DB(), attemptProject, staleAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := readOperationBase(context.Background(), f.store.DB(), attemptProject, staleAttempt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := historicalCooldownOperation(ctx, f.store.DB(), operation, currentAttempt); !errors.Is(err, context.Canceled) {
+		t.Fatal("historical cooldown lookup hid cancellation", err)
 	}
 }
 

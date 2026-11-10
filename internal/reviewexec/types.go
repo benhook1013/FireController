@@ -244,9 +244,8 @@ func actorAllowed(ctx context.Context, tx *sql.Tx, project, actor, worker string
 	return n == 1, err
 }
 
+// WithExecutionClock supplies the clock for review scheduling. A nil clock
+// restores the default time.Now behavior. It does not alter persisted event times.
 func WithExecutionClock(now func() time.Time) EngineOption {
 	return func(e *Engine) { e.schedulingNow = now }
 }
-
-// WithResultWaitLifetime binds only HTTP result waits to an application
-// lifecycle. It never cancels an accepted operation or its provider work.

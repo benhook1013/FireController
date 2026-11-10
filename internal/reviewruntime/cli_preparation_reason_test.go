@@ -20,25 +20,34 @@ import (
 
 func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		failure error
-		want    string
+		name          string
+		failure       error
+		usage         reviewprocess.Usage
+		failRetention bool
+		want          string
 	}{
-		{"rate", &reviewprocess.Error{Code: "rate_limited"}, "allowance_unavailable"},
-		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), "allowance_unavailable"},
-		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, "allowance_unavailable"},
-		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), "allowance_unavailable"},
-		{"raw text", errors.New("rate_limited private token diagnostic"), "allowance_unavailable"},
-		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), "allowance_unavailable"},
+		{"rate", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"raw text", errors.New("rate_limited private token diagnostic"), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"rate with nonzero remaining", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Remaining: 1, Limit: 3, RollingWindowMS: 60000}, false, "allowance_unavailable"},
+		{"exhaustion retention fails", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: 3, RollingWindowMS: 60000}, true, "allowance_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			var usage atomic.Int64
 			f.driver.usage = func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error) {
 				usage.Add(1)
-				return reviewprocess.Usage{}, tc.failure
+				return tc.usage, tc.failure
 			}
 			op, a, c := f.start(t, 2, 1, "prepare-usage-refusal")
+			if tc.failRetention {
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_cli_exhaustion BEFORE INSERT ON review_cli_preflight BEGIN SELECT RAISE(ABORT,'private-exhaustion-storage-failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			prepared, err := f.driver.Prepare(t.Context(), op, c, a)
 			var failure *core.Error
 			if !errors.As(err, &failure) || failure.Code != "review_held" {
@@ -126,7 +135,7 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if operation.State == "held" || mode == "exhausted" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" {
+				if operation.State == "held" || mode == "exhausted" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" && operation.Wait.RetryNotBefore != "" {
 					break
 				}
 				select {

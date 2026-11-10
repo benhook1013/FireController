@@ -110,6 +110,16 @@ func validateAttemptIndexSchema(ctx context.Context, db sqlReader) error {
 		}
 		return invalid()
 	}
+	var uniqueCount int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_index_list('review_execution_attempts') WHERE "unique"=1`).Scan(&uniqueCount); err != nil {
+		return readError()
+	}
+	// Schema nine has only the primary key on id and the partial live-operation
+	// guard. A leftover operation_id UNIQUE constraint would still prevent
+	// historical attempts even when both named indexes below are canonical.
+	if uniqueCount != 2 {
+		return invalid()
+	}
 	for _, index := range []struct {
 		name, definition string
 		unique, partial  int

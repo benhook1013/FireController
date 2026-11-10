@@ -338,7 +338,7 @@ func TestCLIDraftProbeThrottleOnlyBlocksWaitingRequests(t *testing.T) {
 				if cause == "recent" {
 					f.e.draftProbeNext[request.ID] = now.Add(cliDraftProbeInterval)
 				} else {
-					for i := range 256 {
+					for i := range cliDraftProbeCapacity {
 						f.e.draftProbeNext[fmt.Sprintf("other-%d", i)] = now.Add(cliDraftProbeInterval)
 					}
 				}
@@ -376,7 +376,7 @@ func TestCLIDraftAfterThrottledProbeRetainsExplicitIntent(t *testing.T) {
 			if cause == "recent" {
 				f.e.draftProbeNext[r.ID] = now.Add(cliDraftProbeInterval)
 			} else {
-				for i := range 256 {
+				for i := range cliDraftProbeCapacity {
 					f.e.draftProbeNext[fmt.Sprintf("occupied-%d", i)] = now.Add(cliDraftProbeInterval)
 				}
 			}

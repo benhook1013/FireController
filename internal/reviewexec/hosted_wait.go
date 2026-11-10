@@ -144,10 +144,19 @@ func historicalCooldownOperation(ctx context.Context, q EvidenceQuery, o Operati
 	}
 	var reason, state string
 	var owns bool
-	if err := q.QueryRowContext(ctx, `SELECT state,reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&state, &reason); err != nil || state != "held" || reason != "hosted_allowance_cooldown" {
+	if err := q.QueryRowContext(ctx, `SELECT state,reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&state, &reason); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Operation{}, waitUnavailable()
+		}
+		return Operation{}, err
+	}
+	if state != "held" || reason != "hosted_allowance_cooldown" {
 		return Operation{}, waitUnavailable()
 	}
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operation_waits WHERE operation_id=? AND baseline_attempt_id IS NOT NULL)`, o.ID).Scan(&owns); err != nil || !owns {
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operation_waits WHERE operation_id=? AND baseline_attempt_id IS NOT NULL)`, o.ID).Scan(&owns); err != nil {
+		return Operation{}, err
+	}
+	if !owns {
 		return Operation{}, waitUnavailable()
 	}
 	o.AttemptID, o.State, o.Reason = a.ID, "held", reason

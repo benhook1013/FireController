@@ -486,7 +486,12 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if readErr != nil {
 		return true, readErr
 	}
-	err = retryRunSelectionLocal(ctx, func() error {
+	return e.finishRunChoice(ctx, r, repo, metadataPins, choice)
+}
+
+// finishRunChoice validates and records a source selection in one local write.
+func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadataPins map[int64]reviews.SourceMetadataPin, choice runChoice) (bool, error) {
+	err := retryRunSelectionLocal(ctx, func() error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
@@ -509,6 +514,20 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 				return err
 			}
 			if choice.state == "held" {
+				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" {
+					// Local readiness may have changed after chooseRun's read,
+					// even for a later PR masked by the first held reason. Do not
+					// settle that newer eligible basis behind a
+					// stale hold. A fresh ordinary selection must reacquire source
+					// facts rather than dispatch directly from this recheck.
+					_, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+					if err != nil {
+						return err
+					}
+					if reason != choice.reason {
+						return updateRun(ctx, tx, current, "held", "selection_changed", "")
+					}
+				}
 				return updateRun(ctx, tx, current, "held", choice.reason, "")
 			}
 			front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)

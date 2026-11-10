@@ -22,6 +22,20 @@ func TestRetainedAllowanceValidation(t *testing.T) {
 		{"noncanonical time", func(v *ReviewOperation) { v.Allowance.ObservedAt = "2026-01-01T00:00:00+00:00" }, false},
 		{"missing full capacity", func(v *ReviewOperation) { v.Allowance.FullCapacityInMS = nil }, false},
 		{"cli cannot claim reset", func(v *ReviewOperation) { v.Allowance.RetryNotBefore = "2026-01-01T01:00:00Z" }, false},
+		{"nonzero remaining", func(v *ReviewOperation) { n := int64(1); v.Allowance.Remaining = &n }, false},
+		{"zero limit", func(v *ReviewOperation) { n := int64(0); v.Allowance.Limit = &n }, false},
+		{"limit above maximum", func(v *ReviewOperation) { n := int64(10001); v.Allowance.Limit = &n }, false},
+		{"negative full capacity", func(v *ReviewOperation) { n := int64(-1); v.Allowance.FullCapacityInMS = &n }, false},
+		{"full capacity above maximum", func(v *ReviewOperation) { n := int64(86400001); v.Allowance.FullCapacityInMS = &n }, false},
+		{"zero rolling window", func(v *ReviewOperation) { n := int64(0); v.Allowance.RollingWindowMS = &n }, false},
+		{"rolling window above maximum", func(v *ReviewOperation) { n := int64(86400001); v.Allowance.RollingWindowMS = &n }, false},
+		{"minimum limit", func(v *ReviewOperation) { n := int64(1); v.Allowance.Limit = &n }, true},
+		{"maximum limit", func(v *ReviewOperation) { n := int64(10000); v.Allowance.Limit = &n }, true},
+		{"minimum full capacity", func(v *ReviewOperation) { n := int64(0); v.Allowance.FullCapacityInMS = &n }, true},
+		{"maximum full capacity", func(v *ReviewOperation) { n := int64(86400000); v.Allowance.FullCapacityInMS = &n }, true},
+		{"minimum rolling window", func(v *ReviewOperation) { n := int64(1); v.Allowance.RollingWindowMS = &n }, true},
+		{"maximum rolling window", func(v *ReviewOperation) { n := int64(86400000); v.Allowance.RollingWindowMS = &n }, true},
+		{"missing rolling window", func(v *ReviewOperation) { v.Allowance.RollingWindowMS = nil }, false},
 		{"unknown kind", func(v *ReviewOperation) { v.Allowance.Kind = "available" }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -37,6 +51,15 @@ func TestRetainedAllowanceValidation(t *testing.T) {
 	hosted := ReviewOperation{Channel: "hosted", State: "held", Reason: "hosted_allowance_cooldown", AttemptID: baseline.AttemptID, Allowance: &ReviewAllowanceObservation{Kind: "hosted_cooldown", ObservedAt: "2026-01-01T00:00:00Z", RetryNotBefore: "2026-01-01T01:00:00Z"}}
 	if !validReviewAllowance(hosted) {
 		t.Fatal("valid hosted cooldown rejected")
+	}
+	for _, retry := range []string{"", "2026-01-01T01:00:00+00:00"} {
+		candidate := hosted
+		a := *hosted.Allowance
+		candidate.Allowance = &a
+		candidate.Allowance.RetryNotBefore = retry
+		if validReviewAllowance(candidate) {
+			t.Fatal("hosted cooldown accepted missing/noncanonical retry", retry)
+		}
 	}
 	hosted.Allowance.Remaining = &zero
 	if validReviewAllowance(hosted) {

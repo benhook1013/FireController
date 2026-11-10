@@ -12,6 +12,7 @@ import (
 
 const cliDraftWait = "cli_draft_wait"
 const cliDraftProbeInterval = 30 * time.Second
+const cliDraftProbeCapacity = 256
 
 // The wait itself is durable. Only the read throttle is process-local, so a
 // restart can observe readiness again without creating a new review request.
@@ -27,7 +28,7 @@ func (e *Engine) claimDraftProbe(id string) bool {
 			delete(e.draftProbeNext, key)
 		}
 	}
-	if len(e.draftProbeNext) >= 256 {
+	if len(e.draftProbeNext) >= cliDraftProbeCapacity {
 		return false
 	}
 	if e.draftProbeNext == nil {

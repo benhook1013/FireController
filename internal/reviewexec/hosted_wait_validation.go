@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -93,6 +94,9 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 		}
 		_, draft, err := historicalCLIDraftOperation(ctx, tx, o, a)
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return waitUnavailable()
+			}
 			return err
 		}
 		if draft {
@@ -109,7 +113,13 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 		var due time.Time
 		if o.Channel == "cli" {
 			record, err := readCLIAllowanceRecord(ctx, tx, historical, a)
-			if err != nil || record.Observation.Remaining != 0 {
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+					return waitUnavailable()
+				}
+				return err
+			}
+			if record.Observation.Remaining != 0 {
 				return waitUnavailable()
 			}
 			due, err = cliExhaustionDeadline(ctx, tx, a)
@@ -118,11 +128,20 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			}
 		} else {
 			record, err := readHostedAllowanceRecord(ctx, tx, historical, a)
-			if err != nil || record.Input.Observation.State != "cooldown_observed" {
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+					return waitUnavailable()
+				}
+				return err
+			}
+			if record.Input.Observation.State != "cooldown_observed" {
 				return waitUnavailable()
 			}
 			var at string
 			if err := tx.QueryRowContext(ctx, `SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&at); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return waitUnavailable()
+				}
 				return err
 			}
 			ended, valid := attemptRecordedTime(at)

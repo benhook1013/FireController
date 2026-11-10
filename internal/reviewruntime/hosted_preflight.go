@@ -66,7 +66,11 @@ func retainHostedAllowance(ctx context.Context, captures *HostedCaptureStore, en
 		want = "cooldown_observed"
 	}
 	if observation.State != want || query.Comment == nil || observation.QueryCommentID != query.Comment.ID {
-		return core.Fail("review_held", "The retained query has no proven available response for this attempt.", 409)
+		message := "The retained query has no proven available response for this attempt."
+		if cooldown {
+			message = "The retained query has no proven cooldown response for this attempt."
+		}
+		return core.Fail("review_held", message, 409)
 	}
 	input := reviewexec.HostedAllowanceInput{QueryID: query.ID, Anchor: anchor,
 		ObservedAt: record.Snapshot.ObservedAt.Format(time.RFC3339Nano), ChangedFiles: changedFiles, CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, Observation: observation}

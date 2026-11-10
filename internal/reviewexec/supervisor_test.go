@@ -1138,8 +1138,13 @@ func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
 		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
 	}
+	var eventType, eventSubject, eventProject string
+	var eventRevision int64
+	if err := f.store.DB().QueryRow(`SELECT event_type,resource_id,project_id,revision FROM events ORDER BY sequence DESC LIMIT 1`).Scan(&eventType, &eventSubject, &eventProject, &eventRevision); err != nil || eventType != "review.operation_updated" || eventSubject != receipt.ID || eventProject != attemptProject || eventRevision != 2 {
+		t.Fatal("preparing claim did not retain its exact operation event", eventType, eventSubject, eventProject, eventRevision, err)
+	}
 	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
-		t.Fatal("configuration failure dispatched, settled or added journal effects")
+		t.Fatal("configuration failure dispatched, settled or changed effects beyond the preparing event")
 	}
 }
 
@@ -1230,5 +1235,38 @@ func schedulerQueuedCopy(t *testing.T, f *attemptFixture, seed, id string) {
 	t.Helper()
 	if _, err := f.store.DB().Exec(`INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,'queued',1,'','',created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, id, seed); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSupervisorCancellationDuringCooldownPersistenceSettlesPreparation(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "cancel-during-cooldown", "cli", 2, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var persistStarted atomic.Bool
+	f.e.schedulingNow = func() time.Time {
+		if persistStarted.Load() {
+			cancel()
+		}
+		return time.Now().UTC()
+	}
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+		observed := stamp()
+		anchor := attemptAnchor(o.ProjectID, o.PullNumber)
+		anchor.ObservedAt = observed
+		input := CLIAllowanceObservation{Anchor: anchor, ObservedAt: observed, Remaining: 0, Limit: 5, FullCapacityInMS: 0, RollingWindowMS: 3600000, ChangedFiles: 2}
+		if err := f.e.RecordCLIExhaustion(context.Background(), o.ProjectID, a.ID, a.Revision, input); err != nil {
+			return Preparation{}, err
+		}
+		persistStarted.Store(true)
+		return Preparation{}, sourceHold("allowance_exhausted")
+	}}
+	if err := f.e.processNext(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal("orderly cancellation during cooldown persistence stopped the supervisor", err)
+	}
+	var state, operationState, reason string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,o.state,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &operationState, &reason); err != nil || state != "cancelled" || revision != 2 || operationState != "cancelled" || reason != "supervisor_stopping" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("cancelled cooldown retained preparation or reservation", state, revision, operationState, reason, err)
 	}
 }

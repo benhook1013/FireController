@@ -4,9 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+// errAllowanceObservationAbsent marks only the missing top-level preflight
+// record. It still wraps sql.ErrNoRows for older preparation/recovery paths
+// that intentionally treat an absent observation as a normal no-op.
+var errAllowanceObservationAbsent = fmt.Errorf("allowance observation absent: %w", sql.ErrNoRows)
 
 func allowanceUnavailable() error {
 	return core.Fail("storage_unavailable", "Stored allowance observation is unavailable.", 500)
@@ -20,6 +27,9 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 	var record cliAllowanceRecord
 	var project, attempt, body string
 	err := q.QueryRowContext(ctx, `SELECT project_id,attempt_id,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=8192 THEN body_json END FROM review_cli_preflight WHERE attempt_id=?`, a.ID).Scan(&project, &attempt, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return record, errAllowanceObservationAbsent
+	}
 	if err != nil {
 		return record, err
 	}
@@ -27,7 +37,7 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 		var err error
 		o, err = historicalCLIExhaustionOperation(ctx, q, o, a)
 		if err != nil {
-			return record, err
+			return record, allowanceDependencyError(err)
 		}
 	}
 	if !validAllowanceOwners(o, a) {
@@ -38,7 +48,7 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 	}
 	var repo int64
 	if err := q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repo); err != nil {
-		return record, err
+		return record, allowanceDependencyError(err)
 	}
 	if record.Observation.Anchor.RepositoryID != repo {
 		return record, allowanceUnavailable()
@@ -49,6 +59,9 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (hostedAllowanceRecord, error) {
 	var project, attempt, body string
 	err := q.QueryRowContext(ctx, `SELECT project_id,attempt_id,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_hosted_preflight WHERE attempt_id=?`, a.ID).Scan(&project, &attempt, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return hostedAllowanceRecord{}, errAllowanceObservationAbsent
+	}
 	if err != nil {
 		return hostedAllowanceRecord{}, err
 	}
@@ -56,7 +69,7 @@ func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation
 		var err error
 		o, err = historicalCooldownOperation(ctx, q, o, a)
 		if err != nil {
-			return hostedAllowanceRecord{}, err
+			return hostedAllowanceRecord{}, allowanceDependencyError(err)
 		}
 	}
 	if !validAllowanceOwners(o, a) {
@@ -68,7 +81,7 @@ func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation
 	}
 	query, err := readHostedQuery(ctx, q, a, o)
 	if err != nil {
-		return record, err
+		return record, allowanceDependencyError(err)
 	}
 	if project != o.ProjectID || attempt != a.ID || !hostedAllowanceBinding(record, a, o, query) {
 		return record, allowanceUnavailable()
@@ -79,6 +92,25 @@ func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation
 		}
 	}
 	return record, nil
+}
+
+// A retained allowance depends on its related domain rows. A missing row or
+// an unavailable/missing hosted query is corrupt retained evidence, while
+// other database and context errors must retain their original classification.
+func allowanceDependencyError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return allowanceUnavailable()
+	}
+	var failure *core.Error
+	if errors.As(err, &failure) && (failure.Code == "not_found" || failure.Code == "storage_unavailable" && failure.Message == "Stored hosted allowance query is unavailable.") {
+		return allowanceUnavailable()
+	}
+	return err
+}
+
+func storedAllowanceUnavailable(err error) bool {
+	var failure *core.Error
+	return errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored allowance observation is unavailable."
 }
 
 func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, o Operation, query HostedAllowanceQuery, in HostedAllowanceInput) error {
@@ -114,7 +146,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 	}
 	if o.Channel == "cli" {
 		record, err := readCLIAllowanceRecord(ctx, q, o, a)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, errAllowanceObservationAbsent) {
 			return nil, nil
 		}
 		if err != nil {
@@ -127,7 +159,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 		return &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: in.ObservedAt, Remaining: &in.Remaining, Limit: &in.Limit, FullCapacityInMS: &in.FullCapacityInMS, RollingWindowMS: &in.RollingWindowMS}, nil
 	}
 	record, err := readHostedAllowanceRecord(ctx, q, o, a)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, errAllowanceObservationAbsent) {
 		return nil, nil
 	}
 	if err != nil {

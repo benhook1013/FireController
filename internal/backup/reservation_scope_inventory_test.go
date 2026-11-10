@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -33,14 +34,29 @@ func TestReservationScopeBackupRestoreAndPhysicalGuards(t *testing.T) {
 		}
 	}
 	for name, statement := range map[string]string{
-		"missing cli guard":     `DROP INDEX review_reservations_cli_account`,
-		"global hosted guard":   `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,action_class) WHERE action_class='hosted'`,
-		"disabled hosted guard": `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='unused'`,
+		"missing cli guard":          `DROP INDEX review_reservations_cli_account`,
+		"missing hosted guard":       `DROP INDEX review_reservations_hosted_account_repository`,
+		"global hosted guard":        `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,action_class) WHERE action_class='hosted'`,
+		"disabled hosted guard":      `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='unused'`,
+		"widened cli guard":          `DROP INDEX review_reservations_cli_account; CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='cli'`,
+		"extra unique index":         `CREATE UNIQUE INDEX unexpected_reservation_account ON review_execution_reservations(account)`,
+		"changed primary key target": `PRAGMA foreign_keys=OFF; CREATE TABLE altered_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,account,repository_id,pull_number,action_class)); INSERT INTO altered_reservations SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations; DROP TABLE review_execution_reservations; ALTER TABLE altered_reservations RENAME TO review_execution_reservations; CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='hosted'`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			damaged := restoreModifiedBundle(t, bundle, statement)
+			before := restoreTree(t, damaged)
 			if _, err := Inspect(t.Context(), damaged); err == nil {
 				t.Fatal("rehashed bundle lost reservation safety")
+			}
+			destination := filepath.Join(t.TempDir(), "inactive")
+			if _, err := Restore(t.Context(), damaged, destination); err == nil {
+				t.Fatal("Restore accepted damaged reservation guards")
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatal("rejected restore created a destination", err)
+			}
+			if !reflect.DeepEqual(before, restoreTree(t, damaged)) {
+				t.Fatal("rejection changed retained bundle data")
 			}
 		})
 	}
@@ -50,16 +66,17 @@ func TestAttemptIndexPhysicalGuardsRejectRehashedBundles(t *testing.T) {
 	f := newRestoreFixture(t)
 	bundle := restoreBundle(t, f)
 	for name, statement := range map[string]string{
-		"missing-live":       `DROP INDEX review_attempts_live_operation`,
-		"missing-lookup":     `DROP INDEX review_attempts_operation`,
-		"nonunique-live":     `DROP INDEX review_attempts_live_operation; CREATE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active','uncertain')`,
-		"wrong-live-column":  `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(id) WHERE state IN ('preparing','posting','active','uncertain')`,
-		"missing-uncertain":  `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active')`,
-		"full-live":          `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id)`,
-		"wrong-lookup-order": `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(id,operation_id)`,
-		"unique-lookup":      `DROP INDEX review_attempts_operation; CREATE UNIQUE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id)`,
-		"partial-lookup":     `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id) WHERE state='active'`,
-		"collation-lookup":   `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id COLLATE NOCASE,id)`,
+		"missing-live":                `DROP INDEX review_attempts_live_operation`,
+		"missing-lookup":              `DROP INDEX review_attempts_operation`,
+		"nonunique-live":              `DROP INDEX review_attempts_live_operation; CREATE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active','uncertain')`,
+		"wrong-live-column":           `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(id) WHERE state IN ('preparing','posting','active','uncertain')`,
+		"missing-uncertain":           `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active')`,
+		"full-live":                   `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id)`,
+		"wrong-lookup-order":          `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(id,operation_id)`,
+		"unique-lookup":               `DROP INDEX review_attempts_operation; CREATE UNIQUE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id)`,
+		"unique-operation-constraint": `CREATE UNIQUE INDEX legacy_attempt_operation_unique ON review_execution_attempts(operation_id)`,
+		"partial-lookup":              `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id) WHERE state='active'`,
+		"collation-lookup":            `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id COLLATE NOCASE,id)`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			damaged := restoreModifiedBundle(t, bundle, statement)

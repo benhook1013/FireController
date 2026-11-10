@@ -7,7 +7,7 @@ import (
 )
 
 func TestWaitingReviewSurvivesOnlyQueueChangesAfterItsTarget(t *testing.T) {
-	for _, scenario := range []string{"remove later", "append later", "replace later", "move predecessor", "remove target", "mode", "channels", "capability", "paused then restored", "explicit unchanged replacement"} {
+	for _, scenario := range []string{"remove later", "append later", "replace later", "move predecessor", "remove target", "mode", "channels", "capability", "paused then restored", "pause only then restored", "explicit unchanged replacement"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newAttemptFixture(t)
 			f.configure(t, attemptProject, "test-capability", 0, false)
@@ -48,6 +48,11 @@ func TestWaitingReviewSurvivesOnlyQueueChangesAfterItsTarget(t *testing.T) {
 				c.Channels = []string{"cli"}
 			case "capability":
 				c.CapabilityID = "other-account"
+			case "pause only then restored":
+				c.Paused = true
+				change("pause")
+				c.Paused = false
+				safe = true
 			case "paused then restored":
 				c.Paused = true
 				change("pause")

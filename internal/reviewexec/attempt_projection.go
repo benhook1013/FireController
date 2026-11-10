@@ -69,21 +69,42 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 		// History may retain an unused preparation that detached before dispatch.
 		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
 		if err != nil {
-			return reviews.Receipt{}, publicationConflict()
+			if errors.Is(err, sql.ErrNoRows) {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			return reviews.Receipt{}, err
 		}
 		if !draft {
 			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
 			if err != nil {
-				return reviews.Receipt{}, publicationConflict()
+				// The helper returns this error only for a missing or mismatched
+				// historical cooldown. Its storage lookup failures pass through.
+				var failure *core.Error
+				if errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored review waiting intent is unavailable." {
+					return reviews.Receipt{}, publicationConflict()
+				}
+				return reviews.Receipt{}, err
 			}
 			if operation.Channel == "cli" {
 				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
-				if err != nil || record.Observation.Remaining != 0 {
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Observation.Remaining != 0 {
 					return reviews.Receipt{}, publicationConflict()
 				}
 			} else {
 				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
-				if err != nil || record.Input.Observation.State != "cooldown_observed" {
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Input.Observation.State != "cooldown_observed" {
 					return reviews.Receipt{}, publicationConflict()
 				}
 			}
