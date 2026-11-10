@@ -53,13 +53,17 @@ func validAllowanceOwners(o Operation, a Attempt) bool {
 
 func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (cliAllowanceRecord, error) {
 	var record cliAllowanceRecord
-	var project, attempt, body string
+	var project, attempt string
+	var body sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT project_id,attempt_id,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=8192 THEN body_json END FROM review_cli_preflight WHERE attempt_id=?`, a.ID).Scan(&project, &attempt, &body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, errAllowanceObservationAbsent
 	}
 	if err != nil {
 		return record, err
+	}
+	if !body.Valid {
+		return record, allowanceUnavailable()
 	}
 	if o.AttemptID != a.ID {
 		var err error
@@ -71,7 +75,7 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 	if !validAllowanceOwners(o, a) {
 		return record, allowanceUnavailable()
 	}
-	if strictjson.Decode([]byte(body), &record) != nil || encoded(record) != body || !validCLIAllowanceObservation(record.Observation) || project != o.ProjectID || attempt != a.ID || record.ProjectID != project || record.AttemptID != attempt || record.OperationID != o.ID || a.OperationID != o.ID || a.ProjectID != project || o.AttemptID != a.ID || o.Channel != "cli" || record.ActorID != o.ActorID || record.WorkerID != o.WorkerID || record.ConfigurationRevision != o.ConfigurationRevision || record.PolicyRevision != o.PolicyRevision || record.CapabilityFingerprint != o.CapabilityFingerprint || !hash.MatchString(record.CapabilityFingerprint) || record.Provider != a.Provider || record.Account != a.Account || !identifier.MatchString(record.Provider) || !identifier.MatchString(record.Account) || record.AttemptRevision != 1 || record.AttemptRevision > a.Revision || record.Observation.Anchor.PullNumber != o.PullNumber || record.Observation.Anchor.CandidateSHA != o.HeadSHA {
+	if strictjson.Decode([]byte(body.String), &record) != nil || encoded(record) != body.String || !validCLIAllowanceObservation(record.Observation) || project != o.ProjectID || attempt != a.ID || record.ProjectID != project || record.AttemptID != attempt || record.OperationID != o.ID || a.OperationID != o.ID || a.ProjectID != project || o.AttemptID != a.ID || o.Channel != "cli" || record.ActorID != o.ActorID || record.WorkerID != o.WorkerID || record.ConfigurationRevision != o.ConfigurationRevision || record.PolicyRevision != o.PolicyRevision || record.CapabilityFingerprint != o.CapabilityFingerprint || !hash.MatchString(record.CapabilityFingerprint) || record.Provider != a.Provider || record.Account != a.Account || !identifier.MatchString(record.Provider) || !identifier.MatchString(record.Account) || record.AttemptRevision != 1 || record.AttemptRevision > a.Revision || record.Observation.Anchor.PullNumber != o.PullNumber || record.Observation.Anchor.CandidateSHA != o.HeadSHA {
 		return record, allowanceUnavailable()
 	}
 	var repo int64
@@ -85,13 +89,17 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 }
 
 func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (hostedAllowanceRecord, error) {
-	var project, attempt, body string
+	var project, attempt string
+	var body sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT project_id,attempt_id,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_hosted_preflight WHERE attempt_id=?`, a.ID).Scan(&project, &attempt, &body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return hostedAllowanceRecord{}, errAllowanceObservationAbsent
 	}
 	if err != nil {
 		return hostedAllowanceRecord{}, err
+	}
+	if !body.Valid {
+		return hostedAllowanceRecord{}, allowanceUnavailable()
 	}
 	if o.AttemptID != a.ID {
 		var err error
@@ -103,7 +111,7 @@ func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation
 	if !validAllowanceOwners(o, a) {
 		return hostedAllowanceRecord{}, allowanceUnavailable()
 	}
-	record, err := decodeHostedAllowance(body, project, attempt)
+	record, err := decodeHostedAllowance(body.String, project, attempt)
 	if err != nil {
 		return record, err
 	}
@@ -141,13 +149,17 @@ func storedAllowanceUnavailable(err error) bool {
 }
 
 func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, o Operation, query HostedAllowanceQuery, in HostedAllowanceInput) error {
-	var id, project, attempt, operation, checksum, body string
+	var id, project, attempt, operation, checksum string
+	var body sql.NullString
 	var position, size int64
 	err := q.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=24576 THEN body_json END FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, a.ID, in.CaptureSHA256).Scan(&id, &project, &attempt, &operation, &position, &checksum, &size, &body)
 	if err != nil {
 		return allowanceDependencyError(err)
 	}
-	observation, err := decodeHostedObservation(body, id, project, attempt, operation, position, checksum, size, a, o)
+	if !body.Valid {
+		return allowanceUnavailable()
+	}
+	observation, err := decodeHostedObservation(body.String, id, project, attempt, operation, position, checksum, size, a, o)
 	if err != nil {
 		// The optional capture is unusable; lookup failures above still retain
 		// their database or context classification.

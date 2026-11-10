@@ -623,31 +623,83 @@ func TestAttemptExactTargetReservationRejectsDirectQueuedFixture(t *testing.T) {
 
 func TestAttemptRecoveryCancelsCorruptOptionalAllowance(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
-		for _, corruption := range []string{"malformed", "binding"} {
+		for _, corruption := range []string{"malformed", "binding", "oversized", "blob"} {
 			t.Run(channel+"/"+corruption, func(t *testing.T) {
 				f, a := interruptedAllowanceFixture(t, channel)
 				table := "review_" + channel + "_preflight"
-				query := `UPDATE ` + table + ` SET body_json='{' WHERE attempt_id=?`
-				if corruption == "binding" {
-					query = `UPDATE ` + table + ` SET body_json=replace(body_json,'exec-project-one','exec-project-two') WHERE attempt_id=?`
-				}
-				admissionSQL(t, f, query, a.ID)
-				before := snapshotTable(t, f, table)
-				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
-					t.Fatal(err)
+				switch corruption {
+				case "malformed":
+					admissionSQL(t, f, `UPDATE `+table+` SET body_json='{' WHERE attempt_id=?`, a.ID)
+				case "binding":
+					admissionSQL(t, f, `UPDATE `+table+` SET body_json=replace(body_json,'exec-project-one','exec-project-two') WHERE attempt_id=?`, a.ID)
+				case "oversized":
+					limit := 8192
+					if channel == "hosted" {
+						limit = 16384
+					}
+					admissionSQL(t, f, `UPDATE `+table+` SET body_json=? WHERE attempt_id=?`, strings.Repeat("x", limit+1), a.ID)
+				case "blob":
+					admissionSQL(t, f, `UPDATE `+table+` SET body_json=CAST(body_json AS BLOB) WHERE attempt_id=?`, a.ID)
 				}
 				o := cliWaitRead(t, f, a.OperationID)
-				if o.State != "cancelled" || o.Reason != "supervisor_interrupted" || o.Wait != nil || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE id=? AND state='cancelled' AND revision=2`, a.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
-					t.Fatal("corrupt optional evidence did not safely cancel preparation", o)
+				var err error
+				if channel == "cli" {
+					_, err = readCLIAllowanceRecord(t.Context(), f.store.DB(), o, a)
+				} else {
+					_, err = readHostedAllowanceRecord(t.Context(), f.store.DB(), o, a)
 				}
-				if before != snapshotTable(t, f, table) {
-					t.Fatal("recovery rewrote evidence")
+				if !interruptedAllowanceUnavailable(err) || (corruption == "oversized" || corruption == "blob") && !storedAllowanceUnavailable(err) {
+					t.Fatal("unusable retained body lost recovery classification", err)
 				}
-				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
-					t.Fatal(err)
-				}
+				assertCorruptAllowanceRecovery(t, f, a)
 			})
 		}
+	}
+}
+
+func assertCorruptAllowanceRecovery(t *testing.T, f *attemptFixture, a Attempt) {
+	t.Helper()
+	retained := func() string {
+		var state string
+		for _, table := range []string{"review_cli_preflight", "review_hosted_preflight", "review_hosted_allowance_queries", "review_hosted_observations", "review_execution_evidence", "review_round_controls", "review_round_changes", "review_round_operation_bindings", "review_round_completions"} {
+			state += snapshotTable(t, f, table)
+		}
+		return state
+	}
+	before := retained()
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal("corrupt optional evidence blocked recovery", err)
+	}
+	o := cliWaitRead(t, f, a.OperationID)
+	recovered, err := readAttempt(t.Context(), f.store.DB(), attemptProject, a.ID)
+	if err != nil || o.State != "cancelled" || o.Reason != "supervisor_interrupted" || o.Wait != nil || o.AttemptID != a.ID || recovered.State != "cancelled" || recovered.Revision != a.Revision+1 || recovered.Anchor != nil || recovered.Intent != "" || recovered.ExternalID != "" {
+		t.Fatal("corrupt optional evidence did not safely cancel unused preparation", o, recovered, err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operation_waits`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
+		t.Fatal("recovery created an attempt, retry, reservation, evidence or review credit")
+	}
+	if before != retained() {
+		t.Fatal("recovery rewrote evidence or review progress")
+	}
+	settledState := func() string {
+		return retained() + snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_transitions") + snapshotTable(t, f, "review_execution_reservations") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "events") + snapshotTable(t, f, "receipts")
+	}
+	settled := settledState()
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal("repeated recovery", err)
+	}
+	intent := ""
+	if o.Channel == "hosted" {
+		intent = "synthetic-intent-" + a.ID
+	}
+	_, err = f.e.Admit(t.Context(), attemptProject, a.ID, recovered.Revision, attemptAnchor(attemptProject, o.PullNumber), intent)
+	attemptCode(t, err, "review_conflict")
+	driver := &controlledDriver{}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal("post-recovery supervisor pass", err)
+	}
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || settled != settledState() {
+		t.Fatal("repeated recovery or supervisor pass changed settled work or contacted provider")
 	}
 }
 
@@ -668,7 +720,8 @@ func TestAttemptRecoveryPreservesAllowanceStorageAndContextFailures(t *testing.T
 	for _, channel := range []string{"cli", "hosted"} {
 		for _, failure := range []string{"storage", "context"} {
 			t.Run(channel+"/"+failure, func(t *testing.T) {
-				f, _ := interruptedAllowanceFixture(t, channel)
+				f, a := interruptedAllowanceFixture(t, channel)
+				o := cliWaitRead(t, f, a.OperationID)
 				before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_reservations")
 				ctx := t.Context()
 				if failure == "storage" {
@@ -677,6 +730,15 @@ func TestAttemptRecoveryPreservesAllowanceStorageAndContextFailures(t *testing.T
 					var cancel context.CancelFunc
 					ctx, cancel = context.WithCancel(ctx)
 					cancel()
+				}
+				var readErr error
+				if channel == "cli" {
+					_, readErr = readCLIAllowanceRecord(ctx, f.store.DB(), o, a)
+				} else {
+					_, readErr = readHostedAllowanceRecord(ctx, f.store.DB(), o, a)
+				}
+				if readErr == nil || interruptedAllowanceUnavailable(readErr) || failure == "context" && !errors.Is(readErr, context.Canceled) {
+					t.Fatal("allowance reader suppressed or reclassified query failure", readErr)
 				}
 				err := f.e.RecoverInterrupted(ctx)
 				if err == nil || interruptedAllowanceUnavailable(err) {
@@ -724,32 +786,32 @@ func TestCooldownReferencePreservesContextFailureAndClassifiesMissingEvidence(t 
 }
 
 func TestAttemptRecoveryCancelsCorruptCooldownReference(t *testing.T) {
-	for _, corruption := range []string{"malformed", "binding"} {
+	for _, corruption := range []string{"malformed", "binding", "oversized", "blob"} {
 		t.Run(corruption, func(t *testing.T) {
 			f, a := interruptedAllowanceFixture(t, "hosted")
-			query := `UPDATE review_hosted_observations SET body_json='{' WHERE attempt_id=?`
-			if corruption == "binding" {
-				query = `UPDATE review_hosted_observations SET capture_bytes=capture_bytes+1 WHERE attempt_id=?`
-			}
-			admissionSQL(t, f, query, a.ID)
-			before := snapshotTable(t, f, "review_hosted_observations")
-			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
-				t.Fatal("corrupt optional reference blocked recovery", err)
-			}
 			o := cliWaitRead(t, f, a.OperationID)
-			if o.State != "cancelled" || o.Reason != "supervisor_interrupted" || o.Wait != nil || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE id=? AND state='cancelled' AND revision=2`, a.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
-				t.Fatal("corrupt reference did not safely cancel undispatched preparation", o)
-			}
-			if before != snapshotTable(t, f, "review_hosted_observations") {
-				t.Fatal("recovery rewrote referenced evidence")
-			}
-			settled := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_transitions")
-			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+			record, err := readHostedAllowanceRecord(t.Context(), f.store.DB(), o, a)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if settled != snapshotTable(t, f, "review_operations")+snapshotTable(t, f, "review_execution_attempts")+snapshotTable(t, f, "review_execution_transitions") {
-				t.Fatal("recovery was not idempotent")
+			query, err := readHostedQuery(t.Context(), f.store.DB(), a, o)
+			if err != nil {
+				t.Fatal(err)
 			}
+			switch corruption {
+			case "malformed":
+				admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json='{' WHERE attempt_id=?`, a.ID)
+			case "binding":
+				admissionSQL(t, f, `UPDATE review_hosted_observations SET capture_bytes=capture_bytes+1 WHERE attempt_id=?`, a.ID)
+			case "oversized":
+				admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=? WHERE attempt_id=?`, strings.Repeat("x", 24577), a.ID)
+			case "blob":
+				admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=CAST(body_json AS BLOB) WHERE attempt_id=?`, a.ID)
+			}
+			if err := validateCooldownReference(t.Context(), f.store.DB(), a, o, query, record.Input); !storedAllowanceUnavailable(err) {
+				t.Fatal("unusable reference body lost allowance classification", err)
+			}
+			assertCorruptAllowanceRecovery(t, f, a)
 		})
 	}
 }
