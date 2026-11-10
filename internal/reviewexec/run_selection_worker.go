@@ -194,7 +194,7 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 }
 
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
-	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, 15*time.Second)
+	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
