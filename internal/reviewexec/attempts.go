@@ -425,8 +425,7 @@ func interruptedAllowanceUnavailable(err error) bool {
 	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
 		return true
 	}
-	var failure *core.Error
-	return errors.As(err, &failure) && failure.Code == "storage_unavailable" && failure.Message == "Stored hosted allowance observation is unavailable."
+	return isStoredUnavailable(err, storedHostedObservation)
 }
 
 // RecoverInterrupted runs once before a new supervisor accepts work. It never

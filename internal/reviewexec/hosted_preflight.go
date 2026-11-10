@@ -62,7 +62,7 @@ func validHostedAllowanceOutcome(o reviewprovider.HostedAllowanceObservation) bo
 }
 
 func hostedAllowanceUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored hosted allowance observation is unavailable.", 500)
+	return newStoredUnavailable(storedHostedObservation, "Stored hosted allowance observation is unavailable.")
 }
 
 func decodeHostedAllowance(body, project, attemptID string) (hostedAllowanceRecord, error) {
