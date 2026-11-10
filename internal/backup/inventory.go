@@ -1620,8 +1620,7 @@ func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, ve
 }
 
 func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
-	type object struct{ kind, definition string }
-	expected := map[string]object{}
+	expected := map[string]physicalSchemaObject{}
 	statements := reviewexec.SchedulingSchemaSQL()
 	if version >= 2 {
 		statements = reviewexec.SchedulingSchemaV2SQL()
@@ -1632,28 +1631,7 @@ func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader, version
 			return invalid()
 		}
 		name, _, _ := strings.Cut(fields[2], "(")
-		expected[name] = object{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		expected[name] = physicalSchemaObject{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
 	}
-	rows, err := db.QueryContext(ctx, `SELECT type,CASE WHEN length(CAST(name AS BLOB))<=128 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE tbl_name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections') AND (type='table' OR (type='index' AND sql IS NOT NULL)) LIMIT 6`)
-	if err != nil {
-		return invalid()
-	}
-	defer rows.Close()
-	seen := map[string]bool{}
-	for rows.Next() {
-		var kind, name string
-		var definition sql.NullString
-		if rows.Scan(&kind, &name, &definition) != nil || !definition.Valid || seen[name] {
-			return invalid()
-		}
-		want, known := expected[name]
-		if !known || kind != want.kind || historyDefinitionSQL(definition.String) != want.definition {
-			return invalid()
-		}
-		seen[name] = true
-	}
-	if rows.Err() != nil || len(seen) != len(expected) {
-		return invalid()
-	}
-	return nil
+	return validatePhysicalSchemaObjects(ctx, db, expected, []string{"review_scheduling", "review_pull_scheduling", "review_automatic_selections"})
 }
