@@ -6,15 +6,17 @@ type ReviewObserverHealth struct {
 	StartedAt string `json:"started_at,omitempty"`
 }
 type ReviewPullObservationHealth struct {
-	State           string `json:"state"`
-	CheckedAt       string `json:"checked_at,omitempty"`
-	LastSuccessAt   string `json:"last_success_at,omitempty"`
-	NextCheckAt     string `json:"next_check_at,omitempty"`
-	Error           string `json:"error,omitempty"`
-	CICheckedAt     string `json:"ci_checked_at,omitempty"`
-	CIError         string `json:"ci_error,omitempty"`
-	HostedCheckedAt string `json:"hosted_checked_at,omitempty"`
-	HostedError     string `json:"hosted_error,omitempty"`
+	State           string  `json:"state"`
+	CheckedAt       string  `json:"checked_at,omitempty"`
+	LastSuccessAt   string  `json:"last_success_at,omitempty"`
+	NextCheckAt     string  `json:"next_check_at,omitempty"`
+	Error           string  `json:"error,omitempty"`
+	CICheckedAt     string  `json:"ci_checked_at,omitempty"`
+	CIGateState     *string `json:"ci_gate_state,omitempty"`
+	CIGateRef       *string `json:"ci_gate_ref,omitempty"`
+	CIError         string  `json:"ci_error,omitempty"`
+	HostedCheckedAt string  `json:"hosted_checked_at,omitempty"`
+	HostedError     string  `json:"hosted_error,omitempty"`
 }
 
 func validObserverHealth(h *ReviewObserverHealth) bool {
@@ -28,6 +30,13 @@ func validPullObservationHealth(h *ReviewPullObservationHealth) bool {
 		return true
 	}
 	if !oneReviewOf(h.State, "not_enrolled", "unavailable", "waiting", "current", "comparison_changed", "overdue", "retrying") {
+		return false
+	}
+	// Final-target CI observations are one optional pair, not a merge verdict.
+	if (h.CIGateRef == nil) != (h.CIGateState == nil) {
+		return false
+	}
+	if h.CIGateRef != nil && (!cleanText(*h.CIGateRef, 256) || !oneReviewOf(*h.CIGateState, "unknown", "pending", "success", "failure", "not_required")) {
 		return false
 	}
 	for _, s := range []string{h.CheckedAt, h.LastSuccessAt, h.NextCheckAt, h.CICheckedAt, h.HostedCheckedAt} {
