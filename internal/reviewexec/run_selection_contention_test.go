@@ -243,6 +243,10 @@ func TestRunSelectionContentionLocalReadRetainsSourceAndRechecksBinding(t *testi
 
 func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testing.T) {
 	f := selectionFixture(t)
+	if f.e.runSourceBudget != 15*time.Second {
+		t.Fatal("production source budget changed", f.e.runSourceBudget)
+	}
+	f.e.runSourceBudget = 300 * time.Millisecond
 	receipt, _ := selectionEnqueue(t, f, "prolonged-local-read", "cli", nil)
 	r, entered, release := selectionContentionReader()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -275,7 +279,7 @@ func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testin
 		conn.Close()
 		got := selectionContentionRead(t, f, receipt.ID)
 		t.Fatal("local read contention produced an early terminal selection", got, err)
-	case <-time.After(16 * time.Second):
+	case <-time.After(f.e.runSourceBudget + 100*time.Millisecond):
 	}
 	var state, operation string
 	var revision int64
@@ -458,5 +462,24 @@ func TestRunSelectionContentionBackoffCancellationAndFatalBoundary(t *testing.T)
 	calls = 0
 	if err = retryRunSelectionLocal(t.Context(), func() error { calls++; return failure }); err != failure || calls != 1 {
 		t.Fatal("non-overload failure retried", calls, err)
+	}
+}
+
+func TestRunSelectionInjectedBudgetBoundsProviderReads(t *testing.T) {
+	f := selectionFixture(t)
+	f.e.runSourceBudget = 30 * time.Millisecond
+	receipt, _ := selectionEnqueue(t, f, "injected-source-deadline", "cli", nil)
+	reader := &refreshTestReader{repository: func(ctx context.Context, _ int64) (reviewprovider.Repository, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > f.e.runSourceBudget {
+			t.Error("provider did not receive injected source deadline")
+		}
+		<-ctx.Done()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	selectionNext(t, f, reader)
+	got := selectionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Reason != "source_budget_exhausted" || got.OperationID != "" || reader.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || t.Context().Err() != nil {
+		t.Fatal("provider timeout changed local authority or canceled worker", got, reader.calls.Load())
 	}
 }
