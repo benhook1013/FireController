@@ -7,6 +7,13 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 		out.Optional = []string{"credentials grant --help", "credentials update --help", "credentials revoke --help"}
 		out.Semantics = []string{"Project-manager access changes use this bound project. Grant accepts only a digest or local private credential-file reference; update preserves an existing binding under an exact permission-set guard. No raw token arguments or instance administration."}
 		out.Documentation = "docs/local-api.md"
+	case "workers help":
+		out.Optional = []string{"workers create --help", "workers retirement --help", "workers retire --help", "workers list [--include-retired]"}
+		out.Semantics = []string{"Local worker command index; no profile, credential or service access. Use operation --help for permissions and retirement guards."}
+		out.Documentation = "docs/worker-retirement.md"
+	case "reviews help":
+		out.Optional = []string{"reviews policy --help", "reviews policy-configure --help", "reviews execution-configure --help", "reviews start --help", "reviews run-read --help"}
+		out.Semantics = []string{"Local review command index; no profile, credential or service access. Use operation --help for permissions and execution guards."}
 	case "reviews policy":
 		out.Documentation = "docs/review-controls.md"
 		out.Semantics = []string{"Read the current configured project review requirements and policy revision. No provider work or source refresh."}
