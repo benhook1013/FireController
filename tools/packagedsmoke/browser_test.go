@@ -231,6 +231,12 @@ func (o *browserOutput) safePhase() string {
 		}
 		switch record.Phase {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
+			if record.Phase == "live-reviews" {
+				switch record.Checkpoint {
+				case "round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update":
+					return record.Phase + "/" + record.Checkpoint
+				}
+			}
 			if record.Phase == "metadata-failure" {
 				switch record.Checkpoint {
 				case "metadata-notice", "metadata-initial-counts", "metadata-inbox-ready":
@@ -421,5 +427,21 @@ console.log(JSON.stringify({state:passed?'PASS':'FAIL',matcher_assertion:passed}
 	}
 	if err != nil || stderr.len() != 0 || external.Load() != 0 || output.browserPID() < 2 || len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.MatcherAssertion {
 		t.Fatal("browser diagnostic failure-path proof failed; raw output withheld")
+	}
+}
+
+func TestBrowserOutputSafeReviewProgressCheckpoint(t *testing.T) {
+	for _, checkpoint := range []string{"round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update"} {
+		var out browserOutput
+		body, _ := json.Marshal(map[string]string{"state": "FAIL", "phase": "live-reviews", "checkpoint": checkpoint, "message": "PRIVATE_TOKEN"})
+		_, _ = out.Write(append(body, '\n'))
+		if got := out.safePhase(); got != "live-reviews/"+checkpoint {
+			t.Fatalf("unexpected safe checkpoint %q", got)
+		}
+	}
+	var out browserOutput
+	_, _ = out.Write([]byte(`{"state":"FAIL","phase":"live-reviews","checkpoint":"PRIVATE_TOKEN"}` + "\n"))
+	if got := out.safePhase(); got != "live-reviews" {
+		t.Fatalf("unsafe checkpoint %q", got)
 	}
 }
