@@ -51,8 +51,10 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	if hostedActivityDiagnostic(value.Channel, value.State, value.Reason) != nil {
 		value.NextAction = "inspect_provider_activity"
 	}
+	var waitHint *ReviewOperationDiagnostic
 	if value.Wait != nil {
-		hint = operationWaitDiagnostic(value.Wait, value.Channel)
+		waitHint = operationWaitDiagnostic(value.Wait, value.Channel)
+		hint = waitHint
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
 		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
@@ -73,7 +75,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 			value.NextAction = "new_request_if_authorized"
 		}
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && value.Wait != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && waitHint != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
@@ -113,8 +115,10 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 			hint = &ReviewOperationDiagnostic{hint.Explanation, "The original non-review query intent is retained but its posting was not confirmed. " + laterRequest}
 		}
 	}
+	var waitHint *ReviewOperationDiagnostic
 	if value.Wait != nil {
-		hint = operationWaitDiagnostic(value.Wait, value.Channel)
+		waitHint = operationWaitDiagnostic(value.Wait, value.Channel)
+		hint = waitHint
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
 		hint = predecessorUnfinishedDiagnostic(value.SourceRefusal, value.Channel)
@@ -131,7 +135,7 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && value.Wait != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && waitHint != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {

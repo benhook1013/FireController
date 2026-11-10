@@ -214,11 +214,12 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		}
 		if o.Channel == "cli" {
 			if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
-				due, err := cliAccountRetryDeadline(ctx, tx, capability)
+				now := e.sampleExecutionTime()
+				due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 				if err != nil {
 					return Operation{}, false, err
 				}
-				if e.sampleExecutionTime().Before(due) {
+				if now.Before(due) {
 					return Operation{}, false, nil
 				}
 			}

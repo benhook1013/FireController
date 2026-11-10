@@ -122,9 +122,17 @@ func (e *Engine) scheduleCLICooldown(ctx context.Context, tx *sql.Tx, project, a
 	return a, nil
 }
 
-func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Capability) (time.Time, error) {
+func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Capability, now time.Time) (time.Time, error) {
 	var project, id string
-	err := q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w JOIN review_operations o ON o.id=w.operation_id JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id WHERE o.channel='cli' AND a.provider=? AND a.account=? AND w.retry_not_before<>'' ORDER BY julianday(w.retry_not_before) DESC LIMIT 1`, capability.Provider, capability.Account).Scan(&project, &id)
+	// Retained deadlines are canonical UTC RFC3339Nano. Removing the final Z
+	// orders whole and fractional seconds exactly, unlike julianday's rounding.
+	// Expired audit history cannot impose a live account-wide scheduling hold.
+	err := q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w
+	JOIN review_operations o ON o.id=w.operation_id
+	JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id
+	WHERE o.channel='cli' AND a.provider=? AND a.account=? AND w.retry_not_before<>''
+	AND rtrim(w.retry_not_before,'Z')>rtrim(?,'Z')
+	ORDER BY rtrim(w.retry_not_before,'Z') DESC LIMIT 1`, capability.Provider, capability.Account, now.UTC().Format(time.RFC3339Nano)).Scan(&project, &id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, nil
 	}
@@ -132,7 +140,10 @@ func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Ca
 		return time.Time{}, err
 	}
 	o, err := readOperationBase(ctx, q, project, id)
-	if err != nil || o.Wait == nil || o.Wait.RetryNotBefore == "" {
+	if err != nil {
+		return time.Time{}, err
+	}
+	if o.Wait == nil || o.Wait.RetryNotBefore == "" {
 		return time.Time{}, waitUnavailable()
 	}
 	return mustWaitTime(o.Wait.RetryNotBefore), nil

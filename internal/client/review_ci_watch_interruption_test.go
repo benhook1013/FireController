@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"reflect"
 	"strconv"
 	"strings"
@@ -90,6 +91,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 		for _, kind := range []string{"canceled", "deadline_exceeded"} {
 			t.Run(phase+"/"+kind, func(t *testing.T) {
 				entered := make(chan struct{})
+				written, responseStarted := make(chan struct{}), make(chan struct{})
 				var posts atomic.Int64
 				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("X-FC-CI-Watch", "change-v3")
@@ -119,12 +121,31 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					ctx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
 					defer stop()
 				}
+				// A server flush does not prove that the client received a byte.
+				// Observe the same local transport event before cancellation.
+				ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+					WroteRequest: func(info httptrace.WroteRequestInfo) {
+						if info.Err == nil {
+							close(written)
+						}
+					},
+					GotFirstResponseByte: func() { close(responseStarted) },
+				})
 				out := make(chan error, 1)
 				go func() { _, err := c.WatchCI(ctx, ciWatchPins(), 900); out <- err }()
 				select {
 				case <-entered:
 				case <-time.After(time.Second):
 					t.Fatal("wait not entered")
+				}
+				observed := written
+				if phase == "body" {
+					observed = responseStarted
+				}
+				select {
+				case <-observed:
+				case <-time.After(time.Second):
+					t.Fatal("client transport phase not observed")
 				}
 				if kind == "canceled" {
 					cancel(errors.New("PRIVATE_HOST_CAUSE"))

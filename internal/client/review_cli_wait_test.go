@@ -153,3 +153,100 @@ func TestReviewInflightRetainsOnlyValidatedOperationHandle(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIQueuedGuidanceAfterResumePreservesWaitPrecedence(t *testing.T) {
+	source := &client.ReviewSourceRetry{AttemptID: "review_attempt_" + strings.Repeat("a", 32), ObservedAt: "2026-11-09T01:00:00.75Z", RetryNotBefore: "2026-11-09T01:01:00Z", Sequence: 1}
+	quota := client.ReviewOperationWait{BaselineAttemptID: "review_attempt_" + strings.Repeat("b", 32), RetryNotBefore: "2026-11-09T01:02:00Z"}
+	sourceAndQuota, pausedQuota := quota, quota
+	sourceAndQuota.SourceRetry = source
+	pausedQuota.Paused = true
+	for _, compact := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, cause, explanation, action string
+			wait                             *client.ReviewOperationWait
+			draining                         bool
+		}{
+			{name: "resumed without quota", wait: &client.ReviewOperationWait{}},
+			{name: "resumed with shared quota", cause: "cli_quota_wait", wait: &client.ReviewOperationWait{}, explanation: "shared provider account", action: "original request queued"},
+			{name: "resumed with cooldown", cause: "cooldown", wait: &client.ReviewOperationWait{}, explanation: "cooldown deadline", action: "original request"},
+			{name: "quota timer with shared quota", cause: "cli_quota_wait", wait: &quota, explanation: "not the provider reset", action: "original request queued"},
+			{name: "quota timer with cooldown", cause: "cooldown", wait: &quota, explanation: "not the provider reset", action: "original request queued"},
+			{name: "source retry with shared quota", cause: "cli_quota_wait", wait: &client.ReviewOperationWait{SourceRetry: source}, explanation: "GitHub rejected read-only source preparation", action: "original request"},
+			{name: "source retry with cooldown", cause: "cooldown", wait: &client.ReviewOperationWait{SourceRetry: source}, explanation: "GitHub rejected read-only source preparation", action: "original request"},
+			{name: "source retry before quota timer", cause: "cli_quota_wait", wait: &sourceAndQuota, explanation: "GitHub rejected read-only source preparation", action: "original request"},
+			{name: "paused without timer", cause: "cli_quota_wait", wait: &client.ReviewOperationWait{Paused: true}, explanation: "operation is paused", action: "Resume/cancel"},
+			{name: "paused quota timer", cause: "cli_quota_wait", wait: &pausedQuota, explanation: "CLI request is paused", action: "Resume or cancel"},
+			{name: "paused source retry", cause: "cli_quota_wait", wait: &client.ReviewOperationWait{SourceRetry: source, Paused: true}, explanation: "source-rate-limited request is paused", action: "Resume or cancel"},
+			{name: "source retry with queue order", cause: "queue_order", wait: &client.ReviewOperationWait{SourceRetry: source}, explanation: "earlier applicable review request", action: "original request"},
+			{name: "quota timer with project pause", cause: "project_paused", wait: &quota, explanation: "Project execution is paused", action: "original request"},
+			{name: "source retry with deployment drain", cause: "cli_quota_wait", wait: &client.ReviewOperationWait{SourceRetry: source}, draining: true, explanation: "draining new dispatch", action: "same operation"},
+		} {
+			t.Run(boolName(compact)+"/"+tc.name, func(t *testing.T) {
+				op := sampleReviewOperation()
+				op.Wait = tc.wait
+				if op.Wait.SourceRetry != nil {
+					op.Reason = "source_rate_limit_wait"
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodGet {
+						t.Error("reading queued guidance started a mutation", r.Method)
+					}
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					if r.Header.Get("X-FC-Operation-Wait") != "4" {
+						t.Error("source wait protocol changed")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("X-FC-Review-Queued", tc.cause)
+					if tc.draining {
+						w.Header().Set("X-FC-Deployment-Draining", "true")
+					}
+					if compact {
+						_ = json.NewEncoder(w).Encode(client.ReviewOperationStatus{ID: op.ID, PullNumber: op.PullNumber, Channel: op.Channel, State: op.State, Revision: op.Revision, Stage: "queued", Reason: op.Reason, UpdatedAt: op.UpdatedAt, NextAction: "wait", Wait: op.Wait})
+					} else {
+						_ = json.NewEncoder(w).Encode(op)
+					}
+				}))
+				defer server.Close()
+				c := newClient(t, server)
+				var diagnostic *client.ReviewOperationDiagnostic
+				if compact {
+					got, err := c.ReviewOperationStatus(t.Context(), op.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out := client.AgentReviewOperationStatus(got)
+					wantAction := "wait"
+					if tc.draining {
+						wantAction = "wait_for_deployment"
+					}
+					if !reflect.DeepEqual(out.Wait, op.Wait) || out.ID != op.ID || out.State != "queued" || out.Reason != op.Reason || out.Revision != op.Revision || out.AttemptID != "" || out.NextAction != wantAction {
+						t.Fatal("original queued request changed", out)
+					}
+					diagnostic = out.Diagnostic
+				} else {
+					got, err := c.ReviewOperation(t.Context(), op.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out := client.AgentReviewOperation(got)
+					if !reflect.DeepEqual(out.Wait, op.Wait) || out.ID != op.ID || out.State != "queued" || out.Reason != op.Reason || out.Revision != op.Revision || out.AttemptID != "" || out.ConfigurationRevision != op.ConfigurationRevision {
+						t.Fatal("original queued request changed", out)
+					}
+					diagnostic = out.Diagnostic
+				}
+				if tc.explanation == "" {
+					if diagnostic != nil {
+						t.Fatal("empty resumed wait invented guidance", diagnostic)
+					}
+					return
+				}
+				if diagnostic == nil || !strings.Contains(diagnostic.Explanation, tc.explanation) || !strings.Contains(diagnostic.NextAction, tc.action) || strings.Contains(diagnostic.NextAction, "fresh key") {
+					t.Fatal("queued guidance lost its original request or precedence", diagnostic)
+				}
+			})
+		}
+	}
+}

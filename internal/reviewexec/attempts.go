@@ -109,7 +109,8 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			}
 			return err
 		}
-		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.RetryNotBefore))) {
+		now := e.sampleExecutionTime()
+		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
 		if o.Wait != nil && o.Wait.SourceRetry != nil && e.sampleExecutionTime().Before(mustWaitTime(o.Wait.SourceRetry.RetryNotBefore)) {
@@ -146,11 +147,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return nil
 		}
 		if o.Channel == "cli" {
-			due, err := cliAccountRetryDeadline(ctx, tx, capability)
+			due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 			if err != nil {
 				return err
 			}
-			if e.sampleExecutionTime().Before(due) {
+			if now.Before(due) {
 				return nil
 			}
 		}

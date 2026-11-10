@@ -98,11 +98,12 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		}
 		if op.Channel == "cli" {
 			if capability, ok := e.capabilities[original.CapabilityID]; ok && capability.Fingerprint == op.CapabilityFingerprint {
-				due, err := cliAccountRetryDeadline(ctx, tx, capability)
+				now := e.sampleExecutionTime()
+				due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 				if err != nil {
 					return err
 				}
-				if e.sampleExecutionTime().Before(due) {
+				if now.Before(due) {
 					cause = "cli_quota_wait"
 					return nil
 				}
