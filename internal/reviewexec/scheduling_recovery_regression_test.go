@@ -813,3 +813,57 @@ func TestSelectionWorkerLocalHoldPreservesPersistenceFailuresAndRaces(t *testing
 		})
 	}
 }
+
+func TestStartupIsolatesDamagedFrontCacheButSnapshotsRejectIt(t *testing.T) {
+	for _, fault := range []string{"json", "oversized", "timestamp", "type"} {
+		t.Run(fault, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			f.configure(t, otherAttemptProject, "test-capability", 0, false)
+			for _, project := range []string{attemptProject, otherAttemptProject} {
+				zero := int64(0)
+				on := true
+				if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, project, f.admin, "write"), core.NewID("enable"), SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := stamp()
+			admissionSQL(t, f, `INSERT INTO review_front_frames VALUES(?,'hosted',801,1,?,'',0,'','[]')`, attemptProject, now)
+			switch fault {
+			case "json":
+				admissionSQL(t, f, `UPDATE review_front_frames SET prefix_json='not-json'`)
+			case "oversized":
+				admissionSQL(t, f, `UPDATE review_front_frames SET prefix_json=?`, strings.Repeat(" ", maxFrontPrefixBytes+1))
+			case "timestamp":
+				admissionSQL(t, f, `UPDATE review_front_frames SET checked_at='not-time'`)
+			case "type":
+				admissionSQL(t, f, `UPDATE review_front_frames SET repository_id='bad'`)
+			}
+			before := snapshotTable(t, f, "review_front_frames")
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal("one cache row blocked startup", err)
+			}
+			if before != snapshotTable(t, f, "review_front_frames") {
+				t.Fatal("startup rewrote retained cache")
+			}
+			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error { return ValidateFrontSnapshot(ctx, tx) })
+			if err == nil {
+				t.Fatal("backup validation accepted damaged cache")
+			}
+			worked, err := f.e.generateAutomaticHosted(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+			if err != nil || !worked {
+				t.Fatal("healthy project blocked after restart", worked, err)
+			}
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections WHERE project_id=?`, otherAttemptProject); n != 1 {
+				t.Fatal("healthy project not selected", n)
+			}
+		})
+	}
+}
+
+func TestStartupStillRejectsSharedFrontSchemaDamage(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	admissionSQL(t, f, `CREATE INDEX unexpected_front_index ON review_front_frames(repository_id)`)
+	if err := EnsureFrontSchema(t.Context(), f.store); err == nil {
+		t.Fatal("shared physical schema damage accepted")
+	}
+}
