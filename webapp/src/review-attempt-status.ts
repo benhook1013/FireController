@@ -1,5 +1,5 @@
 import type { ReviewAttemptSummary } from './types';
-import { validActivityEvidence, type ReviewActivityEvidence, type ReviewRoundProgress } from './review-progress';
+import { validActivityEvidence, validCancelledWait, type ReviewActivityEvidence, type ReviewRoundProgress } from './review-progress';
 import type { ReviewChannelPosition } from './review-fronts';
 
 export interface ReviewAttemptStatus {
@@ -93,6 +93,10 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   // retry, a running provider, or that the previous failure was resolved.
   if ((progress?.pending ?? 0) > 0) return { text: 'Pending', description: `Pending work is recorded, but its stage is unavailable. ${diagnostic}` };
   if (progress?.configured && progress.closed) return { text: 'Closed' };
+  const cancelled = progress?.cancelled_wait;
+  if (attempt?.state === 'held' && progress?.channel === attempt.channel && progress.pending_execution === 0 && progress.pending_adjudication === 0 && validCancelledWait(cancelled) && cancelled.baseline_attempt_id === attempt.source_attempt_id && cancelled.head_sha === attempt.head_sha && attempt.reason === (attempt.channel === 'hosted' ? 'hosted_allowance_cooldown' : 'allowance_exhausted') && !attempt.source_run_id && !attempt.trigger_id && !attempt.provider_review_id && attempt.finished_at && Number.isFinite(Date.parse(attempt.finished_at)) && Date.parse(attempt.finished_at) <= Date.parse(cancelled.cancelled_at)) {
+    return undefined; // The request is gone; its unused baseline stays in history.
+  }
   if (stopped) {
     // A known admission hold is more useful than a generic process alert.
     if (attempt.state === 'held' && attempt.reason === 'predecessor_unfinished') return { text: 'Dependency pending', cause: reviewAttemptCause(attempt), description: `Predecessor work holds this attempt. No retry is confirmed. ${diagnostic}` };

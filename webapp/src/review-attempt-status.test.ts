@@ -89,6 +89,41 @@ it('does not infer that a changed source prevented provider execution', () => {
   expect(value?.description).toContain('provider outcome is unconfirmed');
 });
 
+describe('cancelled queued waits do not become current process attention', () => {
+  const held = { ...attempt, source_attempt_id: `review_attempt_${'a'.repeat(32)}`, state: 'held' as const, reason: 'allowance_exhausted' };
+  const cancelled_wait = { baseline_attempt_id: held.source_attempt_id, head_sha: held.head_sha, cancelled_at: '2026-11-01T00:01:00Z' };
+  const current = { ...progress, cancelled_wait };
+  it('shows no current badge for the exact unused held baseline while preserving full history', () => {
+    const before = JSON.stringify({ held, current });
+    const value = reviewAttemptStatus(held, current, { text: 'Up next' });
+    expect(value).toBeUndefined();
+    expect(reviewAttemptStatus(held, current, undefined, true)).toMatchObject({ text: 'Past attempt', kind: 'history' });
+    expect(reviewAttemptStatus(held, current, undefined, true)?.description).toContain('held (allowance_exhausted)');
+    expect(JSON.stringify({ held, current })).toBe(before);
+    expect(reviewAttemptStatus({ ...held, channel: 'hosted', reason: 'hosted_allowance_cooldown' }, { ...current, channel: 'hosted' })).toBeUndefined();
+  });
+  it('does not hide unrelated, newer, dispatched or unknown failures using a cancelled request', () => {
+    for (const change of [
+      { source_attempt_id: `review_attempt_${'c'.repeat(32)}` }, { head_sha: 'b'.repeat(40) }, { channel: 'hosted' as const },
+      { state: 'failed' as const }, { state: 'rate_limited' as const }, { state: 'uncertain' as const },
+      { reason: 'capture_retention_failed' }, { reason: undefined },
+      { source_run_id: 'review_evidence_retained' }, { trigger_id: '42' }, { provider_review_id: 'provider-review' },
+      { finished_at: '' }, { finished_at: 'invalid' }, { finished_at: '2026-11-01T00:02:00Z' },
+    ]) expect(reviewAttemptStatus({ ...held, ...change }, current)?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus({ ...held, state: 'unknown' }, current)?.text).toBe('Status unknown');
+    expect(reviewAttemptStatus(held, { ...current, cancelled_wait: { ...cancelled_wait, baseline_attempt_id: 'invalid' } })?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus(held, { ...current, pending_execution: undefined, pending_adjudication: undefined })?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus(held, progress)?.text).toBe('Needs agent attention');
+  });
+  it('keeps actual waiting, newer execution, adjudication and closure ahead of cancelled history', () => {
+    expect(reviewAttemptStatus(held, { ...current, wait: { paused: true } })).toBeUndefined();
+    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_execution: 1 })?.text).toBe('Retry pending');
+    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_adjudication: 1 })?.text).toBe('Needs adjudication');
+    expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, current)?.text).toBe('Reviewing');
+    expect(reviewAttemptStatus(held, { ...current, closed: true })?.text).toBe('Closed');
+  });
+});
+
 
 describe('activity timing describes evidence, not inferred provider start', () => {
   const active = { ...attempt, state: 'active' as const, reason: undefined, finished_at: '' };

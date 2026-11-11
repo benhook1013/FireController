@@ -31,3 +31,13 @@ it('requests the staged view once and accepts mixed staged and legacy channel fi
     expect(String(fetch.mock.calls[0][0])).toBe('https://service.example/api/v1/projects/project_one/reviews/rounds/progress?pull_numbers=31&view=stages&include_activity_evidence=true');
   } finally { api.close(); }
 });
+
+it('validates exact cancelled-wait identity only with explicit staged progress', () => {
+  const cancelled_wait = { baseline_attempt_id: `review_attempt_${'a'.repeat(32)}`, head_sha: 'b'.repeat(40), cancelled_at: '2026-11-01T00:01:00Z' };
+  const staged = { ...channel, pending_execution: 2, pending_adjudication: 1 };
+  for (const channel of ['hosted', 'cli']) expect(validRoundProgress({ ...staged, channel, cancelled_wait }, channel)).toBe(true);
+  expect(validRoundProgress({ ...channel, cancelled_wait }, 'hosted')).toBe(false);
+  for (const value of [null, [], {}, { ...cancelled_wait, extra: true }, { ...cancelled_wait, baseline_attempt_id: 'attempt' }, { ...cancelled_wait, baseline_attempt_id: `review_operation_${'a'.repeat(32)}` }, { ...cancelled_wait, head_sha: '' }, { ...cancelled_wait, head_sha: 'b'.repeat(41) }, { ...cancelled_wait, cancelled_at: '' }, { ...cancelled_wait, cancelled_at: 'invalid' }, { ...cancelled_wait, cancelled_at: 42 }]) {
+    expect(validRoundProgress({ ...staged, cancelled_wait: value }, 'hosted')).toBe(false);
+  }
+});

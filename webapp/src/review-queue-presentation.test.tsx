@@ -76,6 +76,26 @@ describe('truthful stored review presentation', () => {
     expect(unclassified).not.toContain('>Fixes pending</span>');
   });
 
+  it('shows no current badge or explanation for an intentionally cancelled preflight wait', () => {
+    const attempt: ReviewAttemptSummary = { source_attempt_id: `review_attempt_${'a'.repeat(32)}`, channel: 'hosted', head_sha: 'c'.repeat(40), state: 'held', reason: 'hosted_allowance_cooldown', started_at: '2026-11-01T00:00:00Z', finished_at: '2026-11-01T00:00:20Z', duration_seconds: 20, source_run_id: '', trigger_id: '', provider_review_id: '' };
+    const row = { ...pull(2), attempt_count: 1, latest_attempts: [attempt] };
+    const progress: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 2, maximum: 8, taper: 2, used: 0, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0, cancelled_wait: { baseline_attempt_id: attempt.source_attempt_id, head_sha: attempt.head_sha, cancelled_at: '2026-11-01T00:01:00Z' } }] };
+    const html = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={progress} />);
+    expect(html).not.toContain('>Request cancelled</span>');
+    expect(html).not.toContain('review-attempt-history');
+    expect(html).not.toContain('review-attempt-explanation');
+    expect(html).not.toContain('held (hosted_allowance_cooldown)');
+    expect(html).not.toContain('>Needs agent attention</span>');
+    expect(html).not.toContain('>Reviewing</span>');
+    expect(html).not.toContain('>Retry pending</span>');
+    const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={progress} />);
+    expect(historical).toContain('>Past attempt</span>');
+    expect(historical).toContain('held (hosted_allowance_cooldown)');
+    const unrelated = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, source_attempt_id: `review_attempt_${'b'.repeat(32)}` }] }} snapshot="snapshot" progress={progress} />);
+    expect(unrelated).toContain('>Needs agent attention</span>');
+    expect(unrelated).not.toContain('>Request cancelled</span>');
+  });
+
   it('keeps Hosted priority visible alongside a waiting operation and unknown source', () => {
     const v=fronts();v.channels=[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',queued_priority:{pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'}}];
     const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:1,pending_execution:1,pending_adjudication:0,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2026-10-30T12:30:00Z',paused:false}}]};
