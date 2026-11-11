@@ -8,7 +8,7 @@ import (
 func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]TargetReader) (bool, error) {
 	var projects []string
 	if err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id FROM review_scheduling WHERE automatic_cli=1 ORDER BY (SELECT lower(repository) FROM projects WHERE id=project_id)<>'benhook1013/firemud',(project_id<=?),project_id LIMIT 100`, e.automaticCLICursor)
+		rows, err := tx.QueryContext(ctx, `SELECT project_id FROM review_scheduling WHERE automatic_cli=1 ORDER BY (SELECT lower(repository) FROM projects WHERE id=project_id)<>?,(project_id<=?),project_id LIMIT 100`, preferredCLIRepository, e.automaticCLICursor)
 		if err != nil {
 			return err
 		}

@@ -7,6 +7,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"math"
 	"reflect"
 	"slices"
 	"sync"
@@ -456,11 +457,11 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
 			// both selection workers or repeatedly reacquire provider facts.
-			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,s.revision FROM review_selections s
+			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM review_selections s
  WHERE s.state='queued'
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)='benhook1013/firemud' THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
+ ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -477,6 +478,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			r, err := readRun(ctx, tx, project, id)
 			if err != nil {
 				return err
+			}
+			if r.State == "queued" && expected == 0 {
+				return runUnavailable()
 			}
 			if r.State != "queued" || r.Revision != expected {
 				return nil
@@ -544,6 +548,10 @@ func (e *Engine) holdRunLocalRefusal(ctx context.Context, expected Run) (bool, e
 		changed = false
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			current, err := readRun(ctx, tx, expected.ProjectID, expected.ID)
+			if automaticProjectRefused(err) || err == nil && current.Revision == math.MaxInt64 {
+				changed, err = quarantineSelection(ctx, tx, expected)
+				return err
+			}
 			if err != nil {
 				return err
 			}

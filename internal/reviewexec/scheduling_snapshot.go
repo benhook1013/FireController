@@ -38,9 +38,14 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 		if err = rows.Scan(&project, &revision, &enabled, &cliEnabled, &actor, &worker, &credential, &at); err != nil {
 			break
 		}
+		hostedEnabled := enabled
 		enabled = enabled || cliEnabled
 		if !identifier.MatchString(project) || revision < 1 || !identifier.MatchString(actor) || !roundTime(at) || worker != "" && !identifier.MatchString(worker) || enabled && (!identifier.MatchString(worker) || !identifier.MatchString(credential)) || !enabled && credential != "" {
 			err = schedulingUnavailable()
+			break
+		}
+		_, _, err = schedulingBasisRevisions(ctx, tx, schedulingRecord{Scheduling: Scheduling{ProjectID: project, Revision: revision, AutomaticHosted: hostedEnabled, AutomaticCLI: cliEnabled}, actor: actor})
+		if err != nil {
 			break
 		}
 	}

@@ -360,7 +360,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if err != nil {
 		return reportClientError(stderr, err, ctx)
 	}
-	if call.reviewOperationControl != nil {
+	if call.reviewOperationControl != nil || call.reviewScheduling != nil && call.reviewScheduling.action != "read" {
 		encoded, err := json.Marshal(value)
 		if err == nil {
 			encoded = append(encoded, '\n')

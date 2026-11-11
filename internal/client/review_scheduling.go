@@ -114,8 +114,10 @@ func decodeReviewSchedulingResponse(data []byte, dst any) error {
 }
 
 func (c *Client) ReviewScheduling(ctx context.Context) (ReviewScheduling, error) {
+	// Allow 100 paused pulls, including six-byte JSON escaping of each
+	// 256-byte reason and bounded identities, plus the response envelope.
 	var value ReviewScheduling
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "scheduling"), nil, true, "", nil, http.StatusOK, false, &value, 128<<10, decodeReviewSchedulingResponse); err != nil {
+	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "scheduling"), nil, true, "", nil, http.StatusOK, false, &value, 512<<10, decodeReviewSchedulingResponse); err != nil {
 		return ReviewScheduling{}, err
 	}
 	if value.ProjectID != c.identity.ProjectID || value.Revision < 0 || value.PausedPulls == nil || len(value.PausedPulls) > 100 || value.Reason != "" && !safeCode(value.Reason) || value.AuthorizingWorkerID != "" && !validID(value.AuthorizingWorkerID) {

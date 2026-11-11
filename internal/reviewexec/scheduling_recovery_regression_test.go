@@ -247,7 +247,7 @@ func TestAutomaticCLISourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 
 func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, fault := range []string{"policy", "policy-type", "scheduling", "scheduling-type", "pull-scheduling", "pull-scheduling-type", "front", "oversized-front", "oversized-basis", "retry-selection"} {
+		for _, fault := range []string{"configuration-type", "configuration-body-type", "policy", "policy-type", "scheduling", "scheduling-type", "pull-scheduling", "pull-scheduling-type", "front", "oversized-front", "oversized-basis", "retry-selection"} {
 			t.Run(channel+"/"+fault, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				f.configure(t, otherAttemptProject, "test-capability", 0, false)
@@ -263,6 +263,10 @@ func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 					generate = f.e.generateAutomaticCLI
 				}
 				switch fault {
+				case "configuration-type":
+					admissionSQL(t, f, `UPDATE review_execution_config SET revision='malformed' WHERE project_id=?`, attemptProject)
+				case "configuration-body-type":
+					admissionSQL(t, f, `UPDATE review_execution_config SET body_json=CAST(body_json AS BLOB) WHERE project_id=?`, attemptProject)
 				case "policy", "policy-type":
 					if fault == "policy" {
 						admissionSQL(t, f, `UPDATE review_policy_config SET body_json='not-json' WHERE project_id=?`, attemptProject)
@@ -866,4 +870,111 @@ func TestStartupStillRejectsSharedFrontSchemaDamage(t *testing.T) {
 	if err := EnsureFrontSchema(t.Context(), f.store); err == nil {
 		t.Fatal("shared physical schema damage accepted")
 	}
+}
+
+func TestDamagedPendingSelectionQuarantinesWithoutStoppingOtherProjects(t *testing.T) {
+	for _, state := range []string{"queued", "selecting"} {
+		for _, fault := range []string{"time", "revision-type", "revision-limit", "fingerprint-type", "write-failure"} {
+			t.Run(state+"/"+fault, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				f.configure(t, otherAttemptProject, "other-account", 0, false)
+				bad, _ := selectionEnqueue(t, f, "damaged", "cli", nil)
+				admissionSQL(t, f, `UPDATE review_selections SET state=? WHERE id=?`, state, bad.ID)
+				switch fault {
+				case "revision-type":
+					admissionSQL(t, f, `UPDATE review_selections SET revision='broken' WHERE id=?`, bad.ID)
+				case "revision-limit":
+					admissionSQL(t, f, `UPDATE review_selections SET revision=9223372036854775807 WHERE id=?`, bad.ID)
+				case "fingerprint-type":
+					admissionSQL(t, f, `UPDATE review_selections SET capability_fingerprint=CAST(capability_fingerprint AS BLOB) WHERE id=?`, bad.ID)
+				default:
+					admissionSQL(t, f, `UPDATE review_selections SET updated_at='broken' WHERE id=?`, bad.ID)
+				}
+				if fault == "write-failure" {
+					admissionSQL(t, f, `CREATE TRIGGER refuse_quarantine BEFORE UPDATE ON review_selections WHEN NEW.state='held' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`)
+				}
+				before := snapshotTable(t, f, "review_selections")
+				var err error
+				if state == "selecting" {
+					err = f.e.RecoverReviewRuns(t.Context())
+				} else {
+					_, err = f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+				}
+				if fault == "write-failure" {
+					if err == nil || automaticProjectRefused(err) || before != snapshotTable(t, f, "review_selections") {
+						t.Fatal("persistence failure suppressed or partially committed", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal("damaged row stopped workers", err)
+				}
+				var got, reason string
+				if err = f.store.DB().QueryRow(`SELECT state,reason FROM review_selections WHERE id=?`, bad.ID).Scan(&got, &reason); err != nil || got != "held" || reason != "local_read_unavailable" {
+					t.Fatal(got, reason, err)
+				}
+				if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+					t.Fatal("damaged row created child")
+				}
+				if err = f.e.RecoverReviewRuns(t.Context()); err != nil {
+					t.Fatal("restart failed", err)
+				}
+				raw, err := f.e.EnqueueRun(t.Context(), selectionScope(t, f, otherAttemptProject, f.admin, "write"), "healthy", RunRequest{Channel: "cli"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var receipt Receipt
+				json.Unmarshal(raw, &receipt)
+				reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					return reviewprovider.Pull{Number: n, RepositoryID: 802, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				}}
+				if worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"other-account": reader}); err != nil || !worked {
+					t.Fatal("healthy request blocked", worked, err)
+				}
+				if err = f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&got); err != nil || got != "selected" {
+					t.Fatal("healthy request not selected", got, err)
+				}
+			})
+		}
+	}
+}
+
+// These digests were captured from the previous per-pull reader. Reusing a
+// transaction's shared reads must not rearm existing automatic selections.
+func TestSchedulingPlanningDigestCompatibility(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	golden := map[string]string{
+		"hosted": "6fb77710b10a99e847fcc73888722a511b59d9e66bc6973a295f34df6a5251ab",
+		"cli":    "652c41394ef250db0e52f95df26f1b8e2badb766d25273f184e4e81a41d0dcf1",
+	}
+	check := func(changed bool) {
+		t.Helper()
+		err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			for _, channel := range []string{"hosted", "cli"} {
+				shared, err := readAutomaticBasis(ctx, tx, attemptProject, channel)
+				if err != nil {
+					return err
+				}
+				for _, pull := range []int64{2, 4} {
+					got, err := automaticPullBasisWithRead(ctx, tx, attemptProject, pull, channel, shared)
+					if err != nil {
+						return err
+					}
+					if (got != golden[channel]) != (changed && channel == "hosted") {
+						t.Fatalf("digest compatibility/freshness: %s %d %s changed=%v", channel, pull, got, changed)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(false)
+	// A later transaction must refresh shared control facts, not reuse a cache
+	// from the prior planning pass, even for an unchanged PR queue.
+	schedulingEnable(t, f, 1, true)
+	check(true)
 }

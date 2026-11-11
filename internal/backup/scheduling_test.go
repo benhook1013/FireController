@@ -214,6 +214,11 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 	f, _, _ := schedulingBackupFixture(t)
 	bundle := restoreBundle(t, f)
 	for _, tc := range []struct{ name, query string }{
+		{"empty-current-event", `UPDATE events SET payload_json='{}' WHERE event_type='review.scheduling_updated'`},
+		{"mismatched-current-event", `UPDATE events SET payload_json='{"automatic_hosted":false}' WHERE event_type='review.scheduling_updated'`},
+		{"invalid-current-basis", `UPDATE events SET payload_json='{"automatic_hosted":true,"hosted_basis_revision":999,"cli_basis_revision":999}' WHERE event_type='review.scheduling_updated'`},
+		{"missing-current-event", `DELETE FROM events WHERE event_type='review.scheduling_updated'`},
+		{"wrong-current-event-actor", `UPDATE events SET actor_id='principal_missing' WHERE event_type='review.scheduling_updated'`},
 		{"missing-domain", `DELETE FROM metadata WHERE key='schema:review_scheduling'`},
 		{"missing-index", `DROP INDEX review_automatic_selections_pull`},
 		{"weakened-schema", `PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'revision>0','revision>=0') WHERE name='review_scheduling'; PRAGMA writable_schema=OFF`},
@@ -276,7 +281,7 @@ func TestSchedulingCLIBackupAndV1Compatibility(t *testing.T) {
 		t.Fatal("CLI scheduling backup rejected", err)
 	}
 	old := schedulingBundleCopy(t, bundle.Path)
-	mutateBundleSQL(t, old, `ALTER TABLE review_scheduling DROP COLUMN automatic_cli; UPDATE metadata SET value='1' WHERE key='schema:review_scheduling'`)
+	mutateBundleSQL(t, old, `ALTER TABLE review_scheduling DROP COLUMN automatic_cli; UPDATE metadata SET value='1' WHERE key='schema:review_scheduling'; UPDATE events SET payload_json='{"automatic_hosted":true}' WHERE event_type='review.scheduling_updated'`)
 	if _, err = Inspect(t.Context(), old); err != nil {
 		t.Fatal("v1 scheduling backup rejected", err)
 	}
