@@ -139,6 +139,10 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 }
 
 func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run string, count int, selected map[string]bool, ok bool) {
+	return parseSubmittedReviewKind(body, head, current, marked, false)
+}
+
+func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly bool) (run string, count int, selected map[string]bool, ok bool) {
 	if !validBody(body) {
 		return
 	}
@@ -150,47 +154,53 @@ func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run 
 	if !p.take("<!-- coderabbit-ai-generated:v1 -->", true) {
 		return
 	}
-	if line, _ := p.next(); !current || line.text != "---" {
-		claim, valid := p.text()
-		match := publicationActionable.FindStringSubmatch(claim)
-		if !valid || match == nil {
+	if additionalOnly {
+		if !current || marked || !p.additionalOnly() || !p.take("<h6>", false) {
 			return
 		}
-		count, _ = strconv.Atoi(match[1])
-		if count < 1 || count > 200 || !p.caution(body) {
-			return
-		}
-	}
-	if !p.take("---", false) {
-		return
-	}
-	if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
-		if count == 0 || !p.take(line.text, true) {
-			return
-		}
-		checkbox, found := p.next()
-		if !found || checkbox.quote != 0 || !checkbox.hidden || !submittedAutofix.MatchString(checkbox.text) {
-			return
-		}
-		p.at++
-		if !p.take("<!-- autofix_checkbox_end -->", true) {
-			return
-		}
-	}
-	// The optional prompt is opaque. findingBlock retains visibility across
-	// fences/quotes, so examples cannot close the prompt and become metadata.
-	if current {
-		if !p.currentPrompt(body) || !p.take("<h6>", false) {
-			return
-		}
-	} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
-		end, complete := findingBlock(lines, p.at, 0)
-		label := submittedReviewParser{lines: lines, at: p.at + 1}
-		header, visible := label.next()
-		if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
-			p.at = end + 1
-			if !p.take("---", false) {
+	} else {
+		if line, _ := p.next(); !current || line.text != "---" {
+			claim, valid := p.text()
+			match := publicationActionable.FindStringSubmatch(claim)
+			if !valid || match == nil {
 				return
+			}
+			count, _ = strconv.Atoi(match[1])
+			if count < 1 || count > 200 || !p.caution(body) {
+				return
+			}
+		}
+		if !p.take("---", false) {
+			return
+		}
+		if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
+			if count == 0 || !p.take(line.text, true) {
+				return
+			}
+			checkbox, found := p.next()
+			if !found || checkbox.quote != 0 || !checkbox.hidden || !submittedAutofix.MatchString(checkbox.text) {
+				return
+			}
+			p.at++
+			if !p.take("<!-- autofix_checkbox_end -->", true) {
+				return
+			}
+		}
+		// The optional prompt is opaque. findingBlock retains visibility across
+		// fences/quotes, so examples cannot close the prompt and become metadata.
+		if current {
+			if !p.currentPrompt(body) || !p.take("<h6>", false) {
+				return
+			}
+		} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
+			end, complete := findingBlock(lines, p.at, 0)
+			label := submittedReviewParser{lines: lines, at: p.at + 1}
+			header, visible := label.next()
+			if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
+				p.at = end + 1
+				if !p.take("---", false) {
+					return
+				}
 			}
 		}
 	}
@@ -368,7 +378,12 @@ func resolveSubmittedReviewBound(snapshot HostedPublicationSnapshot, result Host
 	if !valid {
 		run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, intent.HeadSHA, true, false)
 	}
-	if !valid || count == 0 {
+	additionalOnly := false
+	if !valid {
+		run, count, selected, valid = parseSubmittedReviewKind(review.Body, intent.HeadSHA, true, false, true)
+		additionalOnly = valid
+	}
+	if !valid || count == 0 && !additionalOnly {
 		return result, false
 	}
 	inside := func(at time.Time) bool {
@@ -444,7 +459,11 @@ func resolveSubmittedReviewBound(snapshot HostedPublicationSnapshot, result Host
 		copy.OriginalStartLine = copyPublicationLine(comment.OriginalStartLine)
 		roots = append(roots, copy)
 	}
-	if !hostedInlineCountMatches(roots, count) {
+	if additionalOnly {
+		if snapshot.ReviewComments == nil || len(roots) != 0 || !publicationCountAbsent(result) || !submittedAdditionalInventory(review, selected) {
+			return result, false
+		}
+	} else if !hostedInlineCountMatches(roots, count) {
 		return result, false
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })

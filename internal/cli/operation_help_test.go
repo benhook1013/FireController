@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -344,6 +345,41 @@ func TestEvidenceReadIDErrorsAreSpecificOfflineAndDoNotEchoInput(t *testing.T) {
 			if code != ExitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "review_evidence_") || !strings.Contains(stderr.String(), "32 lowercase hexadecimal") || !strings.Contains(stderr.String(), "reviews "+command+" --help") || strings.Contains(stderr.String(), id) {
 				t.Fatalf("%s: %d %s %s", command, code, &stdout, &stderr)
 			}
+		}
+	}
+}
+
+func TestManagementGroupHelpIsStructuredAndLocal(t *testing.T) {
+	for _, tc := range []struct {
+		group, documentation string
+		operations           []string
+	}{
+		{"credentials", "docs/local-api.md", []string{"credentials grant --help", "credentials update --help", "credentials revoke --help"}},
+		{"workers", "docs/worker-pause.md", []string{"workers create --help", "workers retirement --help", "workers retire --help", "workers list --help", "workers pause-state --help", "workers pause --help", "workers resume --help", "workers pause-history --help"}},
+	} {
+		for _, spelling := range [][]string{{tc.group, "help"}, {tc.group, "--help"}, {"help", tc.group}} {
+			t.Run(strings.Join(spelling, "/"), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				var out, errout bytes.Buffer
+				args := append([]string{"--profiles-file", filepath.Join(t.TempDir(), "missing-private-profile.json")}, spelling...)
+				code := RunContext(ctx, args, nil, &out, &errout)
+				if code != ExitSuccess || errout.Len() != 0 || out.Len() > 4096 || strings.Contains(out.String(), "private-profile") {
+					t.Fatalf("local group help: code=%d stdout=%s stderr=%s", code, &out, &errout)
+				}
+				var help operationHelpResponse
+				if err := json.Unmarshal(out.Bytes(), &help); err != nil {
+					t.Fatalf("help must be a structured object: %v; stdout=%s", err, &out)
+				}
+				if help.Usage != "<bound launcher> "+tc.group+" help" || help.Required == nil || len(help.Required) != 0 || help.Optional == nil || len(help.Semantics) == 0 || help.Documentation != tc.documentation {
+					t.Fatalf("group help lost its command contract: %+v", help)
+				}
+				for _, operation := range tc.operations {
+					if !slices.Contains(help.Optional, operation) {
+						t.Errorf("group help omits %q: %+v", operation, help)
+					}
+				}
+			})
 		}
 	}
 }

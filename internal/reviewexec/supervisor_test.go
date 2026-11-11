@@ -33,6 +33,9 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	for _, id := range candidates {
 		op, eligible, err := e.pendingCandidate(ctx, id)
 		if err != nil {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, op, err) || e.skipUnavailableCLIWait(ctx, op, err) {
+				continue
+			}
 			return nil, err
 		}
 		if eligible {
@@ -70,11 +73,11 @@ func TestSupervisorClaimsFirstCandidateBeforeReadingLaterDependency(t *testing.T
 	if driver.prepares.Load() != 1 || driver.calls.Load() != 1 || supervisorOperationState(t, f, first.ID) != "completed" || supervisorOperationState(t, f, later.ID) != "queued" {
 		t.Fatal("first work did not complete independently of later candidate")
 	}
-	if _, _, err := f.e.pendingCandidate(t.Context(), ids[1]); err == nil {
-		t.Fatal("later candidate lost its normal configuration guard")
+	if _, _, err := f.e.pendingCandidate(t.Context(), ids[1]); !automaticProjectRefused(err) {
+		t.Fatal("later candidate lost its typed configuration guard", err)
 	}
-	if err := f.e.processNext(t.Context(), drivers); err == nil {
-		t.Fatal("reached corrupt dependency was silently ignored")
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal("typed project-local dependency stopped independent work", err)
 	}
 	if driver.prepares.Load() != 1 || driver.calls.Load() != 1 || supervisorOperationState(t, f, later.ID) != "queued" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 {
 		t.Fatal("corrupt later candidate started work or changed prior outcome")

@@ -16,6 +16,22 @@ import (
 
 var errAutomaticParentCycle = errors.New("automatic scheduling retained parent cycle")
 
+// Tag only validated project-local retained-data refusals. Public status codes
+// deliberately remain unchanged; storage_unavailable alone is not a safe reason
+// to suppress a failed query, transaction, or shared storage operation.
+type automaticProjectStateError struct{ error }
+
+func (e *automaticProjectStateError) Unwrap() error { return e.error }
+
+func automaticProjectStateFailure(code, message string, status int) error {
+	return &automaticProjectStateError{core.Fail(code, message, status)}
+}
+
+func automaticProjectRefused(err error) bool {
+	var local *automaticProjectStateError
+	return errors.As(err, &local)
+}
+
 func automaticDenied() error {
 	return core.Fail("automation_authorization_changed", "Automatic review scheduling is disabled or its original authorizer is no longer authorized.", 403)
 }
@@ -38,6 +54,14 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	}
 	if s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential {
 		continuous, err := retainedAutomaticAuthorization(ctx, tx, r, revision, actor, s)
+		if err != nil {
+			return err
+		}
+		if !continuous {
+			return automaticDenied()
+		}
+	} else if revision != s.Revision {
+		continuous, err := automaticChannelContinuous(ctx, tx, r, revision, actor, s)
 		if err != nil {
 			return err
 		}
@@ -92,6 +116,18 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 }
 
 func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+	s, err := readScheduling(ctx, tx, project)
+	if err != nil {
+		return "", err
+	}
+	hostedRevision, cliRevision, err := schedulingBasisRevisions(ctx, tx, s)
+	if err != nil {
+		return "", err
+	}
+	basisRevision := hostedRevision
+	if channel == "cli" {
+		basisRevision = cliRevision
+	}
 	h := sha256.New()
 	appendRows := func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
@@ -112,7 +148,7 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 		for rows.Next() {
 			count++
 			if count > 10000 {
-				return core.Fail("overloaded", "Automatic scheduling needs a narrower retained review scope.", 503)
+				return automaticProjectStateFailure("overloaded", "Automatic scheduling needs a narrower retained review scope.", 503)
 			}
 			values := make([]any, len(cols))
 			ptrs := make([]any, len(cols))
@@ -126,6 +162,11 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 				if b, ok := v.([]byte); ok {
 					values[i] = string(b)
 				}
+			}
+			// Keep the original query label and JSON framing. Only the
+			// channel's semantic revision differs after a relevant write.
+			if query == `SELECT revision,automatic_`+channel+` FROM review_scheduling WHERE project_id=?` {
+				values[0] = basisRevision
 			}
 			b, err := json.Marshal(values)
 			if err != nil {
@@ -398,104 +439,10 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 	}
 	for _, project := range projects {
 		e.automaticCursor = project
-		worked := false
-		err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			var restored bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&restored); err != nil {
-				return err
-			}
-			if restored {
-				return nil
-			}
-			s, err := readScheduling(ctx, tx, project)
-			if err != nil {
-				return err
-			}
-			if !s.AutomaticHosted {
-				return nil
-			}
-			scope, err := e.store.ProjectAutomationScope(ctx, tx, project, s.actor, s.AuthorizingWorkerID, s.credential)
-			if err != nil {
-				var failure *core.Error
-				if errors.As(err, &failure) && failure.Status >= 400 && failure.Status < 500 {
-					return nil
-				}
-				return err
-			}
-			c, _, err := readConfiguration(ctx, tx, project)
-			if err != nil {
-				var failure *core.Error
-				if errors.As(err, &failure) && failure.Status == 409 {
-					return nil
-				}
-				return err
-			}
-			if c.Paused || !slices.Contains(c.Channels, "hosted") || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
-				return nil
-			}
-			unpaused := false
-			for _, pull := range c.Queue {
-				p, err := readPullScheduling(ctx, tx, project, pull)
-				if err != nil {
-					return err
-				}
-				unpaused = unpaused || !p.Paused
-			}
-			if !unpaused {
-				return nil
-			}
-			policy, err := readPolicy(ctx, tx, project)
-			if err != nil {
-				var failure *core.Error
-				if errors.As(err, &failure) && failure.Code == "reviews_policy_unconfigured" {
-					return nil
-				}
-				return err
-			}
-			if policy.Revision < 1 {
-				return nil
-			}
-			var busy bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel='hosted' AND state IN('queued','selecting')) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel='hosted' AND state IN('preparing','posting','active','uncertain'))`, project, project).Scan(&busy); err != nil {
-				return err
-			}
-			if busy {
-				return nil
-			}
-			basis, candidates, err := automaticPlanningBasis(ctx, tx, project, c, "")
-			if err != nil {
-				if errors.Is(err, errAutomaticParentCycle) {
-					return nil
-				}
-				return err
-			}
-			if !candidates {
-				return nil
-			}
-			var seen bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
-				return err
-			}
-			if seen {
-				worked, err = e.retryAutomaticSourceTx(ctx, tx, project, basis, s.Revision, time.Now())
-				return err
-			}
-			// Use the same acceptance implementation as explicit Run, in this exact
-			// reauthorized snapshot, without manufacturing a credential or HTTP request.
-			receipt, err := e.enqueueRunTx(ctx, tx, scope, RunRequest{Channel: "hosted"})
-			if err != nil {
-				var failure *core.Error
-				if errors.As(err, &failure) && (failure.Status == 409 || failure.Code == "overloaded") {
-					return nil
-				}
-				return err
-			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,actor_id,worker_id,credential_id) VALUES(?,?,?,?,?,?,?)`, receipt.ID, project, s.Revision, basis, s.actor, s.AuthorizingWorkerID, s.credential)
-			if err == nil {
-				worked = true
-			}
-			return err
-		})
+		worked, err := e.generateAutomaticProject(ctx, project, "hosted", readers)
+		if automaticProjectRefused(err) {
+			continue
+		}
 		if err != nil {
 			return false, err
 		}
@@ -509,23 +456,175 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 func (e *Engine) coordinateAutomaticHosted(ctx context.Context, readers map[string]TargetReader) (bool, error) {
 	e.automaticMu.Lock()
 	defer e.automaticMu.Unlock()
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	now := time.Now()
 	if now.Before(e.automaticNext) {
 		return false, nil
 	}
 	e.automaticNext = now.Add(5 * time.Second)
-	worked, err := e.generateAutomaticHosted(ctx, readers)
-	if err == nil {
-		cliWorked, cliErr := e.generateAutomaticCLI(ctx, readers)
-		worked, err = worked || cliWorked, cliErr
+	worked, hostedErr := e.generateAutomaticHosted(ctx, readers)
+	if ctx.Err() != nil {
+		return worked, ctx.Err()
 	}
-	var failure *core.Error
-	if errors.As(err, &failure) && failure.Code == "overloaded" {
-		return false, nil
+	cliWorked, cliErr := e.generateAutomaticCLI(ctx, readers)
+	if ctx.Err() != nil {
+		return worked || cliWorked, ctx.Err()
 	}
-	return worked, err
+	// A transient admission/deadline refusal in one channel must not suppress
+	// the other channel or hide its fatal storage error.
+	transient := func(err error) error {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "overloaded" {
+			return nil
+		}
+		return err
+	}
+	return worked || cliWorked, errors.Join(transient(hostedErr), transient(cliErr))
 }
 
 func automaticChannelEnabled(s schedulingRecord, channel string) bool {
 	return channel == "hosted" && s.AutomaticHosted || channel == "cli" && s.AutomaticCLI
+}
+
+// The read preflight can only nominate work. Repeat the entire plan under the
+// serialized writer and compare its identity before using ordinary acceptance
+// or retry CAS. Idle and permanently suppressed projects never take the writer.
+type automaticProjectPlan struct {
+	scheduling schedulingRecord
+	scope      core.Scope
+	basis      string
+	retry      *Run
+}
+
+func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, channel string, readers map[string]TargetReader) (*automaticProjectPlan, error) {
+	var restored bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&restored); err != nil {
+		return nil, err
+	}
+	if restored {
+		return nil, nil
+	}
+	s, err := readScheduling(ctx, tx, project)
+	if err != nil || !automaticChannelEnabled(s, channel) {
+		return nil, err
+	}
+	scope, err := e.store.ProjectAutomationScope(ctx, tx, project, s.actor, s.AuthorizingWorkerID, s.credential)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status >= 400 && failure.Status < 500 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c, _, err := readConfiguration(ctx, tx, project)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if c.Paused || !slices.Contains(c.Channels, channel) || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
+		return nil, nil
+	}
+	unpaused := false
+	for _, pull := range c.Queue {
+		p, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			return nil, err
+		}
+		unpaused = unpaused || !p.Paused
+	}
+	if !unpaused {
+		return nil, nil
+	}
+	policy, err := readPolicy(ctx, tx, project)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "reviews_policy_unconfigured" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if policy.Revision < 1 {
+		return nil, nil
+	}
+	var busy bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN('queued','selecting')) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN('preparing','posting','active','uncertain'))`, project, channel, project, channel).Scan(&busy); err != nil {
+		return nil, err
+	}
+	if busy {
+		return nil, nil
+	}
+	basis, candidates, err := automaticPlanningBasisChannel(ctx, tx, project, c, "", channel)
+	if err != nil || !candidates {
+		return nil, err
+	}
+	var seen bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
+		return nil, err
+	}
+	plan := &automaticProjectPlan{scheduling: s, scope: scope, basis: basis}
+	if seen {
+		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
+		if err != nil || plan.retry == nil {
+			return nil, err
+		}
+	}
+	return plan, nil
+}
+
+func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (bool, error) {
+	var candidate *automaticProjectPlan
+	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		candidate, err = e.planAutomaticProject(ctx, tx, project, channel, readers)
+		return err
+	})
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err != nil || candidate == nil {
+		return false, err
+	}
+	return e.acceptAutomaticProject(ctx, project, channel, readers, candidate)
+}
+
+func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan) (bool, error) {
+	worked := false
+	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		current, err := e.planAutomaticProject(ctx, tx, project, channel, readers)
+		if err != nil || current == nil {
+			return err
+		}
+		if current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) {
+			return nil
+		}
+		if current.retry != nil {
+			if current.retry.ID != candidate.retry.ID || current.retry.Revision != candidate.retry.Revision {
+				return nil
+			}
+			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
+		} else {
+			// Same ordinary acceptance path, fully reauthorized in this snapshot.
+			receipt, enqueueErr := e.enqueueRunTx(ctx, tx, current.scope, RunRequest{Channel: channel})
+			if enqueueErr != nil {
+				var failure *core.Error
+				if errors.As(enqueueErr, &failure) && (failure.Status == 409 || failure.Code == "overloaded") {
+					return nil
+				}
+				return enqueueErr
+			}
+			s := current.scheduling
+			_, err = tx.ExecContext(ctx, `INSERT INTO review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,actor_id,worker_id,credential_id) VALUES(?,?,?,?,?,?,?)`, receipt.ID, project, s.Revision, current.basis, s.actor, s.AuthorizingWorkerID, s.credential)
+		}
+		worked = err == nil
+		return err
+	})
+	if ctx.Err() != nil {
+		return worked && err == nil, ctx.Err()
+	}
+	return worked && err == nil, err
 }

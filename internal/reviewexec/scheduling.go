@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 type Scheduling struct {
@@ -71,22 +72,86 @@ type schedulingRecord struct {
 }
 
 func schedulingUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review scheduling is unavailable.", 503)
+	return automaticProjectStateFailure("storage_unavailable", "Stored review scheduling is unavailable.", 503)
 }
 func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s schedulingRecord, err error) {
 	s.ProjectID = project
-	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&s.Revision, &s.AutomaticHosted, &s.AutomaticCLI, &s.actor, &s.AuthorizingWorkerID, &s.credential, &s.UpdatedAt)
+	var revision, hosted, cli, actor, worker, credential, updated any
+	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&revision, &hosted, &cli, &actor, &worker, &credential, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
 	if err != nil {
 		return s, err
 	}
+	// Scan into unconverted values so malformed SQLite column types can be
+	// classified as retained data without disguising an actual database error.
+	var revisionOK, actorOK, workerOK, credentialOK, updatedOK bool
+	s.Revision, revisionOK = revision.(int64)
+	hostedValue, hostedOK := hosted.(int64)
+	cliValue, cliOK := cli.(int64)
+	s.actor, actorOK = actor.(string)
+	s.AuthorizingWorkerID, workerOK = worker.(string)
+	s.credential, credentialOK = credential.(string)
+	s.UpdatedAt, updatedOK = updated.(string)
+	if !revisionOK || !hostedOK || !cliOK || !actorOK || !workerOK || !credentialOK || !updatedOK || hostedValue < 0 || hostedValue > 1 || cliValue < 0 || cliValue > 1 {
+		return s, schedulingUnavailable()
+	}
+	s.AutomaticHosted, s.AutomaticCLI = hostedValue == 1, cliValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.actor) || !roundTime(s.UpdatedAt) || (s.AutomaticHosted || s.AutomaticCLI) && (!identifier.MatchString(s.AuthorizingWorkerID) || !identifier.MatchString(s.credential)) {
 		return s, schedulingUnavailable()
 	}
 	return s, nil
 }
+
+// Channel basis revisions are carried in the current scheduling event, not in
+// the authorization revision. Legacy events retain the shared revision verbatim:
+// deploying this change must not regenerate cancelled or failed intent digests.
+func schedulingBasisRevisions(ctx context.Context, tx *sql.Tx, s schedulingRecord) (hosted, cli int64, err error) {
+	if s.Revision == 0 {
+		return 0, 0, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT actor_id,CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB))<=4096 THEN payload_json END FROM events WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision=? LIMIT 2`, s.ProjectID, s.ProjectID, s.Revision)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var actor string
+		var payload sql.NullString
+		if err = rows.Scan(&actor, &payload); err != nil {
+			return 0, 0, err
+		}
+		var event struct {
+			Hosted      *bool           `json:"automatic_hosted"`
+			CLI         *bool           `json:"automatic_cli"`
+			HostedBasis json.RawMessage `json:"hosted_basis_revision"`
+			CLIBasis    json.RawMessage `json:"cli_basis_revision"`
+		}
+		if count != 1 || actor != s.actor || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
+			return 0, 0, schedulingUnavailable()
+		}
+		hosted, cli = s.Revision, s.Revision
+		if len(event.HostedBasis) != 0 || len(event.CLIBasis) != 0 {
+			if json.Unmarshal(event.HostedBasis, &hosted) != nil || json.Unmarshal(event.CLIBasis, &cli) != nil || string(event.HostedBasis) == "null" || string(event.CLIBasis) == "null" || hosted < 1 || cli < 1 || hosted > s.Revision || cli > s.Revision {
+				return 0, 0, schedulingUnavailable()
+			}
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	if err = rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	if count != 1 {
+		return 0, 0, schedulingUnavailable()
+	}
+	return hosted, cli, nil
+}
+
 func schedulingAuthorizerAllowed(ctx context.Context, tx *sql.Tx, s schedulingRecord) (bool, error) {
 	if !s.AutomaticHosted && !s.AutomaticCLI {
 		return false, nil
@@ -180,13 +245,29 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 				return nil, core.Fail("forbidden", "An active bound project manager must authorize automatic review scheduling.", 403)
 			}
 		}
+		hostedBasis, cliBasis, err := schedulingBasisRevisions(ctx, tx, old)
+		if err != nil {
+			return nil, err
+		}
+		authorizerChanged := old.actor != scope.PrincipalID || old.AuthorizingWorkerID != scope.WorkerID || old.credential != credential
+		hostedChanged, cliChanged := old.AutomaticHosted != *input.AutomaticHosted, old.AutomaticCLI != automaticCLI
+		// A write changing only the other channel is not a new intent here.
+		// Reasserting unchanged settings remains an intentional rearm of the
+		// supplied channels; omitted CLI retains its basis, just like its bit.
+		reassert := !hostedChanged && !cliChanged
+		if authorizerChanged || hostedChanged || reassert {
+			hostedBasis = old.Revision + 1
+		}
+		if authorizerChanged || cliChanged || reassert && input.AutomaticCLI != nil {
+			cliBasis = old.Revision + 1
+		}
 		at := stamp()
 		worker := scope.WorkerID
 		_, err = tx.ExecContext(ctx, `INSERT INTO review_scheduling(project_id,revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,automatic_hosted=excluded.automatic_hosted,automatic_cli=excluded.automatic_cli,actor_id=excluded.actor_id,worker_id=excluded.worker_id,credential_id=excluded.credential_id,updated_at=excluded.updated_at`, scope.ProjectID, old.Revision+1, *input.AutomaticHosted, automaticCLI, scope.PrincipalID, worker, credential, at)
 		if err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "review.scheduling_updated", scope.ProjectID, old.Revision+1, map[string]any{"automatic_hosted": *input.AutomaticHosted, "automatic_cli": automaticCLI}); err != nil {
+		if err = core.AppendEvent(ctx, tx, scope, "review.scheduling_updated", scope.ProjectID, old.Revision+1, map[string]any{"automatic_hosted": *input.AutomaticHosted, "automatic_cli": automaticCLI, "hosted_basis_revision": hostedBasis, "cli_basis_revision": cliBasis}); err != nil {
 			return nil, err
 		}
 		return Receipt{ID: scope.ProjectID, State: "scheduling_configured", Revision: old.Revision + 1}, nil
@@ -199,13 +280,24 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 func readPullScheduling(ctx context.Context, tx *sql.Tx, project string, pull int64) (s PullScheduling, err error) {
 	s.ProjectID = project
 	s.PullNumber = pull
-	err = tx.QueryRowContext(ctx, `SELECT revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, project, pull).Scan(&s.Revision, &s.Paused, &s.Reason, &s.ActorID, &s.UpdatedAt)
+	var revision, paused, reason, actor, updated any
+	err = tx.QueryRowContext(ctx, `SELECT revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, project, pull).Scan(&revision, &paused, &reason, &actor, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
 	if err != nil {
 		return s, err
 	}
+	var revisionOK, reasonOK, actorOK, updatedOK bool
+	s.Revision, revisionOK = revision.(int64)
+	pausedValue, pausedOK := paused.(int64)
+	s.Reason, reasonOK = reason.(string)
+	s.ActorID, actorOK = actor.(string)
+	s.UpdatedAt, updatedOK = updated.(string)
+	if !revisionOK || !pausedOK || !reasonOK || !actorOK || !updatedOK || pausedValue < 0 || pausedValue > 1 {
+		return s, schedulingUnavailable()
+	}
+	s.Paused = pausedValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
 		return s, schedulingUnavailable()
 	}

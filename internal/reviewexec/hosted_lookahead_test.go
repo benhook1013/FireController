@@ -59,7 +59,9 @@ func TestHostedLookaheadKeepsAncestorFindingsAndOwnGuard(t *testing.T) {
 				current.Operation.Channel = "cli"
 				return verifyPredecessors(ctx, tx, attemptProject, current, *child.Anchor, parents)
 			})
-			attemptCode(t, err, "review_held")
+			if err != nil || adjudicationState(t, f, prior) != before {
+				t.Fatal("CLI ancestor findings blocked child verification or changed retained evidence", err)
+			}
 			moved := append([]SourcePlan(nil), parents...)
 			moved[0].Pull.HeadSHA = strings.Repeat("9", 40)
 			hostedAdmissionVerify(t, f, child, "validation_failed", "", moved...)

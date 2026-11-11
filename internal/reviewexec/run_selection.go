@@ -41,7 +41,7 @@ const runColumns = `id,project_id,actor_id,worker_id,channel,configuration_revis
 func validRunID(id string) bool    { return hostedObservationID(id, "review_selection_") }
 func runPending(state string) bool { return state == "queued" || state == "selecting" }
 func runUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review selection is unavailable.", 500)
+	return automaticProjectStateFailure("storage_unavailable", "Stored review selection is unavailable.", 500)
 }
 func validRun(r Run) bool {
 	created, e1 := time.Parse(time.RFC3339Nano, r.CreatedAt)

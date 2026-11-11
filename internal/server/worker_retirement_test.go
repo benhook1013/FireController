@@ -3,6 +3,8 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -275,5 +277,127 @@ func TestWorkerRetirementBrowserOriginAndConcurrentReplay(t *testing.T) {
 	}
 	if count(t, f.store, "worker_retirements") != 1 {
 		t.Fatal("concurrent retirement duplicated identity state")
+	}
+}
+
+func TestWorkerRetirementACKRequiresActingWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		onBehalf          bool
+		explicitRecipient bool
+	}{
+		{name: "manager", onBehalf: true, explicitRecipient: true},
+		{name: "administrator", onBehalf: true, explicitRecipient: true},
+		{name: "writer-default"},
+		{name: "writer-explicit", explicitRecipient: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, project, sender, recipient := retirementFixture(t)
+			base := "/api/v1/projects/" + project
+			writer := "synthetic-ack-writer-token"
+			f.grant(t, project, writer, true)
+			token := writer
+			switch tc.name {
+			case "manager":
+				token = "synthetic-ack-manager-token"
+				projectManagerGrant(t, f, project, token)
+			case "administrator":
+				token = f.admin
+			}
+			actor := recipient
+			if tc.onBehalf {
+				actor = sender
+			}
+			body := `{}`
+			if tc.explicitRecipient {
+				body = `{"worker_id":"` + recipient + `"}`
+			}
+			sent := retirementJSON(t, f, "POST", base+"/messages", writer, sender, map[string]any{"recipient_worker_id": recipient, "body": "Synthetic pending acknowledgement"}, http.StatusCreated)
+			message, conversation := sent["id"].(string), sent["conversation_id"].(string)
+			path := base + "/messages/" + message + "/ack"
+			type receiptState struct {
+				receipts, events   int
+				seen, acknowledged bool
+				revision           int64
+			}
+			snapshot := func() receiptState {
+				t.Helper()
+				state := receiptState{receipts: count(t, f.store, "receipts"), events: count(t, f.store, "events")}
+				if err := f.store.DB().QueryRow(`SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?`, project, message, recipient).Scan(&state.seen, &state.acknowledged, &state.revision); err != nil {
+					t.Fatal(err)
+				}
+				return state
+			}
+			before := snapshot()
+			if before.seen || before.acknowledged || before.revision != 1 {
+				t.Fatalf("unexpected initial recipient state: %+v", before)
+			}
+			reject := func(token, actor, key string, status int, code string) {
+				t.Helper()
+				result := require(t, request(f.handler, "POST", path, token, key, actor, body), status)
+				if result["error"].(map[string]any)["code"] != code {
+					t.Fatal("unexpected acknowledgement refusal", result)
+				}
+			}
+			reject(token, "", "ack", http.StatusBadRequest, "validation_failed")
+			if got := snapshot(); got != before {
+				t.Fatalf("missing acting worker changed durable state: before=%+v after=%+v", before, got)
+			}
+			if tc.onBehalf {
+				reject(writer, actor, "writer-ack", http.StatusForbidden, "forbidden")
+				if got := snapshot(); got != before {
+					t.Fatalf("ordinary writer changed another recipient's state: %+v", got)
+				}
+			}
+
+			// A rejected request must not reserve its key or poison a corrected retry.
+			first := request(f.handler, "POST", path, token, "ack", actor, body)
+			result := require(t, first, http.StatusOK)
+			if result["id"] != message || result["conversation_id"] != conversation || result["outcome"] != "acknowledged" {
+				t.Fatalf("unexpected acknowledgement receipt: %+v", result)
+			}
+			want := before
+			want.receipts++
+			want.events++
+			want.seen, want.acknowledged = true, true
+			want.revision++
+			if got := snapshot(); got != want {
+				t.Fatalf("acknowledgement did not commit exactly one transition: want=%+v got=%+v", want, got)
+			}
+
+			var eventActor, payloadJSON, principal string
+			var revision int64
+			if err := f.store.DB().QueryRow(`SELECT actor_id,payload_json,revision FROM events WHERE project_id=? AND resource_id=? AND event_type='message.acknowledged'`, project, message).Scan(&eventActor, &payloadJSON, &revision); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256([]byte(token))
+			if err := f.store.DB().QueryRow(`SELECT principal_id FROM credentials WHERE token_sha256=?`, hex.EncodeToString(sum[:])).Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if eventActor != principal || revision != want.revision || payload["recipient_worker_id"] != recipient || payload["conversation_id"] != conversation {
+				t.Fatalf("acknowledgement lost principal or recipient attribution: actor=%q revision=%d payload=%v", eventActor, revision, payload)
+			}
+			actingWorker, hasActingWorker := payload["actor_worker_id"]
+			if tc.onBehalf && (!hasActingWorker || actingWorker != actor) || !tc.onBehalf && hasActingWorker {
+				t.Fatalf("acting-worker audit attribution changed: %v", payload)
+			}
+
+			replay := request(f.handler, "POST", path, token, "ack", actor, body)
+			require(t, replay, http.StatusOK)
+			if !bytes.Equal(replay.Body.Bytes(), first.Body.Bytes()) {
+				t.Fatal("exact-key replay changed the original acknowledgement receipt")
+			}
+			if got := snapshot(); got != want {
+				t.Fatalf("exact-key replay changed durable state: %+v", got)
+			}
+			reject(token, "", "ack", http.StatusBadRequest, "validation_failed")
+			if got := snapshot(); got != want {
+				t.Fatalf("replay without acting worker changed durable state: %+v", got)
+			}
+		})
 	}
 }

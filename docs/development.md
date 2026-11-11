@@ -136,7 +136,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 | `fc inbox read MESSAGE_ID` | One full selected message, without paging older bodies or changing seen/ack state. |
 
-Administrator setup also supports [prepared review import](review-import.md) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. These commands require deliberately selected administrator access rather than an ordinary worker credential.
+Project management also supports [prepared review import](review-import.md#selected-sources-and-destination) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. Select a profile with the owning contract's project-management or instance-administration authority; ordinary project read/write permission is insufficient.
 
 Opt-in [selected history collection](history-collection.md#operator-and-agent-interfaces) adds administrator `fc history` commands for explicit PR acquisition, bounded waits, retained operation/page reads, guarded resume/cancel and private capture export. It performs no automatic import and adds no MCP inventory. Its owning contract records current proof and deployment limits.
 
@@ -234,7 +234,7 @@ fc reviews start --channel hosted --expect-pr 42 --key hosted-42 --wait-seconds 
 fc reviews run-read --selection-id review_selection_0123456789abcdef0123456789abcdef
 ```
 
-The default short wait returns a useful terminal result when available, or the original compact selection receipt when work remains pending. Immediate return uses `--wait-seconds 0`. Preserve the original key and arguments after uncertain output; another key authorizes another selection. Historical `reviews run RUN_ID` remains a separate retained-history read.
+`start` defaults to a two-second wait, returning a useful terminal result when available or the original compact selection receipt when work remains pending. `run-read` defaults to no wait. Immediate return uses `--wait-seconds 0`. Preserve the original key and arguments after uncertain output; another key authorizes another selection. Historical `reviews run RUN_ID` remains a separate retained-history read.
 
 ## Compact review and job reads
 

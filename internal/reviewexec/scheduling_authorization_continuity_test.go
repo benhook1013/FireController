@@ -118,6 +118,9 @@ func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *te
 				case "mismatched-child":
 					admissionSQL(t, f, `UPDATE review_operations SET worker_id='replacement-worker' WHERE id=?`, r.OperationID)
 				}
+				if fault == "unselected" && (r.State != "queued" || r.OperationID != "") {
+					t.Fatal("unselected fixture unexpectedly has a child", r)
+				}
 				attemptCode(t, continuityGuard(t, f, r), "automation_authorization_changed")
 				if r.OperationID != "" && fault != "mismatched-child" {
 					a, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
@@ -207,5 +210,68 @@ func TestRetainedAutomaticAuthorizationDiagnosticIsReadOnly(t *testing.T) {
 	}
 	if before != selectionCounts(t, f)+snapshotTable(t, f, "review_automatic_selections") {
 		t.Fatal("diagnostic changed retained intent")
+	}
+}
+
+func TestAutomaticSameAuthorizerRevisionContinuity(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, state := range []string{"queued", "selecting", "selected"} {
+			for _, change := range []string{"unchanged", "unrelated-channel", "same-settings", "off-on", "missing-history"} {
+				t.Run(channel+"/"+state+"/"+change, func(t *testing.T) {
+					f := schedulingFixtureWithQueue(t, []int64{2})
+					scope := selectionScope(t, f, attemptProject, f.writer, "write")
+					configure := func(revision int64, hosted, cli bool) {
+						t.Helper()
+						if _, err := f.e.ConfigureScheduling(t.Context(), scope, core.NewID("same-authorizer"), SchedulingRequest{ExpectedRevision: &revision, AutomaticHosted: &hosted, AutomaticCLI: &cli}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					configure(0, true, true)
+					generate := f.e.generateAutomaticHosted
+					if channel == "cli" {
+						generate = f.e.generateAutomaticCLI
+					}
+					if worked, err := generate(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}}); err != nil || !worked {
+						t.Fatal(worked, err)
+					}
+					if state == "selected" {
+						selectionNext(t, f, &refreshTestReader{})
+					} else if state == "selecting" {
+						admissionSQL(t, f, `UPDATE review_selections SET state='selecting',revision=2 WHERE project_id=?`, attemptProject)
+					}
+					r := schedulingLatest(t, f)
+					switch change {
+					case "unrelated-channel":
+						configure(1, channel == "hosted", channel == "cli")
+					case "same-settings", "missing-history":
+						configure(1, true, true)
+						if change == "missing-history" {
+							admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.scheduling_updated' AND revision=1`)
+						}
+					case "off-on":
+						configure(1, channel != "hosted", channel != "cli")
+						attemptCode(t, continuityGuard(t, f, r), "automation_authorization_changed")
+						configure(2, true, true)
+					}
+					before := selectionCounts(t, f) + snapshotTable(t, f, "review_automatic_selections")
+					err := continuityGuard(t, f, r)
+					denied := change == "off-on" || change == "missing-history"
+					if denied {
+						attemptCode(t, err, "automation_authorization_changed")
+					} else if err != nil {
+						t.Fatal("continuous same-authorizer run refused", err)
+					}
+					if after := selectionCounts(t, f) + snapshotTable(t, f, "review_automatic_selections"); after != before {
+						t.Fatal("authorization guard mutated retained intent")
+					}
+					if state == "selected" {
+						a, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
+						if err != nil || (a.ID == "") != denied {
+							t.Fatal("dispatch did not honor continuity", a, err)
+						}
+					}
+				})
+			}
+		}
 	}
 }

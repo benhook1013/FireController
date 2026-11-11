@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -40,8 +41,13 @@ func ciHeadWorkflowCandidate(o CIObservation) bool {
 	return lowerCISHA(m.PRBaseSHA) && lowerCISHA(m.LiveBaseSHA) && lowerCISHA(m.MergeSHA) && lowerCISHA(m.MergeBaseParentSHA) && m.PRBaseSHA == c.BaseSHA && m.LiveBaseSHA != m.MergeBaseParentSHA && m.MergeBaseParentSHA != c.HeadSHA && m.MergeSHA != c.HeadSHA && m.MergeSHA != m.MergeBaseParentSHA
 }
 
-// CIWorkflowAttentionError preserves provider backoff without invalidating the
-// separately completed required-gate observation returned alongside it.
+// ErrCIWorkflowAttemptLimit marks incomplete optional attention caused only by
+// the local shared attempt budget, not by a provider failure.
+var ErrCIWorkflowAttemptLimit = errors.New("Optional CI workflow attempt inventory is incomplete at the local collection limit.")
+
+// CIWorkflowAttentionError preserves an optional collection warning without
+// invalidating the separately completed required-gate observation. Provider
+// causes retain account backoff; ErrCIWorkflowAttemptLimit is local only.
 type CIWorkflowAttentionError struct{ Cause error }
 
 func (*CIWorkflowAttentionError) Error() string {
@@ -154,7 +160,7 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 			}
 			if matches == 0 {
 				if len(attempts) >= 32 {
-					return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: ciInventoryIncomplete()}
+					return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: ErrCIWorkflowAttemptLimit}
 				}
 				attempt, err = g.CurrentActionsAttempt(ctx, actions.Repository, actions.HeadSHA, run.CheckSuiteID)
 				if err != nil {

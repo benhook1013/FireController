@@ -17,7 +17,7 @@ func TestSourcePredecessorRefusalActualAncestorAndCause(t *testing.T) {
 	for _, tc := range []struct {
 		cause string
 		queue []int64
-	}{{"not_in_queue", []int64{2, 4}}, {"discovery_incomplete", []int64{2, 3, 4}}} {
+	}{{"not_in_queue", []int64{2, 4}}} {
 		_, _, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", tc.queue...), operation)
 		var failure *core.Error
 		if !errors.As(err, &failure) || failure.Code != "review_held" {
@@ -27,6 +27,9 @@ func TestSourcePredecessorRefusalActualAncestorAndCause(t *testing.T) {
 		if !reflect.DeepEqual(failure.Details, want) {
 			t.Fatal("reported selected PR rather than actual ancestor", failure.Details, want)
 		}
+	}
+	if _, parents, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", 2, 3, 4), operation); err != nil || len(parents) != 1 {
+		t.Fatal("unreviewed ancestor source should remain valid", parents, err)
 	}
 	if sourceState(t, f) != before || f.fetches.Load() != 0 {
 		t.Fatal("source refusal dispatched or changed local state")

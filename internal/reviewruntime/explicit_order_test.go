@@ -46,7 +46,7 @@ func startExplicitOperation(t *testing.T, f *cliDriverFixture, channel, key stri
 	return current.Operation, attempt, current.Configuration
 }
 
-func TestExplicitOrderSkipsOnlyPredecessorCompletionTraversal(t *testing.T) {
+func TestExplicitOrderSkipsOnlyPredecessorSourceTraversal(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ordinary", true: "explicit"}[explicit], func(t *testing.T) {
 			f := newCLIDriverFixture(t)
@@ -56,8 +56,7 @@ func TestExplicitOrderSkipsOnlyPredecessorCompletionTraversal(t *testing.T) {
 			operation.AllowOutOfOrder = explicit
 			plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, sourceConfiguration("stacked", 2, 3, 4), operation)
 			if !explicit {
-				sourceHoldReason(t, err, "predecessor_unfinished")
-				if plan.Pull.Number != 4 || predecessors != nil || f.reader.calls[3] != 1 || f.reader.calls[2] != 0 {
+				if err != nil || plan.Pull.Number != 4 || len(predecessors) != 1 || predecessors[0].Pull.Number != 3 || f.reader.calls[3] != 1 || f.reader.calls[2] != 0 {
 					t.Fatal("ordinary request did not check its actual parent only", plan, predecessors, f.reader.calls)
 				}
 				return

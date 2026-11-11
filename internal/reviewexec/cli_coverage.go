@@ -86,7 +86,7 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 		return ComparisonState{}, err
 	}
 	if dirty {
-		return ComparisonState{}, adjudicationStorageError()
+		return ComparisonState{}, &automaticProjectStateError{adjudicationStorageError()}
 	}
 	if channel == "hosted" {
 		ids, err := reviews.PendingExternalHosted(ctx, tx, project, repositoryID, number, 1)

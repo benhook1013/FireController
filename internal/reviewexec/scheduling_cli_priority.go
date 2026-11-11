@@ -46,9 +46,13 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 	if closeErr != nil {
 		return false, closeErr
 	}
+candidates:
 	for _, id := range ids {
 		earlier, err := readOperation(ctx, tx, id.project, id.operation)
 		if err != nil {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				continue candidates
+			}
 			return false, err
 		}
 		if earlier.Wait != nil && earlier.Wait.Paused {
@@ -56,6 +60,9 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 		}
 		priorConfig, _, err := readConfiguration(ctx, tx, id.project)
 		if err != nil {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				continue candidates
+			}
 			return false, err
 		}
 		priorCapability, ok := e.capabilities[priorConfig.CapabilityID]
@@ -71,6 +78,9 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 		}
 		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
 		if err != nil {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				continue candidates
+			}
 			return false, err
 		}
 		if valid {
@@ -105,13 +115,20 @@ func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operat
 	if closeErr != nil {
 		return false, closeErr
 	}
+candidates:
 	for _, id := range ids {
 		r, err := readRun(ctx, tx, id.project, id.operation)
 		if err != nil {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				continue candidates
+			}
 			return false, err
 		}
 		c, _, reason, err := e.runBinding(ctx, tx, r)
 		if err != nil {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				continue candidates
+			}
 			return false, err
 		}
 		if reason != "" {
@@ -124,6 +141,9 @@ func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operat
 		for _, pull := range c.Queue {
 			pause, err := readPullScheduling(ctx, tx, r.ProjectID, pull)
 			if err != nil {
+				if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+					continue candidates
+				}
 				return false, err
 			}
 			if !pause.Paused {

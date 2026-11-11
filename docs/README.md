@@ -42,7 +42,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Retained review history](review-history-growth.md): lifetime growth, original producers, immutable versions and bounded transfer/read requirements.
 - [Project review activity](review-activity.md): one provider-free read of hourly Hosted/CLI totals, ended-attempt diagnostics and retained-history coverage.
-- [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit administrator observations.
+- [Native review workspace](review-workspace.md): stored queue, PR/run history, findings, fix proof and explicit project-management observations.
 - [Public review checkpoints](review-publication.md): automatically queued finalized source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.
 - [Required CI observations](review-ci.md): explicit collection, current workflow identity and compact stored assessment.
@@ -69,7 +69,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [AI usability](ai-usability.md) owns output budgets, agent interaction patterns, and attention-cost proof.
 - [Prepared map import](map-import.md): additive map preview/application, stable source mappings and private provenance/history.
 - [Selected history collection](history-collection.md): bounded GitHub acquisition, durable source captures and explicit resume; implementation and proof status are recorded at the owner.
-- [Prepared review import](review-import.md): scoped administrator preview/apply of complete exports or bounded additive mixed-producer batches, with explicit implementation and proof status.
+- [Prepared review import](review-import.md): scoped project-management preview/apply of complete exports or bounded additive mixed-producer batches, with explicit implementation and proof status.
 - [Onboarding](onboarding.md) owns AI-guided project setup and historical import; the bundled [onboarding skill](../skills/firecontroller-onboard/SKILL.md) guides the supported setup.
 - [Review orchestration](reviews.md) owns reusable review invariants and configurable policy.
 - [Acceptance and performance](acceptance.md) defines observable proof requirements.

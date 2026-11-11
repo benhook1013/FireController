@@ -421,6 +421,19 @@ func TestCLIDriverGitFileCeilingAndPreparationBinding(t *testing.T) {
 	}
 }
 
+func cliDriverChildCommit(t *testing.T, f *cliDriverFixture) string {
+	t.Helper()
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child review comparison\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "third.txt")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child review")
+	head := gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/child-review")
+	return head
+}
+
 func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 	for _, mode := range []string{"independent", "merged-prefix", "actual-parent-uncovered", "closed-parent"} {
 		t.Run(mode, func(t *testing.T) {
@@ -443,6 +456,7 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 				parent.HeadRef = "feature-parent"
 				f.reader.pulls[2] = parent
 				p := f.reader.pulls[4]
+				p.HeadSHA = cliDriverChildCommit(t, f)
 				p.BaseSHA = f.headSHA
 				p.BaseRef = "feature-parent"
 				f.reader.pulls[4] = p
@@ -457,12 +471,12 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 			}
 			op, a, c := f.start(t, 4, 2, "stack-driver")
 			_, err := f.driver.Prepare(context.Background(), op, c, a)
-			if mode == "independent" || mode == "merged-prefix" {
+			if mode != "closed-parent" {
 				if err != nil {
-					t.Fatal(err)
+					t.Fatal("valid child comparison was held by ancestor review work", err)
 				}
 			} else if err == nil {
-				t.Fatal("unfinished stack advanced")
+				t.Fatal("closed source parent advanced")
 			}
 			if f.reader.repositoryCalls != 1 {
 				t.Fatal("repository was fetched repeatedly within phase")
@@ -698,26 +712,26 @@ func TestCLIDriverPendingEvidenceBlocksRepeatSpendAcrossHeads(t *testing.T) {
 				f.configure(t, "stacked", []int64{2, 4})
 				number, revision = 4, 2
 				p := f.reader.pulls[4]
-				p.BaseSHA, p.BaseRef = f.headSHA, "parent"
+				p.HeadSHA, p.BaseSHA, p.BaseRef = cliDriverChildCommit(t, f), f.headSHA, "parent"
 				f.reader.pulls[4] = p
 			}
 			before, _ := os.ReadFile(f.log)
 			fetches := f.fetches.Load()
 			op, a, c := f.start(t, number, revision, "new-explicit-intent")
 			_, err := f.driver.Prepare(t.Context(), op, c, a)
-			var failure *core.Error
-			want := "review_evidence_pending"
 			if phase == "stacked-predecessor" {
-				want = "review_held"
-			}
-			if !errors.As(err, &failure) || failure.Code != want {
-				t.Fatal("pending source did not hold", phase, err)
-			}
-			if phase == "stacked-predecessor" {
-				details, ok := failure.Details.(map[string]string)
-				if !ok || details["reason"] != "predecessor_unfinished" {
-					t.Fatal(failure)
+				if err != nil || f.fetches.Load() <= fetches {
+					t.Fatal("ancestor evidence blocked child preparation", err)
 				}
+				after, _ := os.ReadFile(f.log)
+				if strings.Contains(string(after[len(before):]), "review --") {
+					t.Fatal("preparation dispatched a provider review")
+				}
+				return
+			}
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "review_evidence_pending" {
+				t.Fatal("pending target source did not hold", phase, err)
 			}
 			after, _ := os.ReadFile(f.log)
 			if string(after) != string(before) || f.fetches.Load() != fetches {
@@ -760,7 +774,54 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	}
 }
 
-func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testing.T) {
+func TestCLIDriverLateAncestorCorrectionStillReviewsChild(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	_, id := cliDriverCompletedFinding(t, f)
+	cliDriverDecision(t, f, id, "reject-source", 0, "rejected")
+	revision := int64(1)
+	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
+		t.Fatal(err)
+	}
+	// Review a genuine child of the completed parent. Its own channel has no
+	// credit; the older parent's later correction must not stop child review.
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "third.txt")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
+	third := gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+	parent := f.reader.pulls[2]
+	parent.HeadRef = "covered-parent"
+	f.reader.pulls[2] = parent
+	child := f.reader.pulls[4]
+	child.HeadSHA, child.BaseSHA, child.BaseRef = third, f.headSHA, "covered-parent"
+	f.reader.pulls[4] = child
+	f.configure(t, "stacked", []int64{2, 4})
+	usage := f.driver.usage
+	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
+		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
+		return usage(ctx, w, repo, org)
+	}
+	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
+	var reviews atomic.Int64
+	f.driver.review = func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+		reviews.Add(1)
+		return reviewprocess.Capture{ExitCode: -1}, &reviewprocess.Error{Code: "process_failed"}
+	}
+	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+	if err != nil || result.State != "failed" || result.Reason != "process_not_started" || reviews.Load() != 1 {
+		t.Fatal("ancestor correction blocked the distinct child review", result, reviews.Load(), err)
+	}
+	// Prepared dispatch remains one-use even when an ancestor's findings change.
+	_, _ = f.driver.Dispatch(t.Context(), op, a, nil)
+	if reviews.Load() != 1 {
+		t.Fatal("child review dispatched twice")
+	}
+}
+
+func TestCLIDriverAncestorCorrectionAfterGitVerificationKeepsChildReview(t *testing.T) {
 	for _, correct := range []bool{false, true} {
 		t.Run(fmt.Sprint(correct), func(t *testing.T) {
 			f := newCLIDriverFixture(t)
@@ -810,11 +871,8 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 				t.Fatal("dispatch failed before real final Git verification", result, err)
 			}
 			wantReviews, wantReason := int64(1), "process_not_started"
-			if correct {
-				wantReviews, wantReason = 0, "admission_changed"
-			}
 			if result.State != "failed" || result.Reason != wantReason || reviews.Load() != wantReviews {
-				t.Fatal("late predecessor correction crossed final spend boundary", result, reviews.Load())
+				t.Fatal("ancestor correction changed child review admission", result, reviews.Load())
 			}
 			after, _ := os.ReadFile(f.log)
 			if string(before) != string(after) {

@@ -306,7 +306,7 @@ export async function readCompletedRunPreview(read: (cursor: string | undefined,
   }
   throw new ApiError('invalid_response', 'The retained round preview is unavailable.');
 }
-function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number, channel?: ReviewChannel, limit = pageSize, view?: 'timeline', completedPreview: number | false = false) {
+function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 'runs' | 'attempts', number: number, snapshot: string, expected: number, channel?: ReviewChannel, limit = pageSize, view?: 'timeline', completedPreview: number | false = false, enabled = true) {
   const { session, key } = useWorkspace();
   const read = useCallback((cursor: string | undefined, signal: AbortSignal) => {
     const options = { snapshot, limit, ...(view ? { view } : {}), ...(channel ? { channel } : {}), ...(cursor ? { cursor } : {}) };
@@ -316,7 +316,7 @@ function useReviewArchive<T extends ReviewRunSummary | ReviewAttemptItem>(feed: 
   const readCurrent = useRef(read);
   useLayoutEffect(() => { readCurrent.current = read; }, [read]);
   const archive = useMemo(() => new ReviewArchive<T>((cursor, signal) => readCurrent.current(cursor, signal), item => 'id' in item ? item.id : JSON.stringify([item.source, item.source_attempt_id])), [scope]);
-  const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, feed, ...(channel ? [channel] : []), ...(view ? [view] : []), 'archive-first', limit, ...(completedPreview && completedPreview !== limit ? [completedPreview] : [])], queryFn: ({ signal }) => read(undefined, signal), enabled: expected > 0, staleTime: Infinity });
+  const query = useQuery({ queryKey: [...key, 'reviews', snapshot, 'pull', number, feed, ...(channel ? [channel] : []), ...(view ? [view] : []), 'archive-first', limit, ...(completedPreview && completedPreview !== limit ? [completedPreview] : [])], queryFn: ({ signal }) => read(undefined, signal), enabled: enabled && expected > 0, staleTime: Infinity });
   const first = useRetainedRead(scope, query.data, expected > 0);
   const missing = useMemo(() => expected > 0 && first?.items.length === 0 && !first.previewLimited ? new ApiError('invalid_response', 'The retained review history is missing its expected rounds.') : undefined, [expected, first]);
   const error = query.error ?? missing;
@@ -382,10 +382,11 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
 }
 function ChannelReviewLane({ number, ...props }: Omit<Parameters<typeof ReviewLane>[0], 'runs' | 'loading' | 'failed' | 'partial' | 'highlights'> & { number: number }) {
   // Hero and queue read only as many completed summaries as fit their lane.
-  // Finding bodies stay behind deliberate run expansion/detail reads.
-  const { ref, capacity } = useReviewPillCapacity();
+  // Wait for layout measurement before fetching; the display default is not
+  // a measured request size. Finding bodies stay behind deliberate reads.
+  const { ref, capacity, measured } = useReviewPillCapacity();
   const wanted = capacity;
-  const archive = useReviewArchive<ReviewRunSummary>('runs', number, props.snapshot, props.total, props.channel, Math.min(100, wanted), undefined, wanted);
+  const archive = useReviewArchive<ReviewRunSummary>('runs', number, props.snapshot, props.total, props.channel, Math.min(100, wanted), undefined, wanted, measured);
   const highlights = useRef(new Map<string, string>()).current;
   const runs = [...archive.items].reverse();
   if (terminal(archive.error)) return <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>;
