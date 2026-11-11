@@ -90,11 +90,16 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		return true, false, false, nil
 	}
 	driver, ok := registered.(interface{ SourceReader() TargetReader })
-	if !ok {
-		return !waiting, false, false, nil
+	var reader TargetReader
+	if ok {
+		reader = driver.SourceReader()
 	}
-	reader := driver.SourceReader()
 	if reader == nil {
+		// Reuse the bounded probe throttle for diagnostics without attempting
+		// a provider read or changing the retained request's identity.
+		if waiting && e.claimDraftProbe(o.ID) {
+			slog.WarnContext(ctx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "source_reader", "reason", "source_reader_unavailable")
+		}
 		return !waiting, false, false, nil
 	}
 	if !waiting {
