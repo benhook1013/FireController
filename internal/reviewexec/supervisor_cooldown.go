@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// Only unavailable provider evidence permits an operation-local hold. Do not
+// turn unrelated database/context errors or a missing attempt into that claim.
+func cooldownEvidenceUnavailable(channel string, err error) bool {
+	if channel == "cli" {
+		return errors.Is(err, sql.ErrNoRows)
+	}
+	return channel == "hosted" && (errors.Is(err, errAllowanceObservationAbsent) || storedAllowanceUnavailable(err) || isStoredUnavailable(err, storedHostedObservation))
+}
+
 func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, error) {
 	local, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -44,7 +53,7 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 			e.notifyOperation(a.OperationID)
 			return nil
 		}
-		if original.Channel == "cli" && errors.Is(writeErr, sql.ErrNoRows) {
+		if cooldownEvidenceUnavailable(original.Channel, writeErr) {
 			return writeErr
 		}
 		if errors.As(writeErr, &failure) && failure.Code == "review_cooldown_elapsed" {
@@ -53,7 +62,7 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 		return persistenceFailure()
 	})
 	if err != nil {
-		if original.Channel == "cli" && errors.Is(err, sql.ErrNoRows) {
+		if cooldownEvidenceUnavailable(original.Channel, err) {
 			return Attempt{}, err
 		}
 		var failure *core.Error
@@ -66,6 +75,10 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 }
 
 func (e *Engine) recordedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, bool) {
+	// A commit error can race supervisor shutdown. Reconcile only the exact
+	// durable outcome, with a separate bounded read that survives that caller.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
 	var result Attempt
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := readAttempt(ctx, tx, a.ProjectID, a.ID)
