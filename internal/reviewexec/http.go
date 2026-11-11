@@ -16,6 +16,7 @@ import (
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/retained-recovery", e.recoverHostedRetainedHTTP)
 	e.registerFollowingHTTP(mux)
 	e.registerCIWatchHTTP(mux)
 	e.registerSchedulingHTTP(mux)

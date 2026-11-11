@@ -60,7 +60,7 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 	return receipt, nil
 }
 
-func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool) (reviews.Receipt, error) {
+func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool, recovered ...bool) (reviews.Receipt, error) {
 	operation, err := readOperation(ctx, tx, attempt.ProjectID, attempt.OperationID)
 	if err != nil {
 		return reviews.Receipt{}, err
@@ -124,7 +124,15 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	if err != nil || unchanged {
 		return receipt, err
 	}
-	return reviews.PublishNative(ctx, tx, core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Attempt: &projected})
+	scope := core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+	publication := reviews.NativePublication{Pull: pull, Attempt: &projected}
+	if len(recovered) > 0 && recovered[0] {
+		if operation.Reason != "hosted_retained_evidence_recovered" {
+			return reviews.Receipt{}, publicationConflict()
+		}
+		return reviews.PublishRecoveredHostedAttempt(ctx, tx, scope, publication)
+	}
+	return reviews.PublishNative(ctx, tx, scope, publication)
 }
 
 func journalBrowserAttempt(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt) (reviews.Attempt, error) {
