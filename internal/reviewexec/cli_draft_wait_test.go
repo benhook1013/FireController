@@ -512,6 +512,12 @@ func TestCLIDraftWaitMissingDriverSettlesOriginalIntent(t *testing.T) {
 	for _, kind := range []string{"missing", "nil", "without-source-interface", "nil-source-reader"} {
 		t.Run(kind, func(t *testing.T) {
 			f := supervisorFixture(t)
+			now := time.Now()
+			f.e.schedulingNow = func() time.Time { return now }
+			var output bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+			defer slog.SetDefault(previous)
 			request := f.enqueue(t, attemptProject, "draft-driver-original", "cli", 2, 1)
 			original := cliWaitRead(t, f, request.ID)
 			if err := f.e.recordCLIDraftDecision(t.Context(), original, cliDraftWait); err != nil {
@@ -541,6 +547,28 @@ func TestCLIDraftWaitMissingDriverSettlesOriginalIntent(t *testing.T) {
 				}
 			} else if got.State != "queued" || got.Reason != cliDraftWait || got.AttemptID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
 				t.Fatal("registered source-less driver changed Draft wait", got)
+			}
+			if !missing {
+				for range 2 {
+					if err := f.e.processNext(t.Context(), drivers); err != nil {
+						t.Fatal(err)
+					}
+				}
+				text := output.String()
+				if strings.Count(text, "CLI draft source probe failed") != 1 || !strings.Contains(text, request.ID) || !strings.Contains(text, `"reason":"source_reader_unavailable"`) || !strings.Contains(text, `"provider_operation":"source_reader"`) {
+					t.Fatal("source-less wait diagnostic was silent or unbounded", text)
+				}
+				now = now.Add(cliDraftProbeInterval)
+				if err := f.e.processNext(t.Context(), drivers); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(output.String(), "CLI draft source probe failed") != 2 {
+					t.Fatal("next bounded source-less diagnostic was not observable")
+				}
+				after := cliWaitRead(t, f, request.ID)
+				if after.ID != got.ID || after.Revision != got.Revision || after.State != got.State || after.Reason != got.Reason || after.AttemptID != "" {
+					t.Fatal("source-less diagnostics changed retained intent", after)
+				}
 			}
 			if replay := f.enqueue(t, attemptProject, "draft-driver-original", "cli", 2, 1); replay.ID != request.ID {
 				t.Fatal("original request identity lost")

@@ -691,3 +691,125 @@ func TestAutomaticSharedReadersPreserveSQLFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectionWorkerIsolatesRetainedRefusalsAtEveryStage(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, automatic := range []bool{false, true} {
+			for _, stage := range []string{"claim", "choose", "finish"} {
+				name := channel + "/explicit/" + stage
+				if automatic {
+					name = channel + "/automatic/" + stage
+				}
+				t.Run(name, func(t *testing.T) {
+					f := schedulingFixtureWithQueue(t, []int64{2})
+					f.configure(t, otherAttemptProject, "other-account", 0, false)
+					var bad Run
+					if automatic {
+						if channel == "hosted" {
+							schedulingEnable(t, f, 0, true)
+							schedulingGenerate(t, f, true)
+						} else {
+							schedulingCLIEnable(t, f, 0, true)
+							schedulingCLIGenerate(t, f, true)
+						}
+						bad = schedulingLatest(t, f)
+					} else {
+						r, _ := selectionEnqueue(t, f, "bad", channel, nil)
+						bad = selectionRead(t, f, r.ID)
+					}
+					switch stage {
+					case "claim":
+						if automatic {
+							admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
+						} else {
+							admissionSQL(t, f, `UPDATE review_policy_config SET body_json='not-json' WHERE project_id=?`, attemptProject)
+						}
+					case "choose":
+						admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'invalid unpaused reason','actor',?)`, attemptProject, stamp())
+					case "finish":
+						admissionSQL(t, f, `CREATE TRIGGER corrupt_selection_finish AFTER INSERT ON review_front_frames BEGIN INSERT INTO review_pull_scheduling VALUES(NEW.project_id,2,1,0,'invalid unpaused reason','actor',NEW.checked_at); END`)
+					}
+					beforeFrames := snapshotTable(t, f, "review_front_frames")
+					worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+					if err != nil || !worked {
+						t.Fatal("local failure stopped worker", worked, err)
+					}
+					got := selectionRead(t, f, bad.ID)
+					reason := "local_read_unavailable"
+					if automatic {
+						reason = "automatic_scheduling_unavailable"
+					}
+					if got.State != "held" || got.Reason != reason || got.OperationID != "" {
+						t.Fatal("incorrect refusal attribution", got)
+					}
+					if beforeFrames != snapshotTable(t, f, "review_front_frames") || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+						t.Fatal("partial source or child retained")
+					}
+					if stage == "finish" {
+						admissionSQL(t, f, `DROP TRIGGER corrupt_selection_finish`)
+					}
+					raw, err := f.e.EnqueueRun(t.Context(), selectionScope(t, f, otherAttemptProject, f.admin, "write"), "healthy", RunRequest{Channel: channel})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var healthy Receipt
+					if err = json.Unmarshal(raw, &healthy); err != nil {
+						t.Fatal(err)
+					}
+					readers := map[string]TargetReader{"test-capability": &refreshTestReader{}, "other-account": &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+						return reviewprovider.Pull{Number: n, RepositoryID: 802, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+					}}}
+					if worked, err = f.e.runNext(t.Context(), readers); err != nil || !worked {
+						t.Fatal("healthy project stopped", worked, err)
+					}
+					var state string
+					if err = f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, healthy.ID).Scan(&state); err != nil || state != "selected" {
+						t.Fatal("healthy project not selected", state, err)
+					}
+					if err = f.e.RecoverReviewRuns(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					if got = selectionRead(t, f, bad.ID); got.State != "held" {
+						t.Fatal("restart reopened poison selection", got)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestSelectionWorkerLocalHoldPreservesPersistenceFailuresAndRaces(t *testing.T) {
+	for _, fault := range []string{"hold-write", "concurrent-transition", "canceled"} {
+		t.Run(fault, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			receipt, _ := selectionEnqueue(t, f, "local-hold", "cli", nil)
+			r := selectionRead(t, f, receipt.ID)
+			switch fault {
+			case "hold-write":
+				admissionSQL(t, f, `CREATE TRIGGER fail_local_hold BEFORE UPDATE ON review_selections WHEN NEW.reason='local_read_unavailable' BEGIN SELECT RAISE(ABORT,'synthetic persistence failure'); END`)
+			case "concurrent-transition":
+				admissionSQL(t, f, `UPDATE review_selections SET state='held',reason='configuration_changed',revision=revision+1 WHERE id=?`, r.ID)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if fault == "canceled" {
+				cancel()
+			}
+			before := snapshotTable(t, f, "review_selections")
+			worked, err := f.e.holdRunLocalRefusal(ctx, r)
+			if worked {
+				t.Fatal("failed or stale hold reported progress")
+			}
+			if fault == "concurrent-transition" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || automaticProjectRefused(err) {
+				t.Fatal("real failure hidden", err)
+			}
+			if before != snapshotTable(t, f, "review_selections") {
+				t.Fatal("failed or stale hold changed selection")
+			}
+		})
+	}
+}
