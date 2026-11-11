@@ -24,6 +24,15 @@ func retainedAutomaticAuthorization(ctx context.Context, tx *sql.Tx, r Run, revi
 	if err != nil || !bound {
 		return false, err
 	}
+	return automaticChannelContinuous(ctx, tx, r, revision, originalActor, current)
+}
+
+// An unchanged authorizer may finish an unselected intent after an unrelated
+// channel change. Every revision must still prove its own channel stayed on.
+func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision int64, originalActor string, current schedulingRecord) (bool, error) {
+	if revision < 1 || revision >= current.Revision || current.Revision-revision > 10000 {
+		return false, nil
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,payload_json FROM events WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision BETWEEN ? AND ? ORDER BY revision,sequence LIMIT 10002`, r.ProjectID, r.ProjectID, revision, current.Revision)
 	if err != nil {
 		return false, err

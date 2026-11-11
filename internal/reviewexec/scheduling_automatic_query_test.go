@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/reviews"
 )
@@ -105,4 +107,177 @@ func TestSchedulingAutomaticHistoryChurnPreservesFactsAndDedupe(t *testing.T) {
 		t.Fatal("actual selected source change did not change basis")
 	}
 	schedulingGenerate(t, f, true)
+}
+
+func TestAutomaticIdlePlanningDoesNotEnterWriter(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, idle := range []string{"paused", "pending", "cancelled", "held-source-not-due"} {
+			t.Run(channel+"/"+idle, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				on, zero := true, int64(0)
+				scope := selectionScope(t, f, attemptProject, f.writer, "write")
+				if _, err := f.e.ConfigureScheduling(t.Context(), scope, "idle-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+					t.Fatal(err)
+				}
+				reader := &refreshTestReader{}
+				readers := map[string]TargetReader{"test-capability": reader}
+				generate := f.e.generateAutomaticHosted
+				if channel == "cli" {
+					generate = f.e.generateAutomaticCLI
+				}
+				if idle == "paused" {
+					schedulingPause(t, f, 2, 0, true)
+				} else {
+					if worked, err := generate(t.Context(), readers); err != nil || !worked {
+						t.Fatal(worked, err)
+					}
+					if idle == "cancelled" {
+						selectionNext(t, f, reader)
+						r := schedulingLatest(t, f)
+						if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-idle", r.OperationID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+							t.Fatal(err)
+						}
+					} else if idle == "held-source-not-due" {
+						selectionNext(t, f, &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+							return reviewprovider.Repository{}, context.DeadlineExceeded
+						}})
+					}
+				}
+				beforeCalls := reader.calls.Load()
+				entered, release := make(chan struct{}), make(chan struct{})
+				done := make(chan error, 1)
+				go func() {
+					done <- f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+						if _, err := tx.ExecContext(ctx, `UPDATE projects SET name='writer held' WHERE id=?`, attemptProject); err != nil {
+							return err
+						}
+						close(entered)
+						select {
+						case <-release:
+							return nil
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					})
+				}()
+				defer func() {
+					close(release)
+					if err := <-done; err != nil {
+						t.Error(err)
+					}
+				}()
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("writer not held")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+				defer cancel()
+				worked, err := generate(ctx, readers)
+				if err != nil || worked || ctx.Err() != nil {
+					t.Fatal("idle scheduler waited for writer", worked, err, ctx.Err())
+				}
+				if reader.calls.Load() != beforeCalls {
+					t.Fatal("local planning contacted provider")
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticWriterRechecksReadPlan(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, change := range []string{"unchanged", "restore", "revoked", "scheduling", "configuration", "policy", "pull-pause", "basis", "competing-selection"} {
+			t.Run(channel+"/"+change, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				on, zero := true, int64(0)
+				if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "writer-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+					t.Fatal(err)
+				}
+				readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+				var candidate *automaticProjectPlan
+				if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					var err error
+					candidate, err = f.e.planAutomaticProject(ctx, tx, attemptProject, channel, readers)
+					return err
+				}); err != nil || candidate == nil {
+					t.Fatal("candidate not nominated", candidate, err)
+				}
+				// Deterministic interleaving: commit a competing change after the exact
+				// read preflight, then run the same writer path used by the generator.
+				switch change {
+				case "restore":
+					admissionSQL(t, f, `INSERT INTO metadata VALUES('restore:provider_state','held')`)
+				case "revoked":
+					admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+				case "scheduling":
+					schedulingEnable(t, f, 1, true)
+				case "configuration":
+					f.configure(t, attemptProject, "test-capability", 1, false)
+				case "policy":
+					assessmentPolicy(t, f, 1, []string{"cli", "hosted"}, []string{channel})
+				case "pull-pause":
+					schedulingPause(t, f, 2, 0, true)
+				case "basis":
+					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'','actor',?)`, attemptProject, stamp())
+				case "competing-selection":
+					selectionEnqueue(t, f, "competing-explicit", channel, nil)
+				}
+				worked, err := f.e.acceptAutomaticProject(t.Context(), attemptProject, channel, readers, candidate)
+				if err != nil || worked != (change == "unchanged") {
+					t.Fatal("writer accepted stale or refused unchanged plan", worked, err)
+				}
+				want := 0
+				if change == "unchanged" {
+					want = 1
+					// The same nominated plan cannot admit a second selection.
+					if worked, err = f.e.acceptAutomaticProject(t.Context(), attemptProject, channel, readers, candidate); err != nil || worked {
+						t.Fatal("repeated plan created duplicate intent", worked, err)
+					}
+				}
+				if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != want {
+					t.Fatal("unexpected automatic attribution", got)
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticConcurrentProjectPlansAcceptOnce(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			on, zero := true, int64(0)
+			if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "concurrent-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+				t.Fatal(err)
+			}
+			start := make(chan struct{})
+			type result struct {
+				worked bool
+				err    error
+			}
+			results := make(chan result, 2)
+			for range 2 {
+				go func() {
+					<-start
+					worked, err := f.e.generateAutomaticProject(t.Context(), attemptProject, channel, map[string]TargetReader{"test-capability": &refreshTestReader{}})
+					results <- result{worked, err}
+				}()
+			}
+			close(start)
+			accepted := 0
+			for range 2 {
+				r := <-results
+				if r.err != nil {
+					t.Fatal(r.err)
+				}
+				if r.worked {
+					accepted++
+				}
+			}
+			if accepted != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 {
+				t.Fatal("concurrent preflights did not serialize one acceptance", accepted)
+			}
+		})
+	}
 }

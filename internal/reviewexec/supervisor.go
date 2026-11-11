@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -191,6 +192,9 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			c, revision := configuration.configuration, configuration.revision
 			earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 			if err != nil {
+				if e.skipUnavailableConfiguration(ctx, o, err) {
+					continue
+				}
 				return nil, err
 			}
 			if earlier != nil {
@@ -237,6 +241,35 @@ func preparationReason(err error) string {
 	return "preparation_failed"
 }
 
+// A malformed retained configuration affects this candidate's authority, not
+// the database or other projects. Preserve the request and its queue turn. The
+// bounded process-local throttle limits diagnostics, never admission or retries.
+func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, err error) bool {
+	if !isStoredUnavailable(err, storedConfigurationHistory) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	if e.configurationFailureNext[o.ID].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[o.ID] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate configuration history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "configuration_history_unavailable")
+	return true
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
@@ -253,6 +286,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if e.skipUnavailableConfiguration(ctx, o, err) {
+				continue
 			}
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
@@ -271,6 +307,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if e.skipUnavailableConfiguration(ctx, o, err) {
+				continue
 			}
 			var failure *core.Error
 			if errors.As(err, &failure) {

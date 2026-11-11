@@ -33,7 +33,7 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 			return false, err
 		}
 		if n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
-			return false, refreshStorageError()
+			return false, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 		}
 		expected++
 		index := slices.Index(c.Queue, o.PullNumber)
@@ -64,7 +64,7 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 		return false, err
 	}
 	if expected != revision+1 {
-		return false, refreshStorageError()
+		return false, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 	}
 	return true, nil
 }

@@ -35,43 +35,52 @@ func (e *Engine) retryAutomaticSourceTx(ctx context.Context, tx *sql.Tx, project
 }
 
 func (e *Engine) retryAutomaticSourceChannelTx(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time, channel string) (bool, error) {
+	r, err := e.automaticSourceRetryCandidate(ctx, tx, project, basis, schedulingRevision, now, channel)
+	if err != nil || r == nil {
+		return false, err
+	}
+	if err = updateRunAt(ctx, tx, *r, "queued", "", "", now); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// This read-only check is shared by preflight and writer revalidation.
+func (e *Engine) automaticSourceRetryCandidate(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time, channel string) (*Run, error) {
 	if !validChannel(channel) {
-		return false, schedulingUnavailable()
+		return nil, schedulingUnavailable()
 	}
 	var id string
 	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel=? AND s.state='held' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision=? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, channel, schedulingRevision, basis, basis).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	r, err := readRun(ctx, tx, project, id)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if !transientAutomaticSourceHold(r) {
-		return false, nil
+		return nil, nil
 	}
 	updated, err := time.Parse(time.RFC3339Nano, r.UpdatedAt)
 	if err != nil {
-		return false, runUnavailable()
+		return nil, runUnavailable()
 	}
 	if now.Before(updated.Add(automaticSourceRetryDelay)) {
-		return false, nil
+		return nil, nil
 	}
 	superseded, err := automaticSourceSuperseded(ctx, tx, r)
 	if err != nil || superseded {
-		return false, err
+		return nil, err
 	}
 	_, _, reason, err := e.runBinding(ctx, tx, r)
 	if err != nil || reason != "" {
-		return false, err
+		return nil, err
 	}
-	if err = updateRunAt(ctx, tx, r, "queued", "", "", now); err != nil {
-		return false, err
-	}
-	return true, nil
+	return &r, nil
 }
 
 // Recheck recovery fences during every admission snapshot, including after
