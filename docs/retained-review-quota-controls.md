@@ -11,7 +11,9 @@ The supervisor rechecks authority, configuration, grants and source before
 preparing again. The first comparison remains immutable. A changed head, parent,
 base, merge base or patch cannot silently become the retry target.
 
-An elapsed or non-advancing Hosted cooldown instead leaves the operation `held` with reason `hosted_allowance_cooldown`. It does not retry automatically, and the queued-only pause, resume and cancel controls cannot resume it. Inspect the retained operation and allowance facts, resolve the hold's cause, then submit a fresh authorized [review request](review-execution.md#bound-execution-tools) with a new explicit key and the qualified current comparison. The held history remains unchanged; the new request still passes authority, configuration, grant, source, finding, provider and known-cooldown guards. Recover an unknown original request outcome with its original key before considering a new request.
+During normal preparation, an elapsed or non-advancing Hosted cooldown instead leaves the operation `held` with reason `hosted_allowance_cooldown`. It does not retry automatically, and the queued-only pause, resume and cancel controls cannot resume it. Inspect the retained operation and allowance facts, resolve the hold's cause, then submit a fresh authorized [review request](review-execution.md#bound-execution-tools) with a new explicit key and the qualified current comparison. The held history remains unchanged; the new request still passes authority, configuration, grant, source, finding, provider and known-cooldown guards. Recover an unknown original request outcome with its original key before considering a new request.
+
+Startup recovery of a still-preparing attempt revalidates the retained cooldown and restores a queued wait only when its deadline remains future and advances the prior retry floor. An elapsed or non-advancing deadline instead cancels that unused preparation with reason `supervisor_interrupted` and releases its reservation, preserving the original allowance facts and attempt history. An operation already held before restart remains held; startup recovery does not reopen it or issue another review.
 
 CLI backoff belongs to the shared provider account, including after cancellation
 of one request. Hosted reservations are scoped to a repository on the account.
@@ -27,6 +29,8 @@ Pause, resume and cancel apply only to an undispatched queued operation and use
 an expected revision plus an idempotency key. They cannot cancel an issued
 provider review or reopen terminal history. Explicit CLI requests made while a
 PR is draft remain queued until a bounded fresh source check observes readiness. A failed repository or pull probe leaves the request queued and emits a diagnostic with the operation ID, failed read and safe provider error code, at most once per operation per 30-second probe interval; provider bodies and credentials are excluded. An unknown Draft field uses the same bounded diagnostic with reason `draft_state_unknown`, without treating the PR as ready.
+
+Only one of the two supervisor workers probes retained Draft waits. Its scheduling pass selects at most one eligible probe with rotating selection; the other worker excludes Draft waits before applying the candidate limit, so slow probes do not hide ready work in other projects. Both workers retain the same authority, queue-priority, account and reservation guards.
 
 ## Reading state
 
@@ -66,6 +70,6 @@ validation checks the schema, timer ownership and retained allowance facts.
 
 Schema versions 7 and 8 reserve the integrated request-flag columns so later
 slices use the same migration history; this slice does not expose new override
-options. Automatic review selection, wider notification changes and automatic
+options. Its HTTP operation responses omit both reserved flags for every supported wait version while retaining their stored values. Automatic review selection, wider notification changes and automatic
 workspace pruning are separate work. The workspace eligibility helper alone
 does not delete checkouts.

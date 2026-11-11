@@ -14,6 +14,10 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `SELECT coalesce(o.project_id,''),w.operation_id FROM review_operation_waits w LEFT JOIN review_operations o ON o.id=w.operation_id
 		UNION SELECT project_id,id FROM review_operations WHERE reason=?
 		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE t.reason=?
+		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a
+		LEFT JOIN review_operations o ON o.id=a.operation_id
+		JOIN review_execution_transitions t ON t.attempt_id=a.id
+		WHERE (o.id IS NULL OR o.attempt_id<>a.id) AND t.reason IN ('allowance_exhausted','hosted_allowance_cooldown')
 		ORDER BY 2`, cliDraftWait, cliDraftWait)
 	if err != nil {
 		return err

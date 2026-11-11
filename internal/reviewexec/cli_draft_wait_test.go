@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,115 @@ func draftProbeClaimed(e *Engine, operationID string) bool {
 	defer e.draftProbeMu.Unlock()
 	_, claimed := e.draftProbeNext[operationID]
 	return claimed
+}
+
+func TestSlowCLIDraftProbesLeaveOtherProjectSchedulable(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	seed := f.enqueue(t, attemptProject, "slow-draft-prefix", "cli", 2, 1)
+	for i := range 31 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_slowdraft%03d", i))
+	}
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE project_id=?`, cliDraftWait, attemptProject)
+	entered := make(chan struct{}, 2)
+	var active, peak atomic.Int32
+	reader := &refreshTestReader{repository: func(ctx context.Context, _ int64) (reviewprovider.Repository, error) {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 10*time.Second {
+			t.Error("draft probe has no finite provider deadline")
+		}
+		n := active.Add(1)
+		defer active.Add(-1)
+		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
+		}
+		entered <- struct{}{}
+		<-ctx.Done()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	d := &draftWaitDriver{reader: reader}
+	stop := runSupervisor(t, f, d)
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("draft probe never started")
+	}
+	healthy := f.enqueue(t, otherAttemptProject, "ready-during-slow-probe", "cli", 2, 1)
+	waitOperationState(t, f, healthy.ID, "completed")
+	if d.prepares.Load() != 1 || d.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE project_id=?`, attemptProject) != 0 {
+		t.Fatal("draft probe consumed an attempt or ready request dispatched twice")
+	}
+	stop()
+	if peak.Load() != 1 || active.Load() != 0 {
+		t.Fatal("both dispatch workers probed Drafts or shutdown leaked a probe", peak.Load(), active.Load())
+	}
+}
+
+func TestCLIDraftProbePassIsBoundedAndRotatesAfterTimeout(t *testing.T) {
+	f := supervisorFixture(t)
+	seed := f.enqueue(t, attemptProject, "rotating-draft-probes", "cli", 2, 1)
+	for i := range 2 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_rotate%03d", i))
+	}
+	admissionSQL(t, f, `UPDATE review_operations SET reason=?`, cliDraftWait)
+	now := time.Now()
+	f.e.schedulingNow = func() time.Time { return now }
+	reader := &refreshTestReader{repository: func(ctx context.Context, _ int64) (reviewprovider.Repository, error) {
+		short, cancel := context.WithTimeout(ctx, time.Millisecond)
+		defer cancel()
+		<-short.Done()
+		return reviewprovider.Repository{}, short.Err()
+	}}
+	d := &draftWaitDriver{reader: reader}
+	seen := map[string]bool{}
+	for pass := range 3 {
+		before := reader.calls.Load()
+		if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": d}); err != nil {
+			t.Fatal(err)
+		}
+		if reader.calls.Load()-before != 1 {
+			t.Fatal("one scheduling pass performed multiple Draft probes", pass, reader.calls.Load()-before)
+		}
+		f.e.draftProbeMu.Lock()
+		for id, next := range f.e.draftProbeNext {
+			if next.After(now) {
+				if seen[id] {
+					t.Error("expired early probe starved a later wait", id)
+				}
+				seen[id] = true
+			}
+		}
+		f.e.draftProbeMu.Unlock()
+		now = now.Add(cliDraftProbeInterval)
+	}
+	if len(seen) != 3 || d.prepares.Load() != 0 || d.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatal("probe rotation skipped a wait or acquired review capacity", seen)
+	}
+}
+
+func TestSupervisorNonDraftSelectionSkipsDraftPrefix(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	seed := f.enqueue(t, attemptProject, "draft-candidate-prefix", "cli", 2, 1)
+	healthy := f.enqueue(t, otherAttemptProject, "ready-after-draft-prefix", "cli", 2, 1)
+	// Legacy imported rows can exceed ordinary admission's smaller capacity.
+	// The non-probing worker must exclude them before its 256-row window.
+	for i := range 299 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_prefix%03d", i))
+	}
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE project_id=?`, cliDraftWait, attemptProject)
+	operations, err := f.e.pendingForWorker(t.Context(), false)
+	if err != nil || len(operations) != 1 || operations[0].ID != healthy.ID {
+		t.Fatal("draft prefix hid independent ready operation", len(operations), err)
+	}
+	d := &draftWaitDriver{reader: &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+		t.Error("non-probing worker attempted a Draft provider read")
+		return reviewprovider.Repository{}, context.DeadlineExceeded
+	}}}
+	if err := f.e.processNextForWorker(t.Context(), map[string]Driver{"test-capability": d, "other-account": d}, false); err != nil {
+		t.Fatal(err)
+	}
+	if supervisorOperationState(t, f, healthy.ID) != "completed" || d.prepares.Load() != 1 || d.calls.Load() != 1 {
+		t.Fatal("independent ready work did not dispatch exactly once")
+	}
 }
 
 func TestOrdinaryCLIRequestUsesPreparationWithoutDraftProbe(t *testing.T) {

@@ -49,14 +49,19 @@ func historicalCLIExhaustionOperation(ctx context.Context, q EvidenceQuery, o Op
 func cliExhaustionDeadline(ctx context.Context, q EvidenceQuery, a Attempt) (time.Time, error) {
 	var at string
 	if err := q.QueryRowContext(ctx, `SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=? AND state='held' AND reason='allowance_exhausted'`, a.ID, a.Revision).Scan(&at); err != nil {
-		return time.Time{}, waitUnavailable()
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, waitUnavailable()
+		}
+		return time.Time{}, err
 	}
 	ended, valid := attemptRecordedTime(at)
 	if !valid {
 		return time.Time{}, waitUnavailable()
 	}
 	var previous int64
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_transitions t JOIN review_execution_attempts a ON a.id=t.attempt_id WHERE a.operation_id=? AND t.state='held' AND t.reason='allowance_exhausted' AND julianday(t.created_at)<julianday(?)`, a.OperationID, at).Scan(&previous); err != nil {
+	// Three earlier exhaustions already reach the delay cap. Do not count the
+	// entire retained history again for every attempt during snapshot checks.
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM review_execution_transitions t JOIN review_execution_attempts a ON a.id=t.attempt_id WHERE a.operation_id=? AND t.state='held' AND t.reason='allowance_exhausted' AND julianday(t.created_at)<julianday(?) LIMIT 3)`, a.OperationID, at).Scan(&previous); err != nil {
 		return time.Time{}, err
 	}
 	return ended.Add(cliRetryDelay(previous)), nil

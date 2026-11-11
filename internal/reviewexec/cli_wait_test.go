@@ -675,6 +675,61 @@ func (q cliRetryFailureQuery) QueryRowContext(ctx context.Context, query string,
 	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
 }
 
+type cliExhaustionCountQuery struct {
+	EvidenceQuery
+	t        *testing.T
+	previous int64
+}
+
+func (q *cliExhaustionCountQuery) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "SELECT count(*)") {
+		if err := q.EvidenceQuery.QueryRowContext(ctx, query, args...).Scan(&q.previous); err != nil {
+			q.t.Fatal(err)
+		}
+	}
+	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
+}
+
+func TestCLIExhaustionDeadlineBoundsHistoryCount(t *testing.T) {
+	f, a, _, _ := cliWaitFixture(t)
+	a, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heldAt string
+	if err := f.store.DB().QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&heldAt); err != nil {
+		t.Fatal(err)
+	}
+	held := mustWaitTime(heldAt)
+	// Seed earlier, unrelated and future transitions in one rollback-only
+	// transaction. The actual SQL must count at most the three prior matches
+	// needed for the delay cap, not all retained history.
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	insert := func(revision int, state, reason string, at time.Time) {
+		t.Helper()
+		if _, err := tx.Exec(`INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at) VALUES(?,?,?,?,'',?)`, a.ID, revision, state, reason, at.Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(100, "held", "allowance_exhausted", held.Add(time.Hour))
+	insert(101, "held", "different_reason", held.Add(-time.Hour))
+	insert(102, "cancelled", "allowance_exhausted", held.Add(-time.Hour))
+	for previous := 0; previous <= 12; previous++ {
+		if previous > 0 {
+			insert(200+previous, "held", "allowance_exhausted", held.Add(-time.Duration(previous)*time.Minute))
+		}
+		q := &cliExhaustionCountQuery{EvidenceQuery: tx, t: t, previous: -1}
+		due, err := cliExhaustionDeadline(t.Context(), q, a)
+		if err != nil || q.previous != int64(min(previous, 3)) || !due.Equal(held.Add(cliRetryDelay(int64(previous)))) {
+			t.Fatalf("prior=%d count=%d due=%v err=%v", previous, q.previous, due, err)
+		}
+	}
+}
+
 func TestCLIAccountRetryDeadlinePreservesLookupErrors(t *testing.T) {
 	f, a, _, now := cliWaitFixture(t)
 	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
@@ -688,6 +743,47 @@ func TestCLIAccountRetryDeadlinePreservesLookupErrors(t *testing.T) {
 				t.Error("account lookup concealed a real query failure", match, canceled, got, err)
 			}
 		}
+	}
+}
+
+func TestCLIExhaustionDeadlinePreservesLookupErrors(t *testing.T) {
+	f, a, _, _ := cliWaitFixture(t)
+	a, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	expired, cancelDeadline := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+	closed, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		ctx  context.Context
+		q    EvidenceQuery
+		want error
+	}{
+		{"cancelled", canceled, f.store.DB(), context.Canceled},
+		{"deadline", expired, f.store.DB(), context.DeadlineExceeded},
+		{"transaction closed", t.Context(), closed, sql.ErrTxDone},
+		{"database", t.Context(), cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: "SELECT created_at"}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			due, err := cliExhaustionDeadline(test.ctx, test.q, a)
+			if !due.IsZero() || err == nil || isWaitUnavailable(err) || test.want != nil && !errors.Is(err, test.want) || test.want == nil && !strings.Contains(err.Error(), "missing_cli_retry_history") {
+				t.Error("exhaustion transition lookup changed operational failure", due, err)
+			}
+		})
+	}
+	a.Revision++
+	if due, err := cliExhaustionDeadline(t.Context(), f.store.DB(), a); !due.IsZero() || !isWaitUnavailable(err) {
+		t.Error("missing exhaustion transition was not classified as damaged waiting intent", due, err)
 	}
 }
 

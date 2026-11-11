@@ -35,6 +35,9 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 
 // Keep engine-level held facts intact while preserving older strict HTTP shapes.
 func operationForResponse(operation Operation, version string) Operation {
+	// These columns preserve later-schema storage, but none of this slice's
+	// response capabilities negotiates their public request/response contract.
+	operation.AllowOutOfOrder, operation.OverrideFileLimit = false, false
 	operation.Wait = operationWaitForResponse(operation.Wait, operation.Channel, version)
 	if version != "3" {
 		operation.Allowance = nil
@@ -262,7 +265,10 @@ func (e *Engine) scheduleHostedCooldown(ctx context.Context, tx *sql.Tx, project
 		return Attempt{}, conflict()
 	}
 	record, err := readHostedAllowanceRecord(ctx, tx, o, a)
-	if err != nil || record.Input.Observation.State != "cooldown_observed" {
+	if err != nil {
+		return Attempt{}, err
+	}
+	if record.Input.Observation.State != "cooldown_observed" {
 		return Attempt{}, waitUnavailable()
 	}
 	now := e.sampleExecutionTime().UTC()

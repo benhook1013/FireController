@@ -723,6 +723,11 @@ func TestHeldAllowancePreservesLookupErrors(t *testing.T) {
 					}
 				}
 			}
+			missing := o
+			missing.AttemptID = "review_attempt_" + strings.Repeat("f", 32)
+			if allowance, err := readHeldAllowance(t.Context(), f.store.DB(), missing); allowance != nil || !storedAllowanceUnavailable(err) {
+				t.Error("missing held attempt was not classified as damaged allowance evidence", allowance, err)
+			}
 		})
 	}
 }

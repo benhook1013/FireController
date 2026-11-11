@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"net/http/httptest"
@@ -310,6 +311,50 @@ func TestCooldownWaitProgressAndWireOptIn(t *testing.T) {
 	}
 }
 
+func TestOperationHTTPPreservesReservedFlagsWithoutExposingThem(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "reserved-operation-flags", "cli", 2, 1)
+	admissionSQL(t, f, `UPDATE review_operations SET state='held',reason='synthetic_hold',allow_out_of_order=1,override_file_limit=1 WHERE id=?`, receipt.ID)
+	before := snapshotTable(t, f, "review_operations")
+	for _, version := range []string{"", "1", "2", "3", "4", "5", "unsupported"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method+"/"+version, func(t *testing.T) {
+				path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + receipt.ID
+				body, token := "", f.reader
+				if method == http.MethodPost {
+					path = "/api/v1/projects/" + attemptProject + "/reviews/requests"
+					body = encoded(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: attemptAnchor(attemptProject, 2).CandidateSHA})
+					token = f.writer
+				}
+				r := httptest.NewRequest(method, path, strings.NewReader(body))
+				r.Header.Set("Authorization", "Bearer "+token)
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("Idempotency-Key", "reserved-operation-flags")
+				r.Header.Set("Prefer", "wait=1")
+				r.Header.Set(operationWaitHeader, version)
+				w := httptest.NewRecorder()
+				f.handler.ServeHTTP(w, r)
+				if w.Code != http.StatusOK {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				if strings.Contains(w.Body.String(), `"allow_out_of_order"`) || strings.Contains(w.Body.String(), `"override_file_limit"`) {
+					t.Fatal("reserved flags escaped without a negotiated contract", w.Body.String())
+				}
+				var legacy client.ReviewOperation
+				decoder := json.NewDecoder(w.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&legacy); err != nil || legacy.ID != receipt.ID || legacy.State != "held" {
+					t.Fatal("strict client rejected unnegotiated operation shape", legacy, err)
+				}
+			})
+		}
+	}
+	o := cliWaitRead(t, f, receipt.ID)
+	if !o.AllowOutOfOrder || !o.OverrideFileLimit || before != snapshotTable(t, f, "review_operations") {
+		t.Fatal("HTTP projection mutated retained flags", o)
+	}
+}
+
 func TestCooldownSnapshotRejectsCorruptWaitOwnership(t *testing.T) {
 	for _, scenario := range []string{"valid queued", "valid current retry", "deadline", "baseline", "queued pointer", "reservation", "evidence", "terminal held time", "missing transition"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -366,6 +411,129 @@ func TestHistoricalCooldownLookupPreservesCancellation(t *testing.T) {
 	cancel()
 	if _, err := historicalCooldownOperation(ctx, f.store.DB(), operation, currentAttempt); !errors.Is(err, context.Canceled) {
 		t.Fatal("historical cooldown lookup hid cancellation", err)
+	}
+}
+
+func TestCooldownSnapshotFindsDetachedHistoryWithoutWaitOrPreflight(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, current := range []bool{false, true} {
+			t.Run(channel+map[bool]string{false: "/detached", true: "/legacy_current"}[current], func(t *testing.T) {
+				var f *attemptFixture
+				var a Attempt
+				var err error
+				if channel == "cli" {
+					f, a, _, _ = cliWaitFixture(t)
+				} else {
+					var in HostedAllowanceInput
+					f, a, in = cooldownObservationFixture(t)
+					if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+						t.Fatal(err)
+					}
+				}
+				reason, preflight := "allowance_exhausted", "review_cli_preflight"
+				if channel == "hosted" {
+					reason, preflight = "hosted_allowance_cooldown", "review_hosted_preflight"
+				}
+				if current {
+					_, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+				} else if channel == "cli" {
+					_, err = f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision)
+				} else {
+					_, err = f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx, err := f.store.DB().BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				for _, table := range []string{"review_operation_waits", preflight} {
+					if _, err := tx.Exec("DELETE FROM " + table); err != nil {
+						t.Fatal(err)
+					}
+				}
+				err = ValidateOperationWaitsSnapshot(t.Context(), tx)
+				if current && err != nil {
+					t.Fatal("legacy current hold requires no detached wait", err)
+				}
+				if !current && !isWaitUnavailable(err) {
+					t.Fatal("detached cooldown lost required evidence without snapshot refusal", err)
+				}
+			})
+		}
+	}
+}
+
+func TestScheduleHostedCooldownPreservesAllowanceReadErrors(t *testing.T) {
+	for _, scenario := range []string{"absent", "malformed", "database", "available"} {
+		t.Run(scenario, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var in HostedAllowanceInput
+			if scenario == "available" {
+				f, a, _, in = hostedAllowanceFixture(t)
+				if err := f.e.RecordHostedAllowance(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f, a, in = cooldownObservationFixture(t)
+				if scenario != "absent" {
+					if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			tables := []string{"review_operations", "review_execution_attempts", "review_execution_reservations", "review_execution_transitions", "review_operation_waits", "review_hosted_preflight", "events"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			tx, err := f.store.DB().BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if scenario == "malformed" {
+				_, err = tx.ExecContext(t.Context(), `UPDATE review_hosted_preflight SET body_json='{}' WHERE attempt_id=?`, a.ID)
+			} else if scenario == "database" {
+				_, err = tx.ExecContext(t.Context(), `DROP TABLE review_hosted_preflight`)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.e.scheduleHostedCooldown(t.Context(), tx, attemptProject, a.ID, a.Revision)
+			if got.ID != "" || err == nil {
+				t.Fatal("invalid allowance scheduled a cooldown", got, err)
+			}
+			switch scenario {
+			case "absent":
+				if !errors.Is(err, errAllowanceObservationAbsent) {
+					t.Error("missing observation classification changed", err)
+				}
+			case "malformed":
+				if !isStoredUnavailable(err, storedHostedObservation) {
+					t.Error("malformed observation classification changed", err)
+				}
+			case "database":
+				if isWaitUnavailable(err) || !strings.Contains(err.Error(), "no such table: review_hosted_preflight") {
+					t.Error("database failure became damaged waiting intent", err)
+				}
+			case "available":
+				if !isWaitUnavailable(err) {
+					t.Error("non-cooldown observation was not refused", err)
+				}
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range tables {
+				if snapshotTable(t, f, table) != before[table] {
+					t.Errorf("failed cooldown changed %s", table)
+				}
+			}
+		})
 	}
 }
 
@@ -544,6 +712,12 @@ func TestCooldownRecoveryPreservesOnlyProvenFuturePreparingWait(t *testing.T) {
 				}
 			} else if o.Wait != nil || o.State != "cancelled" && scenario != "old held" || scenario == "old held" && o.State != "held" {
 				t.Fatal("unproven/elapsed/terminal work reopened", o)
+			}
+			if scenario == "elapsed" || scenario == "unknown" {
+				recovered, err := readAttempt(t.Context(), f.store.DB(), attemptProject, a.ID)
+				if err != nil || recovered.State != "cancelled" || recovered.Revision != a.Revision+1 || o.Reason != "supervisor_interrupted" {
+					t.Fatal("interrupted unused preparation lost its cancellation history", recovered, o, err)
+				}
 			}
 			if before != hostedAllowanceOnlyAttemptOptional(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 				t.Fatal("recovery changed retained query/source or reserved capacity")

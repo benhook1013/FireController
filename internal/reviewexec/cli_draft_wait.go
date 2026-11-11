@@ -36,7 +36,33 @@ func (e *Engine) claimDraftProbe(id string) bool {
 		e.draftProbeNext = make(map[string]time.Time)
 	}
 	e.draftProbeNext[id] = now.Add(cliDraftProbeInterval)
+	e.draftProbeCursor = id
 	return true
+}
+
+// Pick one eligible wait per scheduling pass, rotating even when an earlier
+// probe's throttle has already expired. The cursor grants no readiness and
+// holds no capacity; claimDraftProbe still serializes the actual read throttle.
+func (e *Engine) nextDraftProbe(operations []Operation) string {
+	now := e.sampleExecutionTime()
+	e.draftProbeMu.Lock()
+	defer e.draftProbeMu.Unlock()
+	var first, next string
+	for _, o := range operations {
+		if o.Channel != "cli" || o.Reason != cliDraftWait || e.draftProbeNext[o.ID].After(now) {
+			continue
+		}
+		if first == "" || o.ID < first {
+			first = o.ID
+		}
+		if o.ID > e.draftProbeCursor && (next == "" || o.ID < next) {
+			next = o.ID
+		}
+	}
+	if next != "" {
+		return next
+	}
+	return first
 }
 
 // This check only decides whether the same explicit request may reach normal

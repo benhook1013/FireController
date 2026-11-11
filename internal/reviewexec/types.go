@@ -118,6 +118,7 @@ type Engine struct {
 	configurationFailureNext   map[string]time.Time
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
+	draftProbeCursor           string
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
 	hostedObserverMu           sync.Mutex

@@ -182,7 +182,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 	}
 	a, err := readAttempt(ctx, q, o.ProjectID, o.AttemptID)
 	if err != nil {
-		return nil, err
+		return nil, allowanceDependencyError(err)
 	}
 	if a.OperationID != o.ID || a.State != o.State {
 		return nil, allowanceUnavailable()

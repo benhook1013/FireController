@@ -76,14 +76,15 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	return done, nil
 }
 
-// supervise owns the same two finite work slots; provider waits never hold a
-// database transaction. Start has already completed startup recovery.
+// supervise owns the same two finite work slots. Only one probes retained Draft
+// waits, so slow source reads cannot occupy both dispatch workers. Provider
+// waits never hold a database transaction; startup recovery is already complete.
 func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
-	for range 2 {
+	for worker := range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -97,7 +98,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 				if workCtx.Err() != nil {
 					return
 				}
-				if err := e.processNext(workCtx, owned); err != nil {
+				if err := e.processNextForWorker(workCtx, owned, worker == 0); err != nil {
 					select {
 					case failures <- err:
 					default:
@@ -119,6 +120,10 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 }
 
 func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
+	return e.pendingForWorker(ctx, true)
+}
+
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Snapshot candidates and reservations together, without entering writer
@@ -134,6 +139,12 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
 	args = append(args, now.UTC().Format(time.RFC3339Nano))
+	draftFilter := ""
+	if !probeDrafts {
+		// Filter before the finite candidate window: a prefix of Draft waits
+		// must not hide ready work in another project from this worker.
+		draftFilter = " AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')"
+	}
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
@@ -141,7 +152,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
-	WHERE o.state='queued'
+	WHERE o.state='queued'` + draftFilter + `
 	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
@@ -313,16 +324,27 @@ func (e *Engine) skipUnavailableCLIWait(ctx context.Context, o Operation, err er
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
-	operations, err := e.pending(ctx)
+	return e.processNextForWorker(ctx, drivers, true)
+}
+
+func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
+	operations, err := e.pendingForWorker(ctx, probeDrafts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return persistenceFailure()
 	}
+	probeID := ""
+	if probeDrafts {
+		probeID = e.nextDraftProbe(operations)
+	}
 	for _, o := range operations {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if o.Channel == "cli" && o.Reason == cliDraftWait && o.ID != probeID {
+			continue
 		}
 		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
 		if err != nil {
