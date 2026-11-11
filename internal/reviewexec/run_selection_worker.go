@@ -508,6 +508,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			return nil
 		})
 	})
+	if automaticProjectRefused(err) {
+		return e.holdRunLocalRefusal(ctx, Run{ProjectID: project, ID: id, Revision: expected, State: "queued"})
+	}
 	if err == nil && changed != "" {
 		e.notifyOperation(changed)
 	}
@@ -519,10 +522,53 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if ctx.Err() != nil {
 		return true, nil
 	}
+	if automaticProjectRefused(readErr) {
+		return e.holdRunLocalRefusal(ctx, r)
+	}
 	if readErr != nil {
 		return true, readErr
 	}
-	return e.finishRunChoice(ctx, r, repo, metadataPins, choice)
+	worked, err := e.finishRunChoice(ctx, r, repo, metadataPins, choice)
+	if automaticProjectRefused(err) {
+		return e.holdRunLocalRefusal(ctx, r)
+	}
+	return worked, err
+}
+
+// A validated retained-data refusal belongs to this selection, not the worker
+// pool. Persist only the hold after the failed claim/finish transaction rolled
+// back. Explicit requests retain local-read attribution, never automatic intent.
+func (e *Engine) holdRunLocalRefusal(ctx context.Context, expected Run) (bool, error) {
+	changed := false
+	err := retryRunSelectionLocal(ctx, func() error {
+		changed = false
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readRun(ctx, tx, expected.ProjectID, expected.ID)
+			if err != nil {
+				return err
+			}
+			if current.State != expected.State || current.Revision != expected.Revision {
+				return nil
+			}
+			var automatic bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, current.ProjectID, current.ID).Scan(&automatic); err != nil {
+				return err
+			}
+			reason := "local_read_unavailable"
+			if automatic {
+				reason = "automatic_scheduling_unavailable"
+			}
+			if err = updateRun(ctx, tx, current, "held", reason, ""); err != nil {
+				return err
+			}
+			changed = true
+			return nil
+		})
+	})
+	if err == nil && changed {
+		e.notifyOperation(expected.ID)
+	}
+	return changed, err
 }
 
 // finishRunChoice validates and records a source selection in one local write.

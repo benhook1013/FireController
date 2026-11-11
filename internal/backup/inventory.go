@@ -620,6 +620,16 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["review_execution"] >= 9 {
+		// Schema nine owns durable wait identity and paired retry state even
+		// when the bundle has no wait rows to exercise these constraints.
+		const definition = `CREATE TABLE review_operation_waits(operation_id TEXT PRIMARY KEY REFERENCES review_operations(id),baseline_attempt_id TEXT REFERENCES review_execution_attempts(id),retry_not_before TEXT NOT NULL DEFAULT '',paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN(0,1)),CHECK((baseline_attempt_id IS NULL AND retry_not_before='') OR (baseline_attempt_id IS NOT NULL AND retry_not_before<>'')))`
+		if err = validatePhysicalSchemaObjects(ctx, db, map[string]physicalSchemaObject{
+			"review_operation_waits": {"table", historyDefinitionSQL(definition)},
+		}, []string{"review_operation_waits"}); err != nil {
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
