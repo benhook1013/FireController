@@ -270,6 +270,8 @@ Recovery does not finalize findings or immediately award round credit. Read and 
 
 ### CLI requests while Draft
 
+Only one supervisor worker probes retained Draft waits, with at most one probe per pass. Selection advances the rotation cursor before local dependency validation, so damaged waiting history cannot starve later waits. The other worker excludes Draft waits before the finite candidate window. Actual claims still revalidate authority, source, scheduling pauses, account guards and reservations.
+
 An explicit CLI request for an exact PR and head can wait in the existing operation queue while the PR is Draft. The operation reports `cli_draft_wait` and can be paused or cancelled with the ordinary queued controls. It holds no provider reservation or quota while waiting and does not block independent queued work. An automatic selection still skips Draft targets.
 
 The controller rechecks waiting requests using bounded source reads. When the PR is ready, the same operation enters normal preparation for the originally requested head. Changed head, closed PR or invalid local authority cannot start a review. The current comparison, dependencies, grants, pauses, allowance and final provider-action guards still apply. Waiting survives restart. A historical terminal `pull_draft` hold stays terminal.
@@ -277,6 +279,8 @@ The controller rechecks waiting requests using bounded source reads. When the PR
 A failed repository or PR readiness probe retains the queued request and reports only its operation ID, failed read and safe provider error code, at most once per operation per thirty-second probe interval. An unknown Draft field reports `draft_state_unknown` and does not establish readiness. Provider response bodies and credentials are excluded.
 
 ### Durable CLI quota waiting
+
+Runtime reads bind the retry deadline to the latest proven detached cooldown while preserving the original comparison and allowance baseline. Contradictory canonical timers are refused. CLI account guards also consult bounded retained exhaustion transitions so a shortened cached timer cannot hide a live backoff. Operational lookup failures retain their causes rather than becoming malformed-history refusals.
 
 CLI reviews can be explicitly requested or selected by the project's opt-in [automatic CLI scheduling](review-scheduling.md#automatic-cli-requests). Each accepted intent retains the same request through proven included-quota exhaustion. Quota retry itself never discovers another target or authorizes another round. Only a successfully parsed, retained zero-capacity CLI observation from an unused preparing attempt enters this wait. Unknown allowance, command failure, timeout, malformed output and an ambiguous review outcome retain their existing explicit holds or uncertainty; they are not treated as exhausted quota.
 

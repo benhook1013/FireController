@@ -122,6 +122,7 @@ type Attempt struct {
 type Engine struct {
 	hostedRetainedDecoder      HostedRetainedDecoder
 	sourceReadGroups           map[string]string
+	draftProbeCursor           string
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	automaticCursor            string

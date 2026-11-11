@@ -134,6 +134,20 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 				return nil, waitUnavailable()
 			}
 		}
+		latest, err := latestCooldownAttempt(ctx, q, o)
+		if err != nil {
+			return nil, err
+		}
+		if latest.Provider != a.Provider || latest.Account != a.Account {
+			return nil, waitUnavailable()
+		}
+		due, err := retainedCooldownDeadline(ctx, q, o, latest)
+		if err != nil {
+			return nil, err
+		}
+		if due.UTC().Format(time.RFC3339Nano) != result.RetryNotBefore {
+			return nil, waitUnavailable()
+		}
 	}
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)
 	if err != nil {
@@ -179,10 +193,19 @@ func historicalCooldownOperation(ctx context.Context, q EvidenceQuery, o Operati
 	}
 	var reason, state string
 	var owns bool
-	if err := q.QueryRowContext(ctx, `SELECT state,reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&state, &reason); err != nil || state != "held" || reason != "hosted_allowance_cooldown" {
+	if err := q.QueryRowContext(ctx, `SELECT state,reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&state, &reason); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Operation{}, waitUnavailable()
+		}
+		return Operation{}, err
+	}
+	if state != "held" || reason != "hosted_allowance_cooldown" {
 		return Operation{}, waitUnavailable()
 	}
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operation_waits WHERE operation_id=? AND baseline_attempt_id IS NOT NULL)`, o.ID).Scan(&owns); err != nil || !owns {
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operation_waits WHERE operation_id=? AND baseline_attempt_id IS NOT NULL)`, o.ID).Scan(&owns); err != nil {
+		return Operation{}, err
+	}
+	if !owns {
 		return Operation{}, waitUnavailable()
 	}
 	o.AttemptID, o.State, o.Reason = a.ID, "held", reason
@@ -282,9 +305,6 @@ func (e *Engine) scheduleHostedCooldown(ctx context.Context, tx *sql.Tx, project
 	if o.Wait != nil && o.Wait.BaselineAttemptID != "" {
 		baseline = o.Wait.BaselineAttemptID
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,?,?,0) ON CONFLICT(operation_id) DO UPDATE SET baseline_attempt_id=excluded.baseline_attempt_id,retry_not_before=excluded.retry_not_before`, o.ID, baseline, due.Format(time.RFC3339Nano)); err != nil {
-		return Attempt{}, err
-	}
 	a.State, a.Revision = "held", a.Revision+1
 	if _, err := tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state='held',revision=? WHERE id=?`, a.Revision, a.ID); err != nil {
 		return Attempt{}, err
@@ -295,6 +315,11 @@ func (e *Engine) scheduleHostedCooldown(ctx context.Context, tx *sql.Tx, project
 		return Attempt{}, err
 	}
 	if err := e.transitionRow(ctx, tx, a, "hosted_allowance_cooldown", at); err != nil {
+		return Attempt{}, err
+	}
+	// Projection reads the previous detached cooldown while this attempt is
+	// still current. Install its replacement timer before atomically detaching.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,?,?,0) ON CONFLICT(operation_id) DO UPDATE SET baseline_attempt_id=excluded.baseline_attempt_id,retry_not_before=excluded.retry_not_before`, o.ID, baseline, due.Format(time.RFC3339Nano)); err != nil {
 		return Attempt{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID); err != nil {

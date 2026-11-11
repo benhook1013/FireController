@@ -83,7 +83,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
-	for range 2 {
+	for worker := range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -97,7 +97,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 				if workCtx.Err() != nil {
 					return
 				}
-				if err := e.processNext(workCtx, owned); err != nil {
+				if err := e.processNextForWorker(workCtx, owned, worker == 0); err != nil {
 					select {
 					case failures <- err:
 					default:
@@ -120,7 +120,24 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 
 type pendingCandidateID struct{ project, operation string }
 
+type pendingSchedulingCandidate struct {
+	pendingCandidateID
+	channel, reason string
+}
+
 func (e *Engine) pendingCandidates(ctx context.Context) ([]pendingCandidateID, error) {
+	candidates, err := e.pendingSchedulingCandidates(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]pendingCandidateID, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.pendingCandidateID)
+	}
+	return ids, nil
+}
+
+func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bool) ([]pendingSchedulingCandidate, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Snapshot candidates and reservations together, without entering writer
@@ -136,15 +153,19 @@ func (e *Engine) pendingCandidates(ctx context.Context) ([]pendingCandidateID, e
 	}
 	now := e.sampleExecutionTime().UTC().Format(time.RFC3339Nano)
 	args = append(args, now, now, now)
+	draftFilter := ""
+	if !probeDrafts {
+		draftFilter = " AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')"
+	}
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint,source_group) AS (VALUES (NULL,NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?,?)`, len(e.capabilities)) + `),
  source_limited AS MATERIALIZED (SELECT DISTINCT source_group FROM review_source_retries INDEXED BY review_source_retries_due WHERE julianday(retry_not_before)>julianday(?))
-	SELECT o.project_id,o.id FROM review_operations o
+	SELECT o.project_id,o.id,o.channel,o.reason FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
-	WHERE o.state='queued'
+	WHERE o.state='queued'` + draftFilter + `
 AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
@@ -157,10 +178,10 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 	if err != nil {
 		return nil, err
 	}
-	var ids []pendingCandidateID
+	var ids []pendingSchedulingCandidate
 	for rows.Next() {
-		var i pendingCandidateID
-		if err = rows.Scan(&i.project, &i.operation); err != nil {
+		var i pendingSchedulingCandidate
+		if err = rows.Scan(&i.project, &i.operation, &i.channel, &i.reason); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -320,11 +341,15 @@ func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
+	return e.processNextForWorker(ctx, drivers, true)
+}
+
+func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
 	if !e.beginDispatchWork() {
 		return nil
 	}
 	defer e.endDispatchWork()
-	candidates, err := e.pendingCandidates(ctx)
+	candidates, err := e.pendingSchedulingCandidates(ctx, probeDrafts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -338,11 +363,25 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		}
 		return persistenceFailureAt("pending_read", err, "", "")
 	}
+	// Rotate from lightweight identities before lazy dependency validation.
+	// A damaged selected wait consumes this pass's probe choice, not another
+	// project's eligibility or the next pass's position.
+	probeID := ""
+	if probeDrafts {
+		waits := make([]Operation, 0, len(candidates))
+		for _, candidate := range candidates {
+			waits = append(waits, Operation{ID: candidate.operation, Channel: candidate.channel, Reason: candidate.reason})
+		}
+		probeID = e.nextDraftProbe(waits)
+	}
 	for _, candidate := range candidates {
+		if candidate.channel == "cli" && candidate.reason == cliDraftWait && candidate.operation != probeID {
+			continue
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		o, eligible, err := e.pendingCandidate(ctx, candidate)
+		o, eligible, err := e.pendingCandidate(ctx, candidate.pendingCandidateID)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil

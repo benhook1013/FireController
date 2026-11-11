@@ -13,6 +13,7 @@ import (
 
 const cliDraftWait = "cli_draft_wait"
 const cliDraftProbeInterval = 30 * time.Second
+const cliDraftProbeCapacity = 256
 
 // The wait itself is durable. Only the read throttle is process-local, so a
 // restart can observe readiness again without creating a new review request.
@@ -28,7 +29,7 @@ func (e *Engine) claimDraftProbe(id string) bool {
 			delete(e.draftProbeNext, key)
 		}
 	}
-	if len(e.draftProbeNext) >= 256 {
+	if len(e.draftProbeNext) >= cliDraftProbeCapacity {
 		return false
 	}
 	if e.draftProbeNext == nil {
@@ -38,6 +39,36 @@ func (e *Engine) claimDraftProbe(id string) bool {
 	return true
 }
 
+func (e *Engine) nextDraftProbe(operations []Operation) string {
+	now := e.sampleExecutionTime()
+	e.draftProbeMu.Lock()
+	defer e.draftProbeMu.Unlock()
+	var first, next string
+	for _, o := range operations {
+		if o.Channel != "cli" || o.Reason != cliDraftWait || e.draftProbeNext[o.ID].After(now) {
+			continue
+		}
+		if first == "" || o.ID < first {
+			first = o.ID
+		}
+		if o.ID > e.draftProbeCursor && (next == "" || o.ID < next) {
+			next = o.ID
+		}
+	}
+	selected := first
+	if next != "" {
+		selected = next
+	}
+	if selected != "" {
+		// Selection must rotate even if local validation fails before claim.
+		e.draftProbeCursor = selected
+	}
+	return selected
+}
+
+// This check only decides whether the same explicit request may reach normal
+// preparation. It does not establish an anchor, allowance or permission to
+// dispatch. Runtime preparation and final admission still make fresh checks.
 // This check only decides whether the same explicit request may reach normal
 // preparation. It does not establish an anchor, allowance or permission to
 // dispatch. Runtime preparation and final admission still make fresh checks.
@@ -79,53 +110,69 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	if selected {
 		return true, false, false, nil
 	}
-	driver, ok := drivers[execution.Configuration.CapabilityID].(interface{ SourceReader() TargetReader })
-	if !ok || driver.SourceReader() == nil {
+	registered := drivers[execution.Configuration.CapabilityID]
+	if registered == nil {
+		if waiting {
+			// A missing driver cannot establish Draft readiness. Settle the
+			// local capability hold without inventing readiness or an attempt.
+			return false, false, false, e.recordCLIDraftDecision(ctx, o, "capability_unavailable")
+		}
+		return true, false, false, nil
+	}
+	driver, ok := registered.(interface{ SourceReader() TargetReader })
+	var reader TargetReader
+	if ok {
+		reader = driver.SourceReader()
+	}
+	if reader == nil {
+		// Reuse the bounded probe throttle for diagnostics without attempting
+		// a provider read or changing the retained request's identity.
+		if waiting && e.claimDraftProbe(o.ID) {
+			slog.WarnContext(ctx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "source_reader", "reason", "source_reader_unavailable")
+		}
 		return !waiting, false, false, nil
 	}
-	if !e.claimDraftProbe(o.ID) {
-		return false, false, false, nil
+	if !waiting {
+		// Ordinary preparation already refreshes this exact source and retains
+		// pull_draft as a wait. Do not duplicate those provider reads or spend
+		// a draft-wait probe slot before the preparation path gets its turn.
+		return true, false, true, nil
 	}
-	reader := driver.SourceReader()
+	if !e.claimDraftProbe(o.ID) {
+		return false, false, true, nil
+	}
 	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	repo, err := reader.Repository(readCtx, execution.RepositoryID)
 	if err != nil {
+		// claimDraftProbe bounds these diagnostics to one probe per operation
+		// every 30 seconds. Never log provider bodies or credential details.
 		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "repository", "reason", lifecycleErrorCode(err))
-		return !waiting, false, true, nil
+		return false, false, true, nil
 	}
 	if repo.ID != execution.RepositoryID || !repository.MatchString(repo.FullName) {
-		if !waiting {
-			return true, false, true, nil
-		}
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, "repository_changed")
 	}
 	pull, err := reader.Pull(readCtx, repo.FullName, o.PullNumber)
 	if err != nil {
 		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", lifecycleErrorCode(err))
-		return !waiting, false, true, nil
+		return false, false, true, nil
 	}
 	if !sameTarget(pull, execution.RepositoryID, o.PullNumber) || pull.HeadSHA != o.HeadSHA || pull.State != "open" || pull.Merged {
-		if !waiting {
-			return true, false, true, nil
-		}
 		reason := "target_changed"
 		if obsolete := obsoleteTargetReason(pull, execution.RepositoryID, o.PullNumber, o.HeadSHA); obsolete != "" {
 			reason = obsolete
 		}
 		return false, false, true, e.recordCLIDraftDecision(ctx, o, reason)
 	}
-	if pull.IsDraft == nil && waiting {
+	if pull.IsDraft == nil {
 		slog.WarnContext(readCtx, "CLI draft source probe failed", "operation_id", o.ID, "provider_operation", "pull", "reason", "draft_state_unknown")
 		return false, false, true, nil
 	}
-	if pull.IsDraft != nil && *pull.IsDraft {
-		if waiting {
-			return false, false, false, nil
-		}
-		return false, false, true, e.recordCLIDraftDecision(ctx, o, cliDraftWait)
+	if *pull.IsDraft {
+		return false, false, false, nil
 	}
-	return true, waiting, true, nil
+	return true, true, true, nil
 }
 
 func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason string) error {
