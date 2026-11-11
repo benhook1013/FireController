@@ -460,3 +460,206 @@ func TestRunSelectionContentionBackoffCancellationAndFatalBoundary(t *testing.T)
 		t.Fatal("non-overload failure retried", calls, err)
 	}
 }
+
+func TestRunSelectionReadRetryLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	calls := 0
+	err := retryRunSelectionRead(ctx, func() error {
+		calls++
+		return core.Fail("overloaded", "Storage is busy.", 503)
+	})
+	attemptCode(t, err, "local_read_unavailable")
+	if calls != 3 {
+		t.Fatal("unbounded local read retries", calls)
+	}
+	calls = 0
+	err = retryRunSelectionRead(ctx, func() error {
+		calls++
+		if calls < 3 {
+			return core.Fail("overloaded", "Storage is busy.", 503)
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatal("transient recovery lost", calls, err)
+	}
+}
+
+func TestRunSelectionRepeatedReadDeadlineHoldsAndReleasesWorker(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "bounded-prefix-read", "cli", nil)
+	r, entered, release := selectionContentionReader()
+	var identityMu sync.Mutex
+	var repositoryIDs []int64
+	var pullNumbers []int64
+	r.repository = func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+		identityMu.Lock()
+		repositoryIDs = append(repositoryIDs, id)
+		identityMu.Unlock()
+		return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+	}
+	originalPull := r.pull
+	r.pull = func(ctx context.Context, repo string, number int64) (reviewprovider.Pull, error) {
+		identityMu.Lock()
+		pullNumbers = append(pullNumbers, number)
+		identityMu.Unlock()
+		return originalPull(ctx, repo, number)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": r})
+		done <- err
+	}()
+	selectionContentionEntered(t, entered)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	close(release)
+	// The independently admitted writer remains usable while every read snapshot
+	// acquisition exceeds its actual two-second deadline.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("failed to persist bounded read hold", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("repeated local deadline retained selection worker")
+	}
+	conn.Close()
+	got := selectionContentionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != 3 || got.OperationID != "" || r.calls.Load() != 2 {
+		t.Fatal("invalid local deadline settlement", got, r.calls.Load())
+	}
+	identityMu.Lock()
+	identityOK := len(repositoryIDs) == 1 && repositoryIDs[0] == 801 && len(pullNumbers) == 1 && pullNumbers[0] == 2
+	identityMu.Unlock()
+	if !identityOK {
+		t.Fatal("sequential source reads changed identity or repeated IO", repositoryIDs, pullNumbers)
+	}
+	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got = selectionContentionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Revision != 3 {
+		t.Fatal("restart reopened terminal hold", got)
+	}
+	next, _ := selectionEnqueue(t, f, "after-bounded-read", "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	if got := selectionContentionRead(t, f, next.ID); got.State != "selected" || got.OperationID == "" {
+		t.Fatal("later authorized selection stalled", got)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("held selection created a child")
+	}
+}
+
+type historyReadStarvationReader struct {
+	*refreshTestReader
+	afterRepository func() error
+}
+
+func (r *historyReadStarvationReader) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+	value, err := r.refreshTestReader.Repository(ctx, id)
+	if err == nil {
+		err = r.afterRepository()
+	}
+	return value, err
+}
+
+func TestRunSelectionHistoryReadDeadlineRetainsLocalHold(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "history-read-starvation", "cli", nil)
+	var conn *sql.Conn
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	reader := &historyReadStarvationReader{refreshTestReader: &refreshTestReader{}, afterRepository: func() error {
+		f.store.DB().SetMaxOpenConns(1)
+		var err error
+		conn, err = f.store.DB().Conn(t.Context())
+		return err
+	}}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	worked, err := f.e.runNext(ctx, map[string]TargetReader{"test-capability": reader})
+	if err != nil || !worked || ctx.Err() != nil {
+		t.Fatal("history exhaustion did not settle promptly", worked, err, ctx.Err())
+	}
+	conn.Close()
+	got := selectionContentionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != 3 || got.OperationID != "" || reader.calls.Load() != 1 {
+		t.Fatal("history read did not retain isolated hold before pull IO", got, reader.calls.Load())
+	}
+	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if after := selectionContentionRead(t, f, receipt.ID); after.State != "held" || after.Revision != got.Revision {
+		t.Fatal("restart reopened held selection", after)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal("history starvation admitted child")
+	}
+}
+
+// The pause read follows history without a provider seam. Exercise the actual
+// read transaction and fenced hold directly, not a timing-dependent runNext race.
+func TestRunSelectionPauseReadDeadlineRetainsLocalHold(t *testing.T) {
+	for _, automatic := range []bool{false, true} {
+		name := "explicit"
+		if automatic {
+			name = "automatic"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := selectionFixture(t)
+			receipt, _ := selectionEnqueue(t, f, "pause-read-starvation", "cli", nil)
+			r := selectionContentionRead(t, f, receipt.ID)
+			if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error { return updateRun(ctx, tx, r, "selecting", "", "") }); err != nil {
+				t.Fatal(err)
+			}
+			r = selectionContentionRead(t, f, receipt.ID)
+			wantReason := "local_read_unavailable"
+			if automatic {
+				// This phase-level fixture isolates the existing automatic membership fence.
+				admissionSQL(t, f, `INSERT INTO review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,actor_id,worker_id,credential_id) VALUES(?,?,1,?,?,?,?)`, r.ID, r.ProjectID, strings.Repeat("a", 64), r.ActorID, r.WorkerID, "synthetic-credential")
+				wantReason = "automatic_scheduling_unavailable"
+			}
+			f.store.DB().SetMaxOpenConns(1)
+			conn, err := f.store.DB().Conn(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			err = retryRunSelectionRead(ctx, func() error {
+				return f.e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+					_, err := readPullScheduling(ctx, tx, r.ProjectID, 2)
+					return err
+				})
+			})
+			attemptCode(t, err, "local_read_unavailable")
+			worked, err := f.e.holdRunLocalRefusal(ctx, r)
+			if err != nil || !worked || ctx.Err() != nil {
+				t.Fatal("pause exhaustion did not settle promptly", worked, err, ctx.Err())
+			}
+			conn.Close()
+			got := selectionContentionRead(t, f, receipt.ID)
+			if got.State != "held" || got.Reason != wantReason || got.Revision != r.Revision+1 || got.OperationID != "" {
+				t.Fatal("pause read did not retain local hold", got)
+			}
+			if worked, err := f.e.holdRunLocalRefusal(t.Context(), r); err != nil || worked {
+				t.Fatal("stale selecting revision changed terminal hold", worked, err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+				t.Fatal("pause starvation admitted child")
+			}
+
+		})
+	}
+}

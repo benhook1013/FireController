@@ -137,6 +137,24 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 	}
 }
 
+// retryRunSelectionRead preserves brief contention recovery without letting a
+// repeatedly expired prefix read retain a selection worker indefinitely.
+func retryRunSelectionRead(ctx context.Context, local func() error) error {
+	attempts := 0
+	return retryRunSelectionLocal(ctx, func() error {
+		err := local()
+		attempts++
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var failure *core.Error
+		if attempts >= 3 && errors.As(err, &failure) && failure.Code == "overloaded" {
+			return core.Fail("local_read_unavailable", "Local selection verification remained unavailable after bounded retries.", 503)
+		}
+		return err
+	})
+}
+
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
 	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, 15*time.Second)
 }
@@ -169,7 +187,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		queue = queue[:index+1]
 	}
 	var history map[int64]SourcePlan
-	err = retryRunSelectionLocal(ctx, func() error {
+	err = retryRunSelectionRead(ctx, func() error {
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			history, err = readRunHistory(ctx, tx, r.ProjectID, repo, queue)
@@ -193,7 +211,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if !retained || neededParent {
 			var paused bool
-			err = retryRunSelectionLocal(ctx, func() error {
+			err = retryRunSelectionRead(ctx, func() error {
 				return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 					control, err := readPullScheduling(ctx, tx, r.ProjectID, n)
 					paused = control.Paused
@@ -220,7 +238,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		var reason string
 		bindingHeld := false
 		pausedSuffix := false
-		err = retryRunSelectionLocal(ctx, func() error {
+		err = retryRunSelectionRead(ctx, func() error {
 			target, reason = 0, ""
 			bindingHeld = false
 			pausedSuffix = false
@@ -252,6 +270,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			})
 		})
 		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "local_read_unavailable" {
+				choice.state, choice.reason = "held", "local_read_unavailable"
+				return choice, nil
+			}
 			return runChoice{}, err
 		}
 		if reason != "" {
@@ -452,7 +475,10 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if ctx.Err() != nil {
 		return true, nil
 	}
-	if automaticProjectRefused(readErr) {
+	var readFailure *core.Error
+	if automaticProjectRefused(readErr) || errors.As(readErr, &readFailure) && readFailure.Code == "local_read_unavailable" {
+		// Earlier history/pause reads have no complete source prefix to publish.
+		// Retain the exact selecting revision as a local hold, not a worker error.
 		return e.holdRunLocalRefusal(ctx, r)
 	}
 	if readErr != nil {
