@@ -19,6 +19,8 @@ Within a project, an eligible earlier queued intent retains priority while its
 timer waits. Neither a timer nor a fresh allowance query counts as a completed
 review round.
 
+Malformed or missing intermediate configuration history keeps the affected request queued without acquiring capacity or preparing a provider action. It also prevents later requests from bypassing that unproven predecessor, but does not stop other projects. A bounded diagnostic identifies the affected candidate and project without exposing stored content, at most once per candidate per 30 seconds within a 256-entry diagnostic bound. General database and context failures retain their normal error behavior.
+
 Pause, resume and cancel apply only to an undispatched queued operation and use
 an expected revision plus an idempotency key. They cannot cancel an issued
 provider review or reopen terminal history. Explicit CLI requests made while a
@@ -50,6 +52,8 @@ Request submission can separately fail with `review_inflight`. It refuses a new-
 After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
 
 Held-operation `allowance` facts and the compact held Hosted `retry_not_before` field require `X-FC-Operation-Wait: 3`, including terminal replies to request submission. Missing, older or unsupported versions omit these fields; engine-level retained facts and exact-key recovery remain unchanged.
+
+Reads distinguish missing or malformed required waiting dependencies from operational lookup failures. Required dependency damage remains `storage_unavailable`; cancellation, deadlines and transient storage errors retain their original classification. An absent optional held allowance observation remains absent rather than becoming a broken wait.
 
 ## Recovery and scope
 

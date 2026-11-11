@@ -1,8 +1,16 @@
 package reviewexec
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
+	"strings"
+
 	"crypto/sha256"
 	"fmt"
+	"github.com/benhook1013/FireController/internal/core"
 	"sync"
 	"testing"
 	"time"
@@ -181,4 +189,109 @@ func TestHostedPriorityInvalidIntentCannotReserveTurn(t *testing.T) {
 		t.Fatal("invalid intent not resolved normally", op, err)
 	}
 	f.start(t, attemptProject, lower)
+}
+
+// Damaged retained history cannot authorize a queue jump or stop another project.
+func TestPriorityConfigurationHistoryIsolation(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, damaged := range []string{"candidate", "predecessor"} {
+			for _, damage := range []string{"malformed", "gap"} {
+				t.Run(channel+"/"+damaged+"/"+damage, func(t *testing.T) {
+					f := supervisorFixture(t)
+					f.configure(t, otherAttemptProject, "other-account", 0, false)
+					number := int64(4)
+					if damaged == "predecessor" {
+						number = 2
+					}
+					bad := f.enqueue(t, attemptProject, "damaged-history", channel, number, 1)
+					for revision := int64(1); revision <= 2; revision++ {
+						c := Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli", "hosted"}}
+						if revision == 2 {
+							c.Queue = append(c.Queue, 8)
+						}
+						if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), fmt.Sprintf("suffix-%d", revision), c); err != nil {
+							t.Fatal(err)
+						}
+					}
+					otherNumber := int64(2)
+					if damaged == "predecessor" {
+						otherNumber = 4
+					}
+					same := f.enqueue(t, attemptProject, "same-project", channel, otherNumber, 3)
+					healthy := f.enqueue(t, otherAttemptProject, "healthy-project", channel, 2, 1)
+					if damage == "gap" {
+						admissionSQL(t, f, `DELETE FROM review_execution_config WHERE project_id=? AND revision=2`, attemptProject)
+					} else {
+						admissionSQL(t, f, `UPDATE review_execution_config SET body_json='private-corrupt-history' WHERE project_id=? AND revision=2`, attemptProject)
+					}
+					before, err := readOperation(t.Context(), f.store.DB(), attemptProject, bad.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var output bytes.Buffer
+					previous := slog.Default()
+					slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+					defer slog.SetDefault(previous)
+					seen := map[string]int{}
+					driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+						seen[o.ID]++
+						return Preparation{}, core.Fail("review_evidence_pending", "synthetic hold", 409)
+					}}
+					for range 3 {
+						if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+							t.Fatal("candidate history stopped shared scheduling", err)
+						}
+					}
+					after, err := readOperation(t.Context(), f.store.DB(), attemptProject, bad.ID)
+					if err != nil || encoded(after) != encoded(before) {
+						t.Fatal("damaged request mutated", before, after, err)
+					}
+					if seen[bad.ID] != 0 || seen[healthy.ID] != 1 || driver.calls.Load() != 0 {
+						t.Fatal("provider work or healthy-project isolation", seen, driver.calls.Load())
+					}
+					if damaged == "predecessor" && seen[same.ID] != 0 {
+						t.Fatal("unproven predecessor allowed queue jump", seen)
+					}
+					if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+						t.Fatal("history failure retained capacity")
+					}
+					if !strings.Contains(output.String(), bad.ID) || strings.Contains(output.String(), "private-corrupt-history") {
+						t.Fatal("missing or unsafe candidate diagnostic", output.String())
+					}
+					if got := strings.Count(output.String(), `"operation_id":"`+bad.ID+`"`); got != 1 {
+						t.Fatal("repeated diagnostic was not bounded", got, output.String())
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestConfigurationHistoryIsolationIsTypedAndBounded(t *testing.T) {
+	now := time.Now()
+	e := &Engine{schedulingNow: func() time.Time { return now }}
+	op := Operation{ID: "review_operation_candidate", ProjectID: "project"}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, errors.New("database failure"), core.Fail("storage_unavailable", "Stored source refresh is unavailable.", 500)} {
+		if e.skipUnavailableConfiguration(t.Context(), op, err) || e.skipUnavailableConfiguration(t.Context(), op, fmt.Errorf("wrapped: %w", err)) {
+			t.Fatal("real storage error isolated", err)
+		}
+	}
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	unavailable := fmt.Errorf("private wrapper: %w", newStoredUnavailable(storedConfigurationHistory, "private retained history"))
+	for i := range 300 {
+		op.ID = fmt.Sprintf("review_operation_%d", i)
+		if !e.skipUnavailableConfiguration(t.Context(), op, unavailable) {
+			t.Fatal("typed history not isolated")
+		}
+	}
+	if len(e.configurationFailureNext) != 256 || strings.Count(output.String(), "\n") != 256 || strings.Contains(output.String(), "private") {
+		t.Fatal("unbounded or unsafe diagnostics", len(e.configurationFailureNext))
+	}
+	now = now.Add(30 * time.Second)
+	if !e.skipUnavailableConfiguration(t.Context(), op, unavailable) || len(e.configurationFailureNext) != 1 || strings.Count(output.String(), "\n") != 257 {
+		t.Fatal("diagnostic throttle did not expire")
+	}
 }
