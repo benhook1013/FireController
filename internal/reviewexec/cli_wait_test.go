@@ -575,8 +575,8 @@ func TestCLIAccountRetryDeadlineFutureHistory(t *testing.T) {
 			}
 			pending, err := f.e.pending(t.Context())
 			if invalid {
-				if !isWaitUnavailable(err) {
-					t.Error("pending accepted invalid live history", pending, err)
+				if err != nil || len(pending) != 0 {
+					t.Error("pending did not isolate invalid live history", pending, err)
 				}
 			} else if err != nil || live && len(pending) != 0 || !live && (len(pending) != 1 || pending[0].ID != other.ID) {
 				t.Error("pending used expired or unrelated account history", pending, err)
