@@ -12,5 +12,8 @@ mkdir "$work/parent"
 git -C "$root" archive "$parent" | tar -x -C "$work/parent"
 mkdir "$work/parent/tools/admin-parent-fixture"
 cp "$root/tools/ci/admin-parent-fixture.go.txt" "$work/parent/tools/admin-parent-fixture/main.go"
+mkdir -m 700 "$output"
 (cd "$work/parent" && GOWORK=off go run ./tools/admin-parent-fixture "$work/source" "$output")
+# The predecessor closes/checkpoints SQLite before preserving its source.
+mv "$work/source" "$output/source"
 printf '%s\n' "$parent" > "$output/parent-commit"

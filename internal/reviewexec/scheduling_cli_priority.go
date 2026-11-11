@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const preferredCLIRepository = "benhook1013/firemud"
+
 type pendingCandidateID struct{ project, operation string }
 
 // Prefer the exact configured repository identity, never a mutable project name.
@@ -23,10 +25,10 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 	if err := tx.QueryRowContext(ctx, `SELECT repository FROM projects WHERE id=?`, o.ProjectID).Scan(&repository); err != nil {
 		return false, err
 	}
-	if strings.EqualFold(repository, "benhook1013/FireMUD") {
+	if strings.EqualFold(repository, preferredCLIRepository) {
 		return false, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id FROM review_operations o JOIN projects p ON p.id=o.project_id WHERE o.channel='cli' AND o.state='queued' AND o.reason<>'cli_draft_wait' AND lower(p.repository)='benhook1013/firemud' AND o.project_id<>? ORDER BY o.created_at,o.id LIMIT 101`, o.ProjectID)
+	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id FROM review_operations o JOIN projects p ON p.id=o.project_id WHERE o.channel='cli' AND o.state='queued' AND o.reason<>'cli_draft_wait' AND lower(p.repository)=? AND o.project_id<>? ORDER BY o.created_at,o.id LIMIT 101`, preferredCLIRepository, o.ProjectID)
 	if err != nil {
 		return false, err
 	}
@@ -95,7 +97,7 @@ candidates:
 // A concurrently selected preferred project gets to finish its bounded source
 // check before a competing account claim. Held/finished selections do not block.
 func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operation, capability Capability) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)='benhook1013/firemud' AND s.project_id<>? ORDER BY s.created_at,s.id LIMIT 101`, o.ProjectID)
+	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)=? AND s.project_id<>? ORDER BY s.created_at,s.id LIMIT 101`, preferredCLIRepository, o.ProjectID)
 	if err != nil {
 		return false, err
 	}

@@ -379,3 +379,56 @@ func TestSchedulingOptionalCLIWireContract(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewSchedulingClientReadsMaximumEscapedPausedQueue(t *testing.T) {
+	project := strings.Repeat("<", 128)
+	value := client.ReviewScheduling{
+		ProjectID: project, Revision: math.MaxInt64, AutomaticHosted: true, AutomaticCLI: true,
+		AuthorizingWorkerID: strings.Repeat("&", 128), UpdatedAt: "2026-11-01T00:00:00.999999999+05:30",
+		PausedPulls: make([]client.ReviewPullScheduling, 100),
+	}
+	for i := range value.PausedPulls {
+		value.PausedPulls[i] = client.ReviewPullScheduling{
+			ProjectID: project, PullNumber: 2147483647 - int64(i), Revision: math.MaxInt64, Paused: true,
+			Reason: strings.Repeat("<", 256), ActorID: strings.Repeat(">", 128), UpdatedAt: value.UpdatedAt,
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) <= 256<<10 {
+		t.Fatalf("fixture must exercise escaped reasons and maximum identities: bytes=%d err=%v", len(encoded), err)
+	}
+	var response atomic.Value
+	response.Store(encoded)
+	var calls atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/"+project+"/reviews/scheduling" {
+			t.Error("scheduling read changed scope or method")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response.Load().([]byte))
+	}))
+	defer service.Close()
+	selected := binding(t, service.URL)
+	selected.Context.ProjectID = project
+	c, err := client.New(t.Context(), selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.ReviewScheduling(t.Context())
+	if err != nil || !reflect.DeepEqual(got, value) || calls.Load() != 1 {
+		t.Fatalf("valid maximum escaped scheduling response failed: calls=%d err=%v", calls.Load(), err)
+	}
+	// Retain a finite wire bound even for an otherwise valid response.
+	response.Store(append(append([]byte(nil), encoded...), []byte(strings.Repeat(" ", 512<<10))...))
+	_, err = c.ReviewScheduling(t.Context())
+	checkError(t, err, "invalid_response")
+	if calls.Load() != 2 {
+		t.Fatal("oversized scheduling read retried", calls.Load())
+	}
+}

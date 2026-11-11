@@ -62,9 +62,12 @@ func validRun(r Run) bool {
 }
 func readRun(ctx context.Context, q EvidenceQuery, project, id string) (Run, error) {
 	var r Run
-	err := q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
+	err := scanRoundValues(q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id), &r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The review selection is unavailable in this project.", 404)
+	}
+	if automaticProjectRefused(err) {
+		return Run{}, runUnavailable()
 	}
 	if err != nil {
 		return r, err
@@ -286,15 +289,18 @@ func updateRunAt(ctx context.Context, tx *sql.Tx, r Run, state, reason, operatio
 func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
+		rows, err := tx.QueryContext(ctx, `SELECT project_id,id,`+selectionClaimRevision+` FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
 		if err != nil {
 			return err
 		}
-		type key struct{ p, id string }
+		type key struct {
+			p, id    string
+			revision int64
+		}
 		var keys []key
 		for rows.Next() {
 			var k key
-			if err = rows.Scan(&k.p, &k.id); err != nil {
+			if err = rows.Scan(&k.p, &k.id, &k.revision); err != nil {
 				rows.Close()
 				return err
 			}
@@ -310,6 +316,16 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 		}
 		for _, k := range keys {
 			r, err := readRun(ctx, tx, k.p, k.id)
+			if automaticProjectRefused(err) || err == nil && r.Revision == math.MaxInt64 {
+				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: k.p, ID: k.id, State: "selecting", Revision: k.revision})
+				if err != nil {
+					return err
+				}
+				if didChange {
+					changed = append(changed, k.id)
+				}
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -455,4 +471,21 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 		}
 	}
 	return int64(len(selected)), nil
+}
+
+// A corrupt revision is an opaque retained value, never an arithmetic operand.
+const selectionClaimRevision = `CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision ELSE 0 END`
+
+// Quarantine only the observed pending row. Keep its original damaged fields
+// and any child link for diagnosis; do not fabricate a readable history entry.
+func quarantineSelection(ctx context.Context, tx *sql.Tx, expected Run) (bool, error) {
+	if expected.State != "queued" && expected.State != "selecting" {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, expected.ProjectID, expected.ID, expected.State, expected.Revision)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }

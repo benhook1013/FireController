@@ -120,17 +120,18 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 }
 
 func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configuration, int64, error) {
-	var body string
-	var revision int64
+	var rawRevision, rawBody any
 	var c Configuration
-	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&revision, &body)
+	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&rawRevision, &rawBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, 0, core.Fail("reviews_unconfigured", "Review execution is not configured for this project.", 409)
 	}
 	if err != nil {
 		return c, 0, err
 	}
-	if json.Unmarshal([]byte(body), &c) != nil {
+	revision, revisionOK := rawRevision.(int64)
+	body, bodyOK := rawBody.(string)
+	if !revisionOK || revision < 1 || !bodyOK || json.Unmarshal([]byte(body), &c) != nil {
 		return c, 0, automaticProjectStateFailure("storage_unavailable", "Stored review configuration is unavailable.", 500)
 	}
 	return c, revision, nil

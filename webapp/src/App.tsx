@@ -468,7 +468,7 @@ function RunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: str
 function PullFacts({ pull }: { pull: ReviewPullSummary }) {
   return <div className="review-pull-facts"><span className={`badge ${pull.state === 'merged' ? 'neutral' : 'status-active'}`}>{pull.state}{pull.state === 'merged' ? ' · retained history' : ''}</span><span>Observed CI: {pull.ci_state}</span><span>Observed mergeability: {pull.mergeability}</span><span>{pull.run_count} runs · {pull.attempt_count} attempts</span>{!pull.complete && <span className="review-warning">Incomplete PR observation</span>}</div>;
 }
-function ReviewQueueView() {
+export function ReviewQueueView() {
   const label = useProjectHeading('reviews');
   const { session, key, home } = useWorkspace();
   const paging = usePaging();
@@ -476,7 +476,7 @@ function ReviewQueueView() {
   const query = useQuery({ queryKey: [...key, 'reviews', paging.number === 1 ? 'current' : continuationSnapshot, 'queue', paging.cursor], queryFn: ({ signal }) => session.api.reviewQueue({ limit: pageSize, ...(paging.cursor ? { cursor: paging.cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity });
   const page = query.data;
   const progressQuery = useReviewProgress(page?.configured ? page.items.map(pull => pull.number) : []);
-  const progressByPull = new Map((progressQuery.data?.items ?? []).map(item => [item.pull_number, item]));
+  const progressByPull = new Map((progressQuery.error ? [] : progressQuery.data?.items ?? []).map(item => [item.pull_number, item]));
   const navigation = { ...paging, next: (cursor: string) => { if (page) setContinuationSnapshot(page.snapshot_id); paging.next(cursor); } };
   return <><div className="page-heading"><p className="eyebrow">Review workspace</p><h2>{label}</h2><p>Stored queue, review rounds and finding evidence.</p></div><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{page && (page.configured ? <><ReviewProvenance value={page} /><section className="panel">{progressQuery.error && <ReadState error={progressQuery.error} loading={false} empty={false}>{null}</ReadState>}<ul className="review-queue">{page.items.map(pull => <li key={pull.number}><div className="review-pull-heading"><span className="review-number">#{pull.number}</span><h3><Link to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>{pull.title}</Link></h3></div><PullFacts pull={pull} /><p className="review-head">Observed head: <code>{pull.head_sha || 'Unknown'}</code></p><ReviewRunsView number={pull.number} snapshot={page.snapshot_id} head={pull.head_sha} attempts={pull.latest_attempts} expected={pull.run_count} progress={progressByPull.get(pull.number)} /><Link className="detail-link" to={reviewLink(home, 'pulls', pull.number, page.snapshot_id)}>Read PR #{pull.number} history →</Link></li>)}</ul>{page.items.length === 0 && <p className="empty">No pull requests in this stored queue.</p>}<Pager paging={navigation} page={page} label="review queue" busy={query.isFetching} /></section></> : <section className="panel empty"><h3>Review workspace unconfigured</h3><p>No review observation has been recorded for this project.</p></section>)}</ReadState></>;
 }
@@ -488,7 +488,7 @@ function ReviewAttempts({ number, snapshot, total }: { number:number; snapshot:s
   return <section className="panel review-attempts"><details onToggle={event => setExpanded(event.currentTarget.open)}><summary>Attempts ({total})</summary>{expanded && <><ReadState error={query.error} loading={query.isPending} empty={!query.data?.items.length}><ul>{query.data?.items.map(attempt => <li key={`${attempt.source}:${attempt.source_attempt_id}`}><div><span className="review-channel">{attempt.channel}</span><strong>{attempt.state.replaceAll('_', ' ')}</strong></div><div><small>Started</small>{attempt.started_at ? time(attempt.started_at) : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source} · {attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div>{attempt.reason && <p>{attempt.reason.replaceAll('_',' ')}</p>}</li>)}</ul></ReadState><Pager paging={paging} page={query.data} label="review attempts" busy={query.isFetching} /></>}</details></section>;
 }
 
-function ReviewPullView() {
+export function ReviewPullView() {
   const { number: rawNumber = '' } = useParams();
   const number = /^[1-9][0-9]*$/u.test(rawNumber) ? Number(rawNumber) : NaN;
   const snapshot = useReviewSnapshot();
@@ -496,7 +496,7 @@ function ReviewPullView() {
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'pull', number], queryFn: ({ signal }) => session.api.reviewPull(number, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
   const progressQuery = useReviewProgress(value ? [value.pull.number] : []);
-  const progress = progressQuery.data?.items[0];
+  const progress = progressQuery.error ? undefined : progressQuery.data?.items[0];
   return <><Link className="back-link" to={`${home}/reviews`}>← Review queue</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">Pull request #{value.pull.number}</p><h2>{value.pull.title}</h2>{githubLink(session.project, `pull/${value.pull.number}`) && <a href={githubLink(session.project, `pull/${value.pull.number}`)} target="_blank" rel="noopener noreferrer">Open PR #{value.pull.number} on GitHub ↗</a>}</div><ReviewProvenance value={value} />{progressQuery.error && <ReadState error={progressQuery.error} loading={false} empty={false}>{null}</ReadState>}<section className="panel review-pull-summary"><PullFacts pull={value.pull} /><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div></dl></section><ReviewRunsView key={`runs:${value.snapshot_id}:${number}`} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} attempts={value.pull.latest_attempts} expected={value.pull.run_count} progress={progress} detail /><ReviewAttempts key={`attempts:${value.snapshot_id}:${number}`} number={number} snapshot={value.snapshot_id} total={value.pull.attempt_count} /></>}</ReadState></>;
 }
 function roundAge(value: string): string {

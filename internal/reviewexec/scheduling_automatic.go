@@ -1,12 +1,14 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -115,21 +117,61 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 	return automaticPullBasisChannel(ctx, tx, project, pull, "hosted")
 }
 
-func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+type automaticBasisRead struct {
+	prefix    []byte
+	revision  int64
+	workspace bool
+	frame     frontFrame
+	hasFrame  bool
+}
+
+// A planning pass owns one read snapshot. These shared facts never escape it.
+func readAutomaticBasis(ctx context.Context, tx *sql.Tx, project, channel string) (automaticBasisRead, error) {
+	var out automaticBasisRead
 	s, err := readScheduling(ctx, tx, project)
 	if err != nil {
-		return "", err
+		return out, err
 	}
-	hostedRevision, cliRevision, err := schedulingBasisRevisions(ctx, tx, s)
+	hosted, cli, err := schedulingBasisRevisions(ctx, tx, s)
+	if err != nil {
+		return out, err
+	}
+	out.revision = hosted
+	if channel == "cli" {
+		out.revision = cli
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='review_current_pulls' AND type='table')`).Scan(&out.workspace); err != nil {
+		return out, err
+	}
+	out.frame, out.hasFrame, err = readFrontFrame(ctx, tx, project, channel)
+	if err != nil {
+		return out, err
+	}
+	var prefix bytes.Buffer
+	appendRows := automaticBasisAppender(ctx, tx, &prefix, channel, out.revision)
+	for _, query := range []string{
+		`SELECT revision,automatic_hosted FROM review_scheduling WHERE project_id=?`,
+		`SELECT revision FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`,
+		`SELECT revision FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`,
+	} {
+		if err := appendRows(query, false, project); err != nil {
+			return out, err
+		}
+	}
+	out.prefix = prefix.Bytes()
+	return out, nil
+}
+
+func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+	shared, err := readAutomaticBasis(ctx, tx, project, channel)
 	if err != nil {
 		return "", err
 	}
-	basisRevision := hostedRevision
-	if channel == "cli" {
-		basisRevision = cliRevision
-	}
-	h := sha256.New()
-	appendRows := func(query string, pinJoins bool, args ...any) error {
+	return automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
+}
+
+func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channel string, basisRevision int64) func(string, bool, ...any) error {
+	return func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
 			query = strings.ReplaceAll(query, "revision,automatic_hosted", "revision,automatic_cli")
 		}
@@ -180,13 +222,17 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 		}
 		return rows.Close()
 	}
+}
+
+func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, shared automaticBasisRead) (string, error) {
+	basisRevision := shared.revision
+	h := sha256.New()
+	h.Write(shared.prefix)
+	appendRows := automaticBasisAppender(ctx, tx, h, channel, basisRevision)
 	queries := []struct {
 		sql  string
 		args []any
 	}{
-		{`SELECT revision,automatic_hosted FROM review_scheduling WHERE project_id=?`, []any{project}},
-		{`SELECT revision FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, []any{project}},
-		{`SELECT revision FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, []any{project}},
 		{`SELECT revision,paused,reason FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, []any{project, pull}},
 		{`SELECT epoch,grant_revision,closed,minimum,maximum,maximum_unbounded,used,dry,tapered FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel='` + channel + `'`, []any{project, pull}},
 		{`SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='` + channel + `' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`, []any{project, pull}},
@@ -198,11 +244,7 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 			return "", err
 		}
 	}
-	var hasWorkspace bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='review_current_pulls' AND type='table')`).Scan(&hasWorkspace); err != nil {
-		return "", err
-	}
-	if hasWorkspace {
+	if shared.workspace {
 		if err := appendRows(`SELECT p.state,p.head_sha,p.base_ref,p.base_sha,json_extract(p.metadata_json,'$.is_draft') FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions p ON p.project_id=m.project_id AND p.number=m.number AND p.version_revision=m.version_revision WHERE c.project_id=? AND c.number=?`, false, project, pull); err != nil {
 			return "", err
 		}
@@ -213,7 +255,7 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 			return "", err
 		}
 	}
-	dependencies, err := automaticDependenciesChannel(ctx, tx, project, pull, channel)
+	dependencies, err := automaticDependenciesWithFrame(ctx, tx, project, pull, channel, shared.frame, shared.hasFrame)
 	if err != nil {
 		return "", err
 	}
@@ -230,10 +272,17 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 }
 
 func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) ([]any, error) {
-	out := []any{}
 	frame, found, err := readFrontFrame(ctx, tx, project, channel)
-	if err != nil || !found {
-		return out, err
+	if err != nil {
+		return nil, err
+	}
+	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found)
+}
+
+func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool) ([]any, error) {
+	out := []any{}
+	if !found {
+		return out, nil
 	}
 	byNumber := make(map[int64]frontPull, len(frame.prefix))
 	for _, p := range frame.prefix {
@@ -292,10 +341,17 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 	if err != nil {
 		return "", false, err
 	}
+	var shared automaticBasisRead
+	if len(c.Queue) > 0 {
+		shared, err = readAutomaticBasis(ctx, tx, project, channel)
+		if err != nil {
+			return "", false, err
+		}
+	}
 	values := make([]any, 0, len(c.Queue))
 	remaining := []int64{}
 	for position, pull := range c.Queue {
-		basis, err := automaticPullBasisChannel(ctx, tx, project, pull, channel)
+		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
 		if err != nil {
 			return "", false, err
 		}
