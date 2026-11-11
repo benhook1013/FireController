@@ -37,7 +37,9 @@ func (s *Store) RequireProjectManagementTx(ctx context.Context, tx *sql.Tx, scop
 	return s.authorize(ctx, tx, scope, "admin")
 }
 
-func ValidateWorkerRetirementsSnapshot(ctx context.Context, tx *sql.Tx) error {
+func ValidateWorkerRetirementsSnapshot(ctx context.Context, tx interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) error {
 	rows, err := tx.QueryContext(ctx, `SELECT r.retired_at,r.actor_id,w.id FROM worker_retirements r LEFT JOIN workers w ON w.project_id=r.project_id AND w.id=r.worker_id`)
 	if err != nil {
 		return err

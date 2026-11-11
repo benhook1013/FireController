@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,6 +11,10 @@ func TestProjectManagementRealParentBundleRemainsInactive(t *testing.T) {
 	root := os.Getenv("FC_ADMIN_PARENT_FIXTURE")
 	if root == "" {
 		t.Skip("requires genuine pinned-parent bundle")
+	}
+	provenance, err := os.ReadFile(filepath.Join(root, "parent-commit"))
+	if err != nil || strings.TrimSpace(string(provenance)) != "383ce8c0bc4505dd89cf5cdec7fb2da1d7e556c8" {
+		t.Fatal("fixture must come from pinned predecessor", err)
 	}
 	matches, err := filepath.Glob(filepath.Join(root, "backup_*"))
 	if err != nil || len(matches) != 1 {

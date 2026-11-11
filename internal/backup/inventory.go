@@ -858,22 +858,8 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
-	if versions["project_management"] > 0 {
-		var bad int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE typeof(can_manage)<>'integer' OR can_manage NOT IN (0,1) OR (can_manage=1 AND (can_read<>1 OR can_write<>1))`).Scan(&bad); err != nil || bad != 0 {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
-		}
-	}
-	if versions["worker_retirements"] > 0 {
-		if err := core.ValidateWorkerRetirementsSnapshot(ctx, tx); err != nil {
-			if checkContext(ctx) != nil {
-				return unavailable()
-			}
-			return invalid()
-		}
+	if err := validateAdministrationContent(ctx, tx, versions); err != nil {
+		return err
 	}
 	var identity, key string
 	var sequence int64
@@ -1586,6 +1572,27 @@ func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, ve
 	}
 	if rows.Err() != nil || len(seen) != len(expected) {
 		return invalid()
+	}
+	return nil
+}
+
+func validateAdministrationContent(ctx context.Context, db sqlReader, versions map[string]int) error {
+	if versions["project_management"] > 0 {
+		var bad int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE typeof(can_manage)<>'integer' OR can_manage NOT IN (0,1) OR (can_manage=1 AND (can_read<>1 OR can_write<>1))`).Scan(&bad); err != nil || bad != 0 {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["worker_retirements"] > 0 {
+		if err := core.ValidateWorkerRetirementsSnapshot(ctx, db); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	return nil
 }
