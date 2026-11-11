@@ -161,12 +161,13 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 		}
 		owned[id] = r
 	}
+	e.lifecycleMu.Lock()
 	if !e.lifecycleRunning.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
 		return nil, conflict()
 	}
 	s := newLifecycleSchedule(c)
 	s.readers = owned
-	e.lifecycleMu.Lock()
 	e.lifecycleSchedule = s
 	e.lifecycleMu.Unlock()
 	done := make(chan error, 1)
@@ -187,7 +188,9 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 				cancel()
 			}
 		}
+		e.lifecycleMu.Lock()
 		e.lifecycleRunning.Store(false)
+		e.lifecycleMu.Unlock()
 		s.mu.Lock()
 		for sub := range s.watchers {
 			select {

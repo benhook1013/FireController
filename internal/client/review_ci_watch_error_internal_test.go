@@ -1,8 +1,10 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,5 +20,19 @@ func TestCIWatchInterruptionCopiesOnlyLocalErrors(t *testing.T) {
 		if ciWatchReadError(original) != original {
 			t.Fatal("CI hint overwrote a nonlocal/cause-specific error", original)
 		}
+	}
+}
+
+func TestCIWatchResponseLimitOffersSmallerBatchWithoutChangingFacts(t *testing.T) {
+	original := &Error{Code: "ci_watch_response_limit", Status: 503, Message: "safe refusal", Action: "old", RequestID: "request-limit", Details: map[string]any{"reason": "ci_watch_response_limit"}}
+	var got *Error
+	if !errors.As(ciWatchReadError(fmt.Errorf("wrapped: %w", original)), &got) {
+		t.Fatal("missing structured error")
+	}
+	if got == original || got.Action == original.Action || !strings.Contains(got.Action, "fewer targets") || got.Code != original.Code || got.Status != original.Status || got.Message != original.Message || got.RequestID != original.RequestID || !reflect.DeepEqual(got.Details, original.Details) {
+		t.Fatal("response limit lost safe recovery or original facts", got)
+	}
+	if original.Action != "old" {
+		t.Fatal("changed original refusal")
 	}
 }

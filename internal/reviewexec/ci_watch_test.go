@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -563,4 +564,194 @@ func TestCIWatchSubscriberJoiningInflightNeedsFollowingCollection(t *testing.T) 
 	if got := s.ciWatchResult(late); got.State != "passed" || r.calls != 2 {
 		t.Fatal("inflight join was not refreshed", got, r.calls)
 	}
+}
+
+func TestCIWatchClosedSurvivesCIHintButRechecksMetadata(t *testing.T) {
+	f, s, clock, reader, scope := ciWatchFixture(t)
+	binding, err := f.e.ciWatchBinding(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.registerCIWatch(scope, binding, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(sub)
+	s.mu.Lock()
+	entry := sub.entries[0]
+	entry.version = sub.minimum[0]
+	entry.result = CIWatchItem{State: "closed", Reason: "ci_watch_pr_closed", ObservedHeadSHA: strings.Repeat("a", 40), Checks: []SourceCIContext{}}
+	s.mu.Unlock()
+	s.hintCIWatches(githubhook.Hint{RepositoryID: 801, HeadSHA: strings.Repeat("a", 40), CI: true})
+	if got := s.ciWatchResult(sub); got.State != "closed" {
+		t.Fatal("CI-only hint erased freshly observed closure", got)
+	}
+	s.hintCIWatches(githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{42}, Metadata: true})
+	if got := s.ciWatchResult(sub); got.State != "pending" {
+		t.Fatal("metadata/reopen hint failed to request fresh source", got)
+	}
+	closed := lifecyclePull(42)
+	closed.State = "closed"
+	reader.mu.Lock()
+	reader.pulls[42] = closed
+	reader.mu.Unlock()
+	watchTick(t, f, s)
+	s.hintCIWatches(githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{42}, CI: true})
+	if got := s.ciWatchResult(sub); got.State != "closed" {
+		t.Fatal("completed metadata refresh kept obsolete demand", got)
+	}
+	closed.State = "open"
+	reader.mu.Lock()
+	reader.pulls[42] = closed
+	reader.mu.Unlock()
+	s.hintCIWatches(githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{42}, Metadata: true})
+	clock.Add(ciWatchFallbackInterval)
+	watchTick(t, f, s)
+	if got := s.ciWatchResult(sub); got.State != "pending" || got.Targets[0].Reason == "ci_watch_refresh_pending" {
+		t.Fatal("fresh reopened PR did not replace closure", got)
+	}
+}
+
+func TestCIWatchNewSubscriberHeadHintInvalidatesInflightPass(t *testing.T) {
+	f, s, clock, r, scope := ciWatchFixture(t)
+	binding, err := f.e.ciWatchBinding(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.registerCIWatch(scope, binding, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(old)
+	watchTick(t, f, s)
+	p := lifecyclePull(42)
+	p.HeadSHA = strings.Repeat("c", 40)
+	p.BaseRef = "stack/parent"
+	r.mu.Lock()
+	r.pulls[42] = p
+	r.states[42] = "satisfied"
+	r.mu.Unlock()
+	sub, err := s.registerCIWatch(scope, binding, []CIWatchTarget{{PullNumber: 42, HeadSHA: p.HeadSHA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(sub)
+	clock.Add(ciWatchFallbackInterval)
+	claim, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+	if err != nil || claim == nil {
+		t.Fatal(claim, err)
+	}
+	s.hintCIWatches(githubhook.Hint{RepositoryID: 801, HeadSHA: p.HeadSHA, CI: true})
+	if err := f.e.observeLifecycle(t.Context(), *claim, s); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ciWatchResult(sub); got.State != "pending" || got.Targets[0].Reason != "ci_watch_refresh_pending" {
+		t.Fatal("pre-hint pass escaped the newer active head", got)
+	}
+	clock.Add(ciWatchFallbackInterval)
+	watchTick(t, f, s)
+	if got := s.ciWatchResult(sub); got.State != "passed" {
+		t.Fatal("fresh post-hint proof did not settle", got)
+	}
+}
+
+func TestCIWatchCannotOutliveItsCapturedSchedule(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint(terminal), func(t *testing.T) {
+			f, s, _, _, scope := ciWatchFixture(t)
+			out, cancel := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}})
+			defer cancel()
+			ciWatchRegistered(t, s, 1)
+			// Model the completed stop/restart before the old waiter consumes its
+			// shutdown notification. The global running flag already belongs to new.
+			replacement := newLifecycleSchedule(s.options)
+			replacement.readers = s.readers
+			f.e.lifecycleMu.Lock()
+			f.e.lifecycleSchedule = replacement
+			f.e.lifecycleRunning.Store(true)
+			f.e.lifecycleMu.Unlock()
+			s.mu.Lock()
+			for sub := range s.watchers {
+				if terminal {
+					entry := sub.entries[0]
+					entry.version = sub.minimum[0]
+					entry.result = CIWatchItem{State: "closed", Reason: "ci_watch_pr_closed", Checks: []SourceCIContext{}}
+				}
+				select {
+				case sub.changed <- struct{}{}:
+				default:
+				}
+			}
+			s.mu.Unlock()
+			reply := receiveCIWatch(t, out)
+			var failure *core.Error
+			if !errors.As(reply.err, &failure) || failure.Code != "overloaded" {
+				t.Fatal("old scheduler returned facts or remained attached after restart", reply)
+			}
+			ciWatchRegistered(t, s, 0)
+		})
+	}
+}
+
+type ciWatchRegistrationBarrierReader struct {
+	*ciWatchReader
+	entered, release chan struct{}
+}
+
+func (r *ciWatchRegistrationBarrierReader) SupportsCIGate() bool {
+	close(r.entered)
+	<-r.release
+	return true
+}
+
+func TestCIWatchRegistrationSharesScheduleLifetimeFence(t *testing.T) {
+	f, s, _, reader, scope := ciWatchFixture(t)
+	barrier := &ciWatchRegistrationBarrierReader{ciWatchReader: reader, entered: make(chan struct{}), release: make(chan struct{})}
+	s.readers["test-capability"] = barrier
+	out, cancel := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}})
+	defer cancel()
+	select {
+	case <-barrier.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("registration did not enter")
+	}
+	restarted := make(chan struct{})
+	go func() {
+		f.e.lifecycleMu.Lock()
+		replacement := newLifecycleSchedule(s.options)
+		replacement.readers = s.readers
+		f.e.lifecycleSchedule = replacement
+		f.e.lifecycleRunning.Store(true)
+		f.e.lifecycleMu.Unlock()
+		close(restarted)
+	}()
+	crossed := false
+	select {
+	case <-restarted:
+		crossed = true
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(barrier.release)
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart remained blocked after registration")
+	}
+	if crossed {
+		t.Fatal("restart crossed the captured schedule registration")
+	}
+	s.mu.Lock()
+	for sub := range s.watchers {
+		select {
+		case sub.changed <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	reply := receiveCIWatch(t, out)
+	var failure *core.Error
+	if !errors.As(reply.err, &failure) || failure.Code != "overloaded" {
+		t.Fatal("registered old schedule survived replacement", reply)
+	}
+	ciWatchRegistered(t, s, 0)
 }

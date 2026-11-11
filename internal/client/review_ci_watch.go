@@ -111,16 +111,34 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 		available := max(0, time.Until(deadline)-5*time.Second) / time.Second
 		seconds = min(seconds, int(available))
 	}
-	workflowDetails := false
+	workflowDetails, explicitBases := false, true
 	for _, target := range targets {
 		workflowDetails = workflowDetails || len(target.FailureWorkflowIDs) > 0
+		explicitBases = explicitBases && target.BaseSHA != ""
 	}
 	var value CIWatchResult
 	var status int
-	err = resumeTracedResultWait(ctx, requested, seconds, func(ctx context.Context, remaining int) error {
+	read := func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
 		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciWorkflowDetails: workflowDetails})
-	})
+	}
+	if explicitBases {
+		err = resumeTracedResultWait(ctx, requested, seconds, read)
+	} else {
+		// An implicit base belongs to the server subscription. Reconnecting
+		// cannot recover that pin and must not silently select a newer base.
+		started, trace := time.Now(), &resultWaitTransportTrace{}
+		err = read(trace.context(ctx), seconds)
+		err = resultWaitTransportError(err, trace, started, requested, seconds, 1)
+		if resultWaitReconnectFailure(err) {
+			var failure *Error
+			if errors.As(err, &failure) {
+				copy := *failure
+				copy.Action = "This watch did not reconnect because at least one base was implicit. Verify the original comparison and supply explicit base pins before starting another bounded CI wait."
+				err = &copy
+			}
+		}
+	}
 	if err != nil {
 		return CIWatchResult{}, ciWatchTargetError(ciWatchReadError(err), "", targets)
 	}
@@ -136,6 +154,11 @@ func ciWatchReadError(err error) error {
 	var failure *Error
 	if !errors.As(err, &failure) {
 		return err
+	}
+	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_response_limit" {
+		result := *failure
+		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No review or CI rerun was requested."
+		return &result
 	}
 	if failure.Status == http.StatusBadRequest && failure.Code == "validation_failed" {
 		result := *failure
