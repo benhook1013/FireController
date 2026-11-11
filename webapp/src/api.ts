@@ -1082,7 +1082,7 @@ export class Api {
   async reviewProgress(pulls: number[], signal?: AbortSignal): Promise<ReviewProgress> {
     if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct pull request numbers.');
     const selected = [...pulls];
-    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(','), view: 'stages' })), signal, undefined, 128 * 1024, assessmentJSON, true);
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(','), view: 'stages', include_activity_evidence: 'true' })), signal, undefined, 128 * 1024, assessmentJSON, true);
     if (!validReviewProgress(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
     return value;
   }

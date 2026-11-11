@@ -6,7 +6,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExterna
 import { Link, useLocation, useNavigationType } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ReadState, signalFor, useWorkspace, type Session } from './workspace';
-import type { DeliverySnapshot, ReviewPullSummary, ReviewQueue } from './types';
+import type { DeliverySnapshot, ReviewQueue } from './types';
 import { ReviewQueueView, ReviewQueueRow, reviewQueueQuery } from './review-workspace';
 import { DeliveryBoardArchive } from './delivery-board';
 import { RelativeTime } from './relative-time';
@@ -18,7 +18,10 @@ import type { ReviewProgressItem } from './review-progress';
 import { currentReviewFronts, type ReviewFronts } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
 import { useReviewQueueFrame } from './review-frame-view';
+import { reviewQueueHeadHash, selectMergeHead } from './review-queue-navigation';
 import { RestoringReadingPosition, scrollToReadingTarget } from './reading-position';
+
+export { selectMergeHead } from './review-queue-navigation';
 
 type DeliveryWorker = DeliverySnapshot['workers']['items'][number];
 type DeliveryJob = DeliverySnapshot['jobs']['items'][number];
@@ -86,30 +89,12 @@ export function DeliveryLanes({ value, home, partialJobs = value.jobs.has_more, 
   </WorkerLaneDisplay>)}</div>;
 }
 
-type MergeHead = { state: 'head'; pull: ReviewPullSummary } | { state: 'unknown'; reason: 'unconfigured' | 'preceding' | 'next-page' } | { state: 'none' };
-export function selectMergeHead(queue: ReviewQueue): MergeHead {
-  if (!queue.configured) return { state: 'unknown', reason: 'unconfigured' };
-  if (queue.head_position !== undefined || queue.items.some(pull => pull.queue_position !== undefined)) {
-    if (queue.head_position !== undefined) {
-      const pull = queue.items.find(item => item.queue_position === queue.head_position);
-      return pull?.state === 'open' ? { state: 'head', pull } : { state: 'unknown', reason: 'next-page' };
-    }
-    if (queue.items.some(pull => pull.state !== 'merged' && pull.state !== 'closed')) return { state: 'unknown', reason: 'preceding' };
-    return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
-  }
-  for (const pull of queue.items) {
-    if (pull.state === 'merged' || pull.state === 'closed') continue;
-    if (pull.state === 'open') return { state: 'head', pull };
-    return { state: 'unknown', reason: 'preceding' };
-  }
-  return queue.has_more ? { state: 'unknown', reason: 'next-page' } : { state: 'none' };
-}
 export function MergeHeadContent({ queue, home, progress, fronts, channels }:  { queue: ReviewQueue; home: string; progress?: ReviewProgressItem; fronts?: ReviewFronts; channels?: ('hosted'|'cli')[] }) {
   const label = useProjectHeading('reviews');
   const head = selectMergeHead(queue);
   if (head.state === 'none' || head.state === 'unknown' && head.reason === 'unconfigured') return null;
   const currentFronts = currentReviewFronts(queue.snapshot_id, queue.items, fronts);
-  const jump = <Link className="review-details-link" to={`${home}#${head.state === 'head' ? `review-pr-${head.pull.number}` : 'review-queue'}`} aria-label="Jump to review queue">Review queue ↗</Link>;
+  const jump = <Link className="review-details-link" to={`${home}${reviewQueueHeadHash}`} aria-label="Jump to review queue">Review queue ↗</Link>;
   return <><p className="eyebrow">{label}</p>{head.state === 'head' ? <ul className="review-queue"><ReviewQueueRow pull={head.pull} snapshot={queue.snapshot_id} progress={progress} fronts={currentFronts} channels={channels ?? (fronts?.configured ? fronts.channels.map(channel=>channel.channel) : undefined)} footer={jump} anchor={false} /></ul> : <><h2>Queue head not determined</h2><p>{head.reason === 'preceding' ? 'An earlier queue entry has unknown state.' : 'No open PR is loaded yet; more queue entries remain.'}</p>{jump}</>}</>;
 }
 export function DeliveryHero({ children }: { children: ReactNode }) {

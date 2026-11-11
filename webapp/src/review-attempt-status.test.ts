@@ -29,7 +29,7 @@ describe('attempt activity is separate from a PR review verdict', () => {
   });
   it('distinguishes preparation from active execution without using the current head as a cancellation signal', () => {
     for (const state of ['preparing', 'prepared', 'posting', 'active'] as const) {
-      expect(reviewAttemptStatus({ ...attempt, state, reason: undefined, finished_at: '' }, progress)).toEqual({ text: state === 'active' ? 'Reviewing' : 'Preparing' });
+      expect(reviewAttemptStatus({ ...attempt, state, reason: undefined, finished_at: '' }, progress)).toMatchObject({ text: state === 'active' ? 'Reviewing' : 'Preparing', activity: { startedAt: attempt.started_at } });
     }
     expect(reviewAttemptStatus({ ...attempt, state: 'active' }, progress)).toBeUndefined();
   });
@@ -87,4 +87,52 @@ it('does not infer that a changed source prevented provider execution', () => {
   expect(value?.cause).toBe('The review comparison changed');
   expect(value?.cause).not.toContain('before start');
   expect(value?.description).toContain('provider outcome is unconfirmed');
+});
+
+
+describe('activity timing describes evidence, not inferred provider start', () => {
+  const active = { ...attempt, state: 'active' as const, reason: undefined, finished_at: '' };
+  it('labels known attempt time with timezone and exact source timestamp', () => {
+    const result = reviewAttemptStatus(active)!;
+    expect(result.description).toContain('Attempt began ');
+    expect(result.description).toContain('(2026-11-01T00:00:00Z)');
+    expect(result.description).toContain('not proof of reviewer start');
+    expect(result.description).toContain('not a live activity check');
+    expect(result.activity?.startedAt).toBe(active.started_at);
+  });
+  it('distinguishes Hosted trigger delivery from execution and collection', () => {
+    const hosted = { ...active, channel: 'hosted' as const, trigger_id: '42' };
+    const result = reviewAttemptStatus(hosted)!;
+    expect(result.text).toBe('Reviewing');
+    expect(result.description).toContain('trigger is recorded as sent');
+    expect(result.description).toContain('queued, running, or finished');
+    expect(result.description).toContain('Actual provider start time is not available');
+    expect(result.description).not.toContain('Trigger sent at');
+    const unknown = reviewAttemptStatus({ ...hosted, trigger_id: '' })!;
+    expect(unknown.description).toContain('trigger delivery is not shown');
+    expect(unknown.description).not.toContain('trigger is recorded as sent');
+  });
+  it('explains that CLI active precedes final checks and process launch', () => {
+    expect(reviewAttemptStatus(active)?.description).toContain('before final checks and process launch');
+    expect(reviewAttemptStatus(active)?.description).toContain('Actual CLI process start time is not available');
+  });
+  it.each(['', 'invalid'])('does not invent unknown or invalid attempt timing: %s', started_at => {
+    const result = reviewAttemptStatus({ ...active, started_at })!;
+    expect(result.description).toContain('Attempt start time is unknown');
+    expect(result.activity?.startedAt).toBe('');
+    expect(result.description).not.toContain('Invalid Date');
+  });
+  it('does not mistake posting or preparation for confirmed execution', () => {
+    for (const state of ['preparing', 'prepared', 'posting'] as const) {
+      const result = reviewAttemptStatus({ ...active, state, channel: 'hosted' })!;
+      expect(result.text).toBe('Preparing');
+      expect(result.description).toContain('not yet confirmed');
+      expect(result.description).not.toContain('trigger is recorded as sent');
+    }
+  });
+  it('does not attach current-activity details to old or finished attempts', () => {
+    expect(reviewAttemptStatus(active, progress, undefined, true)?.activity).toBeUndefined();
+    expect(reviewAttemptStatus({ ...active, finished_at: attempt.finished_at }, progress)?.activity).toBeUndefined();
+    expect(reviewAttemptStatus(active, { ...progress, wait: { paused: true } })?.activity).toBeUndefined();
+  });
 });

@@ -244,3 +244,162 @@ func TestAutomaticCLISourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, fault := range []string{"scheduling", "scheduling-type", "pull-scheduling", "pull-scheduling-type", "front", "oversized-front", "oversized-basis", "retry-selection"} {
+			t.Run(channel+"/"+fault, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				f.configure(t, otherAttemptProject, "test-capability", 0, false)
+				for _, project := range []string{attemptProject, otherAttemptProject} {
+					zero, on := int64(0), true
+					if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, project, f.admin, "write"), core.NewID("enable"), SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+				generate := f.e.generateAutomaticHosted
+				if channel == "cli" {
+					generate = f.e.generateAutomaticCLI
+				}
+				switch fault {
+				case "scheduling":
+					admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
+				case "scheduling-type":
+					admissionSQL(t, f, `UPDATE review_scheduling SET revision='malformed' WHERE project_id=?`, attemptProject)
+				case "pull-scheduling-type":
+					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,'malformed',0,'','actor',?)`, attemptProject, stamp())
+				case "pull-scheduling":
+					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'unexpected reason','actor',?)`, attemptProject, stamp())
+				case "front", "oversized-front":
+					body := "not-json"
+					if fault == "oversized-front" {
+						body = strings.Repeat(" ", maxFrontPrefixBytes+1)
+					}
+					admissionSQL(t, f, `INSERT INTO review_front_frames VALUES(?,?,801,1,?,'',0,'',?)`, attemptProject, channel, stamp(), body)
+				case "oversized-basis":
+					// The basis reads only these three columns; a private synthetic table
+					// keeps this bound test independent of route creation workflows.
+					admissionSQL(t, f, `ALTER TABLE review_finding_routes RENAME TO saved_finding_routes`)
+					admissionSQL(t, f, `CREATE TABLE review_finding_routes(project_id TEXT,id TEXT,revision INTEGER,state TEXT,disposition TEXT,has_fix INTEGER,source_pull_number INTEGER,target_pull_number INTEGER)`)
+					admissionSQL(t, f, `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10001) INSERT INTO review_finding_routes SELECT ?,printf('route-%d',x),1,'active','accepted',0,2,4 FROM n`, attemptProject)
+				case "retry-selection":
+					if worked, err := generate(t.Context(), readers); err != nil || !worked {
+						t.Fatal(worked, err)
+					}
+					selectionNext(t, f, &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+						return reviewprovider.Repository{}, context.DeadlineExceeded
+					}})
+					r := schedulingLatest(t, f)
+					admissionSQL(t, f, `UPDATE review_selections SET updated_at='malformed' WHERE id=?`, r.ID)
+					// Ensure the bad project is considered before the healthy one again.
+					f.e.automaticCursor, f.e.automaticCLICursor = "", ""
+				}
+				worked, err := generate(t.Context(), readers)
+				if err != nil || !worked {
+					t.Fatal("project-local state stopped the healthy project", worked, err)
+				}
+				if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections a JOIN review_selections s ON s.id=a.selection_id WHERE a.project_id=? AND s.channel=?`, otherAttemptProject, channel); got != 1 {
+					t.Fatal("healthy project not selected", got)
+				}
+				// A corrupt Hosted project must not prevent the independent CLI pass.
+				if worked, err = f.e.coordinateAutomaticHosted(t.Context(), readers); err != nil || !worked {
+					t.Fatal("project-local state stopped the other channel", worked, err)
+				}
+				otherChannel := "cli"
+				if channel == "cli" {
+					otherChannel = "hosted"
+				}
+				if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections a JOIN review_selections s ON s.id=a.selection_id WHERE s.channel=?`, otherChannel); got < 1 {
+					t.Fatal("other channel was suppressed", got)
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticCoordinatorPreservesStorageFailuresAndCancellation(t *testing.T) {
+	for _, fault := range []string{"front-table", "scheduling-table", "write-rollback", "cancelled", "cancelled-throttled"} {
+		t.Run(fault, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			schedulingEnable(t, f, 0, true)
+			switch fault {
+			case "front-table":
+				admissionSQL(t, f, `ALTER TABLE review_front_frames RENAME TO missing_front_frames`)
+			case "scheduling-table":
+				admissionSQL(t, f, `ALTER TABLE review_scheduling RENAME TO missing_scheduling`)
+			case "write-rollback":
+				admissionSQL(t, f, `CREATE TRIGGER fail_automatic_attribution BEFORE INSERT ON review_automatic_selections BEGIN SELECT RAISE(ABORT, 'synthetic attribution failure'); END`)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if strings.HasPrefix(fault, "cancelled") {
+				cancel()
+				if fault == "cancelled-throttled" {
+					f.e.automaticNext = time.Now().Add(time.Minute)
+				}
+			}
+			before := selectionCounts(t, f)
+			worked, err := f.e.coordinateAutomaticHosted(ctx, map[string]TargetReader{"test-capability": &refreshTestReader{}})
+			if err == nil || worked || automaticProjectRefused(err) {
+				t.Fatal("storage/cancellation error was suppressed", worked, err)
+			}
+			if strings.HasPrefix(fault, "cancelled") && !errors.Is(err, context.Canceled) {
+				t.Fatal("parent cancellation lost", err)
+			}
+			if before != selectionCounts(t, f) || attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`) != 0 {
+				t.Fatal("failed transaction retained partial intent")
+			}
+		})
+	}
+	for _, err := range []error{core.Fail("storage_unavailable", "Shared storage failed", 503), core.Fail("storage_unavailable", "Shared storage failed", 500), core.Fail("overloaded", "Shared writer busy", 503), core.Fail("unrelated", "Unknown refusal", 403), context.Canceled, sql.ErrTxDone} {
+		if automaticProjectRefused(err) {
+			t.Fatal("public error code alone was classified project-local", err)
+		}
+	}
+}
+
+func TestAutomaticMalformedProjectDoesNotStopExplicitSelectionWorkers(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	schedulingEnable(t, f, 0, true)
+	admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
+	raw, err := f.e.EnqueueRun(t.Context(), selectionScope(t, f, otherAttemptProject, f.admin, "write"), "healthy-explicit", RunRequest{Channel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt Receipt
+	if err = json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reader := &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+		return reviewprovider.Pull{Number: number, RepositoryID: 802, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+	}}
+	done, err := f.e.StartReviewRuns(ctx, map[string]TargetReader{"test-capability": reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error("selection workers failed", err)
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		if err := f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state == "selected" {
+			return
+		}
+		if state == "held" || state == "empty" {
+			t.Fatal("healthy explicit request not selected", state)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("healthy explicit selection did not finish")
+}

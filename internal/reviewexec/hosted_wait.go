@@ -56,6 +56,19 @@ func isWaitUnavailable(err error) bool {
 	return isStoredUnavailable(err, storedWaitingIntent)
 }
 
+// Only absent or proven malformed retained dependencies describe a broken wait.
+// Operational storage failures, including already normalized ones, keep their cause.
+func waitDependencyError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) || isStoredUnavailable(err, storedHostedObservation) || isStoredUnavailable(err, storedReviewAdmission) {
+		return waitUnavailable()
+	}
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "not_found" {
+		return waitUnavailable()
+	}
+	return err
+}
+
 func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*OperationWait, error) {
 	var version string
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil {
@@ -87,7 +100,10 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 			return nil, waitUnavailable()
 		}
 		a, err := readAttempt(ctx, q, o.ProjectID, baseline.String)
-		if err != nil || a.State != "held" || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+		if err != nil {
+			return nil, waitDependencyError(err)
+		}
+		if a.State != "held" || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 			return nil, waitUnavailable()
 		}
 		original, err := historicalCooldownOperation(ctx, q, o, a)
@@ -96,13 +112,22 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		}
 		if o.Channel == "cli" {
 			record, err := readCLIAllowanceRecord(ctx, q, original, a)
-			if err != nil || record.Observation.Remaining != 0 {
+			if err != nil {
+				return nil, waitDependencyError(err)
+			}
+			if record.Observation.Remaining != 0 {
 				return nil, waitUnavailable()
 			}
 			in := record.Observation
 			result.CLIAllowance = &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: in.ObservedAt, Remaining: &in.Remaining, Limit: &in.Limit, FullCapacityInMS: &in.FullCapacityInMS, RollingWindowMS: &in.RollingWindowMS}
-		} else if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
-			return nil, waitUnavailable()
+		} else {
+			record, err := readHostedAllowanceRecord(ctx, q, original, a)
+			if err != nil {
+				return nil, waitDependencyError(err)
+			}
+			if record.Input.Observation.State != "cooldown_observed" {
+				return nil, waitUnavailable()
+			}
 		}
 	}
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)

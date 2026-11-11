@@ -200,6 +200,15 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 					value.QueuedPriority = &FrontQueuePriority{PullNumber: local.PullNumber, HeadSHA: local.HeadSHA, BaseSHA: local.BaseSHA, BaseRef: local.BaseRef}
 				}
 			}
+			if value.Reason == "review_evidence_pending" && value.PullNumber > 0 {
+				fixesPending, err := frontPendingFixes(ctx, tx, scope.ProjectID, value.PullNumber, channel)
+				if err != nil {
+					return err
+				}
+				if fixesPending {
+					value.Reason = "review_fixes_pending"
+				}
+			}
 			if value.PullNumber > 0 {
 				value.ReviewSize = reviews.CurrentReviewSize(ctx, tx, scope.ProjectID, value.PullNumber)
 			}

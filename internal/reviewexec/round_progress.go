@@ -7,25 +7,27 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// RoundProgressChannel contains current native allowance facts only. Pending
-// counts operations bound to this epoch, not coverage or permission to dispatch.
+// RoundProgressChannel contains current native allowance facts and optional
+// private activity diagnostics. Pending counts operations bound to this epoch,
+// not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	Wait                *OperationWait `json:"wait,omitempty"`
-	Channel             string         `json:"channel"`
-	Configured          bool           `json:"configured"`
-	Revision            int64          `json:"revision"`
-	Epoch               int64          `json:"epoch"`
-	Closed              bool           `json:"closed"`
-	Minimum             int64          `json:"minimum"`
-	Maximum             int64          `json:"maximum"`
-	MaximumUnbounded    bool           `json:"maximum_unbounded,omitempty"`
-	Taper               int64          `json:"taper"`
-	Used                int64          `json:"used"`
-	Dry                 int64          `json:"dry"`
-	Tapered             bool           `json:"tapered"`
-	Pending             int64          `json:"pending"`
-	PendingExecution    *int64         `json:"pending_execution,omitempty"`
-	PendingAdjudication *int64         `json:"pending_adjudication,omitempty"`
+	ActivityEvidence    *ActivityEvidence `json:"activity_evidence,omitempty"`
+	Wait                *OperationWait    `json:"wait,omitempty"`
+	Channel             string            `json:"channel"`
+	Configured          bool              `json:"configured"`
+	Revision            int64             `json:"revision"`
+	Epoch               int64             `json:"epoch"`
+	Closed              bool              `json:"closed"`
+	Minimum             int64             `json:"minimum"`
+	Maximum             int64             `json:"maximum"`
+	MaximumUnbounded    bool              `json:"maximum_unbounded,omitempty"`
+	Taper               int64             `json:"taper"`
+	Used                int64             `json:"used"`
+	Dry                 int64             `json:"dry"`
+	Tapered             bool              `json:"tapered"`
+	Pending             int64             `json:"pending"`
+	PendingExecution    *int64            `json:"pending_execution,omitempty"`
+	PendingAdjudication *int64            `json:"pending_adjudication,omitempty"`
 }
 
 type RoundProgressItem struct {
@@ -65,7 +67,7 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 	return e.readRoundProgress(ctx, scope, numbers, true)
 }
 
-func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool) (RoundProgress, error) {
+func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool, activity ...bool) (RoundProgress, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(scope.ProjectID) || !validRoundProgressNumbers(numbers) {
 		return RoundProgress{}, invalid()
 	}
@@ -95,6 +97,12 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				if stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
 					progress.Wait, err = readChannelWait(ctx, tx, scope.ProjectID, number, channel)
+					if err != nil {
+						return err
+					}
+				}
+				if len(activity) > 0 && activity[0] {
+					progress.ActivityEvidence, err = readActivityEvidence(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err
 					}

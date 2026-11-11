@@ -128,20 +128,26 @@ func (e *Engine) ExecutionContext(ctx context.Context, project, operationID stri
 	if !identifier.MatchString(project) || !identifier.MatchString(operationID) {
 		return ExecutionContext{}, invalid()
 	}
+	// Retry only this local snapshot, before either driver starts provider
+	// preparation. Keep a finite aggregate bound even without a caller deadline.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	var result ExecutionContext
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		operation, err := readOperation(ctx, tx, project, operationID)
-		if err != nil {
+	err := retryRunSelectionLocal(ctx, func() error {
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			operation, err := readOperation(ctx, tx, project, operationID)
+			if err != nil {
+				return err
+			}
+			if operation.State != "preparing" {
+				return conflict()
+			}
+			result, err = e.currentExecutionContext(ctx, tx, operation)
 			return err
-		}
-		if operation.State != "preparing" {
-			return conflict()
-		}
-		result, err = e.currentExecutionContext(ctx, tx, operation)
-		return err
+		})
 	})
 	if err != nil {
-		return ExecutionContext{}, err
+		return ExecutionContext{}, core.NormalizeStorageError(err)
 	}
 	return result, nil
 }
@@ -230,31 +236,10 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
-		if current.Operation.Channel == "hosted" {
-			// Look-ahead removes ancestor progress as a dispatch prerequisite,
-			// not the exact source witness or the target's own admission gates.
-			if plan.Pull.IsDraft != nil && *plan.Pull.IsDraft {
-				return invalid()
-			}
-			number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
-			continue
-		}
-		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
-			return err
-		}
-		routes, err := pendingIncomingRoutes(ctx, tx, project, number)
-		if err != nil {
-			return err
-		}
-		if routes > 0 {
-			return predecessorUnfinishedHold(number, "incoming_route_pending")
-		}
-		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
-		if err != nil {
-			return err
-		}
-		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
-			return predecessorUnfinishedHold(number, "discovery_incomplete")
+		// Ancestor review work remains local to that ancestor. Preserve its exact
+		// source witness, including draft state, without requiring review credit.
+		if plan.Pull.IsDraft != nil && *plan.Pull.IsDraft {
+			return invalid()
 		}
 		number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
 	}

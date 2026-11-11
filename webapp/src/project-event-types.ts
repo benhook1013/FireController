@@ -25,6 +25,7 @@ export const projectEventTypes = [
   'reviews.adoption_obligation_retargeted',
   'review.requested',
   'review.operation_updated',
+  'review.activity_observed',
   'review.route.routed',
   'review.route.superseded',
   'review.route.adjudicated',

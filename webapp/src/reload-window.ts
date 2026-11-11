@@ -25,10 +25,11 @@ export function saveReloadWindow(scope: string, value: unknown): boolean {
 }
 // Retain only bounded UI selectors in this exact history entry. Router keys,
 // URL and session cookies remain untouched; no records or credentials are saved.
-export function useReloadWindow<T>(scope: string, fallback: T, valid: (value: unknown) => value is T, entryKey = '', pop = false): [T, Dispatch<SetStateAction<T>>, boolean] {
-  const [stored, setStored] = useState(() => ({ scope, entryKey, value: readReloadWindow(scope, fallback, valid) }));
+export function useReloadWindow<T>(scope: string, fallback: T, valid: (value: unknown) => value is T, entryKey = '', pop = false, restore = true): [T, Dispatch<SetStateAction<T>>, boolean] {
+  const read = (otherwise: T) => restore ? readReloadWindow(scope, otherwise, valid) : fallback;
+  const [stored, setStored] = useState(() => ({ scope, entryKey, value: read(fallback) }));
   const [saved, setSaved] = useState({ scope, okay: true });
-  const value = stored.scope !== scope ? readReloadWindow(scope, fallback, valid) : stored.entryKey !== entryKey && pop ? readReloadWindow(scope, stored.value, valid) : stored.value;
+  const value = stored.scope !== scope ? read(fallback) : stored.entryKey !== entryKey && pop ? read(stored.value) : stored.value;
   if (stored.scope !== scope || stored.entryKey !== entryKey) setStored({ scope, entryKey, value });
   useLayoutEffect(() => { setSaved({ scope, okay: saveReloadWindow(scope, value) }); }, [scope, value, entryKey]);
   const change: Dispatch<SetStateAction<T>> = update => setStored(before => ({ scope, entryKey, value: typeof update === 'function' ? (update as (value: T) => T)(before.scope === scope ? before.value : value) : update }));

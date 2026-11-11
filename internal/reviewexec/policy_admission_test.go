@@ -478,11 +478,13 @@ func TestVerifyActionStackedRequiresExactActualParentWitness(t *testing.T) {
 	if adjudicationState(t, f, child) != before {
 		t.Fatal("moved actual parent refusal changed retained state")
 	}
-	// The proof was ready at preparation, but a real current correction now needs
-	// a fix. The final guard must check predecessors and target in the same read.
+	// A late accepted ancestor finding does not change the child's pinned diff.
+	// The final guard preserves that obligation without making it a review gate.
 	adjudicationDecide(t, f, id, "late-predecessor-acceptance", 2, 0, "accepted")
 	afterCorrection := adjudicationState(t, f, child)
-	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...), "review_held")
+	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
+		t.Fatal("ancestor fix work blocked child review", err)
+	}
 	if adjudicationState(t, f, child) != afterCorrection {
 		t.Fatal("late predecessor refusal mutated state")
 	}

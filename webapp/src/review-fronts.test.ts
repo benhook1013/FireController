@@ -26,6 +26,15 @@ describe('current review position badges',()=>{
     expect(reviewChannelPosition(pull(2),'other-snapshot','hosted',v)).toBeUndefined();
     expect(reviewChannelPosition(pull(2),snapshot,'cli',v)).toBeUndefined();
   });
+  it.each(['hosted', 'cli'] as const)('distinguishes finalized fixes from results pending for %s without inferring from the recent preview', channel => {
+    const v = value();
+    v.channels = [{ ...front(channel, 2), state: 'held', reason: 'review_fixes_pending' }];
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'Review results are finalized, but accepted findings still need fixes before another review.' });
+    v.channels[0].reason = 'review_evidence_pending';
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toMatchObject({ text: 'Results pending', description: expect.stringContaining('capture or adjudication') });
+    v.channels[0].reason = 'external_hosted_pending';
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)?.text).toBe('Manual results pending');
+  });
   it('keeps channel fronts independent and only marks established later positions queued',()=>{
     expect(reviewQueueBadges(pull(1),snapshot,value())).toEqual([]);
     expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.text).toBe('Review front');
@@ -99,6 +108,13 @@ describe('bounded front response admission',()=>{
     expect(await api.reviewFronts()).toEqual(value());expect(read).toHaveBeenCalledTimes(1);
     const [url,init]=read.mock.calls[0] as unknown as [string,RequestInit];
     expect(url).toBe('https://service.example/api/v1/projects/project_one/reviews/fronts');expect(init.method??'GET').toBe('GET');expect(new Headers(init.headers).has('authorization')).toBe(false);expect(new Headers(init.headers).has('x-fc-worker')).toBe(false);api.close();
+  });
+  it('accepts the display-specific fixes hold without adding response fields', async () => {
+    const api = await connected(), v = value();
+    v.channels = [{ ...front('hosted', 2), state: 'held', reason: 'review_fixes_pending' }];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(v), { headers: { 'content-type': 'application/json' } })));
+    expect(await api.reviewFronts()).toEqual(v);
+    api.close();
   });
   it('admits a locally checked position without inventing provider observation time',async()=>{
     const api=await connected();const local=value();local.channels=[{...front('cli',3),state:'held',reason:'local_queue_position',source_observed_at:undefined}];

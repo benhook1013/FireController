@@ -27,7 +27,9 @@ func TestHostedLookaheadSourceKeepsPendingAncestorAndExactParent(t *testing.T) {
 	_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, configuration, sourceOperation(f, 2, "hosted"))
 	assertCoreErrorCode(t, err, "review_evidence_pending")
 	_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, configuration, sourceOperation(f, 4, "cli"))
-	sourceHoldReason(t, err, "predecessor_unfinished")
+	if err != nil {
+		t.Fatal("CLI child was blocked by ancestor review work", err)
+	}
 	parent.HeadSHA = strings.Repeat("8", 40)
 	f.reader.pulls[2] = parent
 	_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, configuration, operation)

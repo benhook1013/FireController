@@ -75,7 +75,7 @@ describe('merge-head recent review rounds', () => {
       expect(value).toContain('class="badge review-fact-pill review-mergeability review-fact-mergeable"');
       expect(value).toContain('review-additions">+20'); expect(value).toContain('review-deletions">−4');
     }
-    expect(hero).toContain('href="/projects/project#review-pr-7"'); expect(hero).toContain('>Review queue ↗</a>');
+    expect(hero).toContain('href="/projects/project#review-queue-head"'); expect(hero).toContain('>Review queue ↗</a>');
     expect(hero).not.toContain('Review history ↗'); expect(normal).toContain('Review history ↗');
   });
   it('waits for authoritative adjudication before highlighting a zero-accepted round', () => {

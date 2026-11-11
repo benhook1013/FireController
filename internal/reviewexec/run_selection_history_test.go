@@ -185,6 +185,12 @@ func TestRunSelectionPausedActualParentsStillAcquired(t *testing.T) {
 					t.Fatal(err)
 				}
 				schedulingPause(t, f, 2, 0, true)
+				pauseBefore, err := f.e.ReadPullScheduling(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidenceBefore := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`)
+				roundsBefore := attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`)
 				reader := &actualParentSelectionReader{pulls: map[int64]reviewprovider.Pull{
 					2: {Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), HeadRef: "parent", BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1},
 					4: {Number: 4, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("c", 40), HeadRef: "child", BaseSHA: strings.Repeat("a", 40), BaseRef: "parent", ChangedFiles: 1},
@@ -201,12 +207,33 @@ func TestRunSelectionPausedActualParentsStillAcquired(t *testing.T) {
 						t.Fatal("actual dependency skipped", p)
 					}
 				}
-				want := "held"
-				if channel == "hosted" {
-					want = "selected"
-				}
-				if got.State != want {
+				if got.State != "selected" || got.OperationID == "" {
 					t.Fatal(got)
+				}
+				child := roundOperation(t, f, got.OperationID)
+				if child.PullNumber != 4 || child.HeadSHA != strings.Repeat("c", 40) || child.AllowOutOfOrder {
+					t.Fatal("selected child lost exact source or bypassed ordinary guards", child)
+				}
+				pauseAfter, err := f.e.ReadPullScheduling(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), 2)
+				if err != nil || pauseAfter != pauseBefore || !pauseAfter.Paused || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != evidenceBefore || attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != roundsBefore {
+					t.Fatal("child selection changed ancestor hold or accounting", pauseAfter, err)
+				}
+				for _, plan := range frame.plans() {
+					if plan.Pull.Number == 4 && (plan.ParentPullNumber != 2 || plan.ParentSHA != strings.Repeat("a", 40) || plan.Pull.BaseSHA != plan.ParentSHA) {
+						t.Fatal("child lost exact paused-parent witness", plan)
+					}
+					if plan.Pull.Number == 2 {
+						err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+							own, err := f.e.evaluateFrontPlan(ctx, tx, Run{ProjectID: attemptProject, Channel: channel}, 801, &plan)
+							if err == nil && (own.state != "held" || own.reason != "pull_scheduling_paused") {
+								t.Fatal("ancestor's own pause no longer holds", own)
+							}
+							return err
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 			})
 		}

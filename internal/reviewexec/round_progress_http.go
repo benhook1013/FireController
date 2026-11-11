@@ -12,9 +12,12 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 	if len(r.URL.RawQuery) > 4096 {
 		return nil, invalid()
 	}
-	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view")
+	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view", "include_activity_evidence")
 	if err != nil {
 		return nil, err
+	}
+	if query.Has("include_activity_evidence") && (query.Get("include_activity_evidence") != "true" || query.Get("view") != "stages") {
+		return nil, invalid()
 	}
 	if query.Has("view") && query.Get("view") != "stages" {
 		return nil, invalid()
@@ -54,7 +57,7 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	progress, err := e.readRoundProgress(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages")
+	progress, err := e.readRoundProgress(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages", r.URL.Query().Get("include_activity_evidence") == "true")
 	if err != nil {
 		core.WriteError(w, err)
 		return

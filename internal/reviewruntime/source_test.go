@@ -165,7 +165,7 @@ func TestResolveReviewSourceHostedStackAndPhaseLocalReads(t *testing.T) {
 			before := sourceState(t, f)
 			reads := newSourceReads(f.reader)
 			plan, predecessors, err := resolveReviewSource(t.Context(), f.engine, reads, 901, config, operation)
-			// Hosted needs the same source chain regardless of ancestor review credit.
+			// Both channels need the same source chain regardless of ancestor review credit.
 			if err != nil || len(predecessors) != 1 || predecessors[0].Pull.Number != 2 || plan.ParentPullNumber != 2 {
 				t.Fatal("hosted stack scope/order changed", plan, predecessors, err)
 			}

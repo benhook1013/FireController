@@ -71,17 +71,32 @@ type schedulingRecord struct {
 }
 
 func schedulingUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review scheduling is unavailable.", 503)
+	return automaticProjectStateFailure("storage_unavailable", "Stored review scheduling is unavailable.", 503)
 }
 func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s schedulingRecord, err error) {
 	s.ProjectID = project
-	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&s.Revision, &s.AutomaticHosted, &s.AutomaticCLI, &s.actor, &s.AuthorizingWorkerID, &s.credential, &s.UpdatedAt)
+	var revision, hosted, cli, actor, worker, credential, updated any
+	err = tx.QueryRowContext(ctx, `SELECT revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, project).Scan(&revision, &hosted, &cli, &actor, &worker, &credential, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
 	if err != nil {
 		return s, err
 	}
+	// Scan into unconverted values so malformed SQLite column types can be
+	// classified as retained data without disguising an actual database error.
+	var revisionOK, actorOK, workerOK, credentialOK, updatedOK bool
+	s.Revision, revisionOK = revision.(int64)
+	hostedValue, hostedOK := hosted.(int64)
+	cliValue, cliOK := cli.(int64)
+	s.actor, actorOK = actor.(string)
+	s.AuthorizingWorkerID, workerOK = worker.(string)
+	s.credential, credentialOK = credential.(string)
+	s.UpdatedAt, updatedOK = updated.(string)
+	if !revisionOK || !hostedOK || !cliOK || !actorOK || !workerOK || !credentialOK || !updatedOK || hostedValue < 0 || hostedValue > 1 || cliValue < 0 || cliValue > 1 {
+		return s, schedulingUnavailable()
+	}
+	s.AutomaticHosted, s.AutomaticCLI = hostedValue == 1, cliValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.actor) || !roundTime(s.UpdatedAt) || (s.AutomaticHosted || s.AutomaticCLI) && (!identifier.MatchString(s.AuthorizingWorkerID) || !identifier.MatchString(s.credential)) {
 		return s, schedulingUnavailable()
 	}
@@ -199,13 +214,24 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 func readPullScheduling(ctx context.Context, tx *sql.Tx, project string, pull int64) (s PullScheduling, err error) {
 	s.ProjectID = project
 	s.PullNumber = pull
-	err = tx.QueryRowContext(ctx, `SELECT revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, project, pull).Scan(&s.Revision, &s.Paused, &s.Reason, &s.ActorID, &s.UpdatedAt)
+	var revision, paused, reason, actor, updated any
+	err = tx.QueryRowContext(ctx, `SELECT revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, project, pull).Scan(&revision, &paused, &reason, &actor, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
 	if err != nil {
 		return s, err
 	}
+	var revisionOK, reasonOK, actorOK, updatedOK bool
+	s.Revision, revisionOK = revision.(int64)
+	pausedValue, pausedOK := paused.(int64)
+	s.Reason, reasonOK = reason.(string)
+	s.ActorID, actorOK = actor.(string)
+	s.UpdatedAt, updatedOK = updated.(string)
+	if !revisionOK || !pausedOK || !reasonOK || !actorOK || !updatedOK || pausedValue < 0 || pausedValue > 1 {
+		return s, schedulingUnavailable()
+	}
+	s.Paused = pausedValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
 		return s, schedulingUnavailable()
 	}

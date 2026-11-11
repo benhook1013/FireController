@@ -51,6 +51,22 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 			baselineLoaded = true
 		}
 	}
+	// Display evidence is independent of final inventory and never changes
+	// scheduler state. Use this already retained poll and its original baseline;
+	// do not collect additional provider source for hover details.
+	if attempt.State == "active" && hostedProcessingCandidate(retained.Snapshot) {
+		loadBaseline()
+		if baselineErr == nil && baselineReason == "" {
+			processing, parseErr := reviewprovider.ExtractHostedProcessing(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
+			if parseErr == nil && processing != nil {
+				_ = engine.RecordActivityEvidence(ctx, attempt.ProjectID, attempt.ID, reviewexec.ActivityEvidence{
+					AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA, Kind: "hosted_processing_observed",
+					ObservedAt: processing.ObservedAt.Format(time.RFC3339Nano), CommentUpdatedAt: processing.CommentUpdatedAt.Format(time.RFC3339Nano),
+					SourceCommentID: processing.SourceCommentID, ProviderRunID: processing.ProviderRunID, TriggerID: processing.TriggerID,
+				})
+			}
+		}
+	}
 	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "ambiguous" && inventory.Reason == "invalid_actionable_count" || inventory.Publication.State == "uncertain" && (inventory.Reason == "hosted_finished_inventory_unproven" || inventory.Reason == "attribution_window_closed")) && inventory.Publication.Trigger.State == "adopted" {
 		loadBaseline()
 		if baselineErr != nil {
@@ -281,4 +297,14 @@ func hostedStandingRunNew(baseline reviewprovider.HostedPublicationSnapshot, pro
 		}
 	}
 	return true
+}
+
+// Avoid even baseline artifact reads on ordinary completed/unsupported captures.
+func hostedProcessingCandidate(snapshot reviewprovider.HostedPublicationSnapshot) bool {
+	for _, comment := range snapshot.IssueComments {
+		if strings.Contains(comment.Body, "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->") {
+			return true
+		}
+	}
+	return false
 }

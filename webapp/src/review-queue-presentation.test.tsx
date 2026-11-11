@@ -59,6 +59,23 @@ describe('truthful stored review presentation', () => {
     expect(held).toContain('>Dependency pending</span>'); expect(held).toContain('<p class="review-attempt-explanation">Waiting for earlier PR work</p>'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
   });
 
+  it('renders Fixes pending from the current native hold while keeping adjudication distinct', () => {
+    const v = fronts();
+    v.channels = [{ ...v.channels[0], state: 'held', reason: 'review_fixes_pending' }];
+    const row = pull(2);
+    const fixedStage = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} />);
+    expect(fixedStage).toContain('>Fixes pending</span>');
+    expect(fixedStage).not.toContain('>Results pending</span>');
+    expect(fixedStage).not.toContain('>Reviewing</span>');
+    const progress: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 1, pending_execution: 0, pending_adjudication: 1 }] };
+    const adjudicating = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} progress={progress} />);
+    expect(adjudicating).toContain('>Needs adjudication</span>');
+    expect(adjudicating).not.toContain('>Fixes pending</span>');
+    const unclassified = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={{ ...v, channels: [{ ...v.channels[0], reason: 'review_evidence_pending' }] }} />);
+    expect(unclassified).toContain('>Results pending</span>');
+    expect(unclassified).not.toContain('>Fixes pending</span>');
+  });
+
   it('keeps Hosted priority visible alongside a waiting operation and unknown source', () => {
     const v=fronts();v.channels=[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',queued_priority:{pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'}}];
     const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:1,pending_execution:1,pending_adjudication:0,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2026-10-30T12:30:00Z',paused:false}}]};
@@ -123,10 +140,10 @@ describe('truthful stored review presentation', () => {
   it('keeps an already-started review visible after head movement', () => {
     const attempt = { channel: 'hosted', head_sha: pull(2).head_sha, state: 'active', finished_at: '', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'active' } as ReviewAttemptSummary;
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [attempt] }]), undefined, { fronts: fronts() });
-    expect(html).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(html).toContain('aria-label="hosted execution: Reviewing"');
     expect(html).not.toContain('>Up next</span>');
     const stale = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [{ ...attempt, head_sha: 'c'.repeat(40) }] }]), undefined, { fronts: fronts() });
-    expect(stale).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(stale).toContain('aria-label="hosted execution: Reviewing"');
     expect(stale).not.toContain('>Up next</span>');
   });
   it('shows carried admission work without claiming Up next, and keeps independent channel readiness', () => {
@@ -138,7 +155,7 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('Hosted CodeRabbit<span class="badge review-channel-position">Up next</span>');
     const attempt={channel:'hosted',head_sha:pull(2).head_sha,state:'active',finished_at:'',started_at:'2026-10-22T00:00:00Z',source_attempt_id:'active'} as ReviewAttemptSummary;
     const running=markup(<ReviewQueueView />,queue([{...pull(2),latest_attempts:[attempt]}]),undefined,{fronts:held});
-    expect(running).toContain('Hosted CodeRabbit<span class="badge review-channel-position">Reviewing</span>');
+    expect(running).toContain('aria-label="hosted execution: Reviewing"');
     expect(running).not.toContain('>Carried work</span>');
     const stale=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:{...held,snapshot_id:'old'}});
     expect(stale).not.toContain('>Carried work</span>');

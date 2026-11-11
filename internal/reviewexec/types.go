@@ -131,6 +131,8 @@ type Engine struct {
 	hostedObservers            map[hostedObserverKey]*hostedObserverEntry
 	hostedAccountNext          map[hostedAccountKey]time.Time
 	schedulingNow              func() time.Time
+	configurationFailureMu     sync.Mutex
+	configurationFailureNext   map[string]time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool
 	deploymentActive           int

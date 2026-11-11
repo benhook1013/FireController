@@ -128,29 +128,36 @@ func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Confi
 }
 func readFrontFrame(ctx context.Context, q EvidenceQuery, project, channel string) (frontFrame, bool, error) {
 	var f frontFrame
-	var body string
-	var complete int
-	err := q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(repository_id)='integer' THEN repository_id END,CASE WHEN typeof(configuration_revision)='integer' THEN configuration_revision END,CASE WHEN typeof(checked_at)='text' AND length(CAST(checked_at AS BLOB))<=64 THEN checked_at END,CASE WHEN typeof(source_observed_at)='text' AND length(CAST(source_observed_at AS BLOB))<=64 THEN source_observed_at END,CASE WHEN typeof(complete)='integer' THEN complete END,CASE WHEN typeof(source_reason)='text' AND length(CAST(source_reason AS BLOB))<=128 THEN source_reason END,CASE WHEN typeof(prefix_json)='text' AND length(CAST(prefix_json AS BLOB))<=131072 THEN prefix_json END FROM review_front_frames WHERE project_id=? AND channel=?`, project, channel).Scan(&f.repository, &f.configuration, &f.checkedAt, &f.observedAt, &complete, &f.sourceReason, &body)
+	var repository, configuration, complete sql.NullInt64
+	var checked, observed, reason, body sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(repository_id)='integer' THEN repository_id END,CASE WHEN typeof(configuration_revision)='integer' THEN configuration_revision END,CASE WHEN typeof(checked_at)='text' AND length(CAST(checked_at AS BLOB))<=64 THEN checked_at END,CASE WHEN typeof(source_observed_at)='text' AND length(CAST(source_observed_at AS BLOB))<=64 THEN source_observed_at END,CASE WHEN typeof(complete)='integer' THEN complete END,CASE WHEN typeof(source_reason)='text' AND length(CAST(source_reason AS BLOB))<=128 THEN source_reason END,CASE WHEN typeof(prefix_json)='text' AND length(CAST(prefix_json AS BLOB))<=131072 THEN prefix_json END FROM review_front_frames WHERE project_id=? AND channel=?`, project, channel).Scan(&repository, &configuration, &checked, &observed, &complete, &reason, &body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return f, false, nil
 	}
 	if err != nil {
+		return f, false, err
+	}
+	// Guarded NULLs are malformed project data, not query/transaction failures.
+	if !repository.Valid || !configuration.Valid || !checked.Valid || !observed.Valid || !complete.Valid || !reason.Valid || !body.Valid || complete.Int64 < 0 || complete.Int64 > 1 || strictjson.Decode([]byte(body.String), &f.prefix) != nil {
 		return f, false, runUnavailable()
 	}
-	if complete < 0 || complete > 1 || strictjson.Decode([]byte(body), &f.prefix) != nil {
-		return f, false, runUnavailable()
-	}
-	f.complete = complete == 1
+	f.repository, f.configuration = repository.Int64, configuration.Int64
+	f.checkedAt, f.observedAt, f.sourceReason = checked.String, observed.String, reason.String
+	f.complete = complete.Int64 == 1
 	canonical, err := json.Marshal(f.prefix)
-	if err != nil || !bytes.Equal(canonical, []byte(body)) {
+	if err != nil || !bytes.Equal(canonical, []byte(body.String)) {
 		return f, false, runUnavailable()
 	}
-	var configBody string
-	if err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_execution_config WHERE project_id=? AND revision=?`, project, f.configuration).Scan(&configBody); err != nil {
+	var configBody sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_execution_config WHERE project_id=? AND revision=?`, project, f.configuration).Scan(&configBody)
+	if errors.Is(err, sql.ErrNoRows) {
 		return f, false, runUnavailable()
+	}
+	if err != nil {
+		return f, false, err
 	}
 	var c Configuration
-	if strictjson.Decode([]byte(configBody), &c) != nil || !validFrontFrame(f, c, channel) {
+	if !configBody.Valid || strictjson.Decode([]byte(configBody.String), &c) != nil || !validFrontFrame(f, c, channel) {
 		return f, false, runUnavailable()
 	}
 	return f, true, nil

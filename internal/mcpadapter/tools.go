@@ -241,6 +241,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value = client.AgentReviewCI(assessment)
 				case "review_activity_read":
 					value, err = service.ReviewActivity(ctx, args.reviewActivity)
+				case "review_lane_diagnostic":
+					value, err = service.ReviewLaneDiagnostic(ctx, args.roundChannel)
 				case "review_scheduling_read":
 					value, err = service.ReviewScheduling(ctx)
 				case "review_scheduling_configure":

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestStoppedNoticeExplicitRequesterOneAndDone(t *testing.T) {
 	f.e.Register(mux)
 	inbox.Register(mux, f.store)
 	f.handler = mux
-	response := f.request("POST", "/api/v1/projects/"+attemptProject+"/messages/"+id+"/ack", f.admin, "handle-stopped", `{"worker_id":"requester"}`)
+	response := stoppedNoticeAcknowledge(t, f, id, "handle-stopped")
 	if response.Code != 200 {
 		t.Fatal(response.Code, response.Body.String())
 	}
@@ -329,7 +330,7 @@ func TestStoppedNoticeAcknowledgmentSurvivesRestart(t *testing.T) {
 	mux := http.NewServeMux()
 	inbox.Register(mux, f.store)
 	f.handler = mux
-	response := f.request("POST", "/api/v1/projects/"+attemptProject+"/messages/"+id+"/ack", f.admin, "handled-before-restart", `{"worker_id":"requester"}`)
+	response := stoppedNoticeAcknowledge(t, f, id, "handled-before-restart")
 	if response.Code != 200 {
 		t.Fatal(response.Code, response.Body.String())
 	}
@@ -438,4 +439,41 @@ func TestStoppedNoticeDurableQueuedQuotaRetriesStayQuiet(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Success paths retain an explicit real acting worker for management ACKs.
+func stoppedNoticeAcknowledge(t *testing.T, f *attemptFixture, id, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	admissionSQL(t, f, `INSERT INTO workers VALUES(?, 'notice-handler', 'Notice handler')`, attemptProject)
+	call := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/messages/"+id+"/ack", strings.NewReader(`{"worker_id":"requester"}`))
+		req.Header.Set("Authorization", "Bearer "+f.admin)
+		req.Header.Set("X-FC-Worker", "notice-handler")
+		req.Header.Set("Idempotency-Key", key)
+		response := httptest.NewRecorder()
+		f.handler.ServeHTTP(response, req)
+		return response
+	}
+	response := call()
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var receipt struct{ ID, Outcome string }
+	if json.Unmarshal(response.Body.Bytes(), &receipt) != nil || receipt.ID != id || receipt.Outcome != "acknowledged" {
+		t.Fatal("ACK receipt lost its message identity", response.Body.String())
+	}
+	var actor, payloadJSON string
+	if err := f.store.DB().QueryRow(`SELECT actor_id,payload_json FROM events WHERE resource_id=? AND event_type='message.acknowledged'`, id).Scan(&actor, &payloadJSON); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]string
+	if json.Unmarshal([]byte(payloadJSON), &payload) != nil || actor != f.scope(t, attemptProject, f.admin, true).PrincipalID || payload["recipient_worker_id"] != "requester" || payload["actor_worker_id"] != "notice-handler" || payload["origin_kind"] != "controller" {
+		t.Fatal("ACK lost principal, actor or recipient attribution", actor, payload)
+	}
+	events, receipts := attemptCount(t, f.store, `SELECT count(*) FROM events`), attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	replay := call()
+	if replay.Code != response.Code || replay.Body.String() != response.Body.String() || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receipts {
+		t.Fatal("ACK replay changed original receipt or durable accounting")
+	}
+	return response
 }
