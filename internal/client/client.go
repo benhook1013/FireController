@@ -549,6 +549,19 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
 	result.RequestID = value.RequestID
 	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "review_busy" {
+		if status != http.StatusConflict {
+			result.Details = nil
+		} else {
+			result.Message = "Existing review work is pending; this request was not accepted."
+			result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations), or read its original accepted receipt. Do not replace or cancel pending work."
+			if details, ok := result.Details.(map[string]any); ok {
+				id := details["selection_id"].(string)
+				result.Message = "A review selection in this channel is already pending; this start was not accepted."
+				result.Action = "Read the existing selection with review_selection_read selection_id=" + id + " (CLI: reviews run-read --selection-id " + id + "). Optional bounded waiting follows its original operation when available. This refusal accepted no new start; do not replace or cancel pending work."
+			}
+		}
+	}
 	if result.Status == http.StatusServiceUnavailable && result.Code == "overloaded" {
 		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
 			result.Message = "The controller ended this temporary wait during shutdown."
@@ -578,6 +591,20 @@ func (c *Client) sensitive(value string) bool {
 	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
 }
 func (c *Client) safeDetails(value any, code string) any {
+	if code == "review_busy" {
+		object, ok := value.(map[string]any)
+		if !ok || len(object) != 3 {
+			return nil
+		}
+		id, idOK := object["selection_id"].(string)
+		channel, channelOK := object["channel"].(string)
+		state, stateOK := object["state"].(string)
+		if !idOK || ValidateReviewRunSelectionID(id) != nil || c.sensitive(id) || !channelOK || !oneReviewOf(channel, "cli", "hosted") || !stateOK || !oneReviewOf(state, "queued", "selecting") {
+			return nil
+		}
+		return map[string]any{"selection_id": id, "channel": channel, "state": state}
+	}
+
 	object, ok := value.(map[string]any)
 	if !ok {
 		return nil

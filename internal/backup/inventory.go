@@ -221,8 +221,9 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 2, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 1, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 6, "review_execution_indexes": 2, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_hosted_discovery_state":    {"reviews", 11, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
 	"review_run_versions":              {"reviews", 4, "project_id id version_revision pull_number source source_run_id channel head_sha reviewer scope outcome attributable complete started_at finished_at found accepted routed finalized fixed coverage_limits_json"},
@@ -927,6 +928,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_selection"] > 0 {
+		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["review_round_adoption"] > 0 && versions["review_rounds"] < 2 {
 		return invalid()
 	}
@@ -1117,6 +1126,7 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_selections":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_hosted_discovery_state": {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"review_pull_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
 	"review_run_versions":           {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},

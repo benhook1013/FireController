@@ -20,6 +20,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -360,5 +361,90 @@ func TestReviewWorkersSupervisorFailureRemainsFatalAndJoinsObservers(t *testing.
 	}
 	if diagnostics.String() != "" {
 		t.Fatal("fatal supervisor cancellation emitted an observer diagnostic")
+	}
+}
+
+// Selection acquisition is owned by the same daemon cancellation/join boundary
+// as supervisor and recovery observers. It cannot leave provider reads behind.
+type selectionOwnedDriver struct {
+	*observerTestDriver
+	reader *selectionOwnedReader
+}
+
+func (d *selectionOwnedDriver) SourceReader() reviewexec.TargetReader { return d.reader }
+
+type selectionOwnedReader struct {
+	entered, canceled, gate, joined chan struct{}
+	once, cancelOnce, joinOnce      sync.Once
+}
+
+func (r *selectionOwnedReader) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	r.cancelOnce.Do(func() { close(r.canceled) })
+	<-r.gate
+	r.joinOnce.Do(func() { close(r.joined) })
+	return reviewprovider.Repository{}, ctx.Err()
+}
+func (r *selectionOwnedReader) Pull(context.Context, string, int64) (reviewprovider.Pull, error) {
+	return reviewprovider.Pull{}, errors.New("unexpected pull after cancellation")
+}
+func TestReviewWorkersSelectionAcquisitionCancellationJoins(t *testing.T) {
+	f := newObserverTestFixture(t)
+	scope := f.scope(t, "failed")
+	scope.WorkerID = "sender"
+	raw, err := f.engine.EnqueueRun(t.Context(), scope, "owned-selection", reviewexec.RunRequest{Channel: "hosted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt reviewexec.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	reader := &selectionOwnedReader{entered: make(chan struct{}), canceled: make(chan struct{}), gate: make(chan struct{}), joined: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(reader.gate) }) }
+	defer release()
+	driver := &selectionOwnedDriver{newObserverTestDriver(), reader}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := startReviewWorkers(ctx, f.engine, map[string]reviewexec.Driver{"failed": driver, "sibling": newObserverTestDriver()}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerSignal(t, reader.entered)
+	cancel()
+	observerSignal(t, reader.canceled)
+	select {
+	case <-done:
+		t.Fatal("selection acquisition escaped owner join")
+	default:
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("selection owner did not join")
+	}
+	observerSignal(t, reader.joined)
+	var operations int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&operations); err != nil || operations != 0 {
+		t.Fatal("canceled source admitted work", operations, err)
+	}
+	if driver.posts.Load() != 0 {
+		t.Fatal("cancellation dispatched review")
+	}
+	var state string
+	if err := f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "selecting" {
+		t.Fatal("canceled acquisition did not preserve its claimed selection", state, err)
+	}
+	if err := f.engine.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT state FROM review_selections WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "queued" {
+		t.Fatal("restart could not recover the canceled selection", state, err)
 	}
 }

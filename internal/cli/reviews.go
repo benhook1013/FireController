@@ -11,6 +11,9 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "start" || call.subcommand == "run-read" {
+		return parseReviewRun(call, args)
+	}
 	if call.subcommand == "operations" {
 		return parseOperationList(call, args)
 	}

@@ -69,7 +69,7 @@ func readProviderRelease(fields map[string]string, status RecoveryStatus) (provi
 	if err != nil || string(canonical) != body || release.Version != 1 || !validResumptionRequest(release.Request) || release.Request.ExpectedInstanceID != status.InstanceID || release.Request.FencedPredecessorID != status.SourceInstanceID || release.BundleID != status.BundleID || release.ActivatedAt != status.ActivatedAt || !activationOK || !atOK || at.Before(activation) {
 		return release, invalid()
 	}
-	for _, count := range []int64{release.Counts.QueuedOperations, release.Counts.Attempts, release.Counts.SourceRefreshes, release.Counts.Publications, release.Counts.PausedProjects} {
+	for _, count := range []int64{release.Counts.QueuedOperations, release.Counts.Attempts, release.Counts.SourceRefreshes, release.Counts.Publications, release.Counts.PausedProjects, release.Counts.Selections} {
 		if count < 0 || count > 10000 {
 			return release, invalid()
 		}
@@ -85,7 +85,8 @@ func resumptionSummary(status RecoveryStatus, release providerRelease) ProviderR
 	return ProviderResumptionSummary{InstanceID: status.InstanceID, SourceInstanceID: status.SourceInstanceID, BundleID: status.BundleID, State: status.State, ReleasedAt: release.ReleasedAt, Counts: release.Counts}
 }
 
-// Only pre-write validation failures use this normalization. In particular,
+// Validation and reconciliation failures before commit use this normalization.
+// In particular,
 // commit failures retain their uncertain-outcome diagnostic, and successful
 // commits must never be reported as interrupted if cancellation arrives later.
 func providerResumptionValidationError(ctx context.Context, err error) error {
@@ -158,10 +159,20 @@ func ResumeProviders(ctx context.Context, dataDir string, in ProviderResumptionR
 	if at.Before(activation) {
 		at = activation
 	}
+	selections, err := reviewexec.AbandonReviewRuns(ctx, tx, at)
+	if err != nil {
+		err = providerResumptionValidationError(ctx, err)
+		var failure *core.Error
+		if !errors.As(err, &failure) {
+			err = core.Fail("restore_reconciliation_invalid", "Retained provider work is inconsistent; no provider release was authorized.", 409)
+		}
+		return zero, err
+	}
 	counts, err := reviewexec.AbandonRestoredProviderWork(ctx, tx, status.InstanceID, at)
 	if err != nil {
 		return zero, err
 	}
+	counts.Selections = selections
 	release := providerRelease{Version: 1, Request: in, BundleID: status.BundleID, ActivatedAt: status.ActivatedAt, ReleasedAt: at.Format(time.RFC3339Nano), Counts: counts}
 	body, err := json.Marshal(release)
 	if err != nil {

@@ -15,6 +15,8 @@ import (
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/selections", e.enqueueRunHTTP)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/selections/{selection_id}", e.readRunHTTP)
 	adoptionholds.New(e.store).Register(mux)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/preview", e.previewRoundAdoptionHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/apply", e.applyRoundAdoptionHTTP)

@@ -46,6 +46,7 @@ type options struct {
 }
 
 type invocation struct {
+	reviewRun             *reviewRunInvocation
 	operationHelp         string
 	reviewOperations      client.ReviewOperationsOptions
 	reviewOperationStatus *reviewOperationStatusInvocation
@@ -92,7 +93,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	call, ok := parseInvocation(args)
 	if !ok {
 		action := "Use fc version, fc context, fc doctor, or a documented service command."
-		if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation") {
+		if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") {
 			action = "Use fc reviews " + call.subcommand + " --help."
 		}
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", action)
@@ -198,6 +199,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.command == "reviews" && call.subcommand == "operation" {
 		timeout = client.ReviewOperationBudget(call.waitSeconds)
 	}
+	if call.reviewRun != nil {
+		timeout = client.ReviewOperationBudget(call.reviewRun.waitSeconds)
+	}
 	// Identity recovery gets up to ten seconds; operations keep their own limits.
 	timeout = max(timeout, 3*serviceTimeout)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -207,6 +211,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		return reportClientError(stderr, err, ctx)
 	}
 	defer service.Close()
+	if call.reviewRun != nil {
+		return executeReviewRun(requestCtx, ctx, service, call.reviewRun, stdout, stderr)
+	}
 	if call.adoptionObligations != nil {
 		return executeAdoptionObligations(requestCtx, ctx, service, call.adoptionObligations, stdout, stderr)
 	}
@@ -397,7 +404,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
-	if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
+	if call.command == "reviews" && (call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		call.operationHelp = call.subcommand
 		return call, true
 	}
