@@ -44,6 +44,8 @@ func (e *Engine) waitRunState(ctx context.Context, scope core.Scope, id string, 
 	if seconds == 0 {
 		return e.readRunState(ctx, scope, id)
 	}
+	ctx, cleanupWait := e.resultWaitContext(ctx)
+	defer cleanupWait()
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	read := func() (RunState, bool, error) {
 		var state RunState
@@ -149,6 +151,12 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		state, terminal, err := e.waitRunState(r.Context(), scope, queued.ID, seconds)
 		if err != nil {
+			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, err); detached {
+				core.WriteJSON(w, http.StatusAccepted, receipt)
+				return
+			} else {
+				err = detachErr
+			}
 			writeOperationWaitError(w, err)
 			return
 		}

@@ -95,10 +95,10 @@ describe('public project browser', () => {
 });
 
 it.each([
-  { count: 0, hasMore: true, message: 'Finalized rounds are retained privately, but none fit this public window.' },
+  { count: 0, hasMore: true, message: 'No finalized rounds fit in this view.' },
   { count: 0, hasMore: false, message: 'No finalized rounds published.' },
-  { count: 1, hasMore: true, message: 'Showing 1 published round; other finalized rounds are outside this public window.' },
-  { count: 2, hasMore: true, message: 'Showing 2 published rounds; other finalized rounds are outside this public window.' },
+  { count: 1, hasMore: true, message: 'Other finalized CLI rounds are outside this view.' },
+  { count: 2, hasMore: true, message: 'Other finalized CLI rounds are outside this view.' },
 ])('describes $count public CLI rounds with retained history $hasMore honestly', ({count, hasMore, message}) => {
   const snapshot=fixture();
   snapshot.content.reviews[0].cli=Array.from({length:count},(_,index)=>({...snapshot.content.reviews[0].cli[0],key:`public_round_${index.toString(16).padStart(32,'0')}`}));
@@ -108,9 +108,17 @@ it.each([
   const lane=html.split('aria-label="CLI review rounds"')[1].split('</section>')[0];
   expect(lane).toContain(message);
   expect(lane).toContain(`${count} published ${count === 1 ? 'round' : 'rounds'}`);
-  if(hasMore) expect(lane).not.toContain('No finalized rounds published.');
-  else expect(lane).not.toContain('retained privately');
+  if(hasMore) {
+    expect(lane).not.toContain('No finalized rounds published.');
+    expect(lane).toContain('Other finalized CLI rounds are outside this view.');
+    expect(lane).toContain('href="#published-history"');
+    expect(lane).toContain('Browse retained published revisions');
+    expect(lane).toContain('these snapshots may not contain every round');
+  } else {
+    expect(lane).not.toContain('Other finalized CLI rounds are outside this view.');
+    expect(lane).not.toContain('Browse retained published revisions');
+  }
   if(!count) expect(lane).not.toContain('Showing 0');
-  else { expect(lane).toContain('1 / 1 / 0'); expect(lane).not.toContain('Showing 1 published rounds'); }
+  else { expect(lane.match(/aria-label="Published CLI round: 1\/1\/0 \(found \/ accepted \/ routed\)\./gu)).toHaveLength(count); expect(lane).not.toContain('Showing 1 published rounds'); }
   expect(html).not.toContain('/attempts');
 });

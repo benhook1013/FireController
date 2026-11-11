@@ -336,6 +336,8 @@ func (e *Engine) WaitRun(ctx context.Context, scope core.Scope, id string, secon
 	if ctx == nil || !validRunID(id) || !identifier.MatchString(scope.PrincipalID) || seconds < 0 || seconds > 900 {
 		return Run{}, false, invalid()
 	}
+	ctx, cleanupWait := e.resultWaitContext(ctx)
+	defer cleanupWait()
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	read := func() (Run, error) {
 		var r Run
@@ -345,7 +347,7 @@ func (e *Engine) WaitRun(ctx context.Context, scope core.Scope, id string, secon
 			return readErr
 		})
 		if ctx.Err() != nil {
-			return Run{}, core.Fail("overloaded", "The accepted selection wait was canceled; its request is retained.", 503)
+			return Run{}, resultWaitCanceled(ctx, "The accepted selection wait was canceled; its request is retained.")
 		}
 		return r, err
 	}
@@ -395,7 +397,7 @@ func (e *Engine) WaitRun(ctx context.Context, scope core.Scope, id string, secon
 		}
 		select {
 		case <-ctx.Done():
-			return Run{}, false, core.Fail("overloaded", "The accepted selection wait was canceled; its request is retained.", 503)
+			return Run{}, false, resultWaitCanceled(ctx, "The accepted selection wait was canceled; its request is retained.")
 		case <-timer.C:
 			r, err = read()
 			return r, err == nil && !runPending(r.State), err

@@ -582,6 +582,20 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return err
 			}
 			if choice.state == "held" {
+				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" && choice.reason != "local_read_unavailable" {
+					// Local readiness may have changed after chooseRun's read,
+					// even for a later PR masked by the first held reason. Do not
+					// settle that newer eligible basis behind a
+					// stale hold. A fresh ordinary selection must reacquire source
+					// facts rather than dispatch directly from this recheck.
+					_, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+					if err != nil {
+						return err
+					}
+					if reason != choice.reason {
+						return updateRun(ctx, tx, current, "held", "selection_changed", "")
+					}
+				}
 				return updateRun(ctx, tx, current, "held", choice.reason, "")
 			}
 			front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)

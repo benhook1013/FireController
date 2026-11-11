@@ -31,17 +31,17 @@ describe('anonymous project address resolution', () => {
 });
 
 describe('anonymous publication DTO boundary', () => {
-  it('preserves old payloads and accepts only optional boolean channel window flags', () => {
+  it('preserves old payloads and accepts only optional true-only channel window flags', () => {
     const old = snapshot(), before = JSON.stringify(old);
     expect(validatePublicSnapshot(old, 'showcase')).toBe(true);
     expect(JSON.stringify(old)).toBe(before);
     expect(Object.hasOwn(old.content.reviews[0], 'cli_has_more')).toBe(false);
     for (const field of ['cli_has_more', 'hosted_has_more']) {
-      for (const flag of [true, false]) {
+      for (const flag of [true]) {
         const value = snapshot(); Object.assign(value.content.reviews[0], { [field]: flag });
         expect(validatePublicSnapshot(value, 'showcase')).toBe(true);
       }
-      for (const flag of [null, 0, 1, 'true', [], {}, undefined]) {
+      for (const flag of [false, null, 0, 1, 'true', [], {}, undefined]) {
         const value = snapshot(); Object.assign(value.content.reviews[0], { [field]: flag });
         expect(validatePublicSnapshot(value, 'showcase')).toBe(false);
       }
@@ -82,14 +82,14 @@ describe('anonymous publication DTO boundary', () => {
 
 describe('public transport has no private connection authority', () => {
   it('reads window flags anonymously in current and frozen content and refuses malformed wire flags', async () => {
-    const value = snapshot(); value.content.reviews[0].cli_has_more = true; value.content.reviews[0].hosted_has_more = false;
+    const value = snapshot(); value.content.reviews[0].cli_has_more = true; value.content.reviews[0].hosted_has_more = true;
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => { expect(init.credentials).toBe('omit'); return json(value); });
     vi.stubGlobal('fetch', fetcher);
     const api = new PublicSiteApi('showcase'), signal = new AbortController().signal;
     expect((await api.snapshot(signal)).content.reviews[0]).toEqual(value.content.reviews[0]);
     expect((await api.snapshot(signal, 1, generation)).content.reviews[0]).toEqual(value.content.reviews[0]);
     const raw = JSON.stringify(value);
-    for (const invalid of [raw.replace('"cli_has_more":true', '"cli_has_more":null'), raw.replace('"cli_has_more":true', '"cli_has_more":1'), raw.replace('"cli_has_more":true', '"cli_has_more":true,"cli_has_more":true'), raw.replace('"cli_has_more":true', '"private_has_more":true')]) {
+    for (const invalid of [raw.replace('"cli_has_more":true', '"cli_has_more":false'), raw.replace('"cli_has_more":true', '"cli_has_more":null'), raw.replace('"cli_has_more":true', '"cli_has_more":1'), raw.replace('"cli_has_more":true', '"cli_has_more":true,"cli_has_more":true'), raw.replace('"cli_has_more":true', '"private_has_more":true')]) {
       vi.stubGlobal('fetch', vi.fn(async () => new Response(invalid, { headers: { 'content-type': 'application/json' } })));
       await expect(api.snapshot(signal)).rejects.toMatchObject({ code: 'invalid_response' });
     }

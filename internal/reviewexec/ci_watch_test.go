@@ -643,3 +643,77 @@ func TestCIWatchRegistrationSharesScheduleLifetimeFence(t *testing.T) {
 	}
 	ciWatchRegistered(t, s, 0)
 }
+
+func TestCIWatchSubscriberFreshnessDoesNotWithholdOtherOwners(t *testing.T) {
+	for _, pass := range []bool{false, true} {
+		name := "failed"
+		if pass {
+			name = "passed"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, s, clock, base, scope := ciWatchFixture(t)
+			r := &ciWatchRerunReader{ciWatchReader: base, attempt: 1, pass: pass}
+			s.readers["test-capability"] = r
+			binding, err := f.e.ciWatchBinding(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			targets := []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}}
+			register := func() *ciWatchSubscription {
+				t.Helper()
+				sub, err := s.registerCIWatch(scope, binding, targets)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return sub
+			}
+			first, shared := register(), register()
+			defer s.unregisterCIWatch(first)
+			defer s.unregisterCIWatch(shared)
+			before := lifecycleHintCounts(t, f)
+			watchTick(t, f, s)
+			original := s.ciWatchResult(first)
+			if original.State != name || s.ciWatchResult(shared).State != name || r.calls != 1 {
+				t.Fatal("pre-claim owners did not share one fresh terminal collection", original, r.calls)
+			}
+			late := register()
+			defer s.unregisterCIWatch(late)
+			if got := s.ciWatchResult(first); !reflect.DeepEqual(got, original) {
+				t.Fatal("new subscriber withheld another owners fresh terminal result", got, original)
+			}
+			if got := s.ciWatchResult(late); got.State != "pending" || got.Targets[0].ObservedAt != "" {
+				t.Fatal("new owner reused a cached terminal result", got)
+			}
+			if claim, err := f.e.claimCIWatch(t.Context(), s.readers, s); err != nil || claim != nil {
+				t.Fatal("subscriber freshness bypassed event coalescing", claim, err)
+			}
+			clock.Add(5 * time.Second)
+			watchTick(t, f, s)
+			if got := s.ciWatchResult(late); got.State != name || r.calls != 2 {
+				t.Fatal("new owner did not get its own fresh shared collection", got, r.calls)
+			}
+			// A zero-wait caller leaves immediately; it must not leave a shared
+			// event hint or provider work behind while other owners remain.
+			for i := 0; i < 3; i++ {
+				gone := register()
+				s.unregisterCIWatch(gone)
+				if got := s.ciWatchResult(first); got.State != name {
+					t.Fatal("departed subscriber invalidated another owner", got)
+				}
+			}
+			clock.Add(5 * time.Second)
+			if claim, err := f.e.claimCIWatch(t.Context(), s.readers, s); err != nil || claim != nil || r.calls != 2 {
+				t.Fatal("departed subscriber forced an orphaned provider collection", claim, err, r.calls)
+			}
+			// Real CI hints still invalidate shared proof and request a collection.
+			s.hintCIWatches(githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{42}, CI: true})
+			if got := s.ciWatchResult(first); got.State != "pending" || got.Targets[0].Reason != "ci_watch_refresh_pending" {
+				t.Fatal("real CI hint did not invalidate older terminal facts", got)
+			}
+			watchTick(t, f, s)
+			if got := s.ciWatchResult(first); got.State != name || r.calls != 3 || !reflect.DeepEqual(before, lifecycleHintCounts(t, f)) {
+				t.Fatal("real hint lost shared observation or changed durable state", got, r.calls)
+			}
+		})
+	}
+}
