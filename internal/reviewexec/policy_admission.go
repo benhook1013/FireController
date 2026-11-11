@@ -118,20 +118,26 @@ func (e *Engine) ExecutionContext(ctx context.Context, project, operationID stri
 	if !identifier.MatchString(project) || !identifier.MatchString(operationID) {
 		return ExecutionContext{}, invalid()
 	}
+	// Retry only this local snapshot, before either driver starts provider
+	// preparation. Keep a finite aggregate bound even without a caller deadline.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	var result ExecutionContext
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		operation, err := readOperation(ctx, tx, project, operationID)
-		if err != nil {
+	err := retryRunSelectionLocal(ctx, func() error {
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			operation, err := readOperation(ctx, tx, project, operationID)
+			if err != nil {
+				return err
+			}
+			if operation.State != "preparing" {
+				return conflict()
+			}
+			result, err = e.currentExecutionContext(ctx, tx, operation)
 			return err
-		}
-		if operation.State != "preparing" {
-			return conflict()
-		}
-		result, err = e.currentExecutionContext(ctx, tx, operation)
-		return err
+		})
 	})
 	if err != nil {
-		return ExecutionContext{}, err
+		return ExecutionContext{}, core.NormalizeStorageError(err)
 	}
 	return result, nil
 }
