@@ -680,3 +680,64 @@ func TestStoredUnavailableDependencyAndRecoveryClassification(t *testing.T) {
 		t.Fatal("history classification still depends on message text")
 	}
 }
+
+func TestHeldAllowancePreservesLookupErrors(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var err error
+			reason := "allowance_exhausted"
+			if channel == "cli" {
+				var in CLIAllowanceObservation
+				f, a, in = cliAllowanceFixture(t)
+				in.Remaining = 0
+				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, in)
+			} else {
+				var in HostedAllowanceInput
+				f, a, in = cooldownObservationFixture(t)
+				reason = "hosted_allowance_cooldown"
+				err = f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, in)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matches := []string{"FROM review_execution_attempts", "FROM review_" + channel + "_preflight", "FROM projects"}
+			if channel == "hosted" {
+				matches = []string{"FROM review_execution_attempts", "FROM review_hosted_preflight", "FROM review_hosted_allowance_queries", "FROM review_hosted_observations"}
+			}
+			for _, match := range matches {
+				for _, canceled := range []bool{false, true} {
+					q := cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: match, cancel: canceled}
+					allowance, err := readHeldAllowance(t.Context(), q, o)
+					if allowance != nil || err == nil || storedAllowanceUnavailable(err) || canceled && !errors.Is(err, context.Canceled) || !canceled && !strings.Contains(err.Error(), "missing_cli_retry_history") {
+						t.Errorf("held lookup reclassified: %s canceled=%t allowance=%v err=%v", match, canceled, allowance, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestWaitDependencyErrorsPreserveOperationalClassification(t *testing.T) {
+	for _, original := range []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, errors.New("database fault"), core.Fail("storage_unavailable", "Stored review admission is unavailable.", 500), core.Fail("overloaded", "Local overload", 503)} {
+		for _, err := range []error{original, fmt.Errorf("wrapped: %w", original)} {
+			if waitDependencyError(err) != err {
+				t.Errorf("real lookup failure changed: %v", err)
+			}
+		}
+	}
+	for _, err := range []error{sql.ErrNoRows, core.Fail("not_found", "missing", 404), newStoredUnavailable(storedReviewAdmission, "invalid anchor"), allowanceUnavailable(), hostedAllowanceUnavailable()} {
+		if !isWaitUnavailable(waitDependencyError(fmt.Errorf("wrapped: %w", err))) {
+			t.Errorf("broken retained dependency not classified: %v", err)
+		}
+	}
+}

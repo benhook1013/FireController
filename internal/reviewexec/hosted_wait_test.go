@@ -750,3 +750,72 @@ func restorePreSelectionExecutionSchema(t *testing.T, f *attemptFixture) {
 	// deployed predecessors; the independent comparison repair restores them.
 	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
 }
+
+func TestOperationWaitPreservesDependencyLookupErrors(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			if channel == "cli" {
+				f, a, _, _ = cliWaitFixture(t)
+				if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f, a, _, _ = queuedCooldown(t)
+			}
+			o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tables := []string{"review_operations", "review_execution_attempts", "review_operation_waits", "review_cli_preflight", "review_hosted_preflight", "events"}
+			before := map[string]string{}
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			matches := []string{"FROM review_execution_attempts", "FROM review_" + channel + "_preflight", "FROM projects"}
+			if channel == "hosted" {
+				matches = []string{"FROM review_execution_attempts", "FROM review_hosted_preflight", "FROM review_hosted_allowance_queries", "FROM review_hosted_observations"}
+			}
+			for _, match := range matches {
+				for _, canceled := range []bool{false, true} {
+					q := cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: match, cancel: canceled}
+					wait, err := readOperationWait(t.Context(), q, o)
+					if wait != nil || err == nil || isWaitUnavailable(err) || storedAllowanceUnavailable(err) || canceled && !errors.Is(err, context.Canceled) || !canceled && !strings.Contains(err.Error(), "missing_cli_retry_history") {
+						t.Errorf("lookup reclassified: %s canceled=%t wait=%v err=%v", match, canceled, wait, err)
+					}
+				}
+			}
+			for _, table := range tables {
+				if snapshotTable(t, f, table) != before[table] {
+					t.Fatal("read changed retained state", table)
+				}
+			}
+		})
+	}
+}
+
+func TestOperationWaitRejectsMissingAndCorruptBaseline(t *testing.T) {
+	for _, damage := range []string{"missing attempt", "invalid anchor", "missing allowance", "corrupt allowance"} {
+		t.Run(damage, func(t *testing.T) {
+			f, a, _, _ := queuedCooldown(t)
+			o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch damage {
+			case "missing attempt":
+				admissionSQL(t, f, `UPDATE review_execution_attempts SET project_id=? WHERE id=?`, otherAttemptProject, a.ID)
+			case "invalid anchor":
+				admissionSQL(t, f, `UPDATE review_execution_attempts SET anchor_json='{' WHERE id=?`, a.ID)
+			case "missing allowance":
+				admissionSQL(t, f, `DELETE FROM review_hosted_preflight WHERE attempt_id=?`, a.ID)
+			case "corrupt allowance":
+				admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json='{}' WHERE attempt_id=?`, a.ID)
+			}
+			if wait, err := readOperationWait(t.Context(), f.store.DB(), o); wait != nil || !isWaitUnavailable(err) {
+				t.Fatal("retained dependency accepted", wait, err)
+			}
+		})
+	}
+}

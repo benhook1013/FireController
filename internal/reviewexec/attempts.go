@@ -208,7 +208,7 @@ func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Att
 		return a, core.Fail("not_found", "The review attempt is unavailable in this project.", 404)
 	}
 	if err == nil && json.Unmarshal([]byte(anchor), &a.Anchor) != nil {
-		return a, core.Fail("storage_unavailable", "Stored review admission is unavailable.", 500)
+		return a, newStoredUnavailable(storedReviewAdmission, "Stored review admission is unavailable.")
 	}
 	return a, err
 }

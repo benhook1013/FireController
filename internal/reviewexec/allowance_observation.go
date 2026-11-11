@@ -24,6 +24,8 @@ const (
 	storedAllowanceObservation
 	storedHostedQuery
 	storedHostedObservation
+	storedReviewAdmission
+	storedConfigurationHistory
 )
 
 type storedUnavailableError struct {
@@ -191,7 +193,7 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 			return nil, nil
 		}
 		if err != nil {
-			return nil, allowanceUnavailable()
+			return nil, err
 		}
 		in := record.Observation
 		if in.Remaining != 0 {
@@ -204,7 +206,10 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 		return nil, nil
 	}
 	if err != nil {
-		return nil, allowanceUnavailable()
+		if isStoredUnavailable(err, storedHostedObservation) {
+			return nil, allowanceUnavailable()
+		}
+		return nil, err
 	}
 	if record.Input.Observation.State != "cooldown_observed" {
 		return nil, nil
