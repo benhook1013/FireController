@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,10 +21,10 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 	project := f.project(t, "selection-bootstrap")
 	worker := f.worker(t, project, "Builder")
 	for _, command := range []string{"start", "run-read"} {
-		for _, wait := range []string{"default", "0", "2", "cancel-before", "cancel-after", "earlier-deadline"} {
+		for _, wait := range []string{"default", "0", "2", "cancel-before", "cancel-after", "earlier-deadline", "reduced-budget"} {
 			t.Run(command+"/"+wait, func(t *testing.T) {
 				t.Parallel()
-				var identities, operations atomic.Int64
+				var identities, operations, commandDeadline, identityReturned atomic.Int64
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 
@@ -34,18 +35,39 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 				if wait == "0" || wait == "2" {
 					selected = wait
 				}
+				if wait == "reduced-budget" {
+					selected = "2"
+				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/instance" {
 						if identities.Add(1) < 6 {
 							http.Error(w, "synthetic gateway restart", http.StatusServiceUnavailable)
 							return
 						} // Six attempts consume 5.75 seconds of bounded identity backoff, above the ordinary five-second limit.
+						identityReturned.Store(time.Now().UnixNano())
 						f.handler.ServeHTTP(w, r)
 						return
 					}
 					operations.Add(1)
-					if r.Header.Get("Prefer") != "wait="+selected || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("Authorization") != "Bearer "+f.admin {
-						t.Error("wait or binding changed")
+					// Bootstrap and scheduling consume the shared caller budget. Both
+					// interfaces reserve five seconds for the operation response, so
+					// a short selected wait can legitimately shrink before dispatch.
+					requested, _ := strconv.Atoi(selected)
+					remaining := time.Until(time.Unix(0, commandDeadline.Load())) - 5*time.Second
+					margin := 250 * time.Millisecond
+					minimum := min(requested, int(max(0, remaining-margin)/time.Second))
+					// The calculation occurs after the identity response and before
+					// this request arrives. Bracket that interval rather than making
+					// server scheduling delay part of the expected wait.
+					beforeDispatch := time.Duration(commandDeadline.Load()-identityReturned.Load()) - 5*time.Second
+					maximum := min(requested, int(max(0, beforeDispatch+margin)/time.Second))
+					prefer := r.Header.Get("Prefer")
+					actual, err := strconv.Atoi(strings.TrimPrefix(prefer, "wait="))
+					if !strings.HasPrefix(prefer, "wait=") || err != nil || actual < minimum || actual > maximum {
+						t.Errorf("wait exceeded remaining budget: got %q, want %d..%d", prefer, minimum, maximum)
+					}
+					if r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("Authorization") != "Bearer "+f.admin {
+						t.Error("binding changed")
 					}
 					if command == "start" {
 						body, err := io.ReadAll(r.Body)
@@ -74,6 +96,12 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 				if wait == "0" || wait == "2" {
 					args = append(args, "--wait-seconds", wait)
 				}
+				if wait == "reduced-budget" {
+					args = append(args, "--wait-seconds", "2")
+					var deadlineCancel context.CancelFunc
+					ctx, deadlineCancel = context.WithTimeout(ctx, 8*time.Second)
+					defer deadlineCancel()
+				}
 				if wait == "cancel-before" {
 					cancel()
 				}
@@ -83,6 +111,11 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					defer deadlineCancel()
 				}
 				var out, diagnostic strings.Builder
+				deadline := time.Now().Add(15 * time.Second)
+				if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
+					deadline = parent
+				}
+				commandDeadline.Store(deadline.UnixNano())
 				code := cli.RunContext(ctx, args, map[string]string{"FC_PROFILE": "builder"}, &out, &diagnostic)
 				if wait == "earlier-deadline" {
 					if code == cli.ExitSuccess || operations.Load() != 0 || !strings.Contains(diagnostic.String(), "deadline_exceeded") || strings.Contains(diagnostic.String(), "outcome_unknown") {
