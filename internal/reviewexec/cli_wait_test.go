@@ -30,6 +30,66 @@ func cliWaitFixture(t *testing.T) (*attemptFixture, Attempt, CLIAllowanceObserva
 	return f, a, in, &now
 }
 
+func TestOperationStatusRetryDeadlineVersionCompatibility(t *testing.T) {
+	for _, state := range []string{"held", "queued"} {
+		t.Run(state, func(t *testing.T) {
+			f, a, in := cooldownObservationFixture(t)
+			if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+				t.Fatal(err)
+			}
+			if state == "held" {
+				if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "hosted_allowance_cooldown", ""); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			original := cliWaitRead(t, f, a.OperationID)
+			status, err := f.e.ReadOperationStatus(t.Context(), operationReadScope(t, f), a.OperationID)
+			if err != nil || status.State != state {
+				t.Fatal("invalid retained status fixture", status, err)
+			}
+			due := in.Observation.RetryNotBefore.Format(time.RFC3339Nano)
+			if state == "held" && (status.RetryNotBefore != due || original.Allowance == nil || original.Allowance.RetryNotBefore != due) || state == "queued" && (status.RetryNotBefore != "" || status.Wait == nil || status.Wait.RetryNotBefore != due) {
+				t.Fatal("deadline was not retained in its state-specific location", status, original)
+			}
+			snapshot := func() string {
+				return snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_hosted_preflight") + snapshotTable(t, f, "receipts") + snapshotTable(t, f, "events")
+			}
+			before := snapshot()
+			base := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
+			for _, version := range []string{"", "1", "2", "3", "4", "5", "unknown"} {
+				t.Run("version_"+version, func(t *testing.T) {
+					fullResponse := versionWaitRead(t, f, base, version)
+					statusResponse := versionWaitRead(t, f, base+"/status", version)
+					var full Operation
+					var compact OperationStatus
+					if err := json.Unmarshal(fullResponse.Body.Bytes(), &full); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(statusResponse.Body.Bytes(), &compact); err != nil {
+						t.Fatal(err)
+					}
+					wantFull, wantCompact := original, status
+					if version != "3" && version != "5" {
+						wantFull.Allowance = nil
+						wantCompact.RetryNotBefore = ""
+					}
+					if version != "1" && version != "2" && version != "3" && version != "5" {
+						wantFull.Wait, wantCompact.Wait = nil, nil
+					}
+					if !reflect.DeepEqual(full, wantFull) || !reflect.DeepEqual(compact, wantCompact) {
+						t.Fatalf("negotiated full/status reads lost or exposed retained facts: full=%+v compact=%+v want_full=%+v want_compact=%+v", full, compact, wantFull, wantCompact)
+					}
+				})
+			}
+			if before != snapshot() {
+				t.Fatal("versioned reads changed retained history or scheduling")
+			}
+		})
+	}
+}
+
 func cliWaitRead(t *testing.T, f *attemptFixture, id string) Operation {
 	t.Helper()
 	o, err := readOperation(t.Context(), f.store.DB(), attemptProject, id)
