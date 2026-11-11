@@ -183,7 +183,7 @@ Use `reviews operations` to discover one page of retained operations and `review
 
 ## Explicit channel-front selection
 
-Use `fc reviews start --channel cli --key KEY` for one durable selection and at most one native child, or `--channel hosted` for the independent Hosted channel. Optional `--expect-pr NUMBER` and `--expected-configuration-revision REVISION` assert the selected target and accepted configuration. `fc reviews run-read --selection-id ID --wait-seconds SECONDS` observes the same selection and original child; it never starts another request. Keep the original key when stdout is lost. A terminal hold requires a fresh authorized request after its cause is resolved. The [selection contract](review-round-controls.md#one-explicit-channel-front-run) owns bounds, recovery and the deferred automatic-scheduling boundary.
+Use `fc reviews start --channel cli --key KEY` for one durable selection and at most one native child, or `--channel hosted` for the independent Hosted channel. Optional `--expect-pr NUMBER` and `--expected-configuration-revision REVISION` assert the selected target and accepted configuration. `fc reviews run-read --selection-id ID --wait-seconds SECONDS` observes the same selection and original child; it never starts another request. `start` defaults to a two-second wait and `run-read` to no wait; use `--wait-seconds 0` for an immediate receipt. Keep the original key when stdout is lost. A terminal hold requires a fresh authorized request after its cause is resolved. The [selection contract](review-round-controls.md#one-explicit-channel-front-run) owns bounds, recovery and the deferred automatic-scheduling boundary.
 
 ## Native administration
 
