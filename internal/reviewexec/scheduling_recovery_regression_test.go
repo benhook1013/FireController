@@ -247,7 +247,7 @@ func TestAutomaticCLISourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 
 func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, fault := range []string{"scheduling", "scheduling-type", "pull-scheduling", "pull-scheduling-type", "front", "oversized-front", "oversized-basis", "retry-selection"} {
+		for _, fault := range []string{"policy", "policy-type", "scheduling", "scheduling-type", "pull-scheduling", "pull-scheduling-type", "front", "oversized-front", "oversized-basis", "retry-selection"} {
 			t.Run(channel+"/"+fault, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				f.configure(t, otherAttemptProject, "test-capability", 0, false)
@@ -263,6 +263,12 @@ func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 					generate = f.e.generateAutomaticCLI
 				}
 				switch fault {
+				case "policy", "policy-type":
+					if fault == "policy" {
+						admissionSQL(t, f, `UPDATE review_policy_config SET body_json='not-json' WHERE project_id=?`, attemptProject)
+					} else {
+						admissionSQL(t, f, `UPDATE review_policy_config SET revision='malformed' WHERE project_id=?`, attemptProject)
+					}
 				case "scheduling":
 					admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
 				case "scheduling-type":
@@ -551,5 +557,137 @@ func TestAutomaticSelectionRetryNeverRetriesTypedRefusal(t *testing.T) {
 	err := retryRunSelectionLocal(ctx, func() error { calls++; return refusal })
 	if err != refusal || calls != 1 {
 		t.Fatal("deterministic refusal entered transient retry", calls, err)
+	}
+}
+
+func TestSelectionLocalRefusalKeepsExplicitAttribution(t *testing.T) {
+	for _, automatic := range []bool{false, true} {
+		name := "explicit"
+		if automatic {
+			name = "automatic"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			var r Run
+			if automatic {
+				schedulingEnable(t, f, 0, true)
+				schedulingGenerate(t, f, true)
+				r = schedulingLatest(t, f)
+			} else {
+				receipt, _ := selectionEnqueue(t, f, "explicit-attribution", "hosted", nil)
+				r = selectionRead(t, f, receipt.ID)
+			}
+			admissionSQL(t, f, `UPDATE review_selections SET state='selecting',revision=2 WHERE id=?`, r.ID)
+			r = selectionRead(t, f, r.ID)
+			admissionSQL(t, f, `UPDATE review_execution_config SET body_json='not-json' WHERE project_id=?`, r.ProjectID)
+			before := snapshotTable(t, f, "review_selections")
+			frames := snapshotTable(t, f, "review_front_frames")
+			_, err := f.e.finishRunChoice(t.Context(), r, 801, nil, runChoice{state: "held", reason: "source_fetch_timeout", sourceReason: "source_fetch_timeout"})
+			if automatic {
+				if err != nil {
+					t.Fatal("automatic refusal escaped", err)
+				}
+				var state, reason string
+				if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_selections WHERE id=?`, r.ID).Scan(&state, &reason); err != nil || state != "held" || reason != "automatic_scheduling_unavailable" {
+					t.Fatal("automatic hold missing", state, reason, err)
+				}
+			} else if !automaticProjectRefused(err) || before != snapshotTable(t, f, "review_selections") {
+				t.Fatal("explicit request became an automatic hold instead of preserving its error path", err)
+			}
+			if frames != snapshotTable(t, f, "review_front_frames") || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+				t.Fatal("refusal retained source or child writes")
+			}
+		})
+	}
+}
+
+func TestAutomaticParentReadersIsolateRetainedCorruption(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, fault := range []string{"proof", "round-body", "round-type", "route", "adoption"} {
+			t.Run(channel+"/"+fault, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				f.configure(t, otherAttemptProject, "test-capability", 0, false)
+				now, sha := stamp(), strings.Repeat("a", 40)
+				prefix := []frontPull{{Number: 2, State: "open", HeadSHA: sha, BaseSHA: sha, BaseRef: "four", ParentPullNumber: 4, ParentSHA: sha, ObservedAt: now}, {Number: 4, State: "open", HeadSHA: sha, BaseSHA: sha, BaseRef: "main", ObservedAt: now}}
+				raw, err := json.Marshal(prefix)
+				if err != nil {
+					t.Fatal(err)
+				}
+				admissionSQL(t, f, `INSERT INTO review_front_frames VALUES(?,?,801,1,?,?,1,'',?)`, attemptProject, channel, now, now, string(raw))
+				switch fault {
+				case "proof":
+					// Isolate the bounded proof reader from unrelated evidence construction.
+					admissionSQL(t, f, `ALTER TABLE review_comparison_proofs RENAME TO saved_comparison_proofs`)
+					admissionSQL(t, f, `CREATE TABLE review_comparison_proofs(project_id TEXT,pull_number INTEGER,channel TEXT,state TEXT,repository_id INTEGER)`)
+					admissionSQL(t, f, `INSERT INTO review_comparison_proofs VALUES(?,4,?,'dirty',801)`, attemptProject, channel)
+				case "round-body", "round-type":
+					roundGrant(t, f, 4, channel, 0, 1, 2, "parent-grant")
+					if fault == "round-body" {
+						admissionSQL(t, f, `UPDATE review_round_changes SET body_json='not-json' WHERE project_id=?`, attemptProject)
+					} else {
+						admissionSQL(t, f, `UPDATE review_round_controls SET updated_at=123 WHERE project_id=?`, attemptProject)
+					}
+				case "adoption":
+					integrationImportHold(t, f, 4)
+					admissionSQL(t, f, `DROP TRIGGER review_adoption_originals_immutable`)
+					admissionSQL(t, f, `UPDATE review_adoption_obligations SET original_json='not-json' WHERE project_id=?`, attemptProject)
+				case "route":
+					admissionSQL(t, f, `INSERT INTO review_route_policy_invalidations VALUES(?,4,'broken-route')`, attemptProject)
+				}
+				err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					_, err := automaticDependenciesChannel(ctx, tx, attemptProject, 2, channel)
+					return err
+				})
+				if !automaticProjectRefused(err) {
+					t.Fatal("retained corruption not classified", err)
+				}
+				for _, project := range []string{attemptProject, otherAttemptProject} {
+					zero := int64(0)
+					hosted, cli := channel == "hosted", channel == "cli"
+					if _, err = f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, project, f.admin, "write"), core.NewID("enable"), SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &hosted, AutomaticCLI: &cli}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				generate := f.e.generateAutomaticHosted
+				if channel == "cli" {
+					generate = f.e.generateAutomaticCLI
+				}
+				worked, err := generate(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+				if err != nil || !worked {
+					t.Fatal("corruption stopped healthy project", worked, err)
+				}
+				if n := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections WHERE project_id=?`, otherAttemptProject); n != 1 {
+					t.Fatal("healthy project not selected", n)
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticSharedReadersPreserveSQLFailures(t *testing.T) {
+	for _, table := range []string{"review_policy_config", "review_comparison_proofs", "review_round_controls", "review_route_policy_invalidations", "review_adoption_obligations"} {
+		t.Run(table, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			admissionSQL(t, f, `ALTER TABLE `+table+` RENAME TO unavailable_retained_table`)
+			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				var err error
+				switch table {
+				case "review_policy_config":
+					_, err = readPolicy(ctx, tx, attemptProject)
+				case "review_comparison_proofs":
+					_, err = channelProgress(ctx, tx, attemptProject, 801, 4, "hosted")
+				case "review_round_controls":
+					_, err = readRoundRecord(ctx, tx, attemptProject, 4, "hosted")
+				case "review_route_policy_invalidations":
+					_, err = pendingIncomingRoutes(ctx, tx, attemptProject, 4)
+				case "review_adoption_obligations":
+					_, err = sourceObligationCount(ctx, tx, attemptProject, 4)
+				}
+				return err
+			})
+			if err == nil || automaticProjectRefused(err) {
+				t.Fatal("SQL failure hidden as project-local refusal", err)
+			}
+		})
 	}
 }

@@ -32,5 +32,8 @@ func sourceObligationReadError(err error) error {
 	if errors.As(err, &failure) && failure.Code == "repository_changed" {
 		return sourceHold("repository_changed")
 	}
+	if adoptionholds.IsProjectStateError(err) {
+		return &automaticProjectStateError{err}
+	}
 	return err
 }

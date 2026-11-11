@@ -5,17 +5,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/benhook1013/FireController/internal/core"
-	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func schedulingFixture(t *testing.T) *attemptFixture {
@@ -811,3 +812,595 @@ func frontFixture(t *testing.T) *attemptFixture {
 	return f
 }
 func frontMergedPull() reviews.PullInput { p := projectionPull(1); p.State = "merged"; return p }
+
+func TestSchedulingAutomaticWorkspaceBasisUsesTargetFirstCurrentReferences(t *testing.T) {
+	f := frontFixture(t)
+	for _, query := range []string{automaticCurrentRunsBasisQuery, automaticCurrentFindingsBasisQuery} {
+		if automaticBasisQuery(query, false) != query {
+			t.Fatal("ordinary query text changed")
+		}
+		rows, err := f.store.DB().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+automaticBasisQuery(query, true), attemptProject, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, detail)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(plan, "\n")
+		if !strings.Contains(joined, "SEARCH c USING INDEX") || !strings.Contains(plan[0], "project_id=? AND pull_number=?") {
+			t.Fatal("basis starts from project-wide history instead of selected current PR", plan)
+		}
+		for _, detail := range plan {
+			if (strings.Contains(detail, "SEARCH v ") || strings.Contains(detail, "SEARCH f ")) && strings.HasSuffix(detail, "(project_id=?)") {
+				t.Fatal("basis walks unrelated historical versions", plan)
+			}
+		}
+	}
+}
+
+func TestSchedulingAutomaticHistoryChurnPreservesFactsAndDedupe(t *testing.T) {
+	f := frontFixture(t)
+	one := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "one-target", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	selected := schedulingLatest(t, f)
+	if _, err := f.e.ControlOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "cancel-original", selected.OperationID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	basis := func() string {
+		t.Helper()
+		var sum string
+		err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			sum, err = automaticPullBasis(ctx, tx, attemptProject, 2)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sum
+	}
+	before := basis()
+	observe := func(target reviews.PullInput, unrelated reviews.PullInput, key string) {
+		t.Helper()
+		var revision int64
+		if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&revision); err != nil {
+			t.Fatal(err)
+		}
+		request := reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 801, Source: "unrelated-history", ObservedAt: stamp(), Queue: []reviews.PullInput{frontMergedPull(), target, unrelated}}
+		response := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, key, encoded(request))
+		if response.Code != 201 {
+			t.Fatal("history observation", response.Code, response.Body.String())
+		}
+	}
+	for n := 0; n < 8; n++ {
+		other := projectionPull(4)
+		other.Runs = []reviews.RunInput{{SourceRunID: fmt.Sprintf("unrelated-%d", n), Channel: "hosted", HeadSHA: other.HeadSHA, Reviewer: "Historical reviewer", Scope: "Retained comparison", Outcome: "completed", Attributable: true, Complete: true, StartedAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-01T00:01:00Z", Found: 1, Findings: []reviews.Finding{{SourceFindingID: "original", Title: "Retained finding", Detail: "Historical source detail", Severity: "low", Disposition: "unadjudicated"}}}}
+		observe(projectionPull(2), other, fmt.Sprintf("history-%d", n))
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_run_versions WHERE project_id=?`, attemptProject) < 8 || attemptCount(t, f.store, `SELECT count(*) FROM review_finding_versions WHERE project_id=?`, attemptProject) < 8 {
+		t.Fatal("fixture did not retain run/finding history")
+	}
+	if after := basis(); after != before {
+		t.Fatal("unrelated historical versions changed selected source basis")
+	}
+	schedulingGenerate(t, f, false)
+	changed := projectionPull(2)
+	changed.HeadSHA = strings.Repeat("c", 40)
+	observe(changed, projectionPull(4), "changed-current-head")
+	if basis() == before {
+		t.Fatal("actual selected source change did not change basis")
+	}
+	schedulingGenerate(t, f, true)
+}
+
+func TestAutomaticIdlePlanningDoesNotEnterWriter(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, idle := range []string{"paused", "pending", "cancelled", "held-source-not-due"} {
+			t.Run(channel+"/"+idle, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				on, zero := true, int64(0)
+				scope := selectionScope(t, f, attemptProject, f.writer, "write")
+				if _, err := f.e.ConfigureScheduling(t.Context(), scope, "idle-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+					t.Fatal(err)
+				}
+				reader := &refreshTestReader{}
+				readers := map[string]TargetReader{"test-capability": reader}
+				generate := f.e.generateAutomaticHosted
+				if channel == "cli" {
+					generate = f.e.generateAutomaticCLI
+				}
+				if idle == "paused" {
+					schedulingPause(t, f, 2, 0, true)
+				} else {
+					if worked, err := generate(t.Context(), readers); err != nil || !worked {
+						t.Fatal(worked, err)
+					}
+					if idle == "cancelled" {
+						selectionNext(t, f, reader)
+						r := schedulingLatest(t, f)
+						if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-idle", r.OperationID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+							t.Fatal(err)
+						}
+					} else if idle == "held-source-not-due" {
+						selectionNext(t, f, &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+							return reviewprovider.Repository{}, context.DeadlineExceeded
+						}})
+					}
+				}
+				beforeCalls := reader.calls.Load()
+				entered, release := make(chan struct{}), make(chan struct{})
+				done := make(chan error, 1)
+				go func() {
+					done <- f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+						if _, err := tx.ExecContext(ctx, `UPDATE projects SET name='writer held' WHERE id=?`, attemptProject); err != nil {
+							return err
+						}
+						close(entered)
+						select {
+						case <-release:
+							return nil
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					})
+				}()
+				defer func() {
+					close(release)
+					if err := <-done; err != nil {
+						t.Error(err)
+					}
+				}()
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("writer not held")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+				defer cancel()
+				worked, err := generate(ctx, readers)
+				if err != nil || worked || ctx.Err() != nil {
+					t.Fatal("idle scheduler waited for writer", worked, err, ctx.Err())
+				}
+				if reader.calls.Load() != beforeCalls {
+					t.Fatal("local planning contacted provider")
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticWriterRechecksReadPlan(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, change := range []string{"unchanged", "restore", "revoked", "scheduling", "configuration", "policy", "pull-pause", "basis", "competing-selection"} {
+			t.Run(channel+"/"+change, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				on, zero := true, int64(0)
+				if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "writer-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+					t.Fatal(err)
+				}
+				readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+				var candidate *automaticProjectPlan
+				if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					var err error
+					candidate, err = f.e.planAutomaticProject(ctx, tx, attemptProject, channel, readers)
+					return err
+				}); err != nil || candidate == nil {
+					t.Fatal("candidate not nominated", candidate, err)
+				}
+				// Deterministic interleaving: commit a competing change after the exact
+				// read preflight, then run the same writer path used by the generator.
+				switch change {
+				case "restore":
+					admissionSQL(t, f, `INSERT INTO metadata VALUES('restore:provider_state','held')`)
+				case "revoked":
+					admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+				case "scheduling":
+					schedulingEnable(t, f, 1, true)
+				case "configuration":
+					f.configure(t, attemptProject, "test-capability", 1, false)
+				case "policy":
+					assessmentPolicy(t, f, 1, []string{"cli", "hosted"}, []string{channel})
+				case "pull-pause":
+					schedulingPause(t, f, 2, 0, true)
+				case "basis":
+					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'','actor',?)`, attemptProject, stamp())
+				case "competing-selection":
+					selectionEnqueue(t, f, "competing-explicit", channel, nil)
+				}
+				worked, err := f.e.acceptAutomaticProject(t.Context(), attemptProject, channel, readers, candidate)
+				if err != nil || worked != (change == "unchanged") {
+					t.Fatal("writer accepted stale or refused unchanged plan", worked, err)
+				}
+				want := 0
+				if change == "unchanged" {
+					want = 1
+					// The same nominated plan cannot admit a second selection.
+					if worked, err = f.e.acceptAutomaticProject(t.Context(), attemptProject, channel, readers, candidate); err != nil || worked {
+						t.Fatal("repeated plan created duplicate intent", worked, err)
+					}
+				}
+				if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != want {
+					t.Fatal("unexpected automatic attribution", got)
+				}
+			})
+		}
+	}
+}
+
+func TestAutomaticConcurrentProjectPlansAcceptOnce(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			on, zero := true, int64(0)
+			if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "concurrent-enable", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+				t.Fatal(err)
+			}
+			start := make(chan struct{})
+			type result struct {
+				worked bool
+				err    error
+			}
+			results := make(chan result, 2)
+			for range 2 {
+				go func() {
+					<-start
+					worked, err := f.e.generateAutomaticProject(t.Context(), attemptProject, channel, map[string]TargetReader{"test-capability": &refreshTestReader{}})
+					results <- result{worked, err}
+				}()
+			}
+			close(start)
+			accepted := 0
+			for range 2 {
+				r := <-results
+				if r.err != nil {
+					t.Fatal(r.err)
+				}
+				if r.worked {
+					accepted++
+				}
+			}
+			if accepted != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 {
+				t.Fatal("concurrent preflights did not serialize one acceptance", accepted)
+			}
+		})
+	}
+}
+
+func TestSchedulingPreparationGuardRetainsOperation(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, change := range []string{"pause", "disable", "withdraw"} {
+			t.Run(channel+"/"+change, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				on := true
+				revision := int64(0)
+				scope := selectionScope(t, f, attemptProject, f.writer, "write")
+				_, err := f.e.ConfigureScheduling(t.Context(), scope, "enable-both", SchedulingRequest{ExpectedRevision: &revision, AutomaticHosted: &on, AutomaticCLI: &on})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Select the requested automatic channel through the normal scheduler.
+				readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+				if channel == "cli" {
+					_, err = f.e.generateAutomaticCLI(t.Context(), readers)
+				} else {
+					_, err = f.e.generateAutomaticHosted(t.Context(), readers)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				selectionNext(t, f, &refreshTestReader{})
+				r := schedulingLatest(t, f)
+				if r.OperationID == "" || r.Channel != channel {
+					t.Fatal(r)
+				}
+				deadline := ""
+				admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,?,0)`, r.OperationID, deadline)
+				before, err := f.e.ReadOperation(t.Context(), scope, r.OperationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected := "automation_authorization_changed"
+				if change == "pause" {
+					expected = "pull_scheduling_paused"
+				}
+				var original Attempt
+				driver := &controlledDriver{prepare: func(ctx context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+					original = a
+					switch change {
+					case "pause":
+						schedulingPause(t, f, 2, 0, true)
+					case "disable":
+						off, rev := false, int64(1)
+						_, err := f.e.ConfigureScheduling(ctx, scope, "disable-both", SchedulingRequest{ExpectedRevision: &rev, AutomaticHosted: &off, AutomaticCLI: &off})
+						if err != nil {
+							t.Fatal(err)
+						}
+					case "withdraw":
+						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					}
+					_, err := f.e.ExecutionContext(ctx, o.ProjectID, o.ID)
+					attemptCode(t, err, expected)
+					return Preparation{}, err
+				}}
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+					t.Fatal(err)
+				}
+				after, err := f.e.ReadOperation(t.Context(), scope, r.OperationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.State != "queued" || after.Reason != expected || after.AttemptID != "" {
+					t.Fatalf("guard lost retained request: %+v", after)
+				}
+				if after.ID != before.ID || after.ActorID != before.ActorID || after.WorkerID != before.WorkerID || after.HeadSHA != before.HeadSHA || after.ConfigurationRevision != before.ConfigurationRevision || !reflect.DeepEqual(after.Wait, before.Wait) {
+					t.Fatal("changed original binding or wait", before, after)
+				}
+				if driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+					t.Fatal("dispatched or leaked reservation")
+				}
+				var state, reason string
+				if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_execution_transitions WHERE attempt_id=? AND revision=2`, original.ID).Scan(&state, &reason); err != nil || state != "held" || reason != expected {
+					t.Fatal(state, reason, err)
+				}
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || driver.prepares.Load() != 1 {
+					t.Fatal("blocked operation prepared again", err)
+				}
+				if change == "pause" {
+					schedulingPause(t, f, 2, 1, false)
+					retry, err := f.e.StartAttempt(t.Context(), attemptProject, after.ID)
+					if err != nil || retry.ID == "" || retry.ID == original.ID || retry.OperationID != before.ID {
+						t.Fatal("same operation could not resume", retry, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSchedulingQueuedPauseDiagnosticPrecedence(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, wait := range []string{"scheduler", "queue", "draft"} {
+			t.Run(channel+"/"+wait, func(t *testing.T) {
+				f := schedulingFixture(t)
+				pull := int64(2)
+				if wait == "queue" {
+					f.enqueue(t, attemptProject, "earlier", channel, 2, 1)
+					pull = 4
+				}
+				r := f.enqueue(t, attemptProject, "queued-pause", channel, pull, 1)
+				scope := selectionScope(t, f, attemptProject, f.writer, "write")
+				deadline := ""
+
+				admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,?,0)`, r.ID, deadline)
+				if wait == "draft" {
+					admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, r.ID)
+				}
+				schedulingPause(t, f, pull, 0, true)
+				check := func(want string) {
+					t.Helper()
+					if got := f.e.queuedDiagnostic(t.Context(), scope, r.ID, r.Revision); got != want {
+						t.Fatalf("diagnostic=%q want=%q", got, want)
+					}
+				}
+				check("pull_scheduling_paused")
+				admissionSQL(t, f, `UPDATE review_execution_config SET body_json=json_set(body_json,'$.paused',json('true')) WHERE project_id=?`, attemptProject)
+				check("project_paused")
+				admissionSQL(t, f, `UPDATE review_operation_waits SET paused=1 WHERE operation_id=?`, r.ID)
+				check("operation_paused")
+			})
+		}
+	}
+}
+
+func TestSchedulingPausePreservesRetainedCooldown(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var now *time.Time
+			if channel == "cli" {
+				f, a, _, now = cliWaitFixture(t)
+				if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f, a, _, now = queuedCooldown(t)
+			}
+			scope := f.scope(t, attemptProject, f.writer, false)
+			pause := func(revision int64, paused bool) {
+				_, err := f.e.ConfigurePullScheduling(t.Context(), scope, "timer-pause-"+time.Now().Format("150405.000000000"), 2, PullSchedulingRequest{ExpectedRevision: &revision, Paused: &paused})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := cliWaitRead(t, f, a.OperationID)
+			pause(0, true)
+			if got := f.e.queuedDiagnostic(t.Context(), scope, before.ID, before.Revision); got != "pull_scheduling_paused" {
+				t.Fatal("quota/cooldown hid PR pause", got)
+			}
+			pause(1, false)
+			*now = cliWaitDue(t, before).Add(time.Second)
+			driver := &controlledDriver{prepare: func(ctx context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+				pause(2, true)
+				_, err := f.e.ExecutionContext(ctx, o.ProjectID, o.ID)
+				return Preparation{}, err
+			}}
+			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+				t.Fatal(err)
+			}
+			after := cliWaitRead(t, f, a.OperationID)
+			if driver.prepares.Load() != 1 || driver.calls.Load() != 0 || after.State != "queued" || after.Reason != "pull_scheduling_paused" || !reflect.DeepEqual(after.Wait, before.Wait) {
+				t.Fatal("lost original cooldown", before, after)
+			}
+			assertCLIWaitSnapshot(t, f)
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+				t.Fatal("leaked reservation")
+			}
+		})
+	}
+}
+
+func TestSchedulingPreparationGuardCannotRequeueAdmittedAttempt(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, reason := range []string{"pull_scheduling_paused", "automation_authorization_changed"} {
+			t.Run(channel+"/"+reason, func(t *testing.T) {
+				f := supervisorFixture(t)
+				r := f.enqueue(t, attemptProject, "admitted-guard", channel, 2, 1)
+				a := f.start(t, attemptProject, r)
+				intent := ""
+				if channel == "hosted" {
+					intent = "synthetic-trigger"
+				}
+				admitted, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), intent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, admitted.Revision, "held", reason, ""); err == nil {
+					t.Fatal("admitted attempt accepted a preparation hold")
+				}
+				if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, admitted.Revision, "failed", reason, ""); err != nil {
+					t.Fatal(err)
+				}
+				after := cliWaitRead(t, f, r.ID)
+				if after.State != "failed" || after.AttemptID != a.ID {
+					t.Fatal("admitted action silently requeued", after)
+				}
+			})
+		}
+	}
+}
+
+func TestSchedulingDetachedGuardHistoryRejectsCorruption(t *testing.T) {
+	for _, corrupt := range []string{"anchor", "intent", "external", "state", "revision", "reason"} {
+		t.Run(corrupt, func(t *testing.T) {
+			f := schedulingFixture(t)
+			r := f.enqueue(t, attemptProject, "detached-guard", "hosted", 2, 1)
+			a := f.start(t, attemptProject, r)
+			if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "pull_scheduling_paused", ""); err != nil {
+				t.Fatal(err)
+			}
+			assertCLIWaitSnapshot(t, f)
+			o := cliWaitRead(t, f, r.ID)
+			current, err := readAttempt(t.Context(), f.store.DB(), attemptProject, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch corrupt {
+			case "anchor":
+				anchor := attemptAnchor(attemptProject, 2)
+				current.Anchor = &anchor
+			case "intent":
+				current.Intent = "possible-post"
+			case "external":
+				current.ExternalID = "trigger"
+			case "state":
+				current.State = "active"
+			case "revision":
+				current.Revision = 1
+			case "reason":
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET reason='preparation_failed' WHERE attempt_id=? AND revision=2`, a.ID)
+			}
+			_, recognized, err := historicalUnusedPreparationOperation(t.Context(), f.store.DB(), o, current, true)
+			if err == nil && recognized {
+				t.Fatal("accepted corrupt detached attempt", corrupt)
+			}
+		})
+	}
+}
+
+func TestSchedulingDetachedGuardProjectsOriginalAttempt(t *testing.T) {
+	for _, reason := range []string{"pull_scheduling_paused", "automation_authorization_changed"} {
+		t.Run(reason, func(t *testing.T) {
+			f := attemptProjectionFixture(t, true)
+			r := f.enqueue(t, attemptProject, "guard-projection", "hosted", 2, 1)
+			a := f.start(t, attemptProject, r)
+			if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, ""); err != nil {
+				t.Fatal(err)
+			}
+			_, projected := projectedAttempt(t, f, a)
+			if projected.State != "held" || projected.Reason != reason {
+				t.Fatal(projected)
+			}
+			assertCLIWaitSnapshot(t, f)
+			o := cliWaitRead(t, f, r.ID)
+			if _, err := f.e.ControlOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), "cancel-guard", o.ID, OperationControl{ExpectedRevision: o.Revision, Action: "cancel"}); err != nil {
+				t.Fatal(err)
+			}
+			assertCLIWaitSnapshot(t, f)
+			if _, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil); err != nil {
+				t.Fatal("historical projection after cancellation", err)
+			}
+		})
+	}
+}
+
+func validateSchedulingSnapshotForTest(t *testing.T, f *attemptFixture) error {
+	t.Helper()
+	return f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return ValidateSchedulingSnapshot(ctx, tx)
+	})
+}
+
+func TestValidateSchedulingSnapshotAcceptsSupportedVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		version        string
+		legacyPhysical bool
+	}{
+		{name: "legacy-v1", version: "1", legacyPhysical: true},
+		{name: "current-v2", version: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := schedulingFixture(t)
+			schedulingEnable(t, f, 0, true)
+			if tc.legacyPhysical {
+				admissionSQL(t, f, `ALTER TABLE review_scheduling DROP COLUMN automatic_cli`)
+			}
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_scheduling'`, tc.version)
+			if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+				t.Fatalf("valid schema version %s rejected: %v", tc.version, err)
+			}
+		})
+	}
+}
+
+func TestValidateSchedulingSnapshotRejectsMalformedAndFutureVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+	}{
+		{name: "malformed", version: "not-a-version"},
+		{name: "future", version: "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := schedulingFixture(t)
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_scheduling'`, tc.version)
+			attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
+		})
+	}
+}
+
+func TestValidateSchedulingSnapshotRequiresPresentDomainMetadata(t *testing.T) {
+	f := schedulingFixture(t)
+	admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_scheduling'`)
+	if err := validateSchedulingSnapshotForTest(t, f); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing optional domain metadata should not be mistaken for a schema version: %v", err)
+	}
+}
