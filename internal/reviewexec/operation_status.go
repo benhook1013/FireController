@@ -172,7 +172,7 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		value.Observer = nil
 	}
 	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
-	if r.Header.Get(operationWaitHeader) != "3" {
+	if version := r.Header.Get(operationWaitHeader); version != "3" && version != "5" {
 		value.RetryNotBefore = ""
 	}
 	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)

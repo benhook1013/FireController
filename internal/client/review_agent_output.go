@@ -126,7 +126,9 @@ func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOper
 }
 
 func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
-	if state == "held" || state == "queued" {
+	// Queued reasons can outlive a resumed pause; only the current queued cause
+	// can establish a scheduling hold. Held operations retain their own reason.
+	if state == "held" {
 		return schedulingDiagnostic(reason)
 	}
 	return nil
