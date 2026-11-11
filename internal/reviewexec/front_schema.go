@@ -10,7 +10,7 @@ func EnsureFrontSchema(ctx context.Context, store *core.Store) error {
 	if err := store.EnsureSchema(ctx, "review_fronts", FrontSchemaSQL()); err != nil {
 		return err
 	}
-	return store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error { return ValidateFrontSnapshot(ctx, tx) })
+	return store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error { return validateFrontDefinition(ctx, tx) })
 }
 
 // FrontSchemaSQL is independent canonical DDL for the optional current cache.
