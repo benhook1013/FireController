@@ -179,7 +179,7 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 		}
 		err := local()
 		var failure *core.Error
-		if !errors.As(err, &failure) || failure.Code != "overloaded" {
+		if automaticProjectRefused(err) || !errors.As(err, &failure) || failure.Code != "overloaded" {
 			return err
 		}
 		timer := time.NewTimer(delay)
@@ -529,6 +529,16 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadataPins map[int64]reviews.SourceMetadataPin, choice runChoice) (bool, error) {
 	err := retryRunSelectionLocal(ctx, func() error {
 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) (resultErr error) {
+			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
+			if err != nil {
+				return err
+			}
+			if current.State != r.State || current.Revision != r.Revision {
+				return conflict()
+			}
+			if _, err = tx.ExecContext(ctx, `SAVEPOINT review_selection_finish`); err != nil {
+				return err
+			}
 			defer func() {
 				if resultErr == nil {
 					var pull int64
@@ -541,14 +551,20 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
 					}
 				}
+				if automaticProjectRefused(resultErr) {
+					// Settlement is part of atomic selection. Discard any source,
+					// child and event writes before retaining a local hold. The
+					// accepted basis stays intact for tick/restart suppression.
+					if _, err := tx.ExecContext(ctx, `ROLLBACK TO review_selection_finish`); err != nil {
+						resultErr = err
+						return
+					}
+					resultErr = updateRun(ctx, tx, current, "held", "automatic_scheduling_unavailable", "")
+				}
+				if resultErr == nil {
+					_, resultErr = tx.ExecContext(ctx, `RELEASE review_selection_finish`)
+				}
 			}()
-			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
-			if err != nil {
-				return err
-			}
-			if current.State != r.State || current.Revision != r.Revision {
-				return conflict()
-			}
 			c, nowRepo, reason, err := e.runBinding(ctx, tx, current)
 			if err != nil {
 				return err

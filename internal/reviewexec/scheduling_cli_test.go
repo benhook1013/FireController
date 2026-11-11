@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"reflect"
@@ -372,4 +373,203 @@ func TestSchedulingCLIEarlierFrontWhileLaterIntentWaits(t *testing.T) {
 		t.Fatal("later intent replaced", op)
 	}
 	schedulingCLIGenerate(t, f, false)
+}
+
+func TestSchedulingOtherChannelChangeKeepsCancelledIntent(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, legacy := range []bool{false, true} {
+			t.Run(channel+"/legacy="+fmt.Sprint(legacy), func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				scope := selectionScope(t, f, attemptProject, f.writer, "write")
+				configure := func(revision int64, hosted, cli bool) {
+					t.Helper()
+					if _, err := f.e.ConfigureScheduling(t.Context(), scope, core.NewID("channel-basis"), SchedulingRequest{ExpectedRevision: &revision, AutomaticHosted: &hosted, AutomaticCLI: &cli}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				configure(0, false, false)
+				configure(1, channel == "hosted", channel == "cli")
+				if legacy {
+					admissionSQL(t, f, `UPDATE events SET payload_json=json_remove(payload_json,'$.hosted_basis_revision','$.cli_basis_revision') WHERE event_type='review.scheduling_updated'`)
+				}
+				generate := schedulingGenerate
+				if channel == "cli" {
+					generate = schedulingCLIGenerate
+				}
+				generate(t, f, true)
+				selectionNext(t, f, &refreshTestReader{})
+				r := schedulingLatest(t, f)
+				if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-basis", r.OperationID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+					t.Fatal(err)
+				}
+				before := snapshotTable(t, f, "review_selections") + snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_automatic_selections")
+				for revision := int64(2); revision <= 4; revision++ {
+					other := revision%2 == 0
+					hosted, cli := true, other
+					if channel == "cli" {
+						hosted, cli = other, true
+					}
+					configure(revision, hosted, cli)
+					generate(t, f, false)
+				}
+				restarted, err := New(f.store, attemptCapabilities)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.e = restarted
+				if err = f.e.RecoverReviewRuns(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				generate(t, f, false)
+				if snapshotTable(t, f, "review_selections")+snapshotTable(t, f, "review_operations")+snapshotTable(t, f, "review_automatic_selections") != before {
+					t.Fatal("other channel recreated cancelled intent")
+				}
+				// Reasserting the current settings deliberately rearms supplied channels.
+				configure(5, true, true)
+				generate(t, f, true)
+			})
+		}
+	}
+}
+
+func TestSchedulingPriorityIsolatesOffendingCandidate(t *testing.T) {
+	for _, state := range []string{"queued-operation", "queued-selection"} {
+		for _, fault := range []string{"scheduling", "pause", "configuration", "selection", "sql"} {
+			t.Run(state+"/"+fault, func(t *testing.T) {
+				f := schedulingFixtureWithQueue(t, []int64{2})
+				f.configure(t, otherAttemptProject, "test-capability", 0, false)
+				low := f.enqueue(t, otherAttemptProject, "healthy-low", "cli", 2, 1)
+				schedulingCLIEnable(t, f, 0, true)
+				schedulingCLIGenerate(t, f, true)
+				if state == "queued-operation" {
+					selectionNext(t, f, &refreshTestReader{})
+				}
+				r := schedulingLatest(t, f)
+				admissionSQL(t, f, `UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?`, attemptProject)
+				switch fault {
+				case "scheduling":
+					admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
+				case "pause":
+					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'invalid','actor',?)`, attemptProject, stamp())
+				case "configuration":
+					admissionSQL(t, f, `UPDATE review_execution_config SET body_json='not-json' WHERE project_id=?`, attemptProject)
+				case "selection":
+					admissionSQL(t, f, `UPDATE review_selections SET updated_at='malformed' WHERE id=?`, r.ID)
+				case "sql":
+					admissionSQL(t, f, `ALTER TABLE review_scheduling RENAME TO unavailable_scheduling`)
+				}
+				a, err := f.e.StartAttempt(t.Context(), otherAttemptProject, low.ID)
+				if fault == "sql" {
+					if err == nil || automaticProjectRefused(err) || a.ID != "" {
+						t.Fatal("priority swallowed SQL error", a, err)
+					}
+					return
+				}
+				if err != nil || a.ID == "" || a.OperationID != low.ID {
+					t.Fatal("other project's damage blocked healthy claim", a, err)
+				}
+				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE project_id=?`, attemptProject) != 0 {
+					t.Fatal("damaged preferred candidate claimed")
+				}
+			})
+		}
+	}
+}
+
+func TestSchedulingChannelBasisKeepsAuthorityAndLegacySemantics(t *testing.T) {
+	for _, mode := range []string{"own-toggle", "actor", "worker", "credential", "omitted-cli", "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			scope := selectionScope(t, f, attemptProject, f.writer, "write")
+			on, off, zero, one := true, false, int64(0), int64(1)
+			if _, err := f.e.ConfigureScheduling(t.Context(), scope, "initial-both", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &on, AutomaticCLI: &on}); err != nil {
+				t.Fatal(err)
+			}
+			read := func() (int64, int64) {
+				t.Helper()
+				var hosted, cli int64
+				if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					s, err := readScheduling(ctx, tx, attemptProject)
+					if err != nil {
+						return err
+					}
+					hosted, cli, err = schedulingBasisRevisions(ctx, tx, s)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return hosted, cli
+			}
+			input := SchedulingRequest{ExpectedRevision: &one, AutomaticHosted: &off, AutomaticCLI: &on}
+			switch mode {
+			case "actor":
+				scope = selectionScope(t, f, attemptProject, f.admin, "write")
+			case "worker":
+				admissionSQL(t, f, `INSERT INTO workers VALUES(?,'new-authorizer','New authorizer')`, attemptProject)
+				scope.WorkerID = "new-authorizer"
+			case "credential":
+				// Reauthorizing retained settings after credential rotation must
+				// matter even when the principal and worker are unchanged.
+				admissionSQL(t, f, `UPDATE review_scheduling SET credential_id='retired-credential' WHERE project_id=?`, attemptProject)
+			case "omitted-cli":
+				input.AutomaticHosted, input.AutomaticCLI = &on, nil
+			case "legacy":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_remove(payload_json,'$.hosted_basis_revision','$.cli_basis_revision') WHERE event_type='review.scheduling_updated'`)
+				if h, c := read(); h != 1 || c != 1 {
+					t.Fatal("legacy basis changed", h, c)
+				}
+			}
+			if _, err := f.e.ConfigureScheduling(t.Context(), scope, "change-settings", input); err != nil {
+				t.Fatal(err)
+			}
+			hosted, cli := read()
+			wantCLI := int64(1)
+			if mode == "actor" || mode == "worker" || mode == "credential" {
+				wantCLI = 2
+			}
+			if hosted != 2 || cli != wantCLI {
+				t.Fatal("wrong channel basis", hosted, cli, wantCLI)
+			}
+		})
+	}
+}
+
+func TestSchedulingChannelBasisRejectsInvalidCurrentHistory(t *testing.T) {
+	for _, fault := range []string{"missing", "duplicate", "actor", "bit", "null", "partial", "future", "zero", "malformed", "oversized", "sql"} {
+		t.Run(fault, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			schedulingEnable(t, f, 0, true)
+			switch fault {
+			case "missing":
+				admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.scheduling_updated'`)
+			case "duplicate":
+				admissionSQL(t, f, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) SELECT project_id,event_type,resource_id,revision,actor_id,payload_json,created_at FROM events WHERE event_type='review.scheduling_updated'`)
+			case "actor":
+				admissionSQL(t, f, `UPDATE events SET actor_id='other-actor' WHERE event_type='review.scheduling_updated'`)
+			case "bit":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_set(payload_json,'$.automatic_hosted',json('false')) WHERE event_type='review.scheduling_updated'`)
+			case "null":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_set(payload_json,'$.hosted_basis_revision',NULL) WHERE event_type='review.scheduling_updated'`)
+			case "partial":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_remove(payload_json,'$.cli_basis_revision') WHERE event_type='review.scheduling_updated'`)
+			case "future":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_set(payload_json,'$.hosted_basis_revision',2) WHERE event_type='review.scheduling_updated'`)
+			case "zero":
+				admissionSQL(t, f, `UPDATE events SET payload_json=json_set(payload_json,'$.cli_basis_revision',0) WHERE event_type='review.scheduling_updated'`)
+			case "malformed":
+				admissionSQL(t, f, `UPDATE events SET payload_json='{}' WHERE event_type='review.scheduling_updated'`)
+			case "oversized":
+				admissionSQL(t, f, `UPDATE events SET payload_json=payload_json || ? WHERE event_type='review.scheduling_updated'`, strings.Repeat(" ", 4097))
+			case "sql":
+				admissionSQL(t, f, `ALTER TABLE events RENAME TO unavailable_events`)
+			}
+			err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				_, err := automaticPullBasisChannel(ctx, tx, attemptProject, 2, "hosted")
+				return err
+			})
+			if err == nil || automaticProjectRefused(err) != (fault != "sql") {
+				t.Fatal("invalid history classification", fault, err)
+			}
+		})
+	}
 }

@@ -248,3 +248,19 @@ func TestWorkerRetirementManagementAckReplayReauthorizesAndIsolates(t *testing.T
 	require(t, request(f.handler, "GET", base+"/workers/"+target+"/retirement", reader, "", "", ""), 200)
 	require(t, request(f.handler, "POST", base+"/workers/"+target+"/retire", reader, "reader-retire", "", `{}`), 403)
 }
+
+func TestWorkerListRawQueryBound(t *testing.T) {
+	f := setup(t)
+	project := f.project(t, "owner/query-bound")
+	base := "/api/v1/projects/" + project + "/workers?"
+	// Leading zeroes retain a valid page limit, distinguishing the raw byte
+	// bound from cursor/value validation.
+	for _, size := range []int{16 << 10, (16 << 10) + 1} {
+		query := "limit=" + strings.Repeat("0", size-len("limit=1")) + "1"
+		status := 200
+		if size > 16<<10 {
+			status = 400
+		}
+		require(t, request(f.handler, "GET", base+query, f.admin, "", "", ""), status)
+	}
+}

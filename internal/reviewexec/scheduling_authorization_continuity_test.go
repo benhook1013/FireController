@@ -118,6 +118,9 @@ func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *te
 				case "mismatched-child":
 					admissionSQL(t, f, `UPDATE review_operations SET worker_id='replacement-worker' WHERE id=?`, r.OperationID)
 				}
+				if fault == "unselected" && (r.State != "queued" || r.OperationID != "") {
+					t.Fatal("unselected fixture unexpectedly has a child", r)
+				}
 				attemptCode(t, continuityGuard(t, f, r), "automation_authorization_changed")
 				if r.OperationID != "" && fault != "mismatched-child" {
 					a, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
