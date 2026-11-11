@@ -552,6 +552,14 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					}
 				}
 				if automaticProjectRefused(resultErr) {
+					var automatic bool
+					if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+						resultErr = err
+						return
+					}
+					if !automatic {
+						return // Explicit selections retain their original error and rollback.
+					}
 					// Settlement is part of atomic selection. Discard any source,
 					// child and event writes before retaining a local hold. The
 					// accepted basis stays intact for tick/restart suppression.
