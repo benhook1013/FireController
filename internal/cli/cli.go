@@ -46,16 +46,15 @@ type options struct {
 }
 
 type invocation struct {
-	ciWatch                *ciWatchInvocation
-	reviewRun              *reviewRunInvocation
-	operationHelp          string
-	reviewOperations       client.ReviewOperationsOptions
-	reviewOperationStatus  *reviewOperationStatusInvocation
-	reviewOperationControl *reviewOperationControlInvocation
-	adoptionObligations    *adoptionObligationsInvocation
-	roundAdoption          *roundAdoptionInvocation
-	rounds                 *reviewRoundsInvocation
-	reviewCIDiagnostics    bool
+	ciWatch               *ciWatchInvocation
+	reviewRun             *reviewRunInvocation
+	operationHelp         string
+	reviewOperations      client.ReviewOperationsOptions
+	reviewOperationStatus *reviewOperationStatusInvocation
+	adoptionObligations   *adoptionObligationsInvocation
+	roundAdoption         *roundAdoptionInvocation
+	rounds                *reviewRoundsInvocation
+	reviewCIDiagnostics   bool
 	options
 	command      string
 	subcommand   string
@@ -95,7 +94,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	call, ok := parseInvocation(args)
 	if !ok {
 		action := "Use fc version, fc context, fc doctor, or a documented service command."
-		if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation-control" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") {
+		if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") {
 			action = "Use fc reviews " + call.subcommand + " --help."
 		}
 		return report(stderr, ExitUsage, "invalid_arguments", "The command or its arguments are not supported.", action)
@@ -349,21 +348,6 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if err != nil {
 		return reportClientError(stderr, err, ctx)
 	}
-	if call.reviewOperationControl != nil {
-		encoded, err := json.Marshal(value)
-		if err == nil {
-			encoded = append(encoded, '\n')
-			var written int
-			written, err = stdout.Write(encoded)
-			if err == nil && written != len(encoded) {
-				err = io.ErrShortWrite
-			}
-		}
-		if err != nil {
-			return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The review control receipt could not be written.", Action: "Retry the exact same key, request and bound instance; do not use a replacement key.", OutcomeUnknown: true})
-		}
-		return ExitSuccess
-	}
 	return emit(stdout, stderr, value)
 }
 
@@ -403,7 +387,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	call.command = remaining[0]
-	if len(remaining) == 3 && remaining[0] == "help" && remaining[1] == "reviews" && (remaining[2] == "operations" || remaining[2] == "operation-control" || remaining[2] == "operation") {
+	if len(remaining) == 3 && remaining[0] == "help" && remaining[1] == "reviews" && (remaining[2] == "operations" || remaining[2] == "operation") {
 		call.operationHelp = remaining[2]
 		return call, true
 	}
@@ -424,7 +408,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	}
 	call.subcommand = remaining[1]
 	operationArgs := remaining[2:]
-	if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation-control" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
+	if call.command == "reviews" && (call.subcommand == "ci-wait" || call.subcommand == "operations" || call.subcommand == "operation" || call.subcommand == "start" || call.subcommand == "run-read") && len(operationArgs) == 1 && operationArgs[0] == "--help" {
 		call.operationHelp = call.subcommand
 		return call, true
 	}

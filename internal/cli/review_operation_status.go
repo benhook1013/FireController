@@ -57,15 +57,7 @@ func parseReviewOperationStatus(args []string) (*reviewOperationStatusInvocation
 }
 func executeReviewOperationStatus(ctx context.Context, service *client.Client, value *reviewOperationStatusInvocation) (any, error) {
 	if value.Diagnostics {
-		operation, err := service.WaitReviewOperation(ctx, value.ID, value.WaitSeconds)
-		if out := client.AgentReviewOperation(operation); out.Diagnostic != nil {
-			return out, err
-		}
-		return operation, err
+		return service.WaitReviewOperation(ctx, value.ID, value.WaitSeconds)
 	}
-	status, err := service.WaitReviewOperationStatus(ctx, value.ID, value.WaitSeconds)
-	if out := client.AgentReviewOperationStatus(status); out.Diagnostic != nil {
-		return out, err
-	}
-	return status, err
+	return service.WaitReviewOperationStatus(ctx, value.ID, value.WaitSeconds)
 }

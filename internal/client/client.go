@@ -349,8 +349,6 @@ func (c *Client) requestBounded(ctx context.Context, method string, segments []s
 // validates its own limit before transport; ordinary request budgets and shared
 // transport state remain unchanged.
 type sourceWaitOptions struct {
-	operationWait                    bool
-	queuedCause                      *string
 	ciWatchChange, ciWorkflowDetails bool
 	hostedObserver                   bool
 	seconds                          int
@@ -420,9 +418,6 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 		if wait.ciWorkflowDetails {
 			r.Header.Set("X-FC-CI-Workflow-Details", "3")
 		}
-		if wait.operationWait {
-			r.Header.Set("X-FC-Operation-Wait", "3")
-		}
 		if wait.hostedObserver && method == http.MethodGet {
 			r.Header.Set("X-FC-Hosted-Observer", "1")
 		}
@@ -472,12 +467,6 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
 	}
 	defer response.Body.Close()
-	if wait != nil && wait.queuedCause != nil {
-		*wait.queuedCause = ""
-		if response.Header.Get("X-FC-Review-Queued") == "cli_quota_wait" {
-			*wait.queuedCause = "cli_quota_wait"
-		}
-	}
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		if mutation {
 			return unknownRequest("redirect_rejected", operation, "request was redirected", response.StatusCode)
@@ -615,13 +604,6 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 			}
 		}
 	}
-	if result.Code == "review_inflight" && status == http.StatusConflict {
-		result.Message = "This PR and channel already have a pending review request; no new request was accepted."
-		result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations) and retain the original request. Do not submit another key to bypass it."
-		if details, ok := result.Details.(map[string]any); ok && details["operation_id"] != nil {
-			result.Action = "Read and retain the operation in details.operation_id with review_operation_read (CLI: reviews operation). Cancel only with queued-only review_operation_control when cancellation is intended; issued work must follow its original recovery path. Do not submit another key to bypass it."
-		}
-	}
 	if result.Status == http.StatusServiceUnavailable && result.Code == "overloaded" {
 		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
 			result.Message = "The controller ended this temporary wait during shutdown."
@@ -679,10 +661,6 @@ func (c *Client) safeDetails(value any, code string) any {
 		case "current_revision":
 			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict" || code == "project_presentation_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
 				result[key] = int64(n)
-			}
-		case "operation_id":
-			if id, ok := item.(string); ok && code == "review_inflight" && ValidateReviewOperationID(id) == nil && !c.sensitive(id) {
-				result[key] = id
 			}
 		case "project_id":
 			if id, ok := item.(string); ok && validID(id) && !c.sensitive(id) {
