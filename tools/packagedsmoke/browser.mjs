@@ -84,7 +84,7 @@ try {
   const reloadGeometry = async () => ({...await page.evaluate(() => {
     const rect = selector => {const node=document.querySelector(selector);if(!node)return null;const box=node.getBoundingClientRect();return {top:box.top,bottom:box.bottom,left:box.left,right:box.right,height:box.height};};
     const target=document.querySelector('#review-pr-32');
-    return {hash_matches:location.hash==='#review-pr-32',scroll_y:scrollY,scroll_height:document.documentElement.scrollHeight,viewport_height:innerHeight,margin:target?parseFloat(getComputedStyle(target).scrollMarginTop):0,target:rect('#review-pr-32'),header:rect('.mast'),hero:rect('.delivery-merge-head'),queue:rect('#review-queue')};
+    return {hash_matches:location.hash==='#review-queue-head',scroll_y:scrollY,scroll_height:document.documentElement.scrollHeight,viewport_height:innerHeight,margin:target?parseFloat(getComputedStyle(target).scrollMarginTop):0,target:rect('#review-pr-32'),header:rect('.mast'),hero:rect('.delivery-merge-head'),queue:rect('#review-queue')};
   }),run_reads:reviewRunReads,delivery_reads:deliveryReads,delivery_held:reloadDeliveryHeld,delivery_settled:reloadDeliverySettled});
 
   failureSnapshot = async () => {
@@ -930,7 +930,7 @@ try {
   const fallbackHero = page.getByRole('region', {name:'Review queue head', exact:true});
   await fallbackHero.getByRole('heading', {name:'Queue head not determined', exact:true}).waitFor();
   const fallbackJump = fallbackHero.getByRole('link', {name:'Jump to review queue', exact:true});
-  await expect(fallbackJump).toHaveAttribute('href', `${home}#review-queue`);
+  await expect(fallbackJump).toHaveAttribute('href', `${home}#review-queue-head`);
   const fallbackPosition = async () => {
     const geometry = await page.locator('#review-queue').evaluate(element => {
       const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();
@@ -948,7 +948,7 @@ try {
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect.poll(fallbackPosition).toBe(false);
     await fallbackJump.click();
-    await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue');
+    await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue-head');
     await expect.poll(fallbackPosition).toBe(true);
     need(fallbackGeometry.scroll > 2);
     const fallbackKey = await page.evaluate(() => history.state.key);
@@ -956,13 +956,13 @@ try {
     checkpoint = 'fallback-scroll-away';
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect.poll(fallbackPosition).toBe(false);
-    need(new URL(page.url()).hash === '#review-queue');
+    need(new URL(page.url()).hash === '#review-queue-head');
     need(await page.evaluate(() => history.state.key) === fallbackKey);
     checkpoint = 'fallback-repeat-jump';
     await fallbackJump.click();
     await expect.poll(() => page.evaluate(() => history.state.key)).not.toBe(fallbackKey);
     need(typeof await page.evaluate(() => history.state.key) === 'string');
-    need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue');
+    need(new URL(page.url()).pathname === home && new URL(page.url()).hash === '#review-queue-head');
     await expect.poll(fallbackPosition).toBe(true);
     need(JSON.stringify(await page.evaluate(() => ({origin:performance.timeOrigin, session:sessionStorage.getItem('firecontroller.browser-session.v1')}))) === JSON.stringify(fallbackPage));
   }
@@ -970,11 +970,44 @@ try {
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'seed-observation';
   // Complete observations require explicit retirement of an omitted entry.
-  await write('POST', '/reviews/observations', {...observation(1, [merged, open]), retired:[{number:33,reason:'defunct'}]}, 201);
+  const activityStart = new Date().toISOString();
+  const activityAttempt = channel => ({source_attempt_id:`live-${channel}-active`,channel,head_sha:open.head_sha,state:'active',started_at:activityStart,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:channel==='hosted'?'42':'',provider_review_id:''});
+  await write('POST', '/reviews/observations', {...observation(1, [merged, {...open, attempts:[activityAttempt('hosted'),activityAttempt('cli')]}]), retired:[{number:33,reason:'defunct'}]}, 201);
   checkpoint = 'initial-open-pull';
   await page.locator('#review-pr-32').getByRole('link', {name:'#32 Live review before', exact:true}).waitFor();
   checkpoint = 'initial-merged-pull';
   await page.locator('#review-pr-31').getByRole('link', {name:'#31 Retained merged smoke PR', exact:true}).waitFor();
+  checkpoint = 'active-review-hover';
+  const activityRow = page.locator('#review-pr-32');
+  const activityReadCounts = [reviewOperationReads, reviewAttemptReads];
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({width,height:900});
+    for (const channel of ['hosted','cli']) {
+      const badge = activityRow.getByRole('button',{name:`${channel} execution: Reviewing`,exact:true});
+      await badge.hover();
+      const tooltip = activityRow.locator(`[id="${await badge.getAttribute('aria-describedby')}"]`);
+      await expect(tooltip).toBeVisible();
+      await expect(tooltip).toContainText('Attempt began:');
+      await expect(tooltip.locator('time')).toHaveAttribute('datetime',activityStart);
+      await expect(tooltip).toContainText(channel==='hosted'?'trigger is recorded as sent':'before final checks and process launch');
+      await tooltip.hover();
+      await expect(tooltip).toBeVisible();
+      need(await tooltip.evaluate(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1;}));
+      if (config.diagnostic_directory && channel==='hosted') await page.screenshot({path:config.diagnostic_directory+`/review-activity-${width}.png`,timeout:2000});
+      await badge.focus();
+      await badge.press('Escape');
+      await expect(tooltip).toBeHidden();
+      await badge.press('Enter');
+      await expect(tooltip).toBeVisible();
+      await badge.press('Space');
+      await expect(tooltip).toBeHidden();
+      await badge.click();
+      await expect(tooltip).toBeVisible();
+      await page.getByRole('heading',{name:'Review queue',exact:true}).click();
+      await expect(tooltip).toBeHidden();
+    }
+  }
+  need(JSON.stringify(activityReadCounts)===JSON.stringify([reviewOperationReads,reviewAttemptReads]));
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   const reasonCode = 'hosted_finished_inventory_unproven';
@@ -1033,7 +1066,7 @@ try {
   }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
-  await expect(jump).toHaveAttribute('href', `${home}#review-pr-32`);
+  await expect(jump).toHaveAttribute('href', `${home}#review-queue-head`);
   await expect(jump).toHaveText('Review queue ↗');
   need(await jump.locator('*').count() === 0);
   const jumpStyle = await jump.evaluate(element => { const style = getComputedStyle(element); return {color:style.color, weight:style.fontWeight, family:style.fontFamily, decoration:style.textDecorationLine}; });
@@ -1122,7 +1155,7 @@ try {
     need(reviewOperationReads === 0 && reviewAttemptReads === 0);
   });
   await jump.click();
-  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue-head');
   checkpoint = 'queue-jump-visible';
   await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
   checkpoint = 'queue-jump-desktop-context';
@@ -1214,7 +1247,7 @@ try {
   checkpoint = 'reload-head-spa';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   await jump.click();
-  await expect.poll(() => new URL(page.url()).hash).toBe('#review-pr-32');
+  await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue-head');
   await expect.poll(headJumpPosition).toEqual(expectedHeadPosition);
 
   phase = 'reload';
@@ -1250,7 +1283,7 @@ try {
       await expect(openingHead.locator('.review-round-placeholder')).toHaveCount(12);
       need(await openingHead.getByRole('link').count() === 0);
       checkpoint = 'reload-hash-retained';
-      need(new URL(page.url()).hash === '#review-pr-32');
+      need(new URL(page.url()).hash === '#review-queue-head');
       checkpoint = 'reload-target-absent';
       await expect(headRow).toHaveCount(0);
     } finally { releaseReloadQueue(); }

@@ -524,7 +524,7 @@ func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull
 		return 0, err
 	}
 	if dirty {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	var pending int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_route_policy_facts WHERE project_id=? AND target_pull_number=? AND active=1 AND pending=1`, project, pull).Scan(&pending); err != nil {
@@ -533,7 +533,7 @@ func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull
 	// Browser JSON must preserve the exact count; this is a wire precision
 	// invariant, not a practical retained-route capacity or page-size limit.
 	if pending < 0 || pending > 1<<53-1 {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	return pending, nil
 }

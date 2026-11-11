@@ -125,7 +125,7 @@ func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string
 	} else if version == 2 {
 		columns = roundColumnsV2 + `,0`
 	}
-	err := q.QueryRowContext(ctx, `SELECT `+columns+` FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel=?`, project, pull, channel).Scan(&c.ProjectID, &c.PullNumber, &c.Channel, &c.Revision, &c.Epoch, &c.grantRevision, &c.Closed, &c.Minimum, &c.Maximum, &c.Taper, &c.Used, &c.Dry, &c.Tapered, &c.ActorID, &c.CreatedAt, &c.UpdatedAt, &c.InitialDry, &c.InitiallyTapered, &c.OriginSource, &c.OriginKey, &c.OriginSHA256, &c.MaximumUnbounded)
+	err := scanRoundValues(q.QueryRowContext(ctx, `SELECT `+columns+` FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel=?`, project, pull, channel), &c.ProjectID, &c.PullNumber, &c.Channel, &c.Revision, &c.Epoch, &c.grantRevision, &c.Closed, &c.Minimum, &c.Maximum, &c.Taper, &c.Used, &c.Dry, &c.Tapered, &c.ActorID, &c.CreatedAt, &c.UpdatedAt, &c.InitialDry, &c.InitiallyTapered, &c.OriginSource, &c.OriginKey, &c.OriginSHA256, &c.MaximumUnbounded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil
 	}
@@ -134,27 +134,30 @@ func readRoundRecordVersion(ctx context.Context, q EvidenceQuery, project string
 	}
 	c.Configured = true
 	var grantBody, latestBody string
-	if err := q.QueryRowContext(ctx, `SELECT g.body_json,l.body_json,EXISTS(SELECT 1 FROM review_round_changes t WHERE t.project_id=g.project_id AND t.pull_number=g.pull_number AND t.channel=g.channel AND t.epoch=g.epoch AND t.action='taper' AND t.revision<=?) FROM review_round_changes g JOIN review_round_changes l ON l.project_id=g.project_id AND l.pull_number=g.pull_number AND l.channel=g.channel AND l.revision=? AND l.epoch=g.epoch WHERE g.project_id=? AND g.pull_number=? AND g.channel=? AND g.revision=? AND g.epoch=?`, c.Revision, c.Revision, project, pull, channel, c.grantRevision, c.Epoch).Scan(&grantBody, &latestBody, &c.taperSet); err != nil {
+	if err := scanRoundValues(q.QueryRowContext(ctx, `SELECT g.body_json,l.body_json,EXISTS(SELECT 1 FROM review_round_changes t WHERE t.project_id=g.project_id AND t.pull_number=g.pull_number AND t.channel=g.channel AND t.epoch=g.epoch AND t.action='taper' AND t.revision<=?) FROM review_round_changes g JOIN review_round_changes l ON l.project_id=g.project_id AND l.pull_number=g.pull_number AND l.channel=g.channel AND l.revision=? AND l.epoch=g.epoch WHERE g.project_id=? AND g.pull_number=? AND g.channel=? AND g.revision=? AND g.epoch=?`, c.Revision, c.Revision, project, pull, channel, c.grantRevision, c.Epoch), &grantBody, &latestBody, &c.taperSet); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return roundRecord{}, &automaticProjectStateError{roundUnavailable()}
+		}
 		return roundRecord{}, err
 	}
 	var bound RoundControl
 	bound, _, err = decodeRoundHistory(grantBody)
 	if err != nil {
-		return roundRecord{}, err
+		return roundRecord{}, &automaticProjectStateError{err}
 	}
 	latest, cumulative, err := decodeRoundHistory(latestBody)
 	if err != nil {
-		return roundRecord{}, err
+		return roundRecord{}, &automaticProjectStateError{err}
 	}
 	c.cumulative = cumulative
 	if latest.ProjectID != project || latest.PullNumber != pull || latest.Channel != channel || latest.Revision != c.Revision || latest.Epoch != c.Epoch || latest.Taper != c.Taper || version < 5 && c.taperSet {
-		return roundRecord{}, roundUnavailable()
+		return roundRecord{}, &automaticProjectStateError{roundUnavailable()}
 	}
 	if bound.ProjectID != project || bound.PullNumber != pull || bound.Channel != channel || bound.Revision != c.grantRevision || bound.Epoch != c.Epoch {
-		return roundRecord{}, roundUnavailable()
+		return roundRecord{}, &automaticProjectStateError{roundUnavailable()}
 	}
 	if !validRoundControl(c.RoundControl) || c.grantRevision < 1 || c.grantRevision > c.Revision || version < 4 && (c.cumulative || c.Maximum > 1000) || c.Used < bound.Used || c.cumulative && c.Tapered != (effectiveRoundTapered(c) && roundTaperBoundary(bound, c.Used)) || !c.cumulative && !validLegacyRoundControl(c.RoundControl) {
-		return roundRecord{}, roundUnavailable()
+		return roundRecord{}, &automaticProjectStateError{roundUnavailable()}
 	}
 	return c, nil
 }
@@ -625,4 +628,34 @@ func writeRoundCompletionProgress(ctx context.Context, tx *sql.Tx, c *roundRecor
 func storeRoundRecord(ctx context.Context, tx *sql.Tx, c roundRecord) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO review_round_controls(`+roundColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,pull_number,channel) DO UPDATE SET revision=excluded.revision,epoch=excluded.epoch,grant_revision=excluded.grant_revision,closed=excluded.closed,minimum=excluded.minimum,maximum=excluded.maximum,taper=excluded.taper,used=excluded.used,dry=excluded.dry,tapered=excluded.tapered,actor_id=excluded.actor_id,updated_at=excluded.updated_at,initial_dry=excluded.initial_dry,initially_tapered=excluded.initially_tapered,origin_source=excluded.origin_source,origin_key=excluded.origin_key,origin_sha256=excluded.origin_sha256,maximum_unbounded=excluded.maximum_unbounded`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, c.grantRevision, c.Closed, c.Minimum, c.Maximum, c.Taper, c.Used, c.Dry, c.Tapered, c.ActorID, c.CreatedAt, c.UpdatedAt, c.InitialDry, c.InitiallyTapered, c.OriginSource, c.OriginKey, c.OriginSHA256, c.MaximumUnbounded)
 	return err
+}
+
+// Scan without database/sql conversions so malformed retained values can be
+// distinguished from an actual query or transaction failure.
+func scanRoundValues(row *sql.Row, destinations ...any) error {
+	values := make([]any, len(destinations))
+	pointers := make([]any, len(values))
+	for i := range values {
+		pointers[i] = &values[i]
+	}
+	if err := row.Scan(pointers...); err != nil {
+		return err
+	}
+	for i, destination := range destinations {
+		valid := false
+		switch out := destination.(type) {
+		case *string:
+			*out, valid = values[i].(string)
+		case *int64:
+			*out, valid = values[i].(int64)
+		case *bool:
+			v, ok := values[i].(int64)
+			valid = ok && (v == 0 || v == 1)
+			*out = v == 1
+		}
+		if !valid {
+			return &automaticProjectStateError{roundUnavailable()}
+		}
+	}
+	return nil
 }

@@ -1,3 +1,6 @@
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { refreshProjectMetadata } from './project-metadata';
+import { validMetadataPage } from './presentation';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Api } from './api';
@@ -26,7 +29,7 @@ describe('current round progress', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(fetch.mock.calls[0][0])).toContain('/reviews/rounds/progress?pull_numbers=31');
     expect(fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
-    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Operation-Wait')).toBe('3');
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Operation-Wait')).toBe('5');
   });
   it('refuses invalid selectors before any network request', async () => {
     const api = await connected(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
@@ -185,5 +188,42 @@ describe('operation wait accessibility', () => {
     expect(reviewWaitExpandedForKey('Escape', false)).toBe(false);
     expect(reviewWaitExpandedForKey('ArrowDown', false)).toBeUndefined();
     expect(reviewWaitExpandedForKey('Tab', true)).toBeUndefined();
+  });
+});
+
+// Configuration refresh updates current queue priority without touching retained history.
+describe('configuration event progress refresh', () => {
+  it('refreshes open current progress without refreshing history or another session', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+    const key = ['fc', 'session', 'instance', 'project_one', 'worker'];
+    const progressKey = [...key, 'reviews', 'current', 'round-progress', [7]];
+    const before: ReviewRoundProgress = { ...current, wait: {paused:false,queue_ahead_pull_number:4} };
+    const after: ReviewRoundProgress = { ...current, wait: {paused:false,queue_ahead_pull_number:9} };
+    client.setQueryData(progressKey, before);
+    let reads = 0;
+    const observer = new QueryObserver(client, { queryKey: progressKey, queryFn: async () => { reads++; return after; } });
+    let html = '';
+    const render = () => { html = renderToStaticMarkup(<ReviewOperationWaitBadge wait={observer.getCurrentResult().data!.wait!} />); };
+    const stop = observer.subscribe(render);
+    render();
+    const untouched = [
+      [...key, 'reviews', 'snapshot_old', 'run', 'run_one'],
+      ['fc', 'other_session', 'instance', 'project_one', 'worker', 'reviews', 'current', 'round-progress', [7]],
+      [...key, 'inbox', ''],
+    ];
+    for (const queryKey of untouched) client.setQueryData(queryKey, 'retained');
+    const change = { items: [{ event_type: 'reviews.configured', resource_id: 'project_one', revision: 2, event_cursor: 'event_cursor' }], event_cursor: 'page_cursor', has_more: false };
+    try {
+      expect(html).toContain('Behind #4');
+      if (!validMetadataPage(change, 25)) throw new Error('configuration event rejected by browser decoder');
+      await refreshProjectMetadata(client, key, change, new AbortController().signal);
+      expect(reads).toBe(1);
+      expect(html).toContain('Behind #9');
+      expect(html).not.toContain('Behind #4');
+      for (const queryKey of untouched) {
+        expect(client.getQueryData(queryKey)).toBe('retained');
+        expect(client.getQueryState(queryKey)?.isInvalidated).toBe(false);
+      }
+    } finally { stop(); client.clear(); }
   });
 });

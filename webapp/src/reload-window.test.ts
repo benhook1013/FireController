@@ -48,3 +48,22 @@ it('copies the live page on hash PUSH and restores each POP entry without overwr
   expect(render('A', true)[0].index).toBe(1);
   expect(render('B', true)[0].index).toBe(0);
 });
+
+it('starts a queue-head navigation at the current page despite retained pagination, but still permits paging afterward', () => {
+  const first = { trail: [''], index: 0, snapshot: 'current' };
+  const older = { trail: ['', 'older-cursor'], index: 1, snapshot: 'older-snapshot' };
+  const stored = { state: { key: 'head', firecontrollerWindows: [{ scope: 'queue', value: older }] }, replaceState: vi.fn() };
+  vi.stubGlobal('history', stored);
+  const render = (key = 'head') => {
+    hooks.index = 0;
+    const result = useReloadWindow('queue', first, validQueueWindow, key, true, false);
+    hooks.effects.splice(0).forEach(effect => effect());
+    return result;
+  };
+  const [value, change] = render();
+  expect(value).toEqual(first);
+  expect(stored.replaceState).toHaveBeenCalledWith(expect.objectContaining({ firecontrollerWindows: [{ scope: 'queue', value: first }] }), '');
+  change(older);
+  expect(render()[0]).toEqual(older);
+  expect(render('back-to-head')[0]).toEqual(first);
+});

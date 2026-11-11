@@ -195,7 +195,9 @@ func TestWaitingReviewRejectsDamagedConfigurationHistory(t *testing.T) {
 					t.Fatal("damaged history created an attempt", attempt)
 				}
 				driver := &controlledDriver{}
-				attemptCode(t, f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}), "review_persistence_failed")
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+					t.Fatal("candidate history stopped the supervisor", err)
+				}
 				op, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
 				if err != nil || op.State != "queued" || op.Reason != "" || op.Revision != request.Revision || op.ConfigurationRevision != 1 || op.AttemptID != "" {
 					t.Fatal("storage damage became a normal configuration hold or changed original request", op, err)

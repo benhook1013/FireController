@@ -7,7 +7,7 @@ export function reviewPillCapacity(width: number, mobile: boolean): number {
 }
 export function useReviewPillCapacity() {
   const ref = useRef<HTMLElement>(null);
-  const [capacity, setCapacity] = useState(6);
+  const [capacity, setCapacity] = useState<number>();
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -23,5 +23,5 @@ export function useReviewPillCapacity() {
     update();
     return () => { observer.disconnect(); mobile.removeEventListener('change', update); };
   }, []);
-  return { ref, capacity };
+  return { ref, capacity: capacity ?? 6, measured: capacity !== undefined };
 }

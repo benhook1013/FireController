@@ -3,29 +3,32 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// RoundProgressChannel contains current native allowance facts only. Pending
-// counts operations bound to this epoch, not coverage or permission to dispatch.
+// RoundProgressChannel contains current native allowance facts and optional
+// private activity diagnostics. Pending counts operations bound to this epoch,
+// not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	Wait                *OperationWait `json:"wait,omitempty"`
-	Channel             string         `json:"channel"`
-	Configured          bool           `json:"configured"`
-	Revision            int64          `json:"revision"`
-	Epoch               int64          `json:"epoch"`
-	Closed              bool           `json:"closed"`
-	Minimum             int64          `json:"minimum"`
-	Maximum             int64          `json:"maximum"`
-	MaximumUnbounded    bool           `json:"maximum_unbounded,omitempty"`
-	Taper               int64          `json:"taper"`
-	Used                int64          `json:"used"`
-	Dry                 int64          `json:"dry"`
-	Tapered             bool           `json:"tapered"`
-	Pending             int64          `json:"pending"`
-	PendingExecution    *int64         `json:"pending_execution,omitempty"`
-	PendingAdjudication *int64         `json:"pending_adjudication,omitempty"`
+	ActivityEvidence    *ActivityEvidence `json:"activity_evidence,omitempty"`
+	Wait                *OperationWait    `json:"wait,omitempty"`
+	Channel             string            `json:"channel"`
+	Configured          bool              `json:"configured"`
+	Revision            int64             `json:"revision"`
+	Epoch               int64             `json:"epoch"`
+	Closed              bool              `json:"closed"`
+	Minimum             int64             `json:"minimum"`
+	Maximum             int64             `json:"maximum"`
+	MaximumUnbounded    bool              `json:"maximum_unbounded,omitempty"`
+	Taper               int64             `json:"taper"`
+	Used                int64             `json:"used"`
+	Dry                 int64             `json:"dry"`
+	Tapered             bool              `json:"tapered"`
+	Pending             int64             `json:"pending"`
+	PendingExecution    *int64            `json:"pending_execution,omitempty"`
+	PendingAdjudication *int64            `json:"pending_adjudication,omitempty"`
 }
 
 type RoundProgressItem struct {
@@ -65,7 +68,10 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 	return e.readRoundProgress(ctx, scope, numbers, true)
 }
 
-func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool) (RoundProgress, error) {
+func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool, activity ...bool) (RoundProgress, error) {
+	return e.readRoundProgressWithQueuePriority(ctx, scope, numbers, stages, false, activity...)
+}
+func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope core.Scope, numbers []int64, stages, queuePriority bool, activity ...bool) (RoundProgress, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(scope.ProjectID) || !validRoundProgressNumbers(numbers) {
 		return RoundProgress{}, invalid()
 	}
@@ -94,7 +100,13 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				if stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
-					progress.Wait, err = readChannelWait(ctx, tx, scope.ProjectID, number, channel)
+					progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, queuePriority)
+					if err != nil {
+						return err
+					}
+				}
+				if len(activity) > 0 && activity[0] {
+					progress.ActivityEvidence, err = readActivityEvidence(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err
 					}
@@ -113,10 +125,10 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 }
 
 // Project only a current queued intent, never infer a timer from a held run.
-func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*OperationWait, error) {
+func (e *Engine) readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string, queuePriority bool) (*OperationWait, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, `SELECT o.id FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='queued' AND o.attempt_id='' ORDER BY o.created_at,o.id LIMIT 1`, project, number, channel).Scan(&id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -126,5 +138,24 @@ func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int
 	if err != nil {
 		return nil, err
 	}
-	return currentOperationWait(o), nil
+	wait := currentOperationWait(o)
+	if !queuePriority || channel != "hosted" || wait == nil || wait.Paused {
+		return wait, nil
+	}
+	// Reuse actual accepted-intent admission priority, not the first PR with
+	// remaining rounds. The latter may be skipped legitimately by lookahead.
+	// These are bounded local reads in this same authorized snapshot; no source
+	// refresh or provider request is performed. An unavailable hint leaves the
+	// original retained timer intact rather than fabricating a queue blocker.
+	configuration, revision, err := readConfiguration(ctx, tx, project)
+	if err != nil {
+		return wait, nil
+	}
+	earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, configuration, revision)
+	if err == nil && earlier != nil {
+		copy := *wait
+		copy.QueueAheadPullNumber = earlier.PullNumber
+		wait = &copy
+	}
+	return wait, nil
 }

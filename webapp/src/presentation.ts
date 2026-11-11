@@ -82,6 +82,7 @@ export function validPresentationSnapshot(v: unknown, project: string): v is Pre
   return object(v) && exact(v, ['presentation', 'event_cursor']) && validPresentation(v.presentation, project) && cursor(v.event_cursor);
 }
 function metadataResource(event: string, value: unknown): boolean {
+  if (event === 'review.activity_observed') return typeof value === 'string' && /^review_attempt_[a-f0-9]{32}$/u.test(value);
   if (event === 'review.requested' || event === 'review.operation_updated') {
     return typeof value === 'string' && value.length === 49 && /^review_operation_[a-f0-9]{32}$/u.test(value);
   }

@@ -34,6 +34,14 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 	if err != nil || result.Reason != "capture_retained" {
 		return result, err
 	}
+	return deriveHostedEvidence(ctx, captures, engine, attempt, retained, result, func(input reviewexec.ReviewEvidenceInput) (reviewexec.Receipt, error) {
+		return engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+	})
+}
+
+// deriveHostedEvidence shares the full decoder and original baseline checks.
+// The terminal-repair path supplies an in-memory sink, never a journal write.
+func deriveHostedEvidence(ctx context.Context, captures *HostedCaptureStore, engine *reviewexec.Engine, attempt reviewexec.Attempt, retained HostedCaptureRecord, result CapturedHosted, recordEvidence func(reviewexec.ReviewEvidenceInput) (reviewexec.Receipt, error)) (CapturedHosted, error) {
 	anchor := *attempt.Anchor
 	ref := result.Capture
 	inventory, err := reviewprovider.ExtractHostedFindings(retained.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
@@ -49,6 +57,22 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		if !baselineLoaded {
 			baseline, baselineReason, baselineErr = loadHostedStandingBaseline(ctx, captures, engine, attempt, retained)
 			baselineLoaded = true
+		}
+	}
+	// Display evidence is independent of final inventory and never changes
+	// scheduler state. Use this already retained poll and its original baseline;
+	// do not collect additional provider source for hover details.
+	if attempt.State == "active" && hostedProcessingCandidate(retained.Snapshot) {
+		loadBaseline()
+		if baselineErr == nil && baselineReason == "" {
+			processing, parseErr := reviewprovider.ExtractHostedProcessing(retained.Snapshot, baseline.Snapshot, retained.Intent, retained.PostingActor, retained.ProviderActor, retained.EarliestPosting)
+			if parseErr == nil && processing != nil {
+				_ = engine.RecordActivityEvidence(ctx, attempt.ProjectID, attempt.ID, reviewexec.ActivityEvidence{
+					AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA, Kind: "hosted_processing_observed",
+					ObservedAt: processing.ObservedAt.Format(time.RFC3339Nano), CommentUpdatedAt: processing.CommentUpdatedAt.Format(time.RFC3339Nano),
+					SourceCommentID: processing.SourceCommentID, ProviderRunID: processing.ProviderRunID, TriggerID: processing.TriggerID,
+				})
+			}
 		}
 	}
 	if !inventory.Complete && (inventory.Publication.State == "active" || inventory.Publication.State == "ambiguous" && inventory.Reason == "invalid_actionable_count" || inventory.Publication.State == "uncertain" && (inventory.Reason == "hosted_finished_inventory_unproven" || inventory.Reason == "attribution_window_closed")) && inventory.Publication.Trigger.State == "adopted" {
@@ -144,7 +168,7 @@ func RetainHosted(ctx context.Context, captures *HostedCaptureStore, engine *rev
 		result.Reason = "finding_inventory_limit"
 		return result, nil
 	}
-	result.Receipt, err = engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
+	result.Receipt, err = recordEvidence(input)
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "validation_failed" {
@@ -281,4 +305,14 @@ func hostedStandingRunNew(baseline reviewprovider.HostedPublicationSnapshot, pro
 		}
 	}
 	return true
+}
+
+// Avoid even baseline artifact reads on ordinary completed/unsupported captures.
+func hostedProcessingCandidate(snapshot reviewprovider.HostedPublicationSnapshot) bool {
+	for _, comment := range snapshot.IssueComments {
+		if strings.Contains(comment.Body, "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->") {
+			return true
+		}
+	}
+	return false
 }

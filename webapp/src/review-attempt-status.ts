@@ -1,5 +1,5 @@
 import type { ReviewAttemptSummary } from './types';
-import type { ReviewRoundProgress } from './review-progress';
+import { validActivityEvidence, type ReviewActivityEvidence, type ReviewRoundProgress } from './review-progress';
 import type { ReviewChannelPosition } from './review-fronts';
 
 export interface ReviewAttemptStatus {
@@ -7,6 +7,33 @@ export interface ReviewAttemptStatus {
   description?: string;
   cause?: string;
   kind?: 'attention' | 'history';
+  activity?: { startedAt: string; explanation: string; evidence?: ReviewActivityEvidence };
+}
+
+// The browser attempt timestamp is the first journal transition (preparation),
+// not provider execution. In particular, CLI admission precedes process launch
+// and Hosted activity follows trigger delivery, not a provider start receipt.
+function activeAttemptStatus(attempt: ReviewAttemptSummary, progress?: ReviewRoundProgress): ReviewAttemptStatus {
+  const startedAt = attempt.started_at && Number.isFinite(Date.parse(attempt.started_at)) ? attempt.started_at : '';
+  const timing = startedAt ? `Attempt began ${new Date(startedAt).toLocaleString(undefined, { timeZoneName: 'short' })} (${startedAt}).` : 'Attempt start time is unknown.';
+  const candidate = progress?.activity_evidence;
+  const evidence = attempt.state === 'active' && progress?.channel === attempt.channel && validActivityEvidence(candidate, attempt.channel) && candidate.attempt_id === attempt.source_attempt_id && candidate.head_sha === attempt.head_sha && (!startedAt || Date.parse(candidate.observed_at) >= Date.parse(startedAt)) && (candidate.kind !== 'hosted_processing_observed' || candidate.trigger_id === attempt.trigger_id) ? candidate : undefined;
+  const explanation = evidence?.kind === 'cli_process_spawned'
+    ? 'CLI process launch was confirmed locally. This does not establish when CodeRabbit’s remote analysis started or whether it is still running.'
+    : evidence?.kind === 'hosted_processing_observed'
+      ? 'CodeRabbit reported processing this attempt’s matching head and run. It had started by the observation time; this is not an exact provider start time. Processing may have finished since this observation while FireController waits for the result.'
+      : attempt.state === 'active'
+    ? attempt.channel === 'hosted'
+      ? `${attempt.trigger_id ? 'The Hosted review trigger is recorded as sent.' : 'The Hosted attempt is recorded as active; trigger delivery is not shown in this record.'} CodeRabbit may be queued, running, or finished while FireController waits for a result. Actual provider start time is not available.`
+      : attempt.channel === 'cli'
+        ? 'The CLI attempt is marked active before final checks and process launch. It may still be starting or running, or its result may be awaiting collection. Actual CLI process start time is not available.'
+        : 'This attempt is recorded as active. Actual reviewer start time is not available.'
+    : attempt.state === 'posting'
+      ? 'The review trigger is being posted. Delivery and provider execution are not yet confirmed.'
+      : 'This attempt is being prepared. Provider execution is not yet confirmed.';
+  const details = `${explanation} The attempt time can include preparation; it is not proof of reviewer start. This is retained status, not a live activity check.`;
+  const signal = evidence?.kind === 'cli_process_spawned' ? `CLI process started ${evidence.process_started_at}. ` : evidence ? `CodeRabbit processing observed ${evidence.observed_at}. Provider comment updated ${evidence.comment_updated_at}. ` : '';
+  return { text: attempt.state === 'active' ? 'Reviewing' : 'Preparing', description: `${signal}${timing} ${details}`, activity: { startedAt, explanation: details, ...(evidence ? { evidence } : {}) } };
 }
 
 // Keep the reason readable without requiring a mouse hover. Raw codes remain
@@ -54,7 +81,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   if (attempt?.state === 'uncertain') return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
   if (progress?.wait) return undefined; // Render the actual retained wait badge.
   if (attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state)) {
-    return { text: attempt.state === 'active' ? 'Reviewing' : 'Preparing' };
+    return activeAttemptStatus(attempt, progress);
   }
   if ((progress?.pending_execution ?? 0) > 0) return {
     text: stopped ? 'Retry pending' : 'Pending',

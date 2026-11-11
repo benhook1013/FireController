@@ -18,11 +18,15 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 // queued/pause shape; version 2 additionally understands CLI quota baselines.
 // Version 3 adds the retained provider allowance estimate, never a retry clock.
 // Version 4 extends version 2 with source-retry evidence; it omits quota estimates.
+// Version 5 extends version 3 with accepted Hosted queue priority, not source retry.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" {
+	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" && version != "5" {
 		return nil
 	}
 	copy := *wait
+	if version != "5" {
+		copy.QueueAheadPullNumber = 0
+	}
 	if version != "4" {
 		copy.SourceRetry = nil
 	}
@@ -30,7 +34,7 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
-	if version != "3" {
+	if version != "3" && version != "5" {
 		copy := *wait
 		copy.CLIAllowance = nil
 		return &copy
@@ -41,11 +45,12 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 // OperationWait retains dispatch scheduling, not provider availability or review
 // completion. A paused ordinary queued operation need not have a cooldown.
 type OperationWait struct {
-	SourceRetry       *SourceRetry          `json:"source_retry,omitempty"`
-	CLIAllowance      *AllowanceObservation `json:"cli_allowance,omitempty"`
-	BaselineAttemptID string                `json:"baseline_attempt_id,omitempty"`
-	RetryNotBefore    string                `json:"retry_not_before,omitempty"`
-	Paused            bool                  `json:"paused"`
+	QueueAheadPullNumber int64                 `json:"queue_ahead_pull_number,omitempty"`
+	SourceRetry          *SourceRetry          `json:"source_retry,omitempty"`
+	CLIAllowance         *AllowanceObservation `json:"cli_allowance,omitempty"`
+	BaselineAttemptID    string                `json:"baseline_attempt_id,omitempty"`
+	RetryNotBefore       string                `json:"retry_not_before,omitempty"`
+	Paused               bool                  `json:"paused"`
 }
 
 func waitUnavailable() error {
@@ -54,6 +59,19 @@ func waitUnavailable() error {
 
 func isWaitUnavailable(err error) bool {
 	return isStoredUnavailable(err, storedWaitingIntent)
+}
+
+// Only absent or proven malformed retained dependencies describe a broken wait.
+// Operational storage failures, including already normalized ones, keep their cause.
+func waitDependencyError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) || isStoredUnavailable(err, storedHostedObservation) || isStoredUnavailable(err, storedReviewAdmission) {
+		return waitUnavailable()
+	}
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "not_found" {
+		return waitUnavailable()
+	}
+	return err
 }
 
 func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*OperationWait, error) {
@@ -87,7 +105,10 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 			return nil, waitUnavailable()
 		}
 		a, err := readAttempt(ctx, q, o.ProjectID, baseline.String)
-		if err != nil || a.State != "held" || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+		if err != nil {
+			return nil, waitDependencyError(err)
+		}
+		if a.State != "held" || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 			return nil, waitUnavailable()
 		}
 		original, err := historicalCooldownOperation(ctx, q, o, a)
@@ -96,13 +117,22 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		}
 		if o.Channel == "cli" {
 			record, err := readCLIAllowanceRecord(ctx, q, original, a)
-			if err != nil || record.Observation.Remaining != 0 {
+			if err != nil {
+				return nil, waitDependencyError(err)
+			}
+			if record.Observation.Remaining != 0 {
 				return nil, waitUnavailable()
 			}
 			in := record.Observation
 			result.CLIAllowance = &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: in.ObservedAt, Remaining: &in.Remaining, Limit: &in.Limit, FullCapacityInMS: &in.FullCapacityInMS, RollingWindowMS: &in.RollingWindowMS}
-		} else if record, err := readHostedAllowanceRecord(ctx, q, original, a); err != nil || record.Input.Observation.State != "cooldown_observed" {
-			return nil, waitUnavailable()
+		} else {
+			record, err := readHostedAllowanceRecord(ctx, q, original, a)
+			if err != nil {
+				return nil, waitDependencyError(err)
+			}
+			if record.Input.Observation.State != "cooldown_observed" {
+				return nil, waitUnavailable()
+			}
 		}
 	}
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)
@@ -229,7 +259,10 @@ func (e *Engine) scheduleHostedCooldown(ctx context.Context, tx *sql.Tx, project
 		return Attempt{}, conflict()
 	}
 	record, err := readHostedAllowanceRecord(ctx, tx, o, a)
-	if err != nil || record.Input.Observation.State != "cooldown_observed" {
+	if err != nil {
+		return Attempt{}, err
+	}
+	if record.Input.Observation.State != "cooldown_observed" {
 		return Attempt{}, waitUnavailable()
 	}
 	now := e.sampleExecutionTime().UTC()

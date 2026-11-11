@@ -8,6 +8,9 @@ import (
 )
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
+	if _, err := retainedComparisonSchema(ctx, store.DB()); err != nil {
+		return err
+	}
 	if err := adoptionholds.EnsureSchema(ctx, store); err != nil {
 		return err
 	}
@@ -52,7 +55,7 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`ALTER TABLE review_execution_reservations_next RENAME TO review_execution_reservations`,
 		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'`,
 		`CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='hosted'`,
-	}}, validateExecutionForeignKeys); err != nil {
+	}}, backfillExecutionSchema); err != nil {
 		return err
 	}
 	if err := store.EnsureSchema(ctx, "review_source_refusals", []string{`ALTER TABLE review_execution_transitions ADD COLUMN source_refusal_json TEXT NOT NULL DEFAULT 'null' CHECK(length(CAST(source_refusal_json AS BLOB))<=512)`}, []string{`SELECT 1 /* source-refusal format: unavailable parent facts */`}, []string{`SELECT 1 /* source-refusal format: unfinished predecessor cause */`}, []string{`SELECT 1 /* source-refusal format: selected parent mismatch */`}); err != nil {
@@ -97,6 +100,23 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		return err
 	}
 	return EnsureSchedulingSchema(ctx, store)
+}
+
+// Execution migration nine rebuilds attempts independently of the comparison
+// schema version. Restore its triggers in the same migration transaction even
+// when that separately versioned domain is already current.
+func backfillExecutionSchema(ctx context.Context, conn *sql.Conn) error {
+	if err := validateExecutionForeignKeys(ctx, conn); err != nil {
+		return err
+	}
+	comparisonExists, err := retainedComparisonSchema(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if comparisonExists {
+		return ensureComparisonAttemptTriggersTx(ctx, conn)
+	}
+	return nil
 }
 
 // Reconstruction keeps every dependent row and verifies all constraints before

@@ -39,13 +39,17 @@ func TestReviewPolicyAssessmentCLIBoundReadAndArgumentPrecedence(t *testing.T) {
 			t.Error("CLI assessment lost selected profile binding")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(cliPolicyAssessment(project))
+		value := cliPolicyAssessment(project)
+		value.IncomingRoutesPending = 103
+		value.Reason = "routed_findings_pending"
+		value.Channels[0].Covered = true
+		_ = json.NewEncoder(w).Encode(value)
 	}))
 	defer srv.Close()
 	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
 	code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "assess", cliEvidenceID)
 	var result client.ReviewPolicyAssessment
-	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || result.State != "held" || result.Source != "captured_comparison" || strings.Count(out, "\n") != 1 || calls.Load() != 2 {
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || result.State != "held" || result.IncomingRoutesPending != 103 || !result.Channels[0].Covered || !result.Channels[0].Pending || result.Source != "captured_comparison" || strings.Count(out, "\n") != 1 || calls.Load() != 2 {
 		t.Fatal("assessment was not one quiet explicit read", code, out, stderr)
 	}
 	var explained client.ReviewPolicyAssessmentOutput

@@ -25,6 +25,17 @@ function fixture() {
 }
 
 describe('live private project views', () => {
+  it('refreshes only current round progress when a live activity signal arrives', async () => {
+    const f = fixture(), progress = f.add(['reviews', 'current', 'round-progress', [31]]), queue = f.add(['reviews', 'current', 'queue', '']), history = f.add(['reviews', 'snapshot_old', 'runs']), other = f.add(['reviews', 'current', 'round-progress', [31]], true, ['fc', 'session', 'instance', 'other', 'worker']);
+    try {
+      const change = page([{ event_type: 'review.activity_observed', resource_id: `review_attempt_${'a'.repeat(32)}` }]);
+      expect(validMetadataPage(change, 25)).toBe(true);
+      await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
+      expect(progress.reads()).toBe(1);
+      for (const query of [queue, history, other]) expect(query.reads()).toBe(0);
+      for (const resource_id of ['record_one', `review_operation_${'a'.repeat(32)}`, `review_attempt_${'a'.repeat(32)}\n`]) expect(validMetadataPage(page([{ event_type: 'review.activity_observed', resource_id }]), 25)).toBe(false);
+    } finally { f.close(); }
+  });
   it('refreshes selected job summaries and delivery without touching private briefs, archives or another project', async () => {
     const f=fixture(), summary=f.add(['job-summary','job_one']), delivery=f.add(['delivery','','']), brief=f.add(['job','job_one']), other=f.add(['job-summary','job_one'],true,['fc','session','instance','other','worker']);
     try {
@@ -234,6 +245,7 @@ describe('live private project views', () => {
     const complete = page(projectEventTypes.map(event_type => ({
       event_type,
       resource_id: event_type === 'reviews.rounds_configured' ? '32/cli' :
+        event_type === 'review.activity_observed' ? `review_attempt_${'a'.repeat(32)}` :
         event_type === 'review.requested' || event_type === 'review.operation_updated' ? `review_operation_${'a'.repeat(32)}` : 'record_one',
     })));
     expect(validMetadataPage(complete, 100)).toBe(true);

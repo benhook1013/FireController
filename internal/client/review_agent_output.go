@@ -230,6 +230,9 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	default:
 		return nil
 	}
+	if reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
+		return &ReviewOperationDiagnostic{explanation, "An explicit held selection is terminal and has no child operation; after addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. Its old key replays the hold. An eligible automatic selection may recover on its original identity after at least thirty seconds, subject to its retained retry budget, unchanged authorization and normal admission checks. Preserve the original selection while automatic recovery remains eligible; this diagnostic does not establish eligibility or promise an exact retry time. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed."}
+	}
 	return &ReviewOperationDiagnostic{explanation, "This held selection is terminal and has no child operation. After addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. The old key replays this hold. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed; normal front, source and provider checks still apply."}
 }
 

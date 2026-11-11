@@ -37,6 +37,8 @@ type CLIDriver struct {
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
 func (d *CLIDriver) GoString() string { return d.String() }
 
+type cliStartCallbackKey struct{}
+
 type cliPrepared struct {
 	operation     reviewexec.Operation
 	configuration reviewexec.Configuration
@@ -75,7 +77,10 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: func(ctx context.Context, workspace reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+		onStart, _ := ctx.Value(cliStartCallbackKey{}).(func(time.Time))
+		return runner.ReviewWithStart(ctx, workspace, onStart)
+	}, prepared: map[string]*cliPrepared{}}, nil
 }
 
 // A successful preflight can be held by admission before Dispatch. Expire only
@@ -212,7 +217,12 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		return failed(actionRefusalReason(err, "admission_changed"))
 	}
 	started := time.Now().UTC()
-	capture, executionErr := d.review(ctx, prepared.workspace)
+	onStart := func(at time.Time) {
+		// Never retry or cancel an already spawned process if diagnostic
+		// retention fails. The browser will correctly show unknown evidence.
+		_ = d.engine.RecordActivityEvidence(ctx, operation.ProjectID, attempt.ID, reviewexec.ActivityEvidence{AttemptID: attempt.ID, HeadSHA: operation.HeadSHA, Kind: "cli_process_spawned", ObservedAt: at.Format(time.RFC3339Nano), ProcessStartedAt: at.Format(time.RFC3339Nano)})
+	}
+	capture, executionErr := d.review(context.WithValue(ctx, cliStartCallbackKey{}, onStart), prepared.workspace)
 	finished := time.Now().UTC()
 	possibleStart := capture.Started
 	var processFailure *reviewprocess.Error

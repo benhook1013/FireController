@@ -120,6 +120,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	hostedRetainedDecoder      HostedRetainedDecoder
 	sourceReadGroups           map[string]string
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
@@ -131,6 +132,8 @@ type Engine struct {
 	hostedObservers            map[hostedObserverKey]*hostedObserverEntry
 	hostedAccountNext          map[hostedAccountKey]time.Time
 	schedulingNow              func() time.Time
+	configurationFailureMu     sync.Mutex
+	configurationFailureNext   map[string]time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool
 	deploymentActive           int

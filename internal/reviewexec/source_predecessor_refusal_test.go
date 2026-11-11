@@ -175,10 +175,10 @@ func TestPredecessorRefusalSchemaMigrationSnapshotAndRollback(t *testing.T) {
 	}
 }
 
-func TestPredecessorRefusalFinalGuardsNameActualBlocker(t *testing.T) {
+func TestPredecessorFinalGuardKeepsAncestorRoutesLocal(t *testing.T) {
 	f, source, id := routeFixture(t, 1)
-	// Target6 has predecessor4; the existing unresolved route to4 must remain
-	// the first final guard without attributing its source PR2 as the blocker.
+	// Target6 has predecessor4. Its unresolved route remains on4 while exact
+	// child source verification proceeds without inventing route resolution.
 	created := routeCreate(t, f, id, "route-to-predecessor", routeRequest(0, 0, 4))
 	parent := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 4, State: "open", HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, ParentSHA: strings.Repeat("b", 40), ObservedAt: stamp()}
 	current := ExecutionContext{Operation: Operation{PullNumber: 6, Channel: "cli"}, Configuration: Configuration{Mode: "stacked", Queue: []int64{2, 4, 6}}, RepositoryID: 801}
@@ -189,19 +189,14 @@ func TestPredecessorRefusalFinalGuardsNameActualBlocker(t *testing.T) {
 			return verifyPredecessors(ctx, tx, attemptProject, current, target, []SourcePlan{parent})
 		})
 	}
-	got := sourceRefusalFromError(check(), "held", "predecessor_unfinished", 6)
-	if !reflect.DeepEqual(got, &SourceRefusal{PullNumber: 4, Cause: "incoming_route_pending"}) {
-		t.Fatal("wrong final route blocker", got)
+	if err := check(); err != nil || routeState(t, f, source) != before {
+		t.Fatal("ancestor route blocked child or changed accounting", err)
 	}
-	if routeState(t, f, source) != before {
-		t.Fatal("final guard changed route or accounting")
-	}
-	// After this explicit fixture decision clears the incoming obligation, the
-	// existing channel discovery guard names the same still-unreviewed ancestor.
+	// Resolution remains an explicit fixture action; child permission did not
+	// resolve the ancestor's route or manufacture discovery credit.
 	routeDecision(t, f, created.ID, "clear-predecessor-route", 1, "rejected")
 	before = routeState(t, f, source)
-	got = sourceRefusalFromError(check(), "held", "predecessor_unfinished", 6)
-	if !reflect.DeepEqual(got, &SourceRefusal{PullNumber: 4, Cause: "discovery_incomplete"}) || routeState(t, f, source) != before {
-		t.Fatal("wrong final discovery blocker or changed state", got)
+	if err := check(); err != nil || routeState(t, f, source) != before {
+		t.Fatal("ancestor discovery credit blocked child or changed state", err)
 	}
 }

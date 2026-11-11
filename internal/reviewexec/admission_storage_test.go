@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
 	holdmodel "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
@@ -171,5 +174,157 @@ func TestFrontOperationalQueryFailureDoesNotBecomeHeld(t *testing.T) {
 	var version string
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&version); err != nil || version != beforeVersion {
 		t.Fatal("failed read did not roll back fixture change", version, err)
+	}
+}
+
+// Hold the actual read pool through its first two-second snapshot deadline.
+// The supervisor must call Prepare once, while the execution-context read alone
+// retries; provider preparation and dispatch must remain outside that retry.
+func TestExecutionContextOverloadRetriesOnlyLocalPreparationRead(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, outcome := range []string{"recovered", "revoked", "cancelled", "deadline", "exhausted"} {
+			t.Run(channel+"/"+outcome, func(t *testing.T) {
+				t.Parallel()
+				f := selectionFixture(t)
+				receipt := f.enqueue(t, attemptProject, "execution-read-retry", channel, 2, 1)
+				f.store.DB().SetMaxOpenConns(1)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				entered := make(chan *sql.Conn, 1)
+				var providerPreparation atomic.Int32
+				driver := &controlledDriver{prepare: func(ctx context.Context, operation Operation, _ Configuration, attempt Attempt) (Preparation, error) {
+					conn, err := f.store.DB().Conn(ctx)
+					if err != nil {
+						return Preparation{}, err
+					}
+					defer conn.Close()
+					if outcome == "deadline" {
+						var deadlineCancel context.CancelFunc
+						ctx, deadlineCancel = context.WithTimeout(ctx, 100*time.Millisecond)
+						defer deadlineCancel()
+					}
+					entered <- conn
+					current, err := f.e.ExecutionContext(ctx, operation.ProjectID, operation.ID)
+					if err != nil {
+						return Preparation{}, err
+					}
+					if current.Operation.ID != operation.ID || current.Operation.AttemptID != attempt.ID || current.Operation.State != "preparing" {
+						t.Error("retry lost the original operation binding", current.Operation)
+					}
+					providerPreparation.Add(1)
+					intent := ""
+					if channel == "hosted" {
+						intent = "synthetic-intent-" + attempt.ID
+					}
+					return Preparation{Anchor: attemptAnchor(operation.ProjectID, operation.PullNumber), Intent: intent}, nil
+				}}
+				driver.dispatch = func(context.Context, Operation, Attempt, func(context.Context, string) error) (Result, error) {
+					result := Result{State: "completed", Reason: "synthetic_capture"}
+					if channel == "hosted" {
+						result.ExternalID = "synthetic-trigger"
+					}
+					return result, nil
+				}
+				done := make(chan error, 1)
+				go func() {
+					done <- f.e.processNext(ctx, map[string]Driver{"test-capability": driver})
+					close(done)
+				}()
+				t.Cleanup(func() {
+					cancel()
+					select {
+					case <-done:
+					case <-time.After(3 * time.Second):
+						t.Error("execution-context retry leaked its supervisor")
+					}
+				})
+				var conn *sql.Conn
+				select {
+				case conn = <-entered:
+				case err := <-done:
+					t.Fatal("preparation did not reach local read", err)
+				case <-time.After(3 * time.Second):
+					t.Fatal("preparation did not start")
+				}
+				defer conn.Close()
+				waitSupervisor(t, "execution read entered pool", func() bool { return f.store.DB().Stats().WaitCount >= 1 })
+				if outcome == "recovered" || outcome == "revoked" || outcome == "cancelled" {
+					select {
+					case err := <-done:
+						t.Fatal("transient local read became terminal instead of retrying", err)
+					case <-time.After(2200 * time.Millisecond):
+					}
+					if driver.prepares.Load() != 1 || providerPreparation.Load() != 0 || driver.calls.Load() != 0 || f.store.DB().Stats().WaitCount < 2 {
+						t.Fatal("retry repeated preparation, reached provider work or never retried the read")
+					}
+					if outcome == "revoked" {
+						if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+							_, err := tx.ExecContext(ctx, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if outcome == "cancelled" {
+						cancel()
+					} else if err := conn.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				completionBudget := 4 * time.Second
+				if outcome == "cancelled" || outcome == "deadline" {
+					completionBudget = time.Second
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal("supervisor failed to retain local-read outcome", err)
+					}
+				case <-time.After(completionBudget):
+					t.Fatal("local-read retry exceeded aggregate or caller bound")
+				}
+				conn.Close()
+				var state, reason string
+				if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason); err != nil {
+					t.Fatal(err)
+				}
+				wantState, wantReason, wantProvider := "held", "preparation_failed", int32(0)
+				if outcome == "recovered" {
+					wantState, wantReason, wantProvider = "completed", "synthetic_capture", 1
+				} else if outcome == "cancelled" {
+					wantState, wantReason = "cancelled", "supervisor_stopping"
+				}
+				if state != wantState || reason != wantReason || driver.prepares.Load() != 1 || providerPreparation.Load() != wantProvider || driver.calls.Load() != wantProvider {
+					t.Fatal("retry changed preparation or terminal semantics", state, reason, driver.prepares.Load(), providerPreparation.Load(), driver.calls.Load())
+				}
+				if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+					t.Fatal("retry duplicated retained work or leaked the reservation")
+				}
+			})
+		}
+	}
+}
+
+func TestExecutionContextNonOverloadFailureRemainsUnchanged(t *testing.T) {
+	for _, failure := range []string{"policy", "storage"} {
+		t.Run(failure, func(t *testing.T) {
+			f := selectionFixture(t)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "execution-read-error", "cli", 2, 1))
+			want := "review_conflict"
+			if failure == "policy" {
+				admissionPolicy(t, f, 1)
+			} else {
+				if err := f.store.DB().Close(); err != nil {
+					t.Fatal(err)
+				}
+				want = "storage_unavailable"
+			}
+			started := time.Now()
+			current, err := f.e.ExecutionContext(t.Context(), attemptProject, a.OperationID)
+			attemptCode(t, err, want)
+			if !reflect.DeepEqual(current, ExecutionContext{}) || time.Since(started) >= time.Second {
+				t.Fatal("non-overload error returned partial facts or entered retry backoff", current, err)
+			}
+		})
 	}
 }

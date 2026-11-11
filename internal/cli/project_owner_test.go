@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/cli"
@@ -122,6 +125,9 @@ func TestProjectOwnerCLIHelpAndMalformedBeforeProfiles(t *testing.T) {
 		if code != 0 || stderr != "" || !strings.Contains(out, "documentation") {
 			t.Fatal(op, code, out, stderr)
 		}
+		if op[0] == "credentials" && op[1] == "grant" && (!strings.Contains(out, "32-256 printable nonspace ASCII bytes") || !strings.Contains(out, "surrounding whitespace is trimmed")) {
+			t.Fatal("credential-file bounds missing from local help", out)
+		}
 	}
 	p := filepath.Join(t.TempDir(), "incomplete.json")
 	if os.WriteFile(p, []byte(`{"expected_revision":1,"capability_id":"fixture","mode":"independent","queue":[],"channels":["cli"]}`), 0600) != nil {
@@ -188,5 +194,99 @@ func TestProjectOwnerSettlementHelpAndExplicitBoolean(t *testing.T) {
 	_, _, stderr = run([]string{"--profiles-file", "/missing-settlement-profile", "reviews", "attempt-settle", "review_attempt_" + strings.Repeat("a", 32), "--file", file, "--key", "settle"}, nil)
 	if !strings.Contains(stderr, "invalid_management_input") {
 		t.Fatal("missing boolean accepted")
+	}
+}
+
+func TestProjectOwnerCLICredentialFileBoundsPreserveHashAndReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name, token, padding string
+	}{
+		{"minimum", strings.Repeat("!", 32), " \t\r\n"},
+		{"maximum", strings.Repeat("~", 256), "\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupServiceFixture(t)
+			project := f.project(t, "credential-boundary")
+			worker := f.worker(t, project, "Owner")
+			var leaked atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(tc.token)) || strings.Contains(r.URL.RawQuery, tc.token) {
+					leaked.Store(true)
+				}
+				f.handler.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"owner": {project, worker}})
+			credentialFile := filepath.Join(t.TempDir(), "boundary.token")
+			if err := os.WriteFile(credentialFile, []byte(tc.padding+tc.token+tc.padding), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := mutationInvoke(t, profiles, "owner", "credentials", "grant", "--credential-file", credentialFile, "--permission", "read", "--key", "boundary-grant")
+			if code != cli.ExitSuccess || stderr != "" || strings.Contains(out, tc.token) || strings.Contains(out, credentialFile) {
+				t.Fatal(code, out, stderr)
+			}
+			var grant client.ProjectCredentialReceipt
+			if json.Unmarshal([]byte(out), &grant) != nil || grant.ID == "" || grant.PrincipalID == "" || grant.ProjectID != project || grant.Outcome != "granted" {
+				t.Fatal("invalid boundary grant receipt", out)
+			}
+			// Digest input must preserve the exact receipt and principal from the trimmed file input.
+			sum := sha256.Sum256([]byte(tc.token))
+			code, replay, stderr := mutationInvoke(t, profiles, "owner", "credentials", "grant", "--token-sha256", hex.EncodeToString(sum[:]), "--permission", "read", "--key", "boundary-grant")
+			if code != cli.ExitSuccess || stderr != "" || replay != out || leaked.Load() {
+				t.Fatal("credential digest or replay changed", code, replay, stderr)
+			}
+			if got := f.call(t, "GET", "/api/v1/projects/"+project, tc.token, worker, nil); got["id"] != project {
+				t.Fatal("granted boundary token cannot authenticate", got)
+			}
+		})
+	}
+}
+
+func TestProjectOwnerCLICredentialFileRejectsInvalidTokensBeforeHTTP(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "invalid-credentials")
+	worker := f.worker(t, project, "Owner")
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"owner": {project, worker}})
+	for _, tc := range []struct {
+		name, token string
+	}{
+		{"empty", ""},
+		{"one-byte", "!"},
+		{"short", strings.Repeat("!", 31)},
+		{"short-padded", " \t" + strings.Repeat("!", 31) + "\r\n"},
+		{"long", strings.Repeat("!", 257)},
+		{"long-padded", "\t" + strings.Repeat("!", 257) + "\n"},
+		{"raw-limit", strings.Repeat("!", 4096)},
+		{"past-raw-limit", strings.Repeat("!", 4097)},
+		{"excessive-padding", strings.Repeat(" ", 4096) + strings.Repeat("!", 32)},
+		{"whitespace-only", " \t\r\n"},
+		{"interior-space", strings.Repeat("!", 16) + " " + strings.Repeat("!", 16)},
+		{"interior-newline", strings.Repeat("!", 16) + "\n" + strings.Repeat("!", 16)},
+		{"control", strings.Repeat("!", 32) + "\x7f"},
+		{"non-ascii", strings.Repeat("!", 32) + "é"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credentialFile := filepath.Join(t.TempDir(), "rejected.token")
+			if err := os.WriteFile(credentialFile, []byte(tc.token), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, profileFile := range []string{profiles, filepath.Join(t.TempDir(), "missing-profiles.json")} {
+				code, out, stderr := mutationInvoke(t, profileFile, "owner", "credentials", "grant", "--credential-file", credentialFile, "--permission", "read", "--key", "invalid-grant")
+				if code != cli.ExitUsage || out != "" || !strings.Contains(stderr, "invalid_management_input") || !strings.Contains(stderr, "no service request was sent") || requests.Load() != 0 {
+					t.Fatal("invalid token reached profiles or HTTP", code, out, stderr, requests.Load())
+				}
+				if strings.Contains(stderr, credentialFile) || tc.token != "" && strings.TrimSpace(tc.token) != "" && strings.Contains(stderr, tc.token) {
+					t.Fatal("private credential input reached diagnostics")
+				}
+			}
+		})
 	}
 }

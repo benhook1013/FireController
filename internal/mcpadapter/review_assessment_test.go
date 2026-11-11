@@ -149,3 +149,31 @@ func TestReviewPolicyAssessmentMCPCancellationReleasesOwnedHTTP(t *testing.T) {
 		t.Fatal("cancellation broke the fixed session binding")
 	}
 }
+
+func TestReviewPolicyAssessmentMCPExactIncomingCount(t *testing.T) {
+	binding := localContext()
+	evidenceID := "review_evidence_" + strings.Repeat("a", 32)
+	at := "2026-10-16T00:00:00Z"
+	assessment := client.ReviewPolicyAssessment{ProjectID: binding.ProjectID, EvidenceID: evidenceID, Source: "captured_comparison", PolicyRevision: 1, EvaluatedAt: at, State: "held", Reason: "routed_findings_pending", IncomingRoutesPending: 103, Channels: []client.ReviewPolicyAssessmentChannel{{Channel: "hosted", Covered: true}}, Anchor: client.ReviewAnchor{RepositoryID: 1, Repository: "owner/repo", PullNumber: 2, CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("c", 64), BaseRef: "main", ObservedAt: at}}
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/instance" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": binding.InstanceID})
+			return
+		}
+		if r.Method != "GET" || r.URL.RawQuery != "" || r.Header.Get("Idempotency-Key") != "" || r.URL.Path != "/api/v1/projects/"+binding.ProjectID+"/reviews/evidence/"+evidenceID+"/policy" {
+			t.Error("incoming assessment changed read authority")
+		}
+		_ = json.NewEncoder(w).Encode(assessment)
+	}))
+	defer service.Close()
+	binding.ServerURL = service.URL
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, credential(t)), "chosen")
+	var got client.ReviewPolicyAssessment
+	decodeResult(t, call(t, session, "review_policy_assess", map[string]any{"evidence_id": evidenceID}), &got)
+	if got.IncomingRoutesPending != 103 || got.IncomingRoutesCapacity || !got.Channels[0].Covered || got.State != "held" || requests.Load() != 2 {
+		t.Fatal("MCP lost exact hold or independent completion", got)
+	}
+}

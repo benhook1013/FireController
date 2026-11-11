@@ -163,7 +163,13 @@ func (e *Engine) recordHostedObservationAt(ctx context.Context, project, attempt
 			if rowProject != project || rowAttempt != attemptID || rowOperation != o.ID {
 				return hostedObservationUnavailable()
 			}
-			prior, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, owned.CaptureSHA256, bytes, a, o)
+			// Exact replay uses proven historical ownership without permitting new
+			// writes for an attempt detached by cooldown scheduling.
+			historical, err := historicalCooldownOperation(ctx, tx, o, a)
+			if err != nil {
+				return err
+			}
+			prior, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, owned.CaptureSHA256, bytes, a, historical)
 			if err != nil {
 				return err
 			}

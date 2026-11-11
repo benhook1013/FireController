@@ -7,6 +7,8 @@ description: Use an existing FireController connection to enroll or inspect PRs,
 
 Use the supplied worker-bound connection and the project's existing authorization, review settings and workflow. Read [native review operations](references/operations.md) when entering review work or recovering missing operational context. It covers queue add/move, compact inspection, durable operation waits, finding batches, finalization, allowance holds and independent Subagent results.
 
+For stalled, failed or held work, read [operational recovery](references/recovery.md) before declaring the task blocked. It distinguishes original-operation collection, release-matched recovery of a released Hosted result, a fresh authorized request and the narrow order/file overrides. When asked to recover the original result, verify its immutable evidence and supported same-attempt route before spending another round; a fresh review is not that repair.
+
 For project-wide hourly Hosted/CLI activity, use `reviews activity` / `review_activity_read`; no per-PR aggregation is needed. See [activity coverage](../../docs/review-activity.md) when interpreting totals or undated history.
 
 For newly created automatic requests or project/PR/channel activity without a known operation ID, use `reviews watch` / `wait_for_reviews`; load [quiet review activity watch](../../docs/review-operations.md#quiet-review-activity-watch) for initial snapshot, separate event cursor and host-delivery limits.

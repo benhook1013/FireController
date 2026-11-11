@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -185,7 +186,7 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 	defer tx.Rollback()
 	o, err := readOperation(ctx, tx, id.project, id.operation)
 	if err != nil {
-		return Operation{}, false, err
+		return o, false, err
 	}
 	if o.State != "queued" {
 		return Operation{}, false, nil
@@ -193,21 +194,21 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 	if validChannel(o.Channel) {
 		c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 		if err != nil {
-			return Operation{}, false, err
+			return o, false, err
 		}
 		if ready, err := e.sourceCandidateDue(ctx, tx, o, c); err != nil {
-			return Operation{}, false, err
+			return o, false, err
 		} else if !ready {
 			return Operation{}, false, nil
 		}
 		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
-			return Operation{}, false, err
+			return o, false, err
 		} else if preferred {
 			return Operation{}, false, nil
 		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)
 		if err != nil {
-			return Operation{}, false, err
+			return o, false, err
 		}
 		if earlier != nil {
 			return Operation{}, false, nil
@@ -217,7 +218,7 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 				now := e.sampleExecutionTime()
 				due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 				if err != nil {
-					return Operation{}, false, err
+					return o, false, err
 				}
 				if now.Before(due) {
 					return Operation{}, false, nil
@@ -260,6 +261,64 @@ func preparationReason(err error) string {
 	return "preparation_failed"
 }
 
+// A malformed retained configuration affects this candidate's authority, not
+// the database or other projects. Preserve the request and its queue turn. The
+// bounded process-local throttle limits diagnostics, never admission or retries.
+func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, err error) bool {
+	if !isStoredUnavailable(err, storedConfigurationHistory) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	if e.configurationFailureNext[o.ID].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[o.ID] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate configuration history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "configuration_history_unavailable")
+	return true
+}
+
+// Typed wait validation failures refuse only this candidate and its guarded scope. Real
+// database and context failures retain their normal supervisor behavior.
+func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error) bool {
+	if !validChannel(o.Channel) || !isWaitUnavailable(err) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	key := o.Channel + "-wait:" + o.ID
+	if e.configurationFailureNext[key].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[key] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate wait history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "channel", o.Channel, "reason", o.Channel+"_wait_history_unavailable")
+	return true
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	if !e.beginDispatchWork() {
 		return nil
@@ -288,6 +347,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if ctx.Err() != nil {
 				return nil
 			}
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				continue
+			}
 			var failure *core.Error
 			if errors.As(core.NormalizeStorageError(err), &failure) && failure.Code == "overloaded" {
 				continue
@@ -301,6 +363,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				continue
 			}
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
@@ -319,6 +384,9 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				continue
 			}
 			var failure *core.Error
 			if errors.As(err, &failure) {
@@ -372,7 +440,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 					return nil
 				}
 				var refusal *core.Error
-				if !(o.Channel == "cli" && errors.Is(scheduleErr, sql.ErrNoRows)) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
+				if ctx.Err() == nil && !cooldownEvidenceUnavailable(o.Channel, scheduleErr) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
 					return scheduleErr
 				}
 			}
@@ -507,6 +575,15 @@ func persistenceFailureAt(stage string, cause error, operationID, attemptID stri
 	return failure
 }
 
+// Only unavailable provider evidence permits an operation-local hold. Do not
+// turn unrelated database/context errors or a missing attempt into that claim.
+func cooldownEvidenceUnavailable(channel string, err error) bool {
+	if channel == "cli" {
+		return errors.Is(err, sql.ErrNoRows)
+	}
+	return channel == "hosted" && (errors.Is(err, errAllowanceObservationAbsent) || storedAllowanceUnavailable(err) || isStoredUnavailable(err, storedHostedObservation))
+}
+
 // A proven unused cooldown is already retained before this call. Retry only
 // refused local writer admission or a callback deadline that rolled back before
 // Commit. An ambiguous commit still requires exact retained-state reconciliation.
@@ -546,7 +623,7 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 			e.notifyOperation(a.OperationID)
 			return nil
 		}
-		if original.Channel == "cli" && errors.Is(writeErr, sql.ErrNoRows) {
+		if cooldownEvidenceUnavailable(original.Channel, writeErr) {
 			return writeErr
 		}
 		if errors.As(writeErr, &failure) && failure.Code == "review_cooldown_elapsed" {
@@ -555,7 +632,7 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 		return persistenceFailureAt("cooldown_schedule", writeErr, a.OperationID, a.ID)
 	})
 	if err != nil {
-		if original.Channel == "cli" && errors.Is(err, sql.ErrNoRows) {
+		if cooldownEvidenceUnavailable(original.Channel, err) {
 			return Attempt{}, err
 		}
 		var failure *core.Error
@@ -568,6 +645,10 @@ func (e *Engine) persistCooldown(ctx context.Context, original Operation, a Atte
 }
 
 func (e *Engine) recordedCooldown(ctx context.Context, original Operation, a Attempt) (Attempt, bool) {
+	// A commit error can race supervisor shutdown. Reconcile only the exact
+	// durable outcome, with a separate bounded read that survives that caller.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
 	var result Attempt
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := readAttempt(ctx, tx, a.ProjectID, a.ID)

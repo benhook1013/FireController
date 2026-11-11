@@ -111,18 +111,37 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 		available := max(0, time.Until(deadline)-5*time.Second) / time.Second
 		seconds = min(seconds, int(available))
 	}
-	workflowDetails := false
+	workflowDetails, explicitBases := false, true
 	for _, target := range targets {
 		workflowDetails = workflowDetails || len(target.FailureWorkflowIDs) > 0
+		explicitBases = explicitBases && target.BaseSHA != ""
 	}
 	var value CIWatchResult
 	var status int
-	err = resumeTracedResultWait(ctx, requested, seconds, func(ctx context.Context, remaining int) error {
+	read := func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
 		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciWorkflowDetails: workflowDetails})
-	})
+	}
+	if explicitBases {
+		err = resumeTracedResultWait(ctx, requested, seconds, read)
+	} else {
+		// An implicit base belongs to the server subscription. Reconnecting
+		// cannot recover that pin and must not silently select a newer base.
+		started, trace := time.Now(), &resultWaitTransportTrace{}
+		err = read(trace.context(ctx), seconds)
+		err = resultWaitTransportError(err, trace, started, requested, seconds, 1)
+	}
 	if err != nil {
-		return CIWatchResult{}, reviewWaitTargetError(ciWatchReadError(err), "", targets)
+		err = ciWatchReadError(err)
+		if !explicitBases && resultWaitReconnectFailure(err) {
+			var failure *Error
+			if errors.As(err, &failure) {
+				copy := *failure
+				copy.Action = "This watch did not reconnect because at least one base was implicit. Verify the original comparison and supply explicit base pins before starting another bounded CI wait."
+				err = &copy
+			}
+		}
+		return CIWatchResult{}, reviewWaitTargetError(err, "", targets)
 	}
 	if value.ProjectID != c.identity.ProjectID || !validCIWatchResult(value, targets) {
 		return CIWatchResult{}, invalidResponse()
@@ -137,9 +156,19 @@ func ciWatchReadError(err error) error {
 	if !errors.As(err, &failure) {
 		return err
 	}
+	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_response_limit" {
+		result := *failure
+		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No review or CI rerun was requested."
+		return &result
+	}
 	if failure.Status == http.StatusBadRequest && failure.Code == "validation_failed" {
 		result := *failure
 		result.Action = "Check the CI wait target fields and original PR/head/base pins, including any observation key or workflow selection. Also verify matching client and server CI watch capabilities; an older server can refuse a newer baseline. No automatic retry or fallback was attempted."
+		return &result
+	}
+	if resultWaitShutdown(err) {
+		result := *failure
+		result.Action = "When the controller is available, start another bounded CI wait with the original PR/head/base pins. No durable operation exists for this watch, and interrupted waiting does not establish CI failure or a changed comparison."
 		return &result
 	}
 	if failure.Status != 0 || !oneReviewOf(failure.Code, "canceled", "deadline_exceeded") {
@@ -192,7 +221,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if oneReviewOf(item.State, "passed", "failed", "unconfigured") && (item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "") {
 			return false
 		}
-		if item.State == "passed" && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
+		if oneReviewOf(item.State, "passed", "failed") && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
 			return false
 		}
 		if state == "pending" && !item.WaitingForChange {

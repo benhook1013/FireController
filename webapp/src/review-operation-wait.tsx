@@ -5,6 +5,7 @@ import { relativeAge } from './relative-time';
 export interface CLIAllowance { kind: 'cli_exhausted'; observed_at: string; remaining: number; limit: number; full_capacity_in_ms: number; rolling_window_ms: number }
 
 export interface ReviewOperationWait {
+  queue_ahead_pull_number?: number;
   baseline_attempt_id?: string;
   retry_not_before?: string;
   paused: boolean;
@@ -14,7 +15,8 @@ export interface ReviewOperationWait {
 export function validOperationWait(value: unknown, channel: string): value is ReviewOperationWait {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some(key => !['baseline_attempt_id', 'retry_not_before', 'paused', 'cli_allowance'].includes(key)) || typeof v.paused !== 'boolean') return false;
+  if (Object.keys(v).some(key => !['queue_ahead_pull_number', 'baseline_attempt_id', 'retry_not_before', 'paused', 'cli_allowance'].includes(key)) || typeof v.paused !== 'boolean') return false;
+  if (v.queue_ahead_pull_number !== undefined && (channel !== 'hosted' || v.paused || !Number.isSafeInteger(v.queue_ahead_pull_number) || Number(v.queue_ahead_pull_number) < 1 || Number(v.queue_ahead_pull_number) > 2147483647)) return false;
   if (v.cli_allowance !== undefined && (channel !== 'cli' || v.baseline_attempt_id === undefined || !validCLIAllowance(v.cli_allowance))) return false;
   if (v.baseline_attempt_id === undefined) return v.retry_not_before === undefined;
   if (!['cli', 'hosted'].includes(channel) || typeof v.baseline_attempt_id !== 'string' || !/^review_attempt_[a-f0-9]{32}$/u.test(v.baseline_attempt_id) || typeof v.retry_not_before !== 'string') return false;
@@ -30,6 +32,7 @@ function validCLIAllowance(value: unknown): value is CLIAllowance {
 
 export function operationWaitLabel(wait: ReviewOperationWait, now = Date.now(), channel = 'hosted'): string {
   if (wait.paused) return 'Paused';
+  if (channel === 'hosted' && wait.queue_ahead_pull_number !== undefined) return `Behind #${wait.queue_ahead_pull_number}`;
   if (!wait.retry_not_before) return 'Waiting';
   if (channel === 'cli') return 'Quota wait';
   const minutes = Math.ceil((Date.parse(wait.retry_not_before) - now) / 60000);
@@ -44,6 +47,7 @@ export function reviewWaitExpandedForKey(key: string, expanded: boolean): boolea
 }
 
 export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: ReviewOperationWait; channel?: string }) {
+  const behind = channel === 'hosted' && wait.queue_ahead_pull_number !== undefined && !wait.paused;
   const [now, setNow] = useState(Date.now);
   const [expanded, setExpanded] = useState(false);
   const detailsID = useId();
@@ -60,7 +64,8 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     place(); window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [expanded]);
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(timer); }, []);
+  useEffect(() => { if (behind || !wait.retry_not_before) return; const timer = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(timer); }, [behind, wait.retry_not_before]);
+  if (behind) return <span className="badge review-channel-position" title={`Queued behind PR #${wait.queue_ahead_pull_number}. Its accepted Hosted request has priority. This review has not started.`}>{operationWaitLabel(wait, now, channel)}</span>;
   const description = wait.paused
     ? 'This review request is paused before dispatch. Its retry deadline is retained; resume is explicit.'
     : channel === 'cli' && wait.retry_not_before

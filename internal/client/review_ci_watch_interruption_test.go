@@ -196,3 +196,56 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestCIWatchReconnectRequiresEveryExplicitBase(t *testing.T) {
+	for _, mode := range []string{"implicit", "mixed", "explicit"} {
+		t.Run(mode, func(t *testing.T) {
+			pins := ciWatchPins()
+			for i := range pins {
+				pins[i].BaseSHA = strings.Repeat("b", 40)
+			}
+			if mode != "explicit" {
+				pins[0].BaseSHA = ""
+			}
+			if mode == "implicit" {
+				pins = pins[:1]
+			}
+			var posts atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				w.Header().Set("X-FC-CI-Watch", "change-v3")
+				var body struct {
+					Targets []client.CIWatchTarget `json:"targets"`
+				}
+				if json.NewDecoder(r.Body).Decode(&body) != nil || !reflect.DeepEqual(body.Targets, pins) {
+					t.Error("watch changed original pins")
+				}
+				if posts.Add(1) == 1 {
+					w.WriteHeader(502)
+					return
+				}
+				result := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true}
+				for _, pin := range pins {
+					result.Targets = append(result.Targets, client.CIWatchTargetResult{PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "pending", Reason: "ci_watch_check_pending", Checks: []client.ReviewCIContext{}})
+				}
+				write(w, 200, result)
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			_, err := c.WatchCI(t.Context(), pins, 2)
+			if mode == "explicit" {
+				if err != nil || posts.Load() != 2 {
+					t.Fatal("explicit pins did not reconnect", err, posts.Load())
+				}
+				return
+			}
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Status != 502 || !strings.Contains(failure.Action, "base was implicit") || posts.Load() != 1 {
+				t.Fatal("implicit server base was lost by reconnect", err, posts.Load())
+			}
+		})
+	}
+}

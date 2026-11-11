@@ -35,7 +35,8 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
       ['source_obligations_unavailable', {text:'Held',description:'Carried review work could not be checked. New reviews remain held.'}],
       ['routed_findings_pending', {text:'Findings pending',description:'Incoming routed findings hold new reviews.'}],
       ['external_hosted_pending', {text:'Manual results pending',description:'Settle the captured manual Hosted results before starting another Hosted review.'}],
-      ['review_evidence_pending', {text:'Results pending',description:'Retained review results still need to be settled before another review.'}],
+      ['review_evidence_pending', {text:'Results pending',description:'Review capture or adjudication is still pending before another review; accepted findings may also need fixes.'}],
+      ['review_fixes_pending', {text:'Fixes pending',description:'Review results are finalized, but accepted findings still need fixes before another review.'}],
       ['predecessor_unfinished', {text:'Dependency pending',description:'This PR depends on unfinished predecessor work.'}],
     ]);
     return held.get(front.reason ?? '') ?? {text:'Held',description:'The stored admission check holds new reviews. Check review details before requesting another review.'};

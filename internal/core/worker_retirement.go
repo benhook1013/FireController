@@ -37,8 +37,13 @@ func (s *Store) RequireProjectManagementTx(ctx context.Context, tx *sql.Tx, scop
 	return s.authorize(ctx, tx, scope, "admin")
 }
 
-func ValidateWorkerRetirementsSnapshot(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `SELECT r.retired_at,r.actor_id,w.id FROM worker_retirements r LEFT JOIN workers w ON w.project_id=r.project_id AND w.id=r.worker_id`)
+func ValidateWorkerRetirementsSnapshot(ctx context.Context, tx interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) error {
+	// Canonical UTC RFC3339Nano uses at most 30 bytes (four-digit year,
+	// nine fractional digits and Z). Bound bytes before values cross into Go;
+	// invalid sentinels preserve oversized rows so validation rejects them.
+	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN length(CAST(r.retired_at AS BLOB))<=30 THEN r.retired_at ELSE '' END,CASE WHEN length(CAST(r.actor_id AS BLOB))<=256 THEN r.actor_id ELSE '' END,w.id FROM worker_retirements r LEFT JOIN workers w ON w.project_id=r.project_id AND w.id=r.worker_id`)
 	if err != nil {
 		return err
 	}

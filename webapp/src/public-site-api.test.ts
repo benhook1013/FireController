@@ -269,3 +269,14 @@ describe('quiet public live delivery', () => {
     expect(error).toMatchObject({ code: 'not_found', status: 404 }); expect(seen).toEqual([1, 2]); expect(streams).toBe(2);
   });
 });
+
+describe('honest bounded public review windows', () => {
+  it('accepts explicit true continuation flags without leaking a private cursor', () => {
+    const value=snapshot(); value.content.reviews[0].cli_has_more=true; value.content.reviews[0].hosted_has_more=true;
+    expect(validatePublicSnapshot(value,'showcase')).toBe(true);
+    for (const flag of [false,null,1,'true']) {
+      const malformed=JSON.parse(JSON.stringify(value)); malformed.content.reviews[0].hosted_has_more=flag;
+      expect(validatePublicSnapshot(malformed,'showcase')).toBe(false);
+    }
+  });
+});

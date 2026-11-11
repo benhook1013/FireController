@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { Delivery, DeliveryHero, DeliveryLanes, DeliveryWork, MergeHeadContent, deliveryQuery, deliveryReviewQuery, groupDeliveryLanes, selectMergeHead } from './delivery';
 import { WorkspaceContext, type Session } from './workspace';
 import { reviewQueueQuery } from './review-workspace';
@@ -252,8 +252,8 @@ describe('stored merge head and review summaries', () => {
     expect(head).not.toContain('Observed CI');
     expect(head).not.toContain('First open PR');
     expect(head).not.toContain('runs ·');
-    expect(partial).toContain(`href="${home}#review-queue"`);
-    expect(head).toContain(`href="${home}#review-pr-2"`);
+    expect(partial).toContain(`href="${home}#review-queue-head"`);
+    expect(head).toContain(`href="${home}#review-queue-head"`);
     expect(head).toContain('>Review queue ↗</a>');
     expect(head).not.toContain('delivery-link-arrow');
     expect(head).not.toMatch(/Ready to merge|Taper|Closed review/u);
@@ -267,6 +267,30 @@ describe('stored merge head and review summaries', () => {
     expect(html).toContain('1 run</span>');
     expect(markup(<MergeHeadContent queue={queue([pull(1, 'merged')])} home={home} />)).toBe('');
     expect(markup(<MergeHeadContent queue={{ ...queue([]), configured: false }} home={home} />)).toBe('');
+  });
+  it('keeps the head jump dynamic even when the current head is unknown', () => {
+    const html = markup(<MergeHeadContent queue={queue([pull(1, 'unknown'), pull(2, 'open')])} home={home} />);
+    expect(html).toContain(`href="${home}#review-queue-head"`);
+    expect(html).toContain('Queue head not determined');
+  });
+  it('rereads cached current data before a head navigation can resolve it', async () => {
+    const before = queue([pull(1, 'open'), pull(2, 'open')]);
+    const after = { ...queue([pull(1, 'merged'), pull(2, 'open')]), snapshot_id: 'snapshot_after' };
+    let resolve!: (value: ReviewQueue) => void;
+    const read = vi.fn(() => new Promise<ReviewQueue>(done => { resolve = done; }));
+    const session = { controller: new AbortController(), api: { reviewQueue: read } } as unknown as Session;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const options = reviewQueueQuery(session, key, 'recent', '', 'current', true);
+    client.setQueryData(options.queryKey, before);
+    const observer = new QueryObserver(client, options);
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(observer.getCurrentResult()).toMatchObject({ isFetching: true, data: before });
+      resolve(after);
+      await vi.waitFor(() => expect(observer.getCurrentResult()).toMatchObject({ isFetching: false, data: after }));
+      expect(selectMergeHead(observer.getCurrentResult().data!)).toEqual({ state: 'head', pull: after.items[1] });
+    } finally { unsubscribe(); client.clear(); }
   });
   it('shares one bounded queue read between hero and overview without run/archive fanout', async () => {
     const read = vi.fn().mockResolvedValue(queue([pull(2, 'open')]));

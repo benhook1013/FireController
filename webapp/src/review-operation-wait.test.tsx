@@ -87,3 +87,22 @@ describe('retained CLI full-capacity estimate',()=>{
     for(const change of [{observed_at:'2026-02-30T12:00:00Z'},{observed_at:'bad'},{remaining:1},{limit:0},{limit:10001},{full_capacity_in_ms:undefined},{full_capacity_in_ms:-1},{full_capacity_in_ms:86400001},{full_capacity_in_ms:0.5},{rolling_window_ms:0},{kind:'other'},{extra:'private'}]) expect(validOperationWait({...wait,cli_allowance:{...allowance,...change}},'cli')).toBe(false);
   });
 });
+
+
+describe('accepted Hosted queue priority', () => {
+  it('shows Behind without a visible countdown and retains the next request countdown', () => {
+    const queued = {...wait, queue_ahead_pull_number:4};
+    const html = renderToStaticMarkup(<ReviewOperationWaitBadge wait={queued}/>);
+    expect(html).toContain('Behind #4');
+    expect(html).not.toContain('Cooldown');
+    expect(html).not.toContain('earliest retry');
+    expect(operationWaitLabel(wait, Date.parse('2026-10-30T12:00:00Z'))).toBe('Cooldown · 30m');
+    expect(operationWaitLabel({...queued, paused:true})).toBe('Paused');
+  });
+  it('rejects malformed, paused and cross-channel priority hints', () => {
+    expect(validOperationWait({...wait, queue_ahead_pull_number:4}, 'hosted')).toBe(true);
+    for (const value of [0,-1,1.5,2147483648,'4',null]) expect(validOperationWait({...wait, queue_ahead_pull_number:value}, 'hosted')).toBe(false);
+    expect(validOperationWait({...wait, queue_ahead_pull_number:4}, 'cli')).toBe(false);
+    expect(validOperationWait({...wait, queue_ahead_pull_number:4,paused:true}, 'hosted')).toBe(false);
+  });
+});

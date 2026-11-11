@@ -26,6 +26,18 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		groups[capability.ID] = hex.EncodeToString(digest[:])
 		capabilities = append(capabilities, reviewexec.Capability{ID: capability.ID, Provider: "coderabbit", Account: capability.Account, Channels: capability.Channels, Fingerprint: capability.Fingerprint})
 	}
+	var hostedCaptures *reviewruntime.HostedCaptureStore
+	for _, capability := range catalog.Capabilities {
+		if slices.Contains(capability.Channels, "hosted") {
+			var err error
+			hostedCaptures, err = reviewruntime.NewHostedCaptureStore(filepath.Join(dataDir, "hosted-review-captures"))
+			if err != nil {
+				return nil, nil, err
+			}
+			options = append(options, reviewexec.WithHostedRetainedDecoder(reviewruntime.HostedRetainedDecoder(hostedCaptures)))
+			break
+		}
+	}
 	options = append(options, reviewexec.WithNativeProjection(), reviewexec.WithSourceReadGroups(groups))
 	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
@@ -40,7 +52,6 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		return nil, nil, core.Fail("configuration_invalid", "The private review data directory is unavailable.", 500)
 	}
 	var captures *reviewruntime.CaptureStore
-	var hostedCaptures *reviewruntime.HostedCaptureStore
 	for _, capability := range catalog.Capabilities {
 		manager, err := reviewworkspace.New(filepath.Join(root, "review-workspaces", capability.ID), capability.GitExecutable)
 		if err != nil {

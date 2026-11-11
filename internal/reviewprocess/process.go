@@ -225,6 +225,12 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 // A returned capture is raw evidence for a caller-owned private journal; this
 // package does not classify success from exit status or inspect provider data.
 func (r *Runner) Review(ctx context.Context, workspace reviewworkspace.Workspace) (Capture, error) {
+	return r.ReviewWithStart(ctx, workspace, nil)
+}
+
+// ReviewWithStart reports successful OS process creation before waiting. The
+// callback is evidence only, not evidence that provider review work began.
+func (r *Runner) ReviewWithStart(ctx context.Context, workspace reviewworkspace.Workspace, onStart func(time.Time)) (Capture, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return Capture{}, processError("process_failed", false)
 	}
@@ -249,7 +255,7 @@ func (r *Runner) Review(ctx context.Context, workspace reviewworkspace.Workspace
 	if commandCtx.Err() != nil {
 		return Capture{}, processError("process_failed", false)
 	}
-	result := r.run(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput)
+	result := r.run(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput, onStart)
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
 			return result.capture, processError("process_failed", result.capture.Started)
@@ -267,7 +273,7 @@ type runResult struct {
 	err     error
 }
 
-func (r *Runner) run(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int) runResult {
+func (r *Runner) run(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int, onStart ...func(time.Time)) runResult {
 	commandCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, r.executable, args...)
@@ -286,6 +292,10 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 		return runResult{capture: Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1}, err: err}
 	}
 	started := true
+	startedAt := r.now().UTC()
+	if len(onStart) > 0 && onStart[0] != nil {
+		onStart[0](startedAt)
+	}
 	err = command.Wait()
 	cleanupErr := cleanup()
 	code := 0

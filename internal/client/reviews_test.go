@@ -69,6 +69,13 @@ func newReviewClientFixture(t *testing.T) *reviewClientFixture {
 	domain.Register(mux, store)
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/reviews/queue") {
+			if r.URL.Query().Get("include_observation") != "true" {
+				t.Error("queue client omitted negotiated observer health")
+			}
+		} else if r.URL.Query().Has("include_observation") {
+			t.Error("non-queue client sent unsupported observer query")
+		}
 		mux.ServeHTTP(w, r)
 	}))
 	ctx := profileBinding(t, f.server.URL, store.InstanceID(), f.project)

@@ -161,7 +161,7 @@ func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configu
 		return c, 0, err
 	}
 	if json.Unmarshal([]byte(body), &c) != nil {
-		return c, 0, core.Fail("storage_unavailable", "Stored review configuration is unavailable.", 500)
+		return c, 0, automaticProjectStateFailure("storage_unavailable", "Stored review configuration is unavailable.", 500)
 	}
 	return c, revision, nil
 }

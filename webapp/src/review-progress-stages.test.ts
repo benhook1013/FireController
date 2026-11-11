@@ -28,6 +28,6 @@ it('requests the staged view once and accepts mixed staged and legacy channel fi
   try {
     expect(await api.reviewProgress([31])).toEqual(result);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(String(fetch.mock.calls[0][0])).toBe('https://service.example/api/v1/projects/project_one/reviews/rounds/progress?pull_numbers=31&view=stages');
+    expect(String(fetch.mock.calls[0][0])).toBe('https://service.example/api/v1/projects/project_one/reviews/rounds/progress?pull_numbers=31&view=stages&include_activity_evidence=true');
   } finally { api.close(); }
 });

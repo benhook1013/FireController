@@ -162,12 +162,13 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 		}
 		owned[id] = r
 	}
+	e.lifecycleMu.Lock()
 	if !e.lifecycleRunning.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
 		return nil, conflict()
 	}
 	s := newLifecycleSchedule(c)
 	s.readers = owned
-	e.lifecycleMu.Lock()
 	e.lifecycleSchedule = s
 	e.lifecycleMu.Unlock()
 	done := make(chan error, 1)
@@ -188,7 +189,9 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 				cancel()
 			}
 		}
+		e.lifecycleMu.Lock()
 		e.lifecycleRunning.Store(false)
+		e.lifecycleMu.Unlock()
 		s.mu.Lock()
 		for sub := range s.watchers {
 			select {
@@ -426,6 +429,12 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			continue
 		}
 		s.mu.Lock()
+		// The other lane may establish account cooldown while source pins are read.
+		now = s.options.Now()
+		if now.Before(s.accounts[account].until) {
+			s.mu.Unlock()
+			continue
+		}
 		if hinted && lane == lifecycleEnrichment && due.hints[lane].head != comparison.head {
 			// The CI event selected an older stored head. Do not spend reads on
 			// a later comparison merely because that event was queued first.

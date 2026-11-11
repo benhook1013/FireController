@@ -122,8 +122,8 @@ func TestRunSelectionPausedParentStillRequiresVerifiedPrefix(t *testing.T) {
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, receipt.ID)
 	frame, ok, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, "cli")
-	if err != nil || !ok || !frame.complete || len(frame.prefix) != 2 || frame.prefix[0].ParentPullNumber != 4 || got.State != "held" || got.Reason != "predecessor_unfinished" || got.OperationID != "" {
-		t.Fatal("paused dependency was skipped or granted completion", got, frame, err)
+	if err != nil || !ok || !frame.complete || len(frame.prefix) != 2 || frame.prefix[0].ParentPullNumber != 4 || got.State != "selected" || got.Reason != "" || got.OperationID == "" {
+		t.Fatal("paused parent source was skipped or blocked child review", got, frame, err)
 	}
 }
 

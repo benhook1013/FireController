@@ -313,7 +313,7 @@ func TestExternalHostedNativeIdentityIndexesAndConflictingOriginal(t *testing.T)
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "4" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "5" {
 		t.Fatal("latest schema was not used", version, err)
 	}
 }

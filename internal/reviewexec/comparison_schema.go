@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -63,10 +64,44 @@ func ComparisonSchemaSQL() []string {
 	return statements
 }
 
+func comparisonSchemaMigrations() [][]string {
+	return [][]string{ComparisonSchemaSQL(), nil}
+}
+
+// Execution migrations can rebuild a table owned by comparison triggers. Refuse
+// unknown or damaged comparison authority before touching that shared schema.
+func retainedComparisonSchema(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (bool, error) {
+	var raw string
+	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, core.NormalizeStorageError(err)
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil || version < 1 || strconv.Itoa(version) != raw {
+		return false, core.Fail("schema_invalid", "Domain schema version metadata is invalid.", 500)
+	}
+	if version > len(comparisonSchemaMigrations()) {
+		return false, core.Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
+	}
+	var installed bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&installed); err != nil {
+		return false, core.NormalizeStorageError(err)
+	}
+	if !installed {
+		return false, core.Fail("schema_invalid", "Retained comparison schema is missing its proof table.", 500)
+	}
+	return true, nil
+}
+
 func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
 	// Version two rederives source progress after valid routes transfer the
 	// remaining fix obligation to the receiving PR. The physical schema stays v1.
-	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL(), nil}, backfillComparisonProofs); err != nil {
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", comparisonSchemaMigrations(), backfillComparisonProofs); err != nil {
 		return err
 	}
 	if err := ensureComparisonAttemptTriggers(ctx, store); err != nil {
@@ -80,28 +115,37 @@ func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
 // after a previously committed rebuild. Existing differing definitions fail.
 func ensureComparisonAttemptTriggers(ctx context.Context, store *core.Store) error {
 	return store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		for _, statement := range ComparisonSchemaSQL() {
-			if !strings.HasPrefix(statement, "CREATE TRIGGER review_comparison_dirty_review_execution_attempts_") {
-				continue
-			}
-			name := strings.Fields(statement)[2]
-			var kind, table, definition string
-			err := tx.QueryRowContext(ctx, `SELECT type,tbl_name,sql FROM sqlite_schema WHERE name=?`, name).Scan(&kind, &table, &definition)
-			if errors.Is(err, sql.ErrNoRows) {
-				if _, err := tx.ExecContext(ctx, statement); err != nil {
-					return err
-				}
-				continue
-			}
-			if err != nil {
+		return ensureComparisonAttemptTriggersTx(ctx, tx)
+	})
+}
+
+// Share canonical definition checks with the exclusive execution migration.
+// Existing differing definitions remain errors; only absent triggers are added.
+func ensureComparisonAttemptTriggersTx(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	for _, statement := range ComparisonSchemaSQL() {
+		if !strings.HasPrefix(statement, "CREATE TRIGGER review_comparison_dirty_review_execution_attempts_") {
+			continue
+		}
+		name := strings.Fields(statement)[2]
+		var kind, table, definition string
+		err := db.QueryRowContext(ctx, `SELECT type,tbl_name,sql FROM sqlite_schema WHERE name=?`, name).Scan(&kind, &table, &definition)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
 				return err
 			}
-			if kind != "trigger" || table != "review_execution_attempts" || strings.TrimSuffix(strings.TrimSpace(definition), ";") != strings.TrimSuffix(strings.TrimSpace(statement), ";") {
-				return core.Fail("schema_invalid", "Native comparison attempt invalidation is inconsistent.", 500)
-			}
+			continue
 		}
-		return nil
-	})
+		if err != nil {
+			return err
+		}
+		if kind != "trigger" || table != "review_execution_attempts" || strings.TrimSuffix(strings.TrimSpace(definition), ";") != strings.TrimSuffix(strings.TrimSpace(statement), ";") {
+			return core.Fail("schema_invalid", "Native comparison attempt invalidation is inconsistent.", 500)
+		}
+	}
+	return nil
 }
 
 func backfillComparisonProofs(ctx context.Context, conn *sql.Conn) error {

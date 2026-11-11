@@ -451,6 +451,10 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 	}
 	onBehalf := recipientWorker != scope.WorkerID
 	if onBehalf {
+		if scope.WorkerID == "" {
+			core.WriteError(w, core.Fail("validation_failed", "Select the acting worker with X-FC-Worker for acknowledgement on behalf of another recipient.", http.StatusBadRequest))
+			return
+		}
 		scope = scope.RequireAdministration()
 	}
 	id := r.PathValue("message_id")

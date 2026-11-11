@@ -74,14 +74,15 @@ type ciWatchSubscription struct {
 }
 
 type ciWatchEntry struct {
-	key               ciWatchKey
-	owners            map[*ciWatchSubscription]bool
-	wanted, done      uint64
-	started, version  uint64
-	lastAttempt, next time.Time
-	inflight          bool
-	cancel            context.CancelFunc
-	result            CIWatchItem
+	key                          ciWatchKey
+	owners                       map[*ciWatchSubscription]bool
+	wanted, done                 uint64
+	metadataWanted, metadataDone uint64
+	started, version             uint64
+	lastAttempt, next            time.Time
+	inflight                     bool
+	cancel                       context.CancelFunc
+	result                       CIWatchItem
 }
 
 func validCIWatchTargets(targets []CIWatchTarget) bool {
@@ -171,11 +172,13 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 	}
 	e.lifecycleMu.RLock()
 	s := e.lifecycleSchedule
-	e.lifecycleMu.RUnlock()
 	if s == nil || !e.lifecycleRunning.Load() {
+		e.lifecycleMu.RUnlock()
 		return CIWatchResult{}, ciWatchUnavailable()
 	}
+	// Registration and the running schedule identity share one lifetime fence.
 	sub, err := s.registerCIWatch(scope, binding, targets)
+	e.lifecycleMu.RUnlock()
 	if err != nil {
 		return CIWatchResult{}, err
 	}
@@ -194,10 +197,10 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 		if fresh != binding {
 			return CIWatchResult{}, core.Fail("ci_watch_binding_changed", "The CI watch project source binding changed; start a fresh watch with current targets.", 409)
 		}
-		if !e.lifecycleRunning.Load() {
-			return CIWatchResult{}, ciWatchUnavailable()
+		value, err := e.currentCIWatchResult(s, sub)
+		if err != nil {
+			return CIWatchResult{}, err
 		}
-		value := s.ciWatchResult(sub)
 		if value.State != "pending" {
 			return boundedCIWatchResult(value)
 		}
@@ -213,15 +216,26 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 			if fresh != binding {
 				return CIWatchResult{}, core.Fail("ci_watch_binding_changed", "The CI watch project source binding changed; start a fresh watch with current targets.", 409)
 			}
-			if !e.lifecycleRunning.Load() {
-				return CIWatchResult{}, ciWatchUnavailable()
+			value, err = e.currentCIWatchResult(s, sub)
+			if err != nil {
+				return CIWatchResult{}, err
 			}
-			value = s.ciWatchResult(sub)
 			value.TimedOut = value.State == "pending"
 			return boundedCIWatchResult(value)
 		case <-sub.changed:
 		}
 	}
+}
+
+// A restarted observer cannot lend its running flag to an old subscription.
+// Hold the lifetime fence through the snapshot, including terminal/expiry reads.
+func (e *Engine) currentCIWatchResult(s *lifecycleSchedule, sub *ciWatchSubscription) (CIWatchResult, error) {
+	e.lifecycleMu.RLock()
+	defer e.lifecycleMu.RUnlock()
+	if e.lifecycleSchedule != s || !e.lifecycleRunning.Load() {
+		return CIWatchResult{}, ciWatchUnavailable()
+	}
+	return s.ciWatchResult(sub), nil
 }
 
 func boundedCIWatchResult(value CIWatchResult) (CIWatchResult, error) {

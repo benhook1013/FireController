@@ -32,6 +32,7 @@ const ciWatchFallbackInterval = time.Minute
 type ciWatchClaim struct {
 	entry                 *ciWatchEntry
 	generation            uint64
+	metadataGeneration    uint64
 	version               uint64
 	ctx                   context.Context
 	workflowIDs           []int64
@@ -113,11 +114,29 @@ func (s *lifecycleSchedule) unregisterCIWatch(sub *ciWatchSubscription) {
 			if s.watches[entry.key] == entry {
 				delete(s.watches, entry.key)
 			}
-			if entry.cancel != nil {
-				entry.cancel()
+		}
+		// A departed subscriber can leave an in-flight freshness-only read
+		// behind even when older owners retain already-fresh observations.
+		if entry.cancel != nil && (len(entry.owners) == 0 || !ciWatchHasDemand(entry, s.options.Now())) {
+			entry.cancel()
+		}
+	}
+}
+
+// Called under the scheduler lock. Real hints, due fallback checks and each
+// remaining owner's freshness requirement independently retain collection.
+func ciWatchHasDemand(entry *ciWatchEntry, now time.Time) bool {
+	if entry.wanted != entry.done || !now.Before(entry.next) {
+		return true
+	}
+	for sub := range entry.owners {
+		for i, owned := range sub.entries {
+			if owned == entry && sub.minimum[i] > entry.version {
+				return true
 			}
 		}
 	}
+	return false
 }
 
 func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResult {
@@ -147,9 +166,10 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			if item.State != "closed" && item.ObservedHeadSHA != "" && (item.ObservedHeadSHA != target.HeadSHA || sub.bases[i] != "" && item.ObservedBaseSHA != sub.bases[i]) {
 				item.State, item.Reason = "superseded", "ci_watch_source_changed"
 			}
-			// Newer CI hints can withhold success, but cannot undo a fresh
-			// comparison mismatch for this subscription's original source pins.
-			if entry.wanted != entry.done && item.State != "superseded" {
+			// CI hints cannot undo fresh closure or source supersession. A
+			// metadata hint can represent reopening and needs fresh PR proof.
+			refresh := entry.wanted != entry.done && (item.State != "closed" || entry.metadataWanted != entry.metadataDone)
+			if refresh && item.State != "superseded" {
 				item.State, item.Reason = "pending", "ci_watch_refresh_pending"
 			}
 		}
@@ -267,7 +287,9 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 			continue
 		}
 		s.mu.Lock()
-		if s.watches[entry.key] != entry || entry.inflight || len(entry.owners) == 0 {
+		// Metadata observations may establish account cooldown while authorization waits.
+		now = s.options.Now()
+		if s.watches[entry.key] != entry || entry.inflight || len(entry.owners) == 0 || now.Before(s.accounts[b.account].until) || !ciWatchHasDemand(entry, now) {
 			s.mu.Unlock()
 			continue
 		}
@@ -275,7 +297,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		entry.inflight, entry.lastAttempt = true, now
 		readCtx, cancel := context.WithCancel(ctx)
 		entry.cancel = cancel
-		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, false), historicalWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, true)}
+		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, metadataGeneration: entry.metadataWanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, false), historicalWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, true)}
 		lane.projects[b.project], lane.accounts[b.account] = true, true
 		s.mu.Unlock()
 		return &lifecycleTarget{project: b.project, account: b.account, repository: b.repository, number: entry.key.number, fingerprint: b.fingerprint, reader: reader, lane: lifecycleEnrichment, watch: claim}, nil
@@ -299,9 +321,16 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 			}
 		}
 		s.finishAccountLocked(target, providerErr, s.options.Now())
+		canceled := ctx.Err() != nil
 		entry.cancel()
 		entry.cancel, entry.inflight = nil, false
+		if canceled {
+			// Cancellation releases capacity without replacing completed facts
+			// or consuming demand from hints/subscribers that arrived meanwhile.
+			return
+		}
 		entry.done, entry.version = claim.generation, claim.version
+		entry.metadataDone = claim.metadataGeneration
 		entry.next = s.options.Now().Add(ciWatchFallbackInterval)
 		entry.result = item
 		for sub := range entry.owners {
@@ -376,8 +405,10 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		var warning *reviewprovider.CIWorkflowAttentionError
 		if len(claim.workflowIDs) > 0 && errors.As(err, &warning) && warning.Cause != nil {
 			// Optional observation can fail without invalidating proven gate
-			// facts. Its actual provider limit still governs the shared account.
-			providerErr = warning
+			// facts. A local attempt cap is not a provider-account failure.
+			if !errors.Is(warning.Cause, reviewprovider.ErrCIWorkflowAttemptLimit) {
+				providerErr = warning
+			}
 		} else {
 			providerErr = err
 			item.Reason = sourceCIErrorReason(readCtx, err)
@@ -581,21 +612,22 @@ func (s *lifecycleSchedule) hintCIWatches(hint githubhook.Hint) {
 		for _, n := range hint.PullNumbers {
 			explicit = explicit || n == entry.key.number
 		}
-		head := entry.result.ObservedHeadSHA
-		if head == "" {
-			for sub := range entry.owners {
-				for _, t := range sub.targets {
-					if t.PullNumber == entry.key.number && t.HeadSHA == hint.HeadSHA {
-						head = t.HeadSHA
-					}
+		sameHead := hint.HeadSHA != "" && strings.EqualFold(entry.result.ObservedHeadSHA, hint.HeadSHA)
+		// A new subscriber can pin a head not yet present in the shared cache.
+		for sub := range entry.owners {
+			for _, target := range sub.targets {
+				if target.PullNumber == entry.key.number && hint.HeadSHA != "" && strings.EqualFold(target.HeadSHA, hint.HeadSHA) {
+					sameHead = true
 				}
 			}
 		}
-		sameHead := hint.HeadSHA != "" && strings.EqualFold(head, hint.HeadSHA)
 		branch := hint.BranchRef != "" && (hint.BranchRef == entry.result.BaseRef || hint.BranchRef == entry.result.GateRef)
 		knownCI := hint.HeadSHA != "" && hint.HeadSHA == entry.result.CICommitSHA
 		if hint.Metadata && explicit || hint.CI && (sameHead || branch || knownCI || explicit) {
 			entry.wanted++
+			if hint.Metadata && explicit {
+				entry.metadataWanted++
+			}
 		}
 	}
 }

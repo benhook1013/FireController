@@ -18,7 +18,7 @@ func TestLiveProjectReplayVisibleStateOnly(t *testing.T) {
 		"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced", "job.summary_replaced",
 		"workers.created", "worker.pause_changed", "worker.primary_job_changed", "note.created", "note.updated",
 		"reviews.adoption_obligations_imported", "reviews.adoption_obligation_resolved", "reviews.adoption_obligation_retargeted",
-		"review.observed", "reviews.policy_configured", "reviews.rounds_configured", "review.requested", "review.operation_updated",
+		"review.observed", "reviews.configured", "reviews.policy_configured", "reviews.rounds_configured", "review.requested", "review.operation_updated", "review.activity_observed",
 		"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",
 		"review.route.routed", "review.route.superseded", "review.route.adjudicated", "review.route.fix_recorded",
 	}
@@ -29,7 +29,7 @@ func TestLiveProjectReplayVisibleStateOnly(t *testing.T) {
 	// browser view. A future same-prefix event is not implicitly opted in.
 	for i, kind := range []string{
 		"message.sent", "message.seen", "message.acknowledged", "credentials.revoked",
-		"reviews.configured", "review.captured", "review.capture_observed",
+		"review.captured", "review.capture_observed",
 		"review.source_refresh_requested", "review.source_refresh_updated", "reviews.checkpoint_publication",
 		"review.cli_preflight", "review.hosted_preflight", "review.hosted_query_started", "review.hosted_query_posted", "review.hosted_settled",
 		"job.future", "review.evidence.future", "review.route.future",

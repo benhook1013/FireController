@@ -388,3 +388,33 @@ func TestEvidenceHTTPStoredNullFindingsAreArrayWithoutWrites(t *testing.T) {
 		t.Fatal("collection normalization rewrote retained state")
 	}
 }
+
+func TestEvidenceHTTPSubmittedReviewRetainsRealIdentityWithoutParserMetadata(t *testing.T) {
+	f, a, in := hostedPublicationFixture(t, false)
+	h := in.Hosted
+	h.PublicationID, h.ProviderAttemptID = "", ""
+	h.ReviewIDs, h.Sources = h.ReviewIDs[:1], h.Sources[:1]
+	h.SubmittedReview = &HostedSubmittedReviewMetadata{ProviderRunID: "33333333-3333-4333-8333-333333333333", AcknowledgementCommentID: 102}
+	in.Review.Findings, in.Review.ReportedFindings = in.Review.Findings[:1], 1
+	in.Review.CoverageLimits = []string{"Private source limitation"}
+	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := adjudicationState(t, f, a)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/evidence/" + receipt.ID
+	w := f.request("GET", path, f.reader, "", "")
+	evidenceHTTPRequire(t, w, 200, "")
+	var got evidenceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || got.Capture.Hosted == nil || !reflect.DeepEqual(got.Capture.Hosted.SubmittedReview, h.SubmittedReview) || got.Capture.Hosted.PublicationID != "" || got.Capture.Hosted.ProviderAttemptID != "" || !reflect.DeepEqual(got.Capture.Hosted.ReviewIDs, h.ReviewIDs) || !reflect.DeepEqual(got.Capture.Findings[0].Source, &h.Sources[0]) {
+		t.Fatal("HTTP lost original submitted identities", err)
+	}
+	if strings.Contains(w.Body.String(), "coverage_limits") || strings.Contains(w.Body.String(), "Private source limitation") || before != adjudicationState(t, f, a) {
+		t.Fatal("read exposed private parser metadata or changed durable state")
+	}
+	projected := publicEvidence(ReviewEvidence{Capture: in})
+	projected.Capture.Hosted.SubmittedReview.ProviderRunID = "projection-only"
+	if h.SubmittedReview.ProviderRunID == "projection-only" {
+		t.Fatal("HTTP aliases immutable submitted metadata")
+	}
+}

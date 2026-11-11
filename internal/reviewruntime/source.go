@@ -208,18 +208,8 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			}
 			return plan, nil, err
 		}
-		// Hosted discovery can advance while ancestor findings or rounds are
-		// unfinished. Keep every fresh source witness for final admission;
-		// the selected PR's own evidence guards above still apply.
-		if operation.Channel != "hosted" {
-			covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
-			if err != nil {
-				return plan, nil, err
-			}
-			if !covered {
-				return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
-			}
-		}
+		// Both channels retain every source witness without requiring an ancestor's
+		// findings or review rounds to finish. Target-local guards remain above.
 		predecessors = append(predecessors, preceding)
 		number = preceding.ParentPullNumber
 	}
@@ -274,7 +264,7 @@ func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, proj
 }
 
 func reviewPredecessorHold(number int64, cause string) error {
-	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
+	return &core.Error{Code: "review_held", Message: "An ancestor does not establish the selected source comparison.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }
 
 // Keep quiet, proven stop classes through final dispatch admission. No arbitrary
