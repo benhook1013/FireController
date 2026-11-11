@@ -6,11 +6,12 @@ reviews, increase grants, adjudicate findings, or merge pull requests.
 
 ## One request, multiple unused preparations
 
-An observed Hosted cooldown or proven zero CLI allowance releases the unused
-preparation reservation and retains the original operation with a retry floor.
+An observed Hosted cooldown with a future deadline that advances any previous retry floor, or proven zero CLI allowance, releases the unused preparation reservation and retains the original operation with a retry floor.
 The supervisor rechecks authority, configuration, grants and source before
 preparing again. The first comparison remains immutable. A changed head, parent,
 base, merge base or patch cannot silently become the retry target.
+
+An elapsed or non-advancing Hosted cooldown instead leaves the operation `held` with reason `hosted_allowance_cooldown`. It does not retry automatically, and the queued-only pause, resume and cancel controls cannot resume it. Inspect the retained operation and allowance facts, resolve the hold's cause, then submit a fresh authorized [review request](review-execution.md#bound-execution-tools) with a new explicit key and the qualified current comparison. The held history remains unchanged; the new request still passes authority, configuration, grant, source, finding, provider and known-cooldown guards. Recover an unknown original request outcome with its original key before considering a new request.
 
 CLI backoff belongs to the shared provider account, including after cancellation
 of one request. Hosted reservations are scoped to a repository on the account.
@@ -25,8 +26,7 @@ PR is draft remain queued until a bounded fresh source check observes readiness.
 
 ## Reading state
 
-Operation and round-progress reads expose waiting state only when requested with
-`X-FC-Operation-Wait`. Version 1 preserves the original Hosted shape; version 2
+Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`; round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape; version 2
 also understands CLI baselines. Version 3 adds retained provider allowance
 estimates. A full-capacity estimate is not the next retry time or a guarantee
 that a review can start. Older clients continue receiving their existing shapes. The current bound clients request version 3 and preserve validated `wait.cli_allowance` for a queued CLI baseline, held-operation `allowance` facts, and the compact held Hosted `retry_not_before` deadline. Legacy responses without these optional facts remain readable; absence does not imply zero allowance or a provider reset.
