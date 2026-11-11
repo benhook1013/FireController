@@ -118,6 +118,8 @@ type Engine struct {
 	automaticNext              time.Time
 	runSourceBudget            time.Duration
 	schedulingNow              func() time.Time
+	configurationFailureMu     sync.Mutex
+	configurationFailureNext   map[string]time.Time
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	runWake                    chan struct{}
