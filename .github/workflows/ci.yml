@@ -166,9 +166,11 @@ jobs:
       - name: Verify genuine predecessor inactive restore
         env:
           FC_ADMIN_PARENT_FIXTURE: ${{ runner.temp }}/admin-parent-fixture
-        run: go test -race -v -count=1 -run '^TestProjectManagementRealParentBundleRemainsInactive$' ./internal/backup
+        run: go test -race -v -count=1 -run '^(TestProjectManagementRealParentBundleRemainsInactive|TestProjectManagementRealParentUpgradePreservesAllRowsAndSchemas|TestWorkerRetirementRealParentEmptyACKAndRetiredSendReplay)$' ./internal/backup ./internal/core ./internal/inbox
       - run: make build
       - name: Smoke packaged binaries
+        env:
+          FC_ADMIN_PARENT_FIXTURE: ${{ runner.temp }}/admin-parent-fixture
         run: make smoke
       - name: Install pinned Chromium
         working-directory: webapp
