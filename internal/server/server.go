@@ -303,6 +303,10 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	if len(r.URL.RawQuery) > 16<<10 {
+		core.WriteError(w, core.Fail("validation_failed", "Use only one limit, one cursor and one include_retired query parameter.", 400))
+		return
+	}
 	query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "include_retired")
 	if err != nil {
 		core.WriteError(w, err)

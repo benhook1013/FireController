@@ -171,12 +171,17 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 		revision      int64
 	}
 	configurations := map[string]configurationSnapshot{}
-	cliRetryDeadlines := map[string]time.Time{}
+	type accountKey struct{ provider, account string }
+	cliRetryDeadlines := map[accountKey]time.Time{}
+	cliUnavailable := map[accountKey]bool{}
 	emptyPredecessors := map[queuePriorityKey]bool{}
 	out := make([]Operation, 0, len(ids))
 	for _, i := range ids {
 		o, err := readOperation(ctx, tx, i.project, i.operation)
 		if err != nil {
+			if automaticProjectRefused(err) || e.skipUnavailableCLIWait(ctx, o, err) {
+				continue
+			}
 			return nil, err
 		}
 		if o.State == "queued" {
@@ -184,6 +189,9 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			if !ok {
 				c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 				if err != nil {
+					if automaticProjectRefused(err) {
+						continue
+					}
 					return nil, err
 				}
 				configuration = configurationSnapshot{c, revision}
@@ -192,7 +200,7 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			c, revision := configuration.configuration, configuration.revision
 			earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 			if err != nil {
-				if e.skipUnavailableConfiguration(ctx, o, err) {
+				if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableCLIWait(ctx, o, err) {
 					continue
 				}
 				return nil, err
@@ -202,13 +210,21 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 			}
 			if o.Channel == "cli" {
 				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
-					due, cached := cliRetryDeadlines[capability.ID]
+					key := accountKey{capability.Provider, capability.Account}
+					if cliUnavailable[key] {
+						continue
+					}
+					due, cached := cliRetryDeadlines[key]
 					if !cached {
 						due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
 						if err != nil {
+							if e.skipUnavailableCLIWait(ctx, o, err) {
+								cliUnavailable[key] = true
+								continue
+							}
 							return nil, err
 						}
-						cliRetryDeadlines[capability.ID] = due
+						cliRetryDeadlines[key] = due
 					}
 					if now.Before(due) {
 						continue
@@ -270,6 +286,35 @@ func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, 
 	return true
 }
 
+// Typed wait validation failures refuse only this CLI candidate/account. Real
+// database and context failures retain their normal supervisor behavior.
+func (e *Engine) skipUnavailableCLIWait(ctx context.Context, o Operation, err error) bool {
+	if o.Channel != "cli" || !isWaitUnavailable(err) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	key := "cli-wait:" + o.ID
+	if e.configurationFailureNext[key].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[key] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate CLI wait history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "cli_wait_history_unavailable")
+	return true
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
@@ -287,7 +332,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableCLIWait(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
@@ -308,7 +353,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableCLIWait(ctx, o, err) {
 				continue
 			}
 			var failure *core.Error

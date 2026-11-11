@@ -19,6 +19,8 @@ Within a project, an eligible earlier queued intent retains priority while its
 timer waits. Neither a timer nor a fresh allowance query counts as a completed
 review round.
 
+Damaged live CLI wait history suppresses candidates only on its provider account. Other accounts and Hosted work remain schedulable. Typed retained wait failures emit a bounded candidate diagnostic using the same 30-second, 256-entry diagnostic budget; actual database and context errors still propagate. The retained request and evidence are not changed, and expiry removes only the account timer, not audit validation.
+
 Malformed or missing intermediate configuration history keeps the affected request queued without acquiring capacity or preparing a provider action. It also prevents later requests from bypassing that unproven predecessor, but does not stop other projects. A bounded diagnostic identifies the affected candidate and project without exposing stored content, at most once per candidate per 30 seconds within a 256-entry diagnostic bound. General database and context failures retain their normal error behavior.
 
 Pause, resume and cancel apply only to an undispatched queued operation and use

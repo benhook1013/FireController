@@ -116,6 +116,18 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 }
 
 func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+	s, err := readScheduling(ctx, tx, project)
+	if err != nil {
+		return "", err
+	}
+	hostedRevision, cliRevision, err := schedulingBasisRevisions(ctx, tx, s)
+	if err != nil {
+		return "", err
+	}
+	basisRevision := hostedRevision
+	if channel == "cli" {
+		basisRevision = cliRevision
+	}
 	h := sha256.New()
 	appendRows := func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
@@ -150,6 +162,11 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 				if b, ok := v.([]byte); ok {
 					values[i] = string(b)
 				}
+			}
+			// Keep the original query label and JSON framing. Only the
+			// channel's semantic revision differs after a relevant write.
+			if query == `SELECT revision,automatic_`+channel+` FROM review_scheduling WHERE project_id=?` {
+				values[0] = basisRevision
 			}
 			b, err := json.Marshal(values)
 			if err != nil {
