@@ -156,6 +156,16 @@ func ciWatchReadError(err error) error {
 	if !errors.As(err, &failure) {
 		return err
 	}
+	if failure.Status == http.StatusConflict && failure.Code == "ci_watch_workflow_failures_unsupported" {
+		result := *failure
+		result.Action = "Verify matching client and server workflow-attention capabilities, or explicitly omit workflow selections for an ordinary required-CI wait, retaining the original PR/head/base pins. No automatic retry or fallback was attempted."
+		return &result
+	}
+	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_workflow_capacity" {
+		result := *failure
+		result.Action = "Reduce the workflow selections or wait for existing shared PR subscriptions to finish before another bounded CI wait, retaining the original PR/head/base pins. No automatic retry or review or CI rerun was requested."
+		return &result
+	}
 	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_response_limit" {
 		result := *failure
 		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No review or CI rerun was requested."
@@ -207,7 +217,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {
 			return false
 		}
-		if item.Selection == "" && item.CICommitSHA != "" || item.Selection != "" && (!oneReviewOf(item.Selection, "head", "test_merge") || !controlHex(item.CICommitSHA, 40)) {
+		if item.Selection == "" && item.CICommitSHA != "" || item.Selection != "" && (!oneReviewOf(item.Selection, "head", "test_merge") || !controlHex(item.CICommitSHA, 40)) || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA {
 			return false
 		}
 		for _, count := range []int64{item.Required, item.Satisfied, item.Failed, item.Pending, item.Unproven} {
@@ -224,7 +234,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if oneReviewOf(item.State, "passed", "failed", "unconfigured") && (item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "") {
 			return false
 		}
-		if oneReviewOf(item.State, "passed", "failed") && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
+		if oneReviewOf(item.State, "passed", "failed") && item.Selection == "" {
 			return false
 		}
 		if state == "pending" && !item.WaitingForChange {
