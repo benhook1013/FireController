@@ -22,6 +22,7 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 		{"refresh zero", "ci_watch_refresh_pending", "", "refreshing", "newer controller check", 0, 0, 0, 0},
 		{"refresh earlier green", "ci_watch_refresh_pending", "2026-11-01T00:00:00Z", "refreshing", "earlier counts and checks are informational", 1, 1, 0, 0},
 		{"GitHub pending", "ci_required_checks_pending", "2026-11-01T00:00:00Z", "checks_pending", "GitHub checks still pending as of observed_at", 1, 0, 1, 0},
+		{"mixed pending and missing evidence", "ci_required_checks_pending", "2026-11-01T00:00:00Z", "checks_unproven", "missing required-check evidence", 2, 0, 1, 1},
 		{"missing evidence", "ci_required_checks_unproven", "2026-11-01T00:00:00Z", "checks_unproven", "missing required-check evidence", 1, 0, 0, 1},
 		{"unavailable", "ci_watch_source_unavailable", "", "observation_unproven", "not established a current required-CI result", 0, 0, 0, 0},
 		{"coherence changed", "ci_observation_changed", "2026-11-01T00:00:00Z", "observation_unproven", "collected counts remain informational", 1, 1, 0, 0},
