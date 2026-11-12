@@ -37,7 +37,7 @@ func TestCIWatchMismatchFactsRespectExplicitBase(t *testing.T) {
 		t.Run(pinBase, func(t *testing.T) {
 			head, observed := strings.Repeat("a", 40), strings.Repeat("b", 40)
 			pin := CIWatchTarget{PullNumber: 2, HeadSHA: head, BaseSHA: pinBase}
-			value := CIWatchResult{State: "pending", Targets: []CIWatchTargetResult{{PullNumber: 2, HeadSHA: head, BaseSHA: pinBase, ObservedHeadSHA: head, ObservedBaseSHA: observed, State: "pending", Reason: "ci_merge_base_mismatch", Checks: []ReviewCIContext{}, MergeBaseMismatch: &CIMergeBaseMismatch{PRBaseSHA: observed, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: observed}}}}
+			value := CIWatchResult{State: "pending", TimedOut: true, Targets: []CIWatchTargetResult{{PullNumber: 2, HeadSHA: head, BaseSHA: pinBase, ObservedHeadSHA: head, ObservedBaseSHA: observed, State: "pending", Reason: "ci_merge_base_mismatch", Checks: []ReviewCIContext{}, MergeBaseMismatch: &CIMergeBaseMismatch{PRBaseSHA: observed, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: observed}}}}
 			got := validCIWatchResult(value, []CIWatchTarget{pin})
 			want := pinBase == "" || pinBase == observed
 			if got != want {
