@@ -617,6 +617,10 @@ func ciWatchObservationKey(project string, observation reviewprovider.CIObservat
 func (s *lifecycleSchedule) hintCIWatches(hint githubhook.Hint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hintCIWatchesLocked(hint)
+}
+
+func (s *lifecycleSchedule) hintCIWatchesLocked(hint githubhook.Hint) {
 	for _, entry := range s.watches {
 		if entry.key.binding.repository != hint.RepositoryID {
 			continue

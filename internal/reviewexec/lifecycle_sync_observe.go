@@ -120,7 +120,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	// expensive evidence for exactly that retained comparison.
 	err = e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
+		bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, &target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
 		return err
 	})
 	if err != nil || !bound {
@@ -182,7 +182,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			if err != nil || !bound {
 				return err
 			}
-			bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
+			bound, err = e.lifecycleEnrichmentCurrent(ctx, tx, &target, lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state})
 			if err != nil || !bound {
 				return err
 			}
@@ -239,13 +239,18 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	return err
 }
 
-func (e *Engine) lifecycleEnrichmentCurrent(ctx context.Context, tx *sql.Tx, target lifecycleTarget, comparison lifecycleComparison) (bool, error) {
+func (e *Engine) lifecycleEnrichmentCurrent(ctx context.Context, tx *sql.Tx, target *lifecycleTarget, comparison lifecycleComparison) (bool, error) {
 	current, err := readLifecycleComparison(ctx, tx, target.project, target.number)
 	if err != nil || current != comparison {
 		return false, err
 	}
 	pins, err := reviews.PinSourceMetadata(ctx, tx, target.project, []int64{target.number})
-	return err == nil && len(pins) == 1 && pins[target.number] == target.pins[target.number], err
+	currentPin := err == nil && len(pins) == 1 && pins[target.number] == target.pins[target.number]
+	// A metadata-only publication invalidates the pin, not this CI request.
+	// Preserve its generation with the existing attempt time so retry remains
+	// throttled and still collects CI before the ordinary CI interval expires.
+	target.retainCIHint = err == nil && len(pins) == 1 && !currentPin && target.forceCI && comparison == target.comparison
+	return currentPin, err
 }
 
 // A locally expensive batch must not monopolize a scheduler worker by retrying
