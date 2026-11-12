@@ -92,6 +92,7 @@ func TestCIWatchNotifiedReadContentionReauthorizesAndCleansUp(t *testing.T) {
 			}
 			out := make(chan ciWatchReply, 1)
 			var release func()
+			var initialWaitCount int64
 			wait := 300
 			if phase == "zero_wait" {
 				wait = 0
@@ -101,13 +102,17 @@ func TestCIWatchNotifiedReadContentionReauthorizesAndCleansUp(t *testing.T) {
 			if phase != "zero_wait" {
 				ciWatchRegistered(t, s, 1)
 				release = holdCIWatchReadPool(t, f)
+				initialWaitCount = f.store.DB().Stats().WaitCount
 				notifyCIWatchRead(s)
 			}
 			if phase == "caller_cancel" || phase == "lifetime_cancel" {
 				until := time.Now().Add(time.Second)
-				initial := f.store.DB().Stats().WaitCount
-				for f.store.DB().Stats().WaitCount == initial && time.Now().Before(until) {
+				for f.store.DB().Stats().WaitCount == initialWaitCount && time.Now().Before(until) {
 					time.Sleep(time.Millisecond)
+				}
+				if f.store.DB().Stats().WaitCount == initialWaitCount {
+					release()
+					t.Fatal("CI watch did not enter read contention before cancellation")
 				}
 				if phase == "caller_cancel" {
 					cancel()
