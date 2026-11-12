@@ -558,11 +558,14 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 		return changed != "", err
 	}
 	r := *selected
+	// Reserve the bounded source phase plus a complete gate read, including
+	// its final rechecks. Readiness adds the provider's review-state phase.
 	budget := 15 * time.Second
+	if r.IncludeCI || r.IncludeReadiness {
+		budget += reviewprovider.CIObservationTimeout
+	}
 	if r.IncludeReadiness {
-		budget = 45 * time.Second
-	} else if r.IncludeCI {
-		budget = 30 * time.Second
+		budget += 15 * time.Second
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()

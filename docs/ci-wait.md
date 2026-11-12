@@ -1,6 +1,6 @@
 # Waiting for CI
 
-The service exposes `POST /api/v1/projects/{project_id}/reviews/ci/watch` for bounded, read-only CI observation. Client, CLI and MCP watch entrypoints are a separate implementation checkpoint and are not included in this service checkpoint. The API requires project read access and a configured GitHub observation capability; despite using POST for its bounded target list, it has no idempotency key or durable mutation. Targets do not need Delivery queue enrollment. A watch never requests reviews, spends review allowance, reruns CI or changes branches, jobs, notes or queue membership.
+The service exposes `POST /api/v1/projects/{project_id}/reviews/ci/watch` for bounded, read-only CI observation. Client, CLI and MCP watch entrypoints are a separate implementation checkpoint and are not included in this service checkpoint. The API requires bearer-based project read access and a configured GitHub observation capability. A read-only browser session is insufficient: its project read grant does not permit this POST route; despite using POST for its bounded target list, it has no idempotency key or durable mutation. Targets do not need Delivery queue enrollment. A watch never requests reviews, spends review allowance, reruns CI or changes branches, jobs, notes or queue membership.
 
 ## Request and comparison
 
