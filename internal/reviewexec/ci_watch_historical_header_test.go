@@ -17,7 +17,7 @@ func TestCIWatchHistoricalAttentionRequiresV3Pair(t *testing.T) {
 		for _, details := range []string{"1", "2", "3"} {
 			t.Run(watch+"/"+details, func(t *testing.T) {
 				f, s, _, base, _ := ciWatchFixture(t)
-				s.readers["test-capability"] = &ciWatchWorkflowReader{ciWatchReader: base}
+				s.readers["test-capability"] = &optionalCIWorkflowAttentionReader{ciWatchWorkflowReader: &ciWatchWorkflowReader{ciWatchReader: base}, available: true}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				req := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", strings.NewReader(fmt.Sprintf(`{"targets":[{"pull_number":42,"head_sha":%q,"failure_workflow_ids":[10]}]}`, strings.Repeat("a", 40)))).WithContext(ctx)
