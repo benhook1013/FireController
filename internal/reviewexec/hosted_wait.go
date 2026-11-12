@@ -29,7 +29,12 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 	if version != "5" {
 		copy.QueueAheadPullNumber = 0
 	}
-	if version != "4" && version != "6" {
+	if channel == "hosted" && copy.SourceRetry != nil {
+		// Existing Hosted clients understand a queued recheck deadline. Keep the
+		// original CodeRabbit clock and GitHub evidence separate in storage.
+		copy.RetryNotBefore = copy.hostedRetryNotBefore()
+		copy.SourceRetry = nil
+	} else if version != "4" && version != "6" {
 		copy.SourceRetry = nil
 	}
 	wait = &copy
@@ -53,6 +58,13 @@ type OperationWait struct {
 	BaselineAttemptID    string                `json:"baseline_attempt_id,omitempty"`
 	RetryNotBefore       string                `json:"retry_not_before,omitempty"`
 	Paused               bool                  `json:"paused"`
+}
+
+func (w *OperationWait) hostedRetryNotBefore() string {
+	if w.SourceRetry != nil && mustWaitTime(w.SourceRetry.RetryNotBefore).After(mustWaitTime(w.RetryNotBefore)) {
+		return w.SourceRetry.RetryNotBefore
+	}
+	return w.RetryNotBefore
 }
 
 func waitUnavailable() error {
@@ -92,6 +104,9 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		source, sourceErr := readSourceRetry(ctx, q, o)
 		if sourceErr != nil || source == nil {
 			return nil, sourceErr
+		}
+		if o.Channel == "hosted" {
+			return nil, waitUnavailable()
 		}
 		return &OperationWait{SourceRetry: source}, nil
 	}
@@ -154,6 +169,9 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)
 	if err != nil {
 		return nil, err
+	}
+	if o.Channel == "hosted" && result.SourceRetry != nil && !baseline.Valid {
+		return nil, waitUnavailable()
 	}
 	return &result, nil
 }
@@ -389,6 +407,9 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		receipt := OperationControlReceipt{ID: id, State: state, Revision: o.Revision + 1, Paused: paused}
 		if o.Wait != nil {
 			receipt.RetryNotBefore = o.Wait.RetryNotBefore
+			if o.Channel == "hosted" {
+				receipt.RetryNotBefore = o.Wait.hostedRetryNotBefore()
+			}
 		}
 		return receipt, nil
 	})

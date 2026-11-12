@@ -25,7 +25,7 @@ func TestCombinedWaitProjectionKeepsEveryLegacyBoundary(t *testing.T) {
 				if version != "5" {
 					expected.QueueAheadPullNumber = 0
 				}
-				if version != "4" && version != "6" {
+				if channel == "hosted" || version != "4" && version != "6" {
 					expected.SourceRetry = nil
 				}
 				if version != "3" && version != "5" && version != "6" {

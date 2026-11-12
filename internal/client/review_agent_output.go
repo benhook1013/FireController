@@ -53,7 +53,7 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 	}
 	var waitHint *ReviewOperationDiagnostic
 	if value.Wait != nil {
-		waitHint = operationWaitDiagnostic(value.Wait, value.Channel)
+		waitHint = operationWaitDiagnostic(value.Wait, value.Channel, value.Reason)
 		hint = waitHint
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
@@ -75,7 +75,8 @@ func AgentReviewOperationStatus(value ReviewOperationStatus) ReviewOperationStat
 			value.NextAction = "new_request_if_authorized"
 		}
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && waitHint != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
+	keepTimedWait := waitHint != nil && (value.queuedCause == "cooldown" && (value.Channel == "cli" || value.Reason == "source_rate_limit_wait") || value.Channel == "cli" && value.queuedCause == "cli_quota_wait")
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !keepTimedWait {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
@@ -117,7 +118,7 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	}
 	var waitHint *ReviewOperationDiagnostic
 	if value.Wait != nil {
-		waitHint = operationWaitDiagnostic(value.Wait, value.Channel)
+		waitHint = operationWaitDiagnostic(value.Wait, value.Channel, value.Reason)
 		hint = waitHint
 	}
 	if value.State == "held" && value.Reason == "predecessor_unfinished" {
@@ -135,7 +136,8 @@ func AgentReviewOperation(value ReviewOperation) ReviewOperationOutput {
 	if value.PendingEvidence != nil {
 		hint = pendingEvidenceDiagnostic(value.PendingEvidence)
 	}
-	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !(value.Channel == "cli" && waitHint != nil && (value.queuedCause == "cooldown" || value.queuedCause == "cli_quota_wait")) {
+	keepTimedWait := waitHint != nil && (value.queuedCause == "cooldown" && (value.Channel == "cli" || value.Reason == "source_rate_limit_wait") || value.Channel == "cli" && value.queuedCause == "cli_quota_wait")
+	if value.State == "queued" && value.queuedCause != "" && (value.Wait == nil || !value.Wait.Paused) && !keepTimedWait {
 		hint = queuedOperationDiagnostic(value.queuedCause, boundQueuedReservation(value.queuedReservation, value.ID, value.Channel))
 	}
 	if value.State == "queued" && value.deploymentDraining {
@@ -457,7 +459,13 @@ func parentUnavailableDiagnostic(refusal *ReviewSourceRefusal) *ReviewOperationD
 	return &ReviewOperationDiagnostic{explanation, "Inspect that base branch in its owning workflow; align or retarget it if its former parent merged. After the source is qualified, use a fresh key and current guards for the still-authorized review. No round reset or extra grant is required. Out-of-order requests still check the target's own parent."}
 }
 
-func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOperationDiagnostic {
+func operationWaitDiagnostic(w *ReviewOperationWait, channel, reason string) *ReviewOperationDiagnostic {
+	if channel == "hosted" && reason == "source_rate_limit_wait" && w.RetryNotBefore != "" {
+		if w.Paused {
+			return &ReviewOperationDiagnostic{"This Hosted request is paused after GitHub rate-limited source verification. Its retry deadline is retained.", "Resume or cancel this same queued request with its current revision. Resume preserves the retry deadline and comparison checks."}
+		}
+		return &ReviewOperationDiagnostic{"GitHub rate-limited source verification before review dispatch. The same Hosted request stays queued and can recheck at or after retry_not_before.", "Keep the original request queued. The controller rechecks the original comparison and current review allowance before dispatch."}
+	}
 	if w.SourceRetry != nil {
 		if w.Paused {
 			return &ReviewOperationDiagnostic{"This source-rate-limited request is paused before review dispatch. Its original provider deadline is retained.", "Resume or cancel this same queued request with its current revision. Resume cannot shorten the source deadline or bypass fresh source and authorization checks."}
