@@ -64,6 +64,14 @@ func resultWaitTransportError(err error, trace *resultWaitTransportTrace, starte
 	return &result
 }
 
+type tracedResultWaitError struct {
+	error
+	trace     *resultWaitTransportTrace
+	effective int
+}
+
+func (e *tracedResultWaitError) Unwrap() error { return e.error }
+
 // Keep instrumentation outside the reconnect policy and the request budgets.
 func resumeTracedResultWait(ctx context.Context, requested, seconds int, read func(context.Context, int) error) error {
 	started := time.Now()
@@ -73,10 +81,18 @@ func resumeTracedResultWait(ctx context.Context, requested, seconds int, read fu
 		attempts++
 		effective = remaining
 		trace = &resultWaitTransportTrace{}
-		return read(trace.context(ctx), remaining)
+		if err := read(trace.context(ctx), remaining); err != nil {
+			return &tracedResultWaitError{error: err, trace: trace, effective: remaining}
+		}
+		return nil
 	})
 	if err == nil {
 		return nil
+	}
+	// The reconnect policy can return an earlier read's error. A cancellation
+	// synthesized by that policy uses the most recent observed transport facts.
+	if selected, ok := err.(*tracedResultWaitError); ok {
+		err, trace, effective = selected.error, selected.trace, selected.effective
 	}
 	return resultWaitTransportError(err, trace, started, requested, effective, attempts)
 }

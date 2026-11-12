@@ -101,8 +101,10 @@ func TestCIWatchNotifiedReadContentionReauthorizesAndCleansUp(t *testing.T) {
 			go func() { v, err := f.e.WatchCI(ctx, scope, []CIWatchTarget{target}, wait); out <- ciWatchReply{v, err} }()
 			if phase != "zero_wait" {
 				ciWatchRegistered(t, s, 1)
-				release = holdCIWatchReadPool(t, f)
+				// The watch can reauthorize as soon as it registers. Sample
+				// before the fixture takes the sole connection.
 				initialWaitCount = f.store.DB().Stats().WaitCount
+				release = holdCIWatchReadPool(t, f)
 				notifyCIWatchRead(s)
 			}
 			if phase == "caller_cancel" || phase == "lifetime_cancel" {
