@@ -299,8 +299,9 @@ func TestCIWatchImplicitBaseLocalInterruptionsRequireExplicitRestart(t *testing.
 				ctx, cancel := context.WithCancelCause(t.Context())
 				defer cancel(nil)
 				ctx = ciWatchPhaseDeadlineContext{ctx}
+				c := newClient(t, service)
 				done := make(chan error, 1)
-				go func() { _, err := newClient(t, service).WatchCI(ctx, pins, 300); done <- err }()
+				go func() { _, err := c.WatchCI(ctx, pins, 300); done <- err }()
 				select {
 				case <-entered:
 				case <-time.After(5 * time.Second):
