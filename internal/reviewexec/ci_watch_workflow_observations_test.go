@@ -151,6 +151,7 @@ func TestCIWatchNonstrictHeadWorkflowAttentionPreservesBindings(t *testing.T) {
 	}
 	o.Actions.Runs = []reviewprovider.ActionsHeadRun{{ID: 100, WorkflowID: 10, CheckSuiteID: 1000, RunNumber: 1, RunAttempt: 2, RepositoryID: target.RepositoryID, Repository: target.Repository, HeadSHA: target.HeadSHA, Event: "pull_request", Status: "in_progress", CreatedAt: o.ObservedAt.Add(-time.Minute), UpdatedAt: o.ObservedAt}}
 	failure := reviewprovider.CIWorkflowFailure{WorkflowID: 10, RunID: 100, RunAttempt: 2, JobID: 1000, CheckRunID: 10000, Name: "Failed leaf", Conclusion: "failure"}
+	o.WorkflowAttempts = []reviewprovider.ActionsAttempt{ciWatchFailedAttempt(o.Actions.Runs[0], failure)}
 	before := encoded(o)
 	if rows := ciWatchValidatedWorkflowFailures(o, []int64{10}, []reviewprovider.CIWorkflowFailure{failure}); len(rows) != 1 || rows[0] != failure {
 		t.Fatal("proven non-strict head failure was discarded", rows)
