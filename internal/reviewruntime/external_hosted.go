@@ -68,6 +68,13 @@ func (r *hostedArchiveSource) SupportsCIWorkflowFailures() bool {
 	return ok || attention
 }
 
+func (r *hostedArchiveSource) SupportsCIWorkflowAttention() bool {
+	_, ok := r.provider.(interface {
+		ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
+	})
+	return ok
+}
+
 func (r *hostedArchiveSource) ObserveCIGateWithWorkflows(ctx context.Context, target reviewprovider.CITarget, gateRef string, ids []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	if reader, ok := r.provider.(interface {
 		ObserveCIGateWithWorkflows(context.Context, reviewprovider.CITarget, string, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
@@ -87,6 +94,9 @@ func (r *hostedArchiveSource) ObserveCIGateWithWorkflowAttention(ctx context.Con
 		ObserveCIGateWithWorkflowAttention(context.Context, reviewprovider.CITarget, string, []int64, []int64, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
 	}); ok {
 		return reader.ObserveCIGateWithWorkflowAttention(ctx, target, gateRef, ids, headIDs, historicalIDs)
+	}
+	if len(headIDs) > 0 || len(historicalIDs) > 0 {
+		return reviewprovider.CIObservation{}, nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "Advanced workflow attention is unavailable for this source adapter."}
 	}
 	return r.ObserveCIGateWithWorkflows(ctx, target, gateRef, ids)
 }
