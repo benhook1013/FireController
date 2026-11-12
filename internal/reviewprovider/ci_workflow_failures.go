@@ -225,6 +225,9 @@ func (g *GitHub) collectCIWorkflowAttention(ctx context.Context, target CITarget
 	}
 	if needsRecheck {
 		current, readErr := g.ActionsRunsForHead(ctx, actions.Repository, actions.RepositoryID, actions.HeadSHA)
+		if readErr == nil {
+			_, readErr = LatestActionsRuns(current)
+		}
 		kept := failures[:0]
 		for _, failure := range failures {
 			if readErr != nil && !headOnly && !fallback[failure.WorkflowID] || readErr == nil && sameCIWorkflowChain(actions, current, failure) {
