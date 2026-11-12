@@ -117,8 +117,8 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 		return lifecycleHintUnavailable()
 	}
 	e.lifecycleMu.RLock()
+	defer e.lifecycleMu.RUnlock()
 	s := e.lifecycleSchedule
-	e.lifecycleMu.RUnlock()
 	if s == nil || !e.lifecycleRunning.Load() {
 		if len(matches) == 0 {
 			return nil
