@@ -11,11 +11,21 @@ import (
 )
 
 func TestOperationListIndexBackupVersionsRemainReadOnly(t *testing.T) {
-	for _, version := range []string{"1", "2"} {
+	for _, version := range []string{"1", "2", "3"} {
 		t.Run(version, func(t *testing.T) {
 			store, dir := historyInventoryFixture(t)
 			if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
 				t.Fatal(err)
+			}
+			if version != "3" {
+				for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt"} {
+					if _, err := store.DB().Exec("DROP INDEX " + index); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_execution_indexes'`, version); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if version == "1" {
 				if err := store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {

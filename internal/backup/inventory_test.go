@@ -439,6 +439,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 		{"jobs", 1}, {"jobs", 2}, {"jobs", 3}, {"jobs", 4}, {"jobs", 5},
 		{"reviews", 1}, {"reviews", 2},
 		{"review_execution", 1}, {"review_execution", 2}, {"review_execution", 3}, {"review_execution", 4}, {"review_execution", 5},
+		{"review_execution", 6}, {"review_execution", 7}, {"review_execution", 8}, {"review_execution", 9},
 		{"review_evidence", 1}, {"review_evidence", 2}, {"review_adjudication", 1},
 		{"review_source_refresh", 1}, {"review_source_refresh", 2},
 	}
@@ -480,7 +481,53 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				// The independent original physical schema is already installed.
 
 			case "review_execution":
-				statements = []string{`DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`}
+
+				conn, err := store.DB().Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy := []string{`PRAGMA foreign_keys=OFF`}
+				if test.version < 9 {
+					legacy = append(legacy,
+						`DROP TABLE review_operation_waits`,
+						`CREATE TABLE review_execution_attempts_next(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE REFERENCES review_operations(id),project_id TEXT NOT NULL REFERENCES projects(id),provider TEXT NOT NULL,account TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,anchor_json TEXT NOT NULL,intent TEXT NOT NULL,external_id TEXT NOT NULL)`,
+						`INSERT INTO review_execution_attempts_next SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts`,
+						`DROP TABLE review_execution_attempts`,
+						`ALTER TABLE review_execution_attempts_next RENAME TO review_execution_attempts`,
+					)
+				}
+				legacy = append(legacy,
+					`CREATE TABLE review_execution_reservations_next(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`,
+					`INSERT INTO review_execution_reservations_next SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations`,
+					`DROP TABLE review_execution_reservations`,
+					`ALTER TABLE review_execution_reservations_next RENAME TO review_execution_reservations`,
+				)
+				if test.version < 7 {
+					legacy = append(legacy, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+				}
+				if test.version < 8 {
+					legacy = append(legacy, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+				}
+				legacy = append(legacy, `PRAGMA foreign_keys=ON`)
+				for _, statement := range legacy {
+					if _, err := conn.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(statement, err)
+					}
+				}
+				conn.Close()
+				// DROP TABLE removed its derived-proof triggers. Preserve the
+				// independently current comparison domain on this predecessor.
+				for _, statement := range reviewexec.ComparisonSchemaSQL() {
+					if strings.HasPrefix(statement, "CREATE TRIGGER ") {
+						if _, err := store.DB().Exec(strings.Replace(statement, "CREATE TRIGGER ", "CREATE TRIGGER IF NOT EXISTS ", 1)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				statements = nil
+				if test.version < 6 {
+					statements = append(statements, `DROP TABLE review_hosted_allowance_queries`, `DROP TABLE review_hosted_preflight`)
+				}
 				if test.version < 4 {
 					statements = append(statements, `DROP TABLE review_cli_preflight`)
 				}

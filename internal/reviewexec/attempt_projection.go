@@ -10,7 +10,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func probeAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
 		return err
@@ -61,9 +61,56 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 }
 
 func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool) (reviews.Receipt, error) {
-	operation, err := readOperation(ctx, tx, attempt.ProjectID, attempt.OperationID)
+	// Publication needs journal ownership, not optional allowance presentation.
+	// Damaged allowance evidence must not roll back a safe local hold.
+	operation, err := readOperationBase(ctx, tx, attempt.ProjectID, attempt.OperationID)
 	if err != nil {
 		return reviews.Receipt{}, err
+	}
+	if operation.AttemptID != attempt.ID {
+		// History may retain an unused preparation that detached before dispatch.
+		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			return reviews.Receipt{}, err
+		}
+		if !draft {
+			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				// The helper returns this error only for a missing or mismatched
+				// historical cooldown. Its storage lookup failures pass through.
+				if isWaitUnavailable(err) {
+					return reviews.Receipt{}, publicationConflict()
+				}
+				return reviews.Receipt{}, err
+			}
+			if operation.Channel == "cli" {
+				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Observation.Remaining != 0 {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			} else {
+				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Input.Observation.State != "cooldown_observed" {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			}
+		}
+		operation = original
 	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, publicationConflict()

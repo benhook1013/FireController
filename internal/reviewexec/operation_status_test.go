@@ -12,12 +12,15 @@ import (
 	"time"
 )
 
-func statusHTTP(t *testing.T, f *attemptFixture, id, query, prefer string) *httptest.ResponseRecorder {
+func statusHTTP(t *testing.T, f *attemptFixture, id, query, prefer string, waitVersion ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+id+"/status"+query, nil)
 	r.SetPathValue("project_id", attemptProject)
 	r.SetPathValue("operation_id", id)
 	r.Header.Set("Authorization", "Bearer "+f.reader)
+	if len(waitVersion) > 0 {
+		r.Header.Set(operationWaitHeader, waitVersion[0])
+	}
 	if prefer != "" {
 		r.Header.Set("Prefer", prefer)
 	}

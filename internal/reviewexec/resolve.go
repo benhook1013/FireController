@@ -153,3 +153,19 @@ func RecheckSource(ctx context.Context, reader TargetReader, repositoryID int64,
 func unavailableParentHold(pull reviewprovider.Pull) error {
 	return &core.Error{Code: "review_held", Message: "The checked PR base branch has no available open parent.", Status: 409, Details: map[string]string{"reason": "parent_unavailable", "pull_number": strconv.FormatInt(pull.Number, 10), "base_ref": pull.BaseRef}}
 }
+
+func obsoleteTargetReason(pull reviewprovider.Pull, repositoryID, number int64, head string) string {
+	if !sameTarget(pull, repositoryID, number) {
+		return ""
+	}
+	if pull.Merged {
+		return "target_merged"
+	}
+	if pull.State == "closed" {
+		return "target_closed"
+	}
+	if pull.State == "open" && pull.HeadSHA != head {
+		return "target_superseded"
+	}
+	return ""
+}

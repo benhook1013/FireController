@@ -2,38 +2,66 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
+	if _, err := retainedComparisonSchema(ctx, store.DB()); err != nil {
+		return err
+	}
 	if err := EnsurePolicySchema(ctx, store); err != nil {
 		return err
 	}
-	if err := store.EnsureSchema(ctx, "review_execution", []string{
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_execution", [][]string{{
 		`CREATE TABLE review_execution_config(project_id TEXT NOT NULL REFERENCES projects(id),revision INTEGER NOT NULL CHECK(revision>0),body_json TEXT NOT NULL,PRIMARY KEY(project_id,revision))`,
 		`CREATE TABLE review_operations(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),actor_id TEXT NOT NULL,worker_id TEXT NOT NULL,configuration_revision INTEGER NOT NULL,pull_number INTEGER NOT NULL,channel TEXT NOT NULL,head_sha TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,reason TEXT NOT NULL,attempt_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,FOREIGN KEY(project_id,configuration_revision) REFERENCES review_execution_config(project_id,revision))`,
 		`CREATE INDEX review_operations_pending ON review_operations(state,created_at,id)`,
 		`CREATE TABLE review_execution_attempts(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE REFERENCES review_operations(id),project_id TEXT NOT NULL REFERENCES projects(id),provider TEXT NOT NULL,account TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,anchor_json TEXT NOT NULL,intent TEXT NOT NULL,external_id TEXT NOT NULL)`,
 		`CREATE TABLE review_execution_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`,
 		`CREATE TABLE review_execution_transitions(attempt_id TEXT NOT NULL REFERENCES review_execution_attempts(id),revision INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,external_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(attempt_id,revision))`,
-	}, []string{`ALTER TABLE review_operations ADD COLUMN capability_fingerprint TEXT NOT NULL DEFAULT ''`}, []string{
+	}, {`ALTER TABLE review_operations ADD COLUMN capability_fingerprint TEXT NOT NULL DEFAULT ''`}, {
 		`ALTER TABLE review_operations ADD COLUMN policy_revision INTEGER NOT NULL DEFAULT 0`,
-	}, []string{
+	}, {
 		`CREATE TABLE review_cli_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`,
-	}, []string{
+	}, {
 		`CREATE INDEX review_operations_completed_comparison ON review_operations(project_id,channel,pull_number,id) WHERE state='completed'`,
 		`DROP INDEX review_operations_cli_admission`,
-	}, []string{
+	}, {
 		`CREATE TABLE review_hosted_preflight(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL)`,
 		`CREATE TABLE review_hosted_allowance_queries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),operation_id TEXT NOT NULL REFERENCES review_operations(id),capability_fingerprint TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision IN (1,2)),body_json TEXT NOT NULL)`,
-	}); err != nil {
+	}, {
+		`ALTER TABLE review_operations ADD COLUMN allow_out_of_order INTEGER NOT NULL DEFAULT 0 CHECK(allow_out_of_order IN (0,1))`,
+	}, {
+		`ALTER TABLE review_operations ADD COLUMN override_file_limit INTEGER NOT NULL DEFAULT 0 CHECK(override_file_limit IN (0,1))`,
+	}, {
+		`PRAGMA defer_foreign_keys=ON`,
+		`CREATE TABLE review_execution_attempts_next(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL REFERENCES review_operations(id),project_id TEXT NOT NULL REFERENCES projects(id),provider TEXT NOT NULL,account TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,anchor_json TEXT NOT NULL,intent TEXT NOT NULL,external_id TEXT NOT NULL)`,
+		`INSERT INTO review_execution_attempts_next SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts`,
+		`DROP TABLE review_execution_attempts`,
+		`ALTER TABLE review_execution_attempts_next RENAME TO review_execution_attempts`,
+		`CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id)`,
+		`CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active','uncertain')`,
+		`CREATE TABLE review_operation_waits(operation_id TEXT PRIMARY KEY REFERENCES review_operations(id),baseline_attempt_id TEXT REFERENCES review_execution_attempts(id),retry_not_before TEXT NOT NULL DEFAULT '',paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN(0,1)),CHECK((baseline_attempt_id IS NULL AND retry_not_before='') OR (baseline_attempt_id IS NOT NULL AND retry_not_before<>'')))`,
+	}, {
+		`CREATE TABLE review_execution_reservations_next(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class))`,
+		`INSERT INTO review_execution_reservations_next(provider,repository_id,pull_number,action_class,account,attempt_id) SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations`,
+		`DROP TABLE review_execution_reservations`,
+		`ALTER TABLE review_execution_reservations_next RENAME TO review_execution_reservations`,
+		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'`,
+		`CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='hosted'`,
+	}}, backfillExecutionSchema); err != nil {
 		return err
 	}
 	// Index maintenance has its own version so newer execution-table
 	// migrations retain their existing positions in deployed databases.
-	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}, []string{`CREATE INDEX review_operations_listing ON review_operations(project_id,created_at DESC,id DESC)`}); err != nil {
+	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}, []string{`CREATE INDEX review_operations_listing ON review_operations(project_id,created_at DESC,id DESC)`}, []string{
+		`CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`,
+		`CREATE INDEX review_transitions_exhaustion_time ON review_execution_transitions(rtrim(created_at,'Z') DESC,attempt_id,revision) WHERE state='held' AND reason='allowance_exhausted'`,
+		`CREATE INDEX review_transitions_exhaustion_attempt ON review_execution_transitions(attempt_id,rtrim(created_at,'Z')) WHERE state='held' AND reason='allowance_exhausted'`,
+	}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {
@@ -64,4 +92,57 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		return err
 	}
 	return EnsureSelectionSchema(ctx, store)
+}
+
+// Execution migration nine rebuilds attempts independently of the comparison
+// schema version. Restore its triggers in the same migration transaction even
+// when that separately versioned domain is already current.
+func backfillExecutionSchema(ctx context.Context, conn *sql.Conn) error {
+	if err := validateExecutionForeignKeys(ctx, conn); err != nil {
+		return err
+	}
+	comparisonExists, err := retainedComparisonSchema(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if comparisonExists {
+		for _, statement := range comparisonAttemptTriggerRepairSQL() {
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateExecutionForeignKeys(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	invalid := rows.Next()
+	rowErr := rows.Err()
+	closeErr := rows.Close()
+	if invalid {
+		return core.Fail("schema_invalid", "Execution migration found inconsistent retained references.", 500)
+	}
+	if rowErr != nil {
+		return rowErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	var enabled int
+	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&enabled); err != nil {
+		return err
+	}
+	if enabled != 1 {
+		return core.Fail("schema_invalid", "Execution migration requires enforced retained references.", 500)
+	}
+	// SQLite retains deferred violation bookkeeping from DROP of the original
+	// parent even when its replacement satisfies every child reference. Clear
+	// that bookkeeping only after checking all real constraints. Enforcement
+	// remains enabled throughout the exclusive migration and at commit.
+	_, err = conn.ExecContext(ctx, `PRAGMA defer_foreign_keys=OFF`)
+	return err
 }
