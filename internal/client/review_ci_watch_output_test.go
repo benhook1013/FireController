@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -118,14 +119,14 @@ func TestAgentCIWatchSeparatesWakeStateFromAllTargetsPassed(t *testing.T) {
 func TestAgentCIWatchUsesUnchangedValidatedReadTransport(t *testing.T) {
 	pins := ciWatchPins()[:1]
 	raw := client.CIWatchResult{ProjectID: "project-one", State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{{PullNumber: pins[0].PullNumber, HeadSHA: pins[0].HeadSHA, BaseSHA: pins[0].BaseSHA, State: "pending", Reason: "ci_merge_base_mismatch", Checks: []client.ReviewCIContext{}}}}
-	posts := 0
+	var posts atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-FC-CI-Watch", "change-v3")
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return
 		}
-		posts++
+		posts.Add(1)
 		body, err := io.ReadAll(r.Body)
 		var input struct {
 			Targets []client.CIWatchTarget `json:"targets"`
@@ -142,8 +143,8 @@ func TestAgentCIWatchUsesUnchangedValidatedReadTransport(t *testing.T) {
 		t.Fatal("strict typed read changed", value, err)
 	}
 	out := client.AgentCIWatch(value)
-	if posts != 1 || out.Targets[0].Phase != "observation_unproven" || out.Targets[0].Diagnostic == nil || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "reconcile the PR branch") {
-		t.Fatal("output adaptation requested extra reads or failed", out, posts)
+	if posts.Load() != 1 || out.Targets[0].Phase != "observation_unproven" || out.Targets[0].Diagnostic == nil || !strings.Contains(out.Targets[0].Diagnostic.NextAction, "reconcile the PR branch") {
+		t.Fatal("output adaptation requested extra reads or failed", out, posts.Load())
 	}
 }
 

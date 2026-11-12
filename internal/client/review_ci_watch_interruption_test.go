@@ -61,7 +61,7 @@ func TestCIWatchFitsRemainingBudgetAfterSetupWithoutChangingResults(t *testing.T
 				}
 				if r.Header.Get("Prefer") != "wait="+strconv.Itoa(tc.preference) {
 					t.Error("wait did not retain response headroom", r.Header.Get("Prefer"))
-					<-r.Context().Done()
+					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
 				write(w, 200, want)

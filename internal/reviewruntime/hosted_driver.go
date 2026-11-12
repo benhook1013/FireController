@@ -77,10 +77,10 @@ func NewHostedDriver(store *core.Store, engine *reviewexec.Engine, capability Op
 	capability.Channels = slices.Clone(capability.Channels)
 	settings := *capability.Hosted
 	capability.Hosted = &settings
-	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitHosted, prepared: map[string]*hostedPrepared{}}, nil
+	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitPreparation, prepared: map[string]*hostedPrepared{}}, nil
 }
 
-func waitHosted(ctx context.Context, duration time.Duration) error {
+func waitPreparation(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -200,7 +200,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
-			if err := retryHostedCooldownRetention(ctx, d.wait, func() error {
+			if err := retryAllowanceRetention(ctx, d.wait, func() error {
 				return RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture)
 			}); err != nil {
 				if retryableHostedRetention(err) || ctx.Err() != nil {
