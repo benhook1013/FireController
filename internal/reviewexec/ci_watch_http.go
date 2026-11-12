@@ -65,7 +65,10 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			FailureWorkflowIDs  json.RawMessage `json:"failure_workflow_ids,omitempty"`
 		} `json:"targets"`
 	}
-	if err = core.ReadJSON(w, r, &input); err != nil {
+	if err = readCIWatchBody(w, r, &input); err != nil {
+		if errors.Is(context.Cause(ctx), errResultWaitLifetime) {
+			err = resultWaitCanceled(ctx, "The CI watch was canceled while reading the request body.")
+		}
 		core.WriteError(w, err)
 		return
 	}
@@ -130,4 +133,20 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-FC-CI-Watch", "change-v3")
 	}
 	core.WriteJSON(w, http.StatusOK, result)
+}
+
+func readCIWatchBody(w http.ResponseWriter, r *http.Request, input any) error {
+	// A server-side socket read can outlive the watch context. Interrupt
+	// a stalled upload on cancellation without extending the server's deadline.
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(r.Context(), func() {
+		defer close(interrupted)
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	})
+	err := core.ReadJSON(w, r, input)
+	if !stop() {
+		// Finish the deadline update before the handler can release the connection.
+		<-interrupted
+	}
+	return err
 }
