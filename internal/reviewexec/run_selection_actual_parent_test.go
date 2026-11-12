@@ -81,9 +81,9 @@ func TestRunSelectionActualParentKeepsUnfinishedFindingLocal(t *testing.T) {
 			request, _ := selectionEnqueue(t, f, "mixed-selection", "cli", nil)
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, request.ID)
-			// The initial bounded metadata window may look ahead to PR4;
-			// reaching it later requires its own fresh comparison read.
-			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 2}
+			// Each candidate is read once. A true dependency also reads
+			// its parent comparison.
+			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 1}
 			if dependent {
 				wantCalls["parent:agent-a"] = 1
 			}

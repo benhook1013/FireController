@@ -40,8 +40,8 @@ func TestFrontsHTTPCorruptSourceObligationReturnsDiagnosticHold(t *testing.T) {
 	reader := &refreshTestReader{}
 	frontSelect(t, f, "front-before-source-corruption", "cli", reader)
 	selectionCalls := reader.calls.Load()
-	if selectionCalls != 3 {
-		t.Fatal("selection did not join its bounded two-PR window", selectionCalls)
+	if selectionCalls != 2 {
+		t.Fatal("selection fetched beyond its chosen PR", selectionCalls)
 	}
 	retainObligationSource(t, f, attemptProject, "front-source-importer", "front-source", strings.Repeat("c", 64), 0)
 	path := "/api/v1/projects/" + attemptProject + "/reviews/fronts"

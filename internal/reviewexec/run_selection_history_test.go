@@ -74,20 +74,15 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 				}
 				mu.Lock()
 				defer mu.Unlock()
-				// Each live draft ends ordered consumption. Its discarded
-				// lookahead must be reacquired, never reused as fresh authority.
-				for _, n := range queue {
-					want := 0
-					if n >= 50 && n <= 57 {
-						want = min(int(n-49), 4)
-					} else if n == 86 {
-						want = 1
-					}
-					if identities[n] != want {
-						t.Errorf("PR%d metadata reads = %d, want %d", n, identities[n], want)
+				// Successful lookahead is reused. A lookahead canceled by
+				// ordered consumption may need to be read again.
+				for n := int64(50); n <= 57; n++ {
+					maximum := min(int(n-49), 4)
+					if count := identities[n]; count < 1 || count > maximum {
+						t.Errorf("PR%d metadata reads = %d, want 1 to %d", n, count, maximum)
 					}
 				}
-				if len(identities) != 9 {
+				if len(identities) != 9 || identities[86] != 1 {
 					t.Error("unexpected source identities", identities)
 				}
 			}
@@ -115,7 +110,7 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 				return p, err
 			}}
 			choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-			if err != nil || choice.state != "selected" || choice.number != 86 || len(choice.prefix) != 86 || pulls.Load() != 27 || reader.calls.Load() != 28 {
+			if err != nil || choice.state != "selected" || choice.number != 86 || len(choice.prefix) != 86 || reader.calls.Load() != int64(pulls.Load())+1 {
 				t.Fatal(choice.state, choice.reason, choice.number, len(choice.prefix), pulls.Load(), reader.calls.Load(), err)
 			}
 			assertReads()
@@ -128,7 +123,7 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, receipt.ID)
 			frame, found, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, channel)
-			if err != nil || !found || got.State != "selected" || frame.complete || len(frame.prefix) != 86 || reader.calls.Load() != 28 || pulls.Load() != 27 {
+			if err != nil || !found || got.State != "selected" || frame.complete || len(frame.prefix) != 86 || reader.calls.Load() != int64(pulls.Load())+1 {
 				t.Fatal(got, frame.complete, len(frame.prefix), reader.calls.Load(), err)
 			}
 			assertReads()
@@ -143,7 +138,7 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 			if front.State != "ready" || front.PullNumber != 86 {
 				t.Fatal("skipped history hid actual front", front)
 			}
-			t.Logf("86 queued PRs: 49 merged + 28 paused read zero times; 9 live identities with bounded discarded lookahead + repository = %d provider calls", reader.calls.Load())
+			t.Logf("86 queued PRs: 49 merged + 28 paused read zero times; 9 live identities with bounded lookahead + repository = %d provider calls", reader.calls.Load())
 		})
 	}
 }
