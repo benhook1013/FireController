@@ -68,6 +68,7 @@ type lifecycleKey struct {
 	number  int64
 }
 type lifecycleDue struct {
+	hints                                                [2]lifecycleHint
 	checkedAt, successAt, ciCheckedAt, hostedCheckedAt   time.Time
 	ciError, hostedError                                 string
 	baseSHA, baseRef                                     string
@@ -75,6 +76,7 @@ type lifecycleDue struct {
 	next, ci, enrichmentNext                             time.Time
 	head                                                 string
 	ciHead, ciBaseSHA, ciBaseRef                         string
+	ciCommit                                             string
 	enrichmentHead, enrichmentBaseSHA, enrichmentBaseRef string
 	enrichmentError                                      string
 }
@@ -97,15 +99,24 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
-	startedAt time.Time
-	claim     chan struct{}
-	mu        sync.Mutex
-	lanes     [2]lifecycleLaneSchedule
-	due       map[lifecycleKey]lifecycleDue
-	accounts  map[string]lifecycleAccount
-	options   LifecycleSyncOptions
+	readers         map[string]TargetReader
+	watches         map[ciWatchKey]*ciWatchEntry
+	watchers        map[*ciWatchSubscription]bool
+	watchPrincipals map[string]int
+	watchTurn       bool
+	startedAt       time.Time
+	claim           chan struct{}
+	mu              sync.Mutex
+	lanes           [2]lifecycleLaneSchedule
+	due             map[lifecycleKey]lifecycleDue
+	accounts        map[string]lifecycleAccount
+	options         LifecycleSyncOptions
 }
 type lifecycleTarget struct {
+	watch              *ciWatchClaim
+	hintGeneration     uint64
+	forceCI            bool
+	ciOnly             bool
 	project, account   string
 	repository, number int64
 	configuration      Configuration
@@ -150,11 +161,13 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 		}
 		owned[id] = r
 	}
+	e.lifecycleMu.Lock()
 	if !e.lifecycleRunning.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
 		return nil, conflict()
 	}
 	s := newLifecycleSchedule(c)
-	e.lifecycleMu.Lock()
+	s.readers = owned
 	e.lifecycleSchedule = s
 	e.lifecycleMu.Unlock()
 	done := make(chan error, 1)
@@ -175,7 +188,17 @@ func (e *Engine) StartLifecycleSync(ctx context.Context, readers map[string]Targ
 				cancel()
 			}
 		}
+		e.lifecycleMu.Lock()
 		e.lifecycleRunning.Store(false)
+		e.lifecycleMu.Unlock()
+		s.mu.Lock()
+		for sub := range s.watchers {
+			select {
+			case sub.changed <- struct{}{}:
+			default:
+			}
+		}
+		s.mu.Unlock()
 		done <- first
 		close(done)
 	}()
@@ -222,7 +245,18 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 	}
 	s.mu.Lock()
 	last := s.lanes[lane].lastProject
+	watchFirst := lane == lifecycleEnrichment && s.watchTurn
 	s.mu.Unlock()
+	if watchFirst {
+		if target, err := e.claimCIWatch(ctx, readers, s); target != nil || err != nil {
+			if target != nil {
+				s.mu.Lock()
+				s.watchTurn = false
+				s.mu.Unlock()
+			}
+			return target, err
+		}
+	}
 	type project struct {
 		id                   string
 		revision, repository int64
@@ -312,6 +346,8 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		start := slices.Index(numbers, s.lanes[lane].lastPull[p.id]) + 1
 		var number int64
 		var due lifecycleDue
+		var hinted bool
+		var ordinaryDue bool
 		for offset := range len(numbers) {
 			n := numbers[(start+offset)%len(numbers)]
 			d := s.due[lifecycleKey{p.id, n}]
@@ -321,8 +357,12 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				next = d.enrichmentNext
 				changed = d.head != "" && (d.head != d.enrichmentHead || d.baseSHA != d.enrichmentBaseSHA || d.baseRef != d.enrichmentBaseRef)
 			}
-			if changed || !now.Before(next) {
+			hint := d.hints[lane]
+			eventDue := hint.wanted != hint.done && (hint.attemptAt.IsZero() || !now.Before(hint.attemptAt.Add(5*time.Second)))
+			if changed || !now.Before(next) || eventDue {
 				number, due = n, d
+				hinted = eventDue
+				ordinaryDue = changed || !now.Before(next)
 				break
 			}
 		}
@@ -338,7 +378,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			pins, err = reviews.PinSourceMetadata(ctx, tx, p.id, []int64{number})
 			if err == nil && len(pins) > 0 {
 				comparison, err = readLifecycleComparison(ctx, tx, p.id, number)
-				if _, ok := readers[p.config.CapabilityID].(ExternalHostedReader); err == nil && ok && lane == lifecycleEnrichment {
+				if _, ok := readers[p.config.CapabilityID].(ExternalHostedReader); err == nil && ok && lane == lifecycleEnrichment && !(hinted && !ordinaryDue) {
 					_, err = reviews.InitializeExternalHostedFrontier(ctx, tx, p.id, p.repository, number)
 					var refusal *core.Error
 					if errors.As(err, &refusal) && (refusal.Code == "observation_conflict" || refusal.Code == "validation_failed") {
@@ -367,6 +407,15 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 				s.holdStoredState(p.id, number, lane, lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, err)
 				s.mu.Lock()
 				s.lanes[lane].lastPull[p.id] = number
+				if hinted {
+					// This failed claim consumed only its selected hint. Leaving it
+					// pending would bypass the malformed target's retry cadence.
+					key := lifecycleKey{p.id, number}
+					current := s.due[key]
+					current.hints[lane].done = max(current.hints[lane].done, due.hints[lane].wanted)
+					current.hints[lane].attemptAt = now
+					s.due[key] = current
+				}
 				s.mu.Unlock()
 				continue
 			}
@@ -377,11 +426,52 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			continue
 		}
 		s.mu.Lock()
+		// The other lane may establish account cooldown while source pins are read.
+		now = s.options.Now()
+		if now.Before(s.accounts[account].until) {
+			s.mu.Unlock()
+			continue
+		}
+		if hinted && lane == lifecycleEnrichment && due.hints[lane].head != comparison.head {
+			// The CI event selected an older stored head. Do not spend reads on
+			// a later comparison merely because that event was queued first.
+			key := lifecycleKey{p.id, number}
+			current := s.due[key]
+			current.hints[lane].done = max(current.hints[lane].done, due.hints[lane].wanted)
+			s.due[key] = current
+			if !ordinaryDue {
+				s.mu.Unlock()
+				continue
+			}
+			hinted = false
+		}
+		generation := uint64(0)
+		if hinted {
+			generation = due.hints[lane].wanted
+			key := lifecycleKey{p.id, number}
+			current := s.due[key]
+			current.hints[lane].attemptAt = now
+			s.due[key] = current
+		}
 		s.lanes[lane].projects[p.id] = true
 		s.lanes[lane].accounts[account] = true
 		s.lanes[lane].lastPull[p.id] = number
+		if lane == lifecycleEnrichment {
+			// Idle workers cannot spend the next watch's turn while another
+			// claim owns its project/account. Only admitted work advances it.
+			s.watchTurn = true
+		}
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
+	}
+	if lane == lifecycleEnrichment && !watchFirst {
+		target, err := e.claimCIWatch(ctx, readers, s)
+		if target != nil {
+			s.mu.Lock()
+			s.watchTurn = false
+			s.mu.Unlock()
+		}
+		return target, err
 	}
 	return nil, nil
 }
@@ -414,6 +504,54 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	errorCode, delay := s.finishAccountLocked(target, providerErr, now)
+	interval = max(interval, delay)
+	// Merge only fields owned by this lane. The other lane may have completed
+	// after this target was claimed; copying its old due snapshot would lose it.
+	key := lifecycleKey{target.project, target.number}
+	due := s.due[key]
+	// A hint delivered while provider work runs has a later generation. Finish
+	// only the claimed generation, preserving that later request for another tick.
+	due.hints[target.lane].done = max(due.hints[target.lane].done, target.hintGeneration)
+	if target.lane == lifecycleMetadata {
+		due.checkedAt, due.lastErrorCode, due.next = now, errorCode, now.Add(interval)
+		if published {
+			due.successAt = target.due.successAt
+			due.head, due.baseSHA, due.baseRef = head, target.due.baseSHA, target.due.baseRef
+			if due.ciHead != head || due.ciBaseSHA != due.baseSHA || due.ciBaseRef != due.baseRef {
+				due.ciCommit = ""
+			}
+		}
+	} else {
+		if !target.ciOnly {
+			due.enrichmentNext = now.Add(interval)
+			due.enrichmentError = errorCode
+		}
+		// Consume only the scheduler comparison that caused this claim,
+		// including when nothing publishes. A newer comparison or webhook
+		// generation arriving in flight must remain eligible for its own turn.
+		due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = target.wakeComparison.head, target.wakeComparison.baseSHA, target.wakeComparison.baseRef
+		if published && ci {
+			due.ci = now.Add(s.options.CIInterval)
+			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
+			due.ciCommit = target.due.ciCommit
+			due.ciCheckedAt, due.ciError = target.due.ciCheckedAt, target.due.ciError
+		}
+		if published && !target.ciOnly && !target.due.hostedCheckedAt.IsZero() {
+			due.hostedCheckedAt, due.hostedError = target.due.hostedCheckedAt, target.due.hostedError
+		}
+	}
+	s.due[key] = due
+}
+
+func readLifecycleComparison(ctx context.Context, tx *sql.Tx, project string, number int64) (lifecycleComparison, error) {
+	var c lifecycleComparison
+	err := tx.QueryRowContext(ctx, `SELECT v.head_sha,v.base_sha,v.base_ref,v.state FROM review_current_pulls p JOIN review_pull_memberships m ON m.project_id=p.project_id AND m.number=p.number AND m.start_revision=p.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE p.project_id=? AND p.number=?`, project, number).Scan(&c.head, &c.baseSHA, &c.baseRef, &c.state)
+	return c, err
+}
+
+func (s *lifecycleSchedule) finishAccountLocked(target lifecycleTarget, providerErr error, now time.Time) (string, time.Duration) {
+	var delay time.Duration
 	a := s.accounts[target.account]
 	delete(s.lanes[target.lane].projects, target.project)
 	delete(s.lanes[target.lane].accounts, target.account)
@@ -431,43 +569,12 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 		a.lastErrorCode = errorCode
 		a.backoff = lifecycleProviderDelay(providerErr, a.backoff)
 		a.until = maxObservationTime(a.until, now.Add(a.backoff))
-		interval = max(interval, a.backoff)
+		delay = a.backoff
 	} else if !now.Before(a.until) {
 		a.lastErrorCode = ""
 		a.backoff = 0
 		a.until = time.Time{}
 	}
 	s.accounts[target.account] = a
-	// Merge only fields owned by this lane. The other lane may have completed
-	// after this target was claimed; copying its old due snapshot would lose it.
-	key := lifecycleKey{target.project, target.number}
-	due := s.due[key]
-	if target.lane == lifecycleMetadata {
-		due.checkedAt, due.lastErrorCode, due.next = now, errorCode, now.Add(interval)
-		if published {
-			due.successAt = target.due.successAt
-			due.head, due.baseSHA, due.baseRef = head, target.due.baseSHA, target.due.baseRef
-		}
-	} else {
-		due.enrichmentNext, due.enrichmentError = now.Add(interval), errorCode
-		// Consume the scheduler comparison that caused this claim even when
-		// collection could not publish. Reading current due here would swallow
-		// a newer metadata comparison that arrived while this read was in flight.
-		due.enrichmentHead, due.enrichmentBaseSHA, due.enrichmentBaseRef = target.wakeComparison.head, target.wakeComparison.baseSHA, target.wakeComparison.baseRef
-		if published && ci {
-			due.ci = now.Add(s.options.CIInterval)
-			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
-			due.ciCheckedAt, due.ciError = target.due.ciCheckedAt, target.due.ciError
-		}
-		if published && !target.due.hostedCheckedAt.IsZero() {
-			due.hostedCheckedAt, due.hostedError = target.due.hostedCheckedAt, target.due.hostedError
-		}
-	}
-	s.due[key] = due
-}
-
-func readLifecycleComparison(ctx context.Context, tx *sql.Tx, project string, number int64) (lifecycleComparison, error) {
-	var c lifecycleComparison
-	err := tx.QueryRowContext(ctx, `SELECT v.head_sha,v.base_sha,v.base_ref,v.state FROM review_current_pulls p JOIN review_pull_memberships m ON m.project_id=p.project_id AND m.number=p.number AND m.start_revision=p.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE p.project_id=? AND p.number=?`, project, number).Scan(&c.head, &c.baseSHA, &c.baseRef, &c.state)
-	return c, err
+	return errorCode, delay
 }

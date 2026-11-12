@@ -240,6 +240,46 @@ func TestLifecycleStoredStateHoldPreservesNewerComparison(t *testing.T) {
 	}
 }
 
+func TestLifecycleStoredStateHoldConsumesOnlySelectedHint(t *testing.T) {
+	for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
+		f, s, clock := lifecycleFixture(t)
+		admissionSQL(t, f, `UPDATE review_pull_versions SET metadata_json='{"is_draft":"bad"}' WHERE project_id=? AND number=2`, attemptProject)
+		key := lifecycleKey{attemptProject, 2}
+		d := s.due[key]
+		d.hints[lane].wanted = 2
+		d.hints[lane].head = strings.Repeat("a", 40)
+		s.due[key] = d
+		r := externalReader(externalSnapshot(0, strings.Repeat("a", 40)))
+		readers := map[string]TargetReader{"test-capability": r}
+		if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane); err != nil || target != nil {
+			t.Fatal(target, err)
+		}
+		first := s.due[key]
+		if first.hints[lane].done != 2 || first.hints[lane].attemptAt != clock.Now() {
+			t.Fatal("hold left old hint pending", first)
+		}
+		clock.Add(10 * time.Second)
+		if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane); err != nil || target != nil {
+			t.Fatal(target, err)
+		}
+		if got := s.due[key]; got.hints[lane].attemptAt != first.hints[lane].attemptAt {
+			t.Fatal("old hint bypassed hold cadence", got)
+		}
+		d = s.due[key]
+		d.hints[lane].wanted = 3
+		s.due[key] = d
+		if target, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane); err != nil || target != nil {
+			t.Fatal(target, err)
+		}
+		if got := s.due[key]; got.hints[lane].done != 3 || got.hints[lane].attemptAt != clock.Now() {
+			t.Fatal("later hint was swallowed", got)
+		}
+		if r.calls.Load() != 0 {
+			t.Fatal("invalid retained metadata reached provider")
+		}
+	}
+}
+
 func TestLifecycleInvalidProviderMetadataIsVisibleIsolatedAndRecovers(t *testing.T) {
 	for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {
 		for _, field := range []string{"title", "base_ref", "merged_at", "diff"} {
