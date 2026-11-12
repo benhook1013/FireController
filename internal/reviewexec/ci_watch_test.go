@@ -603,6 +603,15 @@ func TestCIWatchRegistrationSharesScheduleLifetimeFence(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("registration did not enter")
 	}
+	// Registration is known to be inside SupportsCIGate, so checking the
+	// lifetime lock here cannot pass merely because restart was not scheduled.
+	if f.e.lifecycleMu.TryLock() {
+		f.e.lifecycleMu.Unlock()
+		close(barrier.release)
+		cancel()
+		receiveCIWatch(t, out)
+		t.Fatal("registration did not hold the schedule lifetime read lock")
+	}
 	restarted := make(chan struct{})
 	go func() {
 		f.e.lifecycleMu.Lock()
@@ -613,20 +622,11 @@ func TestCIWatchRegistrationSharesScheduleLifetimeFence(t *testing.T) {
 		f.e.lifecycleMu.Unlock()
 		close(restarted)
 	}()
-	crossed := false
-	select {
-	case <-restarted:
-		crossed = true
-	case <-time.After(20 * time.Millisecond):
-	}
 	close(barrier.release)
 	select {
 	case <-restarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("restart remained blocked after registration")
-	}
-	if crossed {
-		t.Fatal("restart crossed the captured schedule registration")
 	}
 	s.mu.Lock()
 	for sub := range s.watchers {
