@@ -13,6 +13,7 @@ var hostedAddressedFooter = regexp.MustCompile(`^\n\n✅ Addressed in commit ([a
 
 // ExtractHostedFindingsWithBaseline permits only proven historical annotations
 // or positive submitted publication settlement alongside complete inventory.
+// A strictly attributed head-change refusal can settle without review credit.
 // Unrelated Bot reports use the canonical current-source actor policy.
 // The caller must independently bind baseline to its immutable complete
 // pre-POST capture and reject reused provider run UUIDs. Structural/timestamp
@@ -73,6 +74,12 @@ func ExtractHostedFindingsWithBaseline(snapshot, baseline HostedPublicationSnaps
 		return original, nil
 	}
 	fallback, fallbackErr := ExtractHostedFindings(projected, intent, postingActor, providerActor, earliestPosting)
+	// A timestamped head-change refusal proves termination without findings.
+	// Ignore baseline-proven old annotations only through the refusal time.
+	if fallbackErr == nil && fallback.Publication.State == "failed" && fallback.Reason == "hosted_review_skipped" &&
+		!fallback.Publication.FinishedAt.IsZero() && !lastOmitted.After(fallback.Publication.FinishedAt) {
+		return fallback, nil
+	}
 	if fallbackErr == nil && !fallback.Complete {
 		fallback = extractHostedSettledSubmission(projected, baseline, fallback, intent, postingActor, providerActor)
 	}

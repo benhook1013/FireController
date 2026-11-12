@@ -35,7 +35,7 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 		var project, actor, worker, credential, at string
 		var revision int64
 		var enabled, cliEnabled bool
-		if err = rows.Scan(&project, &revision, &enabled, &cliEnabled, &actor, &worker, &credential, &at); err != nil {
+		if err = scanSchedulingSnapshot(rows, &project, &revision, &enabled, &cliEnabled, &actor, &worker, &credential, &at); err != nil {
 			break
 		}
 		enabled = enabled || cliEnabled
@@ -60,7 +60,7 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	}
 	for rows.Next() {
 		var s PullScheduling
-		if err = rows.Scan(&s.ProjectID, &s.PullNumber, &s.Revision, &s.Paused, &s.Reason, &s.ActorID, &s.UpdatedAt); err != nil {
+		if err = scanSchedulingSnapshot(rows, &s.ProjectID, &s.PullNumber, &s.Revision, &s.Paused, &s.Reason, &s.ActorID, &s.UpdatedAt); err != nil {
 			break
 		}
 		if !identifier.MatchString(s.ProjectID) || s.PullNumber < 1 || s.PullNumber > 2147483647 || s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
@@ -101,7 +101,7 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	for rows.Next() {
 		var selection, project, basis, settled, pullBasis, actor, worker, credential string
 		var revision, pull int64
-		if err = rows.Scan(&selection, &project, &revision, &basis, &settled, &pull, &pullBasis, &actor, &worker, &credential); err != nil {
+		if err = scanSchedulingSnapshot(rows, &selection, &project, &revision, &basis, &settled, &pull, &pullBasis, &actor, &worker, &credential); err != nil {
 			return err
 		}
 		if !validRunID(selection) || !identifier.MatchString(project) || revision < 1 || !hash.MatchString(basis) || settled != "" && !hash.MatchString(settled) || pull < 0 || pull > 2147483647 || pull > 0 && !hash.MatchString(pullBasis) || !identifier.MatchString(actor) || !identifier.MatchString(worker) || !identifier.MatchString(credential) {
@@ -112,4 +112,43 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	return rows.Close()
+}
+
+// Preserve SQLite storage types before checking control and attribution values.
+// database/sql otherwise accepts conversions (notably BLOB to string) that the
+// live control readers deliberately reject. Genuine scan/query errors propagate.
+func scanSchedulingSnapshot(row interface{ Scan(...any) error }, destinations ...any) error {
+	values := make([]any, len(destinations))
+	pointers := make([]any, len(values))
+	for i := range values {
+		pointers[i] = &values[i]
+	}
+	if err := row.Scan(pointers...); err != nil {
+		return err
+	}
+	for i, destination := range destinations {
+		switch target := destination.(type) {
+		case *string:
+			value, ok := values[i].(string)
+			if !ok {
+				return schedulingUnavailable()
+			}
+			*target = value
+		case *int64:
+			value, ok := values[i].(int64)
+			if !ok {
+				return schedulingUnavailable()
+			}
+			*target = value
+		case *bool:
+			value, ok := values[i].(int64)
+			if !ok || value < 0 || value > 1 {
+				return schedulingUnavailable()
+			}
+			*target = value == 1
+		default:
+			return schedulingUnavailable()
+		}
+	}
+	return nil
 }

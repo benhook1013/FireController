@@ -50,7 +50,7 @@ candidates:
 	for _, id := range ids {
 		earlier, err := readOperation(ctx, tx, id.project, id.operation)
 		if err != nil {
-			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+			if isRetainedOperationDecodeError(err) || automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
 				continue candidates
 			}
 			return false, err
@@ -92,8 +92,13 @@ candidates:
 
 // A concurrently selected preferred project gets to finish its bounded source
 // check before a competing account claim. Held/finished selections do not block.
+// Match ordinary selection capacity: pending operations must be allowed to
+// drain when the preferred selection cannot create its child operation.
 func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operation, capability Capability) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)='benhook1013/firemud' AND s.project_id<>? ORDER BY s.created_at,s.id LIMIT 101`, o.ProjectID)
+	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)='benhook1013/firemud' AND s.project_id<>?
+ AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
+ AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
+ ORDER BY s.created_at,s.id LIMIT 101`, o.ProjectID, requestGlobalCapacity, requestProjectCapacity)
 	if err != nil {
 		return false, err
 	}

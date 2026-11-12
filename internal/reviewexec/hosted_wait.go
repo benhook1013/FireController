@@ -19,22 +19,24 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 // Version 3 adds the retained provider allowance estimate, never a retry clock.
 // Version 4 extends version 2 with source-retry evidence; it omits quota estimates.
 // Version 5 extends version 3 with accepted Hosted queue priority, not source retry.
+// Version 6 combines version 3 allowance estimates and version 4 source retry;
+// it does not include version 5 queue priority. Earlier versions stay unchanged.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" && version != "5" {
+	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" {
 		return nil
 	}
 	copy := *wait
 	if version != "5" {
 		copy.QueueAheadPullNumber = 0
 	}
-	if version != "4" {
+	if version != "4" && version != "6" {
 		copy.SourceRetry = nil
 	}
 	wait = &copy
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
-	if version != "3" && version != "5" {
+	if version != "3" && version != "5" && version != "6" {
 		copy := *wait
 		copy.CLIAllowance = nil
 		return &copy

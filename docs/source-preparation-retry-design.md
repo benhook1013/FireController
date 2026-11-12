@@ -24,6 +24,8 @@ The separate `review_source_retries` domain retains immutable per-attempt observ
 
 Wait protocol version 4 extends version 2 with `source_retry`, including the original attempt, observation time, absolute retry floor and sequence. It does not expose the private credential group or quota estimates. Earlier clients receive their existing wait shape and truthful queued state. Source timing is not placed in the existing Hosted-only compact cooldown field.
 
+Wait protocol version 6 combines version 3 retained `cli_allowance` estimates with version 4 `source_retry` evidence. The bound client requests version 6 and validates each optional field against its original channel, state and baseline. Neither field grants permission or turns an estimate into a retry clock. Version 6 omits version 5 queue-priority hints; the browser continues to request version 5. Versions 1–5 keep their original projections, and omitted optional facts remain absent when reading an older service. Strict unknown-field and malformed-value rejection remains unchanged.
+
 Matching backup helpers validate the new domain's inventory, ownership, unused-attempt history, clock ordering, retry bounds and absence of execution evidence. Export and inactive restore preserve original rows and timestamps. Older backup helpers must reject the unknown domain. Roll out the matching service and backup helpers together; do not bypass an older helper's compatibility refusal. New helpers continue to inspect prior snapshots without migrating them. Restore reconciliation validates source waits before abandoning queued work, and never authorizes provider release by itself.
 
 ## Proof boundary

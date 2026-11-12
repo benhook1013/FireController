@@ -30,7 +30,7 @@ func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, sc
 		return
 	}
 	cause, reservation := e.queuedDiagnosticDetails(r.Context(), scope, id, revision)
-	if (cause == "cli_quota_wait" || cause == "queue_order" && channel == "cli") && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" {
+	if (cause == "cli_quota_wait" || cause == "queue_order" && channel == "cli") && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" && r.Header.Get(operationWaitHeader) != "6" {
 		cause = "awaiting_scheduler"
 	}
 	if cause != "" {

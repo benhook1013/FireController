@@ -24,7 +24,7 @@ func TestSourceRetryNewClientReadsFullCompactWithoutQuotaClaim(t *testing.T) {
 				handshake(w)
 				return
 			}
-			if r.Header.Get("X-FC-Operation-Wait") != "4" {
+			if r.Header.Get("X-FC-Operation-Wait") != "6" {
 				t.Error("source wait not negotiated")
 			}
 			if compact {

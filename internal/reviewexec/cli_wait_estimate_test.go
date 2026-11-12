@@ -17,10 +17,10 @@ func TestCLIWaitEstimateProjectionPreservesBaselineAndVersionContract(t *testing
 	}
 	base := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
 	for _, path := range []string{base, base + "/status", "/api/v1/projects/" + attemptProject + "/reviews/rounds/progress?pull_numbers=2&view=stages"} {
-		for _, version := range []string{"1", "2", "3"} {
+		for _, version := range []string{"1", "2", "3", "4", "5", "6"} {
 			response := versionWaitRead(t, f, path, version)
 			contains := strings.Contains(response.Body.String(), `"cli_allowance"`)
-			if contains != (version == "3") {
+			if contains != (version == "3" || version == "5" || version == "6") {
 				t.Fatal("incorrect negotiated estimate projection", version, response.Body.String())
 			}
 		}

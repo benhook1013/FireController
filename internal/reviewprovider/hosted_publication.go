@@ -358,6 +358,10 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		result.State, result.Reason = "rate_limited", "hosted_review_rate_limited"
 		return result, nil
 	}
+	if refusedAt := publicationCommandRejected(snapshot, result, providerAuthor, closing, "Head commit changed."); !refusedAt.IsZero() {
+		result.State, result.Reason, result.FinishedAt = "failed", "hosted_review_skipped", refusedAt
+		return result, nil
+	}
 	if publicationSkipped(snapshot, result, providerAuthor, closing) {
 		result.State, result.Reason = "failed", "hosted_review_skipped"
 		return result, nil

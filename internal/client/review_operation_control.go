@@ -20,10 +20,11 @@ type ReviewSourceRetry struct {
 // ReviewOperationWait retains the same request while no provider action is running.
 // A retry deadline is the earliest automatic recheck, not a promised start time.
 type ReviewOperationWait struct {
-	SourceRetry       *ReviewSourceRetry `json:"source_retry,omitempty"`
-	BaselineAttemptID string             `json:"baseline_attempt_id,omitempty"`
-	RetryNotBefore    string             `json:"retry_not_before,omitempty"`
-	Paused            bool               `json:"paused"`
+	CLIAllowance      *ReviewAllowanceObservation `json:"cli_allowance,omitempty"`
+	SourceRetry       *ReviewSourceRetry          `json:"source_retry,omitempty"`
+	BaselineAttemptID string                      `json:"baseline_attempt_id,omitempty"`
+	RetryNotBefore    string                      `json:"retry_not_before,omitempty"`
+	Paused            bool                        `json:"paused"`
 }
 
 func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt string) bool {
@@ -32,6 +33,13 @@ func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt st
 	}
 	if state != "queued" || attempt != "" {
 		return false
+	}
+	if w.CLIAllowance != nil {
+		// Original exhausted baseline facts are not new quota or a retry clock.
+		baseline := ReviewOperation{Channel: channel, State: "held", Reason: "allowance_exhausted", AttemptID: w.BaselineAttemptID, Allowance: w.CLIAllowance}
+		if channel != "cli" || !validReviewAllowance(baseline) {
+			return false
+		}
 	}
 	if r := w.SourceRetry; r != nil {
 		observed, _ := time.Parse(time.RFC3339Nano, r.ObservedAt)

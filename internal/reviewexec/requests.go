@@ -268,13 +268,40 @@ func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (O
 	return o, err
 }
 
+// retainedOperationDecodeError is produced only by a destination scanner after
+// SQL has returned a value. Query, transaction and context errors never acquire
+// this classification, so priority can isolate corrupt candidates safely.
+type retainedOperationDecodeError struct{ error }
+
+func (e *retainedOperationDecodeError) Unwrap() error { return e.error }
+
+type operationValueScanner[T string | int64 | bool] struct{ destination *T }
+
+func (s operationValueScanner[T]) Scan(value any) error {
+	var decoded sql.Null[T]
+	if err := decoded.Scan(value); err != nil || !decoded.Valid {
+		return &retainedOperationDecodeError{core.Fail("storage_unavailable", "Stored review operation is unavailable.", 500)}
+	}
+	*s.destination = decoded.V
+	return nil
+}
+
+func operationValue[T string | int64 | bool](destination *T) sql.Scanner {
+	return operationValueScanner[T]{destination: destination}
+}
+
+func isRetainedOperationDecodeError(err error) bool {
+	var malformed *retainedOperationDecodeError
+	return errors.As(err, &malformed)
+}
+
 func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
 	var o Operation
 	orderColumn, limitColumn, err := operationFlagColumns(ctx, tx)
 	if err != nil {
 		return o, err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+`,`+limitColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt, &o.AllowOutOfOrder, &o.OverrideFileLimit)
+	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+`,`+limitColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(operationValue(&o.ID), operationValue(&o.ProjectID), operationValue(&o.ActorID), operationValue(&o.WorkerID), operationValue(&o.ConfigurationRevision), operationValue(&o.PolicyRevision), operationValue(&o.CapabilityFingerprint), operationValue(&o.PullNumber), operationValue(&o.Channel), operationValue(&o.HeadSHA), operationValue(&o.State), operationValue(&o.Revision), operationValue(&o.Reason), operationValue(&o.AttemptID), operationValue(&o.CreatedAt), operationValue(&o.UpdatedAt), operationValue(&o.AllowOutOfOrder), operationValue(&o.OverrideFileLimit))
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
 	}

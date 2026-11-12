@@ -195,14 +195,14 @@ func TestSourceRetryPauseCancelAndVersionedReaders(t *testing.T) {
 	f, r, now := sourceFixture(t)
 	scheduleSourceFixture(t, f, r, *now)
 	base := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + r.ID
-	for _, version := range []string{"", "1", "2", "3", "4"} {
+	for _, version := range []string{"", "1", "2", "3", "4", "5", "6"} {
 		for _, path := range []string{base, base + "/status"} {
 			response := versionWaitRead(t, f, path, version)
 			var op OperationStatus
 			if err := json.Unmarshal(response.Body.Bytes(), &op); err != nil {
 				t.Fatal(err)
 			}
-			if version == "4" {
+			if version == "4" || version == "6" {
 				if op.Wait == nil || op.Wait.SourceRetry == nil {
 					t.Fatal("new reader lost source floor")
 				}
@@ -461,6 +461,7 @@ func TestSourceRetryPreservesIndependentQuotaBaseline(t *testing.T) {
 	if retained.Wait == nil || retained.Wait.SourceRetry == nil || retained.Wait.BaselineAttemptID != a.ID || retained.Wait.RetryNotBefore != quota.Wait.RetryNotBefore || retained.Wait.CLIAllowance == nil {
 		t.Fatal("source wait overwrote quota evidence", retained)
 	}
+	assertCombinedRetainedWaitHTTP(t, f, retained)
 	baseline, err := f.e.RetryBaseline(t.Context(), attemptProject, a.OperationID)
 	if err != nil || baseline == nil {
 		t.Fatal("source wait lost original quota comparison", baseline, err)

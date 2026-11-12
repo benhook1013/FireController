@@ -2,6 +2,7 @@ package client
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,5 +19,17 @@ func TestSchedulingDiagnosticsPreserveRetainedFacts(t *testing.T) {
 	}
 	if schedulingDiagnostic("unknown") != nil {
 		t.Fatal("invented scheduling refusal")
+	}
+}
+
+func TestSchedulingDiagnosticExplainsInterruptedAuthorization(t *testing.T) {
+	diagnostic := schedulingDiagnostic("automation_authorization_changed")
+	for _, want := range []string{"Re-enabling scheduling does not resume", "Inspect this retained operation", "new authorized request", "original identity"} {
+		if diagnostic == nil || !strings.Contains(diagnostic.NextAction, want) {
+			t.Fatalf("missing continuity guidance %q: %+v", want, diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic.Explanation, "Automatic Hosted") {
+		t.Fatal("shared authorization diagnostic excluded CLI")
 	}
 }

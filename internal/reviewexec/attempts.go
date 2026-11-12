@@ -271,6 +271,15 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
 		}
+		// Preparation may have overlapped a PR pause or a withdrawal of the
+		// automatic intent's authority. Recheck in this admission transaction,
+		// before recording a possibly issued action.
+		if err := requirePullScheduling(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			return err
+		}
 		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
 			return err
 		}

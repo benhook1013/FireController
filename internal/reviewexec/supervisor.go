@@ -496,6 +496,11 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
 			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {
+				// Admit recorded no intent. Release only this unused attempt and
+				// retain the queued operation's original identity and wait state.
+				return e.finishPreparation(a, "held", refusal.Code)
+			}
 			// A protective source hold may arrive during successful preparation.
 			// Admit has refused before recording intent or invoking Dispatch, so
 			// settle this unused reservation through the normal held transition.

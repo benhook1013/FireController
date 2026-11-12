@@ -223,6 +223,13 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 		{"missing-credential", `UPDATE review_automatic_selections SET credential_id='credential_missing'`},
 		{"wrong-target", `UPDATE review_automatic_selections SET pull_number=99`},
 		{"future-control-revision", `UPDATE review_automatic_selections SET scheduling_revision=99`},
+		{"blob-pause-reason", `UPDATE review_pull_scheduling SET reason=CAST(reason AS BLOB)`},
+		{"blob-pause-actor", `UPDATE review_pull_scheduling SET actor_id=CAST(actor_id AS BLOB)`},
+		{"blob-pause-time", `UPDATE review_pull_scheduling SET updated_at=CAST(updated_at AS BLOB)`},
+		{"blob-control-time", `UPDATE review_scheduling SET updated_at=CAST(updated_at AS BLOB)`},
+		{"blob-attribution-basis", `UPDATE review_automatic_selections SET basis_sha256=CAST(basis_sha256 AS BLOB)`},
+		{"blob-attribution-settled", `UPDATE review_automatic_selections SET settled_basis_sha256=CAST(settled_basis_sha256 AS BLOB)`},
+		{"blob-attribution-pull-basis", `UPDATE review_automatic_selections SET pull_basis_sha256=CAST(pull_basis_sha256 AS BLOB)`},
 		{"invalid-basis", `UPDATE review_automatic_selections SET basis_sha256='` + strings.Repeat("z", 64) + `'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

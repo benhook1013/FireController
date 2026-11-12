@@ -84,8 +84,9 @@ func (e *Engine) automaticSourceRetryCandidate(ctx context.Context, tx *sql.Tx, 
 }
 
 // Recheck recovery fences during every admission snapshot, including after
-// source I/O. Revision >= 4 conservatively includes interrupted initial reads;
-// it never excludes a requeued terminal source hold (whose first claim is 5).
+// source I/O. Interrupted initial reads retain ordinary authorization continuity.
+// Completed source holds require the exact accepted scheduling revision even
+// after further interrupted reads; incomplete transition evidence is conservative.
 func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (string, error) {
 	if !validChannel(r.Channel) || r.Revision < 4 {
 		return "", nil
@@ -99,7 +100,13 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 		return "", err
 	}
 	if accepted != current {
-		return "automation_authorization_changed", nil
+		initial, err := automaticSourceInitialRead(ctx, tx, r)
+		if err != nil {
+			return "", err
+		}
+		if !initial {
+			return "automation_authorization_changed", nil
+		}
 	}
 	superseded, err := automaticSourceSuperseded(ctx, tx, r)
 	if err != nil {
@@ -109,6 +116,24 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 		return "selection_superseded", nil
 	}
 	return "", nil
+}
+
+// A revision alone cannot distinguish restart recovery from a completed hold.
+// Prove every retained transition was an unfinished read before relaxing the
+// exact-revision fence. A held event (whatever its reason), missing/duplicate
+// revision or malformed payload keeps that fence. Aggregate in SQL rather than
+// copying an unbounded event history into each admission snapshot.
+func automaticSourceInitialRead(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
+	var count, distinct, first, last, invalid int64
+	err := tx.QueryRowContext(ctx, `SELECT count(*),count(DISTINCT revision),COALESCE(min(revision),0),COALESCE(max(revision),0),COALESCE(sum(
+ CASE WHEN typeof(revision)='integer' AND json_valid(payload_json) THEN
+  CASE WHEN json_extract(payload_json,'$.state') IN ('queued','selecting') AND json_extract(payload_json,'$.reason')='' THEN 0 ELSE 1 END
+ ELSE 1 END),0)
+ FROM events WHERE project_id=? AND resource_id=? AND event_type='review.selection_updated' AND revision BETWEEN 2 AND ?`, r.ProjectID, r.ID, r.Revision).Scan(&count, &distinct, &first, &last, &invalid)
+	if err != nil {
+		return false, err
+	}
+	return count == r.Revision-1 && distinct == count && first == 2 && last == r.Revision && invalid == 0, nil
 }
 
 func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
