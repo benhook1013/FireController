@@ -20,7 +20,7 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 	var posts atomic.Int64
 	var setupStarted atomic.Pointer[time.Time]
 	preferences := make(chan string, 4)
-	readStarted := make(chan struct{}, 1)
+	readStarted := make(chan string, 1)
 	readDetached := make(chan struct{}, 1)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/reviews/requests") {
@@ -32,7 +32,7 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 			if !boundedReviewWait(r.Header.Get("Prefer"), 50, setupStarted.Load()) {
 				t.Error("operation wait was shortened beyond elapsed setup time")
 			}
-			readStarted <- struct{}{}
+			readStarted <- r.Header.Get("Prefer")
 		}
 		handler.ServeHTTP(w, r)
 		if waiting {
@@ -63,7 +63,11 @@ func TestReviewResultStdioWaitDoesNotBlockOtherToolsOrRetry(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-readStarted:
+	case preference := <-readStarted:
+		seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
+		if err != nil || seconds <= 5 || seconds > 50 {
+			t.Fatal("forwarded wait lost the caller budget or ordinary-deadline coverage", preference, err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("long review read did not start")
 	}
