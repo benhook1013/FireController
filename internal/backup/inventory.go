@@ -656,6 +656,23 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["project_management"] > 0 {
+		var statement string
+		if err := db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='table' AND name='grants'`).Scan(&statement); err != nil || historyDefinitionSQL(statement) != historyDefinitionSQL(`CREATE TABLE grants(credential_id TEXT NOT NULL REFERENCES credentials(id),project_id TEXT NOT NULL REFERENCES projects(id),can_read INTEGER NOT NULL CHECK(can_read IN(0,1)),can_write INTEGER NOT NULL CHECK(can_write IN(0,1)), can_manage INTEGER NOT NULL DEFAULT 0 CHECK(can_manage IN(0,1) AND (can_manage=0 OR (can_read=1 AND can_write=1))),PRIMARY KEY(credential_id,project_id))`) {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, invalid()
+		}
+	}
+	if versions["worker_retirements"] > 0 {
+		if err := validatePhysicalSchemaObjects(ctx, db, map[string]physicalSchemaObject{"worker_retirements": {"table", `CREATE TABLE worker_retirements(project_id TEXT NOT NULL REFERENCES projects(id),worker_id TEXT NOT NULL,retired_at TEXT NOT NULL,actor_id TEXT NOT NULL,PRIMARY KEY(project_id,worker_id),FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id))`}}, []string{"worker_retirements"}); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, err
+		}
+	}
 	if versions["review_execution"] >= 9 {
 		// Schema nine owns durable wait identity and paired retry state even
 		// when the bundle has no wait rows to exercise these constraints.

@@ -125,6 +125,16 @@ func TestProjectOwnerCLIHelpAndMalformedBeforeProfiles(t *testing.T) {
 		if code != 0 || stderr != "" || !strings.Contains(out, "documentation") {
 			t.Fatal(op, code, out, stderr)
 		}
+		if op[0] == "reviews" && op[1] == "policy-configure" {
+			var help struct {
+				FileExample struct {
+					ExpectedRevision *int64 `json:"expected_revision"`
+				} `json:"file_example"`
+			}
+			if err := json.Unmarshal([]byte(out), &help); err != nil || help.FileExample.ExpectedRevision == nil || *help.FileExample.ExpectedRevision != 0 || !strings.Contains(out, "reviews_policy_unconfigured") || !strings.Contains(out, "For replacement") {
+				t.Fatal("initial policy guidance missing", out, err)
+			}
+		}
 		if op[0] == "credentials" && op[1] == "grant" && (!strings.Contains(out, "32-256 printable nonspace ASCII bytes") || !strings.Contains(out, "surrounding whitespace is trimmed")) {
 			t.Fatal("credential-file bounds missing from local help", out)
 		}

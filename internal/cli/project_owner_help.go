@@ -20,8 +20,8 @@ func ownerManagementHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/review-controls.md"
 		out.Usage += " --file POLICY_JSON --key KEY"
 		out.Required = []string{"--file (owner-private absolute JSON path)", "--key KEY"}
-		out.FileExample = map[string]any{"expected_revision": 1, "required_channels": []string{"cli", "hosted"}, "max_review_files": 0}
-		out.Semantics = append(out.Semantics, "Project manager; full policy replacement. max_review_files zero disables the optional project ceiling; provider restrictions remain independent. Read reviews policy for current revision. Optional round_defaults provides hosted/cli objects with explicit minimum/maximum for newly initialized PR controls only. Omission uses product defaults; existing controls and taper are unchanged. See docs/review-round-controls.md. No review request.")
+		out.FileExample = map[string]any{"expected_revision": 0, "required_channels": []string{"cli", "hosted"}, "max_review_files": 0}
+		out.Semantics = append(out.Semantics, "Project manager; full policy replacement. max_review_files zero disables the optional project ceiling; provider restrictions remain independent. For initial configuration use expected_revision zero; reviews policy returns reviews_policy_unconfigured until configured. For replacement, read reviews policy for the current revision. Optional round_defaults provides hosted/cli objects with explicit minimum/maximum for newly initialized PR controls only. Omission uses product defaults; existing controls and taper are unchanged. See docs/review-round-controls.md. No review request.")
 	case "reviews execution-configure":
 		out.Usage += " --file CONFIG_JSON --key KEY"
 		out.Required = []string{"--file (owner-private absolute JSON path)", "--key KEY"}

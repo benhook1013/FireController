@@ -27,6 +27,7 @@ type administrationCancellationReader struct {
 
 func (r *administrationCancellationReader) interrupt(query string) {
 	match := r.phase == "project_management" && strings.HasPrefix(query, "SELECT COUNT(*) FROM grants WHERE typeof(can_manage)") || r.phase == "worker_retirements" && strings.Contains(query, "FROM worker_retirements r LEFT JOIN workers")
+	match = match || r.phase == "grants_schema" && strings.Contains(query, "FROM sqlite_schema WHERE type='table' AND name='grants'")
 	if match {
 		r.once.Do(func() { r.fired = true; r.cancel() })
 	}
@@ -36,6 +37,13 @@ func (r *administrationCancellationReader) QueryRowContext(ctx context.Context, 
 	return r.sqlReader.QueryRowContext(ctx, query, args...)
 }
 func (r *administrationCancellationReader) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if r.phase == "retirement_schema" && strings.Contains(query, "FROM sqlite_schema") {
+		for _, arg := range args {
+			if arg == "worker_retirements" {
+				r.once.Do(func() { r.fired = true; r.cancel() })
+			}
+		}
+	}
 	r.interrupt(query)
 	return r.sqlReader.QueryContext(ctx, query, args...)
 }
@@ -182,5 +190,32 @@ func TestAdministrationOperationCancellationIsUnavailableAndRetryable(t *testing
 				}
 			})
 		}
+	}
+}
+
+func TestAdministrationSchemaCancellationIsUnavailableAndRetryable(t *testing.T) {
+	for _, phase := range []string{"grants_schema", "retirement_schema"} {
+		t.Run(phase, func(t *testing.T) {
+			store, err := core.Open(t.Context(), filepath.Join(t.TempDir(), "source"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			before := backupRows(t, store.DB())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			reader := &administrationCancellationReader{sqlReader: store.DB(), cancel: cancel, phase: phase}
+			_, err = validateSchema(ctx, reader, false)
+			if !reader.fired || !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatal("selected schema query not interrupted", err)
+			}
+			backupCode(t, err, "backup_unavailable")
+			if !reflect.DeepEqual(before, backupRows(t, store.DB())) {
+				t.Fatal("schema validation changed source")
+			}
+			if _, err := validateSchema(t.Context(), store.DB(), false); err != nil {
+				t.Fatal("retry failed", err)
+			}
+		})
 	}
 }

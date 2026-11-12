@@ -96,3 +96,23 @@ func TestPresentationReplacementRequiresExplicitRevision(t *testing.T) {
 		}
 	}
 }
+
+func TestPresentationReplacementRejectsExplicitNullConfig(t *testing.T) {
+	for _, field := range []string{"name", "brand_name", "tagline", "headings", "theme"} {
+		t.Run(field, func(t *testing.T) {
+			config := map[string]any{"name": "Selected", field: nil}
+			raw, err := json.Marshal(map[string]any{"document": map[string]any{"expected_revision": 7, "presentation": config}, "idempotency_key": "chosen"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseExistingManagementArguments("presentation_replace", raw); err == nil {
+				t.Fatal("explicit null accepted", field)
+			}
+		})
+	}
+	raw := `{"document":{"expected_revision":7,"presentation":{"name":"Selected","brand_name":"Custom","tagline":"Custom tagline","headings":{},"theme":{}}},"idempotency_key":"chosen"}`
+	args, err := parseExistingManagementArguments("presentation_replace", []byte(raw))
+	if err != nil || args.presentation.ExpectedRevision != 7 || args.presentation.Presentation.BrandName != "Custom" {
+		t.Fatal("valid replacement changed", args, err)
+	}
+}
