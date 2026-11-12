@@ -490,6 +490,9 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				if test.version < 9 {
 					legacy = append(legacy,
 						`DROP TABLE review_operation_waits`,
+						`DROP INDEX review_transitions_exhaustion_time`,
+						`DROP INDEX review_transitions_exhaustion_attempt`,
+						`UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`,
 						`CREATE TABLE review_execution_attempts_next(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE REFERENCES review_operations(id),project_id TEXT NOT NULL REFERENCES projects(id),provider TEXT NOT NULL,account TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,anchor_json TEXT NOT NULL,intent TEXT NOT NULL,external_id TEXT NOT NULL)`,
 						`INSERT INTO review_execution_attempts_next SELECT id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts`,
 						`DROP TABLE review_execution_attempts`,

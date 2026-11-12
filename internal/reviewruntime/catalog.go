@@ -269,7 +269,10 @@ func readPrivateFile(path string, limit int64) ([]byte, string, error) {
 		return nil, "", err
 	}
 	before, err := os.Lstat(absolute)
-	if err != nil || !privateRegular(before) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(before) {
 		return nil, "", errors.New("file")
 	}
 	if before.Size() > limit {
@@ -281,19 +284,31 @@ func readPrivateFile(path string, limit int64) ([]byte, string, error) {
 	}
 	defer file.Close()
 	after, err := file.Stat()
-	if err != nil || !privateRegular(after) || !os.SameFile(before, after) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(after) || !os.SameFile(before, after) {
 		return nil, "", errors.New("file")
 	}
 	pathAfter, err := os.Lstat(absolute)
-	if err != nil || !privateRegular(pathAfter) || !os.SameFile(before, pathAfter) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(pathAfter) || !os.SameFile(before, pathAfter) {
 		return nil, "", errors.New("file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil || int64(len(data)) > limit {
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) > limit {
 		return nil, "", errors.New("large")
 	}
 	afterRead, err := file.Stat()
-	if err != nil || !privateRegular(afterRead) || !os.SameFile(before, afterRead) || afterRead.Size() > limit {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(afterRead) || !os.SameFile(before, afterRead) || afterRead.Size() > limit {
 		return nil, "", errors.New("file")
 	}
 	return data, absolute, nil

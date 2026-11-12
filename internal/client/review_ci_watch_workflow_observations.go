@@ -33,7 +33,7 @@ func validCIWatchWorkflowObservations(item CIWatchTargetResult, pin CIWatchTarge
 			return false
 		}
 		for _, failure := range item.WorkflowFailures {
-			if failure.WorkflowID == row.WorkflowID && (failure.RunID != row.RunID || failure.RunAttempt != row.RunAttempt) {
+			if failure.WorkflowID == row.WorkflowID && (failure.Basis != "" || failure.RunID != row.RunID || failure.RunAttempt != row.RunAttempt) {
 				return false
 			}
 		}

@@ -47,6 +47,10 @@ func TestCIWatchWorkflowRefusalsExplainInputRecovery(t *testing.T) {
 			if !errors.As(err, &failure) || failure.Code != test.code || failure.Status != test.status || failure.RequestID != "workflow-refusal" || posts.Load() != 1 {
 				t.Fatal("refusal changed identity or retried", err, posts.Load())
 			}
+			details, ok := failure.Details.(map[string]any)
+			if !ok || !reflect.DeepEqual(details["targets"], pins) {
+				t.Fatal("workflow refusal omitted the original target pins", failure.Details)
+			}
 			if !strings.Contains(failure.Action, test.guidance) || !strings.Contains(failure.Action, "PR/head/base pins") || !strings.Contains(failure.Action, "No automatic retry") {
 				t.Fatal("missing safe input-specific guidance or original pins", failure)
 			}
