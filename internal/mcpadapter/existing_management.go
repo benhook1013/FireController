@@ -124,6 +124,9 @@ func existingManagementDefinitions() []definition {
 }
 func parseExistingManagementArguments(name string, raw json.RawMessage) (*existingManagementArgs, error) {
 	spec, ok := existingManagementSpecFor(name)
+	if len(raw) == 0 {
+		raw = json.RawMessage("{}")
+	}
 	if !ok || len(raw) > (256<<10)+1024 || strictjson.Validate(raw) != nil {
 		return nil, invalidArguments()
 	}
