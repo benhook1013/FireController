@@ -76,6 +76,12 @@ func (c *Client) ControlReviewOperation(ctx context.Context, key, id string, v R
 	var out ReviewOperationControlReceipt
 	if err := c.requestBounded(ctx, http.MethodPost, c.projectPath("reviews", "operations", id, "control"), nil, true, key, body, http.StatusOK, true, &out, 16<<10, decodeReviewResponse); err != nil {
 		var failure *Error
+		if errors.As(err, &failure) && failure.Code == "review_conflict" && failure.Status == http.StatusConflict {
+			copy := *failure
+			copy.Message = "This operation's revision changed or cannot advance."
+			copy.Action = "Read this same operation's current state before deciding on a new control action; rereading cannot resolve a revision at the maximum value. To recover an unknown outcome, retain the original authenticated principal, project, worker, exact request body, operation ID and idempotency key rather than choosing a new action or key."
+			return ReviewOperationControlReceipt{}, &copy
+		}
 		if errors.As(err, &failure) && failure.Code == "review_operation_started" && failure.Status == http.StatusConflict {
 			copy := *failure
 			copy.Message = "This operation is no longer an undispatched queued request."

@@ -186,3 +186,60 @@ func TestReviewOperationControlActualWriterReadAndProjectIsolation(t *testing.T)
 		t.Fatal(done, err)
 	}
 }
+
+func TestReviewOperationControlConflictRecoveryIsExplicit(t *testing.T) {
+	id := "review_operation_" + strings.Repeat("a", 32)
+	for _, test := range []struct {
+		name, code string
+		status     int
+		revision   int64
+	}{
+		{"stale", "review_conflict", http.StatusConflict, 4},
+		{"exhausted", "review_conflict", http.StatusConflict, 9223372036854775807},
+		{"uncertain-server-error", "review_conflict", http.StatusInternalServerError, 4},
+		{"access-refusal", "forbidden", http.StatusForbidden, 4},
+		{"already-started", "review_operation_started", http.StatusConflict, 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				requests.Add(1)
+				body, _ := io.ReadAll(r.Body)
+				if r.Method != "POST" || r.URL.Path != "/api/v1/projects/project-one/reviews/operations/"+id+"/control" || r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("Idempotency-Key") != "original-control" || string(body) != `{"expected_revision":3,"action":"pause"}` {
+					t.Error("bound control request changed", r.URL, string(body))
+				}
+				write(w, test.status, map[string]any{"error": map[string]any{"code": test.code, "message": "Control refused.", "details": map[string]any{"current_revision": test.revision}}, "request_id": "request-control-conflict"})
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			_, err := c.ControlReviewOperation(t.Context(), "original-control", id, client.ReviewOperationControl{ExpectedRevision: 3, Action: "pause"})
+			checkError(t, err, test.code)
+			failure := err.(*client.Error)
+			if requests.Load() != 1 || failure.Status != test.status || failure.RequestID != "request-control-conflict" || failure.OutcomeUnknown != (test.status >= 500) {
+				t.Fatal("refusal lost status, identity, or single-shot outcome", failure, requests.Load())
+			}
+			if test.code == "review_conflict" && test.status == http.StatusConflict {
+				for _, fragment := range []string{"Read this same operation", "current state", "new control action", "maximum value", "unknown outcome", "original authenticated principal, project, worker, exact request body, operation ID and idempotency key"} {
+					if !strings.Contains(failure.Action, fragment) {
+						t.Errorf("conflict recovery omits %q: %s", fragment, failure.Action)
+					}
+				}
+				if strings.Contains(failure.Action, "current access") {
+					t.Fatal("revision conflict misdiagnosed as access refusal", failure)
+				}
+			} else if test.status >= 500 {
+				if strings.Contains(failure.Action, "new control action") || !strings.Contains(failure.Action, "same idempotency key") {
+					t.Fatal("uncertain outcome lost exact-key recovery", failure)
+				}
+			} else if test.code == "forbidden" && !strings.Contains(failure.Action, "current access") {
+				t.Fatal("unrelated access diagnostic changed", failure)
+			} else if test.code == "review_operation_started" && !strings.Contains(failure.Action, "No provider cancellation occurred") {
+				t.Fatal("issued-work refusal changed", failure)
+			}
+		})
+	}
+}

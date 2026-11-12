@@ -1,6 +1,8 @@
 package client_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -167,5 +169,139 @@ func TestWorkerArchiveAndSelectedAcknowledgementPreserveDefaultWire(t *testing.T
 	}
 	if requests.Load() != before {
 		t.Fatal("malformed operation sent")
+	}
+}
+
+func longRetirementBlockers(fill string) client.WorkerRetirementBlockers {
+	var groups [3]client.WorkerRetirementBlocker
+	for i := range groups {
+		groups[i].Count = (1 << 53) - 1
+		for j := 0; j < 20; j++ {
+			groups[i].IDs = append(groups[i].IDs, strings.Repeat(fill, 125/len(fill))+strings.Repeat("x", 125%len(fill))+fmt.Sprintf("%03d", j))
+		}
+	}
+	return client.WorkerRetirementBlockers{Jobs: groups[0], Notes: groups[1], Messages: groups[2]}
+}
+
+func TestWorkerRetirementLongBlockersRemainDefinitive(t *testing.T) {
+	for _, fill := range []string{"a", "<", "\"", "é"} {
+		t.Run(fmt.Sprintf("fill-%x", fill), func(t *testing.T) {
+			blocks := longRetirementBlockers(fill)
+			details, err := json.Marshal(blocks)
+			if err != nil || len(details) <= 4096 || len(details) > 48<<10 {
+				t.Fatal("fixture must exceed the ordinary detail budget within the bounded blocker envelope", len(details), err)
+			}
+			var calls atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				if r.Header.Get("X-FC-Worker") != "worker-one" {
+					t.Error("retirement selection changed actor")
+				}
+				if r.Method == "POST" {
+					body, _ := io.ReadAll(r.Body)
+					if string(body) != "{}" || r.Header.Get("Idempotency-Key") != "blocked-long" || r.URL.Path != "/api/v1/projects/project-one/workers/worker-target/retire" {
+						t.Error("retirement request identity changed")
+					}
+				}
+				write(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "worker_retirement_blocked", "message": "Clear blockers first.", "details": blocks}, "request_id": "request-long-blockers"})
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			for _, mutate := range []bool{false, true} {
+				var err error
+				if mutate {
+					_, err = c.RetireWorker(t.Context(), "blocked-long", "worker-target")
+				} else {
+					_, err = c.WorkerRetirement(t.Context(), "worker-target")
+				}
+				checkError(t, err, "worker_retirement_blocked")
+				failure := err.(*client.Error)
+				if failure.Status != http.StatusConflict || failure.OutcomeUnknown || failure.RequestID != "request-long-blockers" || !reflect.DeepEqual(failure.Details, blocks) {
+					t.Fatal("definitive refusal lost bounded blocker handles", failure)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatal("blocked retirement was retried or fanned out", calls.Load())
+			}
+		})
+	}
+}
+
+func TestWorkerRetirementErrorDetailBoundsStayStrict(t *testing.T) {
+	blocks := longRetirementBlockers("a")
+	encode := func(value any) string {
+		t.Helper()
+		b, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	valid := encode(blocks)
+	duplicate := longRetirementBlockers("a")
+	duplicate.Jobs.IDs[1] = duplicate.Jobs.IDs[0]
+	oversizedID := longRetirementBlockers("a")
+	oversizedID.Jobs.IDs[0] += "b"
+	extraID := longRetirementBlockers("a")
+	extraID.Jobs.IDs = append(extraID.Jobs.IDs, "extra")
+	sensitive := longRetirementBlockers("a")
+	sensitive.Jobs.IDs[0] = testToken
+	for _, test := range []struct {
+		name, code, details string
+		valid               bool
+	}{
+		{"ordinary-at-limit", "conflict", `"` + strings.Repeat("a", 4094) + `"`, true},
+		{"ordinary-over-limit", "conflict", `"` + strings.Repeat("a", 4095) + `"`, false},
+		{"other-code-blocker-shape", "conflict", valid, false},
+		{"blocker-over-envelope", "worker_retirement_blocked", `"` + strings.Repeat("a", 48<<10) + `"`, false},
+		{"transport-over-limit", "worker_retirement_blocked", `"` + strings.Repeat("a", 64<<10) + `"`, false},
+		{"unknown-blocker-field", "worker_retirement_blocked", strings.Replace(valid, `"jobs":{`, `"jobs":{"unknown":0,`, 1), false},
+		{"duplicate-blocker-field", "worker_retirement_blocked", strings.Replace(valid, `"jobs":{`, `"jobs":{"count":1,`, 1), false},
+		{"null-count", "worker_retirement_blocked", strings.Replace(valid, `"count":9007199254740991`, `"count":null`, 1), false},
+		{"unsafe-count", "worker_retirement_blocked", strings.Replace(valid, `9007199254740991`, `9007199254740992`, 1), false},
+		{"duplicate-id", "worker_retirement_blocked", encode(duplicate), false},
+		{"oversized-id", "worker_retirement_blocked", encode(oversizedID), false},
+		{"extra-id", "worker_retirement_blocked", encode(extraID), false},
+		{"sensitive-id", "worker_retirement_blocked", encode(sensitive), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				calls.Add(1)
+				write(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": test.code, "message": "Request refused.", "details": json.RawMessage(test.details)}, "request_id": "request-bounds"})
+			}))
+			defer service.Close()
+			c := newClient(t, service)
+			for _, mutate := range []bool{false, true} {
+				var err error
+				if mutate {
+					_, err = c.RetireWorker(t.Context(), "bounded-error", "worker-target")
+				} else {
+					_, err = c.WorkerRetirement(t.Context(), "worker-target")
+				}
+				want := "invalid_response"
+				if test.valid {
+					want = test.code
+				} else if mutate && test.name != "transport-over-limit" {
+					want = "unexpected_status"
+				}
+				checkError(t, err, want)
+				failure := err.(*client.Error)
+				if failure.OutcomeUnknown != (mutate && !test.valid) || failure.Details != nil {
+					t.Fatal("invalid detail or outcome escaped its bounds", failure)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatal("error was retried or fanned out", calls.Load())
+			}
+		})
 	}
 }

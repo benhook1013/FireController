@@ -634,7 +634,13 @@ func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
 		return invalidResponse(), false
 	}
 	details, err := json.Marshal(value.Error.Details)
-	if err != nil || len(details) > 4096 || c.hasSensitive(&value) {
+	if err != nil || c.hasSensitive(&value) {
+		return invalidResponse(), false
+	}
+	// Three groups of twenty 128-byte identities can exceed the ordinary
+	// detail budget. Allow only the validated blocker shape in a 48 KiB
+	// envelope, including worst-case six-byte JSON escapes per identity byte.
+	if len(details) > 4096 && (value.Error.Code != "worker_retirement_blocked" || len(details) > 48<<10 || safeWorkerRetirementBlockers(value.Error.Details) == nil) {
 		return invalidResponse(), false
 	}
 	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)

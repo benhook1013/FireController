@@ -62,3 +62,37 @@ func TestReviewManagementToolDescriptionsStateAuthority(t *testing.T) {
 		t.Fatalf("management tools missing from discovery: %v", want)
 	}
 }
+
+func TestPresentationReplacementRequiresExplicitRevision(t *testing.T) {
+	for name, document := range map[string]string{
+		"missing":          `{"presentation":{"name":"Selected"}}`,
+		"null":             `{"expected_revision":null,"presentation":{"name":"Selected"}}`,
+		"duplicate":        `{"expected_revision":0,"expected_revision":1,"presentation":{"name":"Selected"}}`,
+		"unknown":          `{"expected_revision":0,"unknown":true,"presentation":{"name":"Selected"}}`,
+		"mis-cased":        `{"Expected_Revision":0,"presentation":{"name":"Selected"}}`,
+		"string":           `{"expected_revision":"0","presentation":{"name":"Selected"}}`,
+		"negative":         `{"expected_revision":-1,"presentation":{"name":"Selected"}}`,
+		"fractional":       `{"expected_revision":0.5,"presentation":{"name":"Selected"}}`,
+		"exhausted":        `{"expected_revision":9223372036854775807,"presentation":{"name":"Selected"}}`,
+		"nested-unknown":   `{"expected_revision":0,"presentation":{"name":"Selected","unknown":true}}`,
+		"nested-duplicate": `{"expected_revision":0,"presentation":{"name":"Selected","name":"Other"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := `{"document":` + document + `,"idempotency_key":"chosen"}`
+			if _, err := parseExistingManagementArguments("presentation_replace", []byte(raw)); err == nil {
+				t.Fatal("malformed revision document accepted", document)
+			}
+		})
+	}
+	for _, revision := range []string{"0", "1", "9223372036854775806"} {
+		raw := `{"document":{"expected_revision":` + revision + `,"presentation":{"name":"Selected"}},"idempotency_key":"chosen"}`
+		args, err := parseExistingManagementArguments("presentation_replace", []byte(raw))
+		if err != nil || args == nil {
+			t.Fatal("explicit valid revision rejected", revision, err)
+		}
+		encoded, err := json.Marshal(args.presentation.ExpectedRevision)
+		if err != nil || string(encoded) != revision {
+			t.Fatal("explicit revision changed", revision, string(encoded), err)
+		}
+	}
+}

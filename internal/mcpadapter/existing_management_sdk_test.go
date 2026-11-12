@@ -117,3 +117,46 @@ func TestExistingManagementOfficialSDKBoundTransportAndPermissionRefusal(t *test
 		})
 	}
 }
+
+func TestPresentationReplacementRevisionGuardStaysLocal(t *testing.T) {
+	var calls, writes atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/instance" {
+			json.NewEncoder(w).Encode(map[string]string{"instance_id": "instance-one"})
+			return
+		}
+		writes.Add(1)
+		if r.Method != "PUT" || r.URL.Path != "/api/v1/projects/project-one/presentation" || r.Header.Get("Idempotency-Key") != "chosen" || r.Header.Get("X-FC-Worker") != "worker-one" {
+			t.Error("presentation request identity changed")
+		}
+		var body client.ReplacePresentationRequest
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.ExpectedRevision != 0 || body.Presentation.Name != "Selected" {
+			t.Error("explicit zero revision was not preserved")
+		}
+		core.WriteError(w, core.Fail("forbidden", "Project management is required.", http.StatusForbidden))
+	}))
+	defer service.Close()
+	binding := localContext()
+	binding.ServerURL = service.URL
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"alpha": binding}, credential(t)), "alpha")
+	for name, doc := range map[string]map[string]any{
+		"missing": {"presentation": map[string]any{"name": "Selected"}},
+		"null":    {"expected_revision": nil, "presentation": map[string]any{"name": "Selected"}},
+		"unknown": {"expected_revision": 0, "unknown": true, "presentation": map[string]any{"name": "Selected"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := calls.Load()
+			diagnosticResult(t, call(t, session, "presentation_replace", map[string]any{"document": doc, "idempotency_key": "chosen"}), "invalid_arguments", false)
+			if calls.Load() != before {
+				t.Fatal("invalid document performed service work", calls.Load()-before)
+			}
+		})
+	}
+	before := writes.Load()
+	diagnosticResult(t, call(t, session, "presentation_replace", map[string]any{"document": client.ReplacePresentationRequest{ExpectedRevision: 0, Presentation: client.PresentationConfig{Name: "Selected"}}, "idempotency_key": "chosen"}), "forbidden", false)
+	if writes.Load() != before+1 {
+		t.Fatal("explicit zero was rejected or automatically retried", writes.Load()-before)
+	}
+}

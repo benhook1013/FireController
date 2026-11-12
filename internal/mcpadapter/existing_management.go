@@ -229,6 +229,13 @@ func parseExistingManagementArguments(name string, raw json.RawMessage) (*existi
 	var err error
 	switch name {
 	case "presentation_replace":
+		var document map[string]json.RawMessage
+		if json.Unmarshal(in.Document, &document) != nil {
+			return nil, invalidArguments()
+		}
+		if revision, present := document["expected_revision"]; !present || bytes.Equal(bytes.TrimSpace(revision), []byte("null")) {
+			return nil, invalidArguments()
+		}
 		err = strictjson.Decode(in.Document, &a.presentation)
 		if err == nil {
 			err = client.ValidateReplacePresentationRequest(a.presentation)
