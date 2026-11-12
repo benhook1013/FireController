@@ -21,7 +21,7 @@ func TestResultWaitRestartCompletesOriginalInvocationThroughSDKAndCLI(t *testing
 	identity := localContext()
 	id := "review_operation_" + strings.Repeat("a", 32)
 	status := client.ReviewOperationStatus{ID: id, PullNumber: 2, Channel: "hosted", State: "completed", Revision: 4, Stage: "evidence_ready", AttemptID: "review_attempt_" + strings.Repeat("b", 32), EvidenceID: "review_evidence_" + strings.Repeat("c", 32), UpdatedAt: "2026-10-24T00:00:00Z", NextAction: "read_evidence"}
-	pins := []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("e", 40)}, {PullNumber: 7, HeadSHA: strings.Repeat("f", 40)}}
+	pins := []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("e", 40)}, {PullNumber: 7, HeadSHA: strings.Repeat("f", 40), BaseSHA: strings.Repeat("e", 40)}}
 	ci := client.CIWatchResult{ProjectID: identity.ProjectID, State: "passed", Targets: []client.CIWatchTargetResult{}}
 	for index, pin := range pins {
 		ci.Targets = append(ci.Targets, client.CIWatchTargetResult{PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "passed", BaseRef: "feature", GateRef: "main", ObservedHeadSHA: pin.HeadSHA, ObservedBaseSHA: strings.Repeat("e", 40), ObservedAt: status.UpdatedAt, CICommitSHA: pin.HeadSHA, Selection: "head", Required: 1, Satisfied: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: int64(index + 81), Status: "completed", Conclusion: "success"}}}})
@@ -91,7 +91,7 @@ func TestResultWaitRestartCompletesOriginalInvocationThroughSDKAndCLI(t *testing
 	}
 	out.Reset()
 	diag.Reset()
-	if code := cli.RunContext(t.Context(), []string{"--profiles-file", path, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + pins[0].HeadSHA + ":" + pins[0].BaseSHA, "--target", "7:" + pins[1].HeadSHA, "--wait-seconds", "10"}, nil, &out, &diag); code != 0 || diag.Len() != 0 || json.Unmarshal(out.Bytes(), &gotCI) != nil || !reflect.DeepEqual(gotCI, ci) {
+	if code := cli.RunContext(t.Context(), []string{"--profiles-file", path, "--profile", "chosen", "reviews", "ci-wait", "--target", "2:" + pins[0].HeadSHA + ":" + pins[0].BaseSHA, "--target", "7:" + pins[1].HeadSHA + ":" + pins[1].BaseSHA, "--wait-seconds", "10"}, nil, &out, &diag); code != 0 || diag.Len() != 0 || json.Unmarshal(out.Bytes(), &gotCI) != nil || !reflect.DeepEqual(gotCI, ci) {
 		t.Fatal("CLI CI invocation did not survive restart", code, out.String(), diag.String())
 	}
 	if len(counts) != 2 {

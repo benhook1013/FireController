@@ -68,7 +68,7 @@ func TestQueuePriorityWaitVersionsRemainOrthogonal(t *testing.T) {
 	source := &SourceRetry{}
 	allowance := &AllowanceObservation{}
 	original := &OperationWait{SourceRetry: source, CLIAllowance: allowance, QueueAheadPullNumber: 4}
-	v4 := operationWaitForResponse(original, "hosted", "4")
+	v4 := operationWaitForResponse(original, "cli", "4")
 	if v4.SourceRetry != source || v4.CLIAllowance != nil || v4.QueueAheadPullNumber != 0 {
 		t.Fatal("version 4 changed", v4)
 	}

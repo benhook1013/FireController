@@ -627,7 +627,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 					statements = append(statements, `DROP TABLE job_checkpoints`)
 				}
 			case "review_execution":
-				statements = []string{`DROP TABLE review_source_retries`, `DELETE FROM metadata WHERE key='schema:review_source_retries'`, `DROP TABLE review_operation_waits`}
+				statements = []string{`DROP TABLE review_source_retries`, `DELETE FROM metadata WHERE key='schema:review_source_retries'`, `DROP TABLE review_operation_waits; DROP INDEX review_transitions_exhaustion_time; DROP INDEX review_transitions_exhaustion_attempt; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`}
 				if test.version < 8 {
 					statements = append(statements, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
 				}

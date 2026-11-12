@@ -243,6 +243,7 @@ func TestRunSelectionContentionLocalReadRetainsSourceAndRechecksBinding(t *testi
 
 func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testing.T) {
 	f := selectionFixture(t)
+	f.e.runSourceBudget = time.Second
 	receipt, _ := selectionEnqueue(t, f, "prolonged-local-read", "cli", nil)
 	r, entered, release := selectionContentionReader()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -275,7 +276,7 @@ func TestRunSelectionContentionLocalReadBeyondSourceBudgetRetainsFacts(t *testin
 		conn.Close()
 		got := selectionContentionRead(t, f, receipt.ID)
 		t.Fatal("local read contention produced an early terminal selection", got, err)
-	case <-time.After(16 * time.Second):
+	case <-time.After(3 * time.Second):
 	}
 	var state, operation string
 	var revision int64

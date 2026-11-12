@@ -125,16 +125,17 @@ func (r *runReads) pullWindow(ctx context.Context, repo string, repositoryID int
 		break
 	}
 	workers.Wait()
-	results = results[:consumed]
 	for i, result := range results {
-		if result.err == nil {
+		// A successfully joined lookahead read is reusable only when the
+		// ordered walk later reaches that identity and checks local authority.
+		if result.err == nil && sameTarget(result.pull, repositoryID, numbers[i]) {
 			if r.pulls[repo] == nil {
 				r.pulls[repo] = map[int64]reviewprovider.Pull{}
 			}
 			r.pulls[repo][numbers[i]] = result.pull
 		}
 	}
-	return results
+	return results[:consumed]
 }
 
 func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
@@ -289,7 +290,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					// for speculative reads. Future control damage only stops
 					// lookahead; the ordered member retains its normal checks.
 					numbers := []int64{n}
-					for j := i + 1; j < min(i+4, len(queue)); j++ {
+					window := min(i+4, len(queue))
+					if len(queue) <= 2 {
+						window = i + 1
+					}
+					for j := i + 1; j < window; j++ {
 						next := queue[j]
 						if _, retained := history[next]; retained {
 							break
