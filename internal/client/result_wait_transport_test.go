@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptrace"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -89,4 +91,26 @@ func TestTracedResultWaitReportsFinalAttemptWithoutChangingReconnect(t *testing.
 	if effective, ok := facts["effective_wait_seconds"].(int); !ok || effective < 0 || effective >= 3 {
 		t.Fatal("effective wait not reduced", facts)
 	}
+}
+
+func TestTracedResultWaitKeepsFactsFromReturnedEarlierAttempt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		err := resumeTracedResultWait(t.Context(), 10, 1, func(ctx context.Context, seconds int) error {
+			hooks := httptrace.ContextClientTrace(ctx)
+			if seconds == 1 {
+				hooks.GotFirstResponseByte()
+				return &Error{Code: "connection_failed"}
+			}
+			hooks.GetConn("PRIVATE_ADDRESS")
+			return &Error{Code: "service_unavailable", Status: http.StatusServiceUnavailable}
+		})
+		failure, ok := err.(*Error)
+		if !ok || failure.Code != "connection_failed" {
+			t.Fatal("changed reconnect policy", err)
+		}
+		facts := failure.Details.(map[string]any)["transport"].(map[string]any)
+		if facts["phase"] != "response_started" || facts["effective_wait_seconds"] != 1 || facts["attempt_count"] != 2 {
+			t.Fatal("reported retry transport facts on the earlier error", facts)
+		}
+	})
 }
