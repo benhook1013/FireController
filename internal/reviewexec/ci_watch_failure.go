@@ -14,10 +14,11 @@ func ciWatchRequiredFailure(o reviewprovider.CIObservation) bool {
 	if o.State != "unproven" || o.Reason != "ci_required_checks_unproven" || o.Assessment.State != o.State || o.Assessment.Reason != o.Reason || o.Selection == "" || o.Results == nil || o.Actions == nil || o.Attempts == nil {
 		return false
 	}
-	// Unproven observations may retain incomplete candidate facts. Require the
-	// same complete comparison binding used for ordinary non-unproven results.
+	// Require the same comparison binding used for ordinary non-unproven
+	// results, including positively bound head CI under non-strict authority.
 	c, target := o.Candidate, o.Target
-	if c == nil || c.State != "complete" || c.RepositoryID != target.RepositoryID || !strings.EqualFold(c.Repository, target.Repository) || c.PullNumber != target.PullNumber || c.HeadSHA != target.HeadSHA || c.BaseSHA != target.BaseSHA || c.BaseRef != target.BaseRef || c.MergeState != o.MergeState {
+	nonstrictHead := c != nil && o.MergeState == "unproven" && o.Selection == "head" && o.SelectedCommitSHA == target.HeadSHA && o.TestMergeResults == nil && reviewprovider.NonstrictHeadCICandidate(*c, target, o.Authority)
+	if c == nil || c.State != "complete" && !nonstrictHead || c.RepositoryID != target.RepositoryID || !strings.EqualFold(c.Repository, target.Repository) || c.PullNumber != target.PullNumber || c.HeadSHA != target.HeadSHA || c.BaseSHA != target.BaseSHA || c.BaseRef != target.BaseRef || c.MergeState != o.MergeState {
 		return false
 	}
 	for _, check := range o.Assessment.Checks {

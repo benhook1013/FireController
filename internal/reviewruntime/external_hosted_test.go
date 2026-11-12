@@ -63,6 +63,9 @@ func TestExternalHostedReaderPreservesOptionalCIObserver(t *testing.T) {
 	reader := f.hosted.HostedObservationReader().(interface {
 		ObserveRequiredCI(context.Context, reviewprovider.CITarget) (reviewprovider.CIObservation, error)
 	})
+	if reader.(interface{ SupportsCIGate() bool }).SupportsCIGate() {
+		t.Fatal("base-only CI provider advertised distinct gate")
+	}
 	got, err := reader.ObserveRequiredCI(t.Context(), reviewprovider.CITarget{})
 	if err != nil || p.calls != 1 || got.State != "unproven" {
 		t.Fatal("CI adapter lost", got, err)
@@ -88,6 +91,9 @@ func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
 	reader := f.hosted.HostedObservationReader().(interface {
 		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
 	})
+	if !reader.(interface{ SupportsCIGate() bool }).SupportsCIGate() {
+		t.Fatal("gate provider not advertised")
+	}
 	target := reviewprovider.CITarget{BaseRef: "stack/parent"}
 	got, err := reader.ObserveCIGate(t.Context(), target, "develop")
 	if err != nil || p.gate != "develop" || p.target != target || got.Target != target {
@@ -109,6 +115,9 @@ func TestExternalHostedReaderPreservesDistinctCIGate(t *testing.T) {
 func TestExternalHostedReaderDoesNotAdvertiseUnsupportedCI(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	reader := f.hosted.HostedObservationReader()
+	if reader.(interface{ SupportsCIGate() bool }).SupportsCIGate() {
+		t.Fatal("unsupported gate advertised")
+	}
 	if _, ok := reader.(hostedCIReader); ok {
 		t.Fatal("unsupported CI must follow the observer's local ci_reader_unavailable path, not account backoff")
 	}
@@ -134,7 +143,7 @@ func (p *externalAttentionOnlyProvider) ObserveCIGateWithWorkflowAttention(ctx c
 func TestExternalHostedReaderSupportsAttentionOnlyProvider(t *testing.T) {
 	p := &externalAttentionOnlyProvider{externalGateProvider: &externalGateProvider{}}
 	r := &hostedArchiveSource{provider: p}
-	if !r.SupportsCIWorkflowFailures() {
+	if !r.SupportsCIWorkflowFailures() || !r.SupportsCIGate() {
 		t.Fatal("attention-only capability rejected")
 	}
 	target := reviewprovider.CITarget{BaseRef: "stack/parent"}

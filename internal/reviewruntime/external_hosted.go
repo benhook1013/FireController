@@ -42,6 +42,13 @@ func (r *hostedArchiveCISource) ObserveRequiredCI(ctx context.Context, target re
 	return r.ci.ObserveRequiredCI(ctx, target)
 }
 
+func (r *hostedArchiveSource) SupportsCIGate() bool {
+	_, ok := r.provider.(interface {
+		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
+	})
+	return ok
+}
+
 func (r *hostedArchiveSource) ObserveCIGate(ctx context.Context, target reviewprovider.CITarget, gateRef string) (reviewprovider.CIObservation, error) {
 	if reader, ok := r.provider.(interface {
 		ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)

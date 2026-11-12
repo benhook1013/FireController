@@ -134,7 +134,7 @@ func (g *GitHub) collectCIWorkflowAttention(ctx context.Context, target CITarget
 	}
 	latest, latestErr := LatestActionsRuns(actions)
 	if latestErr != nil {
-		return observation, failures, nil
+		return observation, failures, &CIWorkflowAttentionError{Cause: latestErr}
 	}
 	attempts := append([]ActionsAttempt(nil), observation.Attempts...)
 	fallback := map[int64]bool{}
@@ -147,62 +147,78 @@ func (g *GitHub) collectCIWorkflowAttention(ctx context.Context, target CITarget
 		}
 		return kept
 	}
-	for _, newest := range latest.Runs {
-		if !wanted[newest.WorkflowID] {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
-		}
-		runs := ciWorkflowRuns(actions, newest.WorkflowID)
-		var historical CIWorkflowFailure
-		provenWorkflow := false
-		for index, run := range runs {
-			var attempt ActionsAttempt
-			matches := 0
-			for _, retained := range attempts {
-				if matchingCIWorkflowAttempt(run, retained) {
-					attempt, matches = retained, matches+1
+	// Collect each selected latest run (and its direct failure) before any
+	// older skipped-run chain can spend the remaining shared attempt budget.
+	for _, history := range []bool{false, true} {
+		for _, newest := range latest.Runs {
+			if !wanted[newest.WorkflowID] {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
+			}
+			runs := ciWorkflowRuns(actions, newest.WorkflowID)
+			if history {
+				_, proven, canExtend := ciWorkflowFailureThroughSkips(runs[:1], attempts)
+				if proven || !canExtend {
+					continue
+				}
+			} else {
+				runs = runs[:1]
+			}
+			var historical CIWorkflowFailure
+			provenWorkflow := false
+			for index, run := range runs {
+				if history && index == 0 {
+					continue
+				}
+				var attempt ActionsAttempt
+				matches := 0
+				for _, retained := range attempts {
+					if matchingCIWorkflowAttempt(run, retained) {
+						attempt, matches = retained, matches+1
+					}
+				}
+				if matches > 1 {
+					break
+				}
+				if matches == 0 {
+					if len(attempts) >= 32 {
+						return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: ErrCIWorkflowAttemptLimit}
+					}
+					attempt, err = g.CurrentActionsAttempt(ctx, actions.Repository, actions.HeadSHA, run.CheckSuiteID)
+					if err != nil {
+						return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
+					}
+					attempts = append(attempts, attempt)
+					observation.WorkflowAttempts = append(observation.WorkflowAttempts, attempt)
+				}
+				if !validCIWorkflowJobs(run, attempt) {
+					break
+				}
+				failure, proven, canExtend := ciWorkflowFailureThroughSkips(runs[:index+1], attempts)
+				if proven {
+					provenWorkflow = true
+					failures = append(failures, failure)
+					fallback[failure.WorkflowID] = index > 0
+					break
+				}
+				if historicalWanted[run.WorkflowID] && attentionHead == target.HeadSHA && historical.JobID == 0 {
+					if candidate, ok := ciWorkflowHistoricalFailure(runs[:index+1], attempts); ok {
+						historical = candidate
+					}
+				}
+				if !canExtend {
+					break
 				}
 			}
-			if matches > 1 {
-				break
+			if !provenWorkflow && historical.JobID != 0 {
+				failures = append(failures, historical)
+				fallback[historical.WorkflowID] = true
 			}
-			if matches == 0 {
-				if len(attempts) >= 32 {
-					return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: ErrCIWorkflowAttemptLimit}
-				}
-				attempt, err = g.CurrentActionsAttempt(ctx, actions.Repository, actions.HeadSHA, run.CheckSuiteID)
-				if err != nil {
-					return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
-				}
-				attempts = append(attempts, attempt)
-				observation.WorkflowAttempts = append(observation.WorkflowAttempts, attempt)
-			}
-			if !validCIWorkflowJobs(run, attempt) {
-				break
-			}
-			failure, proven, canExtend := ciWorkflowFailureThroughSkips(runs[:index+1], attempts)
-			if proven {
-				provenWorkflow = true
-				failures = append(failures, failure)
-				fallback[failure.WorkflowID] = index > 0
-				break
-			}
-			if historicalWanted[run.WorkflowID] && attentionHead == target.HeadSHA && historical.JobID == 0 {
-				if candidate, ok := ciWorkflowHistoricalFailure(runs[:index+1], attempts); ok {
-					historical = candidate
-				}
-			}
-			if !canExtend {
-				break
-			}
-		}
-		if !provenWorkflow && historical.JobID != 0 {
-			failures = append(failures, historical)
-			fallback[historical.WorkflowID] = true
 		}
 	}
+
 	needsRecheck := headOnly && len(failures) > 0
 	for _, older := range fallback {
 		needsRecheck = needsRecheck || older
@@ -409,15 +425,19 @@ func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailu
 	if err != nil {
 		return false
 	}
+	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
 	for _, run := range latest.Runs {
 		if failure.Basis == "" && !headOnly && run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
-			return run.RepositoryID == observation.Target.RepositoryID && run.HeadSHA == observation.SelectedCommitSHA
+			if observation.WorkflowActions != nil && !sameCIWorkflowChain(*actions, *observation.WorkflowActions, failure) {
+				return false
+			}
+			actual, proven, _ := ciWorkflowFailureThroughSkips([]ActionsHeadRun{run}, attempts)
+			return proven && actual == failure
 		}
 	}
 	if observation.WorkflowActions == nil || !sameCIWorkflowChain(*actions, *observation.WorkflowActions, failure) {
 		return false
 	}
-	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
 	if failure.Basis == CIWorkflowHistoricalBasis {
 		if actions.HeadSHA != observation.Target.HeadSHA {
 			return false

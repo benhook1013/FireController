@@ -139,3 +139,64 @@ func TestCIWatchFallbackOmitsWholeDetailGroupOnlyForAffectedSubscriber(t *testin
 		t.Fatal("one subscriber's omission erased another subscriber's latest facts", other)
 	}
 }
+
+func TestCIWatchNonstrictHeadWorkflowAttentionPreservesBindings(t *testing.T) {
+	target := reviewprovider.CITarget{RepositoryID: 801, Repository: "owner/repo", PullNumber: 42, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main"}
+	o := sourceCITestObservation(target, "pending")
+	o.MergeState = "unproven"
+	o.Candidate.State, o.Candidate.Reason, o.Candidate.MergeState = "unproven", "ci_merge_base_mismatch", "unproven"
+	o.Candidate.MergeBaseMismatch = &reviewprovider.CIMergeBaseMismatch{PRBaseSHA: target.BaseSHA, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: target.BaseSHA}
+	if !reviewprovider.NonstrictHeadCICandidate(*o.Candidate, target, o.Authority) {
+		t.Fatal("fixture does not establish non-strict head CI")
+	}
+	o.Actions.Runs = []reviewprovider.ActionsHeadRun{{ID: 100, WorkflowID: 10, CheckSuiteID: 1000, RunNumber: 1, RunAttempt: 2, RepositoryID: target.RepositoryID, Repository: target.Repository, HeadSHA: target.HeadSHA, Event: "pull_request", Status: "in_progress", CreatedAt: o.ObservedAt.Add(-time.Minute), UpdatedAt: o.ObservedAt}}
+	failure := reviewprovider.CIWorkflowFailure{WorkflowID: 10, RunID: 100, RunAttempt: 2, JobID: 1000, CheckRunID: 10000, Name: "Failed leaf", Conclusion: "failure"}
+	o.WorkflowAttempts = []reviewprovider.ActionsAttempt{ciWatchFailedAttempt(o.Actions.Runs[0], failure)}
+	before := encoded(o)
+	if rows := ciWatchValidatedWorkflowFailures(o, []int64{10}, []reviewprovider.CIWorkflowFailure{failure}); len(rows) != 1 || rows[0] != failure {
+		t.Fatal("proven non-strict head failure was discarded", rows)
+	}
+	if rows := ciWatchWorkflowObservations(o, []int64{10}); len(rows) != 1 || rows[0].RunID != 100 || rows[0].RunAttempt != 2 || rows[0].Status != "in_progress" {
+		t.Fatal("latest non-strict head run was discarded", rows)
+	}
+	if encoded(o) != before {
+		t.Fatal("optional attention changed required gate facts")
+	}
+	for name, damage := range map[string]func(*reviewprovider.CIObservation){
+		"missing candidate":            func(v *reviewprovider.CIObservation) { v.Candidate = nil },
+		"strict authority":             func(v *reviewprovider.CIObservation) { v.Authority.Strict = true },
+		"unproven authority":           func(v *reviewprovider.CIObservation) { v.Authority.State = "unproven" },
+		"foreign authority":            func(v *reviewprovider.CIObservation) { v.Authority.Repository = "other/repo" },
+		"missing authority time":       func(v *reviewprovider.CIObservation) { v.Authority.ObservedAt = time.Time{} },
+		"missing authority checks":     func(v *reviewprovider.CIObservation) { v.Authority.Checks = nil },
+		"different candidate refusal":  func(v *reviewprovider.CIObservation) { v.Candidate.Reason = "ci_merge_pending" },
+		"foreign candidate repository": func(v *reviewprovider.CIObservation) { v.Candidate.RepositoryID++ },
+		"foreign candidate name":       func(v *reviewprovider.CIObservation) { v.Candidate.Repository = "other/repo" },
+		"different pull":               func(v *reviewprovider.CIObservation) { v.Candidate.PullNumber++ },
+		"different candidate head":     func(v *reviewprovider.CIObservation) { v.Candidate.HeadSHA = target.BaseSHA },
+		"different candidate base":     func(v *reviewprovider.CIObservation) { v.Candidate.BaseSHA = strings.Repeat("c", 40) },
+		"different candidate branch":   func(v *reviewprovider.CIObservation) { v.Candidate.BaseRef = "other" },
+		"selected stale merge":         func(v *reviewprovider.CIObservation) { v.Candidate.MergeSHA = strings.Repeat("e", 40) },
+		"missing mismatch":             func(v *reviewprovider.CIObservation) { v.Candidate.MergeBaseMismatch = nil },
+		"unproven mismatch":            func(v *reviewprovider.CIObservation) { v.Candidate.MergeBaseMismatch.LiveBaseSHA = target.BaseSHA },
+		"different selection":          func(v *reviewprovider.CIObservation) { v.Selection = "merge" },
+		"different selected commit":    func(v *reviewprovider.CIObservation) { v.SelectedCommitSHA = target.BaseSHA },
+		"foreign Actions repository":   func(v *reviewprovider.CIObservation) { v.Actions.RepositoryID++ },
+		"different Actions head":       func(v *reviewprovider.CIObservation) { v.Actions.HeadSHA = target.BaseSHA },
+		"incoherent gate":              func(v *reviewprovider.CIObservation) { v.Reason = "ci_observation_changed" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var value reviewprovider.CIObservation
+			if err := json.Unmarshal([]byte(before), &value); err != nil {
+				t.Fatal(err)
+			}
+			damage(&value)
+			if rows := ciWatchValidatedWorkflowFailures(value, []int64{10}, []reviewprovider.CIWorkflowFailure{failure}); len(rows) != 0 {
+				t.Fatal("invalid source supplied failure attention", rows)
+			}
+			if rows := ciWatchWorkflowObservations(value, []int64{10}); len(rows) != 0 {
+				t.Fatal("invalid source supplied latest-run details", rows)
+			}
+		})
+	}
+}

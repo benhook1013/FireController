@@ -116,6 +116,7 @@ type lifecycleSchedule struct {
 type lifecycleTarget struct {
 	watch              *ciWatchClaim
 	hintGeneration     uint64
+	retainCIHint       bool
 	forceCI            bool
 	ciOnly             bool
 	project, account   string
@@ -515,7 +516,9 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 	due := s.due[key]
 	// A hint delivered while provider work runs has a later generation. Finish
 	// only the claimed generation, preserving that later request for another tick.
-	due.hints[target.lane].done = max(due.hints[target.lane].done, target.hintGeneration)
+	if !target.retainCIHint {
+		due.hints[target.lane].done = max(due.hints[target.lane].done, target.hintGeneration)
+	}
 	if target.lane == lifecycleMetadata {
 		due.checkedAt, due.lastErrorCode, due.next = now, errorCode, now.Add(interval)
 		if published {

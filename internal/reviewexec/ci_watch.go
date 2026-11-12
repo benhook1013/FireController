@@ -65,12 +65,13 @@ type ciWatchKey struct {
 }
 
 type ciWatchSubscription struct {
-	scope   core.Scope
-	changed chan struct{}
-	targets []CIWatchTarget
-	entries []*ciWatchEntry
-	minimum []uint64
-	bases   []string
+	scope      core.Scope
+	changed    chan struct{}
+	targets    []CIWatchTarget
+	entries    []*ciWatchEntry
+	minimum    []uint64
+	bases      []string
+	superseded []*CIWatchItem
 }
 
 type ciWatchEntry struct {
@@ -82,7 +83,10 @@ type ciWatchEntry struct {
 	lastAttempt, next            time.Time
 	inflight                     bool
 	cancel                       context.CancelFunc
-	result                       CIWatchItem
+	// Unknown SHA-only hints are retained only for the current bounded read.
+	inflightSHAHints    []string
+	inflightSHAOverflow bool
+	result              CIWatchItem
 }
 
 func validCIWatchTargets(targets []CIWatchTarget) bool {
@@ -202,6 +206,12 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 			return CIWatchResult{}, err
 		}
 		if value.State != "pending" {
+			return boundedCIWatchResult(value)
+		}
+		if waitSeconds == 0 {
+			// This snapshot was just authorized; no quiet wait occurred that
+			// would require a third binding read within the response allowance.
+			value.TimedOut = true
 			return boundedCIWatchResult(value)
 		}
 		select {

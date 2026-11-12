@@ -19,6 +19,19 @@ type ciGateReader interface {
 	ObserveCIGate(context.Context, reviewprovider.CITarget, string) (reviewprovider.CIObservation, error)
 }
 
+// advertisedCIGateReader preserves legacy readers while honoring adapters whose
+// method set is wider than the capabilities of their underlying provider.
+func advertisedCIGateReader(reader TargetReader) (ciGateReader, bool) {
+	gate, ok := reader.(ciGateReader)
+	if !ok {
+		return nil, false
+	}
+	if available, known := gate.(interface{ SupportsCIGate() bool }); known && !available.SupportsCIGate() {
+		return nil, false
+	}
+	return gate, true
+}
+
 type ciGateWorkflowReader interface {
 	ObserveCIGateWithWorkflows(context.Context, reviewprovider.CITarget, string, []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error)
 }
@@ -43,7 +56,7 @@ type ciWatchClaim struct {
 func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBinding, targets []CIWatchTarget) (*ciWatchSubscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.readers[binding.capability].(ciGateReader); !ok {
+	if _, ok := advertisedCIGateReader(s.readers[binding.capability]); !ok {
 		return nil, ciWatchUnavailable()
 	}
 	if len(s.watchers) >= 64 || s.watchPrincipals[scope.PrincipalID] >= 8 {
@@ -93,6 +106,7 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 		// a new watch. Overlapping subscribers before a claim share its check.
 		sub.minimum = append(sub.minimum, entry.started+1)
 		sub.bases = append(sub.bases, target.BaseSHA)
+		sub.superseded = append(sub.superseded, nil)
 	}
 	s.watchers[sub] = true
 	s.watchPrincipals[scope.PrincipalID]++
@@ -125,6 +139,11 @@ func (s *lifecycleSchedule) unregisterCIWatch(sub *ciWatchSubscription) {
 // Called under the scheduler lock. Real hints, due fallback checks and each
 // remaining owner's freshness requirement independently retain collection.
 func ciWatchHasDemand(entry *ciWatchEntry, now time.Time) bool {
+	// An unknown in-flight commit hint still needs reconciliation if its
+	// initiating subscriber leaves while other owners remain.
+	if entry.inflight && (len(entry.inflightSHAHints) > 0 || entry.inflightSHAOverflow) {
+		return true
+	}
 	if entry.wanted != entry.done || !now.Before(entry.next) {
 		return true
 	}
@@ -171,6 +190,10 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			if refresh && item.State != "superseded" {
 				item.State, item.Reason = "pending", "ci_watch_refresh_pending"
 			}
+		}
+		if i < len(sub.superseded) && sub.superseded[i] != nil {
+			item = *sub.superseded[i]
+			item.Checks = []SourceCIContext{}
 		}
 		item.CIWatchTarget = target
 		if item.State != "pending" || item.Reason != "ci_merge_base_mismatch" {
@@ -304,6 +327,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		}
 		entry.started++
 		entry.inflight, entry.lastAttempt = true, now
+		entry.inflightSHAHints, entry.inflightSHAOverflow = nil, false
 		readCtx, cancel := context.WithCancel(ctx)
 		entry.cancel = cancel
 		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, metadataGeneration: entry.metadataWanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, false), historicalWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, true)}
@@ -333,6 +357,20 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		canceled := ctx.Err() != nil
 		entry.cancel()
 		entry.cancel, entry.inflight = nil, false
+		// The selected test merge may not have been known when a status hint
+		// arrived. Reconcile under the publication lock, including hints that
+		// arrived during the final repository read. Overflow is conservative,
+		// bounded refresh demand, never CI evidence.
+		if !canceled && item.CICommitSHA != "" {
+			refresh := entry.inflightSHAOverflow
+			for _, head := range entry.inflightSHAHints {
+				refresh = refresh || head == item.CICommitSHA
+			}
+			if refresh {
+				entry.wanted++
+			}
+		}
+		entry.inflightSHAHints, entry.inflightSHAOverflow = nil, false
 		if canceled {
 			// Cancellation releases capacity without replacing completed facts
 			// or consuming demand from hints/subscribers that arrived meanwhile.
@@ -346,8 +384,17 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 			// Pin the first eligible fresh source observation before another
 			// completion can replace it, even if this subscriber reads late.
 			for i, owned := range sub.entries {
-				if owned == entry && sub.bases[i] == "" && claim.version >= sub.minimum[i] && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
+				if owned != entry || claim.version < sub.minimum[i] {
+					continue
+				}
+				if sub.bases[i] == "" && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
 					sub.bases[i] = item.ObservedBaseSHA
+				}
+				// Source movement is terminal for this subscriber's immutable
+				// pins, even if authorization delays delivery across later reads.
+				// Retain only bounded source proof, never another owner's CI facts.
+				if sub.superseded[i] == nil && item.State != "closed" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) && (item.ObservedHeadSHA != sub.targets[i].HeadSHA || sub.bases[i] != "" && item.ObservedBaseSHA != sub.bases[i]) {
+					sub.superseded[i] = &CIWatchItem{State: "superseded", Reason: "ci_watch_source_changed", ObservedHeadSHA: item.ObservedHeadSHA, ObservedBaseSHA: item.ObservedBaseSHA, BaseRef: item.BaseRef, GateRef: item.GateRef, ObservedAt: item.ObservedAt, Checks: []SourceCIContext{}}
 				}
 			}
 			select {
@@ -543,7 +590,7 @@ func ciWatchValidatedWorkflowFailures(o reviewprovider.CIObservation, ids []int6
 	if len(rows) == 0 || len(rows) > 16 {
 		return nil
 	}
-	if reviewprovider.CIWorkflowAttentionBasis(o) != reviewprovider.CIWorkflowHeadOnlyBasis && (o.Results == nil || o.Actions == nil || o.Candidate == nil || o.Candidate.State != "complete" || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
+	if reviewprovider.CIWorkflowAttentionBasis(o) != reviewprovider.CIWorkflowHeadOnlyBasis && (o.Results == nil || o.Actions == nil || !ciWatchAllowsWorkflowCandidate(o) || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.SelectedCommitSHA == "" || o.Selection == "" || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason) {
 		return nil
 	}
 	wanted := map[int64]bool{}
@@ -613,6 +660,10 @@ func ciWatchObservationKey(project string, observation reviewprovider.CIObservat
 func (s *lifecycleSchedule) hintCIWatches(hint githubhook.Hint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hintCIWatchesLocked(hint)
+}
+
+func (s *lifecycleSchedule) hintCIWatchesLocked(hint githubhook.Hint) {
 	for _, entry := range s.watches {
 		if entry.key.binding.repository != hint.RepositoryID {
 			continue
@@ -636,6 +687,21 @@ func (s *lifecycleSchedule) hintCIWatches(hint githubhook.Hint) {
 			entry.wanted++
 			if hint.Metadata && explicit {
 				entry.metadataWanted++
+			}
+		} else if entry.inflight && hint.CI && hint.HeadSHA != "" && len(hint.PullNumbers) == 0 && hint.BranchRef == "" {
+			// A status event can identify only an as-yet unpublished test merge.
+			// Keep at most 32 distinct commit hints per active collection, and
+			// do not broaden matching for explicit PR or branch selectors.
+			head, seen := strings.ToLower(hint.HeadSHA), false
+			for _, retained := range entry.inflightSHAHints {
+				seen = seen || retained == head
+			}
+			if !seen {
+				if len(entry.inflightSHAHints) < 32 {
+					entry.inflightSHAHints = append(entry.inflightSHAHints, head)
+				} else {
+					entry.inflightSHAOverflow = true
+				}
 			}
 		}
 	}

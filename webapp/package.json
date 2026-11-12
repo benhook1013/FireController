@@ -10,19 +10,19 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@tanstack/react-query": "5.104.2",
+    "@tanstack/react-query": "5.107.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-markdown": "10.1.0",
-    "react-router": "8.4.0"
+    "react-router": "8.5.1",
+    "react-markdown": "10.1.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.1",
+    "@playwright/test": "1.65.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react-swc": "4.3.3",
     "typescript": "7.0.2",
-    "vite": "8.3.4",
-    "vitest": "5.0.4"
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
   }
 }

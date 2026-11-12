@@ -11,12 +11,13 @@ import type { PublicSnapshot } from './public-site-api';
 function fixture(): PublicSnapshot { const generation = `public_generation_${'a'.repeat(32)}`; return { slug: 'showcase', generation, revision: 2, published_at: '2026-10-17T12:00:00Z', cursor: `${generation}:2`, content: { slug: 'showcase', presentation: { name: 'Showcase', brand_name: 'Showcase', tagline: 'A project worth sharing', headings: { map: 'Roadmap' }, theme: {} }, description: '<script>literal approved text</script>', links: [{ key: 'source', label: 'Project source', url: 'https://example.com/project' }], project_map: [{ key: 'build', title: 'Build the project', description: 'Approved roadmap description', phase: 'Build', status: 'Active', links: [] }], progress: [], worker_lanes: [{ key: 'builder', label: 'Builder lane', headline: 'Shipping the project', status: 'Active', milestones: ['Public milestone'] }], reviews: [{ number: 4, title: 'Retain merged work', url: 'https://github.com/example/project/pull/4', lifecycle: 'merged', cli: [{ key: `public_round_${'b'.repeat(32)}`, found: 1, accepted: 1, routed: 0, complete: false, observed_at: '', duration_milliseconds: null }], hosted: [{ key: `public_round_${'c'.repeat(32)}`, found: 0, accepted: 0, routed: 0, complete: true, observed_at: '2026-10-17T11:00:00Z', duration_milliseconds: 30000 }] }] } }; }
 afterEach(() => vi.unstubAllGlobals());
 describe('public project browser', () => {
-  it('renders absent and explicit false window flags identically', () => {
+  it('renders omitted window flags without truncation notices', () => {
     const old = fixture(), before = JSON.stringify(old);
     const render = (value: PublicSnapshot) => renderToStaticMarkup(<MemoryRouter><PublicSnapshotView snapshot={value} /></MemoryRouter>);
-    const expected = render(old), flagged = fixture();
-    flagged.content.reviews[0].cli_has_more = false; flagged.content.reviews[0].hosted_has_more = false;
-    expect(render(flagged)).toBe(expected); expect(JSON.stringify(old)).toBe(before);
+    expect(Object.hasOwn(old.content.reviews[0], 'cli_has_more')).toBe(false);
+    expect(Object.hasOwn(old.content.reviews[0], 'hosted_has_more')).toBe(false);
+    const expected = render(old);
+    expect(JSON.stringify(old)).toBe(before);
     expect(expected).toContain('<strong>0/0/0</strong>'); expect(expected).not.toContain('outside this view');
   });
   it('shows a bounded channel window without lifetime ordinals or complete-archive promises', () => {

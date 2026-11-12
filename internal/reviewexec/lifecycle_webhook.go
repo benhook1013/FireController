@@ -30,9 +30,6 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 	e.lifecycleMu.RLock()
 	watchSchedule := e.lifecycleSchedule
 	e.lifecycleMu.RUnlock()
-	if watchSchedule != nil && e.lifecycleRunning.Load() {
-		watchSchedule.hintCIWatches(hint)
-	}
 	type match struct {
 		key          lifecycleKey
 		metadata, ci bool
@@ -119,13 +116,13 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 	if err != nil {
 		return lifecycleHintUnavailable()
 	}
-	if len(matches) == 0 {
-		return nil
-	}
 	e.lifecycleMu.RLock()
+	defer e.lifecycleMu.RUnlock()
 	s := e.lifecycleSchedule
-	e.lifecycleMu.RUnlock()
 	if s == nil || !e.lifecycleRunning.Load() {
+		if len(matches) == 0 {
+			return nil
+		}
 		return lifecycleHintUnavailable()
 	}
 	s.mu.Lock()
@@ -139,6 +136,9 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 	if len(s.due)+extra > 64*100 {
 		return lifecycleHintUnavailable()
 	}
+	// Admission is complete. Mutate both kinds of demand under one lock,
+	// including watches of PRs that are not enrolled in the lifecycle queue.
+	s.hintCIWatchesLocked(hint)
 	for _, match := range matches {
 		due := s.due[match.key]
 		if match.metadata {
