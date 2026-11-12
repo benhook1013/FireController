@@ -14,8 +14,8 @@ func TestCIWatchDescriptionPinsReturnedBaseAndEndsSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := definition.description + string(data)
-	if strings.Count(text, "observed_base_sha as base_sha") < 2 || !strings.Contains(text, "Every response ends the subscription") {
-		t.Fatal("discovery omits the implicit-base rearm pin or returned-wait boundary", text)
+	const rearm = "observed_base_sha as base_sha"
+	if !strings.Contains(definition.description, rearm) || !strings.Contains(string(data), rearm) || !strings.Contains(definition.description, "Every response ends the subscription") {
+		t.Fatal("discovery omits the implicit-base rearm pin or returned-wait boundary", definition.description, string(data))
 	}
 }

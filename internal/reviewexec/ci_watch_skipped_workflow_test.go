@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,9 +70,9 @@ func ciWatchSkippedFailure(o reviewprovider.CIObservation) (reviewprovider.CIObs
 
 type ciWatchSkippedReader struct{ *ciWatchReader }
 
-func (r ciWatchSkippedReader) ObserveCIGateWithWorkflows(ctx context.Context, target reviewprovider.CITarget, gate string, _ []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+func (r ciWatchSkippedReader) ObserveCIGateWithWorkflows(ctx context.Context, target reviewprovider.CITarget, gate string, ids []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	o, err := r.ObserveCIGate(ctx, target, gate)
-	if err != nil {
+	if err != nil || !slices.Contains(ids, 10) {
 		return o, nil, err
 	}
 	o, row := ciWatchSkippedFailure(o)
