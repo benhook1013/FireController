@@ -447,8 +447,11 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	if len(claim.workflowIDs) > 0 {
 		if reader, ok := target.reader.(ciGateHeadWorkflowReader); ok && (len(claim.headWorkflowIDs) > 0 || len(claim.historicalWorkflowIDs) > 0) {
 			observation, workflowFailures, err = reader.ObserveCIGateWithWorkflowAttention(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs, claim.headWorkflowIDs, claim.historicalWorkflowIDs)
+		} else if reader, ok := target.reader.(ciGateWorkflowReader); ok {
+			observation, workflowFailures, err = reader.ObserveCIGateWithWorkflows(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs)
 		} else {
-			observation, workflowFailures, err = target.reader.(ciGateWorkflowReader).ObserveCIGateWithWorkflows(readCtx, sourceCITarget(source), repo.DefaultBranch, claim.workflowIDs)
+			item.Reason = "ci_watch_observation_unproven"
+			return nil
 		}
 	} else {
 		observation, err = target.reader.(ciGateReader).ObserveCIGate(readCtx, sourceCITarget(source), repo.DefaultBranch)
