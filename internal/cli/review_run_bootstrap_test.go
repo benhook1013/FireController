@@ -35,7 +35,10 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					selected = wait
 				}
 				if wait == "reduced-budget" || wait == "deadline-after" {
-					selected = "0"
+					selected = "2"
+					if command == "start" {
+						selected = "0"
+					}
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/instance" {
