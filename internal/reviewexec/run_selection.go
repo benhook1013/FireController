@@ -40,7 +40,7 @@ const runColumns = `id,project_id,actor_id,worker_id,channel,configuration_revis
 func validRunID(id string) bool    { return hostedObservationID(id, "review_selection_") }
 func runPending(state string) bool { return state == "queued" || state == "selecting" }
 func runUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review selection is unavailable.", 500)
+	return automaticProjectStateFailure("storage_unavailable", "Stored review selection is unavailable.", 500)
 }
 func validRun(r Run) bool {
 	created, e1 := time.Parse(time.RFC3339Nano, r.CreatedAt)
@@ -62,9 +62,12 @@ func validRun(r Run) bool {
 }
 func readRun(ctx context.Context, q EvidenceQuery, project, id string) (Run, error) {
 	var r Run
-	err := q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
+	err := scanRoundValues(q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id), &r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The review selection is unavailable in this project.", 404)
+	}
+	if automaticProjectRefused(err) {
+		return Run{}, runUnavailable()
 	}
 	if err != nil {
 		return r, err
@@ -126,7 +129,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 	return out, err
 }
 
-// enqueueRunTx accepts one explicit durable selection.
+// enqueueRunTx is shared by explicit requests and the reauthorized automatic coordinator.
 func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope, input RunRequest) (Receipt, error) {
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
@@ -191,6 +194,16 @@ func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope,
 }
 
 func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configuration, int64, string, error) {
+	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status == 403 {
+			return Configuration{}, 0, "automation_authorization_changed", nil
+		}
+		return Configuration{}, 0, "", err
+	}
+	if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
+		return Configuration{}, 0, reason, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
 		return c, 0, "", err
@@ -222,6 +235,19 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 	var busy bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
+	}
+	if busy {
+		var automatic bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic); err != nil {
+			return c, 0, "", err
+		}
+		if automatic {
+			// Existing queued requests retain their turn; automatic front
+			// evaluation considers only the prefix before the earliest one.
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+				return c, 0, "", err
+			}
+		}
 	}
 	if busy {
 		return c, repository, "review_inflight", nil
@@ -263,15 +289,18 @@ func updateRunAt(ctx context.Context, tx *sql.Tx, r Run, state, reason, operatio
 func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
+		rows, err := tx.QueryContext(ctx, `SELECT project_id,id,`+selectionClaimRevision+` FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
 		if err != nil {
 			return err
 		}
-		type key struct{ p, id string }
+		type key struct {
+			p, id    string
+			revision int64
+		}
 		var keys []key
 		for rows.Next() {
 			var k key
-			if err = rows.Scan(&k.p, &k.id); err != nil {
+			if err = rows.Scan(&k.p, &k.id, &k.revision); err != nil {
 				rows.Close()
 				return err
 			}
@@ -287,6 +316,16 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 		}
 		for _, k := range keys {
 			r, err := readRun(ctx, tx, k.p, k.id)
+			if automaticProjectRefused(err) || err == nil && r.Revision == math.MaxInt64 {
+				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: k.p, ID: k.id, State: "selecting", Revision: k.revision})
+				if err != nil {
+					return err
+				}
+				if didChange {
+					changed = append(changed, k.id)
+				}
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -432,4 +471,21 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 		}
 	}
 	return int64(len(selected)), nil
+}
+
+// A corrupt revision is an opaque retained value, never an arithmetic operand.
+const selectionClaimRevision = `CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision ELSE 0 END`
+
+// Quarantine only the observed pending row. Keep its original damaged fields
+// and any child link for diagnosis; do not fabricate a readable history entry.
+func quarantineSelection(ctx context.Context, tx *sql.Tx, expected Run) (bool, error) {
+	if expected.State != "queued" && expected.State != "selecting" {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, expected.ProjectID, expected.ID, expected.State, expected.Revision)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }

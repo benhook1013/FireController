@@ -172,11 +172,9 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		value.Observer = nil
 	}
 	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
-	if r.Header.Get(operationWaitHeader) != "3" {
+	if version := r.Header.Get(operationWaitHeader); version != "3" && version != "5" {
 		value.RetryNotBefore = ""
 	}
-	if value.Channel == "cli" && value.State == "queued" && e.sharedCLIQuotaWait(r.Context(), scope, value.ID) {
-		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
-	}
+	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)
 	core.WriteJSON(w, http.StatusOK, value)
 }

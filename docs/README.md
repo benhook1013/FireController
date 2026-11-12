@@ -41,6 +41,7 @@ The [Hosted source foundation](delivery.md#hosted-source-foundation) records the
 - [Hosted capacity settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.
 - [Per-PR review rounds](review-round-controls.md): explicit native grants, close, taper, cumulative accounting and bound-client contracts.
 - [Retained review operations](review-operations.md): provider-free discovery, compact status and original Hosted observer diagnostics.
+- [Automatic review scheduling](review-scheduling.md): explicit default-off channel automation, scoped authorizers and durable PR pauses.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source refresh and observed policy](review-source.md): explicit background source reads, retained observations and provider-free policy assessment.
 - [Job checkpoints](job-checkpoints.md): immutable progress records, guarded appends, explicit latest/archive reads and integration status.

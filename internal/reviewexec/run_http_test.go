@@ -13,7 +13,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, path, body, key, wait string) *httptest.ResponseRecorder {
+func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, path, body, key, wait string, waitVersion ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Authorization", "Bearer "+f.writer)
@@ -25,9 +25,76 @@ func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, 
 	if wait != "" {
 		r.Header.Set("Prefer", wait)
 	}
+	if len(waitVersion) > 0 {
+		r.Header.Set(operationWaitHeader, waitVersion[0])
+	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	return w
+}
+
+func TestRunHTTPWaitNegotiationVary(t *testing.T) {
+	f := selectionFixture(t)
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/selections"
+	versions := []string{"", "1", "2", "3", "4", "5", "unsupported"}
+	assertVary := func(t *testing.T, w *httptest.ResponseRecorder) {
+		t.Helper()
+		vary := strings.Join(w.Header().Values("Vary"), ",")
+		for _, header := range []string{"Prefer", operationWaitHeader} {
+			if !strings.Contains(vary, header) {
+				t.Errorf("missing Vary: %s in %v", header, w.Header())
+			}
+		}
+	}
+	var original []byte
+	for _, version := range versions {
+		t.Run("POST/"+version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "POST", path, `{"channel":"cli"}`, "negotiated-run", "wait=0", version)
+			if w.Code != http.StatusAccepted {
+				t.Fatal("selection not accepted", w.Code, w.Body.String())
+			}
+			assertVary(t, w)
+			if original == nil {
+				original = append([]byte(nil), w.Body.Bytes()...)
+			} else if !bytes.Equal(original, w.Body.Bytes()) {
+				t.Fatal("negotiation changed original receipt")
+			}
+		})
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(original, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	// Select the later independent PR while the front PR is a draft, then
+	// accept a front-PR intent before reading the original selected child.
+	selectionNext(t, f, &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+		draft := n == 2
+		return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+	}})
+	f.enqueue(t, attemptProject, "front-run-intent", "cli", 2, 1)
+	before := selectionCounts(t, f)
+	for _, version := range versions {
+		t.Run("GET/"+version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "GET", path+"/"+receipt.ID, "", "", "wait=0", version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.PullNumber != 4 || state.Operation.State != "queued" {
+				t.Fatal("original selected child unavailable", w.Code, w.Body.String())
+			}
+			assertVary(t, w)
+			want := "awaiting_scheduler"
+			if version == "2" || version == "3" || version == "4" || version == "5" {
+				want = "queue_order"
+			}
+			if got := w.Header().Get(queuedDiagnosticHeader); got != want {
+				t.Fatalf("diagnostic=%q, want %q", got, want)
+			}
+		})
+	}
+	if selectionCounts(t, f) != before {
+		t.Fatal("negotiated reads changed durable state")
+	}
 }
 
 func TestRunHTTPStrictOptionalAssertionsAndOriginalReceipt(t *testing.T) {
