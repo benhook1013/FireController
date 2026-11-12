@@ -217,11 +217,23 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		return Operation{}, false, err
 	}
 	draft := reason == cliDraftWait
-	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
+	transient := scheduling && transientCLISourceReason(reason) && o.Channel == "cli"
+	if !draft && !transient && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
 		return Operation{}, false, nil
 	}
 	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, false, waitUnavailable()
+	}
+	if transient {
+		var automatic bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections s
+			JOIN review_automatic_selections r ON r.selection_id=s.id AND r.project_id=s.project_id
+			WHERE s.operation_id=? AND s.project_id=? AND s.channel='cli' AND s.state='selected')`, o.ID, o.ProjectID).Scan(&automatic); err != nil {
+			return Operation{}, false, err
+		}
+		if !automatic {
+			return Operation{}, false, waitUnavailable()
+		}
 	}
 	var startedAt, heldAt string
 	var occupied bool
@@ -233,7 +245,7 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		FROM review_execution_transitions first
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
-		AND last.state='held' AND first.external_id='' AND last.external_id=''`, draft, a.ID).Scan(&startedAt, &heldAt, &occupied)
+		AND last.state='held' AND first.external_id='' AND last.external_id=''`, draft || transient, a.ID).Scan(&startedAt, &heldAt, &occupied)
 	if err != nil {
 		return Operation{}, false, err
 	}

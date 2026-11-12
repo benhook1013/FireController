@@ -511,10 +511,11 @@ func automaticChannelEnabled(s schedulingRecord, channel string) bool {
 // serialized writer and compare its identity before using ordinary acceptance
 // or retry CAS. Idle and permanently suppressed projects never take the writer.
 type automaticProjectPlan struct {
-	scheduling schedulingRecord
-	scope      core.Scope
-	basis      string
-	retry      *Run
+	scheduling     schedulingRecord
+	scope          core.Scope
+	basis          string
+	retry          *Run
+	operationRetry *Operation
 }
 
 func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, channel string, readers map[string]TargetReader) (*automaticProjectPlan, error) {
@@ -577,6 +578,15 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if busy {
 		return nil, nil
 	}
+	if channel == "cli" {
+		retry, err := e.automaticTransientCLIRetry(ctx, tx, project, c)
+		if err != nil {
+			return nil, err
+		}
+		if retry != nil {
+			return &automaticProjectPlan{scheduling: s, scope: scope, operationRetry: retry}, nil
+		}
+	}
 	basis, candidates, err := automaticPlanningBasisChannel(ctx, tx, project, c, "", channel)
 	if err != nil || !candidates {
 		return nil, err
@@ -613,15 +623,23 @@ func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel 
 
 func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan) (bool, error) {
 	worked := false
+	var requeued string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := e.planAutomaticProject(ctx, tx, project, channel, readers)
 		if err != nil || current == nil {
 			return err
 		}
-		if current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) {
+		if current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) ||
+			(current.operationRetry == nil) != (candidate.operationRetry == nil) {
 			return nil
 		}
-		if current.retry != nil {
+		if current.operationRetry != nil {
+			if current.operationRetry.ID != candidate.operationRetry.ID || current.operationRetry.Revision != candidate.operationRetry.Revision {
+				return nil
+			}
+			err = e.requeueTransientCLISource(ctx, tx, *current.operationRetry)
+			requeued = current.operationRetry.ID
+		} else if current.retry != nil {
 			if current.retry.ID != candidate.retry.ID || current.retry.Revision != candidate.retry.Revision {
 				return nil
 			}
@@ -642,6 +660,13 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 		worked = err == nil
 		return err
 	})
+	if err == nil && requeued != "" {
+		e.notifyOperation(requeued)
+		select {
+		case e.wake <- struct{}{}:
+		default:
+		}
+	}
 	if ctx.Err() != nil {
 		return worked && err == nil, ctx.Err()
 	}

@@ -34,7 +34,13 @@ func PreparationFailureAt(stage string, err error) error {
 	default:
 		stage = "unknown"
 	}
-	return &preparationFailure{stage: stage, cause: preparationFailureCause(err), err: err}
+	cause := preparationFailureCause(err)
+	var provider *reviewprovider.Error
+	if stage == "source_resolution" && cause == "provider_unavailable" &&
+		errors.As(err, &provider) && provider.RetryableSourceRead() {
+		cause = "provider_transient"
+	}
+	return &preparationFailure{stage: stage, cause: cause, err: err}
 }
 
 func preparationFailureCause(err error) string {

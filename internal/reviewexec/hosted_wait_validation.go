@@ -14,8 +14,8 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `SELECT coalesce(o.project_id,''),w.operation_id FROM review_operation_waits w LEFT JOIN review_operations o ON o.id=w.operation_id
 		UNION SELECT project_id,id FROM review_operations WHERE reason=?
 		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE t.reason=?
-		UNION SELECT o.project_id,o.id FROM review_operations o JOIN review_execution_attempts a ON a.operation_id=o.id JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE a.id<>o.attempt_id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed')
-		ORDER BY 2`, cliDraftWait, cliDraftWait)
+		UNION SELECT o.project_id,o.id FROM review_operations o JOIN review_execution_attempts a ON a.operation_id=o.id JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE a.id<>o.attempt_id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed',?,?)
+		ORDER BY 2`, cliDraftWait, cliDraftWait, transientCLISourceHold, legacyCLISourceHold)
 	if err != nil {
 		return err
 	}
@@ -82,6 +82,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	foundCurrent := o.AttemptID == ""
 	foundDraft := o.Reason == cliDraftWait
 	foundSource := false
+	foundTransient := false
 	for _, id := range ids {
 		a, err := readAttempt(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -94,15 +95,22 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			foundCurrent = true
 			continue
 		}
-		_, draft, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
+		original, unused, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return waitUnavailable()
 			}
 			return err
 		}
-		if draft {
-			foundDraft = true
+		if unused {
+			if transientCLISourceReason(original.Reason) {
+				if foundTransient {
+					return waitUnavailable()
+				}
+				foundTransient = true
+			} else {
+				foundDraft = true
+			}
 			continue
 		}
 		_, source, err := historicalSourceRetryOperation(ctx, tx, o, a)
@@ -174,7 +182,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			return waitUnavailable()
 		}
 	}
-	if !foundCurrent || o.Wait == nil && !foundDraft && !foundSource {
+	if !foundCurrent || o.Wait == nil && !foundDraft && !foundSource && !foundTransient {
 		return waitUnavailable()
 	}
 	if hasBaseline && (baselineDeadline.IsZero() || !baselineDeadline.Equal(firstDeadline) || lastDeadline.UTC().Format(time.RFC3339Nano) != o.Wait.RetryNotBefore) {
