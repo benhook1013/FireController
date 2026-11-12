@@ -17,6 +17,7 @@ import (
 func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 	t.Helper()
 	f := &ciObservationFixture{t: t, mode: "merge", counts: map[string]int{}}
+	capacity := mode == "capacity" || mode == "capacity latest"
 	run := func(id int64) map[string]any {
 		value := f.run(60, candidateMerge)
 		value["id"], value["check_suite_id"], value["run_number"], value["run_attempt"] = id, id-19, id-59, int64(1)
@@ -34,7 +35,7 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 		} else if mode == "different event" {
 			value["event"] = "workflow_dispatch"
 		}
-		if id == 70 && strings.HasPrefix(mode, "mixed ") {
+		if id == 70 && strings.HasPrefix(mode, "mixed ") || id == 100 && mode == "capacity latest" {
 			value["workflow_id"], value["run_attempt"], value["conclusion"] = int64(32), int64(2), "failure"
 		}
 		return value
@@ -76,10 +77,13 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 				if mode == "rerun-during-read" {
 					rows[1]["run_attempt"], rows[1]["conclusion"] = int64(1), "failure"
 				}
-				if mode == "capacity" {
+				if capacity {
 					for id := int64(62); id <= 93; id++ {
 						rows = append(rows, run(id))
 					}
+				}
+				if mode == "capacity latest" {
+					rows = append(rows, run(100))
 				}
 				if headWalk > 1 && mode == "new run during recheck" {
 					rows = append(rows, run(62))
@@ -104,7 +108,7 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 					body = actionsEnvelope("workflow_runs", rows, len(rows))
 				}
 			}
-		case strings.HasPrefix(r.URL.Path, actionsRunsPath+"/6") || strings.HasPrefix(mode, "mixed ") && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/70") || mode == "capacity" && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/") && r.URL.Path != actionsCurrentPath && r.URL.Path != actionsJobsPath:
+		case strings.HasPrefix(r.URL.Path, actionsRunsPath+"/6") || strings.HasPrefix(mode, "mixed ") && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/70") || capacity && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/") && r.URL.Path != actionsCurrentPath && r.URL.Path != actionsJobsPath:
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, actionsRunsPath+"/"), "/")
 			id, _ := strconv.ParseInt(parts[0], 10, 64)
 			if len(parts) == 1 {
@@ -134,7 +138,7 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 					job["name"], job["conclusion"] = "Metadata only", "success"
 				}
 			}
-			if id == 70 && strings.HasPrefix(mode, "mixed ") {
+			if id == 70 && strings.HasPrefix(mode, "mixed ") || id == 100 && mode == "capacity latest" {
 				job["conclusion"], job["run_attempt"] = "failure", int64(2)
 			}
 			jobs := []map[string]any{job}
@@ -153,8 +157,11 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 			if strings.HasPrefix(mode, "mixed ") {
 				envelope["total_count"] = 4
 			}
-			if mode == "capacity" {
+			if capacity {
 				envelope["total_count"] = 35
+			}
+			if mode == "capacity latest" {
+				envelope["total_count"] = 36
 			}
 			body = envelope
 		default:
@@ -335,5 +342,20 @@ func TestWorkflowAttentionFinalInventoryRechecksDirectAndSkippedFailures(t *test
 				t.Fatal("direct current numbered attempt was not collected", calls)
 			}
 		})
+	}
+}
+
+func TestWorkflowAttentionLatestFailureSurvivesEarlierHistoryBudget(t *testing.T) {
+	f := ciSkippedRunFixture(t, "capacity latest")
+	got, rows, err := f.g.ObserveCIGateWithWorkflows(t.Context(), ciObservationTarget(), "main", []int64{31, 32})
+	var warning *CIWorkflowAttentionError
+	if !errors.As(err, &warning) || !errors.Is(err, ErrCIWorkflowAttemptLimit) || got.State != "pending" || len(rows) != 1 || rows[0].WorkflowID != 32 || rows[0].RunID != 100 || !CIWorkflowFailureApplies(got, rows[0]) {
+		t.Fatal("older history starved selected current failure", got.State, rows, err)
+	}
+	if len(got.Attempts)+len(got.WorkflowAttempts) != 32 {
+		t.Fatal("shared attempt budget changed", len(got.Attempts), len(got.WorkflowAttempts))
+	}
+	if len(got.WorkflowAttempts) < 2 || got.WorkflowAttempts[1].RunID != 100 {
+		t.Fatal("latest selected runs were not read before older history")
 	}
 }

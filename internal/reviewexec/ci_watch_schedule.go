@@ -129,6 +129,11 @@ func (s *lifecycleSchedule) unregisterCIWatch(sub *ciWatchSubscription) {
 // Called under the scheduler lock. Real hints, due fallback checks and each
 // remaining owner's freshness requirement independently retain collection.
 func ciWatchHasDemand(entry *ciWatchEntry, now time.Time) bool {
+	// An unknown in-flight commit hint still needs reconciliation if its
+	// initiating subscriber leaves while other owners remain.
+	if entry.inflight && (len(entry.inflightSHAHints) > 0 || entry.inflightSHAOverflow) {
+		return true
+	}
 	if entry.wanted != entry.done || !now.Before(entry.next) {
 		return true
 	}
@@ -308,6 +313,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 		}
 		entry.started++
 		entry.inflight, entry.lastAttempt = true, now
+		entry.inflightSHAHints, entry.inflightSHAOverflow = nil, false
 		readCtx, cancel := context.WithCancel(ctx)
 		entry.cancel = cancel
 		claim := &ciWatchClaim{entry: entry, generation: entry.wanted, metadataGeneration: entry.metadataWanted, version: entry.started, ctx: readCtx, workflowIDs: ciWatchWorkflowUnion(entry, nil), headWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, false), historicalWorkflowIDs: ciWatchOptionalWorkflowUnion(entry, true)}
@@ -337,6 +343,20 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		canceled := ctx.Err() != nil
 		entry.cancel()
 		entry.cancel, entry.inflight = nil, false
+		// The selected test merge may not have been known when a status hint
+		// arrived. Reconcile under the publication lock, including hints that
+		// arrived during the final repository read. Overflow is conservative,
+		// bounded refresh demand, never CI evidence.
+		if !canceled && item.CICommitSHA != "" {
+			refresh := entry.inflightSHAOverflow
+			for _, head := range entry.inflightSHAHints {
+				refresh = refresh || head == item.CICommitSHA
+			}
+			if refresh {
+				entry.wanted++
+			}
+		}
+		entry.inflightSHAHints, entry.inflightSHAOverflow = nil, false
 		if canceled {
 			// Cancellation releases capacity without replacing completed facts
 			// or consuming demand from hints/subscribers that arrived meanwhile.
@@ -644,6 +664,21 @@ func (s *lifecycleSchedule) hintCIWatchesLocked(hint githubhook.Hint) {
 			entry.wanted++
 			if hint.Metadata && explicit {
 				entry.metadataWanted++
+			}
+		} else if entry.inflight && hint.CI && hint.HeadSHA != "" && len(hint.PullNumbers) == 0 && hint.BranchRef == "" {
+			// A status event can identify only an as-yet unpublished test merge.
+			// Keep at most 32 distinct commit hints per active collection, and
+			// do not broaden matching for explicit PR or branch selectors.
+			head, seen := strings.ToLower(hint.HeadSHA), false
+			for _, retained := range entry.inflightSHAHints {
+				seen = seen || retained == head
+			}
+			if !seen {
+				if len(entry.inflightSHAHints) < 32 {
+					entry.inflightSHAHints = append(entry.inflightSHAHints, head)
+				} else {
+					entry.inflightSHAOverflow = true
+				}
 			}
 		}
 	}
