@@ -190,7 +190,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
-		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
+		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
 			return false
 		}
 		if !validCIWatchWorkflowFailures(item, pin) || !validCIWatchWorkflowObservations(item, pin) {
