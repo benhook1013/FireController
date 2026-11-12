@@ -531,8 +531,8 @@ func TestSourceReadinessCollectionUsesOneBoundedBudget(t *testing.T) {
 	reader.ci = func(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 		deadline, ok := ctx.Deadline()
 		remaining := time.Until(deadline)
-		if !ok || remaining <= 30*time.Second || remaining > 45*time.Second {
-			t.Error("readiness does not share selected45s budget", remaining)
+		if !ok || remaining <= 55*time.Second || remaining > 70*time.Second {
+			t.Error("readiness does not share selected70s budget", remaining)
 		}
 		o := sourceCITestObservation(target, "not_required")
 		o.Candidate.MergeState = "verified"
@@ -542,7 +542,7 @@ func TestSourceReadinessCollectionUsesOneBoundedBudget(t *testing.T) {
 	}
 	reader.review = func(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.PullReviewObservation, error) {
 		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > 45*time.Second {
+		if !ok || time.Until(deadline) > 70*time.Second {
 			t.Error("review collection escaped operation budget")
 		}
 		return reviewprovider.PullReviewObservation{Target: target, State: "complete", ObservedAt: time.Now().UTC(), PullState: "OPEN", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", Threads: []reviewprovider.PullReviewThread{}}, nil

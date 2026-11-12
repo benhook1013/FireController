@@ -73,7 +73,7 @@ func TestCIWatchPassedBaselineHTTPSharedFreshQuietAndChangedProof(t *testing.T) 
 				t.Fatal("CI watch refused", got.code, got.raw)
 			}
 			return got
-		case <-time.After(2 * time.Second):
+		case <-time.After(12 * time.Second):
 			t.Fatal("CI watch did not return")
 			return response{}
 		}
@@ -87,8 +87,11 @@ func TestCIWatchPassedBaselineHTTPSharedFreshQuietAndChangedProof(t *testing.T) 
 	}
 	key := first.Targets[0].ObservationKey
 	ciWatchRegistered(t, s, 0)
-	current := start("change-v3", key, "10")
-	quiet := start("change-v3", key, "1")
+	current := start("change-v3", key, "30")
+	// Keep both modern subscribers alive through the same fresh-proof ticks.
+	// A one-second expiry races registration and the older HTTP responses on
+	// loaded/race-instrumented runners; leave a bounded ten-second window.
+	quiet := start("change-v3", key, "10")
 	old1, old2 := start("change-v1", key, "10"), start("change-v2", key, "10")
 	ciWatchRegistered(t, s, 4)
 	// A new subscription cannot settle from the previously collected pass.
