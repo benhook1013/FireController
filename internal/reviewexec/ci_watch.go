@@ -149,6 +149,16 @@ func (e *Engine) WatchCI(ctx context.Context, scope core.Scope, targets []CIWatc
 // The HTTP entry point includes scoped authentication and body parsing in its
 // selected wait. Direct callers start the same bounded wait at invocation.
 func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CIWatchTarget, waitSeconds int, started time.Time) (CIWatchResult, error) {
+	return e.watchCIFromProjected(ctx, scope, targets, waitSeconds, started, nil)
+}
+
+func (e *Engine) watchCIFromProjected(ctx context.Context, scope core.Scope, targets []CIWatchTarget, waitSeconds int, started time.Time, project func(CIWatchResult) CIWatchResult) (CIWatchResult, error) {
+	bounded := func(value CIWatchResult) (CIWatchResult, error) {
+		if project != nil {
+			value = project(value)
+		}
+		return boundedCIWatchResult(value)
+	}
 	if ctx == nil || e == nil || e.store == nil || !validCIWatchTargets(targets) || waitSeconds < 0 || waitSeconds > 900 {
 		return CIWatchResult{}, invalid()
 	}
@@ -206,13 +216,13 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 			return CIWatchResult{}, err
 		}
 		if value.State != "pending" {
-			return boundedCIWatchResult(value)
+			return bounded(value)
 		}
 		if waitSeconds == 0 {
 			// This snapshot was just authorized; no quiet wait occurred that
 			// would require a third binding read within the response allowance.
 			value.TimedOut = true
-			return boundedCIWatchResult(value)
+			return bounded(value)
 		}
 		select {
 		case <-ctx.Done():
@@ -231,7 +241,7 @@ func (e *Engine) watchCIFrom(ctx context.Context, scope core.Scope, targets []CI
 				return CIWatchResult{}, err
 			}
 			value.TimedOut = value.State == "pending"
-			return boundedCIWatchResult(value)
+			return bounded(value)
 		case <-sub.changed:
 		}
 	}
