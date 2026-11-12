@@ -202,6 +202,9 @@ func draftReadinessDiagnostic() *ReviewOperationDiagnostic {
 // A terminal source hold has no linked review action. Unknown historical
 // failures remain unknown; these static explanations never echo provider text.
 func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if reason == "automation_authorization_changed" {
+		return &ReviewOperationDiagnostic{"This selection stopped before it created a review operation because its scheduling authorization no longer applies.", "Read review_scheduling_read / reviews scheduling. A project manager can authorize future automatic selections through an active bound worker. The retained selection records the refusal."}
+	}
 	if hint := schedulingDiagnostic(reason); hint != nil {
 		return hint
 	}
