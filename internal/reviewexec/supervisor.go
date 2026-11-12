@@ -143,44 +143,19 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
 	args = append(args, now.UTC().Format(time.RFC3339Nano))
-	draftFilter := ""
-	if !probeDrafts {
-		// Filter before the finite candidate window: a prefix of Draft waits
-		// must not hide ready work in another project from this worker.
-		draftFilter = " AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')"
-	}
+
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
-	SELECT o.project_id,o.id FROM review_operations o
+	SELECT o.project_id,o.id,o.channel,o.capability_fingerprint FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
-	WHERE o.state='queued'` + draftFilter + `
+	WHERE o.state='queued'
 	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
-	ORDER BY o.created_at,o.id LIMIT 256`
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	type id struct{ project, operation string }
-	var ids []id
-	for rows.Next() {
-		var i id
-		if err = rows.Scan(&i.project, &i.operation); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		ids = append(ids, i)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
-		return nil, err
-	}
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)`
 	type configurationSnapshot struct {
 		configuration Configuration
 		revision      int64
@@ -190,61 +165,142 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	cliRetryDeadlines := map[accountKey]time.Time{}
 	cliUnavailable := map[accountKey]bool{}
 	emptyPredecessors := map[queuePriorityKey]bool{}
-	out := make([]Operation, 0, len(ids))
-	for _, i := range ids {
-		o, err := readOperation(ctx, tx, i.project, i.operation)
+	readCandidate := func(project, operation string) (Operation, error) {
+		o, err := readOperation(ctx, tx, project, operation)
 		if err != nil {
 			if e.skipUnavailableWait(ctx, o, err) {
-				continue
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
+		if o.State != "queued" {
+			return Operation{}, nil
+		}
+		configuration, ok := configurations[o.ProjectID]
+		if !ok {
+			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+			if err != nil {
+				return Operation{}, err
+			}
+			configuration = configurationSnapshot{c, revision}
+			configurations[o.ProjectID] = configuration
+		}
+		c, revision := configuration.configuration, configuration.revision
+		if o.Channel == "cli" {
+			if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
+				key := accountKey{capability.Provider, capability.Account}
+				if cliUnavailable[key] {
+					return Operation{}, nil
+				}
+				due, cached := cliRetryDeadlines[key]
+				if !cached {
+					due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
+					if err != nil {
+						if e.skipUnavailableWait(ctx, o, err) {
+							cliUnavailable[key] = true
+							return Operation{}, nil
+						}
+						return Operation{}, err
+					}
+					cliRetryDeadlines[key] = due
+				}
+				if now.Before(due) {
+					return Operation{}, nil
+				}
+			}
+		}
+		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
+		if err != nil {
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
+		if earlier != nil {
+			return Operation{}, nil
+		}
+		return o, nil
+	}
+	// Draft probes use their own window so a full ordinary queue cannot
+	// conceal a ready Draft, and Drafts cannot fill the dispatch window.
+	var out []Operation
+	if probeDrafts {
+		e.draftProbeMu.Lock()
+		cursor := e.draftProbeCursor
+		e.draftProbeMu.Unlock()
+		draftArgs := append(append([]any(nil), args...), cursor, cliDraftProbeCapacity+1)
+		rows, err := tx.QueryContext(ctx, query+` AND o.channel='cli' AND o.reason='cli_draft_wait' ORDER BY o.id<=?,o.id LIMIT ?`, draftArgs...)
+		if err != nil {
+			return nil, err
+		}
+		drafts := make([]Operation, 0, cliDraftProbeCapacity+1)
+		for rows.Next() {
+			o := Operation{Channel: "cli", Reason: cliDraftWait}
+			if err := rows.Scan(&o.ProjectID, &o.ID, &o.Channel, &o.CapabilityFingerprint); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			drafts = append(drafts, o)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if selected := e.nextDraftProbe(drafts); selected != "" {
+			for _, draft := range drafts {
+				if draft.ID == selected {
+					o, err := readCandidate(draft.ProjectID, draft.ID)
+					if err != nil {
+						return nil, err
+					}
+					if o.ID != "" {
+						out = append(out, o)
+					}
+					break
+				}
+			}
+		}
+	}
+	rows, err := tx.QueryContext(ctx, query+` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait') ORDER BY o.created_at,o.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// Apply the dispatch bound after filtering known waits and unavailable
+	// accounts. The read transaction supplies the overall scan deadline.
+	limit := len(out) + 256
+	for len(out) < limit && rows.Next() {
+		var project, operation, channel, fingerprint string
+		if err := rows.Scan(&project, &operation, &channel, &fingerprint); err != nil {
+			return nil, err
+		}
+		if channel == "cli" {
+			if cfg, ok := configurations[project]; ok {
+				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
+					key := accountKey{capability.Provider, capability.Account}
+					if cliUnavailable[key] || now.Before(cliRetryDeadlines[key]) {
+						continue
+					}
+				}
+			}
+		}
+		o, err := readCandidate(project, operation)
+		if err != nil {
+			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+				return out, nil
 			}
 			return nil, err
 		}
-		if o.State == "queued" {
-			configuration, ok := configurations[o.ProjectID]
-			if !ok {
-				c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
-				if err != nil {
-					return nil, err
-				}
-				configuration = configurationSnapshot{c, revision}
-				configurations[o.ProjectID] = configuration
-			}
-			c, revision := configuration.configuration, configuration.revision
-			earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
-			if err != nil {
-				if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
-					continue
-				}
-				return nil, err
-			}
-			if earlier != nil {
-				continue
-			}
-			if o.Channel == "cli" {
-				if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
-					key := accountKey{capability.Provider, capability.Account}
-					if cliUnavailable[key] {
-						continue
-					}
-					due, cached := cliRetryDeadlines[key]
-					if !cached {
-						due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
-						if err != nil {
-							if e.skipUnavailableWait(ctx, o, err) {
-								cliUnavailable[key] = true
-								continue
-							}
-							return nil, err
-						}
-						cliRetryDeadlines[key] = due
-					}
-					if now.Before(due) {
-						continue
-					}
-				}
-			}
+		if o.ID != "" {
 			out = append(out, o)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+			return out, nil
+		}
+		return nil, err
 	}
 	return out, nil
 }
@@ -334,21 +390,14 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
 	operations, err := e.pendingForWorker(ctx, probeDrafts)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
 		return persistenceFailure()
 	}
-	probeID := ""
-	if probeDrafts {
-		probeID = e.nextDraftProbe(operations)
-	}
 	for _, o := range operations {
 		if ctx.Err() != nil {
 			return nil
-		}
-		if o.Channel == "cli" && o.Reason == cliDraftWait && o.ID != probeID {
-			continue
 		}
 		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
 		if err != nil {

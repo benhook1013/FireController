@@ -157,6 +157,10 @@ func TestReviewCIMismatchCapabilityReadAndAgentProjection(t *testing.T) {
 			}
 		}
 		for name, mutate := range map[string]func(map[string]any){
+			"legacy mismatch claims a head selection": func(m map[string]any) {
+				delete(m, "merge_base_mismatch")
+				m["selection"], m["selected_commit_sha"] = "head", value.Target.HeadSHA
+			},
 			"wrong base": func(m map[string]any) {
 				m["merge_base_mismatch"].(map[string]any)["pr_base_sha"] = strings.Repeat("f", 40)
 			},

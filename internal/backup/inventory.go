@@ -595,6 +595,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["review_execution_indexes"] >= 3 && versions["review_execution"] < 9 {
+		return nil, errors.New("review execution retry index requires operation waits schema")
+	}
 	if versions["review_execution"] >= 9 {
 		// Schema nine owns durable wait identity and paired retry state even
 		// when the bundle has no wait rows to exercise these constraints.

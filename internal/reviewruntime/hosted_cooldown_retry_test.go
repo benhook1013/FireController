@@ -326,7 +326,7 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			calls, waits := 0, 0
 			failure := core.Fail(code, "fixture", 503)
-			err := retryHostedCooldownRetention(t.Context(), func(ctx context.Context, duration time.Duration) error {
+			err := retryAllowanceRetention(t.Context(), func(ctx context.Context, duration time.Duration) error {
 				waits++
 				if duration != 200*time.Millisecond {
 					t.Fatal("unexpected retry delay", duration)
@@ -350,20 +350,20 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 	}
 	calls := 0
 	failure := core.Fail("overloaded", "fixture", 503)
-	err := retryHostedCooldownRetention(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error { calls++; return failure })
+	err := retryAllowanceRetention(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error { calls++; return failure })
 	if calls != 3 || err != failure {
 		t.Fatal("retention retry was not bounded", calls, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	calls = 0
-	err = retryHostedCooldownRetention(ctx, func(context.Context, time.Duration) error { cancel(); return ctx.Err() }, func() error { calls++; return failure })
+	err = retryAllowanceRetention(ctx, func(context.Context, time.Duration) error { cancel(); return ctx.Err() }, func() error { calls++; return failure })
 	if calls != 1 || !errors.Is(err, context.Canceled) {
 		t.Fatal("retry ignored cancellation", calls, err)
 	}
 }
 
 func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
-	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace"} {
+	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace", "observation"} {
 		t.Run(damage, func(t *testing.T) {
 			f, _ := newHostedCooldownRetryFixture(t)
 			operation, attempt, config := f.startHosted(t)
@@ -414,6 +414,10 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(workspace.Directory, "untracked"), []byte("changed"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "observation":
+				if _, err := f.store.DB().Exec(`UPDATE review_hosted_observations SET body_json='{}' WHERE attempt_id=?`, attempt.ID); err != nil {
 					t.Fatal(err)
 				}
 			}

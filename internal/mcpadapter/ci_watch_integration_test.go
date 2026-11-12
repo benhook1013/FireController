@@ -22,6 +22,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	identity := localContext()
 	pins := []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40)}, {PullNumber: 4, HeadSHA: strings.Repeat("c", 40)}}
 	entered, closed := make(chan struct{}, 1), make(chan struct{}, 1)
+	shutdown := make(chan struct{})
 	var posts atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-FC-CI-Watch", "change-v3")
@@ -38,8 +39,11 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 		}
 		if r.Header.Get("Prefer") == "wait=900" {
 			entered <- struct{}{}
-			<-r.Context().Done()
-			closed <- struct{}{}
+			select {
+			case <-r.Context().Done():
+				closed <- struct{}{}
+			case <-shutdown:
+			}
 			return
 		}
 		if r.Header.Get("Prefer") != "wait=0" {
@@ -51,6 +55,7 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 		}})
 	}))
 	defer service.Close()
+	defer close(shutdown)
 	identity.ServerURL = service.URL
 	profilePath := profiles(t, map[string]profile.Context{"chosen": identity}, credential(t))
 	session := connect(t, adapter(t, profilePath, "chosen"), "")
