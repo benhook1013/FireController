@@ -160,11 +160,16 @@ func TestRunSelectionCancellationStopsCurrentRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	entered := make(chan struct{})
-	var active atomic.Int32
+	var active, started atomic.Int32
 	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 		active.Add(1)
 		defer active.Add(-1)
-		close(entered)
+		// Wait for the entire three-member window before cancelling.
+		// Only the last entrant closes the barrier; concurrent reads must not
+		// close the same channel repeatedly.
+		if started.Add(1) == 3 {
+			close(entered)
+		}
 		<-ctx.Done()
 		return reviewprovider.Pull{}, ctx.Err()
 	}}
@@ -181,7 +186,7 @@ func TestRunSelectionCancellationStopsCurrentRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("read not joined")
 	}
-	if active.Load() != 0 || reader.calls.Load() != 2 {
+	if active.Load() != 0 || reader.calls.Load() != 4 {
 		t.Fatal(active.Load(), reader.calls.Load())
 	}
 }

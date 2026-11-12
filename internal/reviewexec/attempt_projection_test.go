@@ -293,6 +293,46 @@ func TestAttemptProjectionRecoveryAndHostedTrigger(t *testing.T) {
 	}
 }
 
+func TestAttemptPublicationRetriesTransientWriterContention(t *testing.T) {
+	f := attemptProjectionFixture(t, false)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "attempt-publication-contention", "hosted", 2, 1))
+	pull := projectionPull(2)
+	before := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	writerEntered, writerRelease := make(chan struct{}), make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- f.store.BackgroundWrite(t.Context(), func(ctx context.Context, _ *sql.Tx) error {
+			close(writerEntered)
+			<-writerRelease
+			return ctx.Err()
+		})
+	}()
+	select {
+	case <-writerEntered:
+	case err := <-writerDone:
+		t.Fatalf("writer did not reach the fixture transaction: %v", err)
+	}
+	// Keep admission occupied past the first two-second write budget.
+	release := time.AfterFunc(2250*time.Millisecond, func() { close(writerRelease) })
+	defer release.Stop()
+	first, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &pull)
+	<-writerDone
+	if err != nil || first.ID == "" {
+		t.Fatalf("same-attempt publication did not recover: %+v %v", first, err)
+	}
+	if attempts := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`); attempts != 1 {
+		t.Fatalf("publication created %d attempts", attempts)
+	}
+	_, projected := projectedAttempt(t, f, a)
+	if projected.State != "preparing" || projected.TriggerID != "" {
+		t.Fatalf("publication changed review state: %+v", projected)
+	}
+	if replay, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, &pull); err != nil || replay != first ||
+		attemptCount(t, f.store, `SELECT count(*) FROM events`) != before+1 {
+		t.Fatalf("publication did not retain exactly one projection: %+v %v", replay, err)
+	}
+}
+
 func TestAttemptProjectionMissingPRExplicitPublicationAndReplay(t *testing.T) {
 	f := attemptProjectionFixture(t, false)
 	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "ledger-only", "cli", 2, 1))

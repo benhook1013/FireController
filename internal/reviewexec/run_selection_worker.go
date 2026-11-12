@@ -169,6 +169,7 @@ type runChoice struct {
 	pausedSuffix  []int64
 	number        int64
 	head          string
+	expectedHeld  bool
 }
 
 // retryRunSelectionLocal retains completed source reads while only retrying
@@ -332,10 +333,12 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		var target int64
 		var reason string
 		bindingHeld := false
+		expectedHeld := false
 		pausedSuffix := false
 		err = retryRunSelectionRead(ctx, func() error {
 			target, reason = 0, ""
 			bindingHeld = false
+			expectedHeld = false
 			pausedSuffix = false
 			return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 				current, err := readRun(ctx, tx, r.ProjectID, r.ID)
@@ -357,11 +360,21 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					bindingHeld = true
 					return nil
 				}
-				target, reason, err = e.runFront(ctx, tx, current, repo, choice.prefix)
-				if err == nil && reason != "" && !globalFrontHold(reason) {
-					pausedSuffix, err = pausedRunSuffix(ctx, tx, r.ProjectID, choice.prefix, queue[i+1:])
+				front, err := e.evaluateFront(ctx, tx, current, repo, choice.prefix, true)
+				if err != nil {
+					return err
 				}
-				return err
+				if front.state == "ready" {
+					target = front.plan.Pull.Number
+				} else if front.state != "complete" {
+					reason = front.reason
+					expectedHeld = front.holdsPull(current.ExpectedPullNumber)
+				}
+				if reason != "" && !expectedHeld && !globalFrontHold(reason) {
+					pausedSuffix, err = pausedRunSuffix(ctx, tx, r.ProjectID, choice.prefix, queue[i+1:])
+					return err
+				}
+				return nil
 			})
 		})
 		if err != nil {
@@ -381,7 +394,8 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 				}
 				return choice, nil
 			}
-			if bindingHeld || globalFrontHold(reason) {
+			if bindingHeld || expectedHeld || globalFrontHold(reason) {
+				choice.expectedHeld = expectedHeld
 				return choice, nil
 			}
 			continue
@@ -720,11 +734,11 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					// settle that newer eligible basis behind a
 					// stale hold. A fresh ordinary selection must reacquire source
 					// facts rather than dispatch directly from this recheck.
-					_, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+					front, err := e.evaluateFront(ctx, tx, current, repo, choice.prefix, true)
 					if err != nil {
 						return err
 					}
-					if reason != choice.reason {
+					if front.reason != choice.reason || choice.expectedHeld && !front.holdsPull(current.ExpectedPullNumber) {
 						return updateRun(ctx, tx, current, "held", "selection_changed", "")
 					}
 				}

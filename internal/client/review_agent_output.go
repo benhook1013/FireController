@@ -209,6 +209,12 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	if reason == "external_hosted_pending" {
 		return externalHostedPendingDiagnostic()
 	}
+	if reason == "predecessor_unfinished" {
+		return &ReviewOperationDiagnostic{
+			"A predecessor in the PR stack has not met this channel's admission requirements. This selection created no review operation.",
+			"Use reviews source-assess on the target and follow its parent PR chain to find the unfinished work. Address it before making a fresh authorized selection.",
+		}
+	}
 	var explanation string
 	switch reason {
 	case "source_budget_exhausted":

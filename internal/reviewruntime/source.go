@@ -250,16 +250,8 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 // publishPreparedAttempt preserves current PR facts. Only an absent projection
 // permits initial display metadata from this phase's verified source plan.
 func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, project, attemptID string, plan reviewexec.SourcePlan) error {
-	_, err := engine.PublishAttempt(ctx, project, attemptID, nil)
-	if err == nil {
-		return nil
-	}
-	var missing *core.Error
-	if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
-		return err
-	}
 	metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
-	_, err = engine.PublishAttempt(ctx, project, attemptID, &metadata)
+	_, err := engine.PublishAttempt(ctx, project, attemptID, &metadata)
 	return err
 }
 

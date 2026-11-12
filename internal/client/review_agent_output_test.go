@@ -551,3 +551,17 @@ func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSelectionExplainsPredecessorHold(t *testing.T) {
+	raw := ReviewRunState{Selection: ReviewRunSelection{
+		ExpectedPullNumber: 4,
+		State:              "held",
+		Reason:             "predecessor_unfinished",
+	}}
+	got := AgentReviewSelection(raw)
+	if !reflect.DeepEqual(got.ReviewRunState, raw) || got.Diagnostic == nil ||
+		!strings.Contains(got.Diagnostic.Explanation, "created no review operation") ||
+		!strings.Contains(got.Diagnostic.NextAction, "parent PR chain") {
+		t.Fatalf("missing actionable predecessor hold: %+v", got)
+	}
+}

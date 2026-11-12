@@ -127,6 +127,27 @@ func TestRunSelectionPausedParentStillRequiresVerifiedPrefix(t *testing.T) {
 	}
 }
 
+func TestRunSelectionExpectedPRReportsItsOwnHold(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4})
+	revision := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "expected-child-stack", Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	schedulingPause(t, f, 2, 0, true)
+	parent := reviewprovider.Pull{Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("c", 40), HeadRef: "parent", BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
+	draft := true
+	child := reviewprovider.Pull{Number: 4, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), HeadRef: "child", BaseSHA: parent.HeadSHA, BaseRef: parent.HeadRef, ChangedFiles: 1, IsDraft: &draft}
+	reader := &actualParentSelectionReader{pulls: map[int64]reviewprovider.Pull{2: parent, 4: child}}
+	expected := int64(4)
+	receipt, _ := selectionEnqueue(t, f, "expected-child", "cli", &expected)
+	selectionNext(t, f, reader)
+
+	got := selectionRead(t, f, receipt.ID)
+	if got.State != "held" || got.Reason != "pull_draft" || got.OperationID != "" {
+		t.Fatalf("expected the child's draft hold without dispatch, got %+v", got)
+	}
+}
+
 func TestPausedRunSuffixRejectsMalformedControls(t *testing.T) {
 	f := schedulingFixtureWithQueue(t, []int64{1, 2})
 	schedulingPause(t, f, 2, 0, true)

@@ -190,7 +190,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
-		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
+		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
 			return false
 		}
 		if !validCIWatchWorkflowFailures(item, pin) || !validCIWatchWorkflowObservations(item, pin) {
@@ -198,7 +198,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		}
 		attention := item.State == "pending" && len(item.WorkflowFailures) > 0
 		rearmable := item.State == "passed" || item.State == "failed" || attention
-		if item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (!rearmable || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || rearmable && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
+		if rearmable && pin.AfterObservationKey != "" && item.ObservationKey == "" || item.ObservationKey != "" && !controlHex(item.ObservationKey, 64) || item.WaitingForChange && (!rearmable || pin.AfterObservationKey == "" || item.ObservationKey != pin.AfterObservationKey) || rearmable && pin.AfterObservationKey != "" && item.ObservationKey == pin.AfterObservationKey && !item.WaitingForChange {
 			return false
 		}
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {

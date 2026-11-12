@@ -26,10 +26,16 @@ func ciWatchAllowsWorkflowCandidate(o reviewprovider.CIObservation) bool {
 }
 
 func ciWatchWorkflowObservations(o reviewprovider.CIObservation, ids []int64) []CIWorkflowObservation {
-	if len(ids) == 0 || len(ids) > 16 || !ciWatchAllowsWorkflowCandidate(o) || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason || o.Actions == nil || o.Actions.RepositoryID != o.Target.RepositoryID || !strings.EqualFold(o.Actions.Repository, o.Target.Repository) || o.Actions.HeadSHA != o.SelectedCommitSHA {
+	actions := o.Actions
+	if o.WorkflowActions != nil {
+		// Optional collection rechecks this inventory after reading jobs.
+		// Never label the superseded pre-recheck run as the latest run.
+		actions = o.WorkflowActions
+	}
+	if len(ids) == 0 || len(ids) > 16 || !ciWatchAllowsWorkflowCandidate(o) || o.Candidate.RepositoryID != o.Target.RepositoryID || o.Candidate.PullNumber != o.Target.PullNumber || o.Candidate.HeadSHA != o.Target.HeadSHA || o.Candidate.BaseSHA != o.Target.BaseSHA || o.Candidate.BaseRef != o.Target.BaseRef || o.State != o.Assessment.State || o.Reason != o.Assessment.Reason || actions == nil || actions.RepositoryID != o.Target.RepositoryID || !strings.EqualFold(actions.Repository, o.Target.Repository) || actions.HeadSHA != o.SelectedCommitSHA {
 		return nil
 	}
-	latest, err := reviewprovider.LatestActionsRuns(*o.Actions)
+	latest, err := reviewprovider.LatestActionsRuns(*actions)
 	if err != nil {
 		return nil
 	}

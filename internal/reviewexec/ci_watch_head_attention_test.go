@@ -178,7 +178,12 @@ func TestCIWatchHeadAttentionRealHTTPStrictClientAndLegacyProjection(t *testing.
 	case <-time.After(3 * time.Second):
 		t.Fatal("modern attention did not return")
 	}
-	w := <-legacy
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-legacy:
+	case <-time.After(3 * time.Second):
+		t.Fatal("legacy detail version 1 did not return")
+	}
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"state":"pending"`) || !strings.Contains(w.Body.String(), `"timed_out":true`) || strings.Contains(w.Body.String(), "workflow_attention_basis") || strings.Contains(w.Body.String(), "workflow_failures") {
 		t.Fatal("old strict wire changed or woke on head-only failure", w.Code, w.Body.String())
 	}

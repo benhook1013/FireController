@@ -361,7 +361,12 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		// arrived. Reconcile under the publication lock, including hints that
 		// arrived during the final repository read. Overflow is conservative,
 		// bounded refresh demand, never CI evidence.
-		if !canceled && item.CICommitSHA != "" {
+		if canceled && len(entry.owners) > 0 && (len(entry.inflightSHAHints) > 0 || entry.inflightSHAOverflow) {
+			// A hint may arrive after the last freshness-only owner cancels
+			// this read. Without a completed comparison to reconcile it,
+			// retain one bounded refresh for the remaining owners.
+			entry.wanted++
+		} else if !canceled && item.CICommitSHA != "" {
 			refresh := entry.inflightSHAOverflow
 			for _, head := range entry.inflightSHAHints {
 				refresh = refresh || head == item.CICommitSHA

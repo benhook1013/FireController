@@ -46,13 +46,20 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 		supplied = &copy
 	}
 	var receipt reviews.Receipt
-	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		attempt, err := readAttempt(ctx, tx, project, attemptID)
-		if err != nil {
+	local, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// A retry re-reads the exact attempt and current PR in its own transaction.
+	// The projection replay check recognizes a committed write without another
+	// snapshot or event. This path never repeats allowance or provider work.
+	err := retrySourceRefreshLocal(local, func() error {
+		return e.store.BackgroundWrite(local, func(ctx context.Context, tx *sql.Tx) error {
+			attempt, err := readAttempt(ctx, tx, project, attemptID)
+			if err != nil {
+				return err
+			}
+			receipt, err = publishJournalAttempt(ctx, tx, attempt, supplied, false)
 			return err
-		}
-		receipt, err = publishJournalAttempt(ctx, tx, attempt, supplied, false)
-		return err
+		})
 	})
 	if err != nil {
 		return reviews.Receipt{}, err

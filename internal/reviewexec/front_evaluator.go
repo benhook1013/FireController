@@ -16,6 +16,10 @@ type evaluatedFront struct {
 	blockingReason string
 }
 
+func (f evaluatedFront) holdsPull(number int64) bool {
+	return number != 0 && f.state == "held" && f.plan != nil && f.plan.Pull.Number == number
+}
+
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
 	if plan.schedulingPaused {
 		control, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
@@ -161,6 +165,11 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 			continue
 		}
 		if result.state == "ready" {
+			return result, nil
+		}
+		if result.state == "held" && plan.Pull.Number == r.ExpectedPullNumber {
+			// With no earlier ready PR, report the asserted target's own hold.
+			result.plan = plan
 			return result, nil
 		}
 		if firstHeld == nil {
