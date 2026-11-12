@@ -252,7 +252,8 @@ func actorAllowed(ctx context.Context, tx *sql.Tx, project, actor, worker string
 }
 
 // WithExecutionClock supplies the clock for review scheduling. A nil clock
-// restores the default time.Now behavior. It does not alter persisted event times.
+// restores the default time.Now behavior. CLI cooldown transitions also use
+// this clock for their persisted timestamps.
 func WithExecutionClock(now func() time.Time) EngineOption {
 	return func(e *Engine) { e.schedulingNow = now }
 }
