@@ -256,6 +256,11 @@ func TestCIWatchHistoricalReaderHonorsWorkflowSelector(t *testing.T) {
 	base.states[42] = "pending"
 	r := &ciWatchHistoricalReader{ciWatchReader: base}
 	target := reviewprovider.CITarget{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40)}
+	// Head-only attention must not opt a subscriber into historical failures.
+	_, rows, err := r.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", []int64{10}, []int64{10}, nil)
+	if err != nil || len(rows) != 0 {
+		t.Fatal("head-only subscriber received historical rows", rows, err)
+	}
 	for _, ids := range [][]int64{nil, {20}, {10}} {
 		_, rows, err := r.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", ids, ids, ids)
 		if err != nil || (len(rows) > 0) != slices.Contains(ids, 10) {

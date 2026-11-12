@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -94,10 +95,14 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := make(chan struct{})
+	type callReply struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	done := make(chan callReply, 1)
 	go func() {
-		defer close(done)
-		_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "wait_for_ci", Arguments: map[string]any{"targets": pins, "wait_seconds": 900}})
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "wait_for_ci", Arguments: map[string]any{"targets": pins, "wait_seconds": 900}})
+		done <- callReply{result: result, err: err}
 	}()
 	select {
 	case <-entered:
@@ -117,7 +122,10 @@ func TestCIWatchSDKReadRouteResultAndLongCancellation(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case reply := <-done:
+		if !errors.Is(reply.err, context.Canceled) || reply.result != nil {
+			t.Fatal("canceled SDK wait returned an unexpected result", reply.result, reply.err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("SDK wait ignored cancellation")
 	}
