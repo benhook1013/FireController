@@ -61,6 +61,7 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
     } else if (type === 'review.requested' || type === 'review.operation_updated') {
       add('reviews', 'current', 'round-progress');
       add('reviews', 'current', 'fronts');
+      add('reviews', 'policy-assessment');
     } else if (type.startsWith('review.') || type.startsWith('reviews.')) {
       add('reviews', 'current'); add('reviews', 'policy-assessment');
     }

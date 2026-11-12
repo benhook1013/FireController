@@ -185,7 +185,7 @@ func TestLaneDiagnosticRepositoryChangeAndRevokedRead(t *testing.T) {
 	laneDiagnosticFrame(t, f, "cli", []SourcePlan{laneDiagnosticPlan(2), laneDiagnosticPlan(4)})
 	admissionSQL(t, f, `UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject)
 	out, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
-	if err != nil || out.SourceReason != "repository_changed" || out.SourceComplete {
+	if err != nil || out.SourceReason != "repository_changed" || out.LaneReason != "repository_changed" || out.SourceComplete {
 		t.Fatal(out, err)
 	}
 	for _, c := range out.Candidates {

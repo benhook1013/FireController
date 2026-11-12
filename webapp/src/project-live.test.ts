@@ -54,7 +54,7 @@ describe('live private project views', () => {
     } finally { f.close(); }
   });
 
-  it('validates operation resources and refreshes current progress and fronts without crossing project or history boundaries', async () => {
+  it('validates operation resources and refreshes current progress, fronts and assessments without crossing project or history boundaries', async () => {
     const f = fixture();
     const operation = `review_operation_${'a'.repeat(32)}`;
     const progress = f.add(['reviews', 'current', 'round-progress', [31, 32]]);
@@ -72,12 +72,12 @@ describe('live private project views', () => {
         expect(validMetadataPage(change, 25)).toBe(true);
         await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
       }
-      for (const query of [progress, fronts]) expect(query.reads()).toBe(2);
+      for (const query of [progress, fronts, assessment]) expect(query.reads()).toBe(2);
       for (const query of [inactiveProgress, inactiveFronts]) {
         expect(query.reads()).toBe(0);
         expect(query.state()?.isInvalidated).toBe(true);
       }
-      for (const query of [queue, assessment, history, inbox, otherProject]) {
+      for (const query of [queue, history, inbox, otherProject]) {
         expect(query.reads()).toBe(0);
         expect(query.state()?.isInvalidated).toBe(false);
       }
