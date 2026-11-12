@@ -235,7 +235,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 			}
 		}
 	}
-	return value.State == state && (state == "pending" || !value.TimedOut)
+	return value.State == state && value.TimedOut == (state == "pending")
 }
 
 func validCIWatchWorkflowFailures(item CIWatchTargetResult, pin CIWatchTarget) bool {
