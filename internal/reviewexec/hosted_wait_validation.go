@@ -22,22 +22,15 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	var owners [][2]string
+	defer rows.Close()
+	// The owner scan and its validation use the same read transaction.
+	// Keep each operation's facts only until that operation is checked.
 	for rows.Next() {
-		var owner [2]string
-		if err := rows.Scan(&owner[0], &owner[1]); err != nil {
-			rows.Close()
+		var project, operation string
+		if err := rows.Scan(&project, &operation); err != nil {
 			return err
 		}
-		owners = append(owners, owner)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, owner := range owners {
-		o, err := readOperationBase(ctx, tx, owner[0], owner[1])
+		o, err := readOperationBase(ctx, tx, project, operation)
 		if err != nil {
 			return err
 		}
@@ -45,7 +38,7 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	return nil
+	return rows.Err()
 }
 
 func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) error {
