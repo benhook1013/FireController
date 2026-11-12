@@ -103,6 +103,8 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 		if diagnostic := AgentReviewCI(ReviewSourceCIAssessment{State: "unproven", Reason: item.Reason, Target: ReviewSourceObservation{HeadSHA: item.ObservedHeadSHA, BaseSHA: item.ObservedBaseSHA}, MergeBaseMismatch: item.MergeBaseMismatch}).Diagnostic; diagnostic != nil {
 			return "observation_unproven", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction}
 		}
+	case item.Reason == "ci_observation_changed":
+		// Retained counts are informational until a coherent observation exists.
 	case item.ObservedAt != "" && item.Unproven > 0:
 		phase, explanation = "checks_unproven", "The latest observation is missing required-check evidence or could not verify it as of observed_at. Inspect the listed check contexts and reasons; this is not a CI pass."
 	case item.ObservedAt != "" && item.Pending > 0:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -130,7 +131,11 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					GotFirstResponseByte: func() { close(responseStarted) },
 				})
 				out := make(chan error, 1)
-				go func() { _, err := c.WatchCI(ctx, ciWatchPins(), 900); out <- err }()
+				pins := ciWatchPins()
+				for i := range pins {
+					pins[i].BaseSHA = strings.Repeat("b", 40)
+				}
+				go func() { _, err := c.WatchCI(ctx, pins, 900); out <- err }()
 				select {
 				case <-entered:
 				case <-time.After(5 * time.Second):
@@ -267,4 +272,55 @@ func (c ciWatchPhaseDeadlineContext) Err() error {
 // propagate this wrapper's deadline Err rather than its cancellation mechanism.
 func (c ciWatchPhaseDeadlineContext) Value(key any) any {
 	return context.WithoutCancel(c.Context).Value(key)
+}
+
+func TestCIWatchImplicitBaseLocalInterruptionsRequireExplicitRestart(t *testing.T) {
+	for _, kind := range []string{"canceled", "deadline_exceeded"} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mixed=%t", kind, mixed), func(t *testing.T) {
+				entered := make(chan struct{})
+				var posts atomic.Int64
+				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/v1/instance" {
+						handshake(w)
+						return
+					}
+					posts.Add(1)
+					_, _ = io.Copy(io.Discard, r.Body)
+					close(entered)
+					<-r.Context().Done()
+				}))
+				defer service.Close()
+				pins := ciWatchPins()
+				pins[0].BaseSHA = ""
+				if mixed {
+					pins = append(pins, client.CIWatchTarget{PullNumber: 99, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40)})
+				}
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				ctx = ciWatchPhaseDeadlineContext{ctx}
+				done := make(chan error, 1)
+				go func() { _, err := newClient(t, service).WatchCI(ctx, pins, 300); done <- err }()
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("watch not entered")
+				}
+				if kind == "canceled" {
+					cancel(context.Canceled)
+				} else {
+					cancel(context.DeadlineExceeded)
+				}
+				select {
+				case err := <-done:
+					var failure *client.Error
+					if !errors.As(err, &failure) || failure.Code != kind || !strings.Contains(failure.Action, "Verify the original comparison") || !strings.Contains(failure.Action, "explicit base pins") || posts.Load() != 1 {
+						t.Fatal("unsafe implicit restart guidance", err, posts.Load())
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("interruption did not return")
+				}
+			})
+		}
+	}
 }
