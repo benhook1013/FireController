@@ -124,7 +124,8 @@ func TestWaitPhysicalGuardsRejectRehashedBundles(t *testing.T) {
 			if altered == canonical {
 				t.Fatal("mutation did not change canonical schema")
 			}
-			damaged := restoreModifiedBundle(t, bundle, "DROP TABLE review_operation_waits; "+altered)
+			const retryIndex = `CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`
+			damaged := restoreModifiedBundle(t, bundle, "DROP TABLE review_operation_waits; "+altered+"; "+retryIndex)
 			before := restoreTree(t, damaged)
 			if _, err := Inspect(t.Context(), damaged); err == nil {
 				t.Error("Inspect accepted damaged wait constraints")

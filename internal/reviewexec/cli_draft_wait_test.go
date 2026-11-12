@@ -147,6 +147,21 @@ func TestSupervisorNonDraftSelectionSkipsDraftPrefix(t *testing.T) {
 	}
 }
 
+func TestSupervisorProbesDraftBeyondOrdinaryCandidateWindow(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	seed := f.enqueue(t, attemptProject, "ordinary-candidate-prefix", "cli", 2, 1)
+	draft := f.enqueue(t, otherAttemptProject, "draft-after-prefix", "cli", 2, 1)
+	for i := range 299 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_ordinary%03d", i))
+	}
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, draft.ID)
+	operations, err := f.e.pendingForWorker(t.Context(), true)
+	if err != nil || len(operations) < 2 || operations[0].ID != draft.ID {
+		t.Fatalf("ordinary window hid its independent Draft probe: %d candidates, %v", len(operations), err)
+	}
+}
+
 func TestOrdinaryCLIRequestUsesPreparationWithoutDraftProbe(t *testing.T) {
 	f := supervisorFixture(t)
 	request := f.enqueue(t, attemptProject, "ordinary-cli-no-draft-probe", "cli", 2, 1)

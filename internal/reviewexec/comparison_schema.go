@@ -91,6 +91,13 @@ func retainedComparisonSchema(ctx context.Context, q interface {
 	var raw string
 	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
+		var installed bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&installed); err != nil {
+			return false, core.NormalizeStorageError(err)
+		}
+		if installed {
+			return false, core.Fail("schema_invalid", "Retained comparison proof table is missing schema metadata.", 500)
+		}
 		return false, nil
 	}
 	if err != nil {

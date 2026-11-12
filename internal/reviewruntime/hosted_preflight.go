@@ -84,7 +84,7 @@ func retainHostedAllowance(ctx context.Context, captures *HostedCaptureStore, en
 // Retention is an idempotent local write of the same immutable capture. Retry
 // transient writer admission failures without issuing another provider query.
 // Every retry revalidates the original binding and reconciles an existing row.
-func retryHostedCooldownRetention(ctx context.Context, wait func(context.Context, time.Duration) error, retain func() error) error {
+func retryAllowanceRetention(ctx context.Context, wait func(context.Context, time.Duration) error, retain func() error) error {
 	for pass := 0; ; pass++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -111,6 +111,9 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 	defer cancel()
 	query, err := d.engine.ReadHostedAllowanceQuery(ctx, attempt.ProjectID, attempt.ID)
 	if err != nil {
+		if reviewexec.IsInvalidHostedPreparationEvidence(err) {
+			return nil
+		}
 		if retryableHostedRetention(err) || ctx.Err() != nil {
 			return err
 		}
@@ -118,6 +121,9 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 	}
 	observations, err := d.engine.ReadHostedObservations(ctx, attempt.ProjectID, attempt.ID)
 	if err != nil {
+		if reviewexec.IsInvalidHostedPreparationEvidence(err) {
+			return nil
+		}
 		return err
 	}
 	var reference CaptureReference
