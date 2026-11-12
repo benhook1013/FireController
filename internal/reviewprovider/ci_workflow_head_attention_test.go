@@ -67,6 +67,11 @@ func ciHeadAttentionFixture(t *testing.T, mode string) *ciObservationFixture {
 			}
 		}
 		head(value)
+		if mode == "duplicate suite" && r.URL.Path == actionsRunsPath && r.URL.Query().Get("check_suite_id") == "" {
+			envelope := value.(map[string]any)
+			runs := envelope["workflow_runs"].([]any)
+			runs[2].(map[string]any)["check_suite_id"] = runs[1].(map[string]any)["check_suite_id"]
+		}
 		w.WriteHeader(response.StatusCode)
 		_ = json.NewEncoder(w).Encode(value)
 	}))
@@ -162,5 +167,21 @@ func TestHeadWorkflowAttentionRequiresSelectionAndExplicitOptIn(t *testing.T) {
 	f := ciHeadAttentionFixture(t, "skip")
 	if _, _, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{32}, nil); err == nil {
 		t.Fatal("unselected head workflow accepted")
+	}
+}
+
+func TestHeadWorkflowAttentionReportsInvalidLatestInventory(t *testing.T) {
+	f := ciHeadAttentionFixture(t, "duplicate suite")
+	got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, []int64{31}, nil)
+	var warning *CIWorkflowAttentionError
+	if !errors.As(err, &warning) || warning.Cause == nil || len(rows) != 0 || got.State != "unproven" || got.Reason != "ci_merge_base_mismatch" || got.SelectedCommitSHA != "" || got.WorkflowHeadActions == nil {
+		t.Fatal("invalid optional inventory was silently accepted or changed gate", got, rows, err)
+	}
+	if _, invalid := LatestActionsRuns(*got.WorkflowHeadActions); invalid == nil {
+		t.Fatal("fixture did not reach rejected latest-run inventory")
+	}
+	_, calls := f.snapshot()
+	if calls[actionsCurrentPath] != 0 || calls[actionsJobsPath] != 0 {
+		t.Fatal("invalid head-only inventory started attempt fanout", calls)
 	}
 }
