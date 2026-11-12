@@ -97,6 +97,7 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 		// a new watch. Overlapping subscribers before a claim share its check.
 		sub.minimum = append(sub.minimum, entry.started+1)
 		sub.bases = append(sub.bases, target.BaseSHA)
+		sub.superseded = append(sub.superseded, nil)
 	}
 	s.watchers[sub] = true
 	s.watchPrincipals[scope.PrincipalID]++
@@ -180,6 +181,10 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			if refresh && item.State != "superseded" {
 				item.State, item.Reason = "pending", "ci_watch_refresh_pending"
 			}
+		}
+		if i < len(sub.superseded) && sub.superseded[i] != nil {
+			item = *sub.superseded[i]
+			item.Checks = []SourceCIContext{}
 		}
 		item.CIWatchTarget = target
 		if item.State != "pending" || item.Reason != "ci_merge_base_mismatch" {
@@ -370,8 +375,17 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 			// Pin the first eligible fresh source observation before another
 			// completion can replace it, even if this subscriber reads late.
 			for i, owned := range sub.entries {
-				if owned == entry && sub.bases[i] == "" && claim.version >= sub.minimum[i] && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
+				if owned != entry || claim.version < sub.minimum[i] {
+					continue
+				}
+				if sub.bases[i] == "" && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
 					sub.bases[i] = item.ObservedBaseSHA
+				}
+				// Source movement is terminal for this subscriber's immutable
+				// pins, even if authorization delays delivery across later reads.
+				// Retain only bounded source proof, never another owner's CI facts.
+				if sub.superseded[i] == nil && item.State != "closed" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) && (item.ObservedHeadSHA != sub.targets[i].HeadSHA || sub.bases[i] != "" && item.ObservedBaseSHA != sub.bases[i]) {
+					sub.superseded[i] = &CIWatchItem{State: "superseded", Reason: "ci_watch_source_changed", ObservedHeadSHA: item.ObservedHeadSHA, ObservedBaseSHA: item.ObservedBaseSHA, BaseRef: item.BaseRef, GateRef: item.GateRef, ObservedAt: item.ObservedAt, Checks: []SourceCIContext{}}
 				}
 			}
 			select {
