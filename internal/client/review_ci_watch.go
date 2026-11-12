@@ -156,6 +156,16 @@ func ciWatchReadError(err error) error {
 	if !errors.As(err, &failure) {
 		return err
 	}
+	if failure.Status == http.StatusConflict && failure.Code == "ci_watch_workflow_failures_unsupported" {
+		result := *failure
+		result.Action = "Verify matching client and server workflow-attention capabilities, or explicitly omit workflow selections for an ordinary required-CI wait, retaining the original PR/head/base pins. No automatic retry or fallback was attempted."
+		return &result
+	}
+	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_workflow_capacity" {
+		result := *failure
+		result.Action = "Reduce the workflow selections or wait for existing shared PR subscriptions to finish before another bounded CI wait, retaining the original PR/head/base pins. No automatic retry or review or CI rerun was requested."
+		return &result
+	}
 	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_response_limit" {
 		result := *failure
 		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No review or CI rerun was requested."
