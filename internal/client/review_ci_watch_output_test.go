@@ -25,6 +25,8 @@ func TestAgentCIWatchExplainsControllerAndGitHubPendingWithoutChangingFacts(t *t
 		{"mixed pending and missing evidence", "ci_required_checks_pending", "2026-11-01T00:00:00Z", "checks_unproven", "missing required-check evidence", 2, 0, 1, 1},
 		{"missing evidence", "ci_required_checks_unproven", "2026-11-01T00:00:00Z", "checks_unproven", "missing required-check evidence", 1, 0, 0, 1},
 		{"unavailable", "ci_watch_source_unavailable", "", "observation_unproven", "not established a current required-CI result", 0, 0, 0, 0},
+		{"coherence changed pending", "ci_observation_changed", "2026-11-01T00:00:00Z", "observation_unproven", "collected counts remain informational", 1, 0, 1, 0},
+		{"coherence changed unproven", "ci_observation_changed", "2026-11-01T00:00:00Z", "observation_unproven", "collected counts remain informational", 1, 0, 0, 1},
 		{"coherence changed", "ci_observation_changed", "2026-11-01T00:00:00Z", "observation_unproven", "collected counts remain informational", 1, 1, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
