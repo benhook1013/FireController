@@ -32,7 +32,7 @@ func testCIWatchKnownVerdict(t *testing.T, state string) {
 	}}}
 	if state == "passed" {
 		item := &response.Targets[0]
-		item.State, item.Reason, item.Failed, item.Satisfied = "passed", "ci_satisfied", 0, 1
+		item.State, item.Reason, item.Failed, item.Satisfied = "passed", "", 0, 1
 		item.Checks[0].State, item.Checks[0].Reason = "satisfied", ""
 		item.Checks[0].CheckRun.Conclusion = "success"
 	}

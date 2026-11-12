@@ -16,7 +16,7 @@ import (
 func ciWatchPassedSample() (client.CIWatchTarget, client.CIWatchResult) {
 	pin, response := ciWatchChangeSample()
 	item := &response.Targets[0]
-	item.State, item.Reason = "passed", "ci_satisfied"
+	item.State, item.Reason = "passed", ""
 	item.Satisfied, item.Failed, item.Pending = item.Required, 0, 0
 	item.Checks = []client.ReviewCIContext{
 		{Context: "build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: 81, Status: "completed", Conclusion: "success"}},

@@ -46,7 +46,7 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 	}
 	result := *failure
 	result.Details = details
-	if operationID == "" && (local || ciRefusal && details["reason"] == "ci_watch_capacity") {
+	if operationID == "" && (local || ciRefusal) {
 		for _, target := range targets {
 			if target.BaseSHA == "" {
 				result.Action += " At least one base was implicit. Verify the original comparison and supply explicit base pins before treating another bounded CI wait as the same comparison."
