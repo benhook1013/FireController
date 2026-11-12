@@ -56,3 +56,15 @@ func TestOperationListIndexBackupVersionsRemainReadOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutionIndexVersionThreeRequiresWaitSchemaClassification(t *testing.T) {
+	store, _ := historyInventoryFixture(t)
+	if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`UPDATE metadata SET value='8' WHERE key='schema:review_execution'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := validateSchema(t.Context(), store.DB(), false)
+	backupCode(t, err, "backup_invalid")
+}

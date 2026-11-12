@@ -101,3 +101,14 @@ func TestCIWatchZeroWaitUsesOnlyTwoAuthorizedReads(t *testing.T) {
 		t.Fatal("immediate snapshot added authorization or provider work", got, err, reads, reader.calls)
 	}
 }
+
+func TestCIWatchElapsedPositiveWaitUsesOnlyTwoAuthorizedReads(t *testing.T) {
+	f, s, _, reader, scope := ciWatchFixture(t)
+	f.store.DB().SetMaxIdleConns(0)
+	before := f.store.DB().Stats().MaxIdleClosed
+	got, err := f.e.watchCIFrom(t.Context(), scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}}, 1, time.Now().Add(-2*time.Second))
+	reads := f.store.DB().Stats().MaxIdleClosed - before
+	if err != nil || got.State != "pending" || !got.TimedOut || reads != 2 || reader.calls != 0 || len(s.watchers) != 0 {
+		t.Fatal("elapsed positive wait added reads or provider work", got, err, reads, reader.calls)
+	}
+}

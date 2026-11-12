@@ -119,9 +119,11 @@ func TestCIWatchHistoricalAttentionCoalescesAndProjectsBeforeWakeAndKeys(t *test
 	}
 	ciWatchRegistered(t, s, 2)
 	pin.AfterObservationKey = item.ObservationKey
+	pin.BaseSHA = item.ObservedBaseSHA
 	known, cancelKnown := startCIWatch(t, f, scope, []CIWatchTarget{pin})
 	defer cancelKnown()
 	old.AfterObservationKey = item.ObservationKey
+	old.BaseSHA = item.ObservedBaseSHA
 	oldKnown, cancelOldKnown := startCIWatch(t, f, scope, []CIWatchTarget{old})
 	defer cancelOldKnown()
 	ciWatchRegistered(t, s, 4)
