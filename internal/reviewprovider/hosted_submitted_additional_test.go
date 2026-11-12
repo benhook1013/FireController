@@ -325,60 +325,64 @@ func TestHostedSubmittedAdditionalOnlyRejectsUnprovenBody(t *testing.T) {
 }
 
 func TestHostedSubmittedAdditionalOnlyKeepsAttributionBoundaries(t *testing.T) {
-	cases := map[string]func(*hfFixture){
-		"incomplete source":        func(f *hfFixture) { f.snapshot.Complete = false },
-		"unknown root collection":  func(f *hfFixture) { f.snapshot.ReviewComments = nil },
-		"unknown issue collection": func(f *hfFixture) { f.snapshot.IssueComments = nil },
-		"wrong provider actor":     func(f *hfFixture) { f.snapshot.Reviews[0].Author.ID++ },
-		"wrong provider kind":      func(f *hfFixture) { f.snapshot.Reviews[0].Author.Kind = "User" },
-		"wrong head":               func(f *hfFixture) { f.snapshot.Reviews[0].HeadSHA = strings.Repeat("d", 40) },
-		"pending review": func(f *hfFixture) {
+	cases := map[string]func(*testing.T, *hfFixture){
+		"incomplete source":        func(t *testing.T, f *hfFixture) { f.snapshot.Complete = false },
+		"unknown root collection":  func(t *testing.T, f *hfFixture) { f.snapshot.ReviewComments = nil },
+		"unknown issue collection": func(t *testing.T, f *hfFixture) { f.snapshot.IssueComments = nil },
+		"wrong provider actor":     func(t *testing.T, f *hfFixture) { f.snapshot.Reviews[0].Author.ID++ },
+		"wrong provider kind":      func(t *testing.T, f *hfFixture) { f.snapshot.Reviews[0].Author.Kind = "User" },
+		"wrong head":               func(t *testing.T, f *hfFixture) { f.snapshot.Reviews[0].HeadSHA = strings.Repeat("d", 40) },
+		"pending review": func(t *testing.T, f *hfFixture) {
 			f.snapshot.Reviews[0].State = "pending"
 			f.snapshot.Reviews[0].SubmittedAt = time.Time{}
 		},
-		"equal trigger time": func(f *hfFixture) { f.snapshot.Reviews[0].SubmittedAt = f.snapshot.IssueComments[0].CreatedAt },
-		"before trigger": func(f *hfFixture) {
+		"equal trigger time": func(t *testing.T, f *hfFixture) {
+			f.snapshot.Reviews[0].SubmittedAt = f.snapshot.IssueComments[0].CreatedAt
+		},
+		"before trigger": func(t *testing.T, f *hfFixture) {
 			f.snapshot.Reviews[0].SubmittedAt = f.snapshot.IssueComments[0].CreatedAt.Add(-time.Second)
 		},
-		"competing review": func(f *hfFixture) {
+		"competing review": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.Reviews[0]
 			other.ID++
 			f.snapshot.Reviews = append(f.snapshot.Reviews, other)
 		},
-		"competing foreign head review": func(f *hfFixture) {
+		"competing foreign head review": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.Reviews[0]
 			other.ID++
 			other.HeadSHA = strings.Repeat("d", 40)
 			f.snapshot.Reviews = append(f.snapshot.Reviews, other)
 		},
-		"reused historical run": func(f *hfFixture) {
+		"reused historical run": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.Reviews[0]
 			other.ID++
 			other.SubmittedAt = f.snapshot.IssueComments[0].CreatedAt.Add(-time.Hour)
 			f.snapshot.Reviews = append(f.snapshot.Reviews, other)
 		},
-		"missing acknowledgement": func(f *hfFixture) { f.snapshot.IssueComments = f.snapshot.IssueComments[:1] },
-		"foreign acknowledgement": func(f *hfFixture) { f.snapshot.IssueComments[1].Author.ID++ },
-		"unknown acknowledgement": func(f *hfFixture) { f.snapshot.IssueComments[1].Body = "Full review finished." },
-		"acknowledgement before trigger": func(f *hfFixture) {
+		"missing acknowledgement": func(t *testing.T, f *hfFixture) { f.snapshot.IssueComments = f.snapshot.IssueComments[:1] },
+		"foreign acknowledgement": func(t *testing.T, f *hfFixture) { f.snapshot.IssueComments[1].Author.ID++ },
+		"unknown acknowledgement": func(t *testing.T, f *hfFixture) { f.snapshot.IssueComments[1].Body = "Full review finished." },
+		"acknowledgement before trigger": func(t *testing.T, f *hfFixture) {
 			f.snapshot.IssueComments[1].CreatedAt = f.snapshot.IssueComments[0].CreatedAt.Add(-time.Second)
 		},
-		"acknowledgement at submission": func(f *hfFixture) { f.snapshot.IssueComments[1].UpdatedAt = f.snapshot.Reviews[0].SubmittedAt },
-		"acknowledgement before submission": func(f *hfFixture) {
+		"acknowledgement at submission": func(t *testing.T, f *hfFixture) {
+			f.snapshot.IssueComments[1].UpdatedAt = f.snapshot.Reviews[0].SubmittedAt
+		},
+		"acknowledgement before submission": func(t *testing.T, f *hfFixture) {
 			f.snapshot.IssueComments[1].UpdatedAt = f.snapshot.Reviews[0].SubmittedAt.Add(-time.Second)
 		},
-		"duplicate acknowledgement": func(f *hfFixture) {
+		"duplicate acknowledgement": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.IssueComments[1]
 			other.ID++
 			f.snapshot.IssueComments = append(f.snapshot.IssueComments, other)
 		},
-		"unknown provider reply": func(f *hfFixture) {
+		"unknown provider reply": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.IssueComments[1]
 			other.ID++
 			other.Body = "Unknown output"
 			f.snapshot.IssueComments = append(f.snapshot.IssueComments, other)
 		},
-		"competing trigger": func(f *hfFixture) {
+		"competing trigger": func(t *testing.T, f *hfFixture) {
 			other := f.snapshot.IssueComments[0]
 			other.ID = 303
 			other.Body = "@coderabbitai full review"
@@ -386,11 +390,11 @@ func TestHostedSubmittedAdditionalOnlyKeepsAttributionBoundaries(t *testing.T) {
 			other.UpdatedAt = other.CreatedAt
 			f.snapshot.IssueComments = append(f.snapshot.IssueComments, other)
 		},
-		"attached root": func(f *hfFixture) {
+		"attached root": func(t *testing.T, f *hfFixture) {
 			other := submittedTestFixture(t)
 			f.snapshot.ReviewComments = other.snapshot.ReviewComments[:1]
 		},
-		"orphan root": func(f *hfFixture) {
+		"orphan root": func(t *testing.T, f *hfFixture) {
 			other := submittedTestFixture(t)
 			other.snapshot.ReviewComments[0].ReviewID = 999
 			f.snapshot.ReviewComments = other.snapshot.ReviewComments[:1]
@@ -399,7 +403,7 @@ func TestHostedSubmittedAdditionalOnlyKeepsAttributionBoundaries(t *testing.T) {
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := submittedAdditionalFixture(t)
-			mutate(&f)
+			mutate(t, &f)
 			got := f.extract(t)
 			if got.Complete || got.Publication.State == "attributed" || got.Publication.SubmittedReview != nil || len(got.Findings) != 0 || !got.Publication.FinishedAt.IsZero() {
 				t.Fatalf("attribution boundary bypassed: state=%s reason=%s complete=%t findings=%d", got.Publication.State, got.Reason, got.Complete, len(got.Findings))

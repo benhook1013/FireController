@@ -118,7 +118,7 @@ describe('live private project views', () => {
     } finally { f.close(); }
   });
 
-  it('validates operation resources and refreshes only active current progress queries', async () => {
+  it('validates operation resources and refreshes current progress and policy assessments', async () => {
     const f = fixture();
     const operation = `review_operation_${'a'.repeat(32)}`;
     const progress = f.add(['reviews', 'current', 'round-progress', '32']);
@@ -135,10 +135,10 @@ describe('live private project views', () => {
         expect(validMetadataPage(change, 25)).toBe(true);
         await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
       }
-      for (const query of [progress, otherProgress]) expect(query.reads()).toBe(2);
+      for (const query of [progress, otherProgress, assessment]) expect(query.reads()).toBe(2);
       expect(inactiveProgress.reads()).toBe(0);
       expect(inactiveProgress.state()?.isInvalidated).toBe(true);
-      for (const query of [currentQueue, assessment, captured, inbox]) {
+      for (const query of [currentQueue, captured, inbox]) {
         expect(query.reads()).toBe(0);
         expect(query.state()?.isInvalidated).toBe(false);
       }

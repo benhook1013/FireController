@@ -751,14 +751,7 @@ func TestCLIDriverLateAncestorCorrectionStillReviewsChild(t *testing.T) {
 	}
 	// Review a genuine child of the completed parent. Its own channel has no
 	// credit; the older parent's later correction must not stop child review.
-	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
-	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	gitTestRun(t, source, "add", "third.txt")
-	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
-	third := gitTestOutput(t, source, "rev-parse", "HEAD")
-	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+	third := cliDriverChildCommit(t, f)
 	parent := f.reader.pulls[2]
 	parent.HeadRef = "covered-parent"
 	f.reader.pulls[2] = parent
@@ -798,14 +791,7 @@ func TestCLIDriverAncestorCorrectionAfterGitVerificationKeepsChildReview(t *test
 			if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-parent", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 				t.Fatal(err)
 			}
-			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
-			if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			gitTestRun(t, source, "add", "third.txt")
-			gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
-			third := gitTestOutput(t, source, "rev-parse", "HEAD")
-			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+			third := cliDriverChildCommit(t, f)
 			merged := f.reader.pulls[3]
 			merged.Merged, merged.State = true, "closed"
 			f.reader.pulls[3] = merged

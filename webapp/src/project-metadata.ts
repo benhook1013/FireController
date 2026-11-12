@@ -49,9 +49,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('notes'); add('note', id); add('note-history', id);
     } else if (type === 'review.requested' || type === 'review.operation_updated') {
       // Operation changes alter the pending count and per-PR queue-position
-      // badge. Refresh only active current progress views, not review history,
-      // policy assessments or every project review query.
-      add('reviews', 'current', 'round-progress');
+      // badge and can change whether a policy assessment is sufficient.
+      add('reviews', 'current', 'round-progress'); add('reviews', 'policy-assessment');
     } else if (type.startsWith('review.') || type.startsWith('reviews.')) {
       add('reviews', 'current'); add('reviews', 'policy-assessment');
     }

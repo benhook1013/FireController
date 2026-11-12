@@ -28,7 +28,7 @@ export function ReviewProgressView({ channel, progress }: { channel: 'hosted' | 
       {!stopReason && progress.minimum > progress.used && <span>At least {progress.minimum - progress.used} more</span>}
       {!stopReason && <span>Taper {progress.dry}/{progress.taper}</span>}
     </>}
-    {pending}
+    {progress.configured && pending}
     {progress.wait && <ReviewOperationWaitBadge wait={progress.wait} channel={channel} />}
   </div>;
 }
