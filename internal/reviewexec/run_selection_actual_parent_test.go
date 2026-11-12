@@ -86,20 +86,16 @@ func TestRunSelectionActualParentKeepsUnfinishedFindingLocal(t *testing.T) {
 			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 2}
 			if dependent {
 				wantCalls["parent:agent-a"] = 1
-				if got.State != "held" || got.OperationID != "" {
-					t.Fatal("unfinished actual parent allowed dependent dispatch", got)
-				}
-				if count := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`); count != 1 {
-					t.Fatal("held dependency created another operation", count)
-				}
-			} else {
-				if got.State != "selected" || got.OperationID == "" {
-					t.Fatal("unrelated finding blocked independent work", got)
-				}
-				op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
-				if err != nil || op.PullNumber != 4 || op.HeadSHA != reader.pulls[4].HeadSHA {
-					t.Fatal("selected wrong independent source", op, err)
-				}
+			}
+			if got.State != "selected" || got.OperationID == "" {
+				t.Fatal("ancestor finding blocked distinct review work", got)
+			}
+			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
+			if err != nil || op.PullNumber != 4 || op.HeadSHA != reader.pulls[4].HeadSHA {
+				t.Fatal("selected wrong source comparison", op, err)
+			}
+			if count := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`); count != 2 {
+				t.Fatal("selection did not create exactly one child", count)
 			}
 			gotCalls := map[string]int{}
 			for _, call := range reader.calls {

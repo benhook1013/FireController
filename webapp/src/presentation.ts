@@ -64,11 +64,20 @@ export function validPresentation(v: unknown, project: string): v is Presentatio
 export function validPresentationSnapshot(v: unknown, project: string): v is PresentationSnapshot {
   return object(v) && exact(v, ['presentation', 'event_cursor']) && validPresentation(v.presentation, project) && cursor(v.event_cursor);
 }
+function metadataResource(kind: string, value: unknown): value is string {
+  if (kind === 'review.requested' || kind === 'review.operation_updated') {
+    return typeof value === 'string' && /^review_operation_[a-f0-9]{32}$/u.test(value);
+  }
+  if (kind !== 'reviews.rounds_configured') return identity(value);
+  // Native round controls address a canonical PR/channel pair, not a record ID.
+  if (typeof value !== 'string' || !/^[1-9]\d{0,9}\/(?:hosted|cli)$/u.test(value)) return false;
+  return Number(value.split('/')[0]) <= 2147483647;
+}
 export function validMetadataPage(v: unknown, limit: number): v is ProjectMetadataPage {
   if (!object(v) || !exact(v, ['items', 'event_cursor', 'has_more']) || !Array.isArray(v.items) || v.items.length > limit || !cursor(v.event_cursor) || typeof v.has_more !== 'boolean' || v.has_more && v.items.length === 0) return false;
   const seen = new Set<string>();
   for (const item of v.items) {
-    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !identity(item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
+    if (!object(item) || !exact(item, ['event_type', 'resource_id', 'revision', 'event_cursor']) || typeof item.event_type !== 'string' || !projectEventTypeSet.has(item.event_type) || !metadataResource(item.event_type, item.resource_id) || !positive(item.revision) || !cursor(item.event_cursor) || seen.has(item.event_cursor)) return false;
     seen.add(item.event_cursor);
   }
   return !v.has_more || v.items.at(-1)?.event_cursor === v.event_cursor;

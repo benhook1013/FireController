@@ -300,7 +300,7 @@ func TestSchedulingCLIPublicationAndAdjudicationRemainRequired(t *testing.T) {
 	}
 }
 
-func TestSchedulingCLIActualParentStillBlocks(t *testing.T) {
+func TestSchedulingCLIActualParentPauseDoesNotBlockChild(t *testing.T) {
 	f := schedulingFixture(t)
 	one := int64(1)
 	_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "stacked-cli", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}})
@@ -323,8 +323,12 @@ func TestSchedulingCLIActualParentStillBlocks(t *testing.T) {
 	reader.parents = map[string]reviewprovider.Pull{"branch-two": func() reviewprovider.Pull { p := schedulingPull(2); p.HeadRef = "branch-two"; return p }()}
 	selectionNext(t, f, reader)
 	r := schedulingLatest(t, f)
-	if r.OperationID != "" || r.State != "held" {
-		t.Fatal("actual predecessor bypassed", r)
+	if r.OperationID == "" || r.State != "selected" {
+		t.Fatal("ancestor pause blocked the child review", r)
+	}
+	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), r.OperationID)
+	if err != nil || op.PullNumber != 4 {
+		t.Fatal(op, err)
 	}
 }
 
