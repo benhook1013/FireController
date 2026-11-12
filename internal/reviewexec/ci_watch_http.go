@@ -66,7 +66,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			core.WriteError(w, invalid())
 			return
 		}
-		targets = append(targets, CIWatchTarget{AllowPassedRearm: changeAware && watchVersion == "change-v3", PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows, AllowHeadAttention: headAttention && len(workflows) > 0, AllowHistoricalAttention: headAttention && workflowVersion == "3" && len(workflows) > 0})
+		targets = append(targets, CIWatchTarget{AllowPassedRearm: changeAware && watchVersion == "change-v3", PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows, AllowHeadAttention: headAttention && len(workflows) > 0, AllowHistoricalAttention: headAttention && watchVersion == "change-v3" && workflowVersion == "3" && len(workflows) > 0})
 	}
 	if !validCIWatchTargets(targets) {
 		core.WriteError(w, invalid())
