@@ -100,8 +100,13 @@ func TestCIWatchObservedSourceMovementEndsOriginalWaitDespiteNewHint(t *testing.
 			// observed mismatch against this original subscription's immutable pins.
 			hintLifecycle(t, f, githubhook.Hint{RepositoryID: 801, PullNumbers: []int64{42}, HeadSHA: pull.HeadSHA, Metadata: true, CI: true})
 			close(reader.release)
-			if err := <-observed; err != nil {
-				t.Fatal(err)
+			select {
+			case err := <-observed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("source observation did not finish after releasing reader")
 			}
 			reply := receiveCIWatch(t, out)
 			if reply.err != nil || reply.value.State != "superseded" || reply.value.TimedOut || reply.value.Targets[0].Reason != "ci_watch_source_changed" || !reflect.DeepEqual(reply.value.Targets[0].CIWatchTarget, target) || reply.value.Targets[0].ObservedHeadSHA != pull.HeadSHA || reply.value.Targets[0].ObservedBaseSHA != pull.BaseSHA {
