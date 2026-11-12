@@ -79,6 +79,63 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 	return v, err
 }
 
+type runPullResult struct {
+	pull reviewprovider.Pull
+	err  error
+}
+
+// At most four raw metadata GETs are in flight per selection (eight across its
+// two workers). Results remain ordered; only joined successes enter phase-local
+// caches. Lookahead never supplies a selection or publication by itself.
+func (r *runReads) pullWindow(ctx context.Context, repo string, repositoryID int64, numbers []int64) []runPullResult {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]runPullResult, len(numbers))
+	completed := make([]chan struct{}, len(numbers))
+	var workers sync.WaitGroup
+	for i, number := range numbers {
+		completed[i] = make(chan struct{})
+		if value, ok := r.pulls[repo][number]; ok {
+			results[i].pull = value
+			close(completed[i])
+			continue
+		}
+		workers.Go(func() {
+			defer close(completed[i])
+			results[i].pull, results[i].err = r.reader.Pull(ctx, repo, number)
+		})
+	}
+	consumed := len(numbers)
+	for i, number := range numbers {
+		select {
+		case <-ctx.Done():
+			consumed = i
+		case <-completed[i]:
+			result := results[i]
+			if result.err == nil && sameTarget(result.pull, repositoryID, number) && result.pull.Merged && result.pull.State == "closed" {
+				continue
+			}
+			// A live/closed-unmerged candidate (or ordered error) needs local
+			// evaluation before any farther source work can matter. Cancel
+			// discarded lookahead, including a slow reader, then join it.
+			consumed = i + 1
+		}
+		cancel()
+		break
+	}
+	workers.Wait()
+	results = results[:consumed]
+	for i, result := range results {
+		if result.err == nil {
+			if r.pulls[repo] == nil {
+				r.pulls[repo] = map[int64]reviewprovider.Pull{}
+			}
+			r.pulls[repo][numbers[i]] = result.pull
+		}
+	}
+	return results
+}
+
 func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
 	key := repository + "\x00" + branch
 	if value, ok := r.parents[key]; ok {
@@ -156,7 +213,7 @@ func retryRunSelectionRead(ctx context.Context, local func() error) error {
 }
 
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
-	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, 15*time.Second)
+	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
@@ -197,6 +254,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	if err != nil {
 		return runChoice{}, err
 	}
+	windows := map[int64]runPullResult{}
 	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
@@ -224,6 +282,42 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			if paused && !neededParent {
 				plan = SourcePlan{Repository: repository, Pull: reviewprovider.Pull{RepositoryID: repo, Number: n}, SourceReason: "pull_scheduling_paused", schedulingPaused: true}
 			} else {
+				if _, fetched := windows[n]; !fetched {
+					// History and paused controls are barriers, never permission
+					// for speculative reads. Future control damage only stops
+					// lookahead; the ordered member retains its normal checks.
+					numbers := []int64{n}
+					for j := i + 1; j < min(i+4, len(queue)); j++ {
+						next := queue[j]
+						if _, retained := history[next]; retained {
+							break
+						}
+						var blocked bool
+						controlErr := retryRunSelectionRead(ctx, func() error {
+							return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+								control, err := readPullScheduling(ctx, tx, r.ProjectID, next)
+								blocked = control.Paused
+								return err
+							})
+						})
+						if controlErr != nil || blocked {
+							break
+						}
+						numbers = append(numbers, next)
+					}
+					err = source.read(ctx, func(ctx context.Context) error {
+						for j, result := range reads.pullWindow(ctx, repository.FullName, repo, numbers) {
+							windows[numbers[j]] = result
+						}
+						return nil
+					})
+					if err != nil {
+						return sourceFailure(runReason(err)), nil
+					}
+				}
+				if result, fetched := windows[n]; fetched && result.err != nil {
+					return sourceFailure(runReason(result.err)), nil
+				}
 				plan, err = readRunPlan(ctx, &source, reads, repo, c, r.Channel, n)
 				if err != nil {
 					return sourceFailure(runReason(err)), nil

@@ -531,14 +531,18 @@ func TestRunSelectionRepeatedReadDeadlineHoldsAndReleasesWorker(t *testing.T) {
 	}
 	conn.Close()
 	got := selectionContentionRead(t, f, receipt.ID)
-	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != 3 || got.OperationID != "" || r.calls.Load() != 2 {
+	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != 3 || got.OperationID != "" || r.calls.Load() != 3 {
 		t.Fatal("invalid local deadline settlement", got, r.calls.Load())
 	}
 	identityMu.Lock()
-	identityOK := len(repositoryIDs) == 1 && repositoryIDs[0] == 801 && len(pullNumbers) == 1 && pullNumbers[0] == 2
+	pullCounts := map[int64]int{}
+	for _, n := range pullNumbers {
+		pullCounts[n]++
+	}
+	identityOK := len(repositoryIDs) == 1 && repositoryIDs[0] == 801 && len(pullNumbers) == 2 && len(pullCounts) == 2 && pullCounts[2] == 1 && pullCounts[4] == 1
 	identityMu.Unlock()
 	if !identityOK {
-		t.Fatal("sequential source reads changed identity or repeated IO", repositoryIDs, pullNumbers)
+		t.Fatal("bounded speculative source reads changed identity or repeated IO", repositoryIDs, pullNumbers)
 	}
 	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
 		t.Fatal(err)

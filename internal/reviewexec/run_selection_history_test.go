@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,9 +64,40 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			var pulls atomic.Int32
+			var pulls, active atomic.Int32
+			var mu sync.Mutex
+			identities := map[int64]int{}
+			assertReads := func() {
+				t.Helper()
+				if active.Load() != 0 {
+					t.Fatal("metadata readers not joined", active.Load())
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				// Each live draft ends ordered consumption. Its discarded
+				// lookahead must be reacquired, never reused as fresh authority.
+				for _, n := range queue {
+					want := 0
+					if n >= 50 && n <= 57 {
+						want = min(int(n-49), 4)
+					} else if n == 86 {
+						want = 1
+					}
+					if identities[n] != want {
+						t.Errorf("PR%d metadata reads = %d, want %d", n, identities[n], want)
+					}
+				}
+				if len(identities) != 9 {
+					t.Error("unexpected source identities", identities)
+				}
+			}
 			reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
 				pulls.Add(1)
+				active.Add(1)
+				defer active.Add(-1)
+				mu.Lock()
+				identities[n]++
+				mu.Unlock()
 				if n <= 49 || n >= 58 && n <= 85 {
 					t.Errorf("fetched irrelevant historical PR %d", n)
 				}
@@ -83,20 +115,23 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 				return p, err
 			}}
 			choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-			if err != nil || choice.state != "selected" || choice.number != 86 || len(choice.prefix) != 86 || pulls.Load() != 9 || reader.calls.Load() != 10 {
+			if err != nil || choice.state != "selected" || choice.number != 86 || len(choice.prefix) != 86 || pulls.Load() != 27 || reader.calls.Load() != 28 {
 				t.Fatal(choice.state, choice.reason, choice.number, len(choice.prefix), pulls.Load(), reader.calls.Load(), err)
 			}
+			assertReads()
 			if choice.prefix[0].ObservedAt != "2026-01-01T00:00:00Z" || !choice.prefix[0].retainedMerged || !choice.prefix[57].schedulingPaused || choice.prefix[57].ObservedAt != "" {
 				t.Fatal("invented fresh history", choice.prefix[0], choice.prefix[57])
 			}
+			identities = map[int64]int{}
 			pulls.Store(0)
 			reader.calls.Store(0)
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, receipt.ID)
 			frame, found, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, channel)
-			if err != nil || !found || got.State != "selected" || frame.complete || len(frame.prefix) != 86 || reader.calls.Load() != 10 || pulls.Load() != 9 {
+			if err != nil || !found || got.State != "selected" || frame.complete || len(frame.prefix) != 86 || reader.calls.Load() != 28 || pulls.Load() != 27 {
 				t.Fatal(got, frame.complete, len(frame.prefix), reader.calls.Load(), err)
 			}
+			assertReads()
 			if err := ValidateFrontSnapshot(t.Context(), f.store.DB()); err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +143,7 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 			if front.State != "ready" || front.PullNumber != 86 {
 				t.Fatal("skipped history hid actual front", front)
 			}
-			t.Logf("86 queued PRs: 49 merged + 28 paused read zero times; 9 open PRs + repository = %d provider calls", reader.calls.Load())
+			t.Logf("86 queued PRs: 49 merged + 28 paused read zero times; 9 live identities with bounded discarded lookahead + repository = %d provider calls", reader.calls.Load())
 		})
 	}
 }

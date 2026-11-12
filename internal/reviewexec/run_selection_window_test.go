@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,25 +11,43 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func TestRunSelectionOpenHeadNeverReadsLookahead(t *testing.T) {
+func TestRunSelectionOpenHeadBoundsAndJoinsLookahead(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
 		t.Run(channel, func(t *testing.T) {
 			f := selectionFixtureWithQueue(t, []int64{1, 2, 3, 4})
 			expected := int64(4)
 			receipt, _ := selectionEnqueue(t, f, "no-lookahead", channel, &expected)
 			var calls atomic.Int32
+			var active atomic.Int32
+			var mu sync.Mutex
+			identities := map[int64]int{}
 			reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
 				calls.Add(1)
-				if n != 1 {
-					t.Errorf("read irrelevant successor %d", n)
+				active.Add(1)
+				defer active.Add(-1)
+				mu.Lock()
+				identities[n]++
+				mu.Unlock()
+				if repo != "owner/repo" || n < 1 || n > expected {
+					t.Errorf("source outside exact asserted window: %s/%d", repo, n)
 				}
 				return selectionSnapshotReader{}.Pull(ctx, repo, n)
 			}}
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, receipt.ID)
-			if got.State != "held" || got.Reason != "expected_pr_mismatch" || calls.Load() != 1 || reader.calls.Load() != 2 {
+			if got.State != "held" || got.Reason != "expected_pr_mismatch" || calls.Load() != 4 || reader.calls.Load() != 5 || active.Load() != 0 || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 				t.Fatal(got, calls.Load(), reader.calls.Load())
 			}
+			mu.Lock()
+			for _, n := range []int64{1, 2, 3, 4} {
+				if identities[n] != 1 {
+					t.Errorf("metadata identity not read exactly once: %d=%d", n, identities[n])
+				}
+			}
+			if len(identities) != 4 {
+				t.Error("unexpected speculative identities", identities)
+			}
+			mu.Unlock()
 		})
 	}
 }
@@ -90,20 +109,43 @@ func TestRunSelectionClosedUnmergedCanReopen(t *testing.T) {
 func TestRunSelectionSourceFailureRetainsOnlyAcquiredPrefix(t *testing.T) {
 	f := selectionFixtureWithQueue(t, []int64{1, 2, 3})
 	receipt, _ := selectionEnqueue(t, f, "ordered-source-failure", "cli", nil)
+	var active atomic.Int32
+	var identities [3]atomic.Int32
+	speculative := make(chan struct{})
 	reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+		active.Add(1)
+		defer active.Add(-1)
+		if repo != "owner/repo" || n < 1 || n > 3 {
+			t.Errorf("source outside bounded failure window: %s/%d", repo, n)
+			return reviewprovider.Pull{}, nil
+		}
+		identities[n-1].Add(1)
 		if n == 2 {
+			select {
+			case <-speculative:
+			case <-ctx.Done():
+				return reviewprovider.Pull{}, ctx.Err()
+			}
 			return reviewprovider.Pull{}, &reviewprovider.Error{Code: "provider_unauthorized", Message: "Private provider response"}
 		}
+		p, err := selectionSnapshotReader{merged: true}.Pull(ctx, repo, n)
 		if n == 3 {
-			t.Error("read beyond failure")
+			// A successful later result is available before the ordered error,
+			// but must never become retained source or admission authority.
+			defer close(speculative)
 		}
-		return selectionSnapshotReader{merged: true}.Pull(ctx, repo, n)
+		return p, err
 	}}
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, receipt.ID)
 	frame, ok, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, "cli")
-	if err != nil || !ok || got.Reason != "source_unauthorized" || frame.complete || len(frame.prefix) != 1 || !frame.prefix[0].Merged || frame.prefix[0].HeadSHA != strings.Repeat("a", 40) || reader.calls.Load() != 3 {
-		t.Fatal(got, frame, reader.calls.Load(), err)
+	if err != nil || !ok || got.State != "held" || got.Reason != "source_unauthorized" || got.OperationID != "" || frame.complete || len(frame.prefix) != 1 || frame.prefix[0].Number != 1 || !frame.prefix[0].Merged || frame.prefix[0].HeadSHA != strings.Repeat("a", 40) || reader.calls.Load() != 4 || active.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal(got, frame, reader.calls.Load(), active.Load(), err)
+	}
+	for i := range identities {
+		if identities[i].Load() != 1 {
+			t.Errorf("PR%d metadata reads = %d, want 1", i+1, identities[i].Load())
+		}
 	}
 }
 
