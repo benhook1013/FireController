@@ -26,7 +26,7 @@ func ciWatchTargetError(err error, operationID string, targets []CIWatchTarget) 
 	}
 	shutdown := failure.Status == http.StatusServiceUnavailable && failure.Code == "overloaded" && details["reason"] == "result_wait_lifetime"
 	local := failure.Status == 0 && oneReviewOf(failure.Code, "canceled", "deadline_exceeded")
-	workflowRefusal := failure.Code == "ci_watch_workflow_capacity" && failure.Status == http.StatusServiceUnavailable ||
+	workflowRefusal := (failure.Code == "ci_watch_workflow_capacity" || failure.Code == "ci_watch_response_limit") && failure.Status == http.StatusServiceUnavailable ||
 		failure.Code == "ci_watch_workflow_failures_unsupported" && failure.Status == http.StatusConflict
 	ciRefusal := operationID == "" && ValidateCIWatchTargets(targets) == nil && (workflowRefusal ||
 		ciWatchRefusalReason(details["reason"]) && (failure.Code == "overloaded" && failure.Status == http.StatusServiceUnavailable ||
