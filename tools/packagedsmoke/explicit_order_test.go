@@ -272,9 +272,9 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	explicitOperation := read(explicitReceipt, true)
 	providerBefore := provider.inventory()
 	gitBefore, err := os.ReadFile(gitLog)
-	// Each request checks Draft readiness before claiming a slot, then
-	// preparation independently reads the repository and pull before Git.
-	expectedSelected := map[string]int{"GET /repositories/991": 4, "GET /repos/synthetic/packaged-smoke/pulls/3": 4}
+	// Each new request verifies the repository and pull once during
+	// preparation before invoking Git.
+	expectedSelected := map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
 	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 2 || !reflect.DeepEqual(providerBefore, expectedSelected) {
 		t.Fatalf("request did not stop at the bounded source/Git fixture: %v", providerBefore)
 	}
@@ -338,7 +338,8 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("replay/read/restart launched Git again")
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 8, "GET /repos/synthetic/packaged-smoke/pulls/3": 4}
+	// Four held observer requests add repository reads only.
+	expectedTotal := map[string]int{"GET /repositories/991": 6, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("explicit selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
