@@ -181,7 +181,16 @@ func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID s
 			return conflict()
 		}
 		now := time.Now().UTC()
-		if !freshAllowanceObservation(owned.ObservedAt, now) || !freshAllowanceObservation(owned.Anchor.ObservedAt, now) || observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
+		if observation.State == "cooldown_observed" {
+			// An immutable cooldown can be recovered after its capture ages
+			// out. It only delays admission and never proves availability.
+			observed, _ := hostedObservationTime(owned.ObservedAt)
+			anchored, _ := time.Parse(time.RFC3339Nano, owned.Anchor.ObservedAt)
+			future := now.Add(5 * time.Second)
+			if observed.After(future) || anchored.After(future) {
+				return invalid()
+			}
+		} else if !freshAllowanceObservation(owned.ObservedAt, now) || !freshAllowanceObservation(owned.Anchor.ObservedAt, now) || observation.ResponseCreatedAt.Before(now.Add(-time.Minute)) || observation.ResponseCreatedAt.After(now.Add(5*time.Second)) {
 			return invalid()
 		}
 		if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && owned.ChangedFiles > ceiling {

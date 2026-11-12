@@ -48,7 +48,7 @@ func isStoredUnavailable(err error, kind storedUnavailableKind) bool {
 // IsInvalidHostedPreparationEvidence identifies malformed retained source only.
 // Database access and cancellation errors still require normal recovery.
 func IsInvalidHostedPreparationEvidence(err error) bool {
-	return isStoredUnavailable(err, storedHostedQuery) || isStoredUnavailable(err, storedHostedObservation)
+	return isStoredUnavailable(err, storedHostedQuery) || isStoredUnavailable(err, storedHostedObservation) || isStoredUnavailable(err, storedAllowanceObservation)
 }
 
 func allowanceUnavailable() error {
@@ -234,7 +234,9 @@ func ValidateAllowanceSnapshot(ctx context.Context, q EvidenceQuery, executionVe
 		tables = append(tables, "review_hosted_preflight")
 	}
 	for _, table := range tables {
-		rows, err := q.QueryContext(ctx, `SELECT project_id,attempt_id FROM `+table)
+		rows, err := q.QueryContext(ctx, `SELECT p.project_id,p.attempt_id FROM `+table+` p
+			LEFT JOIN review_execution_attempts a ON a.id=p.attempt_id
+			ORDER BY p.project_id,a.operation_id,p.attempt_id`)
 		if err != nil {
 			return err
 		}
@@ -254,14 +256,19 @@ func ValidateAllowanceSnapshot(ctx context.Context, q EvidenceQuery, executionVe
 		}
 		// Finish the scan before further queries: snapshot readers can have a
 		// single connection, while transaction readers share their connection.
+		var o Operation
 		for _, owner := range owners {
 			a, err := readAttempt(ctx, q, owner[0], owner[1])
 			if err != nil {
 				return err
 			}
-			o, err := readOperationBase(ctx, q, owner[0], a.OperationID)
-			if err != nil {
-				return err
+			// All allowances for this operation share one immutable snapshot
+			// of the wait and its latest retained cooldown attempt.
+			if o.ID != a.OperationID || o.ProjectID != owner[0] {
+				o, err = readOperationBase(ctx, q, owner[0], a.OperationID)
+				if err != nil {
+					return err
+				}
 			}
 			if table == "review_cli_preflight" {
 				_, err = readCLIAllowanceRecord(ctx, q, o, a)
