@@ -782,7 +782,7 @@ func TestSchedulingPrepareControlRaceRefusesBeforeDispatch(t *testing.T) {
 			if change == "pause" {
 				wantReason = "pull_scheduling_paused"
 			}
-			if err != nil || hosted.State != "held" || hosted.Reason != wantReason {
+			if err != nil || hosted.State != "queued" || hosted.AttemptID != "" || hosted.Reason != wantReason {
 				t.Fatal(hosted, err)
 			}
 			other, err := f.e.ReadOperation(t.Context(), scope, cli.ID)
