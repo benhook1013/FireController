@@ -190,6 +190,11 @@ func TestCIWatchNonstrictHeadWorkflowAttentionPreservesBindings(t *testing.T) {
 			if err := json.Unmarshal([]byte(before), &value); err != nil {
 				t.Fatal(err)
 			}
+			// The wire clone deliberately excludes optional provider proof.
+			value.WorkflowAttempts = append([]reviewprovider.ActionsAttempt(nil), o.WorkflowAttempts...)
+			if rows := ciWatchValidatedWorkflowFailures(value, []int64{10}, []reviewprovider.CIWorkflowFailure{failure}); len(rows) != 1 || rows[0] != failure {
+				t.Fatal("undamaged clone lost applicable failure proof", rows)
+			}
 			damage(&value)
 			if rows := ciWatchValidatedWorkflowFailures(value, []int64{10}, []reviewprovider.CIWorkflowFailure{failure}); len(rows) != 0 {
 				t.Fatal("invalid source supplied failure attention", rows)
