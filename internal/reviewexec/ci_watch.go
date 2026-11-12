@@ -95,7 +95,7 @@ func validCIWatchTargets(targets []CIWatchTarget) bool {
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) || target.AfterObservationKey != "" && !hash.MatchString(target.AfterObservationKey) {
+		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !hash.MatchString(target.AfterObservationKey)) {
 			return false
 		}
 		seen[target.PullNumber] = true
@@ -218,7 +218,7 @@ func (e *Engine) watchCIFromProjected(ctx context.Context, scope core.Scope, tar
 		if value.State != "pending" {
 			return bounded(value)
 		}
-		if waitSeconds == 0 {
+		if waitSeconds == 0 || !time.Now().Before(deadline) {
 			// This snapshot was just authorized; no quiet wait occurred that
 			// would require a third binding read within the response allowance.
 			value.TimedOut = true

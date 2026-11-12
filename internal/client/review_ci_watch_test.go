@@ -120,7 +120,7 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 
 func TestCIWatchClientInvalidTargetsStayLocal(t *testing.T) {
 	var absent *client.Client
-	for _, targets := range [][]client.CIWatchTarget{nil, {}, {{PullNumber: 2, HeadSHA: "short"}}, {ciWatchPins()[0], ciWatchPins()[0]}, {{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: "short"}}} {
+	for _, targets := range [][]client.CIWatchTarget{nil, {}, {{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), AfterObservationKey: strings.Repeat("c", 64)}}, {{PullNumber: 2, HeadSHA: "short"}}, {ciWatchPins()[0], ciWatchPins()[0]}, {{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: "short"}}} {
 		_, err := absent.WatchCI(context.Background(), targets, 0)
 		checkError(t, err, "validation_failed")
 	}

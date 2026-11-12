@@ -60,7 +60,7 @@ func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	}
 	switch v.State {
 	case "queued":
-		return v.Stage == "queued" && v.NextAction == "wait"
+		return v.Stage == "queued" && (v.NextAction == "wait" || v.NextAction == "resume_or_cancel")
 	case "preparing":
 		return v.Stage == "preparing" && v.NextAction == "wait"
 	case "posting", "active":
