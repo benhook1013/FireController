@@ -109,7 +109,7 @@ func readSourceRetry(ctx context.Context, q EvidenceQuery, o Operation) (*Source
 func validateSourceRetry(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, r SourceRetry) error {
 	observed, validObserved := attemptRecordedTime(r.ObservedAt)
 	due, validDue := attemptRecordedTime(r.RetryNotBefore)
-	if o.Channel != "cli" || a.ID != r.AttemptID || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || !validObserved || !validDue || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > sourceRetryLimit {
+	if !validChannel(o.Channel) || a.ID != r.AttemptID || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || !validObserved || !validDue || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > sourceRetryLimit {
 		return waitUnavailable()
 	}
 	var start, ended string
@@ -208,13 +208,14 @@ func (e *Engine) sourceCandidateDue(ctx context.Context, q EvidenceQuery, o Oper
 	return retry == nil || !e.sampleExecutionTime().Before(mustWaitTime(retry.RetryNotBefore)), nil
 }
 
-// ScheduleSourceRetry atomically retains one strictly unused CLI source read.
+// ScheduleSourceRetry atomically retains an unused CLI preparation or Hosted
+// cooldown continuation after a rate-limited GitHub source read.
 // False means ineligible or exhausted: the supervisor must settle normally.
 // This API accepts only the typed runtime preparation failure, never wire input.
 func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID string, revision int64, failure error) (bool, error) {
 	var stage *preparationFailure
 	var provider *reviewprovider.Error
-	if !errors.As(failure, &stage) || stage.stage != "source_resolution" || !errors.As(stage.err, &provider) || provider.Code != "provider_rate_limited" || (provider.Status != 429 && provider.Status != 403) || provider.OutcomeUnknown || provider.RetryTiming.State != "proven" {
+	if !errors.As(failure, &stage) || (stage.stage != "source_resolution" && stage.stage != "source_refresh") || !errors.As(stage.err, &provider) || provider.Code != "provider_rate_limited" || (provider.Status != 429 && provider.Status != 403) || provider.OutcomeUnknown || provider.RetryTiming.State != "proven" {
 		return false, nil
 	}
 	timing := provider.RetryTiming
@@ -247,7 +248,9 @@ func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID str
 		if timing.ObservedAt.After(now) || !timing.NotBefore.After(now) {
 			return nil
 		}
-		if o.Channel != "cli" || a.Revision != revision || a.Revision != 1 || a.State != "preparing" || o.State != "preparing" || o.AttemptID != a.ID || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || o.Revision == math.MaxInt64 {
+		cliSourceRead := o.Channel == "cli" && stage.stage == "source_resolution"
+		hostedRefresh := o.Channel == "hosted" && stage.stage == "source_refresh" && o.Wait != nil && o.Wait.BaselineAttemptID != ""
+		if (!cliSourceRead && !hostedRefresh) || a.Revision != revision || a.Revision != 1 || a.State != "preparing" || o.State != "preparing" || o.AttemptID != a.ID || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || o.Revision == math.MaxInt64 {
 			return nil
 		}
 		var c Configuration

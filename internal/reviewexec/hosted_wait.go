@@ -23,7 +23,10 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 		return nil
 	}
 	copy := *wait
-	if version != "4" {
+	if channel == "hosted" && copy.SourceRetry != nil {
+		copy.RetryNotBefore = copy.hostedRetryNotBefore()
+		copy.SourceRetry = nil
+	} else if version != "4" {
 		copy.SourceRetry = nil
 	}
 	wait = &copy
@@ -48,6 +51,14 @@ type OperationWait struct {
 	Paused            bool                  `json:"paused"`
 }
 
+// The wire uses the later deadline. Storage retains both provider clocks.
+func (w *OperationWait) hostedRetryNotBefore() string {
+	if w.SourceRetry != nil && mustWaitTime(w.SourceRetry.RetryNotBefore).After(mustWaitTime(w.RetryNotBefore)) {
+		return w.SourceRetry.RetryNotBefore
+	}
+	return w.RetryNotBefore
+}
+
 func waitUnavailable() error {
 	return core.Fail("storage_unavailable", "Stored review waiting intent is unavailable.", 500)
 }
@@ -68,6 +79,9 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		source, sourceErr := readSourceRetry(ctx, q, o)
 		if sourceErr != nil || source == nil {
 			return nil, sourceErr
+		}
+		if o.Channel == "hosted" {
+			return nil, waitUnavailable()
 		}
 		return &OperationWait{SourceRetry: source}, nil
 	}
@@ -104,6 +118,9 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)
 	if err != nil {
 		return nil, err
+	}
+	if o.Channel == "hosted" && result.SourceRetry != nil && !baseline.Valid {
+		return nil, waitUnavailable()
 	}
 	return &result, nil
 }
@@ -325,6 +342,9 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		receipt := OperationControlReceipt{ID: id, State: state, Revision: o.Revision + 1, Paused: paused}
 		if o.Wait != nil {
 			receipt.RetryNotBefore = o.Wait.RetryNotBefore
+			if o.Channel == "hosted" {
+				receipt.RetryNotBefore = o.Wait.hostedRetryNotBefore()
+			}
 		}
 		return receipt, nil
 	})

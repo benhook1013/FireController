@@ -113,7 +113,7 @@ func TestAgentHostedAttributionHintKeepsHigherPriorityDiagnostics(t *testing.T) 
 	full := ReviewOperation{Channel: compact.Channel, State: compact.State, Reason: compact.Reason, AttemptID: compact.AttemptID, Observer: compact.Observer}
 	wait := &ReviewOperationWait{Paused: true}
 	compact.Wait, full.Wait = wait, wait
-	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, operationWaitDiagnostic(wait, "hosted")) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, operationWaitDiagnostic(wait, "hosted")) || AgentReviewOperationStatus(compact).NextAction != "wait" {
+	if !reflect.DeepEqual(AgentReviewOperationStatus(compact).Diagnostic, operationWaitDiagnostic(wait, "hosted", "")) || !reflect.DeepEqual(AgentReviewOperation(full).Diagnostic, operationWaitDiagnostic(wait, "hosted", "")) || AgentReviewOperationStatus(compact).NextAction != "wait" {
 		t.Fatal("attribution hint replaced existing operation wait")
 	}
 	pending := &ReviewPendingEvidence{Items: []ReviewPendingEvidenceItem{}}
@@ -545,5 +545,19 @@ func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
 		if AgentReviewSelection(raw).Diagnostic != nil {
 			t.Fatal("half-linked selection got replacement guidance")
 		}
+	}
+}
+
+func TestAgentReviewOperationExplainsHostedGitHubSourceWait(t *testing.T) {
+	wait := &ReviewOperationWait{RetryNotBefore: "2026-11-12T08:18:00Z"}
+	status := ReviewOperationStatus{Channel: "hosted", State: "queued", Reason: "source_rate_limit_wait", NextAction: "wait", Wait: wait, queuedCause: "cooldown"}
+	got := AgentReviewOperationStatus(status)
+	if got.NextAction != "wait" || got.Diagnostic == nil || !strings.Contains(got.Diagnostic.Explanation, "GitHub rate-limited source verification") || got.Wait.RetryNotBefore != wait.RetryNotBefore {
+		t.Fatalf("lost Hosted source-wait guidance: %+v", got)
+	}
+	status.queuedCause = "queue_order"
+	got = AgentReviewOperationStatus(status)
+	if got.Diagnostic == nil || !strings.Contains(got.Diagnostic.Explanation, "earlier applicable review request") {
+		t.Fatalf("source wait hid the queue blocker: %+v", got)
 	}
 }

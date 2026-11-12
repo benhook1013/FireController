@@ -138,6 +138,83 @@ func TestSourceRetrySupervisorDoesNotDispatchOrDuplicate(t *testing.T) {
 	}
 }
 
+func TestHostedCooldownKeepsOriginalRequestThroughGitHubSourceRefreshLimit(t *testing.T) {
+	f, original, cooldown, now := queuedCooldown(t)
+	completionNoticeSchema(t, f)
+	f.e.schedulingNow = func() time.Time { return *now }
+	f.e.attemptNow = func() time.Time { return *now }
+	f.e.sourceReadGroups = map[string]string{"test-capability": strings.Repeat("a", 64)}
+	*now = cooldown.Observation.RetryNotBefore
+	originalDeadline := now.Format(time.RFC3339Nano)
+	driver := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+		return Preparation{}, PreparationFailureAt("source_refresh", &reviewprovider.Error{
+			Code: "provider_rate_limited", Status: http.StatusTooManyRequests,
+			RetryTiming: reviewprovider.RetryTimingEvidence{State: "proven", ObservedAt: *now, NotBefore: now.Add(time.Minute)},
+		})
+	}}
+	drivers := map[string]Driver{"test-capability": driver}
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal(err)
+	}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	o := bindingOperation(t, f, scope, original.OperationID)
+	sourceDeadline := now.Add(time.Minute).Format(time.RFC3339Nano)
+	if o.State != "queued" || o.Reason != sourceRetryReason || o.AttemptID != "" || o.Wait == nil || o.Wait.BaselineAttemptID != original.ID || o.Wait.RetryNotBefore != originalDeadline || o.Wait.SourceRetry == nil || o.Wait.SourceRetry.RetryNotBefore != sourceDeadline {
+		t.Fatalf("original request or retry clocks changed: %+v", o)
+	}
+	for _, version := range []string{"1", "3", "4"} {
+		projected := operationWaitForResponse(o.Wait, "hosted", version)
+		if projected.RetryNotBefore != sourceDeadline || projected.SourceRetry != nil || projected.BaselineAttemptID != original.ID {
+			t.Fatalf("version %s lost the effective retry deadline: %+v", version, projected)
+		}
+	}
+	if cause, _ := f.e.queuedDiagnosticDetails(t.Context(), scope, o.ID, o.Revision); cause != "cooldown" {
+		t.Fatalf("queued diagnostic ignored the GitHub deadline: %s", cause)
+	}
+	for _, action := range []string{"pause", "resume"} {
+		receipt := timerControl(t, f, o.ID, action, "github-source-wait-"+action)
+		if receipt.RetryNotBefore != sourceDeadline {
+			t.Fatalf("%s lost the effective retry deadline: %+v", action, receipt)
+		}
+	}
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal(err)
+	}
+	if driver.prepares.Load() != 1 || driver.calls.Load() != 0 || completionNoticeCount(t, f) != 0 {
+		t.Fatal("rate limit caused early preparation, review dispatch, or a terminal notice")
+	}
+	if attemptCount(t, f.store, "SELECT count(*) FROM review_execution_reservations") != 0 {
+		t.Fatal("source wait held a review reservation")
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateSourceRetriesSnapshot(t.Context(), tx)
+	tx.Rollback()
+	if err != nil {
+		t.Fatal("cannot restore the combined wait", err)
+	}
+	*now = now.Add(time.Minute)
+	driver.prepare = func(ctx context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		baseline, err := f.e.RetryBaseline(ctx, attemptProject, o.ID)
+		if err != nil || baseline == nil || *baseline != cooldown.Anchor {
+			t.Fatal("source wait lost the original comparison", baseline, err)
+		}
+		return Preparation{}, &core.Error{Code: "review_held", Status: 409, Details: map[string]string{"reason": "source_changed"}}
+	}
+	if err := f.e.processNext(t.Context(), drivers); err != nil {
+		t.Fatal(err)
+	}
+	o = bindingOperation(t, f, scope, original.OperationID)
+	if o.State != "held" || o.Reason != "source_changed" || driver.prepares.Load() != 2 || driver.calls.Load() != 0 {
+		t.Fatal("changed comparison escaped its ordinary hold", o)
+	}
+}
+
 func reviewHoldForSourceTest() error {
 	return PreparationFailureAt("source_resolution", &core.Error{Code: "review_held", Status: 409, Details: map[string]string{"reason": "target_changed"}})
 }

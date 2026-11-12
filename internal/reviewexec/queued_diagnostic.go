@@ -106,9 +106,16 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		case latest.Paused:
 			cause = "project_paused"
 			return nil
-		case op.Wait != nil && op.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(op.Wait.RetryNotBefore)):
-			cause = "cooldown"
-			return nil
+		}
+		if op.Wait != nil {
+			deadline := op.Wait.RetryNotBefore
+			if op.Channel == "hosted" {
+				deadline = op.Wait.hostedRetryNotBefore()
+			}
+			if deadline != "" && e.sampleExecutionTime().Before(mustWaitTime(deadline)) {
+				cause = "cooldown"
+				return nil
+			}
 		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, op, latest, latestRevision)
 		if err != nil {
