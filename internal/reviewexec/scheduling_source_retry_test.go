@@ -126,6 +126,8 @@ func TestAutomaticSourceRetryFences(t *testing.T) {
 	for _, mode := range []string{"configuration", "policy", "authorization", "worker", "scheduling", "newer-intent", "explicit", "budget", "capability"} {
 		t.Run(mode, func(t *testing.T) {
 			f, r := sourceRetryFixture(t)
+			var basis string
+			var schedulingRevision int64
 			switch mode {
 			case "configuration":
 				f.configure(t, attemptProject, "test-capability", 1, false)
@@ -140,6 +142,9 @@ func TestAutomaticSourceRetryFences(t *testing.T) {
 			case "newer-intent":
 				selectionEnqueue(t, f, "later-intent", "hosted", nil)
 			case "explicit":
+				if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256,scheduling_revision FROM review_automatic_selections WHERE selection_id=?`, r.ID).Scan(&basis, &schedulingRevision); err != nil {
+					t.Fatal(err)
+				}
 				admissionSQL(t, f, `DELETE FROM review_automatic_selections WHERE selection_id='`+r.ID+`'`)
 			case "budget":
 				admissionSQL(t, f, `UPDATE review_selections SET revision=9 WHERE id='`+r.ID+`'`)
@@ -150,7 +155,7 @@ func TestAutomaticSourceRetryFences(t *testing.T) {
 				ageSourceRetry(t, f, r.ID)
 				// Direct helper cannot find a retained automatic intent for this selection.
 				err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-					worked, err := f.e.retryAutomaticSourceTx(ctx, tx, attemptProject, "unused", 1, time.Now())
+					worked, err := f.e.retryAutomaticSourceTx(ctx, tx, attemptProject, basis, schedulingRevision, time.Now())
 					if worked {
 						t.Error("explicit intent retried")
 					}
@@ -309,6 +314,8 @@ func TestAutomaticSourceRetryTimestampPrecisionFence(t *testing.T) {
 	at := time.Now().Add(-time.Minute).Truncate(time.Second)
 	admissionSQL(t, f, `UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, at.Format(time.RFC3339Nano), at.Format(time.RFC3339Nano), r.ID)
 	later, _ := selectionEnqueue(t, f, "later-fractional-time", "hosted", nil)
+	// Exercise the time fallback independently of event acceptance order.
+	admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.selection_requested' AND resource_id=?`, later.ID)
 	admissionSQL(t, f, `UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, at.Add(time.Millisecond).Format(time.RFC3339Nano), at.Add(time.Millisecond).Format(time.RFC3339Nano), later.ID)
 	if retrySourceDirect(t, f, r, time.Now()) {
 		t.Fatal("variable timestamp precision lost newer-intent fence")

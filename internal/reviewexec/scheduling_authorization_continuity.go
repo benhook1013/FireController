@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // A configuration owner change governs new selections. It need not replace an
@@ -40,20 +42,21 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 	defer rows.Close()
 	expected := revision
 	for rows.Next() {
-		var recorded int64
+		var retainedRevision any
 		var actor string
 		var payload []byte
-		if err = rows.Scan(&recorded, &actor, &payload); err != nil {
+		if err = rows.Scan(&retainedRevision, &actor, &payload); err != nil {
 			return false, err
 		}
-		if recorded != expected || recorded == revision && actor != originalActor || recorded == current.Revision && actor != current.actor {
+		recorded, validRevision := retainedRevision.(int64)
+		if !validRevision || recorded != expected || recorded == revision && actor != originalActor || recorded == current.Revision && actor != current.actor {
 			return false, nil
 		}
 		var settings struct {
 			Hosted *bool `json:"automatic_hosted"`
 			CLI    *bool `json:"automatic_cli"`
 		}
-		if len(payload) > 4096 || json.Unmarshal(payload, &settings) != nil {
+		if len(payload) > 4096 || strictjson.Validate(payload) != nil || json.Unmarshal(payload, &settings) != nil {
 			return false, nil
 		}
 		enabled := settings.Hosted
