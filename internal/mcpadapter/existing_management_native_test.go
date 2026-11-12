@@ -24,7 +24,7 @@ func TestExistingManagementOfficialSDKNativePublicationAndCurrentAuthority(t *te
 	service := httptest.NewServer(mux)
 	defer service.Close()
 	session := reviewControlsStdio(t, reviewControlsProfile(t, f, service.URL), "chosen")
-	replace := map[string]any{"document": client.ReplacePresentationRequest{ExpectedRevision: 0, Presentation: client.PresentationConfig{Name: "Selected display"}}, "idempotency_key": "appearance-one"}
+	replace := map[string]any{"document": map[string]any{"expected_revision": 0, "presentation": map[string]string{"name": "Selected display"}}, "idempotency_key": "appearance-one"}
 	var first client.PresentationReceipt
 	decodeResult(t, call(t, session, "presentation_replace", replace), &first)
 	if first.ProjectID != f.project || first.Revision != 1 {
