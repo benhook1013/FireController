@@ -82,7 +82,10 @@ type ciWatchEntry struct {
 	lastAttempt, next            time.Time
 	inflight                     bool
 	cancel                       context.CancelFunc
-	result                       CIWatchItem
+	// Unknown SHA-only hints are retained only for the current bounded read.
+	inflightSHAHints    []string
+	inflightSHAOverflow bool
+	result              CIWatchItem
 }
 
 func validCIWatchTargets(targets []CIWatchTarget) bool {
