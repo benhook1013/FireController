@@ -14,6 +14,14 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
+func requireCIWatchCancellation(t *testing.T, err error) {
+	t.Helper()
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Status != 503 || ciWatchDiagnosticReason(t, err) != "ci_watch_canceled" {
+		t.Fatal("watch did not return its classified cancellation", err)
+	}
+}
+
 type ciWatchWorkflowReader struct {
 	*ciWatchReader
 	workflowMu  sync.Mutex
@@ -146,9 +154,7 @@ func TestCIWatchWorkflowFailuresShareFilterAndRetainGateTruth(t *testing.T) {
 		t.Fatal("new selected failure did not wake", changed)
 	}
 	stopPlain()
-	if reply := receiveCIWatch(t, plain); reply.err == nil {
-		t.Fatal("cancel became gate completion")
-	}
+	requireCIWatchCancellation(t, receiveCIWatch(t, plain).err)
 	ciWatchRegistered(t, s, 0)
 	r.workflowMu.Lock()
 	selections := r.selections
@@ -551,9 +557,7 @@ func TestCIWatchWorkflowWarningSurvivesFinalRepositoryFailureAndCancellation(t *
 				t.Fatal("strongest observed limit was discarded", account, test.delay)
 			}
 			cancel()
-			if value := receiveCIWatch(t, out); value.err == nil {
-				t.Fatal("cancel became completion")
-			}
+			requireCIWatchCancellation(t, receiveCIWatch(t, out).err)
 			ciWatchRegistered(t, s, 0)
 			clock.Add(test.delay)
 		})
@@ -578,9 +582,7 @@ func TestCIWatchWorkflowWarningSurvivesFinalRepositoryFailureAndCancellation(t *
 		t.Fatal("final read never started")
 	}
 	cancel()
-	if value := receiveCIWatch(t, out); value.err == nil {
-		t.Fatal("interruption became gate result")
-	}
+	requireCIWatchCancellation(t, receiveCIWatch(t, out).err)
 	select {
 	case err := <-done:
 		if err != nil {

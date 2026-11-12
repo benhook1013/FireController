@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -31,11 +32,23 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	// The HTTP server's socket deadlines do not bound database connection
 	// acquisition during authentication. Include that read in the selected
 	// wait plus its existing response allowance, respecting caller cancellation.
-	ctx, cancel := context.WithDeadline(r.Context(), started.Add(time.Duration(wait+5)*time.Second))
+	// Authentication can outlast the server's ordinary write timeout. Reserve
+	// five further seconds to write its refusal after the bounded read expires.
+	if err = operationResponseDeadlineAt(w, started.Add(time.Duration(wait+10)*time.Second)); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	waitCtx, cleanupWait := e.resultWaitContext(r.Context())
+	defer cleanupWait()
+	ctx, cancel := context.WithDeadline(waitCtx, started.Add(time.Duration(wait+5)*time.Second))
 	defer cancel()
 	r = r.WithContext(ctx)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
+		var failure *core.Error
+		if errors.Is(context.Cause(ctx), errResultWaitLifetime) && errors.As(err, &failure) && failure.Code == "overloaded" {
+			err = resultWaitCanceled(ctx, "The CI watch was canceled before authentication completed.")
+		}
 		core.WriteError(w, ciWatchRefusal(err, "ci_watch_scope_read"))
 		return
 	}
