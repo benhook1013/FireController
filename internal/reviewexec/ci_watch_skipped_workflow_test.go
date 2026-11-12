@@ -144,3 +144,9 @@ func TestCIWatchSkippedFailureHTTPAcceptedByStrictClient(t *testing.T) {
 	}
 	ciWatchRegistered(t, s, 0)
 }
+
+// The strict client negotiates advanced attention; this fixture intentionally
+// supplies the same retained failure for each supported attention selector.
+func (r ciWatchSkippedReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, headIDs, historicalIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	return r.ObserveCIGateWithWorkflows(ctx, target, gate, ids)
+}
