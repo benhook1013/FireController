@@ -2,6 +2,8 @@
 
 Use `reviews ci-wait` or MCP `wait_for_ci` to wait quietly for required CI on up to twenty PRs in the bound project. Every target supplies its PR number and full expected head SHA; an optional full base SHA pins the base immediately. Otherwise the watch pins the first freshly observed base. A later comparison change returns `superseded`, rather than crediting results for different code. Fresh supersession is retained for that subscriber until delivery, even if a later refresh fails or observes the original source again. Once this subscription has a fresh observed head/base mismatch, a newer CI refresh request does not keep that superseded comparison waiting; older cached observations cannot supply this decision.
 
+The underlying `POST /api/v1/projects/{project_id}/reviews/ci/watch` API requires bearer-based project read access and a configured GitHub observation capability. A read-only browser session is insufficient: its project read grant does not permit this POST route. The watch remains a bounded read, not a durable mutation, and does not request reviews or rerun CI.
+
 ```sh
 fc reviews ci-wait --target 42:FULL_HEAD_SHA --target 43:FULL_HEAD_SHA:FULL_BASE_SHA --wait-seconds 300
 ```
