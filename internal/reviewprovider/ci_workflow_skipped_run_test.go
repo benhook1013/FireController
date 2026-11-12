@@ -93,6 +93,8 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 				}
 				if headWalk > 1 {
 					switch mode {
+					case "mixed invalid recheck":
+						rows[2]["check_suite_id"] = rows[1]["check_suite_id"]
 					case "incomplete recheck":
 						body = actionsEnvelope("workflow_runs", rows, 1000)
 					case "rate-limited recheck":
@@ -304,7 +306,7 @@ func TestWorkflowAttentionRecheckProviderFailuresRemainProviderErrors(t *testing
 }
 
 func TestWorkflowAttentionFinalInventoryRechecksDirectAndSkippedFailures(t *testing.T) {
-	for _, mode := range []string{"mixed stable", "mixed repaired", "mixed unavailable recheck"} {
+	for _, mode := range []string{"mixed stable", "mixed repaired", "mixed unavailable recheck", "mixed invalid recheck"} {
 		t.Run(mode, func(t *testing.T) {
 			base := ciSkippedRunFixture(t, mode)
 			ordinary, err := base.g.ObserveCIGate(t.Context(), ciObservationTarget(), "main")
@@ -318,6 +320,11 @@ func TestWorkflowAttentionFinalInventoryRechecksDirectAndSkippedFailures(t *test
 				if !errors.As(err, &provider) || provider.Code != "provider_unavailable" || got.WorkflowActions != nil {
 					t.Fatal("recheck error lost", got, err)
 				}
+			} else if mode == "mixed invalid recheck" {
+				var warning *CIWorkflowAttentionError
+				if !errors.As(err, &warning) || warning.Cause == nil || got.WorkflowActions != nil {
+					t.Fatal("invalid final inventory lost its warning", got, err)
+				}
 			} else if err != nil || got.WorkflowActions == nil {
 				t.Fatal("successful final inventory missing", got, err)
 			}
@@ -325,7 +332,7 @@ func TestWorkflowAttentionFinalInventoryRechecksDirectAndSkippedFailures(t *test
 			if mode == "mixed repaired" {
 				delete(want, 32)
 			}
-			if mode == "mixed unavailable recheck" {
+			if mode == "mixed unavailable recheck" || mode == "mixed invalid recheck" {
 				delete(want, 31)
 			}
 			if got.State != "pending" || len(rows) != len(want) || !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, got)) {
