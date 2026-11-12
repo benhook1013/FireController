@@ -579,3 +579,17 @@ func TestAgentSelectionExplainsPredecessorHold(t *testing.T) {
 		t.Fatalf("missing actionable predecessor hold: %+v", got)
 	}
 }
+
+func TestAgentReviewOperationExplainsHostedGitHubSourceWait(t *testing.T) {
+	wait := &ReviewOperationWait{RetryNotBefore: "2026-11-12T08:18:00Z"}
+	status := ReviewOperationStatus{Channel: "hosted", State: "queued", Reason: "source_rate_limit_wait", NextAction: "wait", Wait: wait, queuedCause: "cooldown"}
+	got := AgentReviewOperationStatus(status)
+	if got.NextAction != "wait" || got.Diagnostic == nil || !strings.Contains(got.Diagnostic.Explanation, "GitHub rate-limited source verification") || got.Wait.RetryNotBefore != wait.RetryNotBefore {
+		t.Fatalf("lost Hosted source-wait guidance: %+v", got)
+	}
+	status.queuedCause = "queue_order"
+	got = AgentReviewOperationStatus(status)
+	if got.Diagnostic == nil || !strings.Contains(got.Diagnostic.Explanation, "earlier applicable review request") {
+		t.Fatalf("source wait hid the queue blocker: %+v", got)
+	}
+}

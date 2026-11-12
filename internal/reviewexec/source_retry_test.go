@@ -162,7 +162,7 @@ func TestHostedCooldownKeepsOriginalRequestThroughGitHubSourceRefreshLimit(t *te
 	if o.State != "queued" || o.Reason != sourceRetryReason || o.AttemptID != "" || o.Wait == nil || o.Wait.BaselineAttemptID != original.ID || o.Wait.RetryNotBefore != originalDeadline || o.Wait.SourceRetry == nil || o.Wait.SourceRetry.RetryNotBefore != sourceDeadline {
 		t.Fatalf("original request or retry clocks changed: %+v", o)
 	}
-	for _, version := range []string{"1", "5", "6"} {
+	for _, version := range []string{"1", "3", "4", "5", "6"} {
 		projected := operationWaitForResponse(o.Wait, "hosted", version)
 		if projected.RetryNotBefore != sourceDeadline || projected.SourceRetry != nil || projected.BaselineAttemptID != original.ID {
 			t.Fatalf("version %s lost the effective retry deadline: %+v", version, projected)
