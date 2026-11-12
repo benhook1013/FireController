@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/adoptionholds"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
@@ -221,9 +222,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 3, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"project_management": 1, "worker_retirements": 1, "review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 3, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_operation_waits":           {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
+	"worker_retirements":               {"worker_retirements", 1, "project_id worker_id retired_at actor_id"},
 	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_hosted_discovery_state":    {"reviews", 11, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
@@ -595,6 +597,23 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["project_management"] > 0 {
+		var statement string
+		if err := db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='table' AND name='grants'`).Scan(&statement); err != nil || historyDefinitionSQL(statement) != historyDefinitionSQL(`CREATE TABLE grants(credential_id TEXT NOT NULL REFERENCES credentials(id),project_id TEXT NOT NULL REFERENCES projects(id),can_read INTEGER NOT NULL CHECK(can_read IN(0,1)),can_write INTEGER NOT NULL CHECK(can_write IN(0,1)), can_manage INTEGER NOT NULL DEFAULT 0 CHECK(can_manage IN(0,1) AND (can_manage=0 OR (can_read=1 AND can_write=1))),PRIMARY KEY(credential_id,project_id))`) {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, invalid()
+		}
+	}
+	if versions["worker_retirements"] > 0 {
+		if err := validatePhysicalSchemaObjects(ctx, db, map[string]physicalSchemaObject{"worker_retirements": {"table", `CREATE TABLE worker_retirements(project_id TEXT NOT NULL REFERENCES projects(id),worker_id TEXT NOT NULL,retired_at TEXT NOT NULL,actor_id TEXT NOT NULL,PRIMARY KEY(project_id,worker_id),FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id))`}}, []string{"worker_retirements"}); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, err
+		}
+	}
 	if versions["review_execution"] >= 9 {
 		// Schema nine owns durable wait identity and paired retry state even
 		// when the bundle has no wait rows to exercise these constraints.
@@ -635,6 +654,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "grants" && versions["project_management"] > 0 {
+			columns += " can_manage"
+		}
 		if name == "review_current_totals" && versions["reviews"] >= 9 {
 			columns += " hosted_run_count cli_run_count subagent_run_count manual_run_count"
 		}
@@ -699,6 +721,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			var col, kind string
 			var defaultValue any
 			if columnRows.Scan(&cid, &col, &kind, &notnull, &defaultValue, &pk, &hidden) != nil || hidden != 0 {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if name == "grants" && col == "can_manage" && (kind != "INTEGER" || notnull != 1 || defaultValue != "0" || pk != 0) {
 				columnRows.Close()
 				return nil, invalid()
 			}
@@ -860,6 +886,9 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		if err != nil || tx.QueryRowContext(ctx, `SELECT count(*) FROM restore_history`).Scan(&count) != nil || status.State == "coordination_active" && count >= maxRecoveryGenerations {
 			return invalid()
 		}
+	}
+	if err := validateAdministrationContent(ctx, tx, versions); err != nil {
+		return err
 	}
 	var identity, key string
 	var sequence int64
@@ -1238,6 +1267,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"job_checklist_history":             {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"restore_history":                   {},
 	"workers":                           {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"worker_retirements":                {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"grants":                            {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"events":                            {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"jobs":                              {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
@@ -1571,6 +1601,27 @@ func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, ve
 	}
 	if rows.Err() != nil || len(seen) != len(expected) {
 		return invalid()
+	}
+	return nil
+}
+
+func validateAdministrationContent(ctx context.Context, db sqlReader, versions map[string]int) error {
+	if versions["project_management"] > 0 {
+		var bad int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE typeof(can_manage)<>'integer' OR can_manage NOT IN (0,1) OR (can_manage=1 AND (can_read<>1 OR can_write<>1))`).Scan(&bad); err != nil || bad != 0 {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["worker_retirements"] > 0 {
+		if err := core.ValidateWorkerRetirementsSnapshot(ctx, db); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
 	}
 	return nil
 }

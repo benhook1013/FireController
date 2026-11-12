@@ -21,6 +21,9 @@ const maxToolWaitSeconds = 50
 type arguments struct {
 	operationControl           client.ReviewOperationControl
 	ciWatchTargets             []client.CIWatchTarget
+	ownerManagement            *ownerManagementInvocation
+	existingManagement         *existingManagementArgs
+	includeRetired             bool
 	reviewRun                  client.ReviewRunRequest
 	reviewOperations           client.ReviewOperationsOptions
 	operationStatus            *operationStatusInput
@@ -67,6 +70,8 @@ type definition struct {
 func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
+	definitions = append(definitions, ownerManagementDefinitions()...)
+	definitions = append(definitions, existingManagementDefinitions()...)
 	definitions = append(definitions, reviewRunDefinitions()...)
 	definitions = append(definitions, operationListDefinition(), operationControlDefinition())
 	definitions = append(definitions, roundControlDefinitions()...)
@@ -83,14 +88,18 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := tool.name == "review_operation_control" || adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := ownerManagementWrite(tool.name) || existingManagementWrite(tool.name) || tool.name == "review_operation_control" || adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := tool.name == "wait_for_ci" || tool.name == "review_start" || checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := tool.name == "review_operation_control" || adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := ownerManagementDestructive(tool.name) || existingManagementDestructive(tool.name) || tool.name == "review_operation_control" || adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
 			if tool.name == "wait_for_ci" {
 				args, err = ciWatchArguments(request.Params.Arguments)
+			} else if ownerManagementTool(tool.name) {
+				args, err = ownerManagementArguments(tool.name, request.Params.Arguments)
+			} else if existingManagementTool(tool.name) {
+				args.existingManagement, err = parseExistingManagementArguments(tool.name, request.Params.Arguments)
 			} else if adoptionTool(tool.name) {
 				args.adoption, err = parseAdoptionArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "review_rounds_read" || tool.name == "review_rounds_configure" {
@@ -141,6 +150,20 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			}
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
+			if ownerManagementTool(tool.name) {
+				value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
+				if err != nil {
+					return resultFailure(err), nil
+				}
+				return result(value, false), nil
+			}
+			if existingManagementTool(tool.name) {
+				value, err = executeExistingManagement(ctx, service, args.existingManagement)
+				if err != nil {
+					return resultFailure(err), nil
+				}
+				return result(value, false), nil
+			}
 			switch tool.name {
 			case "review_start":
 				var result client.ReviewRunResult
@@ -248,7 +271,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "worker_pause_history":
 				value, err = service.WorkerPauseHistory(ctx, options)
 			case "workers_list":
-				value, err = service.Workers(ctx, options)
+				value, err = service.WorkersWithRetired(ctx, options, args.includeRetired)
 			case "jobs_list":
 				value, err = service.Jobs(ctx, options, client.JobFilter{WorkerID: args.worker, Status: args.status})
 			case "jobs_assigned":
@@ -280,7 +303,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "job_checklist_history":
 				value, err = service.JobChecklistHistory(ctx, args.id, options)
 			case "inbox_list":
-				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
+				value, err = service.Inbox(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack}, args.worker)
 			case "inbox_snapshot":
 				value, err = service.InboxSnapshot(ctx, options, client.InboxFilter{Unread: args.unread, Unacknowledged: args.unack})
 			case "inbox_events":
@@ -296,7 +319,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "inbox_seen":
 				value, err = service.MarkSeen(ctx, args.key, args.id)
 			case "inbox_ack":
-				value, err = service.Acknowledge(ctx, args.key, args.id)
+				value, err = service.Acknowledge(ctx, args.key, args.id, args.worker)
 			}
 			if err != nil {
 				return resultFailure(err), nil

@@ -51,27 +51,14 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 // Configure retains every configuration revision. An update never silently
 // rebinds an already queued request to another provider or source policy.
 func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c Configuration) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	if err := validateConfigurationShape(c); err != nil {
 		return nil, err
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// Recheck admin at the transaction boundary even for direct Go callers.
-		var admin int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0`, scope.PrincipalID).Scan(&admin); err != nil {
-			return nil, err
-		}
-		if admin != 1 {
-			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-		}
-		if err := e.validateConfiguration(c); err != nil {
-			return nil, err
-		}
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
-		}
-		if revision != *c.ExpectedRevision {
-			return nil, conflict()
 		}
 		var previous Configuration
 		if revision > 0 {
@@ -80,6 +67,19 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 			if err != nil {
 				return nil, err
 			}
+		}
+		operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
+		if err != nil {
+			return nil, err
+		}
+		if !operator && (revision == 0 || c.CapabilityID != previous.CapabilityID) {
+			return nil, core.Fail("operator_capability_binding_required", "A service operator must establish or change this project's provider capability; preserve its current capability_id for project management.", 403)
+		}
+		if err := e.validateConfiguration(c); err != nil {
+			return nil, err
+		}
+		if revision != *c.ExpectedRevision {
+			return nil, conflict()
 		}
 		defaults, err := enrollmentRoundDefaults(ctx, tx, scope.ProjectID)
 		if err != nil {

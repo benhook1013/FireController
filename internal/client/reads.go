@@ -48,9 +48,15 @@ func (c *Client) Worker(ctx context.Context) (Worker, error) {
 	return value, nil
 }
 func (c *Client) Workers(ctx context.Context, options PageOptions) (Page[Worker], error) {
+	return c.WorkersWithRetired(ctx, options, false)
+}
+func (c *Client) WorkersWithRetired(ctx context.Context, options PageOptions, includeRetired bool) (Page[Worker], error) {
 	q, err := pageQuery(options)
 	if err != nil {
 		return Page[Worker]{}, err
+	}
+	if includeRetired {
+		q.Set("include_retired", "true")
 	}
 	var value Page[Worker]
 	if err = c.get(ctx, c.projectPath("workers"), q, true, &value); err != nil {
@@ -127,7 +133,11 @@ func (c *Client) JobHistory(ctx context.Context, id string, options PageOptions)
 	}
 	return value, nil
 }
-func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFilter) (Page[InboxItem], error) {
+func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFilter, selectedWorker ...string) (Page[InboxItem], error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return Page[InboxItem]{}, err
+	}
 	q, err := pageQuery(options)
 	if err != nil {
 		return Page[InboxItem]{}, err
@@ -139,14 +149,16 @@ func (c *Client) Inbox(ctx context.Context, options PageOptions, filter InboxFil
 		q.Set("unacknowledged", "true")
 	}
 	var value Page[InboxItem]
-	if err = c.get(ctx, c.projectPath("inbox", c.identity.WorkerID), q, true, &value); err != nil {
+	if err = c.get(ctx, c.projectPath("inbox", worker), q, true, &value); err != nil {
 		return Page[InboxItem]{}, err
 	}
 	if !validPage(value, options) {
 		return Page[InboxItem]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !c.validInboxItem(item, filter) {
+		validationClient := *c
+		validationClient.identity.WorkerID = worker
+		if !validationClient.validInboxItem(item, filter) {
 			return Page[InboxItem]{}, invalidResponse()
 		}
 	}

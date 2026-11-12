@@ -10,6 +10,7 @@ import (
 )
 
 type mutationInvocation struct {
+	targetWorker             string
 	reviewCheckpoint         client.ReviewCheckpointRequest
 	reviewCheckpointRecovery client.ReviewCheckpointRecovery
 	operation                string
@@ -73,6 +74,8 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	call := &mutationInvocation{operation: command + " " + operation}
 	allowed := map[string]bool{"--key": true}
 	switch call.operation {
+	case "inbox ack":
+		allowed["--worker"] = true
 	case "jobs create", "jobs edit":
 		for _, flag := range []string{"--title", "--brief", "--worker", "--status"} {
 			allowed[flag] = true
@@ -131,9 +134,10 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 	if len(values["--brief"]) > 32<<10 {
 		return nil, false
 	}
-	if worker := values["--worker"]; worker != "" && !validResourceID(worker) {
+	if worker, present := values["--worker"]; present && (worker != "" || call.operation == "inbox ack") && !validResourceID(worker) {
 		return nil, false
 	}
+	call.targetWorker = values["--worker"]
 	if status, present := values["--status"]; present && !validStatus(status) {
 		return nil, false
 	}
@@ -217,6 +221,6 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 	case "reviews finalize":
 		return service.FinalizeReviewSource(ctx, call.key, call.id, call.reviewFinalize)
 	default:
-		return service.Acknowledge(ctx, call.key, call.id)
+		return service.Acknowledge(ctx, call.key, call.id, call.targetWorker)
 	}
 }

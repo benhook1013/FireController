@@ -28,18 +28,38 @@ Startup validates configuration without opening the credential or contacting the
 
 | Tool | Input and result |
 | --- | --- |
-| `review_round_adoption_preview` | Administrator and valid project worker; required document. Preview the native [round-adoption document](review-round-controls.md#carried-rule-adoption) against its original-source and current revision guards; no live reviews are requested. |
-| `review_round_adoption_apply` | Administrator and valid project worker; required document/preview_sha256/idempotency_key. Apply the exact previewed [round-adoption document](review-round-controls.md#carried-rule-adoption). Preserves retained attribution and accounting rules; tooling access is not review authorization. |
+| `review_round_adoption_preview` | Project management or instance administration, and a valid project worker; required document. Preview the native [round-adoption document](review-round-controls.md#carried-rule-adoption) against its original-source and current revision guards; no live reviews are requested. |
+| `review_round_adoption_apply` | Project management or instance administration, and a valid project worker; required document/preview_sha256/idempotency_key. Apply the exact previewed [round-adoption document](review-round-controls.md#carried-rule-adoption). Preserves retained attribution and accounting rules; tooling access is not review authorization. |
 | `review_obligations_list` | Project read access; optional pull_number/status/limit/cursor, with status open or resolved. Read one compact [carried-obligation](adoption-obligations.md#bound-commands-and-authority) page. Full bodies require review_obligation_read. |
 | `review_obligation_read` | Project read access; required obligation_id. Read one retained carried obligation and original evidence, without marking it resolved; see [carried-obligation reads](adoption-obligations.md#bound-commands-and-authority). |
 | `review_obligation_retarget` | Project write access and valid project worker; required obligation_id/expected_revision/target_pull_number/reason/idempotency_key. Move an open carried route to one receiving PR; target_pull_number zero means unassigned backlog. Preserves original provenance and source scope; does not resolve work or grant review credit. See [route receivers](adoption-obligations.md#current-receivers-of-carried-routes). |
-| `review_obligations_import_preview` | Administrator and valid project worker; required document. Preview one strict native [carried-obligation batch](adoption-obligations.md#bound-commands-and-authority), preserving original evidence and provenance; no application or new review. |
-| `review_obligations_import_apply` | Administrator and valid project worker; required document/preview_sha256/idempotency_key. Apply the exact previewed [carried-obligation batch](adoption-obligations.md#bound-commands-and-authority). Existing source conflicts and evidence requirements remain enforced. |
+| `review_obligations_import_preview` | Project management or instance administration, and a valid project worker; required document. Preview one strict native [carried-obligation batch](adoption-obligations.md#bound-commands-and-authority), preserving original evidence and provenance; no application or new review. |
+| `review_obligations_import_apply` | Project management or instance administration, and a valid project worker; required document/preview_sha256/idempotency_key. Apply the exact previewed [carried-obligation batch](adoption-obligations.md#bound-commands-and-authority). Existing source conflicts and evidence requirements remain enforced. |
 | `review_obligation_resolve` | Project write access and valid project worker; required obligation_id/document/idempotency_key. Resolve one carried obligation using the native {expected_revision,reason,evidence} document. Requires an evidence-backed [resolution](adoption-obligations.md#bound-commands-and-authority); grants no review credit. |
 | `context` | No fields; configured local identity, without service verification. |
+| `review_policy_read` | Read current policy including paused_channels. |
+| `review_policy_configure` | Complete policy replacement with expected_revision, paused_channels and explicit idempotency_key. |
+| `review_execution_configure` | Guarded existing capability/configuration replacement with nonempty queue and explicit key. |
+| `worker_create` | Create a named worker using an explicit key. |
+| `worker_retirement_read` | Read bounded unfinished-job, pending-note and incoming-message blockers. |
+| `worker_retire` | Guarded one-way retirement; explicit worker_id and key. |
+| `project_credential_grant` | Grant a distinct credential digest scoped permissions; explicit key. |
+| `project_credential_update` | Full expected_permissions/permissions CAS for credential_id and explicit key. |
+| `project_credential_revoke` | Revoke only this project grant for credential_id and explicit key. |
+| `presentation_replace` | Apply a strict native presentation document and key. |
+| `presentation_history` | One bounded retained history page. |
+| `presentation_revision_read` | Read one retained revision. |
+| `publication_configuration_read` | Read selected public publication configuration; requires instance administration. |
+| `publication_preview` | Preview a complete native publication document without publishing; requires instance administration. |
+| `publication_apply` | Apply exact native document, preview_sha256 and key; requires instance administration. |
+| `publication_unpublish` | Disable publication using expected_revision and key; requires instance administration. |
+| `review_import_preview` | Project management or instance administration; preview a complete native [review import](review-import.md#selected-sources-and-destination). |
+| `review_import_apply` | Project management or instance administration; apply exact native [review import](review-import.md#selected-sources-and-destination), preview_sha256 and key. |
+| `review_transfer_preview` | Project management or instance administration; preview a bounded native [review-history transfer](review-import.md#additive-mixed-producer-transfer). |
+| `review_transfer_apply` | Project management or instance administration; apply exact native [review-history transfer](review-import.md#additive-mixed-producer-transfer), preview_sha256 and key. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
 | `doctor` | No fields; verified instance/project/worker identity. |
-| `workers_list` | Optional limit/cursor; one compact worker page. |
+| `workers_list` | Optional limit/cursor/include_retired; one compact active or explicitly historical worker page. |
 | `worker_pause_read` | No fields; bound worker’s explicit pause, reason and independent revision. |
 | `worker_pause_history` | Optional limit/cursor; one explicit newest-first pause-history page. |
 | `jobs_list` | Optional worker_id/status/limit/cursor; one compact job page. |
@@ -67,7 +87,7 @@ Startup validates configuration without opening the credential or contacting the
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |
 | `note_revision_read` | Required note_id/revision; one full immutable note revision. |
-| `inbox_list` | Optional unread/unacknowledged/limit/cursor; bound worker's compact preview page. |
+| `inbox_list` | Optional unread/unacknowledged/limit/cursor/worker_id; selected recipient compact preview page without changing acting identity. |
 | `inbox_thread` | Required conversation_id and optional limit/cursor; explicit full-body conversation page. |
 | `inbox_snapshot` | Optional unread/unacknowledged/limit/cursor; one inbox page plus its atomic incoming-event watermark. |
 | `inbox_events` | Required event cursor; optional limit and wait_ms 0–4000; one bounded incoming-event page. |
@@ -98,7 +118,7 @@ Startup validates configuration without opening the credential or contacting the
 | `review_rounds_read` | Required pull_number/channel; compact native per-PR/channel grant, limits, cumulative consumed and clean counts, taper and closure. No provider work. |
 | `review_rounds_configure` | Required idempotency_key/pull_number/channel/expected_revision/action; grant requires minimum/maximum, taper requires taper, and close omits allocation fields. Project-write permission; original-key replay does not buy another round. See [round controls](review-round-controls.md). |
 | `review_queue` | Optional limit/cursor; stored queue, default five PRs. |
-| `review_queue_edit` | Administrator-only native `document` plus `idempotency_key`; selected metadata, explicit retirement/reactivation and relative ordering through [bounded queue edits](review-workspace.md#bounded-queue-edits). No provider work or automatic retry. |
+| `review_queue_edit` | Project management or instance administration; native `document` plus `idempotency_key`; selected metadata, explicit retirement/reactivation and relative ordering through [bounded queue edits](review-workspace.md#selected-queue-edits). No provider work or automatic retry. |
 | `review_pull` | Required pull_number, optional snapshot; compact PR summary with latest attempts per channel. |
 | `review_attempts` | Required pull_number, optional snapshot/limit/cursor; default five newest-first attempts with original producer and explicit continuation. |
 | `review_runs` | Required pull_number, optional snapshot/limit/cursor; default five stored run summaries. |
@@ -118,7 +138,7 @@ Startup validates configuration without opening the credential or contacting the
 | `note_update` | Required idempotency_key/note_id/expected_revision plus selected scope/kind/body/status/status_reason fields; compact changed/unchanged receipt. |
 | `inbox_send` | Required idempotency_key/recipient_worker_id/body; optional reply_to_message_id; compact message receipt. |
 | `inbox_seen` | Required idempotency_key/message_id; explicit recipient seen transition. |
-| `inbox_ack` | Required idempotency_key/message_id; explicit recipient acknowledgment, also establishing seen. |
+| `inbox_ack` | Required idempotency_key/message_id; optional worker_id selects a recipient. Acknowledgment also establishes seen; another recipient requires project management. |
 
 Review queue/run/attempt lists default to five entries; other limits use the API default when omitted and accept explicit values from 1 to 100. Reads never advance seen/ack state, change a job or write a checkpoint. Assigned jobs do not claim to contain primary-job or full resume context. Snapshot and event cursors have different scopes. Event reads retain no cursor and never automatically poll or resubscribe; an explicitly requested bounded wait can return an empty `timed_out` page. The finite snapshot/event operations are separate from the explicit quiet wait; none establishes idle-agent wakeup. Invalid, unknown, duplicate, exactly mis-cased, null or oversized tool fields fail before service work. Profile selectors cannot be supplied as tool arguments.
 
@@ -163,3 +183,11 @@ Clean source `e65315f3141fcba180499110cb0a5ad6f4948d6c` passed the actual packag
 ## Explicit review selection tools
 
 `review_start` accepts one durable channel selection with the caller's key and optional target/configuration assertions. `review_selection_read` observes a retained selection ID and its original native child, with optional bounded waiting. A `review_busy` response identifies another pending selection but creates no receipt and does not satisfy the refused caller's target assertion. Reads and canceled waits never authorize replacement work. See the [selection contract](review-round-controls.md#one-explicit-channel-front-run) for exact lifetime, authority and recovery semantics.
+
+## Native project administration
+
+The bound service exposes `review_policy_read`, `review_policy_configure`, `review_execution_configure`, `worker_create`, `project_credential_grant`, `project_credential_update` and `project_credential_revoke`. Mutation schemas require explicit keys and complete CAS inputs. Policy replacement includes `paused_channels`; execution configuration keeps an existing operator-bound capability and a nonempty queue. Grant takes a digest, never a raw secret. Management permissions and receipt replay follow the [local API](local-api.md#project-management-and-guarded-retirement).
+
+`worker_retirement_read` reports bounded blockers; `worker_retire` rechecks them atomically with ordinary write permission. `workers_list` defaults to active identities and accepts explicit `include_retired`. `inbox_list` and `inbox_ack` accept a selected `worker_id`; only acknowledgement for another recipient requires management. The authenticated acting worker remains unchanged. The existing inbox snapshot and seen operations do not accept another worker selector.
+
+Native presentation replacement/history/revision, public publication configuration/preview/apply/unpublish, and review import/transfer preview/apply tools delegate strict native documents to the existing validators. Public publication configuration, preview, apply and unpublish require instance administration; project management does not authorize them. Publication apply retains the explicit preview hash and revision. Existing round-adoption and adoption-obligation tools remain registered once. Read and preview tools perform no provider action; write/destructive annotations distinguish guarded mutations. New operation-control, settlement, history-collection and publication-prepare adapters are not part of this prerequisite.
