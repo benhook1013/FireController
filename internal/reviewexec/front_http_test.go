@@ -39,6 +39,10 @@ func TestFrontsHTTPCorruptSourceObligationReturnsDiagnosticHold(t *testing.T) {
 	f := frontFixture(t)
 	reader := &refreshTestReader{}
 	frontSelect(t, f, "front-before-source-corruption", "cli", reader)
+	selectionCalls := reader.calls.Load()
+	if selectionCalls != 3 {
+		t.Fatal("selection did not join its bounded two-PR window", selectionCalls)
+	}
 	retainObligationSource(t, f, attemptProject, "front-source-importer", "front-source", strings.Repeat("c", 64), 0)
 	path := "/api/v1/projects/" + attemptProject + "/reviews/fronts"
 	for _, corrupt := range []bool{false, true} {
@@ -59,7 +63,7 @@ func TestFrontsHTTPCorruptSourceObligationReturnsDiagnosticHold(t *testing.T) {
 		if got.State != "held" || got.Reason != reason || got.PullNumber != 2 {
 			t.Fatal("incorrect source hold diagnostic", got)
 		}
-		if before != selectionCounts(t, f) || reader.calls.Load() != 2 {
+		if before != selectionCounts(t, f) || reader.calls.Load() != selectionCalls {
 			t.Fatal("local front read changed state or fetched provider facts")
 		}
 	}

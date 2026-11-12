@@ -83,7 +83,7 @@ func TestRunSelectionActualParentKeepsUnfinishedFindingLocal(t *testing.T) {
 			got := selectionRead(t, f, request.ID)
 			// The initial bounded metadata window may look ahead to PR4;
 			// reaching it later requires its own fresh comparison read.
-			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 1}
+			wantCalls := map[string]int{"repository:801": 1, "pull:2": 1, "pull:4": 2}
 			if dependent {
 				wantCalls["parent:agent-a"] = 1
 			}
