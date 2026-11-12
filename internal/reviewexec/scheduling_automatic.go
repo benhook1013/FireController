@@ -120,19 +120,27 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 	return automaticPullBasisChannel(ctx, tx, project, pull, "hosted")
 }
 
-func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+func automaticChannelBasisRevision(ctx context.Context, tx *sql.Tx, project, channel string) (int64, error) {
 	s, err := readScheduling(ctx, tx, project)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	hostedRevision, cliRevision, err := schedulingBasisRevisions(ctx, tx, s)
+	if channel == "cli" {
+		return cliRevision, err
+	}
+	return hostedRevision, err
+}
+
+func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) (string, error) {
+	revision, err := automaticChannelBasisRevision(ctx, tx, project, channel)
 	if err != nil {
 		return "", err
 	}
-	basisRevision := hostedRevision
-	if channel == "cli" {
-		basisRevision = cliRevision
-	}
+	return automaticPullBasisAtRevision(ctx, tx, project, pull, channel, revision)
+}
+
+func automaticPullBasisAtRevision(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, basisRevision int64) (string, error) {
 	h := sha256.New()
 	appendRows := func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
@@ -297,10 +305,16 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 	if err != nil {
 		return "", false, err
 	}
+	// The channel's authorization history is fixed within this transaction.
+	// Verify it once per plan rather than scanning the same journal per PR.
+	revision, err := automaticChannelBasisRevision(ctx, tx, project, channel)
+	if err != nil {
+		return "", false, err
+	}
 	values := make([]any, 0, len(c.Queue))
 	remaining := []int64{}
 	for position, pull := range c.Queue {
-		basis, err := automaticPullBasisChannel(ctx, tx, project, pull, channel)
+		basis, err := automaticPullBasisAtRevision(ctx, tx, project, pull, channel, revision)
 		if err != nil {
 			return "", false, err
 		}
