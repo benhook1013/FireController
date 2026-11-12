@@ -73,13 +73,19 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 		t.Fatal("fresh result or actionable check lost", got, err)
 	}
 	for name, corrupt := range map[string]func(*client.CIWatchResult){
-		"project":             func(v *client.CIWatchResult) { v.ProjectID = "foreign" },
-		"pin":                 func(v *client.CIWatchResult) { v.Targets[0].HeadSHA = strings.Repeat("d", 40) },
-		"base pin":            func(v *client.CIWatchResult) { v.Targets[0].BaseSHA = "" },
-		"order":               func(v *client.CIWatchResult) { v.Targets[0], v.Targets[1] = v.Targets[1], v.Targets[0] },
-		"top state":           func(v *client.CIWatchResult) { v.State = "pending" },
-		"timeout credit":      func(v *client.CIWatchResult) { v.TimedOut = true },
-		"counts":              func(v *client.CIWatchResult) { v.Targets[1].Satisfied = 0 },
+		"project":        func(v *client.CIWatchResult) { v.ProjectID = "foreign" },
+		"pin":            func(v *client.CIWatchResult) { v.Targets[0].HeadSHA = strings.Repeat("d", 40) },
+		"base pin":       func(v *client.CIWatchResult) { v.Targets[0].BaseSHA = "" },
+		"order":          func(v *client.CIWatchResult) { v.Targets[0], v.Targets[1] = v.Targets[1], v.Targets[0] },
+		"top state":      func(v *client.CIWatchResult) { v.State = "pending" },
+		"timeout credit": func(v *client.CIWatchResult) { v.TimedOut = true },
+		"counts":         func(v *client.CIWatchResult) { v.Targets[1].Satisfied = 0 },
+		"mismatch without facts": func(v *client.CIWatchResult) {
+			v.Targets[1].Reason = "ci_merge_base_mismatch"
+		},
+		"passed with failure reason": func(v *client.CIWatchResult) {
+			v.Targets[1].Reason = "ci_required_checks_failed"
+		},
 		"missing checks":      func(v *client.CIWatchResult) { v.Targets[1].Checks = nil },
 		"wrong observed head": func(v *client.CIWatchResult) { v.Targets[1].ObservedHeadSHA = strings.Repeat("d", 40) },
 		"unknown state":       func(v *client.CIWatchResult) { v.Targets[1].State = "healthy" },
@@ -106,7 +112,7 @@ func TestCIWatchClientBoundReadAndStrictProjection(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if posts != 13 {
+	if posts != 15 {
 		t.Fatal("read retried", posts)
 	}
 }
