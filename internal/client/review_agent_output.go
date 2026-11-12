@@ -287,6 +287,11 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 		return &ReviewOperationDiagnostic{"Preparation held because the PR no longer matches the requested open comparison. This terminal operation will not silently follow a newer head.", "Read current queue/source facts. If the review remains authorized, qualify the current open head, respect any known cooldown, then submit one fresh review_request with a new key and current configuration revision. The old key replays this hold; queued-only pause/resume cannot reopen or rebind it. A new request rechecks provider limits and does not transfer the old timer. Configured PR queue order is unchanged."}
 	case "external_hosted_pending":
 		return externalHostedPendingDiagnostic()
+	case "routed_findings_pending":
+		return &ReviewOperationDiagnostic{
+			"Incoming routed findings were still open on this PR when the review stopped before dispatch.",
+			"Use reviews routes --pr NUMBER or the matching incoming-routes read tool to identify the obligations. Resolve them through the existing receiving workflow before another authorized review.",
+		}
 	case "review_evidence_pending":
 		return &ReviewOperationDiagnostic{"Earlier native evidence in this PR/channel still needs capture, adjudication, finalization, fix proof or a routed receiving resolution. This held operation is terminal and completed no new review.", "Read this operation with diagnostics to identify the current source operation/evidence, finding and route handles. Resolve the actual retained obligation through its existing controls; an outgoing accepted route without fix proof can hold the source channel. Do not reset rounds, discard evidence or start another review to clear the hold."}
 	case "project_file_limit":

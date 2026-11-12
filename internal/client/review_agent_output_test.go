@@ -21,6 +21,17 @@ func TestAgentCIInventoryIncompletePreservesUnknownGate(t *testing.T) {
 	}
 }
 
+func TestAgentOperationExplainsIncomingRoutesHold(t *testing.T) {
+	status := ReviewOperationStatus{ID: "original", AttemptID: "original_attempt", Channel: "hosted", State: "held", Reason: "routed_findings_pending"}
+	full := ReviewOperation{ID: status.ID, AttemptID: status.AttemptID, Channel: status.Channel, State: status.State, Reason: status.Reason}
+	compact, detailed := AgentReviewOperationStatus(status), AgentReviewOperation(full)
+	if compact.ReviewOperationStatus != status || !reflect.DeepEqual(detailed.ReviewOperation, full) ||
+		compact.Diagnostic == nil || !reflect.DeepEqual(compact.Diagnostic, detailed.Diagnostic) ||
+		!strings.Contains(compact.Diagnostic.NextAction, "reviews routes --pr NUMBER") {
+		t.Fatal("incoming routes hold lost its original identity or receiving workflow", compact, detailed)
+	}
+}
+
 func TestAgentRunOutputKeepsRunDatesAndCursor(t *testing.T) {
 	v := ReviewRuns{ProjectID: "p", Revision: 7, SnapshotID: "s", Source: "old source", ObservedAt: "old origin", RecordedAt: "old save", Items: []ReviewRunSummary{{StartedAt: "new start", FinishedAt: "new finish"}}, Cursor: "next", HasMore: true}
 	out := AgentReviewRuns(v)

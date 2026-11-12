@@ -306,6 +306,9 @@ func TestExplicitOrderIncomingRoutesGuardEveryDirectBoundary(t *testing.T) {
 						if !errors.As(err, &failure) || !reflect.DeepEqual(failure.Details, map[string]string{"reason": "routed_findings_pending"}) {
 							t.Fatal("wrong route hold", err)
 						}
+						if phase == "prepare" && preparationReason(PreparationFailureAt("execution_context", err)) != "routed_findings_pending" {
+							t.Fatal("preparation lost the incoming route refusal")
+						}
 					}
 					if routeState(t, f, source) != before {
 						t.Fatal("held direct request changed route/journal/evidence state")
