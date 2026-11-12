@@ -425,15 +425,19 @@ func CIWorkflowFailureApplies(observation CIObservation, failure CIWorkflowFailu
 	if err != nil {
 		return false
 	}
+	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
 	for _, run := range latest.Runs {
 		if failure.Basis == "" && !headOnly && run.WorkflowID == failure.WorkflowID && run.ID == failure.RunID && run.RunAttempt == failure.RunAttempt {
-			return run.RepositoryID == observation.Target.RepositoryID && run.HeadSHA == observation.SelectedCommitSHA
+			if observation.WorkflowActions != nil && !sameCIWorkflowChain(*actions, *observation.WorkflowActions, failure) {
+				return false
+			}
+			actual, proven, _ := ciWorkflowFailureThroughSkips([]ActionsHeadRun{run}, attempts)
+			return proven && actual == failure
 		}
 	}
 	if observation.WorkflowActions == nil || !sameCIWorkflowChain(*actions, *observation.WorkflowActions, failure) {
 		return false
 	}
-	attempts := append(append([]ActionsAttempt(nil), observation.Attempts...), observation.WorkflowAttempts...)
 	if failure.Basis == CIWorkflowHistoricalBasis {
 		if actions.HeadSHA != observation.Target.HeadSHA {
 			return false
