@@ -46,7 +46,7 @@ func TestWaitLifetimeDiagnosticPreservedThroughCLIAndRegisteredMCP(t *testing.T)
 	check := func(got mcpadapter.Diagnostic) {
 		t.Helper()
 		details, ok := got.Details.(map[string]any)
-		if !ok || details["reason"] != "result_wait_lifetime" || got.RequestID != "request-original-wait" || got.OutcomeUnknown || !strings.Contains(got.Message, "shutdown") || !strings.Contains(got.Action, "CI PR/head/base pins") || !strings.Contains(got.Action, "does not mean CI failed") {
+		if !ok || details["reason"] != "result_wait_lifetime" || got.RequestID != "request-original-wait" || got.OutcomeUnknown || !strings.Contains(got.Message, "shutdown") || !strings.Contains(got.Action, "at least one base was implicit") || !strings.Contains(got.Action, "does not mean CI failed") {
 			t.Fatal("adapter lost proven shutdown diagnosis", got)
 		}
 		if strings.Contains(got.Message+got.Action, "PRIVATE_SERVER") {

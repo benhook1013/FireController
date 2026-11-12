@@ -137,7 +137,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 			var failure *Error
 			if errors.As(err, &failure) {
 				copy := *failure
-				copy.Action = "This watch did not reconnect because at least one base was implicit. Verify the original comparison and supply explicit base pins before starting another bounded CI wait."
+				copy.Action = "This watch did not reconnect because at least one base was implicit. Interrupted waiting does not mean CI failed. Verify the original comparison and supply explicit base pins before starting another bounded CI wait."
 				err = &copy
 			}
 		}

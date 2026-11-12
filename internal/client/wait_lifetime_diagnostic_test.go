@@ -51,7 +51,7 @@ func TestWaitLifetimeDiagnosticRequiresProvenServerReason(t *testing.T) {
 			}
 			if test.shutdown {
 				details, ok := got.Details.(map[string]any)
-				if !ok || len(details) != 2 || details["reason"] != "result_wait_lifetime" || !reflect.DeepEqual(details["targets"], []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}}) || !strings.Contains(got.Action, "CI PR/head/base pins") || !strings.Contains(got.Action, "does not mean CI failed") {
+				if !ok || len(details) != 2 || details["reason"] != "result_wait_lifetime" || !reflect.DeepEqual(details["targets"], []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}}) || !strings.Contains(got.Action, "at least one base was implicit") || !strings.Contains(got.Action, "does not mean CI failed") {
 					t.Fatal("known interruption lost safe reattachment guidance", got)
 				}
 			} else if got.Details != nil {

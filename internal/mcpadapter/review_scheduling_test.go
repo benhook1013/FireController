@@ -104,7 +104,7 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 		}
 		seen++
 		write := tool.Name == "review_scheduling_configure" || tool.Name == "review_pull_scheduling_update"
-		if tool.Annotations == nil || tool.Annotations.ReadOnlyHint == write || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint != (tool.Name == "review_scheduling_configure") {
+		if tool.Annotations == nil || tool.Annotations.ReadOnlyHint == write || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint != write {
 			t.Fatal("unsafe annotations", tool.Name)
 		}
 	}

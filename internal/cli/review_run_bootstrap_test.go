@@ -35,7 +35,7 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					selected = wait
 				}
 				if wait == "reduced-budget" || wait == "deadline-after" {
-					selected = "2"
+					selected = "0"
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/instance" {
@@ -47,9 +47,8 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 						return
 					}
 					operations.Add(1)
-					// The integrated CLI preserves the selected preference even when
-					// an earlier caller deadline shortens collection. MCP fits its own
-					// forwarded wait within the separate tool response margin.
+					// An earlier caller deadline can shorten receipt collection
+					// while the request body, key and binding remain exact.
 					if r.Header.Get("Prefer") != "wait="+selected {
 						t.Errorf("selected wait changed: got %q, want wait=%s", r.Header.Get("Prefer"), selected)
 					}

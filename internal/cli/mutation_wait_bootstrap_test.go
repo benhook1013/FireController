@@ -20,6 +20,10 @@ func TestCLIExplicitMutationWaitReservesBootstrapAndHonorsCaller(t *testing.T) {
 			f, project, worker := reviewExecutionFixture(t)
 			var identities, writes atomic.Int64
 			var committed atomic.Bool
+			wantPrefer := "wait=10"
+			if earlier {
+				wantPrefer = "wait=0"
+			}
 			wantBody := `{"expected_configuration_revision":1,"pull_number":2,"channel":"cli","head_sha":"` + strings.Repeat("a", 40) + `"}`
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/instance" {
@@ -37,7 +41,7 @@ func TestCLIExplicitMutationWaitReservesBootstrapAndHonorsCaller(t *testing.T) {
 				}
 				writes.Add(1)
 				body, err := io.ReadAll(r.Body)
-				if err != nil || string(body) != wantBody || r.Header.Get("Idempotency-Key") != "explicit-review-key" || r.Header.Get("Prefer") != "wait=10" || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+f.admin {
+				if err != nil || string(body) != wantBody || r.Header.Get("Idempotency-Key") != "explicit-review-key" || r.Header.Get("Prefer") != wantPrefer || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("Authorization") != "Bearer "+f.admin {
 					t.Error("mutation changed request/key/wait/binding", string(body), err)
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))

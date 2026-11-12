@@ -31,6 +31,9 @@ func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
 			selection.Operation = &op
 			selection.Selection.ConfigurationRevision = op.ConfigurationRevision
 			ci := ciWatchSample()
+			ciPins := ciWatchPins()
+			ciPins[1].BaseSHA = ci.Targets[1].ObservedBaseSHA
+			ci.Targets[1].BaseSHA = ciPins[1].BaseSHA
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
@@ -103,7 +106,7 @@ func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
 				}
 			case "ci":
 				var got client.CIWatchResult
-				got, err = c.WatchCI(t.Context(), ciWatchPins(), 3)
+				got, err = c.WatchCI(t.Context(), ciPins, 3)
 				if !reflect.DeepEqual(got, ci) {
 					t.Error(got)
 				}
