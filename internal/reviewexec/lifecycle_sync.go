@@ -339,9 +339,14 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			return nil, err
 		}
 		s.mu.Lock()
-		for k := range s.due {
-			if k.project == p.id && !slices.Contains(numbers, k.number) {
-				delete(s.due, k)
+		// A different lane may still finish an observation for a PR removed
+		// from this snapshot. Preserve its hint generation until all project
+		// claims finish; otherwise completion recreates done without wanted.
+		if !s.lanes[lifecycleMetadata].projects[p.id] && !s.lanes[lifecycleEnrichment].projects[p.id] {
+			for k := range s.due {
+				if k.project == p.id && !slices.Contains(numbers, k.number) {
+					delete(s.due, k)
+				}
 			}
 		}
 		start := slices.Index(numbers, s.lanes[lane].lastPull[p.id]) + 1
