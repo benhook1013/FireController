@@ -116,6 +116,9 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 func (s *lifecycleSchedule) unregisterCIWatch(sub *ciWatchSubscription) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.watchers[sub] {
+		return
+	}
 	delete(s.watchers, sub)
 	s.watchPrincipals[sub.scope.PrincipalID]--
 	if s.watchPrincipals[sub.scope.PrincipalID] == 0 {
