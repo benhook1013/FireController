@@ -21,7 +21,7 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 		var backoff time.Duration
 		wait := d.recoveryWait
 		if wait == nil {
-			wait = waitHosted
+			wait = waitPreparation
 		}
 		for {
 			if ctx.Err() != nil {

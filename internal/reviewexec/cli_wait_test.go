@@ -672,8 +672,8 @@ func TestSupervisorCooldownPrefixLeavesOtherAccountEligible(t *testing.T) {
 	for i := range 299 {
 		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_blocked%03d", i))
 	}
-	operations, err := f.e.pendingForWorker(t.Context(), false)
-	if err != nil || len(operations) != 1 || operations[0].ID != healthy.ID {
+	operations, err := f.e.pendingSchedulingCandidates(t.Context(), false)
+	if err != nil || len(operations) != 1 || operations[0].operation != healthy.ID {
 		t.Fatalf("cooldown prefix hid the independent account: %d candidates, %v", len(operations), err)
 	}
 }
