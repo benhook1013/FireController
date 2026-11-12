@@ -82,26 +82,29 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
-	result, err := e.watchCIFrom(r.Context(), scope, targets, wait, started)
+	project := func(result CIWatchResult) CIWatchResult {
+		if !changeAware {
+			for i := range result.Targets {
+				result.Targets[i].ObservationKey = ""
+				result.Targets[i].WaitingForChange = false
+			}
+		}
+		if !changeAware || watchVersion != "change-v2" && watchVersion != "change-v3" {
+			for i := range result.Targets {
+				result.Targets[i].MergeBaseMismatch = nil
+			}
+		}
+		if len(r.Header.Values("X-FC-CI-Workflow-Details")) != 1 || workflowVersion != "1" && workflowVersion != "2" && workflowVersion != "3" {
+			for i := range result.Targets {
+				result.Targets[i].WorkflowObservations = nil
+			}
+		}
+		return result
+	}
+	result, err := e.watchCIFromProjected(r.Context(), scope, targets, wait, started, project)
 	if err != nil {
 		core.WriteError(w, err)
 		return
-	}
-	if !changeAware {
-		for i := range result.Targets {
-			result.Targets[i].ObservationKey = ""
-			result.Targets[i].WaitingForChange = false
-		}
-	}
-	if !changeAware || watchVersion != "change-v2" && watchVersion != "change-v3" {
-		for i := range result.Targets {
-			result.Targets[i].MergeBaseMismatch = nil
-		}
-	}
-	if len(r.Header.Values("X-FC-CI-Workflow-Details")) != 1 || workflowVersion != "1" && workflowVersion != "2" && workflowVersion != "3" {
-		for i := range result.Targets {
-			result.Targets[i].WorkflowObservations = nil
-		}
 	}
 	if changeAware && watchVersion == "change-v3" {
 		w.Header().Set("X-FC-CI-Watch", "change-v3")

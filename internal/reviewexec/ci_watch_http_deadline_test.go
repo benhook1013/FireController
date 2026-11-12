@@ -217,7 +217,7 @@ func TestCIWatchDirectDeadlineStartsAtInvocation(t *testing.T) {
 // three-second server wait and miss the unchanged eight-second client budget.
 func TestCIWatchHTTPDeadlineStrictClientKeepsPinsAndSingleRead(t *testing.T) {
 	f, schedule, _, reader, _ := ciWatchFixture(t)
-	schedule.readers["test-capability"] = &ciWatchWorkflowReader{ciWatchReader: reader}
+	schedule.readers["test-capability"] = &optionalCIWorkflowAttentionReader{ciWatchWorkflowReader: &ciWatchWorkflowReader{ciWatchReader: reader}, available: true}
 	admissionSQL(t, f, `INSERT INTO workers(project_id,id,name) VALUES(?,'deadline-reader','Reader')`, attemptProject)
 	pins := []client.CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), AfterObservationKey: strings.Repeat("c", 64), FailureWorkflowIDs: []int64{123}}}
 	wantBody, _ := json.Marshal(struct {
