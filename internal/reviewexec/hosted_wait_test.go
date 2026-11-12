@@ -60,6 +60,7 @@ func TestCooldownSchemaRetainsDependentRows(t *testing.T) {
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal("retained migration", err)
 	}
+	assertRetryIndexesRestored(t, f)
 	for _, table := range tables {
 		if after := snapshotTable(t, f, table); after != before[table] {
 			t.Fatalf("migration rewrote %s", table)
@@ -352,6 +353,9 @@ func TestCooldownSnapshotRejectsCorruptWaitOwnership(t *testing.T) {
 // Other migration regressions invoke this before replaying older migrations.
 func restorePreCooldownAttemptSchema(t *testing.T, f *attemptFixture) {
 	t.Helper()
+	// Dropping waits removes its retry index. Rewind the entire independent
+	// migration so startup also recreates its companion transition indexes.
+	restorePreRetryIndexSchema(t, f)
 	conn, err := f.store.DB().Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)
