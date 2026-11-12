@@ -9,12 +9,17 @@ import (
 )
 
 func TestCIWatchHTTPScopeReadContentionIsBounded(t *testing.T) {
-	for _, mode := range []string{"zero-wait", "caller-deadline"} {
+	for _, mode := range []string{"zero-wait", "caller-deadline", "shutdown"} {
 		t.Run(mode, func(t *testing.T) {
 			f, s, _, reader, _ := ciWatchFixture(t)
 			release := holdCIWatchReadPool(t, f)
 			defer release()
 			ctx := t.Context()
+			if mode == "shutdown" {
+				lifetime, stop := context.WithCancel(t.Context())
+				f.e.resultWaitLifetime = lifetime
+				stop()
+			}
 			if mode == "caller-deadline" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
@@ -23,7 +28,7 @@ func TestCIWatchHTTPScopeReadContentionIsBounded(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", strings.NewReader(`{"targets":[{"pull_number":42,"head_sha":"`+strings.Repeat("a", 40)+`"}]}`)).WithContext(ctx)
 			req.Header.Set("Authorization", "Bearer "+f.reader)
 			req.Header.Set("Prefer", "wait=0")
-			w := httptest.NewRecorder()
+			w := &ciWatchScopeDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
 			done := make(chan struct{})
 			started := time.Now()
 			go func() { defer close(done); f.handler.ServeHTTP(w, req) }()
@@ -38,11 +43,18 @@ func TestCIWatchHTTPScopeReadContentionIsBounded(t *testing.T) {
 			if mode == "zero-wait" && (elapsed < 4500*time.Millisecond || elapsed > 6500*time.Millisecond) {
 				t.Fatal("wrong scope deadline", elapsed)
 			}
-			if mode == "caller-deadline" && elapsed > time.Second {
+			if (mode == "caller-deadline" || mode == "shutdown") && elapsed > time.Second {
 				t.Fatal("ignored caller deadline", elapsed)
 			}
-			if w.Code != 503 || !strings.Contains(w.Body.String(), "ci_watch_scope_read") {
+			reason := "ci_watch_scope_read"
+			if mode == "shutdown" {
+				reason = "result_wait_lifetime"
+			}
+			if w.Code != 503 || !strings.Contains(w.Body.String(), reason) {
 				t.Fatal("unscoped storage refusal", w.Code, w.Body.String())
+			}
+			if w.deadline.Before(started.Add(10*time.Second)) || w.deadline.After(started.Add(11*time.Second)) {
+				t.Fatal("scope refusal lacked bounded response-write allowance", w.deadline.Sub(started))
 			}
 			ciWatchRegistered(t, s, 0)
 			if reader.calls != 0 {
@@ -50,4 +62,14 @@ func TestCIWatchHTTPScopeReadContentionIsBounded(t *testing.T) {
 			}
 		})
 	}
+}
+
+type ciWatchScopeDeadlineWriter struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (w *ciWatchScopeDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
 }

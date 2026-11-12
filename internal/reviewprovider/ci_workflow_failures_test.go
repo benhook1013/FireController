@@ -16,6 +16,11 @@ import (
 // second workflow gets an additional numbered-attempt response here.
 func ciWorkflowFailureFixture(t *testing.T, mode string) *ciObservationFixture {
 	t.Helper()
+	return ciWorkflowFailureFixtureWithOptionalStart(t, mode, nil)
+}
+
+func ciWorkflowFailureFixtureWithOptionalStart(t *testing.T, mode string, optionalStarted func()) *ciObservationFixture {
+	t.Helper()
 	f := &ciObservationFixture{t: t, mode: "merge", counts: map[string]int{}}
 	if mode == "empty" {
 		f.mode = "empty"
@@ -93,6 +98,9 @@ func ciWorkflowFailureFixture(t *testing.T, mode string) *ciObservationFixture {
 			return
 		}
 		if mode == "cancel" {
+			if optionalStarted != nil {
+				optionalStarted()
+			}
 			<-r.Context().Done()
 			return
 		}
@@ -168,7 +176,15 @@ func TestObserveCIGateWithWorkflowsKeepsGateAndBoundsExtraReads(t *testing.T) {
 	basePaths, _ := base.snapshot()
 	for _, mode := range []string{"default", "overlap", "optional", "missing", "unavailable", "stale attempt", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
-			f := ciWorkflowFailureFixture(t, mode)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			optionalStarted := make(chan struct{}, 1)
+			f := ciWorkflowFailureFixtureWithOptionalStart(t, mode, func() {
+				// Cancel only after the required gate completed and the first
+				// optional request reached the server, not after a wall-clock guess.
+				optionalStarted <- struct{}{}
+				cancel()
+			})
 			ids := []int64(nil)
 			switch mode {
 			case "overlap":
@@ -179,13 +195,14 @@ func TestObserveCIGateWithWorkflowsKeepsGateAndBoundsExtraReads(t *testing.T) {
 			default:
 				ids = []int64{31}
 			}
-			ctx := t.Context()
-			if mode == "cancel" {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 150*time.Millisecond)
-				defer cancel()
-			}
 			got, failures, err := f.g.ObserveCIGateWithWorkflows(ctx, ciObservationTarget(), "main", ids)
+			if mode == "cancel" {
+				select {
+				case <-optionalStarted:
+				default:
+					t.Fatal("cancellation did not reach optional collection")
+				}
+			}
 			var warning *CIWorkflowAttentionError
 			wantWarning := mode == "unavailable" || mode == "cancel"
 			if (err != nil) != wantWarning || wantWarning && !errors.As(err, &warning) || !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, got)) || len(got.Attempts) != 1 {
