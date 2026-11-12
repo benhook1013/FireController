@@ -45,6 +45,12 @@ func isStoredUnavailable(err error, kind storedUnavailableKind) bool {
 	return errors.As(err, &unavailable) && unavailable.kind == kind
 }
 
+// IsInvalidHostedPreparationEvidence identifies malformed retained source only.
+// Database access and cancellation errors still require normal recovery.
+func IsInvalidHostedPreparationEvidence(err error) bool {
+	return isStoredUnavailable(err, storedHostedQuery) || isStoredUnavailable(err, storedHostedObservation)
+}
+
 func allowanceUnavailable() error {
 	return newStoredUnavailable(storedAllowanceObservation, "Stored allowance observation is unavailable.")
 }

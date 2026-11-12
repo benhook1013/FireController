@@ -147,9 +147,17 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 				if usage.Remaining != 0 {
 					return preparation, reviewHold("allowance_unavailable")
 				}
-				// Negative timing is optional: failure to retain it cannot turn the
-				// Runner's proven exhaustion into a different refusal or a permit.
-				_ = d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles})
+				// A zero observation cannot authorize dispatch. Preserve an intervening
+				// local refusal before classifying this as another provider wait.
+				observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+				if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
+					return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
+				}); err != nil {
+					var refused *core.Error
+					if errors.As(err, &refused) && (refused.Status == 409 || refused.Status == 403) {
+						return preparation, err
+					}
+				}
 				return preparation, reviewHold("allowance_exhausted")
 			}
 			if failure.Code == "usage_unavailable" {

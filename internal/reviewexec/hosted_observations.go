@@ -103,7 +103,7 @@ func hostedObservationQueryBinding(ctx context.Context, tx *sql.Tx, a Attempt, o
 }
 
 func hostedObservationUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored hosted observation is unavailable.", 500)
+	return newStoredUnavailable(storedHostedObservation, "Stored hosted observation is unavailable.")
 }
 
 // decodeHostedObservation checks the canonical body against every indexed fact;
@@ -269,21 +269,24 @@ func (e *Engine) ReadHostedObservations(ctx context.Context, project, attemptID 
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,body_json FROM review_hosted_observations WHERE project_id=? AND attempt_id=? ORDER BY position LIMIT 201`, project, attemptID)
+		rows, err := tx.QueryContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,
+			CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=? THEN body_json END
+			FROM review_hosted_observations WHERE project_id=? AND attempt_id=? ORDER BY position LIMIT 201`, hostedObservationInputLimit+2048, project, attemptID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, rowProject, rowAttempt, operation, checksum, body string
+			var id, rowProject, rowAttempt, operation, checksum string
+			var body sql.NullString
 			var position, bytes int64
 			if err = rows.Scan(&id, &rowProject, &rowAttempt, &operation, &position, &checksum, &bytes, &body); err != nil {
 				return err
 			}
-			if len(records) >= hostedObservationLimit || rowProject != project || rowAttempt != attemptID || operation != o.ID || position != int64(len(records)+1) {
+			if !body.Valid || len(records) >= hostedObservationLimit || rowProject != project || rowAttempt != attemptID || operation != o.ID || position != int64(len(records)+1) {
 				return hostedObservationUnavailable()
 			}
-			record, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, checksum, bytes, a, o)
+			record, err := decodeHostedObservation(body.String, id, project, attemptID, o.ID, position, checksum, bytes, a, o)
 			if err != nil {
 				return err
 			}

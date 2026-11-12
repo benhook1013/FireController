@@ -151,25 +151,35 @@ func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bo
 		return nil, err
 	}
 	defer tx.Rollback()
-	args := make([]any, 0, 5*len(e.capabilities)+3)
+	now := e.sampleExecutionTime()
+	args := make([]any, 0, 6*len(e.capabilities)+3)
+	type accountKey struct{ provider, account string }
+	quotaHeld := make(map[accountKey]bool)
 	for _, capability := range e.capabilities {
-		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint, e.sourceReadGroups[capability.ID])
+		key := accountKey{capability.Provider, capability.Account}
+		held, checked := quotaHeld[key]
+		if !checked {
+			due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
+			if err != nil && !isWaitUnavailable(err) {
+				return nil, err
+			}
+			held = err != nil || now.Before(due)
+			quotaHeld[key] = held
+		}
+		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint, e.sourceReadGroups[capability.ID], held)
 	}
-	now := e.sampleExecutionTime().UTC().Format(time.RFC3339Nano)
-	args = append(args, now, now, now)
-	draftFilter := ""
-	if !probeDrafts {
-		draftFilter = " AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')"
-	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	args = append(args, stamp, stamp, stamp)
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
-	query := `WITH installed(id,provider,account,fingerprint,source_group) AS (VALUES (NULL,NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?,?)`, len(e.capabilities)) + `),
+	query := `WITH installed(id,provider,account,fingerprint,source_group,cli_quota_held) AS (VALUES (NULL,NULL,NULL,NULL,NULL,0)` + strings.Repeat(`,(?,?,?,?,?,?)`, len(e.capabilities)) + `),
  source_limited AS MATERIALIZED (SELECT DISTINCT source_group FROM review_source_retries INDEXED BY review_source_retries_due WHERE julianday(retry_not_before)>julianday(?))
 	SELECT o.project_id,o.id,o.channel,o.reason FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
-	WHERE o.state='queued'` + draftFilter + `
+	WHERE o.state='queued'
+AND NOT (o.channel='cli' AND COALESCE(i.cli_quota_held,0)=1)
 AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
@@ -177,23 +187,34 @@ AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.i
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
-	ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,o.created_at,o.id LIMIT 256`
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
+	`
 	var ids []pendingSchedulingCandidate
-	for rows.Next() {
-		var i pendingSchedulingCandidate
-		if err = rows.Scan(&i.project, &i.operation, &i.channel, &i.reason); err != nil {
-			_ = rows.Close()
+	read := func(suffix string, parameters []any) error {
+		rows, err := tx.QueryContext(ctx, query+suffix, parameters...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var candidate pendingSchedulingCandidate
+			if err := rows.Scan(&candidate.project, &candidate.operation, &candidate.channel, &candidate.reason); err != nil {
+				return err
+			}
+			ids = append(ids, candidate)
+		}
+		return rows.Err()
+	}
+	if probeDrafts {
+		e.draftProbeMu.Lock()
+		cursor := e.draftProbeCursor
+		e.draftProbeMu.Unlock()
+		draftArgs := append(append([]any(nil), args...), cursor, cliDraftProbeCapacity+1)
+		if err := read(` AND o.channel='cli' AND o.reason='cli_draft_wait' ORDER BY o.id<=?,o.id LIMIT ?`, draftArgs); err != nil {
 			return nil, err
 		}
-		ids = append(ids, i)
 	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
+	if err := read(` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')
+		ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,o.created_at,o.id LIMIT 256`, args); err != nil {
 		return nil, err
 	}
 	return ids, nil
@@ -355,7 +376,7 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 	defer e.endDispatchWork()
 	candidates, err := e.pendingSchedulingCandidates(ctx, probeDrafts)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
 		// Candidate selection is read-only. A bounded pool/SQLite contention

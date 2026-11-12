@@ -9,7 +9,7 @@ import (
 )
 
 func TestExecutionUpgradeRefusesComparisonAuthorityBeforeMutation(t *testing.T) {
-	for _, version := range []string{"3", "02", "0", "invalid"} {
+	for _, version := range []string{"3", "02", "0", "invalid", "absent"} {
 		t.Run(version, func(t *testing.T) {
 			f, _, _, _ := coverageFixture(t, 0, false)
 			restorePreCooldownAttemptSchema(t, f)
@@ -17,7 +17,11 @@ func TestExecutionUpgradeRefusesComparisonAuthorityBeforeMutation(t *testing.T) 
 			if err := ensureComparisonAttemptTriggers(t.Context(), f.store); err != nil {
 				t.Fatal(err)
 			}
-			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_comparison'`, version)
+			if version == "absent" {
+				admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_comparison'`)
+			} else {
+				admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_comparison'`, version)
+			}
 			before := snapshotTable(t, f, "sqlite_master") + snapshotTable(t, f, "metadata") + snapshotTable(t, f, "review_comparison_proofs")
 			source := comparisonSourceRows(t, f)
 			err := EnsureSchema(t.Context(), f.store)

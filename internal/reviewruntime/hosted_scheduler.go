@@ -48,7 +48,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 	}()
 	wait := d.wait
 	if wait == nil {
-		wait = waitHosted
+		wait = waitPreparation
 	}
 	now := time.Now()
 	var selectionBackoff time.Duration

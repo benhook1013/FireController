@@ -1,7 +1,10 @@
 package backup
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -38,8 +41,100 @@ func TestReservationScopeBackupRestoreAndPhysicalGuards(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			damaged := restoreModifiedBundle(t, bundle, statement)
+			before := restoreTree(t, damaged)
 			if _, err := Inspect(t.Context(), damaged); err == nil {
 				t.Fatal("rehashed bundle lost reservation safety")
+			}
+			destination := filepath.Join(t.TempDir(), "inactive")
+			if _, err := Restore(t.Context(), damaged, destination); err == nil {
+				t.Fatal("Restore accepted damaged reservation guards")
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatal("rejected restore created a destination", err)
+			}
+			if !reflect.DeepEqual(before, restoreTree(t, damaged)) {
+				t.Fatal("rejection changed retained bundle data")
+			}
+		})
+	}
+}
+
+func TestAttemptIndexPhysicalGuardsRejectRehashedBundles(t *testing.T) {
+	f := newRestoreFixture(t)
+	bundle := restoreBundle(t, f)
+	for name, statement := range map[string]string{
+		"missing-live":                `DROP INDEX review_attempts_live_operation`,
+		"missing-lookup":              `DROP INDEX review_attempts_operation`,
+		"nonunique-live":              `DROP INDEX review_attempts_live_operation; CREATE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active','uncertain')`,
+		"wrong-live-column":           `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(id) WHERE state IN ('preparing','posting','active','uncertain')`,
+		"missing-uncertain":           `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id) WHERE state IN ('preparing','posting','active')`,
+		"full-live":                   `DROP INDEX review_attempts_live_operation; CREATE UNIQUE INDEX review_attempts_live_operation ON review_execution_attempts(operation_id)`,
+		"wrong-lookup-order":          `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(id,operation_id)`,
+		"unique-lookup":               `DROP INDEX review_attempts_operation; CREATE UNIQUE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id)`,
+		"unique-operation-constraint": `CREATE UNIQUE INDEX legacy_attempt_operation_unique ON review_execution_attempts(operation_id)`,
+		"partial-lookup":              `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id,id) WHERE state='active'`,
+		"collation-lookup":            `DROP INDEX review_attempts_operation; CREATE INDEX review_attempts_operation ON review_execution_attempts(operation_id COLLATE NOCASE,id)`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			damaged := restoreModifiedBundle(t, bundle, statement)
+			if _, err := Inspect(t.Context(), damaged); err == nil {
+				t.Error("Inspect accepted damaged attempt indexes")
+			}
+			destination := filepath.Join(t.TempDir(), "inactive")
+			if _, err := Restore(t.Context(), damaged, destination); err == nil {
+				t.Error("Restore accepted damaged attempt indexes")
+			}
+			if _, err := os.Stat(destination); !os.IsNotExist(err) {
+				t.Fatal("rejected restore created a destination", err)
+			}
+		})
+	}
+}
+
+func TestWaitPhysicalGuardsRejectRehashedBundles(t *testing.T) {
+	f := newRestoreFixture(t)
+	bundle := restoreBundle(t, f)
+	var canonical string
+	if err := f.store.DB().QueryRow(`SELECT sql FROM sqlite_schema WHERE name='review_operation_waits'`).Scan(&canonical); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutation := range map[string][2]string{
+		"missing primary key":    {"operation_id TEXT PRIMARY KEY", "operation_id TEXT"},
+		"changed operation type": {"operation_id TEXT", "operation_id INTEGER"},
+		"changed baseline type":  {"baseline_attempt_id TEXT", "baseline_attempt_id INTEGER"},
+		"changed retry type":     {"retry_not_before TEXT", "retry_not_before INTEGER"},
+		"changed paused type":    {"paused INTEGER", "paused TEXT"},
+		"nullable retry":         {"retry_not_before TEXT NOT NULL", "retry_not_before TEXT"},
+		"nullable paused":        {"paused INTEGER NOT NULL", "paused INTEGER"},
+		"missing retry default":  {"DEFAULT ''", ""},
+		"changed retry default":  {"DEFAULT ''", "DEFAULT 'later'"},
+		"missing paused default": {"DEFAULT 0", ""},
+		"changed paused default": {"DEFAULT 0", "DEFAULT 1"},
+		"missing paused check":   {"CHECK(paused IN(0,1))", ""},
+		"weakened paused check":  {"CHECK(paused IN(0,1))", "CHECK(paused IN(0,1,2))"},
+		"missing paired check":   {",CHECK((baseline_attempt_id IS NULL AND retry_not_before='') OR (baseline_attempt_id IS NOT NULL AND retry_not_before<>''))", ""},
+		"weakened paired check":  {"baseline_attempt_id IS NULL AND retry_not_before=''", "baseline_attempt_id IS NULL"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			altered := strings.Replace(canonical, mutation[0], mutation[1], 1)
+			if altered == canonical {
+				t.Fatal("mutation did not change canonical schema")
+			}
+			const retryIndex = `CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`
+			damaged := restoreModifiedBundle(t, bundle, "DROP TABLE review_operation_waits; "+altered+"; "+retryIndex)
+			before := restoreTree(t, damaged)
+			if _, err := Inspect(t.Context(), damaged); err == nil {
+				t.Error("Inspect accepted damaged wait constraints")
+			}
+			destination := filepath.Join(t.TempDir(), "inactive")
+			if _, err := Restore(t.Context(), damaged, destination); err == nil {
+				t.Error("Restore accepted damaged wait constraints")
+			}
+			if _, err := os.Stat(destination); !os.IsNotExist(err) {
+				t.Fatal("rejected restore created a destination", err)
+			}
+			if !reflect.DeepEqual(before, restoreTree(t, damaged)) {
+				t.Fatal("rejection changed retained bundle data")
 			}
 		})
 	}
