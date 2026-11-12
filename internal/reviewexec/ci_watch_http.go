@@ -1,6 +1,7 @@
 package reviewexec
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -22,17 +23,23 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	changeAware := len(r.Header.Values("X-FC-CI-Watch")) == 1 && (watchVersion == "change-v1" || watchVersion == "change-v2" || watchVersion == "change-v3")
 	workflowVersion := r.Header.Get("X-FC-CI-Workflow-Details")
 	headAttention := changeAware && (watchVersion == "change-v2" || watchVersion == "change-v3") && len(r.Header.Values("X-FC-CI-Workflow-Details")) == 1 && (workflowVersion == "2" || workflowVersion == "3")
+	wait, err := operationPreference(r, 300)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	// The HTTP server's socket deadlines do not bound database connection
+	// acquisition during authentication. Include that read in the selected
+	// wait plus its existing response allowance, respecting caller cancellation.
+	ctx, cancel := context.WithDeadline(r.Context(), started.Add(time.Duration(wait+5)*time.Second))
+	defer cancel()
+	r = r.WithContext(ctx)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, ciWatchRefusal(err, "ci_watch_scope_read"))
 		return
 	}
 	if _, err = core.QueryKeys(r, "validation_failed"); err != nil {
-		core.WriteError(w, err)
-		return
-	}
-	wait, err := operationPreference(r, 300)
-	if err != nil {
 		core.WriteError(w, err)
 		return
 	}

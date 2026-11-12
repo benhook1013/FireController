@@ -79,7 +79,8 @@ func TestCIWatchHTTPDeadlineIncludesScopeAndBody(t *testing.T) {
 		{name: "slow_body", seconds: 120, body: 6 * time.Second, elapsed: 120 * time.Second, responseAt: 125 * time.Second},
 		{name: "scope_finishes_after_deadline", seconds: 3, auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
 		{name: "body_finishes_after_deadline", seconds: 3, body: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
-		{name: "zero_retains_immediate_read", auth: 6 * time.Second, elapsed: 6 * time.Second, responseAt: 11 * time.Second},
+		{name: "zero_retains_immediate_read", auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 9 * time.Second},
+		{name: "zero_scope_exceeds_allowance", auth: 6 * time.Second, elapsed: 5 * time.Second, refusal: "ci_watch_scope_read"},
 		{name: "earlier_caller_during_watch", seconds: 120, auth: 6 * time.Second, caller: 10 * time.Second, elapsed: 10 * time.Second, responseAt: 125 * time.Second, refusal: "ci_watch_canceled"},
 		{name: "earlier_caller_during_scope", seconds: 120, auth: 6 * time.Second, caller: 2 * time.Second, elapsed: 2 * time.Second, refusal: "ci_watch_scope_read"},
 	} {
