@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,7 +39,7 @@ func (r *ciWatchHistoricalReader) ObserveCIGateWithWorkflows(ctx context.Context
 }
 func (r *ciWatchHistoricalReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, heads, historical []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	o, err := r.ObserveCIGate(ctx, target, gate)
-	if len(historical) == 0 {
+	if !slices.Contains(historical, 10) {
 		r.normal.Add(1)
 		return o, nil, err
 	}
@@ -246,6 +247,19 @@ func TestCIWatchHistoricalHTTPStrictClientAndOldDetailVersions(t *testing.T) {
 		}
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"timed_out":true`) || strings.Contains(w.Body.String(), "workflow_failures") || strings.Contains(w.Body.String(), reviewprovider.CIWorkflowHistoricalBasis) {
 			t.Fatal("old detail shape changed or woke", version, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestCIWatchHistoricalReaderHonorsWorkflowSelector(t *testing.T) {
+	_, _, _, base, _ := ciWatchFixture(t)
+	base.states[42] = "pending"
+	r := &ciWatchHistoricalReader{ciWatchReader: base}
+	target := reviewprovider.CITarget{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40)}
+	for _, ids := range [][]int64{nil, {20}, {10}} {
+		_, rows, err := r.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", ids, ids, ids)
+		if err != nil || (len(rows) > 0) != slices.Contains(ids, 10) {
+			t.Fatal("historical fixture ignored selector", ids, rows, err)
 		}
 	}
 }
