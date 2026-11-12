@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -306,5 +308,136 @@ func TestHostedCooldownRetryDoesNotChangeInitialSourceFailure(t *testing.T) {
 	var refusal *core.Error
 	if err == nil || errors.As(err, &refusal) || err.Error() != "preparation_source_resolution_other" || f.provider.queries != 0 || f.provider.reviews != 0 {
 		t.Fatal("initial source lookup gained retry-only behavior", err)
+	}
+}
+
+func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
+	for _, code := range []string{"overloaded", "storage_unavailable", "review_held", "review_conflict", "validation_failed"} {
+		t.Run(code, func(t *testing.T) {
+			calls, waits := 0, 0
+			failure := core.Fail(code, "fixture", 503)
+			err := retryHostedCooldownRetention(t.Context(), func(ctx context.Context, duration time.Duration) error {
+				waits++
+				if duration != 200*time.Millisecond {
+					t.Fatal("unexpected retry delay", duration)
+				}
+				return ctx.Err()
+			}, func() error {
+				calls++
+				if calls == 1 {
+					return failure
+				}
+				return nil
+			})
+			if code == "overloaded" || code == "storage_unavailable" {
+				if err != nil || calls != 2 || waits != 1 {
+					t.Fatal("temporary retention failure not reconciled", calls, waits, err)
+				}
+			} else if err != failure || calls != 1 || waits != 0 {
+				t.Fatal("definitive refusal retried", calls, waits, err)
+			}
+		})
+	}
+	calls := 0
+	failure := core.Fail("overloaded", "fixture", 503)
+	err := retryHostedCooldownRetention(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error { calls++; return failure })
+	if calls != 3 || err != failure {
+		t.Fatal("retention retry was not bounded", calls, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls = 0
+	err = retryHostedCooldownRetention(ctx, func(context.Context, time.Duration) error { cancel(); return ctx.Err() }, func() error { calls++; return failure })
+	if calls != 1 || !errors.Is(err, context.Canceled) {
+		t.Fatal("retry ignored cancellation", calls, err)
+	}
+}
+
+func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
+	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace"} {
+		t.Run(damage, func(t *testing.T) {
+			f, _ := newHostedCooldownRetryFixture(t)
+			operation, attempt, config := f.startHosted(t)
+			if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_cooldown_retention BEFORE INSERT ON review_hosted_preflight BEGIN SELECT RAISE(ABORT,'retention outage'); END`); err != nil {
+				t.Fatal(err)
+			}
+			waits := 0
+			f.hosted.wait = func(ctx context.Context, _ time.Duration) error { waits++; return ctx.Err() }
+			_, err := f.hosted.Prepare(t.Context(), operation, config, attempt)
+			var recovery *reviewexec.PreparationRecoveryError
+			if !errors.As(err, &recovery) || waits != 2 {
+				t.Fatal("outage did not leave recoverable preparation after bounded retries", waits, err)
+			}
+			if got, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), operation.ID); err != nil || got.State != "preparing" || got.AttemptID != attempt.ID {
+				t.Fatal("original preparation lost", got, err)
+			}
+			// Restart while storage is still unavailable must leave the same attempt.
+			if _, err := f.engine.Start(t.Context(), map[string]reviewexec.Driver{f.capability.ID: f.hosted}); err == nil {
+				t.Fatal("startup ignored persistent storage outage")
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER fail_cooldown_retention`); err != nil {
+				t.Fatal(err)
+			}
+			query, err := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, attempt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observations, err := f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+			if err != nil || len(observations) == 0 {
+				t.Fatal(err)
+			}
+			in := observations[len(observations)-1].Input
+			ref := CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes}
+			path := filepath.Join(f.hostedCaptures.root, hostedCaptureFilename(attempt.ID, ref))
+			switch damage {
+			case "missing-capture":
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			case "malformed-capture":
+				if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "workspace":
+				a := query.Anchor
+				workspace, err := f.manager.Open(t.Context(), attempt.ID, a.CandidateSHA, a.BaseSHA, a.MergeBaseSHA, a.PatchSHA256, a.Repository)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(workspace.Directory, "untracked"), []byte("changed"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := []int{f.provider.queries, f.provider.reviews, f.provider.histories, f.reader.repositoryCalls}
+			for pass := 0; pass < 2; pass++ {
+				ctx, cancel := context.WithCancel(t.Context())
+				done, err := f.engine.Start(ctx, map[string]reviewexec.Driver{f.capability.ID: f.hosted})
+				if err != nil {
+					cancel()
+					t.Fatal(err)
+				}
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				got, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), operation.ID)
+				if err != nil || got.ID != operation.ID {
+					t.Fatal("request identity changed", got, err)
+				}
+				if damage == "none" {
+					if got.State != "queued" || got.Wait == nil || got.Wait.BaselineAttemptID != attempt.ID || got.Wait.RetryNotBefore == "" {
+						t.Fatal("original cooldown not recovered", got)
+					}
+				} else if got.State != "cancelled" || cliCount(t, f.store, `SELECT count(*) FROM review_hosted_preflight`) != 0 {
+					t.Fatal("unproven recovery retained cooldown", got)
+				}
+			}
+			after := []int{f.provider.queries, f.provider.reviews, f.provider.histories, f.reader.repositoryCalls}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("recovery contacted provider", before, after)
+			}
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 {
+				t.Fatal("recovery created another attempt")
+			}
+		})
 	}
 }

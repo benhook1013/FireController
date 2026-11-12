@@ -225,7 +225,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_source_retries": 1, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 2, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_source_retries": 1, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -650,6 +650,34 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, invalid()
 		}
 		if err = validateSchedulingPhysicalSchema(ctx, db, versions["review_scheduling"]); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, err
+		}
+	}
+	if versions["review_execution"] >= 9 {
+		// Schema nine owns durable wait identity and paired retry state even
+		// when the bundle has no wait rows to exercise these constraints.
+		const definition = `CREATE TABLE review_operation_waits(operation_id TEXT PRIMARY KEY REFERENCES review_operations(id),baseline_attempt_id TEXT REFERENCES review_execution_attempts(id),retry_not_before TEXT NOT NULL DEFAULT '',paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN(0,1)),CHECK((baseline_attempt_id IS NULL AND retry_not_before='') OR (baseline_attempt_id IS NOT NULL AND retry_not_before<>'')))`
+		objects := map[string]physicalSchemaObject{"review_operation_waits": {"table", historyDefinitionSQL(definition)}}
+		names := []string{"review_operation_waits"}
+		if versions["review_execution_indexes"] >= 3 {
+			objects["review_waits_live_retry"] = physicalSchemaObject{"index", historyDefinitionSQL(`CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`)}
+			transitionDefinition := `CREATE TABLE review_execution_transitions(attempt_id TEXT NOT NULL REFERENCES review_execution_attempts(id),revision INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,external_id TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(attempt_id,revision))`
+			if versions["review_source_refusals"] >= 1 {
+				// SQLite ADD COLUMN inserts this column before the table-level primary key.
+				transitionDefinition = `CREATE TABLE review_execution_transitions(attempt_id TEXT NOT NULL REFERENCES review_execution_attempts(id),revision INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,external_id TEXT NOT NULL,created_at TEXT NOT NULL, source_refusal_json TEXT NOT NULL DEFAULT 'null' CHECK(length(CAST(source_refusal_json AS BLOB))<=512),PRIMARY KEY(attempt_id,revision))`
+			}
+			objects["review_execution_transitions"] = physicalSchemaObject{"table", historyDefinitionSQL(transitionDefinition)}
+			objects["review_transitions_exhaustion_time"] = physicalSchemaObject{"index", historyDefinitionSQL(`CREATE INDEX review_transitions_exhaustion_time ON review_execution_transitions(rtrim(created_at,'Z') DESC,attempt_id,revision) WHERE state='held' AND reason='allowance_exhausted'`)}
+			objects["review_transitions_exhaustion_attempt"] = physicalSchemaObject{"index", historyDefinitionSQL(`CREATE INDEX review_transitions_exhaustion_attempt ON review_execution_transitions(attempt_id,rtrim(created_at,'Z')) WHERE state='held' AND reason='allowance_exhausted'`)}
+			names = append(names, "review_execution_transitions")
+		}
+		if err = validatePhysicalSchemaObjects(ctx, db, objects, names); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
 			return nil, err
 		}
 	}
@@ -848,11 +876,17 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 		if name == "review_execution_reservations" && versions[spec.domain] >= 10 {
 			if err = validateReservationScopeSchema(ctx, db); err != nil {
+				if contextErr := checkContext(ctx); contextErr != nil {
+					return nil, contextErr
+				}
 				return nil, err
 			}
 		}
 		if name == "review_operations" && versions[spec.domain] >= 7 {
 			if err = validateReviewOrderPhysicalSchema(ctx, db, versions[spec.domain]); err != nil {
+				if contextErr := checkContext(ctx); contextErr != nil {
+					return nil, contextErr
+				}
 				return nil, err
 			}
 		}

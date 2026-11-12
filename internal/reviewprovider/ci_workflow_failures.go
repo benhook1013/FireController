@@ -100,6 +100,13 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 	if err != nil || len(wanted) == 0 {
 		return observation, failures, err
 	}
+	return g.collectCIWorkflowAttention(ctx, target, observation, wanted, headWanted, historicalWanted)
+}
+
+// Keep optional collection separate from the completed required-gate read.
+func (g *GitHub) collectCIWorkflowAttention(ctx context.Context, target CITarget, observation CIObservation, wanted, headWanted, historicalWanted map[int64]bool) (CIObservation, []CIWorkflowFailure, error) {
+	failures := []CIWorkflowFailure{}
+	var err error
 	headOnly := len(headWanted) > 0 && ciHeadWorkflowCandidate(observation)
 	actionsSource := observation.Actions
 	attentionHead := observation.SelectedCommitSHA
@@ -141,8 +148,11 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 		return kept
 	}
 	for _, newest := range latest.Runs {
-		if !wanted[newest.WorkflowID] || ctx.Err() != nil {
+		if !wanted[newest.WorkflowID] {
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
 		}
 		runs := ciWorkflowRuns(actions, newest.WorkflowID)
 		var historical CIWorkflowFailure
@@ -201,7 +211,7 @@ func (g *GitHub) observeCIGateWithWorkflowAttention(ctx context.Context, target 
 		current, readErr := g.ActionsRunsForHead(ctx, actions.Repository, actions.RepositoryID, actions.HeadSHA)
 		kept := failures[:0]
 		for _, failure := range failures {
-			if !headOnly && !fallback[failure.WorkflowID] || readErr == nil && sameCIWorkflowChain(actions, current, failure) {
+			if readErr != nil && !headOnly && !fallback[failure.WorkflowID] || readErr == nil && sameCIWorkflowChain(actions, current, failure) {
 				kept = append(kept, failure)
 			}
 		}

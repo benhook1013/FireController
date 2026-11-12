@@ -190,3 +190,21 @@ func TestAgentCIWatchReusesCanonicalMergeRefusalGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestCIWatchInvalidProviderResponsesKeepCanonicalGuidance(t *testing.T) {
+	for _, reason := range []string{"ci_provider_invalid_response_head_results", "ci_provider_invalid_response_merge_results", "ci_provider_invalid_response_results_recheck", "ci_provider_invalid_response_merge_results_recheck", "ci_provider_invalid_response_assessment"} {
+		t.Run(reason, func(t *testing.T) {
+			item := client.CIWatchTargetResult{State: "pending", Reason: reason}
+			out := client.AgentCIWatch(client.CIWatchResult{Targets: []client.CIWatchTargetResult{item}})
+			want := client.AgentReviewCI(client.ReviewSourceCIAssessment{State: "unproven", Reason: reason}).Diagnostic
+			got := out.Targets[0].Diagnostic
+			if want == nil || got == nil || got.Explanation != want.Explanation || got.NextAction != want.NextAction || out.Targets[0].Phase != "observation_unproven" || !reflect.DeepEqual(out.Targets[0].CIWatchTargetResult, item) {
+				t.Fatal("canonical invalid-response guidance or wire facts lost", out, want)
+			}
+		})
+	}
+	out := client.AgentCIWatch(client.CIWatchResult{Targets: []client.CIWatchTargetResult{{State: "pending", Reason: "unrelated_reason"}}})
+	if out.Targets[0].Diagnostic.NextAction != "Start another bounded CI wait for the remaining targets when you need a newer result." {
+		t.Fatal("unrelated reason lost bounded-wait fallback", out)
+	}
+}

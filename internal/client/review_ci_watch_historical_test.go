@@ -88,6 +88,9 @@ func TestCIWatchHistoricalBasisStrictDecodeAndTruthfulMixedOutput(t *testing.T) 
 			if !strings.Contains(d.NextAction, "observation_key as after_observation_key") || !strings.Contains(d.NextAction, "Do not rerun CI or change required gates") {
 				t.Fatal("historical attention lost safe quiet rearm guidance", d)
 			}
+			if mode == "head only" && !strings.Contains(d.NextAction, "Reconcile the actual PR/base comparison") {
+				t.Fatal("historical signal hid comparison repair", d)
+			}
 			if mode == "mixed" && !strings.Contains(d.Explanation, "Unlabelled rows") {
 				t.Fatal("mixed proven rows lost distinction", d)
 			}

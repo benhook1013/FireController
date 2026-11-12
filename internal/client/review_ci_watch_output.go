@@ -58,7 +58,11 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 			if historical < len(item.WorkflowFailures) {
 				explanation += " Unlabelled rows retain the ordinary proven failure-attention meaning."
 			}
-			return phase, &ReviewOperationDiagnostic{explanation, "Inspect the supplied historical workflow/run/attempt/job IDs for the actual failure; verify or fix it without treating metadata-only success as repair. Reuse observation_key as after_observation_key to wait quietly for changed evidence. Do not rerun CI or change required gates solely to clear this historical signal."}
+			action := "Inspect the supplied historical workflow/run/attempt/job IDs for the actual failure; verify or fix it without treating metadata-only success as repair. Reuse observation_key as after_observation_key to wait quietly for changed evidence. Do not rerun CI or change required gates solely to clear this historical signal."
+			if item.Reason == "ci_merge_base_mismatch" {
+				action += " Reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."
+			}
+			return phase, &ReviewOperationDiagnostic{explanation, action}
 		}
 		if item.WorkflowAttentionBasis == "head_only_current_comparison_unproven" {
 			phase := "workflow_failure"
@@ -89,6 +93,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 		phase, explanation = "refreshing", "A newer controller check has been requested but has not completed. Any earlier counts and checks are informational until that refresh completes."
 	case oneReviewOf(item.Reason, "ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending",
 		"ci_provider_inventory_incomplete", "ci_provider_inventory_incomplete_head_results", "ci_provider_inventory_incomplete_merge_results", "ci_provider_inventory_incomplete_results_recheck", "ci_provider_inventory_incomplete_merge_results_recheck",
+		"ci_provider_invalid_response_head_results", "ci_provider_invalid_response_merge_results", "ci_provider_invalid_response_results_recheck", "ci_provider_invalid_response_merge_results_recheck", "ci_provider_invalid_response_assessment",
 		"ci_provider_invalid_response_check_run_time_order", "ci_provider_invalid_response_head_results_check_run_time_order", "ci_provider_invalid_response_merge_results_check_run_time_order", "ci_provider_invalid_response_results_recheck_check_run_time_order", "ci_provider_invalid_response_merge_results_recheck_check_run_time_order"):
 		if diagnostic := AgentReviewCI(ReviewSourceCIAssessment{State: "unproven", Reason: item.Reason, Target: ReviewSourceObservation{HeadSHA: item.ObservedHeadSHA, BaseSHA: item.ObservedBaseSHA}, MergeBaseMismatch: item.MergeBaseMismatch}).Diagnostic; diagnostic != nil {
 			return "observation_unproven", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction}

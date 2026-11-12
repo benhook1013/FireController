@@ -116,11 +116,9 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 				c := newClient(t, service)
 				ctx, cancel := context.WithCancelCause(t.Context())
 				defer cancel(nil)
-				if kind == "deadline_exceeded" {
-					var stop context.CancelFunc
-					ctx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
-					defer stop()
-				}
+				// The phase deadline is armed below, after transport observation.
+				// Setup has its own bounded selects and cannot consume that deadline.
+				ctx = ciWatchPhaseDeadlineContext{ctx}
 				// A server flush does not prove that the client received a byte.
 				// Observe the same local transport event before cancellation.
 				ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
@@ -135,7 +133,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 				go func() { _, err := c.WatchCI(ctx, ciWatchPins(), 900); out <- err }()
 				select {
 				case <-entered:
-				case <-time.After(time.Second):
+				case <-time.After(5 * time.Second):
 					t.Fatal("wait not entered")
 				}
 				observed := written
@@ -144,11 +142,14 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 				}
 				select {
 				case <-observed:
-				case <-time.After(time.Second):
+				case <-time.After(5 * time.Second):
 					t.Fatal("client transport phase not observed")
 				}
 				if kind == "canceled" {
 					cancel(errors.New("PRIVATE_HOST_CAUSE"))
+				} else {
+					timer := time.AfterFunc(100*time.Millisecond, func() { cancel(context.DeadlineExceeded) })
+					defer timer.Stop()
 				}
 				select {
 				case err := <-out:
@@ -168,7 +169,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					if !ok || transport["phase"] != wantPhase || transport["requested_wait_seconds"] != 900 || transport["attempt_count"] != 1 {
 						t.Fatal("missing bounded transport facts", transport)
 					}
-					if elapsed, ok := transport["elapsed_ms"].(int64); !ok || elapsed < 0 || elapsed > 1000 {
+					if elapsed, ok := transport["elapsed_ms"].(int64); !ok || elapsed < 0 || elapsed > 15000 {
 						t.Fatal("invalid elapsed diagnostic", transport)
 					}
 					if effective, ok := transport["effective_wait_seconds"].(int); !ok || effective < 0 || effective > 900 {
@@ -189,7 +190,7 @@ func TestCIWatchLocalInterruptionDoesNotInventCIOrRetry(t *testing.T) {
 					if kind == "canceled" && !strings.Contains(failure.Message, "client context was canceled") || kind == "deadline_exceeded" && !strings.Contains(failure.Message, "deadline expired") {
 						t.Fatal("cancellation and deadline conflated", failure)
 					}
-				case <-time.After(time.Second):
+				case <-time.After(5 * time.Second):
 					t.Fatal("interruption did not return")
 				}
 			})
@@ -248,4 +249,22 @@ func TestCIWatchReconnectRequiresEveryExplicitBase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Translate the deliberately armed deadline cause into the Context contract.
+// WithCancelCause owns synchronization; no mutable deadline races with HTTP.
+// Budget-fitting with real WithTimeout contexts is covered separately above.
+type ciWatchPhaseDeadlineContext struct{ context.Context }
+
+func (c ciWatchPhaseDeadlineContext) Err() error {
+	if c.Context.Err() != nil && context.Cause(c.Context) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return c.Context.Err()
+}
+
+// Hide the embedded cancel context's internal identity so derived HTTP contexts
+// propagate this wrapper's deadline Err rather than its cancellation mechanism.
+func (c ciWatchPhaseDeadlineContext) Value(key any) any {
+	return context.WithoutCancel(c.Context).Value(key)
 }

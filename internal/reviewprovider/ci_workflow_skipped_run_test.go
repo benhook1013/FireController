@@ -34,6 +34,9 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 		} else if mode == "different event" {
 			value["event"] = "workflow_dispatch"
 		}
+		if id == 70 && strings.HasPrefix(mode, "mixed ") {
+			value["workflow_id"], value["run_attempt"], value["conclusion"] = int64(32), int64(2), "failure"
+		}
 		return value
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +66,13 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 				headWalk := f.headWalks
 				f.mu.Unlock()
 				rows := []map[string]any{f.run(50, candidateMerge), run(60), run(61)}
+				if strings.HasPrefix(mode, "mixed ") {
+					direct := run(70)
+					if headWalk > 1 && mode == "mixed repaired" {
+						direct["run_attempt"], direct["conclusion"] = int64(3), "success"
+					}
+					rows = append(rows, direct)
+				}
 				if mode == "rerun-during-read" {
 					rows[1]["run_attempt"], rows[1]["conclusion"] = int64(1), "failure"
 				}
@@ -85,7 +95,7 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 						w.Header().Set("Retry-After", "42")
 						http.Error(w, "PRIVATE_RECHECK_ERROR", http.StatusTooManyRequests)
 						return
-					case "unavailable recheck":
+					case "unavailable recheck", "mixed unavailable recheck":
 						http.Error(w, "PRIVATE_RECHECK_ERROR", http.StatusServiceUnavailable)
 						return
 					}
@@ -94,7 +104,7 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 					body = actionsEnvelope("workflow_runs", rows, len(rows))
 				}
 			}
-		case strings.HasPrefix(r.URL.Path, actionsRunsPath+"/6") || mode == "capacity" && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/") && r.URL.Path != actionsCurrentPath && r.URL.Path != actionsJobsPath:
+		case strings.HasPrefix(r.URL.Path, actionsRunsPath+"/6") || strings.HasPrefix(mode, "mixed ") && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/70") || mode == "capacity" && strings.HasPrefix(r.URL.Path, actionsRunsPath+"/") && r.URL.Path != actionsCurrentPath && r.URL.Path != actionsJobsPath:
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, actionsRunsPath+"/"), "/")
 			id, _ := strconv.ParseInt(parts[0], 10, 64)
 			if len(parts) == 1 {
@@ -124,6 +134,9 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 					job["name"], job["conclusion"] = "Metadata only", "success"
 				}
 			}
+			if id == 70 && strings.HasPrefix(mode, "mixed ") {
+				job["conclusion"], job["run_attempt"] = "failure", int64(2)
+			}
 			jobs := []map[string]any{job}
 			if mode == "matrix ambiguity" && id > 60 {
 				duplicate := actionsJobFixture(jobID + 100)
@@ -137,6 +150,9 @@ func ciSkippedRunFixture(t *testing.T, mode string) *ciObservationFixture {
 			var envelope map[string]any
 			_ = json.Unmarshal(recorded.Body.Bytes(), &envelope)
 			envelope["total_count"] = 3
+			if strings.HasPrefix(mode, "mixed ") {
+				envelope["total_count"] = 4
+			}
 			if mode == "capacity" {
 				envelope["total_count"] = 35
 			}
@@ -275,6 +291,48 @@ func TestWorkflowAttentionRecheckProviderFailuresRemainProviderErrors(t *testing
 			}
 			if len(failures) != 0 || gate.WorkflowActions != nil || !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, gate)) {
 				t.Fatal("failed recheck credited old attention or changed required gate facts", failures, gate.State)
+			}
+		})
+	}
+}
+
+func TestWorkflowAttentionFinalInventoryRechecksDirectAndSkippedFailures(t *testing.T) {
+	for _, mode := range []string{"mixed stable", "mixed repaired", "mixed unavailable recheck"} {
+		t.Run(mode, func(t *testing.T) {
+			base := ciSkippedRunFixture(t, mode)
+			ordinary, err := base.g.ObserveCIGate(t.Context(), ciObservationTarget(), "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := ciSkippedRunFixture(t, mode)
+			got, rows, err := f.g.ObserveCIGateWithWorkflows(t.Context(), ciObservationTarget(), "main", []int64{31, 32})
+			if mode == "mixed unavailable recheck" {
+				var provider *Error
+				if !errors.As(err, &provider) || provider.Code != "provider_unavailable" || got.WorkflowActions != nil {
+					t.Fatal("recheck error lost", got, err)
+				}
+			} else if err != nil || got.WorkflowActions == nil {
+				t.Fatal("successful final inventory missing", got, err)
+			}
+			want := map[int64]bool{31: true, 32: true}
+			if mode == "mixed repaired" {
+				delete(want, 32)
+			}
+			if mode == "mixed unavailable recheck" {
+				delete(want, 31)
+			}
+			if got.State != "pending" || len(rows) != len(want) || !reflect.DeepEqual(workflowGateFacts(t, ordinary), workflowGateFacts(t, got)) {
+				t.Fatal("recheck changed gate or retained stale failure", got.State, rows, err)
+			}
+			for _, row := range rows {
+				if !want[row.WorkflowID] || !CIWorkflowFailureApplies(got, row) {
+					t.Fatal("unexpected or unproven retained row", row)
+				}
+				delete(want, row.WorkflowID)
+			}
+			_, calls := f.snapshot()
+			if calls[actionsRunsPath+"/70/attempts/2/jobs"] != 1 {
+				t.Fatal("direct current numbered attempt was not collected", calls)
 			}
 		})
 	}

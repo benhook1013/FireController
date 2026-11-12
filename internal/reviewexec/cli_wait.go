@@ -146,22 +146,22 @@ func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Ca
 		var project, id string
 		var err error
 		if previous < 0 {
-			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w
-			JOIN review_operations o ON o.id=w.operation_id
-			JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id
+			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w INDEXED BY review_waits_live_retry
+			CROSS JOIN review_operations o ON o.id=w.operation_id
+			CROSS JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id
 			WHERE o.channel='cli' AND a.provider=? AND a.account=? AND w.retry_not_before<>''
 			AND rtrim(w.retry_not_before,'Z')>rtrim(?,'Z')
 			ORDER BY rtrim(w.retry_not_before,'Z') DESC LIMIT 1`, capability.Provider, capability.Account, now.UTC().Format(time.RFC3339Nano)).Scan(&project, &id)
 		} else {
-			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w
-		JOIN review_operations o ON o.id=w.operation_id
-		JOIN review_execution_attempts a ON a.operation_id=o.id
-		JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision
+			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_execution_transitions t INDEXED BY review_transitions_exhaustion_time
+        CROSS JOIN review_execution_attempts a ON a.id=t.attempt_id AND a.revision=t.revision
+        CROSS JOIN review_operations o ON o.id=a.operation_id
+        CROSS JOIN review_operation_waits w ON w.operation_id=o.id
 		WHERE o.channel='cli' AND a.provider=? AND a.account=? AND a.id<>o.attempt_id
 		AND t.state='held' AND t.reason='allowance_exhausted'
 		AND rtrim(t.created_at,'Z')>rtrim(?,'Z')
-		AND (SELECT count(*) FROM (SELECT 1 FROM review_execution_transitions earlier
-			JOIN review_execution_attempts prior ON prior.id=earlier.attempt_id
+		AND (SELECT count(*) FROM (SELECT 1 FROM review_execution_attempts prior
+            CROSS JOIN review_execution_transitions earlier INDEXED BY review_transitions_exhaustion_attempt ON earlier.attempt_id=prior.id
 			WHERE prior.operation_id=o.id AND earlier.state='held' AND earlier.reason='allowance_exhausted'
 			AND rtrim(earlier.created_at,'Z')<rtrim(t.created_at,'Z') LIMIT 3))=?
 		ORDER BY rtrim(t.created_at,'Z') DESC,a.id DESC LIMIT 1`, capability.Provider, capability.Account, now.Add(-cliRetryDelay(previous)).UTC().Format(time.RFC3339Nano), previous).Scan(&project, &id)

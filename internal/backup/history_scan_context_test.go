@@ -31,16 +31,17 @@ func (c *historyScanCancellation) Done() <-chan struct{} {
 	var pcs [40]uintptr
 	n := runtime.Callers(2, pcs[:])
 	frames := runtime.CallersFrames(pcs[:n])
-	selected, sqlCall := false, false
+	selected, sqlCall, nestedPhysical := false, false, false
 	for {
 		frame, more := frames.Next()
 		selected = selected || frame.Function == c.phase
+		nestedPhysical = nestedPhysical || strings.HasSuffix(frame.Function, "backup.validateHistoryPhysicalSchema") || strings.HasSuffix(frame.Function, "backup.validateDomainPhysicalSchema") || strings.HasSuffix(frame.Function, "backup.validateSchedulingPhysicalSchema")
 		sqlCall = sqlCall || strings.HasPrefix(frame.Function, "database/sql.")
 		if !more {
 			break
 		}
 	}
-	if selected && sqlCall {
+	if selected && sqlCall && !(strings.HasSuffix(c.phase, "validatePhysicalSchemaObjects") && nestedPhysical) {
 		c.fired.Store(true)
 		c.cancel()
 	}
@@ -53,6 +54,10 @@ func TestHistoryScanCancellationIsUnavailableAndReadOnly(t *testing.T) {
 	bundle := restoreBundle(t, f)
 	before := restoreTree(t, bundle.Path)
 	for _, phase := range []string{
+		"backup.validateSchedulingPhysicalSchema",
+		"backup.validateReservationScopeSchema",
+		"backup.validateReviewOrderPhysicalSchema",
+		"backup.validatePhysicalSchemaObjects",
 		"reviews.ValidateHistoryReferences",
 		"reviews.ValidateCurrentSummaries",
 		"reviews.ValidateCurrentRunOrder",

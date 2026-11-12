@@ -242,7 +242,12 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
-			if err := RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
+			if err := retryHostedCooldownRetention(ctx, d.wait, func() error {
+				return RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture)
+			}); err != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+				}
 				return preparation, reviewHold("hosted_allowance_unproven")
 			}
 			if observed.Observation.Reason == reviewprovider.HostedChatCooldownReason {

@@ -63,7 +63,11 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}
 	// Index maintenance has its own version so newer execution-table
 	// migrations retain their existing positions in deployed databases.
-	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}, []string{`CREATE INDEX review_operations_listing ON review_operations(project_id,created_at DESC,id DESC)`}); err != nil {
+	if err := store.EnsureSchema(ctx, "review_execution_indexes", []string{`DROP INDEX IF EXISTS review_operations_coverage`}, []string{`CREATE INDEX review_operations_listing ON review_operations(project_id,created_at DESC,id DESC)`}, []string{
+		`CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`,
+		`CREATE INDEX review_transitions_exhaustion_time ON review_execution_transitions(rtrim(created_at,'Z') DESC,attempt_id,revision) WHERE state='held' AND reason='allowance_exhausted'`,
+		`CREATE INDEX review_transitions_exhaustion_attempt ON review_execution_transitions(attempt_id,rtrim(created_at,'Z')) WHERE state='held' AND reason='allowance_exhausted'`,
+	}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {

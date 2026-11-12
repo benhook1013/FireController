@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -694,5 +695,95 @@ func TestWaitIsolationIsTypedAndBounded(t *testing.T) {
 	o.Channel = "invalid"
 	if e.skipUnavailableWait(t.Context(), o, waitUnavailable()) {
 		t.Fatal("invalid channel suppressed")
+	}
+}
+
+func TestPausedExpiredCLIWaitDoesNotReportQuotaHeader(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	timerControl(t, f, a.OperationID, "pause", "pause-quota-diagnostic")
+	due := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	for _, live := range []bool{true, false} {
+		*now = due
+		if live {
+			*now = due.Add(-time.Nanosecond)
+		}
+		for _, suffix := range []string{"", "/status"} {
+			for _, version := range []string{"", "1", "2", "3", "4", "5", "6"} {
+				req := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID+suffix, nil)
+				req.Header.Set("Authorization", "Bearer "+f.writer)
+				req.Header.Set(operationWaitHeader, version)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+				want := "operation_paused"
+				if w.Code != http.StatusOK || w.Header().Get("X-FC-Review-Queued") != want {
+					t.Fatal(live, suffix, version, w.Code, w.Header(), w.Body.String())
+				}
+			}
+		}
+	}
+}
+
+type cliRetryPlanQuery struct {
+	EvidenceQuery
+	t       *testing.T
+	queries int
+}
+
+func (q *cliRetryPlanQuery) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "SELECT o.project_id,o.id") {
+		q.queries++
+		rows, err := q.EvidenceQuery.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			q.t.Fatal(err)
+		}
+		var plan string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				q.t.Fatal(err)
+			}
+			plan += detail + "\n"
+		}
+		if err := rows.Err(); err != nil {
+			q.t.Fatal(err)
+		}
+		rows.Close()
+		if strings.Contains(query, "INDEXED BY review_waits_live_retry") {
+			if !strings.Contains(plan, "SEARCH w USING INDEX review_waits_live_retry") {
+				q.t.Fatal("live deadline lacks indexed range", plan)
+			}
+		} else {
+			if !strings.Contains(plan, "SEARCH t USING INDEX review_transitions_exhaustion_time") || !strings.Contains(plan, "review_transitions_exhaustion_attempt") {
+				q.t.Fatal("tier history lacks indexed ranges", plan)
+			}
+		}
+		q.t.Log(plan)
+	}
+	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
+}
+func TestCLIAccountRetryLookupUsesLiveRangesWithRetainedHistory(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	// History has no lifetime ceiling. This 10,000-row sample verifies actual
+	// query plans, not a timing promise or a new retention limit.
+	if _, err := tx.Exec(`WITH RECURSIVE n(x) AS (SELECT 1000 UNION ALL SELECT x+1 FROM n WHERE x<10999)
+ INSERT INTO review_execution_transitions(attempt_id,revision,state,reason,external_id,created_at)
+ SELECT ?,x,'held','allowance_exhausted','','2020-01-01T00:00:00Z' FROM n`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	q := &cliRetryPlanQuery{EvidenceQuery: tx, t: t}
+	due, err := cliAccountRetryDeadline(t.Context(), q, f.e.capabilities["test-capability"], *now)
+	if err != nil || !due.IsZero() || q.queries != 5 {
+		t.Fatal("expired history changed live account result", due, err, q.queries)
 	}
 }

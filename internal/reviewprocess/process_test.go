@@ -825,3 +825,15 @@ func TestUsageTimeoutOverrideAllowsSlowSuccessfulCheck(t *testing.T) {
 		t.Fatal("valid check beyond default was lost", u, err)
 	}
 }
+
+func TestZeroUsageRejectsWorkspaceChangedByCommand(t *testing.T) {
+	f := newProcessFixture(t)
+	r := f.runner(t, fmt.Sprintf(`printf changed > source.txt; printf '%%s' %q`, usageJSON("owner/repo", "owner", 0, 5, 0, 1)))
+	usage, err := r.Usage(context.Background(), f.workspace, "owner/repo", "owner")
+	if !errorCode(err, "source_changed") || usage != (Usage{}) {
+		t.Fatalf("changed workspace retained exhaustion: %+v %v", usage, err)
+	}
+	if capture, err := r.Review(context.Background(), f.workspace); !errorCode(err, "source_changed") || capture.Started {
+		t.Fatalf("changed workspace authorized review: %v", err)
+	}
+}

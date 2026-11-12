@@ -2,6 +2,8 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -112,5 +114,52 @@ func TestExternalHostedReaderDoesNotAdvertiseUnsupportedCI(t *testing.T) {
 	}
 	if _, err := reader.ObserveHosted(t.Context(), "owner/repo", 2); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// This provider intentionally omits the older workflow method.
+type externalAttentionOnlyProvider struct {
+	*externalGateProvider
+	ids, headIDs, historicalIDs []int64
+	calls                       int
+}
+
+func (p *externalAttentionOnlyProvider) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, headIDs, historicalIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	p.target, p.gate = target, gate
+	p.ids, p.headIDs, p.historicalIDs = ids, headIDs, historicalIDs
+	p.calls++
+	return reviewprovider.CIObservation{Target: target, State: "pending"}, []reviewprovider.CIWorkflowFailure{{WorkflowID: 31}}, ctx.Err()
+}
+
+func TestExternalHostedReaderSupportsAttentionOnlyProvider(t *testing.T) {
+	p := &externalAttentionOnlyProvider{externalGateProvider: &externalGateProvider{}}
+	r := &hostedArchiveSource{provider: p}
+	if !r.SupportsCIWorkflowFailures() {
+		t.Fatal("attention-only capability rejected")
+	}
+	target := reviewprovider.CITarget{BaseRef: "stack/parent"}
+	if gate, err := r.ObserveCIGate(t.Context(), target, "develop"); err != nil || gate.Target != target || p.gate != "develop" {
+		t.Fatal("attention-only provider lost existing gate capability", gate, err)
+	}
+	ids := []int64{31}
+	got, rows, err := r.ObserveCIGateWithWorkflows(t.Context(), target, "develop", ids)
+	if err != nil || got.Target != target || len(rows) != 1 || rows[0].WorkflowID != 31 || p.target != target || p.gate != "develop" || !reflect.DeepEqual(p.ids, ids) || p.headIDs != nil || p.historicalIDs != nil || p.calls != 1 {
+		t.Fatal("ordinary workflow fallback changed selectors or results", got, rows, err, p)
+	}
+	_, _, err = r.ObserveCIGateWithWorkflowAttention(t.Context(), target, "develop", ids, ids, ids)
+	if err != nil || !reflect.DeepEqual(p.headIDs, ids) || !reflect.DeepEqual(p.historicalIDs, ids) || p.calls != 2 {
+		t.Fatal("attention selectors lost", p, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err = r.ObserveCIGateWithWorkflows(ctx, target, "develop", ids); !errors.Is(err, context.Canceled) {
+		t.Fatal("ordinary fallback lost cancellation", err)
+	}
+	unsupported := &hostedArchiveSource{provider: &driverHostedProvider{}}
+	if unsupported.SupportsCIWorkflowFailures() {
+		t.Fatal("unsupported workflow capability advertised")
+	}
+	if _, _, err = unsupported.ObserveCIGateWithWorkflows(t.Context(), target, "develop", ids); err == nil {
+		t.Fatal("unsupported provider fabricated workflow results")
 	}
 }

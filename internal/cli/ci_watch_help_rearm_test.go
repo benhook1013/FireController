@@ -16,7 +16,7 @@ func TestCIWatchHelpQualifiesQuietRearming(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &help); err != nil {
 		t.Fatal(err)
 	}
-	for _, meaning := range []string{"With --after-observation, an unchanged passed or failed verdict stays quiet", "Without that baseline, any terminal result returns immediately", "Pending checks alone do not wake"} {
+	for _, meaning := range []string{"actual PR comparison", "required contexts from the default merge branch", "With --after-observation, an unchanged passed or failed verdict stays quiet", "Without that baseline, any terminal result returns immediately", "Pending checks alone do not wake"} {
 		if !strings.Contains(strings.Join(help.Semantics, " "), meaning) {
 			t.Fatal("help lost baseline-dependent terminal behavior", help.Semantics)
 		}

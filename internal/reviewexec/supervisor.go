@@ -62,6 +62,10 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	if !e.running.CompareAndSwap(false, true) {
 		return nil, conflict()
 	}
+	if err := e.reconcilePreparingDrivers(ctx, owned); err != nil {
+		e.running.Store(false)
+		return nil, err
+	}
 	if err := e.RecoverInterrupted(ctx); err != nil {
 		e.running.Store(false)
 		return nil, err
@@ -459,6 +463,10 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			var recoverable *PreparationRecoveryError
+			if errors.As(err, &recoverable) {
+				return err
+			}
 			if ctx.Err() == nil {
 				scheduled, scheduleErr := e.ScheduleSourceRetry(ctx, o.ProjectID, a.ID, a.Revision, err)
 				if scheduleErr != nil {

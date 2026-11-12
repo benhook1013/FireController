@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -132,8 +133,12 @@ func TestHeadWorkflowAttentionPreservesSkippedJobCurrentnessAndBounds(t *testing
 			if len(rows) != 0 || got.State != "unproven" || got.Actions != nil || got.Results != nil || got.SelectedCommitSHA != "" {
 				t.Fatal("stale head failure or CI credit", mode, rows, got, err)
 			}
-			if mode == "capacity" && err == nil {
-				t.Fatal("attention fanout capacity was not reported")
+			if mode == "capacity" {
+				if !errors.Is(err, ErrCIWorkflowAttemptLimit) {
+					t.Fatal("attention fanout capacity was not reported", err)
+				}
+			} else if err != nil {
+				t.Fatal("unexpected head attention read error", err)
 			}
 		})
 	}

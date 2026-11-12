@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -202,6 +203,27 @@ func TestHistoricalMatrixFailureKeepsRepairAndCollectionGuards(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := ciHistoricalMatrixFixture(t, mode)
 			got, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{31}, nil, []int64{31})
+			switch mode {
+			case "recheck fail":
+				var warning *CIWorkflowAttentionError
+				var provider *Error
+				if !errors.As(err, &warning) || !errors.As(err, &provider) || provider.Code != "provider_unavailable" || provider.Status != http.StatusServiceUnavailable {
+					t.Fatal("final HTTP 503 recheck error was lost", err)
+				}
+			case "capacity":
+				if !errors.Is(err, ErrCIWorkflowAttemptLimit) {
+					t.Fatal("attempt capacity error was lost", err)
+				}
+			case "invalid":
+				var provider *Error
+				if !errors.As(err, &provider) || provider.Code != "provider_invalid_response" {
+					t.Fatal("invalid job response error was lost", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal("unexpected historical attention read error", err)
+				}
+			}
 			if mode == "failure" {
 				if len(rows) != 1 || rows[0].RunID != 61 || rows[0].Basis != "" {
 					t.Fatal("actual newer failure was replaced by history", rows, err)

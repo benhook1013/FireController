@@ -630,7 +630,7 @@ func (s *lifecycleSchedule) hintCIWatches(hint githubhook.Hint) {
 				}
 			}
 		}
-		branch := hint.BranchRef != "" && (hint.BranchRef == entry.result.BaseRef || hint.BranchRef == entry.result.GateRef)
+		branch := hint.BranchRef != "" && (entry.result.BaseRef == "" || hint.BranchRef == entry.result.BaseRef || hint.BranchRef == entry.result.GateRef)
 		knownCI := hint.HeadSHA != "" && hint.HeadSHA == entry.result.CICommitSHA
 		if hint.Metadata && explicit || hint.CI && (sameHead || branch || knownCI || explicit) {
 			entry.wanted++

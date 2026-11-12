@@ -3,6 +3,7 @@ package backup
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,6 +73,11 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 			t.Fatal(err)
 		}
 	}
+	var indexVersion string
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&indexVersion); err != nil || indexVersion != "3" {
+		t.Fatal("fixture must exercise current execution indexes", indexVersion, err)
+	}
+	before := backupRows(t, f.store.DB())
 	bundle := restoreBundle(t, f)
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 		t.Fatal("source-refusal snapshot inspection", err)
@@ -88,6 +94,12 @@ func sourceRefusalBackup(t *testing.T, reason string, value reviewexec.SourceRef
 	var version string
 	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_source_refusals'`).Scan(&version); err != nil || version != wantVersion {
 		t.Fatal("format gate was lost", version, err)
+	}
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&indexVersion); err != nil || indexVersion != "3" {
+		t.Fatal("backup lost current execution indexes", indexVersion, err)
+	}
+	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("source-refusal backup or restore changed source rows")
 	}
 	var restored string
 	if err := db.QueryRow(`SELECT source_refusal_json FROM review_execution_transitions WHERE attempt_id=? AND state='held'`, attempt).Scan(&restored); err != nil || restored != string(body) {
