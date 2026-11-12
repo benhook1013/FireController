@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -754,4 +755,62 @@ func TestCIWatchRegistrationSharesScheduleLifetimeFence(t *testing.T) {
 		t.Fatal("registered old schedule survived replacement", reply)
 	}
 	ciWatchRegistered(t, s, 0)
+}
+
+type ciWatchUploadBody struct {
+	io.ReadCloser
+	started chan struct{}
+}
+
+func (b *ciWatchUploadBody) Read(p []byte) (int, error) {
+	close(b.started)
+	return b.ReadCloser.Read(p)
+}
+
+type ciWatchUploadResponse struct {
+	*httptest.ResponseRecorder
+	upload *io.PipeWriter
+}
+
+func (w *ciWatchUploadResponse) SetReadDeadline(time.Time) error {
+	return w.upload.CloseWithError(context.Canceled)
+}
+
+func TestCIWatchShutdownInterruptsStalledUpload(t *testing.T) {
+	f, schedule, _, _, _ := ciWatchFixture(t)
+	lifetime, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f.e.resultWaitLifetime = lifetime
+	reader, upload := io.Pipe()
+	defer upload.Close()
+	defer reader.Close()
+	body := &ciWatchUploadBody{ReadCloser: reader, started: make(chan struct{})}
+	r := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", body)
+	r.Header.Set("Authorization", "Bearer "+f.reader)
+	r.Header.Set("Prefer", "wait=120")
+	response := &ciWatchUploadResponse{ResponseRecorder: httptest.NewRecorder(), upload: upload}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.handler.ServeHTTP(response, r)
+	}()
+	defer func() {
+		_ = upload.Close()
+		<-done
+	}()
+	select {
+	case <-body.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not start reading the request body")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch remained blocked on the request body after shutdown")
+	}
+	if response.Code != 503 || !strings.Contains(response.Body.String(), "result_wait_lifetime") {
+		t.Fatal("shutdown did not return the reconnectable refusal", response.Code, response.Body.String())
+	}
+	ciWatchRegistered(t, schedule, 0)
 }
