@@ -110,7 +110,7 @@ func TestCIWatchHistoricalAttentionCoalescesAndProjectsBeforeWakeAndKeys(t *test
 		select {
 		case got := <-ch:
 			t.Fatal("history woke older subscriber", got)
-		default:
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	ciWatchRegistered(t, s, 2)

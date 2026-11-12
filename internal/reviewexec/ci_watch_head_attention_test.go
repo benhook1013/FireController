@@ -80,7 +80,7 @@ func TestCIWatchHeadAttentionCoalescesWithoutChangingLegacyWake(t *testing.T) {
 	select {
 	case got := <-legacy:
 		t.Fatal("head-only attention woke legacy subscriber", got)
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 	ciWatchRegistered(t, s, 1)
 	// Identical head-only attention is quiet for a new caller's baseline; an
