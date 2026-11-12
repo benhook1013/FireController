@@ -29,6 +29,7 @@ func TestExplicitCLIDraftWaitReusesIntentAndLeavesIndependentWorkEligible(t *tes
 	}}}
 	drivers := map[string]Driver{"test-capability": d}
 	request := f.enqueue(t, attemptProject, "cli-wait-original", "cli", 2, 1)
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, request.ID)
 	run := func() {
 		t.Helper()
 		if err := f.e.processNext(t.Context(), drivers); err != nil {
@@ -105,6 +106,7 @@ func TestExplicitCLIDraftWaitRefusesMovedHeadAndLeavesOldTerminalHold(t *testing
 		t.Fatal(err)
 	}
 	request := f.enqueue(t, attemptProject, "new-draft-pinned", "cli", 2, 1)
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, request.ID)
 	now := time.Now()
 	f.e.schedulingNow = func() time.Time { return now }
 	draft := true
@@ -150,6 +152,7 @@ func TestExplicitCLIDraftWaitRechecksLocalAuthorityBeforeClaim(t *testing.T) {
 			}
 			drivers := map[string]Driver{"test-capability": d}
 			request := f.enqueue(t, attemptProject, "draft-local-guard", "cli", 2, 1)
+			admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, request.ID)
 			process := func() {
 				t.Helper()
 				if err := f.e.processNext(t.Context(), drivers); err != nil {
@@ -219,6 +222,7 @@ func TestExplicitCLIDraftWaitUsesRealQuotaBaselineOnlyAfterReadiness(t *testing.
 	}
 	drivers := map[string]Driver{"test-capability": d}
 	request := f.enqueue(t, attemptProject, "draft-wait-before-quota", "cli", 2, 1)
+	admissionSQL(t, f, `UPDATE review_operations SET reason=? WHERE id=?`, cliDraftWait, request.ID)
 	if err := f.e.processNext(t.Context(), drivers); err != nil {
 		t.Fatal(err)
 	}

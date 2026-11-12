@@ -24,7 +24,7 @@ func TestResultWaitRestartCompletesOriginalInvocationThroughSDKAndCLI(t *testing
 	pins := []client.CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("e", 40)}, {PullNumber: 7, HeadSHA: strings.Repeat("f", 40)}}
 	ci := client.CIWatchResult{ProjectID: identity.ProjectID, State: "passed", Targets: []client.CIWatchTargetResult{}}
 	for index, pin := range pins {
-		ci.Targets = append(ci.Targets, client.CIWatchTargetResult{PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "passed", Reason: "ci_satisfied", BaseRef: "feature", GateRef: "main", ObservedHeadSHA: pin.HeadSHA, ObservedBaseSHA: strings.Repeat("e", 40), ObservedAt: status.UpdatedAt, CICommitSHA: pin.HeadSHA, Selection: "head", Required: 1, Satisfied: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: int64(index + 81), Status: "completed", Conclusion: "success"}}}})
+		ci.Targets = append(ci.Targets, client.CIWatchTargetResult{PullNumber: pin.PullNumber, HeadSHA: pin.HeadSHA, BaseSHA: pin.BaseSHA, State: "passed", BaseRef: "feature", GateRef: "main", ObservedHeadSHA: pin.HeadSHA, ObservedBaseSHA: strings.Repeat("e", 40), ObservedAt: status.UpdatedAt, CICommitSHA: pin.HeadSHA, Selection: "head", Required: 1, Satisfied: 1, Checks: []client.ReviewCIContext{{Context: "required-build", State: "satisfied", CheckRun: &client.ReviewCICheckRun{ID: int64(index + 81), Status: "completed", Conclusion: "success"}}}})
 	}
 	counts := map[string]int{}
 	firstWait := map[string]int{}

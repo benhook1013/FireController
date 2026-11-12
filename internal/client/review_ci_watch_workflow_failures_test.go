@@ -180,7 +180,7 @@ func TestCIWatchWorkflowFailuresClientConclusionsAndNormalTerminalStates(t *test
 				response.Targets[0].ObservedHeadSHA = strings.Repeat("d", 40)
 			}
 			if state == "passed" {
-				response.Targets[0].Reason = "ci_satisfied"
+				response.Targets[0].Reason = ""
 				response.Targets[0].Satisfied, response.Targets[0].Pending = 2, 0
 				response.Targets[0].Checks[1].State = "satisfied"
 				response.Targets[0].Checks[1].Reason = ""
