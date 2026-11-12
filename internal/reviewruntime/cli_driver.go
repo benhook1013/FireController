@@ -126,6 +126,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
 	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
+		if retryableHostedRetention(err) || ctx.Err() != nil {
+			return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+		}
 		return preparation, err
 	}
 	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
 func TestHostedCooldownRetryComparisonPreservesStableSource(t *testing.T) {
@@ -234,7 +236,15 @@ func TestHostedCooldownRetryChangedOrUnusableSourceStopsBeforeFreshQuery(t *test
 			case "head":
 				pull.HeadSHA = f.baseSHA
 			case "base":
-				pull.BaseSHA = f.headSHA
+				source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+				gitTestRun(t, source, "switch", "--detach", f.baseSHA)
+				if err := os.WriteFile(filepath.Join(source, "new-base.txt"), []byte("new base"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				gitTestRun(t, source, "add", ".")
+				gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "distinct retry base")
+				pull.BaseSHA = gitTestOutput(t, source, "rev-parse", "HEAD")
+				gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/retry-base")
 			case "base branch":
 				// Both current provider facts are valid. The retained original
 				// base branch still prevents quietly changing the retry target.
@@ -278,7 +288,7 @@ func TestHostedCooldownRetryChangedOrUnusableSourceStopsBeforeFreshQuery(t *test
 			if err == nil || !reflect.DeepEqual(prepared, reviewexec.Preparation{}) || f.provider.queries != 1 || f.provider.reviews != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_hosted_allowance_queries`) != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("unusable retry source reached fresh allowance/provider action", err, f.provider.queries)
 			}
-			if mode == "base branch" {
+			if mode == "base branch" || mode == "base" {
 				var refusal *core.Error
 				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "source_changed" {
 					t.Fatal("valid new comparison escaped original retry baseline", err)
@@ -363,7 +373,7 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 }
 
 func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
-	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace", "observation"} {
+	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "observation"} {
 		t.Run(damage, func(t *testing.T) {
 			f, _ := newHostedCooldownRetryFixture(t)
 			operation, attempt, config := f.startHosted(t)
@@ -420,6 +430,33 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 				if _, err := f.store.DB().Exec(`UPDATE review_hosted_observations SET body_json='{}' WHERE attempt_id=?`, attempt.ID); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if damage == "operational-workspace" {
+				git, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wrapper := filepath.Join(t.TempDir(), "git-fault")
+				if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 75\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				manager, err := reviewworkspace.New(filepath.Join(filepath.Dir(f.storeDir), "workspaces"), wrapper)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := f.hosted.manager
+				f.hosted.manager = manager
+				if err := f.hosted.RecoverPreparation(t.Context(), operation, attempt); !reviewworkspace.IsOperationalError(err) {
+					t.Fatal("operational workspace failure discarded", err)
+				}
+				if got, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), operation.ID); err != nil || got.State != "preparing" || got.AttemptID != attempt.ID {
+					t.Fatal("operational failure lost original", got, err)
+				}
+				if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec '"+git+"' \"$@\"\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				f.hosted.manager = original
+				damage = "none"
 			}
 			before := []int{f.provider.queries, f.provider.reviews, f.provider.histories, f.reader.repositoryCalls}
 			for pass := 0; pass < 2; pass++ {
