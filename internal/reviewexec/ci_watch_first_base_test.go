@@ -52,14 +52,19 @@ func TestCIWatchFirstBasePinnedBeforeDelayedSubscriberRead(t *testing.T) {
 	clock.Add(ciWatchFallbackInterval)
 	watchTick(t, f, s)
 	for _, tc := range []struct {
-		name        string
-		sub         *ciWatchSubscription
-		state, base string
+		name                      string
+		sub                       *ciWatchSubscription
+		state, base, observedBase string
 	}{
-		{"early", early, "superseded", first}, {"explicit", explicit, "passed", second}, {"during", during, "passed", second}, {"after", after, "passed", second}, {"wrong head", wrongHead, "superseded", ""},
+		{"early", early, "superseded", first, second},
+		// Explicit/wrong-head owners were already superseded by B1. An unread
+		// mismatch remains terminal even when a later observation matches again.
+		{"explicit", explicit, "superseded", second, first},
+		{"during", during, "passed", second, second}, {"after", after, "passed", second, second},
+		{"wrong head", wrongHead, "superseded", "", first},
 	} {
 		got := s.ciWatchResult(tc.sub)
-		if got.State != tc.state || got.Targets[0].State != tc.state || got.Targets[0].ObservedBaseSHA != second || tc.sub.bases[0] != tc.base {
+		if got.State != tc.state || got.Targets[0].State != tc.state || got.Targets[0].ObservedBaseSHA != tc.observedBase || tc.sub.bases[0] != tc.base {
 			t.Fatal(tc.name, "changed original comparison or adopted ineligible base", got, tc.sub.bases)
 		}
 	}
