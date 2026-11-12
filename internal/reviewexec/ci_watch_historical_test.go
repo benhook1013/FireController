@@ -39,6 +39,9 @@ func (r *ciWatchHistoricalReader) ObserveCIGateWithWorkflows(ctx context.Context
 }
 func (r *ciWatchHistoricalReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, heads, historical []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
 	o, err := r.ObserveCIGate(ctx, target, gate)
+	if err != nil {
+		return o, nil, err
+	}
 	if !slices.Contains(historical, 10) {
 		r.normal.Add(1)
 		return o, nil, err
