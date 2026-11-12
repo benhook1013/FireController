@@ -29,7 +29,7 @@ func validCIWatchWorkflowObservations(item CIWatchTargetResult, pin CIWatchTarge
 			if row.RunAttempt != 0 || row.Status != "" || row.Conclusion != "" {
 				return false
 			}
-		} else if row.RunID < 0 || row.RunAttempt <= 0 || len(row.Status) > 64 || !validExecutionIdentifier(row.Status) || row.Conclusion != "" && (len(row.Conclusion) > 64 || !validExecutionIdentifier(row.Conclusion)) {
+		} else if row.RunID < 0 || row.RunAttempt <= 0 || !validCIWorkflowObservationState(row.Status, row.Conclusion) {
 			return false
 		}
 		for _, failure := range item.WorkflowFailures {
@@ -39,4 +39,16 @@ func validCIWatchWorkflowObservations(item CIWatchTargetResult, pin CIWatchTarge
 		}
 	}
 	return true
+}
+
+// Match the finite Actions lifecycle emitted by the provider-backed server.
+func validCIWorkflowObservationState(status, conclusion string) bool {
+	switch status {
+	case "queued", "in_progress", "waiting", "pending", "requested":
+		return conclusion == ""
+	case "completed":
+		return oneReviewOf(conclusion, "success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure")
+	default:
+		return false
+	}
 }
