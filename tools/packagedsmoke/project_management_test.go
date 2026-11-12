@@ -204,19 +204,19 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	cli(managerProfile, "manager-restarted", "reviews", "scheduling", "resume", "--pr", "42", "--expect-revision", "1", "--key", "scheduling-resume")
 	daemon.stop(t)
 	daemon = startDaemon(t, ctx, filepath.Join(bin, "fcd"), data, env)
-	managerProfile = profile("manager-restarted", managerFile)
+	managerProfile = profile("manager-resumed", managerFile)
 	var resumed client.ReviewPullScheduling
-	decode(t, cli(managerProfile, "manager-restarted", "reviews", "scheduling", "read", "--pr", "42"), &resumed)
+	decode(t, cli(managerProfile, "manager-resumed", "reviews", "scheduling", "read", "--pr", "42"), &resumed)
 	if resumed.Paused || resumed.Revision != 2 || resumed.Reason != "" {
 		t.Fatal("restart changed scheduling control", resumed)
 	}
-	decode(t, cli(managerProfile, "manager-restarted", "reviews", "scheduling"), &scheduling)
+	decode(t, cli(managerProfile, "manager-resumed", "reviews", "scheduling"), &scheduling)
 	if scheduling.Revision != 1 || scheduling.AutomaticHosted || scheduling.AutomaticCLI {
 		t.Fatal("restart changed default-off control", scheduling)
 	}
 
 	var replay client.WorkerRetirementReceipt
-	decode(t, cli(managerProfile, "manager-restarted", "workers", "retire", target.ID, "--key", "retire"), &replay)
+	decode(t, cli(managerProfile, "manager-resumed", "workers", "retire", target.ID, "--key", "retire"), &replay)
 	if replay != retired {
 		t.Fatal("restart changed retirement receipt")
 	}

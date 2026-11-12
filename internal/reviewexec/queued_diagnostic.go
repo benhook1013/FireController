@@ -128,6 +128,7 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		cause = "awaiting_scheduler"
 		capability, ok := e.capabilities[original.CapabilityID]
 		if !ok || capability.Fingerprint != op.CapabilityFingerprint {
+			cause = ""
 			return nil
 		}
 		reservation, err = queuedReservationHolder(ctx, tx, op, capability, repositoryID)
