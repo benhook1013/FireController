@@ -205,8 +205,10 @@ func TestCIWatchHistoricalHTTPStrictClientAndOldDetailVersions(t *testing.T) {
 		}
 		done <- err
 	}()
-	old := make(chan *httptest.ResponseRecorder, 2)
+	old := map[string]chan *httptest.ResponseRecorder{}
 	for _, version := range []string{"1", "2"} {
+		response := make(chan *httptest.ResponseRecorder, 1)
+		old[version] = response
 		go func(version string) {
 			r := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", strings.NewReader(`{"targets":[{"pull_number":42,"head_sha":"`+strings.Repeat("a", 40)+`","failure_workflow_ids":[10]}]}`))
 			r.Header.Set("Authorization", "Bearer "+f.reader)
@@ -215,7 +217,7 @@ func TestCIWatchHistoricalHTTPStrictClientAndOldDetailVersions(t *testing.T) {
 			r.Header.Set("X-FC-CI-Workflow-Details", version)
 			w := httptest.NewRecorder()
 			f.handler.ServeHTTP(w, r)
-			old <- w
+			response <- w
 		}(version)
 	}
 	ciWatchRegistered(t, s, 3)
@@ -228,10 +230,15 @@ func TestCIWatchHistoricalHTTPStrictClientAndOldDetailVersions(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("historical request did not wake")
 	}
-	for range 2 {
-		w := <-old
+	for _, version := range []string{"1", "2"} {
+		var w *httptest.ResponseRecorder
+		select {
+		case w = <-old[version]:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("legacy detail version %s did not return", version)
+		}
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"timed_out":true`) || strings.Contains(w.Body.String(), "workflow_failures") || strings.Contains(w.Body.String(), reviewprovider.CIWorkflowHistoricalBasis) {
-			t.Fatal("old detail shape changed or woke", w.Code, w.Body.String())
+			t.Fatal("old detail shape changed or woke", version, w.Code, w.Body.String())
 		}
 	}
 }
