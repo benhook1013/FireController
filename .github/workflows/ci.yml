@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 # Every job acquires one of twenty shared repository slots before runner admission.
-# Compatibility stage: retain the literal legacy lock while adding job lanes.
-# Enabling interleaving requires a reviewed follow-up workflow change.
+# Default to the legacy lock; activate only after the documented alignment and drain.
+# Publishing this gate requires verifying the effective setting is disabled.
 concurrency:
-  group: firecontroller-ci
+  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
   queue: max
   cancel-in-progress: false
 
