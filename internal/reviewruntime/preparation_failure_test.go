@@ -3,7 +3,9 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -65,5 +67,36 @@ func TestNativePreparationFailureAtSourceBeforeProviderAction(t *testing.T) {
 				t.Fatal("failed source ran CLI", err)
 			}
 		})
+	}
+}
+
+type transientCLISource struct {
+	reviewexec.TargetReader
+	pullCalls int
+}
+
+func (r *transientCLISource) Pull(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
+	r.pullCalls++
+	if r.pullCalls == 1 {
+		return reviewprovider.Pull{}, &reviewprovider.Error{Code: "provider_unavailable", Status: http.StatusServiceUnavailable}
+	}
+	return r.TargetReader.Pull(ctx, repository, number)
+}
+
+func TestCLIDriverRetriesTransientSourceBeforeWorkspace(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	op, attempt, configuration := f.start(t, 2, 1, "transient-source")
+	reader := &transientCLISource{TargetReader: f.reader}
+	f.driver.reader = reader
+	prepared, err := f.driver.Prepare(t.Context(), op, configuration, attempt)
+	if err != nil || prepared.Anchor.CandidateSHA != op.HeadSHA {
+		t.Fatal("original source did not recover", err)
+	}
+	if reader.pullCalls != 2 || f.reader.repositoryCalls != 1 || f.fetches.Load() != 1 {
+		t.Fatal("source retry repeated successful reads or workspace preparation", reader.pullCalls, f.reader.repositoryCalls, f.fetches.Load())
+	}
+	body, err := os.ReadFile(f.log)
+	if err != nil || strings.TrimSpace(string(body)) != "usage --agent" {
+		t.Fatal("transient source retry repeated allowance or dispatched a review", err)
 	}
 }

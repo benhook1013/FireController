@@ -1,6 +1,7 @@
 package reviewprovider
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -73,5 +74,41 @@ func TestStatusErrorRetainsTimingWithoutChangingSafety(t *testing.T) {
 				t.Fatal("timing changed authorization classification")
 			}
 		}
+	}
+}
+
+func TestRetryableSourceReadRespectsProviderDirectionAndCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		header   http.Header
+		mutation bool
+		want     bool
+	}{
+		{http.StatusServiceUnavailable, nil, false, true},
+		{http.StatusGatewayTimeout, nil, false, true},
+		{http.StatusServiceUnavailable, nil, true, false},
+		{http.StatusServiceUnavailable, http.Header{"Retry-After": {"120"}}, false, false},
+		{http.StatusServiceUnavailable, http.Header{"Retry-After": {"invalid"}}, false, false},
+		{http.StatusServiceUnavailable, http.Header{"X-Ratelimit-Remaining": {"0"}}, false, false},
+		{http.StatusTooManyRequests, nil, false, false},
+		{http.StatusUnauthorized, nil, false, false},
+		{http.StatusBadRequest, nil, false, false},
+	} {
+		var failure *Error
+		err := statusError(&http.Response{StatusCode: tc.status, Header: tc.header}, tc.mutation)
+		if !errors.As(err, &failure) || failure.RetryableSourceRead() != tc.want {
+			t.Fatalf("unexpected retry decision for HTTP %d, mutation=%t, headers=%v", tc.status, tc.mutation, tc.header)
+		}
+	}
+	transport := errors.New("private transport detail")
+	if !providerTransportError(t.Context(), transport, false).RetryableSourceRead() ||
+		providerTransportError(t.Context(), transport, true).RetryableSourceRead() {
+		t.Fatal("read transport failure and uncertain mutation were not distinguished")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if providerTransportError(ctx, transport, false).RetryableSourceRead() ||
+		(&Error{Code: "provider_unavailable"}).RetryableSourceRead() {
+		t.Fatal("cancellation or unavailable adapter was treated as transient")
 	}
 }

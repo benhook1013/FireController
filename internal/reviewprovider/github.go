@@ -445,6 +445,7 @@ func providerTransportError(ctx context.Context, err error, unknown bool) *Error
 	if ctx != nil {
 		failure.cause = ctx.Err()
 	}
+	failure.transport = ctx != nil && failure.cause == nil && err != nil
 	switch {
 	case ctx == nil || errors.Is(failure.cause, context.Canceled):
 		failure.Message = "The provider request was canceled."
@@ -473,6 +474,10 @@ func statusError(response *http.Response, mutation bool) error {
 	failure := func(code, message string, status int, retry int64, unknown bool) *Error {
 		result := providerError(code, message, status, retry, unknown)
 		result.RetryTiming = retryTiming(response.Header, now)
+		result.retryDirected = len(response.Header.Values("Retry-After")) > 0
+		for _, remaining := range response.Header.Values("X-RateLimit-Remaining") {
+			result.retryDirected = result.retryDirected || strings.TrimSpace(remaining) == "0"
+		}
 		return result
 	}
 	unknown := mutation && (status == http.StatusRequestTimeout || status >= 200 && status < 300 || status >= 300 && status < 400 || status >= 500)

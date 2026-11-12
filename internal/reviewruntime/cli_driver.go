@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
@@ -124,6 +126,13 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	}()
 	reads := newSourceReads(d.reader)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
+	var sourceFailure *reviewprovider.Error
+	if ctx.Err() == nil && errors.As(err, &sourceFailure) && sourceFailure.RetryableSourceRead() {
+		slog.InfoContext(ctx, "Retrying transient CLI preparation source read", "operation_id", operation.ID, "provider_status", sourceFailure.Status)
+		if err = waitPreparation(ctx, 5*time.Second); err == nil {
+			plan, _, err = resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
+		}
+	}
 	if err != nil {
 		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)
 	}
