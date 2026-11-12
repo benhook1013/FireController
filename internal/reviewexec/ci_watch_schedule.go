@@ -73,6 +73,15 @@ func (s *lifecycleSchedule) registerCIWatch(scope core.Scope, binding ciWatchBin
 			if available, known := reader.(interface{ SupportsCIWorkflowFailures() bool }); known && !available.SupportsCIWorkflowFailures() {
 				return nil, ciWatchWorkflowUnsupported()
 			}
+			if target.AllowHeadAttention || target.AllowHistoricalAttention {
+				attention, ok := reader.(ciGateHeadWorkflowReader)
+				if !ok {
+					return nil, ciWatchWorkflowUnsupported()
+				}
+				if available, known := attention.(interface{ SupportsCIWorkflowAttention() bool }); known && !available.SupportsCIWorkflowAttention() {
+					return nil, ciWatchWorkflowUnsupported()
+				}
+			}
 		}
 		if len(ciWatchWorkflowUnion(entry, target.FailureWorkflowIDs)) > 16 {
 			return nil, core.Fail("ci_watch_workflow_capacity", "The shared PR watch already selects sixteen attention workflows; no extra observation was started.", 503)

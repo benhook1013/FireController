@@ -45,8 +45,19 @@ func TestExternalHostedSourceForwardsExplicitHeadAttentionWithoutCommands(t *tes
 	if _, _, err = source.ObserveCIGateWithWorkflowAttention(ctx, target, "main", []int64{20}, []int64{20}, nil); err == nil {
 		t.Fatal("cancellation lost")
 	}
+	if !source.SupportsCIWorkflowAttention() {
+		t.Fatal("advanced provider capability lost")
+	}
 	source.provider = legacy
-	if _, _, err = source.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", []int64{20}, []int64{20}, nil); err != nil || legacy.ordinary != 1 {
+	if source.SupportsCIWorkflowAttention() {
+		t.Fatal("legacy provider advertised advanced attention")
+	}
+	for _, selectors := range []struct{ heads, historical []int64 }{{[]int64{20}, nil}, {nil, []int64{20}}, {[]int64{20}, []int64{20}}} {
+		if _, _, err = source.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", []int64{20}, selectors.heads, selectors.historical); err == nil || legacy.ordinary != 0 {
+			t.Fatal("legacy provider silently discarded advanced selectors", err)
+		}
+	}
+	if _, _, err = source.ObserveCIGateWithWorkflowAttention(t.Context(), target, "main", []int64{20}, nil, nil); err != nil || legacy.ordinary != 1 {
 		t.Fatal("older optional source did not retain ordinary semantics", err)
 	}
 	if f.provider.queries != 0 || f.provider.reviews != 0 || f.provider.activities != 0 {

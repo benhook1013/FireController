@@ -79,6 +79,10 @@ func (r ciWatchSkippedReader) ObserveCIGateWithWorkflows(ctx context.Context, ta
 	return o, []reviewprovider.CIWorkflowFailure{row}, nil
 }
 
+func (r ciWatchSkippedReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, _, _ []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	return r.ObserveCIGateWithWorkflows(ctx, target, gate, ids)
+}
+
 func TestCIWatchSkippedFailureHTTPAcceptedByStrictClient(t *testing.T) {
 	f, s, _, base, _ := ciWatchFixture(t)
 	base.states[42] = "pending"
