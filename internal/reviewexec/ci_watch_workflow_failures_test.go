@@ -36,7 +36,9 @@ func (r *ciWatchWorkflowReader) ObserveCIGateWithWorkflows(ctx context.Context, 
 	for _, id := range ids {
 		o.Actions.Runs = append(o.Actions.Runs, reviewprovider.ActionsHeadRun{ID: id * 10, WorkflowID: id, CheckSuiteID: id * 100, RunNumber: 1, RunAttempt: 2, RepositoryID: target.RepositoryID, Repository: target.Repository, HeadSHA: o.SelectedCommitSHA, Event: "pull_request", Status: "in_progress", CreatedAt: o.ObservedAt.Add(-time.Minute), UpdatedAt: o.ObservedAt})
 		if conclusion := r.conclusions[id]; conclusion != "" {
-			rows = append(rows, reviewprovider.CIWorkflowFailure{WorkflowID: id, RunID: id * 10, RunAttempt: 2, JobID: id * 1000, CheckRunID: id * 10000, Name: "Explicit leaf", Conclusion: conclusion})
+			row := reviewprovider.CIWorkflowFailure{WorkflowID: id, RunID: id * 10, RunAttempt: 2, JobID: id * 1000, CheckRunID: id * 10000, Name: "Explicit leaf", Conclusion: conclusion}
+			rows = append(rows, row)
+			o.WorkflowAttempts = append(o.WorkflowAttempts, ciWatchFailedAttempt(o.Actions.Runs[len(o.Actions.Runs)-1], row))
 		}
 	}
 	o.Assessment, _ = reviewprovider.AssessRequiredCI(o.Authority, *o.Results, *o.Actions, o.Attempts)
@@ -277,6 +279,7 @@ func TestCIWatchWorkflowFailuresRejectUnknownOrMalformedIdentity(t *testing.T) {
 	o := sourceCITestObservation(target, "pending")
 	o.Actions.Runs = []reviewprovider.ActionsHeadRun{{ID: 100, WorkflowID: 10, CheckSuiteID: 1000, RunNumber: 1, RunAttempt: 2, RepositoryID: 801, Repository: target.Repository, HeadSHA: target.HeadSHA, Event: "pull_request", Status: "in_progress", CreatedAt: o.ObservedAt.Add(-time.Minute), UpdatedAt: o.ObservedAt}}
 	row := reviewprovider.CIWorkflowFailure{WorkflowID: 10, RunID: 100, RunAttempt: 2, JobID: 1000, CheckRunID: 10000, Name: "Failed leaf", Conclusion: "failure"}
+	o.WorkflowAttempts = []reviewprovider.ActionsAttempt{ciWatchFailedAttempt(o.Actions.Runs[0], row)}
 	if len(ciWatchValidatedWorkflowFailures(o, []int64{10}, []reviewprovider.CIWorkflowFailure{row})) != 1 {
 		t.Fatal("valid selected current identity refused")
 	}
@@ -284,6 +287,9 @@ func TestCIWatchWorkflowFailuresRejectUnknownOrMalformedIdentity(t *testing.T) {
 		"foreign workflow": func(r *reviewprovider.CIWorkflowFailure) { r.WorkflowID = 20 },
 		"old run":          func(r *reviewprovider.CIWorkflowFailure) { r.RunID++ },
 		"old attempt":      func(r *reviewprovider.CIWorkflowFailure) { r.RunAttempt = 1 },
+		"unrelated job":    func(r *reviewprovider.CIWorkflowFailure) { r.JobID++ },
+		"unrelated check":  func(r *reviewprovider.CIWorkflowFailure) { r.CheckRunID++ },
+		"unrelated name":   func(r *reviewprovider.CIWorkflowFailure) { r.Name = "Other leaf" },
 		"missing job":      func(r *reviewprovider.CIWorkflowFailure) { r.JobID = 0 },
 		"missing check":    func(r *reviewprovider.CIWorkflowFailure) { r.CheckRunID = 0 },
 		"unsafe name":      func(r *reviewprovider.CIWorkflowFailure) { r.Name = "private\x00body" },
@@ -599,4 +605,10 @@ func TestCIWatchWorkflowWarningSurvivesFinalRepositoryFailureAndCancellation(t *
 	stop()
 	receiveCIWatch(t, fresh)
 	ciWatchRegistered(t, s, 0)
+}
+
+// Synthetic adapters must retain the same exact numbered-attempt job proof as
+// the GitHub adapter, rather than relying only on an inventory run identity.
+func ciWatchFailedAttempt(run reviewprovider.ActionsHeadRun, row reviewprovider.CIWorkflowFailure) reviewprovider.ActionsAttempt {
+	return reviewprovider.ActionsAttempt{State: "complete", Repository: run.Repository, RepositoryID: run.RepositoryID, HeadSHA: run.HeadSHA, CheckSuiteID: run.CheckSuiteID, RunID: run.ID, WorkflowID: run.WorkflowID, RunAttempt: run.RunAttempt, RunNumber: run.RunNumber, Event: run.Event, Status: run.Status, Conclusion: run.Conclusion, ObservedAt: run.UpdatedAt, Jobs: []reviewprovider.ActionsJob{{ID: row.JobID, CheckRunID: row.CheckRunID, Name: row.Name, HeadSHA: run.HeadSHA, Status: "completed", Conclusion: row.Conclusion, StartedAt: run.CreatedAt, CompletedAt: run.UpdatedAt}}}
 }
