@@ -96,6 +96,9 @@ func retryAllowanceRetention(ctx context.Context, wait func(context.Context, tim
 }
 
 func retryableHostedRetention(err error) bool {
+	if reviewexec.IsInvalidHostedPreparationEvidence(err) {
+		return false
+	}
 	var failure *core.Error
 	return errors.As(err, &failure) && (failure.Code == "overloaded" || failure.Code == "storage_unavailable")
 }
@@ -137,6 +140,9 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if retryableHostedRetention(err) {
+			return err
 		}
 		return nil
 	}

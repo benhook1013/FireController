@@ -24,6 +24,10 @@ func cooldownObservationFixture(t *testing.T) (*attemptFixture, Attempt, HostedA
 	in.Observation.State, in.Observation.Reason = "cooldown_observed", "provider_cooldown_observed"
 	in.Observation.RetryNotBefore = in.Observation.ResponseCreatedAt.Add(3 * time.Minute)
 	observed, _ := time.Parse(time.RFC3339Nano, in.ObservedAt)
+	if observed.Before(in.Observation.ResponseCreatedAt) {
+		observed = in.Observation.ResponseCreatedAt
+		in.ObservedAt = observed.Format(time.RFC3339Nano)
+	}
 	start, _ := time.Parse(time.RFC3339Nano, q.EarliestPosting)
 	_, err := f.e.RecordHostedObservation(t.Context(), attemptProject, a.ID, HostedObservationInput{Kind: "allowance_query", CaptureID: in.CaptureID, CaptureSHA256: in.CaptureSHA256, CaptureBytes: in.CaptureBytes, StartedAt: start.Truncate(time.Second).Format(time.RFC3339Nano), FinishedAt: in.ObservedAt, ObservedAt: observed.Format(time.RFC3339Nano), ExpectedAnchor: q.Anchor, Intent: q.Intent})
 	if err != nil {

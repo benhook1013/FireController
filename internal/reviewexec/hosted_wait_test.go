@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -783,5 +785,35 @@ func TestOperationWaitRejectsMissingAndCorruptBaseline(t *testing.T) {
 				t.Fatal("retained dependency accepted", wait, err)
 			}
 		})
+	}
+}
+
+func TestCooldownRecoveryRetainsAgedAttributedResponse(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, attempt, input := cooldownObservationFixture(t)
+		time.Sleep(2 * time.Minute)
+		if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, attempt.ID, 1, input); err != nil {
+			t.Fatal("original cooldown could not be retained after restart", err)
+		}
+		if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		operation := bindingOperation(t, f, f.scope(t, attemptProject, f.writer, false), attempt.OperationID)
+		if operation.State != "queued" || operation.AttemptID != "" || operation.Wait == nil || operation.Wait.RetryNotBefore != input.Observation.RetryNotBefore.Format(time.RFC3339Nano) {
+			t.Fatal("recovery did not preserve the original future cooldown", operation)
+		}
+	})
+}
+
+func TestCooldownRecoveryPreservesEvidenceWhenOriginalDriverIsAbsent(t *testing.T) {
+	f, attempt, _ := cooldownObservationFixture(t)
+	err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "review_preparation_recovery_unavailable" {
+		t.Fatal("missing recovery driver did not preserve preparation", err)
+	}
+	operation := bindingOperation(t, f, f.scope(t, attemptProject, f.writer, false), attempt.OperationID)
+	if operation.State != "preparing" || operation.AttemptID != attempt.ID {
+		t.Fatal("reconciliation changed the original preparation", operation)
 	}
 }
