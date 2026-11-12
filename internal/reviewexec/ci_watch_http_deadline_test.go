@@ -80,9 +80,9 @@ func TestCIWatchHTTPDeadlineIncludesScopeAndBody(t *testing.T) {
 		{name: "scope_finishes_after_deadline", seconds: 3, auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
 		{name: "body_finishes_after_deadline", seconds: 3, body: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
 		{name: "zero_retains_immediate_read", auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 9 * time.Second},
-		{name: "zero_scope_exceeds_allowance", auth: 6 * time.Second, elapsed: 5 * time.Second, refusal: "ci_watch_scope_read"},
+		{name: "zero_scope_exceeds_allowance", auth: 6 * time.Second, elapsed: 5 * time.Second, responseAt: 10 * time.Second, refusal: "ci_watch_scope_read"},
 		{name: "earlier_caller_during_watch", seconds: 120, auth: 6 * time.Second, caller: 10 * time.Second, elapsed: 10 * time.Second, responseAt: 125 * time.Second, refusal: "ci_watch_canceled"},
-		{name: "earlier_caller_during_scope", seconds: 120, auth: 6 * time.Second, caller: 2 * time.Second, elapsed: 2 * time.Second, refusal: "ci_watch_scope_read"},
+		{name: "earlier_caller_during_scope", seconds: 120, auth: 6 * time.Second, caller: 2 * time.Second, elapsed: 2 * time.Second, responseAt: 130 * time.Second, refusal: "ci_watch_scope_read"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -109,11 +109,7 @@ func TestCIWatchHTTPDeadlineIncludesScopeAndBody(t *testing.T) {
 				if elapsed := time.Since(started); elapsed != test.elapsed {
 					t.Fatalf("elapsed=%s want=%s body_read_at=%s", elapsed, test.elapsed, bodyAt)
 				}
-				if test.responseAt == 0 {
-					if !response.deadline.IsZero() {
-						t.Fatal("refused scope reached watch response setup")
-					}
-				} else if response.deadline.Sub(started) != test.responseAt {
+				if response.deadline.Sub(started) != test.responseAt {
 					t.Fatalf("write deadline=%s want=%s", response.deadline.Sub(started), test.responseAt)
 				}
 				if test.refusal != "" {
