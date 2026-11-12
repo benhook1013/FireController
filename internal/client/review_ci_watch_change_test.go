@@ -63,7 +63,7 @@ func TestCIWatchChangeClientExactReadAndTruthfulFailureTimeout(t *testing.T) {
 	mu.Lock()
 	response.State = "passed"
 	item := &response.Targets[0]
-	item.State, item.Reason, item.Failed, item.Pending, item.Satisfied = "passed", "ci_satisfied", 0, 0, 2
+	item.State, item.Reason, item.Failed, item.Pending, item.Satisfied = "passed", "", 0, 0, 2
 	item.Checks = []client.ReviewCIContext{{Context: "build", State: "satisfied"}, {Context: "test", State: "satisfied"}}
 	mu.Unlock()
 	got, err = c.WatchCI(t.Context(), []client.CIWatchTarget{pin}, 0)
