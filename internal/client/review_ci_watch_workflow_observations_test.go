@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/client"
@@ -32,14 +33,14 @@ func TestCIWatchWorkflowObservationsClientWireAndProofLimit(t *testing.T) {
 			if mode == "no current run" {
 				value.Targets[0].WorkflowObservations[0] = client.CIWorkflowObservation{WorkflowID: 301, Basis: "latest_run_only"}
 			}
-			posts := 0
+			var posts atomic.Int64
 			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-FC-CI-Watch", "change-v3")
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
 					return
 				}
-				posts++
+				posts.Add(1)
 				var body struct {
 					Targets []client.CIWatchTarget `json:"targets"`
 				}
@@ -54,8 +55,8 @@ func TestCIWatchWorkflowObservationsClientWireAndProofLimit(t *testing.T) {
 			}))
 			defer service.Close()
 			got, err := newClient(t, service).WatchCI(t.Context(), []client.CIWatchTarget{pin}, 0)
-			if err != nil || !reflect.DeepEqual(got, value) || posts != 1 {
-				t.Fatal(got, err, posts)
+			if err != nil || !reflect.DeepEqual(got, value) || posts.Load() != 1 {
+				t.Fatal(got, err, posts.Load())
 			}
 			out := client.AgentCIWatch(got)
 			if out.AllTargetsPassed || out.State != "pending" || out.Targets[0].Pending != 1 || !reflect.DeepEqual(out.Targets[0].CIWatchTargetResult, value.Targets[0]) {

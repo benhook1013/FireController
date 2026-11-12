@@ -190,7 +190,10 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
-		if item.MergeBaseMismatch != nil && (item.State != "pending" || item.Reason != "ci_merge_base_mismatch" || item.Selection != "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
+		if item.Reason == "ci_merge_base_mismatch" && (item.State != "pending" || item.Selection != "") {
+			return false
+		}
+		if item.MergeBaseMismatch != nil && (item.Reason != "ci_merge_base_mismatch" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || !validCIMergeBaseMismatch(item.MergeBaseMismatch, item.ObservedHeadSHA, item.ObservedBaseSHA)) {
 			return false
 		}
 		if !validCIWatchWorkflowFailures(item, pin) || !validCIWatchWorkflowObservations(item, pin) {
@@ -215,7 +218,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.Required != item.Satisfied+item.Failed+item.Pending+item.Unproven || !validCIContextDetails(ReviewSourceCIAssessment{Checks: &item.Checks, Required: item.Required, Satisfied: item.Satisfied, Failed: item.Failed, Pending: item.Pending, Unproven: item.Unproven}) {
 			return false
 		}
-		if item.State == "passed" && (item.Required == 0 || item.Satisfied != item.Required) || item.State == "unconfigured" && item.Required != 0 || item.State == "failed" && item.Failed == 0 {
+		if item.State == "passed" && (item.Reason != "" || item.Required == 0 || item.Satisfied != item.Required) || item.State == "unconfigured" && item.Required != 0 || item.State == "failed" && item.Failed == 0 {
 			return false
 		}
 		if oneReviewOf(item.State, "passed", "failed", "unconfigured") && (item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "") {

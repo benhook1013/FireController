@@ -140,7 +140,10 @@ func (c *Client) reviewSourceCIAssessment(ctx context.Context, number int64, dia
 	if diagnostics != (value.Checks != nil) || !validCIContextDetails(value) {
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
-	if value.MergeBaseMismatch != nil && (value.State != "unproven" || value.Reason != "ci_merge_base_mismatch" || value.Selection != "" || value.MergeState != "unproven" || !validCIMergeBaseMismatch(value.MergeBaseMismatch, value.Target.HeadSHA, value.Target.BaseSHA)) {
+	if value.Reason == "ci_merge_base_mismatch" && (value.State != "unproven" || value.Selection != "" || value.MergeState != "unproven") {
+		return ReviewSourceCIAssessment{}, invalidResponse()
+	}
+	if value.MergeBaseMismatch != nil && (value.Reason != "ci_merge_base_mismatch" || !validCIMergeBaseMismatch(value.MergeBaseMismatch, value.Target.HeadSHA, value.Target.BaseSHA)) {
 		return ReviewSourceCIAssessment{}, invalidResponse()
 	}
 	return value, nil

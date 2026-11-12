@@ -165,12 +165,19 @@ func TestCIWatchHistoricalProjectionKeepsIndependentProvenRows(t *testing.T) {
 	ciWatchRegistered(t, s, 2)
 	watchTick(t, f, s)
 	for _, test := range []struct {
-		ch    <-chan ciWatchReply
-		count int
-	}{{old, 1}, {modern, 2}} {
+		ch       <-chan ciWatchReply
+		expected map[int64]string
+	}{{old, map[int64]string{20: ""}}, {modern, map[int64]string{10: reviewprovider.CIWorkflowHistoricalBasis, 20: ""}}} {
 		got := receiveCIWatch(t, test.ch)
-		if got.err != nil || got.value.State != "attention" || len(got.value.Targets[0].WorkflowFailures) != test.count {
-			t.Fatal("mixed projection lost independent proof", test.count, got)
+		if got.err != nil || got.value.State != "attention" || len(got.value.Targets[0].WorkflowFailures) != len(test.expected) {
+			t.Fatal("mixed projection lost independent proof", test.expected, got)
+		}
+		for _, failure := range got.value.Targets[0].WorkflowFailures {
+			basis, ok := test.expected[failure.WorkflowID]
+			if !ok || failure.Basis != basis {
+				t.Fatalf("unexpected projected workflow failure: %+v", failure)
+			}
+			delete(test.expected, failure.WorkflowID)
 		}
 	}
 }
