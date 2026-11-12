@@ -43,19 +43,19 @@ func ValidateWorkerRetirementsSnapshot(ctx context.Context, tx interface {
 	// Canonical UTC RFC3339Nano uses at most 30 bytes (four-digit year,
 	// nine fractional digits and Z). Bound bytes before values cross into Go;
 	// invalid sentinels preserve oversized rows so validation rejects them.
-	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN length(CAST(r.retired_at AS BLOB))<=30 THEN r.retired_at ELSE '' END,CASE WHEN length(CAST(r.actor_id AS BLOB))<=256 THEN r.actor_id ELSE '' END,w.id FROM worker_retirements r LEFT JOIN workers w ON w.project_id=r.project_id AND w.id=r.worker_id`)
+	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN length(CAST(r.retired_at AS BLOB))<=30 THEN r.retired_at ELSE '' END,CASE WHEN length(CAST(r.actor_id AS BLOB))<=256 THEN r.actor_id ELSE '' END,w.id IS NOT NULL FROM worker_retirements r LEFT JOIN workers w ON w.project_id=r.project_id AND w.id=r.worker_id`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var at, actor string
-		var worker sql.NullString
-		if err := rows.Scan(&at, &actor, &worker); err != nil {
+		var workerExists bool
+		if err := rows.Scan(&at, &actor, &workerExists); err != nil {
 			return err
 		}
 		timestamp, err := time.Parse(time.RFC3339Nano, at)
-		if err != nil || timestamp.IsZero() || at != timestamp.UTC().Format(time.RFC3339Nano) || !worker.Valid || actor == "" || len(actor) > 256 || !utf8.ValidString(actor) || strings.TrimSpace(actor) != actor || strings.IndexFunc(actor, unicode.IsControl) >= 0 {
+		if err != nil || timestamp.IsZero() || at != timestamp.UTC().Format(time.RFC3339Nano) || !workerExists || actor == "" || len(actor) > 256 || !utf8.ValidString(actor) || strings.TrimSpace(actor) != actor || strings.IndexFunc(actor, unicode.IsControl) >= 0 {
 			return Fail("storage_unavailable", "Stored worker retirement facts are invalid.", 500)
 		}
 	}

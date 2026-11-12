@@ -66,7 +66,7 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 		}
 		if !assigned {
 			i++
-			if i >= len(args) {
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
 				return nil, false
 			}
 			value = args[i]

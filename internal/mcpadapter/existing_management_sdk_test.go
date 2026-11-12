@@ -51,7 +51,7 @@ func managementWireCases(t *testing.T) []managementWireCase {
 		return map[string]any{"collection_id": id, "expected_revision": 1, "idempotency_key": "chosen"}
 	}
 	return []managementWireCase{
-		{"presentation_replace", "PUT", "presentation", map[string]any{"document": raw(client.ReplacePresentationRequest{ExpectedRevision: 0, Presentation: client.PresentationConfig{Name: "Selected project"}}), "idempotency_key": "chosen"}, true},
+		{"presentation_replace", "PUT", "presentation", map[string]any{"document": raw(map[string]any{"expected_revision": 0, "presentation": map[string]string{"name": "Selected project"}}), "idempotency_key": "chosen"}, true},
 		{"presentation_history", "GET", "presentation/history", map[string]any{}, false}, {"presentation_revision_read", "GET", "presentation/history/1", map[string]any{"revision": 1}, false},
 		{"publication_configuration_read", "GET", "publication", map[string]any{}, false}, {"publication_prepare", "GET", "publication", map[string]any{"changes": map[string]any{"expected_revision": 1, "description": "Approved content"}}, false},
 		{"publication_preview", "POST", "publication/preview", preview(pub), false}, {"publication_apply", "PUT", "publication", apply(pub), true}, {"publication_unpublish", "POST", "publication/unpublish", map[string]any{"expected_revision": 0, "idempotency_key": "chosen"}, true},
@@ -155,7 +155,7 @@ func TestPresentationReplacementRevisionGuardStaysLocal(t *testing.T) {
 		})
 	}
 	before := writes.Load()
-	diagnosticResult(t, call(t, session, "presentation_replace", map[string]any{"document": client.ReplacePresentationRequest{ExpectedRevision: 0, Presentation: client.PresentationConfig{Name: "Selected"}}, "idempotency_key": "chosen"}), "forbidden", false)
+	diagnosticResult(t, call(t, session, "presentation_replace", map[string]any{"document": map[string]any{"expected_revision": 0, "presentation": map[string]string{"name": "Selected"}}, "idempotency_key": "chosen"}), "forbidden", false)
 	if writes.Load() != before+1 {
 		t.Fatal("explicit zero was rejected or automatically retried", writes.Load()-before)
 	}
