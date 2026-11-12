@@ -410,7 +410,7 @@ func TestSourceCICollectionBudgetsAndCancellationRetainRunning(t *testing.T) {
 	cancel, done := refreshStart(t, f, r)
 	refreshWait(t, f, receipt.ID, "completed")
 	refreshStop(t, cancel, done)
-	if sourceDeadline.Before(started.Add(14*time.Second)) || sourceDeadline.After(time.Now().Add(15*time.Second)) || ciDeadline.Sub(sourceDeadline) < 14*time.Second || ciDeadline.Sub(sourceDeadline) > 16*time.Second {
+	if sourceDeadline.Before(started.Add(14*time.Second)) || sourceDeadline.After(time.Now().Add(15*time.Second)) || ciDeadline.Sub(sourceDeadline) < reviewprovider.CIObservationTimeout-time.Second || ciDeadline.Sub(sourceDeadline) > reviewprovider.CIObservationTimeout+time.Second {
 		t.Fatal("source and aggregate budgets changed", sourceDeadline, ciDeadline)
 	}
 }
