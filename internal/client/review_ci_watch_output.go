@@ -19,6 +19,11 @@ func AgentCIWatch(value CIWatchResult) CIWatchOutput {
 	for _, item := range value.Targets {
 		out.AllTargetsPassed = out.AllTargetsPassed && item.State == "passed"
 		phase, diagnostic := ciWatchDiagnostic(item)
+		if diagnostic != nil && item.ObservationKey != "" && (item.WaitingForChange || len(item.WorkflowFailures) > 0) {
+			copy := *diagnostic
+			copy.NextAction += " Start another bounded CI wait if changed evidence is still needed; this response ended the subscription. Reuse observation_key as after_observation_key, retain the head pin and workflow selection, and send returned observed_base_sha as base_sha if the original target omitted base_sha."
+			diagnostic = &copy
+		}
 		if len(item.WorkflowObservations) > 0 || len(item.WorkflowFailures) > 0 {
 			limit := " Failure rows identify the exact run/current attempt with a proven failed execution; this may precede newer runs that explicitly skipped that job. Missing workflow details and absent failure rows do not certify that other jobs were checked."
 			for _, row := range item.WorkflowFailures {
@@ -72,15 +77,15 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 			return phase, &ReviewOperationDiagnostic{"A failed job was observed on this same pinned PR head. The workflow run's base/merge comparison is unknown; current required CI remains unproven because its test-merge base does not match the live branch. This is repair attention, not a current-comparison failure or CI credit.", "Inspect the supplied workflow/run/attempt/job IDs for the failure. Keep the source pins and required-CI refusal; do not treat a metadata-only green run as proof of repair. Reuse observation_key as after_observation_key to await changed attention quietly. Reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."}
 		}
 		if item.WaitingForChange {
-			return "waiting_for_change", &ReviewOperationDiagnostic{"An explicitly selected workflow still has the failed job identified by after_observation_key. The required gate remains pending; this wait is awaiting changed facts.", "Keep the quiet wait pending, or reuse the same source pins, workflow selection and after_observation_key after timeout. No CI rerun or required-check change was requested."}
+			return "waiting_for_change", &ReviewOperationDiagnostic{"An explicitly selected workflow still has the failed job identified by after_observation_key. The required gate remains pending; no changed facts were observed before this response.", "Retain the original source comparison and workflow selection when rearming. No CI rerun or required-check change was requested."}
 		}
 		return "workflow_failure", &ReviewOperationDiagnostic{"A job in an explicitly selected workflow failed while required CI remains pending. This is early repair attention, not proof that the required aggregate gate failed.", "Inspect the supplied workflow, run, attempt and job IDs. To await changed facts after handling this signal, reuse observation_key as after_observation_key with the same pins and workflow selection."}
 	}
 	if item.WaitingForChange && item.State == "passed" {
-		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI passed as of observed_at with the proof identified by after_observation_key. This wait is awaiting changed terminal evidence; the passing checks remain observed facts, not a guarantee that CI will stay passed.", "Keep this quiet wait pending, or reuse the same source pins and after_observation_key after timeout. Pending checks alone do not wake this terminal wait. Changed passing proof, failure or selected workflow attention returns normally; this never reruns CI."}
+		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI passed as of observed_at with the proof identified by after_observation_key. No changed terminal evidence was observed before this response; the passing checks remain observed facts, not a guarantee that CI will stay passed.", "Retain the original source comparison when rearming. Pending checks alone do not wake this terminal wait. Changed passing proof, failure or selected workflow attention returns normally; this never reruns CI."}
 	}
 	if item.WaitingForChange {
-		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI still has the failure identified by after_observation_key. This wait is awaiting a changed result; the failed checks remain current facts.", "Keep this quiet wait pending. After a timeout, reuse the same source pins and after_observation_key if still awaiting that retry. A changed failure or a pass will return normally; this never reruns CI."}
+		return "waiting_for_change", &ReviewOperationDiagnostic{"Required CI still has the failure identified by after_observation_key. No changed result was observed before this response; the failed checks remain observed facts.", "Retain the original source comparison when rearming. A changed failure or a pass will return normally; this never reruns CI."}
 	}
 	if item.State != "pending" {
 		return "", nil
