@@ -728,7 +728,7 @@ func TestSchedulingAncestorRoundChangesKeepOriginalChild(t *testing.T) {
 	}
 }
 
-func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *testing.T) {
+func TestSchedulingPrepareControlRaceRefusesBeforeDispatch(t *testing.T) {
 	for _, change := range []string{"pause", "disable", "withdraw"} {
 		t.Run(change, func(t *testing.T) {
 			f := schedulingFixture(t)
@@ -736,10 +736,8 @@ func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *
 			schedulingGenerate(t, f, true)
 			selectionNext(t, f, &refreshTestReader{})
 			r := schedulingLatest(t, f)
-			cli := f.enqueue(t, attemptProject, "independent-cli-after-control-race", "cli", 4, 1)
 			externalHosted := 0
 			completedCLI := 0
-			verified := false
 			driver := &controlledDriver{}
 			driver.prepare = func(ctx context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
 				anchor := attemptAnchor(o.ProjectID, o.PullNumber)
@@ -765,31 +763,26 @@ func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *
 					completedCLI++
 					return Result{State: "completed", Reason: "synthetic_independent_result"}, nil
 				}
-				err := f.e.VerifyAction(ctx, o.ProjectID, a.ID, a.Revision)
-				expected := "automation_authorization_changed"
-				if change == "pause" {
-					expected = "pull_scheduling_paused"
-				}
-				if err != nil {
-					attemptCode(t, err, expected)
-					verified = true
-					return Result{State: "failed", Reason: "admission_changed"}, nil
-				}
 				externalHosted++
 				return Result{State: "failed", Reason: "synthetic_unexpected_external_action"}, nil
 			}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("control race stopped supervisor", err)
 			}
-			if !verified || externalHosted != 0 {
-				t.Fatal("final verification admitted external action", verified, externalHosted)
+			if externalHosted != 0 {
+				t.Fatal("admission sent an external action after a control change", externalHosted)
 			}
+			cli := f.enqueue(t, attemptProject, "independent-cli-after-control-race", "cli", 4, 1)
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("independent CLI work could not continue", err)
 			}
 			scope := selectionScope(t, f, attemptProject, f.writer, "read")
 			hosted, err := f.e.ReadOperation(t.Context(), scope, r.OperationID)
-			if err != nil || hosted.State != "failed" || hosted.Reason != "admission_changed" {
+			wantReason := "automation_authorization_changed"
+			if change == "pause" {
+				wantReason = "pull_scheduling_paused"
+			}
+			if err != nil || hosted.State != "held" || hosted.Reason != wantReason {
 				t.Fatal(hosted, err)
 			}
 			other, err := f.e.ReadOperation(t.Context(), scope, cli.ID)
