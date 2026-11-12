@@ -970,6 +970,24 @@ func TestCLIWaitHistoryIsolatesAccountAndChannel(t *testing.T) {
 	}
 }
 
+func TestSupervisorCooldownPrefixLeavesOtherAccountEligible(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID)).Add(-time.Second)
+	seed := f.enqueue(t, attemptProject, "blocked-candidate-prefix", "cli", 4, 1)
+	healthy := f.enqueue(t, otherAttemptProject, "ready-after-cooldown-prefix", "cli", 2, 1)
+	for i := range 299 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_blocked%03d", i))
+	}
+	operations, err := f.e.pendingForWorker(t.Context(), false)
+	if err != nil || len(operations) != 1 || operations[0].ID != healthy.ID {
+		t.Fatalf("cooldown prefix hid the independent account: %d candidates, %v", len(operations), err)
+	}
+}
+
 func TestWaitIsolationIsTypedAndBounded(t *testing.T) {
 	now := time.Now()
 	e := &Engine{schedulingNow: func() time.Time { return now }}
