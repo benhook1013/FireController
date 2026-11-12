@@ -894,6 +894,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				return nil, err
 			}
 		}
+		if name == "review_execution_attempts" && versions[spec.domain] >= 9 {
+			if err = validateAttemptIndexSchema(ctx, db); err != nil {
+				return nil, err
+			}
+		}
 		if name == "review_execution_reservations" && versions[spec.domain] >= 10 {
 			if err = validateReservationScopeSchema(ctx, db); err != nil {
 				if contextErr := checkContext(ctx); contextErr != nil {
