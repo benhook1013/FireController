@@ -86,9 +86,11 @@ func TestCIWatchHeadAttentionCoalescesWithoutChangingLegacyWake(t *testing.T) {
 	// Identical head-only attention is quiet for a new caller's baseline; an
 	// old caller with that same key must still receive no failure or wake.
 	pin.AfterObservationKey = item.ObservationKey
+	pin.BaseSHA = item.ObservedBaseSHA
 	waiting, stopWaiting := startCIWatch(t, f, scope, []CIWatchTarget{pin})
 	defer stopWaiting()
 	legacyPin.AfterObservationKey = item.ObservationKey
+	legacyPin.BaseSHA = item.ObservedBaseSHA
 	oldBaseline, stopOldBaseline := startCIWatch(t, f, scope, []CIWatchTarget{legacyPin})
 	defer stopOldBaseline()
 	ciWatchRegistered(t, s, 3)

@@ -70,7 +70,7 @@ func ValidateCIWatchTargets(targets []CIWatchTarget) error {
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) || target.AfterObservationKey != "" && !controlHex(target.AfterObservationKey, 64) {
+		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !controlHex(target.AfterObservationKey, 64)) {
 			return validation()
 		}
 		seen[target.PullNumber] = true
@@ -168,7 +168,7 @@ func ciWatchReadError(err error) error {
 	}
 	if failure.Status == http.StatusServiceUnavailable && failure.Code == "ci_watch_response_limit" {
 		result := *failure
-		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No review or CI rerun was requested."
+		result.Action = "Watch fewer targets per call, retaining the original PR/head/base pins. No automatic retry or review or CI rerun was requested."
 		return &result
 	}
 	if failure.Status == http.StatusBadRequest && failure.Code == "validation_failed" {

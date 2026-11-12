@@ -20,8 +20,8 @@ func (m *Manager) Open(ctx context.Context, attemptID, candidateSHA, baseSHA, me
 		PatchSHA256:         patchSHA256,
 		RepositoryCanonical: repositoryCanonical,
 	}
-	if m.Verify(ctx, w) != nil || ctx.Err() != nil {
-		return Workspace{}, errVerification
+	if err := m.Verify(ctx, w); err != nil {
+		return Workspace{}, err
 	}
 	return w, nil
 }

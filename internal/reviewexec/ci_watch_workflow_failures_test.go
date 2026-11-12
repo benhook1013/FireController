@@ -83,7 +83,7 @@ func TestCIWatchWorkflowFailuresShareFilterAndRetainGateTruth(t *testing.T) {
 	default:
 	}
 	key := first.value.Targets[0].ObservationKey
-	baseline, stopBaseline := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: head, FailureWorkflowIDs: []int64{10}, AfterObservationKey: key}})
+	baseline, stopBaseline := startCIWatch(t, f, scope, []CIWatchTarget{{PullNumber: 42, HeadSHA: head, BaseSHA: lifecyclePull(42).BaseSHA, FailureWorkflowIDs: []int64{10}, AfterObservationKey: key}})
 	defer stopBaseline()
 	ciWatchRegistered(t, s, 2)
 	clock.Add(5 * time.Second)

@@ -8,6 +8,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
 // RetainHostedAllowance derives a preparing-attempt observation from immutable
@@ -164,12 +165,18 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if reviewworkspace.IsOperationalError(err) {
+			return err
+		}
 		return nil
 	}
 	files, err := d.manager.ChangedFiles(ctx, workspace)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if reviewworkspace.IsOperationalError(err) {
+			return err
 		}
 		return nil
 	}
