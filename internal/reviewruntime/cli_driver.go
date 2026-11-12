@@ -125,14 +125,10 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		}
 	}()
 	reads := newSourceReads(d.reader)
-	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
-	var sourceFailure *reviewprovider.Error
-	if ctx.Err() == nil && errors.As(err, &sourceFailure) && sourceFailure.RetryableSourceRead() {
-		slog.InfoContext(ctx, "Retrying transient CLI preparation source read", "operation_id", operation.ID, "provider_status", sourceFailure.Status)
-		if err = waitPreparation(ctx, 5*time.Second); err == nil {
-			plan, _, err = resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
-		}
-	}
+	plan, err := retryCLIPreparationSource(ctx, operation.ID, "source_resolution", func() (reviewexec.SourcePlan, error) {
+		plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
+		return plan, err
+	})
 	if err != nil {
 		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)
 	}
@@ -185,7 +181,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		return preparation, reviewHold("allowance_unavailable")
 	}
 	allowanceObservedAt := time.Now().UTC()
-	plan, err = refreshAgedMaterializedSource(ctx, d.reader, current.RepositoryID, current.Configuration, current.Operation, plan, allowanceObservedAt)
+	plan, err = retryCLIPreparationSource(ctx, operation.ID, "source_refresh", func() (reviewexec.SourcePlan, error) {
+		return refreshAgedMaterializedSource(ctx, d.reader, current.RepositoryID, current.Configuration, current.Operation, plan, allowanceObservedAt)
+	})
 	if err != nil {
 		return preparation, reviewexec.PreparationFailureAt("source_refresh", err)
 	}
@@ -200,6 +198,21 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	d.prepared[attempt.ID] = &cliPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, expires: time.Now().Add(60 * time.Second)}
 	d.mu.Unlock()
 	return reviewexec.Preparation{Anchor: anchor}, nil
+}
+
+// Retry only read-only provider work. A refresh retry keeps the existing
+// workspace and allowance observation and still checks the exact prepared source.
+func retryCLIPreparationSource(ctx context.Context, operationID, stage string, read func() (reviewexec.SourcePlan, error)) (reviewexec.SourcePlan, error) {
+	plan, err := read()
+	var failure *reviewprovider.Error
+	if ctx.Err() != nil || !errors.As(err, &failure) || !failure.RetryableSourceRead() {
+		return plan, err
+	}
+	slog.InfoContext(ctx, "Retrying transient CLI preparation source read", "operation_id", operationID, "stage", stage, "provider_status", failure.Status)
+	if err := waitPreparation(ctx, 5*time.Second); err != nil {
+		return reviewexec.SourcePlan{}, err
+	}
+	return read()
 }
 
 func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation, attempt reviewexec.Attempt, _ func(context.Context, string) error) (reviewexec.Result, error) {
