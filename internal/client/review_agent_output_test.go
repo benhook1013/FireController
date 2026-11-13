@@ -21,6 +21,15 @@ func TestAgentCIInventoryIncompletePreservesUnknownGate(t *testing.T) {
 	}
 }
 
+func TestAgentOperationExplainsCLIProviderIdentityTimeout(t *testing.T) {
+	status := ReviewOperationStatus{Channel: "cli", State: "failed", Reason: "cli_provider_identity_timeout", NextAction: "read_diagnostics"}
+	out := AgentReviewOperationStatus(status)
+	if out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "provider identity verification timeout") ||
+		!strings.Contains(out.Diagnostic.NextAction, "Check for an existing request") || out.NextAction != status.NextAction {
+		t.Fatal("identity timeout diagnostic changed the operation or lost the existing-request check", out)
+	}
+}
+
 func TestAgentOperationExplainsIncomingRoutesHold(t *testing.T) {
 	status := ReviewOperationStatus{ID: "original", AttemptID: "original_attempt", Channel: "hosted", State: "held", Reason: "routed_findings_pending"}
 	full := ReviewOperation{ID: status.ID, AttemptID: status.AttemptID, Channel: status.Channel, State: status.State, Reason: status.Reason}

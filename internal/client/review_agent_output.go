@@ -273,6 +273,9 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	if channel == "hosted" && state == "active" && (reason == "trigger_recovered" || reason == "trigger_recorded" || reason == "trigger_posted") {
 		return &ReviewOperationDiagnostic{"The original Hosted review trigger was confirmed on GitHub. This proves delivery, not that CodeRabbit started or is still running. updated_at records a local state transition, not provider start or the last observation; pending observations need not change it.", "Keep the existing observer for this operation and use a bounded status wait while continuing other work. The service's driver/recovery path observes the same trigger without reposting. Use observer.last_check_at and observer.last_source_at for actual check freshness when available; observer.next_check_at is the current schedule, not an exact deadline or provider-start/finish ETA. Follow stage and evidence_id as results arrive; do not request another review, reset controls or infer a stuck provider from this reason's age alone."}
 	}
+	if channel == "cli" && state == "failed" && reason == "cli_provider_identity_timeout" {
+		return &ReviewOperationDiagnostic{"The CodeRabbit CLI started, then reported a provider identity verification timeout. No completed round was recorded.", "Check for an existing request on the current comparison before requesting another review."}
+	}
 	if state != "held" && !(channel == "hosted" && state == "failed" && reason == "hosted_chat_cooldown") {
 		return nil
 	}

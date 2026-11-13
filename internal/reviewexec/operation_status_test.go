@@ -114,14 +114,19 @@ func TestOperationStatusMissingAndIncompleteEvidenceDoNotInventCoverage(t *testi
 	}
 }
 
-func TestOperationStatusExplainsRetainedCLIUnreviewedFiles(t *testing.T) {
-	for _, warning := range []bool{false, true} {
+func TestOperationStatusExplainsRetainedCLIFailure(t *testing.T) {
+	for _, marker := range []string{"", reviewprovider.CLIUnreviewedFilesLimit, reviewprovider.CLIIdentityTimeoutLimit} {
 		f, a, in := evidenceFixture(t, "cli", true)
 		in.Review = reviewprovider.ParsedReview{Outcome: "failed", ReviewedFiles: []string{}, Findings: []reviewprovider.ParsedFinding{}}
 		want := "capture_retained"
-		if warning {
-			in.Review.CoverageLimits = []string{reviewprovider.CLIUnreviewedFilesLimit}
+		if marker != "" {
+			in.Review.CoverageLimits = []string{marker}
+		}
+		switch marker {
+		case reviewprovider.CLIUnreviewedFilesLimit:
 			want = "cli_provider_reported_unreviewed_files"
+		case reviewprovider.CLIIdentityTimeoutLimit:
+			want = "cli_provider_identity_timeout"
 		}
 		receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
 		if err != nil {
@@ -139,7 +144,7 @@ func TestOperationStatusExplainsRetainedCLIUnreviewedFiles(t *testing.T) {
 		err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 			for _, head := range []string{anchor.CandidateSHA, strings.Repeat("f", 40)} {
 				got, err := partialCLIComparisonExists(ctx, tx, attemptProject, anchor.RepositoryID, anchor.PullNumber, head, anchor.BaseSHA, anchor.BaseRef, anchor.ParentSHA, anchor.ParentPullNumber)
-				if err != nil || got != (warning && head == anchor.CandidateSHA) {
+				if err != nil || got != (marker == reviewprovider.CLIUnreviewedFilesLimit && head == anchor.CandidateSHA) {
 					t.Fatal("automatic retry guard", head, got, err)
 				}
 			}

@@ -34,7 +34,10 @@ type ParsedReview struct {
 }
 
 // CLIUnreviewedFilesLimit is the retained marker for a CodeRabbit warning terminal.
-const CLIUnreviewedFilesLimit = "CodeRabbit reported unreviewed files."
+const (
+	CLIUnreviewedFilesLimit = "CodeRabbit reported unreviewed files."
+	CLIIdentityTimeoutLimit = "CodeRabbit provider identity verification timed out."
+)
 
 const (
 	cliCaptureMax       = 16 << 20
@@ -146,6 +149,11 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedRe
 			terminal, valid = cliTerminal(text)
 			if !valid {
 				return invalid()
+			}
+			if terminal == "failed" && exitCode != 0 && contexts == 1 && contextValid && !findingsBeforeContext &&
+				text["type"] == "error" && text["errorType"] == "connection" &&
+				text["message"] == "Connection failed: Provider identity verification timed out. Please try again." {
+				result.CoverageLimits = []string{CLIIdentityTimeoutLimit}
 			}
 			if text["outcome"] == "completed_with_warnings" {
 				_, countPresent := fields["findings"]

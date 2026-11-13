@@ -135,6 +135,29 @@ func TestCLIReviewNoncreditOutcomesRetainBoundedEvidence(t *testing.T) {
 	}
 }
 
+func TestCLIReviewRetainsOnlyVerifiedIdentityTimeout(t *testing.T) {
+	const message = "Connection failed: Provider identity verification timed out. Please try again."
+	for _, tc := range []struct {
+		name, message string
+		context       CLIContext
+		exit          int
+		want          bool
+	}{
+		{"verified", message, syntheticCLIContext, 1, true},
+		{"wrong workspace", message, CLIContext{}, 1, false},
+		{"different connection error", "Connection failed: WebSocket closed", syntheticCLIContext, 1, false},
+		{"successful exit", message, syntheticCLIContext, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := map[string]any{"type": "error", "errorType": "connection", "message": tc.message, "recoverable": true}
+			got, err := ParseCLIReview(cliJSONLines(t, cliContextEvent(), event), tc.exit, tc.context)
+			if err != nil || got.Complete || got.Outcome != "failed" || (len(got.CoverageLimits) == 1 && got.CoverageLimits[0] == CLIIdentityTimeoutLimit) != tc.want {
+				t.Fatal("identity timeout classification", got, err)
+			}
+		})
+	}
+}
+
 func TestCLIReviewRequiresExactContextAndOneConsistentCompletion(t *testing.T) {
 	for _, field := range []string{"reviewType", "currentBranch", "baseBranch", "workingDirectory"} {
 		context := cliContextEvent()
