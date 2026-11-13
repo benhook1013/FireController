@@ -380,7 +380,7 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 }
 
 func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
-	for _, damage := range []string{"none", "clock-boundary", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "observation"} {
+	for _, damage := range []string{"none", "clock-boundary", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "operational-query", "observation"} {
 		t.Run(damage, func(t *testing.T) {
 			f, _ := newHostedCooldownRetryFixture(t)
 			operation, attempt, config := f.startHosted(t)
@@ -450,6 +450,32 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 				if _, err := f.store.DB().Exec(`UPDATE review_hosted_observations SET body_json='{}' WHERE attempt_id=?`, attempt.ID); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if damage == "operational-query" {
+				// Temporarily hide the query table to produce an actual raw SQL read
+				// failure, without changing the retained evidence or original attempt.
+				if _, err := f.store.DB().Exec(`ALTER TABLE review_hosted_allowance_queries RENAME TO unavailable_queries`); err != nil {
+					t.Fatal(err)
+				}
+				_, readErr := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, attempt.ID)
+				var failure *core.Error
+				if !errors.As(readErr, &failure) || failure.Code != "storage_unavailable" {
+					t.Fatal("SQL read failure was not normalized", readErr)
+				}
+				calls := 0
+				if err := retryAllowanceRetention(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error { calls++; return readErr }); err != readErr || calls != 3 {
+					t.Fatal("SQL read failure not retried with bounded retention", calls, err)
+				}
+				if err := f.hosted.RecoverPreparation(t.Context(), operation, attempt); err == nil {
+					t.Fatal("operational query failure discarded")
+				}
+				if got, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), operation.ID); err != nil || got.State != "preparing" || got.AttemptID != attempt.ID {
+					t.Fatal("operational read failure lost original", got, err)
+				}
+				if _, err := f.store.DB().Exec(`ALTER TABLE unavailable_queries RENAME TO review_hosted_allowance_queries`); err != nil {
+					t.Fatal(err)
+				}
+				damage = "none"
 			}
 			if damage == "operational-workspace" {
 				git, err := exec.LookPath("git")

@@ -22,6 +22,11 @@ func validateReviewOrderPhysicalSchema(ctx context.Context, db sqlReader, versio
 	if db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE type='table' AND name='review_operations'`).Scan(&definition) != nil || !definition.Valid {
 		return invalid()
 	}
+	// Supported migration definitions contain no SQL comments. Do not let
+	// ignored comment text impersonate the required executable constraints.
+	if strings.Contains(definition.String, "/*") || strings.Contains(definition.String, "--") {
+		return invalid()
+	}
 	normalized := strings.Join(strings.Fields(definition.String), " ")
 	clause := ", " + reviewOrderDDL + ",FOREIGN KEY(project_id,configuration_revision)"
 	if version >= 8 {
