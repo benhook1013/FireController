@@ -129,7 +129,7 @@ func (e *Engine) recordCLIAllowance(ctx context.Context, project, attemptID stri
 			}
 			checked.ConfigurationRevision = revision
 		}
-		current, err := e.currentExecutionContext(ctx, tx, checked)
+		current, err := e.executionContext(ctx, tx, checked, input.Remaining == 0)
 		if err != nil {
 			return err
 		}
