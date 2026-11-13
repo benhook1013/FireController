@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"net/http/httptest"
@@ -807,9 +806,8 @@ func TestCooldownRecoveryRetainsAgedAttributedResponse(t *testing.T) {
 
 func TestCooldownRecoveryPreservesEvidenceWhenOriginalDriverIsAbsent(t *testing.T) {
 	f, attempt, _ := cooldownObservationFixture(t)
-	err := f.e.reconcilePreparingDrivers(t.Context(), nil)
-	var failure *core.Error
-	if !errors.As(err, &failure) || failure.Code != "review_preparation_recovery_unavailable" {
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	if err != nil || !skipped[attempt.ID] {
 		t.Fatal("missing recovery driver did not preserve preparation", err)
 	}
 	operation := bindingOperation(t, f, f.scope(t, attemptProject, f.writer, false), attempt.OperationID)

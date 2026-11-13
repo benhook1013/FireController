@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -112,5 +113,26 @@ func TestCLIQuotaRetryRequalifiesOriginalComparisonBeforeAnotherUsageCheck(t *te
 				t.Fatal("completed retry damaged original quota evidence", err)
 			}
 		})
+	}
+}
+
+func TestCLIBaselineStorageFailureRetainsPreparation(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	op, attempt, config := f.start(t, 2, 1, "baseline-storage-failure")
+	f.driver.verify = func(ctx context.Context, w reviewworkspace.Workspace) error {
+		if err := f.manager.Verify(ctx, w); err != nil {
+			return err
+		}
+		return f.store.Close()
+	}
+	before, _ := os.ReadFile(f.log)
+	_, err := f.driver.Prepare(t.Context(), op, config, attempt)
+	var recovery *reviewexec.PreparationRecoveryError
+	if !errors.As(err, &recovery) {
+		t.Fatal("baseline storage failure became terminal", err)
+	}
+	after, _ := os.ReadFile(f.log)
+	if string(before) != string(after) {
+		t.Fatal("baseline failure requested allowance/provider work")
 	}
 }

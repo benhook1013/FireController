@@ -201,3 +201,57 @@ func TestAttemptRecoveryCancelsCorruptCooldownReference(t *testing.T) {
 		})
 	}
 }
+
+func TestRetainedCoreMissingRecoveryDriverIsolatedAtStartup(t *testing.T) {
+	f, a, _ := cooldownObservationFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "other-unused", "cli", 2, 1))
+	before := attemptState(t, f, a)
+	delete(f.e.capabilities, "test-capability")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := f.e.Start(ctx, map[string]Driver{"other-account": &controlledDriver{}})
+	if err != nil {
+		t.Fatal("missing original driver blocked unrelated recovery", err)
+	}
+	cancel()
+	<-done
+	if before != attemptState(t, f, a) {
+		t.Fatal("excluded preparation/reservation changed")
+	}
+	got, err := readAttempt(t.Context(), f.store.DB(), otherAttemptProject, other.ID)
+	if err != nil || got.State != "cancelled" {
+		t.Fatal("unrelated unused preparation not recovered", got, err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
+		t.Fatal("lost original reservation")
+	}
+}
+
+type retainedCoreFailedRecovery struct {
+	controlledDriver
+	failure error
+}
+
+func (d *retainedCoreFailedRecovery) RecoverPreparation(context.Context, Operation, Attempt) error {
+	return d.failure
+}
+func TestRetainedCoreReplayFailureStillBlocksStartup(t *testing.T) {
+	for _, failure := range []error{errors.New("retention unavailable"), context.Canceled} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f, a, _ := cooldownObservationFixture(t)
+			before := attemptState(t, f, a)
+			drivers := map[string]Driver{}
+			for key := range f.e.capabilities {
+				drivers[key] = &retainedCoreFailedRecovery{failure: failure}
+			}
+			done, err := f.e.Start(t.Context(), drivers)
+			if done != nil || !errors.Is(err, failure) || f.e.running.Load() {
+				t.Fatal("replay failure did not block startup", err)
+			}
+			if before != attemptState(t, f, a) {
+				t.Fatal("failed replay changed original attempt")
+			}
+		})
+	}
+}

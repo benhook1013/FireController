@@ -304,7 +304,7 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err != nil {
 			return err
 		}
-		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision, anchor.ParentPullNumber)
 		if err != nil {
 			return err
 		}
@@ -539,6 +539,11 @@ func interruptedAllowanceUnavailable(err error) bool {
 // marker; confirmed Hosted work hands off to its observer without changing
 // provider state. Interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
+	return e.recoverInterrupted(ctx, nil)
+}
+
+// Startup exclusions preserve preparations whose original replay driver is absent.
+func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_execution_attempts WHERE state IN ('preparing','posting','active') ORDER BY id`)
@@ -565,6 +570,9 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		}
 		now := e.sampleAttemptTime()
 		for _, x := range ids {
+			if skipped[x.id] {
+				continue
+			}
 			a, err := readAttempt(ctx, tx, x.project, x.id)
 			if err != nil {
 				return err

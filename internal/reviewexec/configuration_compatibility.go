@@ -14,11 +14,11 @@ import (
 // require a deliberate new request.
 // Every intervening revision is checked so a meaningful change cannot be hidden
 // by changing the configuration back before admission.
-func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation, current Configuration, revision int64) (bool, error) {
+func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation, current Configuration, revision int64, parents ...int64) (bool, error) {
 	if current.Paused || revision < o.ConfigurationRevision {
 		return false, nil
 	}
-	if revision == o.ConfigurationRevision {
+	if revision == o.ConfigurationRevision && len(parents) == 0 {
 		return true, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? AND revision BETWEEN ? AND ? ORDER BY revision`, o.ProjectID, o.ConfigurationRevision, revision)
@@ -40,6 +40,11 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 			return false, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 		}
 		expected++
+		for _, parent := range parents {
+			if parent != 0 && c.Mode == "stacked" && !slices.Contains(c.Queue, parent) {
+				return false, nil
+			}
+		}
 		index := slices.Index(c.Queue, o.PullNumber)
 		if index < 0 {
 			return false, nil

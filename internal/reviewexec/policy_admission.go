@@ -44,6 +44,12 @@ func policyAdmissionConflict() error {
 }
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
+	return e.executionContext(ctx, tx, operation, false)
+}
+
+// A cooldown is retained negative evidence, not admission. Project pause may
+// delay its retry without discarding it; all other authority checks still apply.
+func (e *Engine) executionContext(ctx context.Context, tx *sql.Tx, operation Operation, retainCooldown bool) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
 	if err := requirePullScheduling(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
 		return ExecutionContext{}, err
@@ -60,6 +66,11 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	configuration, revision, err := readConfiguration(ctx, tx, operation.ProjectID)
 	if err != nil {
 		return ExecutionContext{}, err
+	}
+	if retainCooldown {
+		// Only ignore the current pause bit. The history validator still checks
+		// every revision and rejects source or capability changes across pauses.
+		configuration.Paused = false
 	}
 	compatible, err := compatibleQueuedConfiguration(ctx, tx, operation, configuration, revision)
 	if err != nil {
@@ -224,13 +235,25 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 	}
 	// Resolve source with the retained configuration, but require every actual
 	// ancestor to remain enrolled in this final action's current snapshot.
-	configuration, _, err := readConfiguration(ctx, tx, project)
+	configuration, revision, err := readConfiguration(ctx, tx, project)
 	if err != nil {
 		return err
 	}
 	if !slices.Contains(configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
 		return invalid()
 	}
+	parents := []int64{target.ParentPullNumber}
+	for _, plan := range predecessors {
+		parents = append(parents, plan.Pull.Number)
+	}
+	compatible, err := compatibleQueuedConfiguration(ctx, tx, current.Operation, configuration, revision, parents...)
+	if err != nil {
+		return err
+	}
+	if !compatible {
+		return invalid()
+	}
+
 	number, head, branch := target.ParentPullNumber, target.ParentSHA, target.BaseRef
 	seen := map[int64]bool{current.Operation.PullNumber: true}
 	for _, plan := range predecessors {

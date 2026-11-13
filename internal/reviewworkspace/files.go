@@ -20,16 +20,19 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
 	defer cancel()
-	if m.verify(ctx, w) != nil {
-		return nil, errVerification
+	if err := m.verify(ctx, w); err != nil {
+		return nil, err
 	}
 	var output bytes.Buffer
-	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
-		return nil, errVerification
+	if err := m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--"); err != nil {
+		return nil, err
 	}
 	paths, err := parseChangedPaths(output.Bytes())
-	if err != nil || m.verify(ctx, w) != nil || ctx.Err() != nil {
-		return nil, errVerification
+	if err != nil {
+		return nil, err
+	}
+	if err = m.verify(ctx, w); err != nil {
+		return nil, err
 	}
 	return paths, nil
 }
@@ -46,7 +49,7 @@ func (m *Manager) ReviewFileCount(ctx context.Context, w Workspace) (int64, erro
 	defer cancel()
 	raw, err := m.ChangedFiles(ctx, w)
 	if err != nil {
-		return 0, errVerification
+		return 0, err
 	}
 	logical, err := m.reviewPaths(ctx, w, raw)
 	return int64(len(logical)), err
@@ -102,8 +105,8 @@ func (m *Manager) CoversChangedFiles(ctx context.Context, w Workspace, claims []
 // The caller first validates every raw path under this same total deadline.
 func (m *Manager) reviewPaths(ctx context.Context, w Workspace, raw []string) ([]string, error) {
 	var output bytes.Buffer
-	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
-		return nil, errVerification
+	if err := m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--"); err != nil {
+		return nil, err
 	}
 	logical, err := parseChangedPaths(output.Bytes())
 	if err != nil || len(logical) > len(raw) || len(raw) > 0 && len(logical) == 0 {
@@ -118,8 +121,8 @@ func (m *Manager) reviewPaths(ctx context.Context, w Workspace, raw []string) ([
 			return nil, errVerification
 		}
 	}
-	if m.verify(ctx, w) != nil || ctx.Err() != nil {
-		return nil, errVerification
+	if err := m.verify(ctx, w); err != nil {
+		return nil, err
 	}
 	return logical, nil
 }

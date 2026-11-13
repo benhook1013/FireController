@@ -541,3 +541,20 @@ func TestAttemptRebuildRepairRestoresInvalidationAndProofs(t *testing.T) {
 		})
 	}
 }
+
+func TestComparisonRepairReplacesStaleReadyProof(t *testing.T) {
+	f, a, id, _ := coverageFixture(t, 0, false)
+	coverageFinalize(t, f, a, id, 0)
+	before := snapshotTable(t, f, "review_comparison_proofs")
+	for _, event := range []string{"insert", "update", "delete"} {
+		admissionSQL(t, f, "DROP TRIGGER review_comparison_dirty_review_execution_attempts_"+event)
+	}
+	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
+	admissionSQL(t, f, `UPDATE review_comparison_proofs SET candidate_sha=? WHERE state='ready'`, strings.Repeat("f", 40))
+	if err := EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotTable(t, f, "review_comparison_proofs") != before {
+		t.Fatal("stale ready proof not replaced from original authority")
+	}
+}

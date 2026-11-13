@@ -8,6 +8,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
 // RetainHostedAllowance derives a preparing-attempt observation from immutable
@@ -146,11 +147,8 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 		}
 		return nil
 	}
-	earliest, err := time.Parse(time.RFC3339Nano, query.EarliestPosting)
-	if err != nil {
-		return nil
-	}
-	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, record.Intent, record.PostingActor, record.ProviderActor, earliest)
+	// Replay the capture's timing boundary, including provider timestamp precision.
+	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
 	if err != nil || observation.State != "cooldown_observed" {
 		return nil
 	}
@@ -160,16 +158,22 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if reviewworkspace.IsOperationalError(err) {
+			return err
+		}
 		return nil
 	}
-	files, err := d.manager.ChangedFiles(ctx, workspace)
+	fileCount, err := d.manager.ReviewFileCount(ctx, workspace)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if reviewworkspace.IsOperationalError(err) {
+			return err
+		}
 		return nil
 	}
-	err = RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, int64(len(files)), reference)
+	err = RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, reference)
 	if retryableHostedRetention(err) || ctx.Err() != nil {
 		return err
 	}

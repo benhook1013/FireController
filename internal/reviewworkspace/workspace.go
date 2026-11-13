@@ -30,6 +30,18 @@ var (
 	errVerification  = errors.New("review workspace verification failed")
 )
 
+// IsOperationalError identifies local execution/I/O failures that do not prove
+// the retained workspace invalid. Recovery must retain the original attempt.
+func IsOperationalError(err error) bool {
+	var failure *operationalError
+	return errors.As(err, &failure)
+}
+
+type operationalError struct{ cause error }
+
+func (e *operationalError) Error() string { return "review workspace operation unavailable" }
+func (e *operationalError) Unwrap() error { return e.cause }
+
 // Manager owns its private workspace layout and a resolved operator Git executable.
 type Manager struct {
 	pruning   atomic.Bool
@@ -152,8 +164,8 @@ func (m *Manager) Prepare(ctx context.Context, repositoryID int64, attemptID, ca
 func (m *Manager) Verify(ctx context.Context, w Workspace) error {
 	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
 	defer cancel()
-	if m.verify(ctx, w) != nil {
-		return errVerification
+	if err := m.verify(ctx, w); err != nil {
+		return err
 	}
 	return nil
 }
@@ -161,12 +173,25 @@ func (m *Manager) Verify(ctx context.Context, w Workspace) error {
 func (m *Manager) verify(ctx context.Context, w Workspace) error {
 	id := filepath.Base(w.Directory)
 	if !validID(id) || w.Directory != filepath.Join(m.root, "workspaces", id) ||
-		w.ComparisonRef != "refs/firecontroller/review-base/"+id || !validSHA(w.CandidateSHA) || !validSHA(w.BaseSHA) || !validSHA(w.MergeBaseSHA) || !lowerHex(w.PatchSHA256, 64) ||
-		ctx.Err() != nil || m.layout() != nil || privateDirectory(w.Directory, false) != nil {
+		w.ComparisonRef != "refs/firecontroller/review-base/"+id || !validSHA(w.CandidateSHA) || !validSHA(w.BaseSHA) || !validSHA(w.MergeBaseSHA) || !lowerHex(w.PatchSHA256, 64) {
 		return errVerification
+	}
+	if ctx.Err() != nil {
+		return &operationalError{ctx.Err()}
+	}
+	for _, path := range []string{m.root, filepath.Join(m.root, "repositories"), filepath.Join(m.root, "workspaces"), w.Directory} {
+		if err := privateDirectory(path, false); err != nil {
+			if IsOperationalError(err) {
+				return err
+			}
+			return errVerification
+		}
 	}
 	// A fresh local clone must keep its own metadata directory; reject redirected Git metadata.
 	metadata, err := os.Lstat(filepath.Join(w.Directory, ".git"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return &operationalError{err}
+	}
 	if err != nil || !metadata.IsDir() || metadata.Mode()&os.ModeSymlink != 0 {
 		return errVerification
 	}
@@ -175,7 +200,10 @@ func (m *Manager) verify(ctx context.Context, w Workspace) error {
 			return errVerification
 		}
 		origin, err := m.output(ctx, w.Directory, "remote", "get-url", "origin")
-		if err != nil || origin != "https://github.com/"+w.RepositoryCanonical+".git" {
+		if err != nil {
+			return err
+		}
+		if origin != "https://github.com/"+w.RepositoryCanonical+".git" {
 			return errVerification
 		}
 	}
@@ -189,16 +217,27 @@ func (m *Manager) verify(ctx context.Context, w Workspace) error {
 		{[]string{"status", "--porcelain=v1", "--untracked-files=all", "--ignored", "-z"}, ""},
 	} {
 		value, err := m.output(ctx, w.Directory, check.args...)
-		if err != nil || value != check.want {
+		if err != nil {
+			return err
+		}
+		if value != check.want {
 			return errVerification
 		}
 	}
 	// Detached HEAD is part of the source contract, even if an attached branch matches.
 	if _, err := m.output(ctx, w.Directory, "symbolic-ref", "-q", "HEAD"); err == nil {
 		return errVerification
+	} else {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return err
+		}
 	}
 	patch, err := m.patch(ctx, w)
-	if err != nil || patch != w.PatchSHA256 {
+	if err != nil {
+		return err
+	}
+	if patch != w.PatchSHA256 {
 		return errVerification
 	}
 	return nil
@@ -208,7 +247,7 @@ func (m *Manager) patch(ctx context.Context, w Workspace) (string, error) {
 	hash := sha256.New()
 	err := m.run(ctx, w.Directory, hash, patchLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--full-index", "--no-renames", "--diff-algorithm=myers", "--src-prefix=a/", "--dst-prefix=b/", w.MergeBaseSHA, w.CandidateSHA, "--")
 	if err != nil {
-		return "", errMaterialize
+		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -216,7 +255,7 @@ func (m *Manager) patch(ctx context.Context, w Workspace) (string, error) {
 func (m *Manager) output(ctx context.Context, directory string, args ...string) (string, error) {
 	var output bytes.Buffer
 	if err := m.run(ctx, directory, &output, 64<<10, args...); err != nil {
-		return "", errMaterialize
+		return "", err
 	}
 	return strings.TrimSuffix(output.String(), "\n"), nil
 }
@@ -229,8 +268,15 @@ func (m *Manager) run(ctx context.Context, directory string, stdout io.Writer, l
 	command.Dir, command.Env, command.WaitDelay = directory, m.env, time.Second
 	command.Stdout = &boundedWriter{writer: stdout, remaining: limit, cancel: cancel}
 	command.Stderr = &boundedWriter{writer: io.Discard, remaining: 64 << 10, cancel: cancel}
-	if command.Run() != nil || commandCtx.Err() != nil {
-		return errMaterialize
+	err := command.Run()
+	if ctx.Err() != nil {
+		return &operationalError{ctx.Err()}
+	}
+	if commandCtx.Err() != nil {
+		return errVerification
+	}
+	if err != nil {
+		return &operationalError{err}
 	}
 	return nil
 }
@@ -265,7 +311,10 @@ func privateDirectory(path string, create bool) error {
 	// layout through a symlink. Permissions are checked on the owned directory.
 	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
 		info, err := os.Lstat(parent)
-		if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) || err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return &operationalError{err}
+		}
+		if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errConfiguration
 		}
 		if filepath.Dir(parent) == parent {
@@ -286,6 +335,9 @@ func privateDirectory(path string, create bool) error {
 			return errConfiguration
 		}
 		info, err = os.Lstat(path)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return &operationalError{err}
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return errConfiguration
