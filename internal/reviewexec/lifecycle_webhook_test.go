@@ -18,6 +18,9 @@ import (
 
 func attachLifecycleHints(t *testing.T, f *attemptFixture, s *lifecycleSchedule) {
 	t.Helper()
+	if s.readers == nil {
+		s.readers = map[string]TargetReader{"test-capability": &sourceCITestReader{}}
+	}
 	f.e.lifecycleMu.Lock()
 	f.e.lifecycleSchedule = s
 	f.e.lifecycleMu.Unlock()
