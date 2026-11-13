@@ -62,6 +62,70 @@ func lifecycleRead(t *testing.T, f *attemptFixture) reviews.PullSummary {
 	return got.Pull
 }
 
+type lifecycleWatchFairnessReader struct{ *ciWatchReader }
+
+func (r *lifecycleWatchFairnessReader) ObserveRequiredCI(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
+	return r.ObserveCIGate(ctx, target, target.BaseRef)
+}
+
+func TestLifecycleBusyScanPreservesCIWatchTurnAndDelivery(t *testing.T) {
+	for _, outcome := range []string{"passed", "superseded"} {
+		t.Run(outcome, func(t *testing.T) {
+			f, s, clock := lifecycleFixture(t)
+			r := &lifecycleWatchFairnessReader{&ciWatchReader{pulls: map[int64]reviewprovider.Pull{}, states: map[int64]string{42: "satisfied"}}}
+			if outcome == "superseded" {
+				pull := lifecyclePull(42)
+				pull.HeadSHA = strings.Repeat("c", 40)
+				r.pulls[42] = pull
+			}
+			s.readers = map[string]TargetReader{"test-capability": r}
+			attachLifecycleHints(t, f, s)
+			ordinary, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+			if err != nil || ordinary == nil || ordinary.watch != nil {
+				t.Fatal("initial ordinary enrichment did not claim", ordinary, err)
+			}
+			target := CIWatchTarget{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40)}
+			out, cancel := startCIWatch(t, f, operationReadScope(t, f), []CIWatchTarget{target})
+			defer cancel()
+			ciWatchRegistered(t, s, 1)
+			// Another worker scans while the ordinary claim owns this account.
+			// An idle scan cannot consume the next watch's fairness turn.
+			if other, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment); err != nil || other != nil {
+				t.Fatal("busy project/account admitted another claim", other, err)
+			}
+			if err := f.e.observeLifecycle(t.Context(), *ordinary, s); err != nil {
+				t.Fatal(err)
+			}
+			clock.Add(time.Minute) // Both ordinary enrichment and the watch are ready.
+			watch, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+			if err != nil || watch == nil || watch.watch == nil {
+				t.Fatal("idle worker consumed watch turn and ordinary enrichment overtook it", watch, err)
+			}
+			if other, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment); err != nil || other != nil {
+				t.Fatal("watch did not reserve the project/account", other, err)
+			}
+			if err := f.e.observeLifecycle(t.Context(), *watch, s); err != nil {
+				t.Fatal(err)
+			}
+			reply := receiveCIWatch(t, out)
+			if reply.err != nil || reply.value.TimedOut || reply.value.State != outcome || len(reply.value.Targets) != 1 || reply.value.Targets[0].HeadSHA != target.HeadSHA || reply.value.Targets[0].BaseSHA != target.BaseSHA || reply.value.Targets[0].ObservedHeadSHA == "" {
+				t.Fatal("fresh watch did not deliver the original pinned result", reply)
+			}
+			if outcome == "superseded" && reply.value.Targets[0].ObservedHeadSHA != strings.Repeat("c", 40) {
+				t.Fatal("supersession lost observed source movement", reply)
+			}
+			ciWatchRegistered(t, s, 0)
+			next, err := f.e.claimLifecycleLane(t.Context(), s.readers, s, lifecycleEnrichment)
+			if err != nil || next == nil || next.watch != nil {
+				t.Fatal("watch turn starved ordinary enrichment", next, err)
+			}
+			if err := f.e.observeLifecycle(t.Context(), *next, s); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestLifecycleSyncPausedNoopHeadCloseMergeAndReopen(t *testing.T) {
 	f, s, clock := lifecycleFixture(t)
 	pull := lifecyclePull(2)
@@ -152,6 +216,9 @@ func TestLifecycleSyncCIUnknownNotRequiredAndComparisonChanges(t *testing.T) {
 			want := map[string]string{"satisfied": "success", "failed": "failure", "pending": "pending", "not_required": "not_required", "unproven": "unknown"}[state]
 			if got := lifecycleRead(t, f); got.CIState != want {
 				t.Fatal("CI projection", state, got.CIState)
+			}
+			if r.ciCalls.Load() != 1 || r.calls.Load() != 4 {
+				t.Fatal("unexpected collection fanout", r.ciCalls.Load(), r.calls.Load())
 			}
 		})
 	}

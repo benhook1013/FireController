@@ -222,10 +222,12 @@ func TestSourceRefreshWaitCancellationCapacityAndAuthorization(t *testing.T) {
 	if got := refreshRead(t, f, receipt.ID); got.State != "queued" || got.Revision != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents {
 		t.Fatal("wait/cancellation mutated operation")
 	}
-	// Current grant is checked again after the bounded wait, not frozen at entry.
+	// Current grant is checked again after a wakeup, not frozen at entry.
+	// Signal only after revocation commits; a short timer can expire first on
+	// loaded race runners and legitimately observe the still-valid grant.
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.e.WaitSourceRefresh(t.Context(), scope, receipt.ID, 80*time.Millisecond)
+		_, err := f.e.WaitSourceRefresh(t.Context(), scope, receipt.ID, time.Minute)
 		done <- err
 	}()
 	deadline = time.Now().Add(time.Second)
@@ -239,11 +241,19 @@ func TestSourceRefreshWaitCancellationCapacityAndAuthorization(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	admissionSQL(t, f, `UPDATE grants SET can_read=0 WHERE credential_id='exec-reader-cred'`)
+	f.e.sourceMu.Lock()
+	for waiter := range f.e.sourceWaiters[receipt.ID] {
+		select {
+		case waiter.changed <- struct{}{}:
+		default:
+		}
+	}
+	f.e.sourceMu.Unlock()
 	select {
 	case err := <-done:
 		attemptCode(t, err, "forbidden")
 	case <-time.After(time.Second):
-		t.Fatal("timeout did not reauthorize")
+		t.Fatal("wakeup did not reauthorize")
 	}
 	// A terminal transition between registration and snapshot cannot lose wakeup.
 	scope = evidenceReadScope(t, f, attemptProject, f.admin)
