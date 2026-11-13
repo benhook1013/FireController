@@ -10,13 +10,10 @@ on:
 permissions:
   contents: read
 
-# Every job acquires one of twenty shared repository slots before runner admission.
-# Compatibility stage: retain the literal legacy lock while adding job lanes.
-# Enabling interleaving requires a reviewed follow-up workflow change.
+# Supersede a PR or branch push independently. The jobs below share the runner budget.
 concurrency:
-  group: firecontroller-ci
-  queue: max
-  cancel-in-progress: false
+  group: firecontroller-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   static:
