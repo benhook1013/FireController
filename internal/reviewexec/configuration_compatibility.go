@@ -30,13 +30,14 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 	var original, previous Configuration
 	var prefix []int64
 	for rows.Next() {
-		var n int64
-		var body string
+		var rawRevision, rawBody any
 		var c Configuration
-		if err := rows.Scan(&n, &body); err != nil {
+		if err := rows.Scan(&rawRevision, &rawBody); err != nil {
 			return false, err
 		}
-		if n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+		n, revisionOK := rawRevision.(int64)
+		body, bodyOK := rawBody.(string)
+		if !revisionOK || !bodyOK || n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
 			return false, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 		}
 		expected++

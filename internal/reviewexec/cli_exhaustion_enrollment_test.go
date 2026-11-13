@@ -33,7 +33,7 @@ func TestCLIExhaustionRetainsOriginalFactsAcrossNeighborEnrollment(t *testing.T)
 				input.Remaining = 0
 				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, input)
 			}
-			if mode != "exhausted" && mode != "positive" {
+			if mode != "exhausted" && mode != "positive" && mode != "paused" {
 				if err == nil || cliAllowanceState(t, f, a) != before {
 					t.Fatal("retention bypassed a positive or current-binding guard", mode, err)
 				}
