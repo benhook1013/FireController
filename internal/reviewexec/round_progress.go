@@ -57,16 +57,16 @@ func validRoundProgressNumbers(numbers []int64) bool {
 // ReadRoundProgress reads one bounded, authorized local snapshot. It does not
 // interpret imported history or collect source, captures, CI or provider state.
 func (e *Engine) ReadRoundProgress(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
-	return e.readRoundProgress(ctx, scope, numbers, false)
+	return e.readRoundProgress(ctx, scope, numbers, false, "")
 }
 
 // ReadRoundProgressStages splits the same occupancy into execution and
 // adjudication without changing reservation or completion accounting.
 func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
-	return e.readRoundProgress(ctx, scope, numbers, true)
+	return e.readRoundProgress(ctx, scope, numbers, true, "2")
 }
 
-func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool) (RoundProgress, error) {
+func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool, waitVersion string) (RoundProgress, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(scope.ProjectID) || !validRoundProgressNumbers(numbers) {
 		return RoundProgress{}, invalid()
 	}
@@ -95,6 +95,8 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				if stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
+				}
+				if stages && (waitVersion == "1" || waitVersion == "2" || waitVersion == "3") {
 					progress.Wait, err = readChannelWait(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err

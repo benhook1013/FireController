@@ -75,7 +75,16 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 	}
 	if o.AttemptID != a.ID {
 		var err error
-		o, err = historicalCLIExhaustionOperation(ctx, q, o, a)
+		var draft bool
+		var historical Operation
+		historical, draft, err = historicalCLIDraftOperation(ctx, q, o, a)
+		if err == nil {
+			if draft {
+				o = historical
+			} else {
+				o, err = historicalCLIExhaustionOperation(ctx, q, o, a)
+			}
+		}
 		if err != nil {
 			return record, allowanceDependencyError(err)
 		}
