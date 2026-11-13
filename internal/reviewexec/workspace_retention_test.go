@@ -91,3 +91,43 @@ func TestWorkspaceRetentionProtectsDetachedCooldownIntentAndReservation(t *testi
 		}
 	}
 }
+
+func TestWorkspaceRetentionRejectsParseableCorruptChronology(t *testing.T) {
+	for _, damage := range []string{"zero", "offset", "before-start", "first-zero", "missing-first", "first-after-terminal"} {
+		t.Run(damage, func(t *testing.T) {
+			f, a, _ := evidenceFixture(t, "cli", true)
+			if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "completion", ""); err != nil {
+				t.Fatal(err)
+			}
+			var first, terminal string
+			if err := f.store.DB().QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=1`, a.ID).Scan(&first); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.DB().QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=3`, a.ID).Scan(&terminal); err != nil {
+				t.Fatal(err)
+			}
+			switch damage {
+			case "zero":
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at='0001-01-01T00:00:00Z' WHERE attempt_id=? AND revision=3`, a.ID)
+			case "offset":
+				at, _ := time.Parse(time.RFC3339Nano, terminal)
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=3`, at.In(time.FixedZone("offset", 3600)).Format(time.RFC3339Nano), a.ID)
+			case "before-start":
+				at, _ := time.Parse(time.RFC3339Nano, first)
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=3`, at.Add(-time.Hour).Format(time.RFC3339Nano), a.ID)
+			case "first-zero":
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at='0001-01-01T00:00:00Z' WHERE attempt_id=? AND revision=1`, a.ID)
+			case "missing-first":
+				admissionSQL(t, f, `DELETE FROM review_execution_transitions WHERE attempt_id=? AND revision=1`, a.ID)
+			case "first-after-terminal":
+				at, _ := time.Parse(time.RFC3339Nano, terminal)
+				admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=? WHERE attempt_id=? AND revision=1`, at.Add(time.Hour).Format(time.RFC3339Nano), a.ID)
+			}
+			allowed, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, time.Now().Add(time.Hour))
+			attemptCode(t, err, "review_persistence_failed")
+			if allowed {
+				t.Fatal("corrupt chronology authorized cleanup")
+			}
+		})
+	}
+}
