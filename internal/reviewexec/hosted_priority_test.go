@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -137,6 +138,65 @@ func TestHostedPriorityCooldownAndAtomicClaims(t *testing.T) {
 	if claimed != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 		t.Fatal("claim/accounting changed", claimed)
 	}
+}
+
+func TestHostedReplacementHonorsCancelledCooldownForSameHead(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4})
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	first := schedulingLatest(t, f)
+	if first.OperationID == "" {
+		t.Fatal("automatic selection did not create a request", first)
+	}
+	due := priorityCooldown(t, f, Receipt{ID: first.OperationID}, 2, 3*time.Minute)
+	now := due.Add(-time.Nanosecond)
+	f.e.schedulingNow = func() time.Time { return now }
+	timerControl(t, f, first.OperationID, "cancel", "withdraw-cooling-request")
+
+	// A deliberate change to automatic scheduling supplies a fresh basis,
+	// just as other allowed review state changes can while a request waits.
+	schedulingEnable(t, f, 1, true)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	replacement := schedulingLatest(t, f)
+	if replacement.OperationID == "" || replacement.OperationID == first.OperationID {
+		t.Fatal("expected a fresh queued request", replacement)
+	}
+	priorityPending(t, f)
+	if a, err := f.e.StartAttempt(t.Context(), attemptProject, replacement.OperationID); err != nil || a.ID != "" {
+		t.Fatal("replacement acquired a preparation before the retained deadline", a, err)
+	}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	op := bindingOperation(t, f, scope, replacement.OperationID)
+	if op.State != "queued" || op.AttemptID != "" || op.Wait != nil ||
+		f.e.queuedDiagnostic(t.Context(), scope, op.ID, op.Revision) != "hosted_prior_cooldown" {
+		t.Fatal("replacement did not report its wait independently of the original intent", op)
+	}
+	if got := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`); got != 0 {
+		t.Fatal("the retained cooldown reserved provider capacity", got)
+	}
+	now = due
+	priorityPending(t, f, replacement.OperationID)
+	f.start(t, attemptProject, Receipt{ID: replacement.OperationID})
+}
+
+func TestCancelledHostedCooldownAllowsChangedHead(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	first := f.enqueue(t, attemptProject, "old-head", "hosted", 2, 1)
+	due := priorityCooldown(t, f, first, 2, 3*time.Minute)
+	f.e.schedulingNow = func() time.Time { return due.Add(-time.Second) }
+	timerControl(t, f, first.ID, "cancel", "withdraw-old-head")
+	raw, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "new-head", Request{
+		ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("c", 40),
+	})
+	var changed Receipt
+	if err != nil || json.Unmarshal(raw, &changed) != nil {
+		t.Fatal("enqueue changed head", err)
+	}
+	priorityPending(t, f, changed.ID)
+	f.start(t, attemptProject, changed)
 }
 
 func TestHostedPriorityOnlyUnpausedProjectHostedIntents(t *testing.T) {

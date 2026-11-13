@@ -55,7 +55,7 @@ func boundQueuedReservation(v *queuedReservation, operationID, channel string) *
 
 func recognizedQueuedCause(value string) string {
 	switch value {
-	case "automation_authorization_changed", "operation_paused", "project_paused", "cooldown", "cli_quota_wait", "cli_draft_wait", "queue_order", "reservation_busy", "awaiting_scheduler":
+	case "automation_authorization_changed", "operation_paused", "project_paused", "cooldown", "hosted_prior_cooldown", "cli_quota_wait", "cli_draft_wait", "queue_order", "reservation_busy", "awaiting_scheduler":
 		return value
 	}
 	return ""
@@ -71,6 +71,8 @@ func queuedOperationDiagnostic(cause string, reservation ...*queuedReservation) 
 		explanation = "Project execution is paused."
 	case "cooldown":
 		explanation = "This queued operation’s cooldown deadline is still in the future."
+	case "hosted_prior_cooldown":
+		return &ReviewOperationDiagnostic{"A cancelled Hosted request for this same head has a retained provider cooldown. This replacement stays queued until that deadline.", "Keep the replacement queued. The controller rechecks the current comparison, admission and allowance when it can proceed."}
 	case "cli_quota_wait":
 		return &ReviewOperationDiagnostic{"Included CLI quota was exhausted on this shared provider account. This request remains queued while the controller uses bounded backoff across projects before checking again. The next available slot and provider reset are unknown.", "Keep this original request queued and continue other work. The controller rechecks the pinned comparison and all normal guards before starting; pause/cancel the undispatched request if needed. Do not submit a duplicate request, reset rounds or change accounts to bypass this wait."}
 	case "cli_draft_wait":

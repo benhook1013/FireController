@@ -233,6 +233,47 @@ func historicalCooldownOperation(ctx context.Context, q EvidenceQuery, o Operati
 	return o, nil
 }
 
+// A replacement request for the same head must honor the original provider
+// cooldown before it can reserve capacity or start another allowance query.
+func (e *Engine) cancelledHostedCooldownPending(ctx context.Context, q EvidenceQuery, o Operation, c Configuration, now time.Time) (bool, error) {
+	capability, ok := e.capabilities[c.CapabilityID]
+	if o.Channel != "hosted" || !ok || capability.Fingerprint != o.CapabilityFingerprint {
+		return false, nil
+	}
+	var id string
+	var repository int64
+	err := q.QueryRowContext(ctx, `SELECT prior.id,p.github_repository_id
+	FROM review_operations prior
+	JOIN projects p ON p.id=prior.project_id
+	JOIN review_operation_waits w ON w.operation_id=prior.id
+	JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id AND a.operation_id=prior.id AND a.project_id=prior.project_id
+	WHERE prior.project_id=? AND prior.pull_number=? AND prior.channel='hosted'
+	AND prior.state='cancelled' AND prior.attempt_id='' AND prior.head_sha=?
+	AND prior.capability_fingerprint=? AND a.provider=? AND a.account=?
+	AND w.retry_not_before<>'' AND rtrim(w.retry_not_before,'Z')>rtrim(?,'Z')
+	ORDER BY rtrim(w.retry_not_before,'Z') DESC,prior.id LIMIT 1`,
+		o.ProjectID, o.PullNumber, o.HeadSHA, capability.Fingerprint, capability.Provider, capability.Account, now.UTC().Format(time.RFC3339Nano)).Scan(&id, &repository)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	prior, err := readOperationBase(ctx, q, o.ProjectID, id)
+	if err != nil {
+		return false, err
+	}
+	latest, err := latestCooldownAttempt(ctx, q, prior)
+	if err != nil {
+		return false, err
+	}
+	record, err := readHostedAllowanceRecord(ctx, q, prior, latest)
+	if err != nil {
+		return false, waitDependencyError(err)
+	}
+	return record.Input.Anchor.RepositoryID == repository, nil
+}
+
 // RetryBaseline returns the first proven cooldown's source, never permission
 // to reuse its allowance query. Every fresh attempt must compare before posting
 // its own query and must independently pass the normal final action guards.

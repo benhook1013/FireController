@@ -119,6 +119,12 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 				return nil
 			}
 		}
+		if waiting, err := e.cancelledHostedCooldownPending(ctx, tx, op, original, e.sampleExecutionTime()); err != nil {
+			return err
+		} else if waiting {
+			cause = "hosted_prior_cooldown"
+			return nil
+		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, op, latest, latestRevision)
 		if err != nil {
 			return err

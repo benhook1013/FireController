@@ -248,6 +248,11 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		} else if !ready {
 			return Operation{}, false, nil
 		}
+		if waiting, err := e.cancelledHostedCooldownPending(ctx, tx, o, c, e.sampleExecutionTime()); err != nil {
+			return o, false, err
+		} else if waiting {
+			return Operation{}, false, nil
+		}
 		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
 			return o, false, err
 		} else if preferred {

@@ -146,6 +146,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		} else if !ready {
 			return nil
 		}
+		if waiting, err := e.cancelledHostedCooldownPending(ctx, tx, o, c, now); err != nil {
+			return err
+		} else if waiting {
+			return nil
+		}
 		if o.Channel == "cli" {
 			due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
 			if err != nil {
