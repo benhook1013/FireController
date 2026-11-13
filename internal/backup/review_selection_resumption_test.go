@@ -227,3 +227,42 @@ func TestSelectionResumptionCancellationIsRetryableAndUnchanged(t *testing.T) {
 		t.Fatal("same request failed after selection abandonment interruption", retried, err)
 	}
 }
+
+func TestSelectionResumptionNormalizesRawSchemaScanAndRollsBack(t *testing.T) {
+	f, in, _ := selectionRestoredActive(t, "queued")
+	// Generic inventory accepts indexes, but the bounded selection schema scan
+	// refuses this oversized name. Its SQL NULL scan error must stay private.
+	index := strings.Repeat("private_schema_index_", 8)
+	activationExec(t, f.dir, `CREATE INDEX "`+index+`" ON review_selections(id)`)
+	before := activationRows(t, f.dir)
+	files := restoreTree(t, f.dir)
+	result, err := ResumeProviders(t.Context(), f.dir, in)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "restore_reconciliation_invalid" || failure.Status != 409 || result != (ProviderResumptionSummary{}) {
+		t.Errorf("raw selection SQL failure escaped safe reconciliation boundary: %v %v", result, err)
+	} else if strings.Contains(failure.Message, index) || strings.Contains(failure.Message, "Scan") || strings.Contains(failure.Message, "NULL") {
+		t.Error("private SQL diagnostics escaped", failure.Message)
+	}
+	if !reflect.DeepEqual(before, activationRows(t, f.dir)) || !reflect.DeepEqual(files, restoreTree(t, f.dir)) {
+		t.Fatal("failed schema scan changed retained work, provider hold or release audit")
+	}
+	activationExec(t, f.dir, `DROP INDEX "`+index+`"`)
+	retried, err := ResumeProviders(t.Context(), f.dir, in)
+	if err != nil || retried.ProvidersHeld || retried.Counts.Selections != 1 {
+		t.Fatal("same request could not reconcile after fixture repair", retried, err)
+	}
+}
+
+func TestSelectionResumptionPreservesSafeDomainRefusal(t *testing.T) {
+	f, in, _ := selectionRestoredActive(t, "queued")
+	activationExec(t, f.dir, `UPDATE review_selections SET reason='invalid_pending_reason'`)
+	before := activationRows(t, f.dir)
+	result, err := ResumeProviders(t.Context(), f.dir, in)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "storage_unavailable" || failure.Status != 500 || result != (ProviderResumptionSummary{}) {
+		t.Fatal("safe selection refusal was rewritten", result, err)
+	}
+	if !reflect.DeepEqual(before, activationRows(t, f.dir)) {
+		t.Fatal("domain refusal changed retained state")
+	}
+}

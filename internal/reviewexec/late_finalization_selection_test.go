@@ -2,10 +2,12 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 // A changed provider head and archived external Hosted review must not erase
@@ -74,4 +76,72 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	if err != nil || retained.ID != cliOperation.ID || retained.PullNumber != 4 || retained.HeadSHA != cliOperation.HeadSHA {
 		t.Fatal("late finalization changed the independently selected operation", retained, err)
 	}
+}
+
+func TestSelectionExternalHostedPendingUsesVerifiedCurrentMembership(t *testing.T) {
+	f, a, evidence, external, target := reconciliationFixture(t, "publication")
+	if count, held := reconciliationObserve(t, f, target, external, 1); count != 1 || held {
+		t.Fatal("observer fixture", count, held)
+	}
+	check := func(project string, repository, pull int64, want bool) {
+		t.Helper()
+		var got ComparisonState
+		err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			got, err = channelProgress(ctx, tx, project, repository, pull, "hosted")
+			return err
+		})
+		if err != nil || got.ExternalPending != want {
+			t.Fatal("wrong pending identity", project, repository, pull, got.ExternalPending, err)
+		}
+	}
+	check(attemptProject, 801, 2, true)
+	check(otherAttemptProject, 801, 2, false)
+	check(attemptProject, 999, 2, false)
+	check(attemptProject, 801, 4, false)
+	// A newly observed source head does not erase the old captured obligation.
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		pins, err := reviews.PinSourceMetadata(ctx, tx, attemptProject, []int64{2})
+		if err != nil {
+			return err
+		}
+		metadata := reviews.PullInput{Number: 2, Title: "Moved head", State: "open", HeadSHA: strings.Repeat("f", 40), BaseSHA: strings.Repeat("b", 40)}
+		_, err = reviews.PublishSourceMetadata(ctx, tx, f.scope(t, attemptProject, f.admin, true), 801, pins, []reviews.PullInput{metadata})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check(attemptProject, 801, 2, true)
+	// The producer label alone is insufficient; proof must be the observer's
+	// same project, snapshot, revision and PR event, with no native credit.
+	for _, mutation := range []string{
+		`UPDATE events SET event_type='unverified' WHERE event_type='review.observed' AND json_extract(payload_json,'$.source')='github-hosted-observer'`,
+		`UPDATE events SET payload_json=json_set(payload_json,'$.pull_number',4) WHERE event_type='review.observed' AND json_extract(payload_json,'$.source')='github-hosted-observer'`,
+		`UPDATE events SET payload_json=json_set(payload_json,'$.native_coverage',json('true')) WHERE event_type='review.observed' AND json_extract(payload_json,'$.source')='github-hosted-observer'`,
+	} {
+		tx, err := f.store.DB().BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), mutation); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		got, err := channelProgress(t.Context(), tx, attemptProject, 801, 2, "hosted")
+		tx.Rollback()
+		if err != nil || got.ExternalPending {
+			t.Fatal("unverified imported label created an obligation", got.ExternalPending, err)
+		}
+	}
+	// Ordinary native capture reconciles the observer alias from current
+	// membership; retained historical observer rows must no longer hold selection.
+	captured, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(attemptProject, 801, 2, true)
+	if _, err := f.e.PublishEvidence(t.Context(), attemptProject, captured.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(attemptProject, 801, 2, false)
 }

@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -202,6 +203,45 @@ func TestReviewWatchReconnectsWhenGatewayMissesShutdownSignal(t *testing.T) {
 			got, err := newClient(t, service).WatchReviews(t.Context(), client.ReviewWatchOptions{Channel: "cli", Limit: 20, After: "original-event"}, 3)
 			if err != nil || got.EventCursor != "resumed" || !got.TimedOut || reads.Load() != 2 {
 				t.Fatal(got, err, reads.Load())
+			}
+		})
+	}
+}
+
+func TestSelectionWaitInterruptionRetainsSelectionIdentityWithoutRestart(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(canceled), func(t *testing.T) {
+			var reads, posts int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				if r.Method == "POST" {
+					posts++
+					t.Error("wait started replacement work")
+				}
+				reads++
+				core.WriteError(w, &core.Error{Code: "overloaded", Status: 503, Message: "shutdown", Details: map[string]any{"reason": "result_wait_lifetime"}})
+			}))
+			defer server.Close()
+			c := newClient(t, server)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if canceled {
+				cancel()
+			}
+			_, err := c.WaitReviewSelection(ctx, runSelectionID, 0)
+			var failure *client.Error
+			if !errors.As(err, &failure) {
+				t.Fatal(err)
+			}
+			details, ok := failure.Details.(map[string]any)
+			if !ok || details["selection_id"] != runSelectionID || details["operation_id"] != nil || strings.Contains(failure.Action, "original operation ID") {
+				t.Fatal("lost selection identity", failure)
+			}
+			if posts != 0 || reads > 1 || canceled && reads != 0 {
+				t.Fatal("interruption caused new requests", reads, posts)
 			}
 		})
 	}

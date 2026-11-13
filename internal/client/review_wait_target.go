@@ -49,6 +49,9 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 	}
 	result := *failure
 	result.Details = details
+	if operationID != "" && details["selection_id"] == operationID {
+		result.Action = "Reattach the same selection wait with its original selection ID. Preserve its original request and key; interrupted waiting does not cancel or repeat the selection."
+	}
 	if operationID == "" && (local || ciRefusal) {
 		for _, target := range targets {
 			if target.BaseSHA == "" {
