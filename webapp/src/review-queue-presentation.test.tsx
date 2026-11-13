@@ -353,14 +353,14 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('Signed positions'); expect(html).not.toContain('As of ');
     expect(html).not.toContain('Latest attempt:'); expect(html).not.toContain('Incomplete PR observation');
   });
-  it('renders merged history in supplied reverse queue order with a back link and no current controls', () => {
+  it('renders merged history in supplied merge-time order with a back link and no current controls', () => {
     const items = [{ ...pull(9, 'merged'), queue_position: 9 }, { ...pull(2, 'merged'), queue_position: 2 }];
     const html = markup(<ReviewQueueView history />, { ...queue(items), head_position: 10, has_more: true, cursor: 'older' }, undefined, { history: true, fronts: fronts() });
     expect(html).toContain('<h2 id="review-queue-title">Queue history</h2>');
     expect(html).toMatch(/href="\/projects\/project\/reviews"[^>]*>Back to review queue/u);
     expect(html.indexOf('id="review-pr-9"')).toBeLessThan(html.indexOf('id="review-pr-2"'));
     expect(html).toContain('Queue distance −01'); expect(html).toContain('Queue distance −08');
-    expect(html).toContain('Merged PRs are shown in reverse queue order.');
+    expect(html).toContain('Merged PRs are shown newest first.');
     expect(html).toContain('Next queue history');
     expect(html).not.toContain('Attempt states describe retained history. Limits show current settings; neither grants permission to request another review.'); expect(html).not.toContain('last 48 hours'); expect(html).not.toContain('review-position-front');
   });

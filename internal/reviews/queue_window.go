@@ -114,15 +114,7 @@ func scanQueueWindow(rows *sql.Rows) (int, string, PullDisplayMetadata, error) {
 }
 
 func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, cursor queueWindowCursor, newest [2]queueMergedTime, limit int) ([]int, error) {
-	order, boundary := "ASC", "p.position>?"
-	if cursor.View == "merged" {
-		order, boundary = "DESC", "(?<0 OR p.position<?)"
-	}
-	args := []any{project, cursor.Snapshot, cursor.Position}
-	if cursor.View == "merged" {
-		args = append(args, cursor.Position)
-	}
-	rows, err := tx.QueryContext(ctx, compactQueueWindowSQL+" AND "+boundary+" ORDER BY p.position "+order, args...)
+	rows, err := tx.QueryContext(ctx, compactQueueWindowSQL+" AND p.position>? ORDER BY p.position", project, cursor.Snapshot, cursor.Position)
 	if err != nil {
 		return nil, err
 	}
@@ -134,11 +126,8 @@ func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, curso
 		if err != nil {
 			return nil, err
 		}
-		visible := state == "merged"
-		if cursor.View == "recent" {
-			instant, _ := time.Parse(time.RFC3339Nano, metadata.MergedAt)
-			visible = state != "merged" || metadata.MergedAt == "" || !instant.Before(cutoff) || position == newest[0].position || position == newest[1].position
-		}
+		instant, _ := time.Parse(time.RFC3339Nano, metadata.MergedAt)
+		visible := state != "merged" || metadata.MergedAt == "" || !instant.Before(cutoff) || position == newest[0].position || position == newest[1].position
 		if visible {
 			positions = append(positions, position)
 			if len(positions) == limit+1 {
@@ -152,8 +141,11 @@ func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, curso
 func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart, topology bool) (QueueResponse, error) {
 	filter := "reviews.queue:" + view + ":v1"
 	topology = topology && view == "recent"
+	history := view == "merged"
 	if topology {
 		filter += ":topology"
+	} else if history {
+		filter += ":chronological"
 	}
 	after, err := store.ParseCursor(scope, filter, token)
 	if err != nil {
@@ -181,14 +173,18 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		var positions []int
 		var parents map[int64]int64
 		var displayPositions map[int]int
-		if topology {
+		if topology || history {
 			nodes, repository, err := readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
 			if err != nil {
 				return err
 			}
-			cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
-			ordered, verifiedParents := orderedRecentNodes(nodes, repository, cutoff)
-			parents = verifiedParents
+			var ordered []queueNode
+			if history {
+				ordered = mergedQueueNodes(nodes)
+			} else {
+				cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
+				ordered, parents = orderedRecentNodes(nodes, repository, cutoff)
+			}
 			displayPositions = make(map[int]int)
 			headSeen := false
 			for i, n := range ordered {
@@ -200,7 +196,11 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 				}
 				if i > cursor.Position && len(positions) <= limit {
 					positions = append(positions, n.position)
-					displayPositions[n.position] = i
+					position := i
+					if history {
+						position = len(ordered) - 1 - i
+					}
+					displayPositions[n.position] = position
 				}
 			}
 		} else {
@@ -222,18 +222,14 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			return nil
 		}
 		// Eligibility precedes pagination; only the selected bounded page loads
-		// detailed compact summaries. Original positions remain cursor authority.
+		// detailed compact summaries.
 		placeholders := make([]string, len(positions))
 		args := []any{scope.ProjectID, meta.SnapshotID}
 		for index, position := range positions {
 			placeholders[index] = "?"
 			args = append(args, position)
 		}
-		order := "ASC"
-		if view == "merged" {
-			order = "DESC"
-		}
-		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position IN (%s) ORDER BY p.position %s`, strings.Join(placeholders, ","), order), args...)
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position IN (%s) ORDER BY p.position`, strings.Join(placeholders, ",")), args...)
 		if err != nil {
 			return err
 		}
@@ -250,7 +246,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 				return err
 			}
 			item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = metadata.Diff, metadata.IsDraft, metadata.MergedAt, metadata.MergeStateStatus
-			if topology {
+			if displayPositions != nil {
 				position = displayPositions[position]
 				item.ParentPullNumber = parents[item.Number]
 			}
@@ -272,14 +268,18 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		if topology {
+		if displayPositions != nil {
 			slices.SortFunc(response.Items, func(a, b PullSummary) int { return *a.QueuePosition - *b.QueuePosition })
+			if history {
+				slices.Reverse(response.Items)
+			}
 		}
 		attachReviewSizes(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 		if response.HasMore {
-			cursor.Position = positions[len(positions)-1]
-			if topology {
-				cursor.Position = displayPositions[cursor.Position]
+			if displayPositions != nil {
+				cursor.Position += len(positions)
+			} else {
+				cursor.Position = positions[len(positions)-1]
 			}
 			payload, _ := json.Marshal(cursor)
 			response.Cursor = store.Cursor(scope, filter, string(payload))

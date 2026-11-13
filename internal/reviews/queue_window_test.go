@@ -87,11 +87,16 @@ func TestQueueWindowExactInstantsOrderingPositionsAndConservation(t *testing.T) 
 		}
 	}
 	merged := windowRead(t, f, "?view=merged&limit=100")
-	if got, want := windowNumbers(merged), []int64{7, 6, 5, 4, 3, 2, 1}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("history must reverse configured position, not merge time: %v", got)
+	if got, want := windowNumbers(merged), []int64{7, 4, 3, 2, 5, 1, 6}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged history must follow exact merge times: %v", got)
 	}
-	if merged.HeadPosition == nil || *merged.HeadPosition != 8 {
-		t.Fatal("history head must retain full queue position")
+	if merged.HeadPosition != nil {
+		t.Fatal("chronological history must not claim queue head distances")
+	}
+	for index, item := range merged.Items {
+		if item.QueuePosition == nil || *item.QueuePosition != len(merged.Items)-1-index {
+			t.Fatal("history position does not match chronological display", item)
+		}
 	}
 	ordinary := f.call("GET", "/api/v1/projects/"+f.project+"/reviews/queue?limit=100", f.readToken, "", nil)
 	if strings.Contains(ordinary.Body.String(), "queue_position") || strings.Contains(ordinary.Body.String(), "head_position") || len(windowRead(t, f, "?limit=100").Items) != len(queue) {
@@ -125,12 +130,37 @@ func TestQueueWindowNewestTwoStableTiesAndNoStarvation(t *testing.T) {
 		t.Fatal("stable top-two known ties / hidden prefix starved open work", got)
 	}
 	page = windowRead(t, f, "?view=merged&limit=1")
-	if !reflect.DeepEqual(windowNumbers(page), []int64{29}) || !page.HasMore {
+	if !reflect.DeepEqual(windowNumbers(page), []int64{1}) || !page.HasMore {
 		t.Fatal("merged descending first page", page)
 	}
 	page = windowRead(t, f, "?view=merged&limit=1&cursor="+url.QueryEscape(page.Cursor))
-	if !reflect.DeepEqual(windowNumbers(page), []int64{28}) {
+	if !reflect.DeepEqual(windowNumbers(page), []int64{2}) {
 		t.Fatal("merged descending continuation", page)
+	}
+}
+
+func TestQueueWindowMergedChronologyAcrossPinnedPages(t *testing.T) {
+	f := newAPIFixture(t)
+	now := time.Now().UTC()
+	merge := func(number int64, at time.Time) PullInput {
+		p := samplePull(number, "out-of-order merge")
+		p.MergedAt = at.Format(time.RFC3339Nano)
+		return p
+	}
+	queue := []PullInput{
+		merge(90, now), merge(99, now.Add(-2*time.Hour)),
+		merge(10, now.Add(-time.Hour)), merge(15, now.Add(-3*time.Hour)),
+	}
+	f.observe(t, reviewRequest(0, queue), "interleaved-merges")
+	first := windowRead(t, f, "?view=merged&limit=2")
+	queue = append(queue, merge(77, now.Add(time.Minute)))
+	f.observe(t, reviewRequest(1, queue), "new-merge")
+	next := windowRead(t, f, "?view=merged&limit=2&cursor="+url.QueryEscape(first.Cursor))
+	current := windowRead(t, f, "?view=merged&limit=2")
+	if !reflect.DeepEqual(windowNumbers(first), []int64{90, 10}) || !first.HasMore ||
+		!reflect.DeepEqual(windowNumbers(next), []int64{99, 15}) || next.HasMore || next.SnapshotID != first.SnapshotID ||
+		!reflect.DeepEqual(windowNumbers(current), []int64{77, 90}) {
+		t.Fatal("chronology or pinned pagination changed", first, next, current)
 	}
 }
 
@@ -279,8 +309,8 @@ func TestQueueWindowEmptyAndZeroHead(t *testing.T) {
 		t.Fatal("zero is known placement, not missing", page)
 	}
 	page = windowRead(t, f, "?view=merged")
-	if !page.Configured || len(page.Items) != 0 || page.HasMore || page.HeadPosition == nil || *page.HeadPosition != 0 {
-		t.Fatal("empty merged view must preserve known full-queue head", page)
+	if !page.Configured || len(page.Items) != 0 || page.HasMore || page.HeadPosition != nil {
+		t.Fatal("empty merged history claimed a head position", page)
 	}
 }
 
@@ -344,7 +374,7 @@ func TestQueueWindowLargeRetainedQueueAndPageOnlyDetails(t *testing.T) {
 		t.Fatal("large retained queue was capped, ties shifted, or positions compressed", got, page)
 	}
 	merged := windowRead(t, f, "?view=merged&limit=1")
-	if !reflect.DeepEqual(windowNumbers(merged), []int64{202}) || !merged.HasMore {
+	if !reflect.DeepEqual(windowNumbers(merged), []int64{2}) || !merged.HasMore {
 		t.Fatal("large merged history was capped or reordered", merged)
 	}
 	if w := f.call("GET", "/api/v1/projects/"+f.project+"/reviews/pulls/100", f.readToken, "", nil); w.Code != 500 {
@@ -408,7 +438,7 @@ func TestQueueWindowRetirementAndPinnedPlacement(t *testing.T) {
 	if continued.SnapshotID != pinned.SnapshotID || !reflect.DeepEqual(windowNumbers(continued), []int64{2, 4}) || continued.HeadPosition == nil || *continued.HeadPosition != 3 {
 		t.Fatal("retirement changed pinned recent membership or placement", continued)
 	}
-	if got := windowNumbers(windowRead(t, f, "?view=merged")); !reflect.DeepEqual(got, []int64{3, 2}) {
+	if got := windowNumbers(windowRead(t, f, "?view=merged")); !reflect.DeepEqual(got, []int64{2, 3}) {
 		t.Fatal("retired row reappeared in current merged history", got)
 	}
 	if w := f.call("GET", "/api/v1/projects/"+f.project+"/reviews/pulls/1?snapshot="+pinned.SnapshotID, f.readToken, "", nil); w.Code != 200 {

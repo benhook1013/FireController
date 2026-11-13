@@ -291,7 +291,7 @@ try {
   }).toBe(`${current.home}#review-queue`);
   const queue = current.page.locator('#review-queue');
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
-  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-123','review-pr-203','review-pr-204','review-pr-205','review-pr-206']));
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-203','review-pr-204','review-pr-123','review-pr-205']));
   await expect(queue.locator('.review-count-key')).toContainText('last 48 hours and the latest two known merges');
   const provenance = queue.locator('.review-technical-details');
   need(await provenance.getAttribute('open') === null);
@@ -339,7 +339,7 @@ try {
   await queue.locator('.delivery-section-heading').getByRole('link',{name:'Queue history ↗',exact:true}).click();
   await expect(queue.getByRole('heading',{name:'Queue history',exact:true})).toBeVisible();
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
-  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-203','review-pr-202','review-pr-201','review-pr-204']));
   await expect(queue.locator('#review-pr-201 .review-round-pill')).toHaveCount(1);
   need(controlReads.length === controlsBefore);
   need(queueReads.every(read=>read.limit === 20 && read.cursor === null && (read.view === 'recent' || read.view === 'merged')));
@@ -349,7 +349,7 @@ try {
   const reloaded = await current.page.reload();
   need(reloaded.status() === 200 && reloaded.headers()['content-type'].startsWith('text/html'));
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
-  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-204','review-pr-203','review-pr-202','review-pr-201']));
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-203','review-pr-202','review-pr-201','review-pr-204']));
   // A fresh application also re-reads the current hero's two shared controls.
   await expect.poll(() => controlReads.length).toBe(controlsBefore + 2);
   need(queueReads.filter(read=>read.view === 'merged').length === 2);

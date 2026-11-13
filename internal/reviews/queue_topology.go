@@ -130,13 +130,35 @@ func readQueueNodes(ctx context.Context, tx *sql.Tx, project, snapshot string) (
 	return nodes, repository, rows.Err()
 }
 
+func mergedQueueNodes(nodes []queueNode) []queueNode {
+	merged := make([]queueNode, 0)
+	for _, n := range nodes {
+		if n.state == "merged" {
+			merged = append(merged, n)
+		}
+	}
+	// Equal or missing timestamps keep stored relative order. An unknown
+	// time follows known times without dropping the retained row.
+	slices.SortStableFunc(merged, func(a, b queueNode) int {
+		if a.metadata.MergedAt == "" && b.metadata.MergedAt != "" {
+			return 1
+		}
+		if a.metadata.MergedAt != "" && b.metadata.MergedAt == "" {
+			return -1
+		}
+		at, _ := time.Parse(time.RFC3339Nano, a.metadata.MergedAt)
+		bt, _ := time.Parse(time.RFC3339Nano, b.metadata.MergedAt)
+		return bt.Compare(at)
+	})
+	return merged
+}
+
 func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) ([]queueNode, map[int64]int64) {
-	var merged, open, other []queueNode
+	var open, other []queueNode
 	unknown := false
 	for _, n := range nodes {
 		switch n.state {
 		case "merged":
-			merged = append(merged, n)
 		case "open":
 			open = append(open, n)
 		default:
@@ -144,15 +166,11 @@ func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) (
 			unknown = unknown || n.state == "unknown"
 		}
 	}
-	slices.SortStableFunc(merged, func(a, b queueNode) int {
-		at, _ := time.Parse(time.RFC3339Nano, a.metadata.MergedAt)
-		bt, _ := time.Parse(time.RFC3339Nano, b.metadata.MergedAt)
-		return bt.Compare(at)
-	})
+	merged := mergedQueueNodes(nodes)
 	recent := merged[:0]
 	for i, n := range merged {
 		at, _ := time.Parse(time.RFC3339Nano, n.metadata.MergedAt)
-		if i < 2 || at.IsZero() || !at.Before(cutoff) {
+		if i < 2 || n.metadata.MergedAt == "" || !at.Before(cutoff) {
 			recent = append(recent, n)
 		}
 	}

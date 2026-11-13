@@ -28,9 +28,9 @@ func TestQueueTopologyBeforePaging(t *testing.T) {
 		p.State, p.BaseRef = "open", n.base
 		pulls = append(pulls, p)
 	}
-	for i, n := range []int64{3430, 3433} {
+	for i, n := range []int64{3433, 3430} {
 		p := samplePull(n, "merged")
-		p.MergedAt = time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		p.MergedAt = time.Now().UTC().Add(-time.Duration(i) * time.Second).Format(time.RFC3339Nano)
 		pulls = append(pulls, p)
 	}
 	f.observe(t, reviewRequest(0, pulls), "topology-fixture")
