@@ -4,14 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/benhook1013/FireController/internal/core"
-	"github.com/benhook1013/FireController/internal/reviewprovider"
-	"github.com/benhook1013/FireController/internal/reviews"
+	"log/slog"
 	"math"
 	"reflect"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 // runSourceBudget bounds cumulative source acquisition, excluding local SQL
@@ -166,6 +168,7 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 type runChoice struct {
 	state, reason string
 	sourceReason  string
+	sourceElapsed time.Duration
 	prefix        []SourcePlan
 	pausedSuffix  []int64
 	number        int64
@@ -219,12 +222,15 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
 
-func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
+func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
 	if len(c.Queue) == 0 {
 		return runChoice{state: "empty", reason: "queue_complete"}, nil
 	}
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
 	source := runSourceBudget{remaining: sourceBudget}
+	defer func() {
+		result.sourceElapsed = sourceBudget - source.remaining
+	}()
 	var repository reviewprovider.Repository
 	err := source.read(ctx, func(ctx context.Context) error {
 		var err error
@@ -589,7 +595,12 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		return changed != "", err
 	}
 	r := *selected
+	started := time.Now()
 	choice, readErr := e.chooseRun(ctx, r, repo, configuration, readers[configuration.CapabilityID])
+	selectionElapsed := time.Since(started)
+	defer func() {
+		logSlowRunSelection(ctx, r, choice, len(configuration.Queue), selectionElapsed, time.Since(started)-selectionElapsed)
+	}()
 	if ctx.Err() != nil {
 		return true, nil
 	}
@@ -607,6 +618,19 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 		return e.holdRunLocalRefusal(ctx, r)
 	}
 	return worked, err
+}
+
+func logSlowRunSelection(ctx context.Context, r Run, choice runChoice, queueSize int, selectionElapsed, settlementElapsed time.Duration) {
+	total := selectionElapsed + settlementElapsed
+	if total < 10*time.Second {
+		return
+	}
+	slog.WarnContext(ctx, "Review selection was slow",
+		"project_id", r.ProjectID, "selection_id", r.ID, "channel", r.Channel,
+		"queue_size", queueSize, "evaluated_prefix", len(choice.prefix),
+		"duration_ms", total.Milliseconds(), "source_read_ms", choice.sourceElapsed.Milliseconds(),
+		"local_selection_ms", (selectionElapsed - choice.sourceElapsed).Milliseconds(),
+		"settlement_ms", settlementElapsed.Milliseconds())
 }
 
 // A validated retained-data refusal belongs to this selection, not the worker
