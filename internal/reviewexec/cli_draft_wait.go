@@ -209,21 +209,14 @@ func (e *Engine) recordCLIDraftDecision(ctx context.Context, o Operation, reason
 // historicalCLIDraftOperation identifies an unused preparation detached when
 // GitHub returned the PR to Draft. It supplies attribution for history only.
 func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, bool, error) {
-	return historicalUnusedPreparationOperation(ctx, q, o, a, false)
-}
-
-// historicalUnusedPreparationOperation verifies detached draft and scheduling
-// holds without inventing provider evidence or changing the current operation.
-func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, scheduling bool) (Operation, bool, error) {
 	var reason string
 	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
 		return Operation{}, false, err
 	}
-	draft := reason == cliDraftWait
-	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
+	if reason != cliDraftWait {
 		return Operation{}, false, nil
 	}
-	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+	if o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, false, waitUnavailable()
 	}
 	var startedAt, heldAt string
@@ -244,17 +237,17 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 	if occupied || !validStart || !validHold || held.Before(started) {
 		return Operation{}, false, waitUnavailable()
 	}
-	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", reason, nil
-	if draft {
-		// A fresh draft observation can detach an unused positive permit. Validate
-		// its original attribution without granting it authority to dispatch.
-		record, err := readCLIAllowanceRecord(ctx, q, o, a)
-		if err != nil && !errors.Is(err, errAllowanceObservationAbsent) {
-			return Operation{}, false, err
-		}
-		if err == nil && record.Observation.Remaining <= 0 {
-			return Operation{}, false, waitUnavailable()
-		}
+	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
+	// A fresh draft observation can detach an unused positive permit. Validate
+	// its original attribution without granting it authority to dispatch. Corrupt
+	// optional allowance cannot prevent history-only projection of this proven
+	// unused attempt; operational lookup failures still abort the transaction.
+	record, err := readCLIAllowanceRecord(ctx, q, o, a)
+	if err != nil && !errors.Is(err, errAllowanceObservationAbsent) && !storedAllowanceUnavailable(err) {
+		return Operation{}, false, err
+	}
+	if err == nil && record.Observation.Remaining <= 0 {
+		return Operation{}, false, waitUnavailable()
 	}
 	return o, true, nil
 }
