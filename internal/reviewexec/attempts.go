@@ -463,7 +463,13 @@ func interruptedAllowanceUnavailable(err error) bool {
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
-	return e.recoverInterrupted(ctx, nil)
+	// The daemon also reaches this entry point when no drivers are configured.
+	// Preserve replayable Hosted preparation just as the supervisor startup does.
+	skipped, err := e.reconcilePreparingDrivers(ctx, nil)
+	if err != nil {
+		return core.NormalizeStorageError(err)
+	}
+	return e.recoverInterrupted(ctx, skipped)
 }
 
 // Startup exclusions preserve only preparations whose original replay driver is
