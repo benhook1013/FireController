@@ -177,3 +177,10 @@ it('shows a GitHub preparation stop only when no current request supersedes it',
   expect(reviewAttemptStatus({ ...held, state: 'preparing', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Preparing' });
   expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Reviewing' });
 });
+
+it('shows the PR’s own fixes when the channel front advances', () => {
+  const completed = { ...attempt, state: 'completed' as const };
+  expect(reviewAttemptStatus(completed, { ...progress, fixes_pending: true })).toMatchObject({ text: 'Fixes pending' });
+  expect(reviewAttemptStatus(completed, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(completed, { ...progress, fixes_pending: true }, undefined, true)).toBeUndefined();
+});

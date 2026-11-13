@@ -1,6 +1,6 @@
 import type { ReviewAttemptSummary } from './types';
 import { validActivityEvidence, validCancelledWait, type ReviewActivityEvidence, type ReviewRoundProgress } from './review-progress';
-import type { ReviewChannelPosition } from './review-fronts';
+import { reviewFixesPending, type ReviewChannelPosition } from './review-fronts';
 
 export interface ReviewAttemptStatus {
   text: string;
@@ -99,6 +99,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
     description: stopped && !settled ? `A review request is pending after the stopped attempt. This does not establish that a provider review has started. ${diagnostic}` : undefined,
   };
   if ((progress?.pending_adjudication ?? 0) > 0) return { text: 'Needs adjudication' };
+  if (progress?.fixes_pending) return reviewFixesPending;
   // Older servers expose only a combined pending count. It cannot prove a
   // retry, a running provider, or that the previous failure was resolved.
   if ((progress?.pending ?? 0) > 0) return { text: 'Pending', description: `Pending work is recorded, but its stage is unavailable.${settled ? '' : ` ${diagnostic}`}` };

@@ -201,7 +201,7 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 				}
 			}
 			if value.Reason == "review_evidence_pending" && value.PullNumber > 0 {
-				fixesPending, err := frontPendingFixes(ctx, tx, scope.ProjectID, value.PullNumber, channel)
+				fixesPending, err := pendingReviewFixes(ctx, tx, scope.ProjectID, value.PullNumber, channel)
 				if err != nil {
 					return err
 				}

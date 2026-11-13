@@ -1334,6 +1334,7 @@ export class Api {
     const headers = this.headers(instanceId, worker);
     if (inboxOriginReadPath(path, this.projectRoute(''))) headers.set('X-FC-Inbox-Origin', 'controller-v1');
     if (path.startsWith(this.projectRoute('reviews/'))) headers.set('X-FC-Review-Start', 'v1');
+    if (path.startsWith(this.projectRoute('reviews/rounds/progress') + '?')) headers.set('X-FC-Review-Fix-Status', 'v1');
     return headers;
   }
   private headers(instanceId?: string, worker?: string): Headers {

@@ -17,6 +17,7 @@ export interface ReviewFronts {
 }
 export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 export interface ReviewChannelPosition { text: string; description?: string }
+export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'Review results are finalized, and accepted findings still need fixes before another review in this channel.'};
 
 // Queue position is useful even without a source frame, but is not admission.
 // Keep an established hold visible instead of suggesting another request.
@@ -36,7 +37,7 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
       ['routed_findings_pending', {text:'Findings pending',description:'Incoming routed findings hold new reviews.'}],
       ['external_hosted_pending', {text:'Manual results pending',description:'Settle the captured manual Hosted results before starting another Hosted review.'}],
       ['review_evidence_pending', {text:'Results pending',description:'Review capture or adjudication is still pending before another review; accepted findings may also need fixes.'}],
-      ['review_fixes_pending', {text:'Fixes pending',description:'Review results are finalized, but accepted findings still need fixes before another review.'}],
+      ['review_fixes_pending', reviewFixesPending],
       ['predecessor_unfinished', {text:'Dependency pending',description:'This PR depends on unfinished predecessor work.'}],
     ]);
     return held.get(front.reason ?? '') ?? {text:'Held',description:'The stored admission check holds new reviews. Check review details before requesting another review.'};

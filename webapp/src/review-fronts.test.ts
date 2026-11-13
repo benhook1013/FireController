@@ -29,7 +29,7 @@ describe('current review position badges',()=>{
   it.each(['hosted', 'cli'] as const)('distinguishes finalized fixes from results pending for %s without inferring from the recent preview', channel => {
     const v = value();
     v.channels = [{ ...front(channel, 2), state: 'held', reason: 'review_fixes_pending' }];
-    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'Review results are finalized, but accepted findings still need fixes before another review.' });
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'Review results are finalized, and accepted findings still need fixes before another review in this channel.' });
     v.channels[0].reason = 'review_evidence_pending';
     expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toMatchObject({ text: 'Results pending', description: expect.stringContaining('capture or adjudication') });
     v.channels[0].reason = 'external_hosted_pending';

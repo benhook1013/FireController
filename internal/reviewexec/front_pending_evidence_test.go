@@ -3,6 +3,10 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -114,7 +118,7 @@ func TestFrontPendingFixesScopeAndMixedEvidence(t *testing.T) {
 	}{
 		{attemptProject, 2, "cli", true}, {otherAttemptProject, 2, "cli", false}, {attemptProject, 4, "cli", false}, {attemptProject, 2, "hosted", false},
 	} {
-		got, err := frontPendingFixes(t.Context(), f.store.DB(), scope.project, scope.pull, scope.channel)
+		got, err := pendingReviewFixes(t.Context(), f.store.DB(), scope.project, scope.pull, scope.channel)
 		if err != nil || got != scope.want {
 			t.Fatal(scope, got, err)
 		}
@@ -199,7 +203,7 @@ func TestFrontPendingFixesRequiresBooleanFinalization(t *testing.T) {
 			// Exercise the compact query's defensive handling independently of the
 			// dirty-proof fence covered above. Production source mutations stay dirty.
 			admissionSQL(t, f, `UPDATE review_comparison_proofs SET state='pending'`)
-			got, err := frontPendingFixes(t.Context(), f.store.DB(), attemptProject, 2, "cli")
+			got, err := pendingReviewFixes(t.Context(), f.store.DB(), attemptProject, 2, "cli")
 			if body == `{broken` {
 				if err == nil {
 					t.Fatal("malformed JSON silently classified")
@@ -211,4 +215,43 @@ func TestFrontPendingFixesRequiresBooleanFinalization(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRoundProgressKeepsFixStatusWhenFrontAdvances(t *testing.T) {
+	f, attempt, evidence, _ := coverageFixture(t, 1, false)
+	// No front frame is written, so the badge must come from the PR's own evidence.
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	read := func(display bool) RoundProgress {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, roundProgressPath(attemptProject)+"?pull_numbers=2,4&view=stages", nil)
+		r.Header.Set("Authorization", "Bearer "+f.reader)
+		if display {
+			r.Header.Set(reviewFixStatusHeader, "v1")
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		var response RoundProgress
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Items) != 2 {
+			t.Fatalf("progress: %d %s", w.Code, w.Body.String())
+		}
+		return response
+	}
+	check := func(want bool) {
+		t.Helper()
+		got := read(true)
+		if got.Items[0].Channels[1].FixesPending != want || got.Items[0].Channels[0].FixesPending ||
+			slices.ContainsFunc(got.Items[1].Channels, func(c RoundProgressChannel) bool { return c.FixesPending }) ||
+			read(false).Items[0].Channels[1].FixesPending {
+			t.Fatalf("expected fix status %v only for opted-in #2 CLI: %+v", want, got)
+		}
+	}
+	adjudicationComplete(t, f, attempt)
+	check(false)
+	adjudicationDecide(t, f, evidence, "progress-accept", 0, 0, "accepted")
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "progress-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, body, err, evidence, "finalized", 2)
+	check(true)
+	coverageFix(t, f, evidence, "progress-fix", 2, 0, "")
+	check(false)
 }

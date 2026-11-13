@@ -30,6 +30,7 @@ type RoundProgressChannel struct {
 	Tapered             bool              `json:"tapered"`
 	Pending             int64             `json:"pending"`
 	PendingExecution    *int64            `json:"pending_execution,omitempty"`
+	FixesPending        bool              `json:"fixes_pending,omitempty"`
 	PendingAdjudication *int64            `json:"pending_adjudication,omitempty"`
 }
 
@@ -68,19 +69,20 @@ func validRoundProgressNumbers(numbers []int64) bool {
 // ReadRoundProgress reads one bounded, authorized local snapshot. It does not
 // interpret imported history or collect source, captures, CI or provider state.
 func (e *Engine) ReadRoundProgress(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
-	return e.readRoundProgress(ctx, scope, numbers, false)
+	return e.readRoundProgress(ctx, scope, numbers, roundProgressView{})
 }
 
 // ReadRoundProgressStages splits the same occupancy into execution and
 // adjudication without changing reservation or completion accounting.
 func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, numbers []int64) (RoundProgress, error) {
-	return e.readRoundProgress(ctx, scope, numbers, true)
+	return e.readRoundProgress(ctx, scope, numbers, roundProgressView{stages: true})
 }
 
-func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, stages bool, activity ...bool) (RoundProgress, error) {
-	return e.readRoundProgressWithQueuePriority(ctx, scope, numbers, stages, false, activity...)
+type roundProgressView struct {
+	stages, queuePriority, activity, sourceRetry, fixes bool
 }
-func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope core.Scope, numbers []int64, stages, queuePriority bool, activity ...bool) (RoundProgress, error) {
+
+func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, view roundProgressView) (RoundProgress, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(scope.ProjectID) || !validRoundProgressNumbers(numbers) {
 		return RoundProgress{}, invalid()
 	}
@@ -107,9 +109,9 @@ func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope c
 					Maximum: control.Maximum, MaximumUnbounded: control.MaximumUnbounded, Taper: control.Taper, Used: control.Used,
 					Dry: control.Dry, Tapered: control.Tapered, Pending: execution + adjudication,
 				}
-				if stages {
+				if view.stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
-					progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, queuePriority)
+					progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, view.queuePriority)
 					if err != nil {
 						return err
 					}
@@ -120,14 +122,20 @@ func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope c
 						}
 					}
 				}
-				if len(activity) > 0 && activity[0] {
+				if view.activity {
 					progress.ActivityEvidence, err = readActivityEvidence(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err
 					}
 				}
-				if len(activity) > 1 && activity[1] {
+				if view.sourceRetry {
 					progress.SourceRetry, err = readChannelSourceRetry(ctx, tx, scope.ProjectID, number, channel)
+					if err != nil {
+						return err
+					}
+				}
+				if view.fixes {
+					progress.FixesPending, err = pendingReviewFixes(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err
 					}

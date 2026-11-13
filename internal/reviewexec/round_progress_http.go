@@ -8,6 +8,8 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+const reviewFixStatusHeader = "X-FC-Review-Fix-Status"
+
 func roundProgressNumbers(r *http.Request) ([]int64, error) {
 	if len(r.URL.RawQuery) > 4096 {
 		return nil, invalid()
@@ -50,6 +52,7 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 
 func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", operationWaitHeader)
+	w.Header().Add("Vary", reviewFixStatusHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -61,7 +64,12 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	progress, err := e.readRoundProgressWithQueuePriority(r.Context(), scope, numbers, query.Get("view") == "stages", r.Header.Get(operationWaitHeader) == "5", query.Get("include_activity_evidence") == "true", query.Get("include_source_retry") == "true")
+	stages := query.Get("view") == "stages"
+	progress, err := e.readRoundProgress(r.Context(), scope, numbers, roundProgressView{
+		stages: stages, queuePriority: r.Header.Get(operationWaitHeader) == "5",
+		activity: query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
+		fixes: stages && r.Header.Get(reviewFixStatusHeader) == "v1",
+	})
 	if err != nil {
 		core.WriteError(w, err)
 		return
