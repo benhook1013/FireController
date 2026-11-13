@@ -36,6 +36,7 @@ const (
 	FailureStageTimeout           FailureStage = "timeout"
 	FailureStageCommandFailed     FailureStage = "command_failed"
 	FailureStageResponseUnproven  FailureStage = "response_unproven"
+	FailureStageLookupFailed      FailureStage = "lookup_failed"
 )
 
 // Error contains only a stable public classification. It never includes a
@@ -181,25 +182,25 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if commandCtx.Err() != nil {
 		return Usage{}, processError("usage_unavailable", false)
 	}
-	result := r.run(commandCtx, workspace.Directory, []string{"usage", "--agent"}, maxUsageOutput, maxErrorOutput)
-	if result.err != nil || result.capture.ExitCode != 0 || !result.capture.Started {
-		if ctx.Err() != nil {
-			return Usage{}, processError("usage_unavailable", false)
+	usage, err := r.readUsage(commandCtx, workspace, expectedRepository, expectedOrganization)
+	var failure *Error
+	if errors.As(err, &failure) && failure.FailureStage == FailureStageLookupFailed {
+		// Both reads share the operator's original allowance-check deadline.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if commandCtx.Err() == nil {
+				usage, err = r.readUsage(commandCtx, workspace, expectedRepository, expectedOrganization)
+			}
+		case <-commandCtx.Done():
 		}
-		stage := FailureStageCommandFailed
-		if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
-			stage = FailureStageTimeout
-		} else if !result.capture.Started {
-			stage = FailureStageCommandNotStarted
-		}
-		return Usage{}, &Error{Code: "usage_unavailable", FailureStage: stage}
 	}
-	usage, err := parseUsage(result.capture.Stdout, expectedRepository, expectedOrganization)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Usage{}, processError("usage_unavailable", false)
 		}
-		return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageResponseUnproven}
+		return Usage{}, err
 	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
@@ -208,17 +209,38 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 		return Usage{}, processError("source_changed", false)
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if generation != r.usageGeneration || ctx.Err() != nil {
-		r.mu.Unlock()
 		return Usage{}, processError("usage_unavailable", false)
 	}
 	if usage.Remaining == 0 {
-		r.mu.Unlock()
 		return usage, processError("rate_limited", false)
 	}
 	r.permit = &usagePermit{workspace: keyFor(workspace), issued: r.now()}
-	r.mu.Unlock()
 	return usage, nil
+}
+
+func (r *Runner) readUsage(ctx context.Context, workspace reviewworkspace.Workspace, repository, organization string) (Usage, error) {
+	result := r.run(ctx, workspace.Directory, []string{"usage", "--agent"}, maxUsageOutput, maxErrorOutput)
+	if result.err == nil && result.capture.Started && (result.capture.ExitCode == 0 || result.capture.ExitCode == 1) {
+		usage, err := parseUsage(result.capture.Stdout, repository, organization)
+		if errors.Is(err, errUsageLookupFailed) {
+			return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageLookupFailed}
+		}
+		if result.capture.ExitCode == 0 {
+			if err != nil {
+				return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageResponseUnproven}
+			}
+			return usage, nil
+		}
+	}
+	stage := FailureStageCommandFailed
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		stage = FailureStageTimeout
+	} else if !result.capture.Started {
+		stage = FailureStageCommandNotStarted
+	}
+	return Usage{}, &Error{Code: "usage_unavailable", FailureStage: stage}
 }
 
 // Review consumes the exact fresh usage permit before starting one process.
@@ -368,6 +390,8 @@ func validRepository(s string) bool {
 	return true
 }
 
+var errUsageLookupFailed = errors.New("provider reported an unavailable usage lookup")
+
 func parseUsage(data []byte, expectedRepository, expectedOrganization string) (Usage, error) {
 	var zero Usage
 	trimmed := bytes.TrimSpace(data)
@@ -387,11 +411,21 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 	// The provider can mark the whole report partial when its separate credits
 	// lookup is unavailable. Dispatch only uses the two independently validated
 	// sections below: inactive billing and included quota for this repository.
-	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || (event.Status != "complete" && event.Status != "partial") || event.Organization != expectedOrganization {
+	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || event.Organization != expectedOrganization {
 		return zero, processError("usage_unavailable", false)
 	}
 	var billing map[string]json.RawMessage
-	if json.Unmarshal(root["billingPeriod"], &billing) != nil || billing == nil || hasAliases(billing, "state", "usageBillingStatus") {
+	if json.Unmarshal(root["billingPeriod"], &billing) != nil || billing == nil || hasAliases(billing, "state", "reason", "usageBillingStatus") {
+		return zero, processError("usage_unavailable", false)
+	}
+	if event.Status == "unavailable" || event.Status == "partial" {
+		var quota map[string]json.RawMessage
+		if json.Unmarshal(root["includedReviews"], &quota) == nil &&
+			(usageLookupFailed(quota) || usageLookupFailed(billing)) {
+			return zero, errUsageLookupFailed
+		}
+	}
+	if event.Status != "complete" && event.Status != "partial" {
 		return zero, processError("usage_unavailable", false)
 	}
 	var billingState, billingStatus string
@@ -412,6 +446,13 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		return zero, processError("usage_unavailable", false)
 	}
 	return u, nil
+}
+
+func usageLookupFailed(fields map[string]json.RawMessage) bool {
+	var state, reason string
+	return !hasAliases(fields, "state", "reason") &&
+		decodeExact(fields, "state", &state) == nil && state == "unavailable" &&
+		decodeExact(fields, "reason", &reason) == nil && reason == "lookup_failed"
 }
 
 func hasAliases(fields map[string]json.RawMessage, names ...string) bool {

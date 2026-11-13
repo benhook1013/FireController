@@ -234,6 +234,59 @@ func TestUsageParserAcceptsPartialReportWithProvenBillingAndQuota(t *testing.T) 
 	}
 }
 
+func TestUsageRetriesOnlyReportedProviderLookupFailure(t *testing.T) {
+	const unavailable = `{"type":"status","phase":"usage","status":"unavailable","organization":"owner","includedReviews":{"state":"unavailable","reason":"lookup_failed","remaining":null},"billingPeriod":{"state":"unavailable","reason":"lookup_failed","usageBillingStatus":null}}`
+	valid := usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)
+	for _, test := range []struct {
+		name, first, second string
+		code, calls         int
+		stage               FailureStage
+	}{
+		{"recovered", unavailable, valid, 1, 2, ""},
+		{"verified exhaustion after retry", unavailable, usageJSON("owner/repo", "owner", 0, 3, 1000, 3600000), 1, 2, "rate_limited"},
+		{"persistent", unavailable, unavailable, 0, 2, FailureStageLookupFailed},
+		{"wrong organization", strings.ReplaceAll(unavailable, `"owner"`, `"other"`), valid, 0, 1, FailureStageResponseUnproven},
+		{"other provider refusal", strings.ReplaceAll(unavailable, "lookup_failed", "forbidden"), valid, 0, 1, FailureStageResponseUnproven},
+		{"valid payload with failed command", valid, valid, 1, 1, FailureStageCommandFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newProcessFixture(t)
+			log := filepath.Join(f.dir, "usage-invocations")
+			r := f.runner(t, fmt.Sprintf(`if [ "$1" != usage ]; then printf 'review'; exit 0; fi
+if [ -f %q ]; then printf '%%s\n' "$*" >> %q; printf '%%s' %q; exit 0; fi
+printf '%%s\n' "$*" >> %q; printf '%%s' %q; exit %d`, log, log, test.second, log, test.first, test.code))
+			got, err := r.Usage(t.Context(), f.workspace, "owner/repo", "owner")
+			if test.stage == "" {
+				if err != nil || got.Remaining != 1 {
+					t.Fatal("second probe did not prove allowance", got, err)
+				}
+				if capture, err := r.Review(t.Context(), f.workspace); err != nil || !capture.Started {
+					t.Fatal("verified allowance did not grant a permit", err)
+				}
+			} else if test.stage == "rate_limited" {
+				if !errorCode(err, "rate_limited") || got.Limit != 3 || got.Remaining != 0 {
+					t.Fatal("second probe did not establish exhaustion", got, err)
+				}
+				if _, err = r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+					t.Fatal("verified exhaustion granted a permit", err)
+				}
+			} else {
+				var failure *Error
+				if !errors.As(err, &failure) || failure.FailureStage != test.stage || got != (Usage{}) {
+					t.Fatal("wrong safe allowance failure", got, err)
+				}
+				if _, err = r.Review(t.Context(), f.workspace); !errorCode(err, "permit_required") {
+					t.Fatal("failed lookup granted a permit", err)
+				}
+			}
+			raw, err := os.ReadFile(log)
+			if err != nil || string(raw) != strings.Repeat("usage --agent\n", test.calls) {
+				t.Fatal("unexpected allowance calls", string(raw), err)
+			}
+		})
+	}
+}
+
 func TestUsageParserRequiresAvailableInactiveBilling(t *testing.T) {
 	valid := usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)
 	const safeBilling = `"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}`

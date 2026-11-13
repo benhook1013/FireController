@@ -179,6 +179,8 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 					return preparation, reviewHold("allowance_command_failed")
 				case reviewprocess.FailureStageResponseUnproven:
 					return preparation, reviewHold("allowance_response_unproven")
+				case reviewprocess.FailureStageLookupFailed:
+					return preparation, reviewHold("allowance_provider_lookup_failed")
 				}
 			}
 		}

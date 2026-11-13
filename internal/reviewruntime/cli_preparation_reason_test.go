@@ -31,6 +31,7 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 		{"not started", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageCommandNotStarted}, "allowance_command_not_started"},
 		{"timeout", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageTimeout}, "allowance_timeout"},
 		{"command failed", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageCommandFailed}, "allowance_command_failed"},
+		{"provider lookup failed", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageLookupFailed}, "allowance_provider_lookup_failed"},
 		{"wrapped malformed", fmt.Errorf("private token: %w", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: reviewprocess.FailureStageResponseUnproven}), "allowance_response_unproven"},
 		{"unknown stage", &reviewprocess.Error{Code: "usage_unavailable", FailureStage: "private_token"}, "allowance_unavailable"},
 		{"unrelated code stage", &reviewprocess.Error{Code: "process_failed", FailureStage: reviewprocess.FailureStageTimeout}, "allowance_unavailable"},
