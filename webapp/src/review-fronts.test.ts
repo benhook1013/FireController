@@ -7,7 +7,8 @@ import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress'
 const snapshot='review_snapshot_a';
 const sha='a'.repeat(40),base='b'.repeat(40),time='2026-10-19T13:00:00Z';
 const front=(channel:'cli'|'hosted',number:number)=>({channel,state:'ready' as const,pull_number:number,head_sha:sha,base_sha:base,base_ref:'main',source_observed_at:time,checked_at:time});
-const value=():ReviewFronts=>({project_id:'project_one',configured:true,repository_id:123,configuration_revision:2,policy_revision:1,snapshot_id:snapshot,queue:[1,2,3,4],channels:[front('hosted',2),front('cli',3)]});
+const priority=(number:number)=>({pull_number:number,head_sha:sha,base_sha:base,base_ref:'main'});
+const value=():ReviewFronts=>({project_id:'project_one',configured:true,repository_id:123,configuration_revision:2,policy_revision:1,snapshot_id:snapshot,queue:[1,2,3,4],channels:[{...front('hosted',2),queued_priority:priority(2)},{...front('cli',3),queued_priority:priority(3)}]});
 const pull=(number:number):ReviewPullSummary=>({number,title:'Work',state:'open',head_sha:sha,base_sha:base,base_ref:'main',ci_state:'unknown',mergeability:'unknown',complete:false,run_count:0,run_counts:{hosted:0,cli:0,subagent:0,manual:0},attempt_count:0,recent_runs:[],latest_attempts:[]});
 const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({channel,configured:true,revision:1,epoch:1,closed,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:0});
 afterEach(()=>vi.unstubAllGlobals());
@@ -35,21 +36,23 @@ describe('current review position badges',()=>{
     v.channels[0].reason = 'external_hosted_pending';
     expect(reviewChannelPosition(pull(2), snapshot, channel, v)?.text).toBe('Manual results pending');
   });
-  it('keeps channel fronts independent and only marks established later positions queued',()=>{
-    expect(reviewQueueBadges(pull(1),snapshot,value())).toEqual([]);
-    expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(3),snapshot,value())[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(2),snapshot,value())[0]?.channels).toEqual(['hosted']);
-    expect(reviewQueueBadges(pull(3),snapshot,value())[0]?.channels).toEqual(['cli']);
-    expect(reviewQueueBadges(pull(4),snapshot,value())[0]?.text).toBe('Queued');
+  it('marks the earliest remaining PR even when the eligible fronts are later',()=>{
+    const v=value();
+    v.channels=[{...front('hosted',3),queued_priority:priority(2)},{...front('cli',4),queued_priority:priority(3)}];
+    expect(reviewQueueBadges(pull(1),snapshot,v)).toEqual([]);
+    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(reviewChannelPosition(pull(3),snapshot,'hosted',v)?.text).toBe('Up next');
+    v.channels[0].queued_priority=priority(4);
+    expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['cli']});
   });
-  it('rejects a contradictory loaded front for all later positions in that channel',()=>{
-    const v=value();v.channels=[front('hosted',2)];
-    const current=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)},pull(4)],v);
+  it('rejects a contradictory loaded priority and never promotes the eligible target as a fallback',()=>{
+    const v=value();v.channels=[{...front('hosted',3),queued_priority:priority(2)}];
+    const current=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)},pull(3),pull(4)],v);
+    expect(reviewQueueBadges(pull(3),snapshot,current)).toEqual([]);
     expect(reviewQueueBadges(pull(4),snapshot,current)).toEqual([]);
     expect(currentReviewFronts('review_snapshot_old',[pull(2)],v)).toBeUndefined();
-    // A blocker outside the loaded page is still an established prefix hold.
-    v.channels=[{...front('hosted',2),state:'held',reason:'review_evidence_pending'}];
     expect(reviewQueueBadges(pull(4),snapshot,currentReviewFronts(snapshot,[pull(4)],v))[0]?.text).toBe('Queued');
   });
   it('uses current controls for closure without converting missing controls into completion',()=>{
@@ -76,12 +79,12 @@ describe('current review position badges',()=>{
     expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
   });
   it('keeps service-derived local fronts when older merged rows are not loaded',()=>{
-    const v=value();v.channels=[{...front('hosted',3),state:'held',reason:'local_queue_position'},{...front('cli',2),state:'held',reason:'local_queue_position'}];
+    const v=value();v.channels=[{...front('hosted',3),state:'held',reason:'local_queue_position',queued_priority:priority(3)},{...front('cli',2),state:'held',reason:'local_queue_position',queued_priority:priority(2)}];
     const pulls=[pull(2),pull(3),pull(4)];
     const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
     const current=currentReviewFronts(snapshot,pulls,v);
     expect(reviewQueueBadges(pull(2),snapshot,current,progress[0])[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Queued');
     expect(reviewQueueBadges(pull(4),snapshot,current,progress[2])[0]?.text).toBe('Queued');
     expect(reviewChannelPosition(pull(2),snapshot,'cli',current)?.text).toBe('Queue position');
     const unavailable={...v,channels:v.channels.map(c=>({channel:c.channel,state:'unknown' as const,reason:'source_frame_unavailable'}))};

@@ -10,7 +10,7 @@ function queue(snapshot: string): ReviewQueue {
     items: [1, 2].map(number => ({ number, title: `PR ${number}`, state: 'open', ...source, ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] })) };
 }
 function fronts(snapshot: string, number = 1): ReviewFronts {
-  return { project_id: 'project_one', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: snapshot, queue: [1, 2], channels: [{ channel: 'hosted', state: 'ready', pull_number: number, ...source }] };
+  return { project_id: 'project_one', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: snapshot, queue: [1, 2], channels: [{ channel: 'hosted', state: 'ready', pull_number: number, ...source, queued_priority:{pull_number:number,...source} }] };
 }
 describe('coherent review presentation', () => {
   it.each(['queue first', 'fronts first'])('retains a verified front until both reads arrive: %s', order => {

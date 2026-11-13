@@ -80,14 +80,18 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   // snapshot that happens to be loading. Missing controls never mean closed.
   if (selected.length > 0 && selected.every(closed)) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
   if (!fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
-  const priority = fronts.channels.filter(channel => channel.queued_priority && matchesPriority(pull,channel.queued_priority) && !closed(channel.channel));
-  if (priority.length) return [{kind:'front',text:'Review front',channels:priority.map(channel=>channel.channel),description:`First remaining position under local queue and round controls. ${priority.filter(channel=>channel.state === 'unknown').map(channel=>`${names([channel.channel])} source verification unavailable${channel.reason ? ` (${channel.reason.replaceAll('_',' ')})` : ''}. `).join('')}Provider waiting and admission holds are separate; this is not permission to request a review.`}];
-  const matching = fronts.channels.filter(channel => (channel.state === 'ready' || channel.state === 'held' && ['reviews_paused','local_queue_position'].includes(channel.reason ?? '')) && channel.pull_number === pull.number && channel.head_sha === pull.head_sha && channel.base_sha === pull.base_sha && channel.base_ref === pull.base_ref && !closed(channel.channel));
-  if (matching.length) return [{kind:'front',text:'Review front',channels:matching.map(channel => channel.channel),description:'Next position under the stored queue and local round controls; requests still recheck source and admission.'}];
-  const position = fronts.queue.indexOf(pull.number);
-  const ahead = fronts.channels.filter(channel => {
-    const number = channel.queued_priority?.pull_number ?? ((channel.state === 'ready' || channel.state === 'held') ? channel.pull_number : undefined);
-    return !closed(channel.channel) && number !== undefined && fronts.queue.indexOf(number) >= 0 && fronts.queue.indexOf(number) < position;
+  const positions = new Map(fronts.queue.map((number, index) => [number, index]));
+  const priorities = fronts.channels.flatMap(channel => {
+    const priority = channel.queued_priority;
+    if (!priority) return [];
+    const index = positions.get(priority.pull_number);
+    return index === undefined ? [] : [{ channel: channel.channel, priority, index }];
   });
-  return ahead.length ? [{kind:'queued',text:'Queued',description:`Behind the established ${names(ahead.map(channel => channel.channel))} front; provider and admission checks remain separate.`}] : [];
+  const first = Math.min(...priorities.map(item => item.index));
+  const position = positions.get(pull.number)!;
+  if (position === first) {
+    const channels = priorities.filter(item => item.index === first && matchesPriority(pull, item.priority) && !closed(item.channel)).map(item => item.channel);
+    if (channels.length) return [{kind:'front',text:'Review front',channels,description:`First PR with ${names(channels)} review rounds remaining. Each channel shows its own readiness and execution status.`}];
+  }
+  return position > first ? [{kind:'queued',text:'Queued',description:'Behind the first PR with review rounds remaining.'}] : [];
 }

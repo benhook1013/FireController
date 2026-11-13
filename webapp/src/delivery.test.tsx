@@ -233,7 +233,7 @@ describe('stored merge head and review summaries', () => {
   });
   it('renders the verified channel status once in the same facts position as the queue', () => {
     const value = queue([pull(2, 'open')]);
-    const fronts: ReviewFronts = { project_id: 'project_one', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: value.snapshot_id, queue: [2], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: 'head', base_sha: 'base', base_ref: 'main' }] };
+    const fronts: ReviewFronts = { project_id: 'project_one', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: value.snapshot_id, queue: [2], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: 'head', base_sha: 'base', base_ref: 'main', queued_priority:{pull_number:2,head_sha:'head',base_sha:'base',base_ref:'main'} }] };
     const html = markup(<MergeHeadContent queue={value} home={home} fronts={fronts} />);
     expect(html).toContain('review-pull-facts"><span class="badge review-position-front"');
     expect(html.match(/>Review front<\/span>/gu)).toHaveLength(1);

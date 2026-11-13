@@ -25,7 +25,7 @@ function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Prese
   } finally { client.clear(); }
 }
 const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: false, configured: true, project_id: 'project', snapshot_id: 'snapshot', revision: 1, source: 'stored', observed_at: '2026-10-19T00:00:00Z', recorded_at: '2026-10-19T00:00:00Z' });
-const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' }] });
+const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main', queued_priority: {pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'} }] });
 
 describe('truthful stored review presentation', () => {
   it('uses the standard channel badge for process attention and keeps quota reasons noninteractive', () => {
@@ -101,16 +101,16 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('>Up next</span>');
   });
 
-  it('uses the same Review front label on independently selected channel rows', () => {
+  it('uses one Review front row when channel priorities differ', () => {
     const v=fronts();v.channels=[2,3].map((number,index)=>({channel:index===0?'hosted':'cli',state:'unknown',reason:'source_budget_exhausted',queued_priority:{pull_number:number,head_sha:pull(number).head_sha,base_sha:pull(number).base_sha,base_ref:'main'}}));
     const html=markup(<ReviewQueueView />,queue([pull(1,'merged'),pull(2),pull(3)]),undefined,{fronts:v});
     for(const number of [2,3]) {
       const row=html.match(new RegExp(`<li id="review-pr-${number}"[\\s\\S]*?<\\/li>`,'u'))![0];
-      expect(row.match(/>Review front<\/span>/gu)).toHaveLength(1);
+      expect(row).toContain(number===2 ? '>Review front</span>' : '>Queued</span>');
       expect(row).toContain('>Source unverified</span>');
       expect(row).not.toMatch(/Hosted review priority|CLI review priority|>Queue priority</u);
     }
-    expect(html.match(/>Review front<\/span>/gu)).toHaveLength(2);
+    expect(html.match(/>Review front<\/span>/gu)).toHaveLength(1);
     expect(html).not.toContain('>Up next</span>');
   });
   it('shows Draft without the redundant Queued badge', () => {
@@ -181,7 +181,7 @@ describe('truthful stored review presentation', () => {
     missing.queue=[2];
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:missing,progress:[progress]});
     expect(html).toContain('>Queue position</span>');
-    expect(html).toContain('Source and admission have not been verified.');
+    expect(html).toContain('Review dispatch held (local queue position)');
     expect(html).not.toContain('>Up next</span>');
   });
 	 it('retains the closed badge and striped-rail class while front data catches up',()=>{
