@@ -138,6 +138,24 @@ func TestPendingScanCursorConcurrentWorkers(t *testing.T) {
 	wg.Wait()
 }
 
+func TestPausedQueuedStatusDirectsControlWithoutMutatingWait(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		f := supervisorFixture(t)
+		r := f.enqueue(t, attemptProject, "paused-status", channel, 2, 1)
+		timerControl(t, f, r.ID, "pause", "pause-status")
+		scope := f.scope(t, attemptProject, f.writer, false)
+		status, err := f.e.ReadOperationStatus(t.Context(), scope, r.ID)
+		if err != nil || status.NextAction != "resume_or_cancel" || status.Wait == nil || !status.Wait.Paused || status.State != "queued" {
+			t.Fatal(status, err)
+		}
+		timerControl(t, f, r.ID, "resume", "resume-status")
+		status, err = f.e.ReadOperationStatus(t.Context(), scope, r.ID)
+		if err != nil || status.NextAction != "wait" {
+			t.Fatal(status, err)
+		}
+	}
+}
+
 func TestPendingScanDoesNotSkipReturnedBatch(t *testing.T) {
 	for _, probe := range []bool{false, true} {
 		t.Run(fmt.Sprint(probe), func(t *testing.T) {

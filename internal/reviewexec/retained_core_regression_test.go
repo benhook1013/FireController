@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -203,6 +204,25 @@ func TestRetainedCoreReplayFailureStillBlocksStartup(t *testing.T) {
 				t.Fatal("failed replay changed original attempt")
 			}
 		})
+	}
+}
+
+func TestRetainedCoreWriteOnlyCannotDiscoverOrControlPending(t *testing.T) {
+	f := sourceHTTPFixture(t)
+	request := f.enqueue(t, attemptProject, "pending", "cli", 2, 1)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/"
+	body := encoded(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	admissionSQL(t, f, `UPDATE grants SET can_read=0,can_write=1 WHERE credential_id='exec-writer-cred'`)
+	before := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "events")
+	zero := "wait=0"
+	for _, r := range []struct{ method, path, body string }{{"POST", path + "requests", body}, {"GET", path + "operations/" + request.ID, ""}, {"POST", path + "operations/" + request.ID + "/control", `{"expected_revision":1,"action":"cancel"}`}} {
+		w := sourceHTTPRequest(f, r.method, r.path, f.writer, "write-only", r.body, &zero)
+		if w.Code != 403 || strings.Contains(w.Body.String(), request.ID) || strings.Contains(w.Body.String(), "review_inflight") {
+			t.Fatal("write-only disclosed pending operation", w.Code, w.Body.String())
+		}
+	}
+	if before != snapshotTable(t, f, "review_operations")+snapshotTable(t, f, "events") {
+		t.Fatal("write-only changed journal")
 	}
 }
 

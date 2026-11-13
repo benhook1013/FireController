@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"github.com/benhook1013/FireController/internal/core"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -388,6 +390,31 @@ func TestCLIWaitConcurrentAccountClaimsStartOnlyOneAttempt(t *testing.T) {
 	assertCLIWaitNoCredit(t, f)
 }
 
+func TestOperationWaitReadsLaterExecutionSchemaWithoutLosingPause(t *testing.T) {
+	f := roundFixture(t)
+	receipt := f.enqueue(t, attemptProject, "paused-future-schema", "cli", 2, 1)
+	admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,NULL,'',1)`, receipt.ID)
+	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=1,override_file_limit=1 WHERE id=?`, receipt.ID)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	before, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+	if err != nil || before.Wait == nil || !before.Wait.Paused || !before.AllowOutOfOrder || !before.OverrideFileLimit {
+		t.Fatal("invalid paused operation baseline", before, err)
+	}
+	for _, version := range []string{"9", "10", "11", "12", "100"} {
+		t.Run(version, func(t *testing.T) {
+			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_execution'`, version)
+			after, err := f.e.ReadOperation(t.Context(), scope, receipt.ID)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("later execution schema changed retained operation", before, after, err)
+			}
+			status, err := f.e.ReadOperationStatus(t.Context(), scope, receipt.ID)
+			if err != nil || status.ID != receipt.ID || !reflect.DeepEqual(before.Wait, status.Wait) {
+				t.Fatal("compact status dropped retained pause", status, err)
+			}
+		})
+	}
+}
+
 func TestOperationReadsSchemaFlagBoundaries(t *testing.T) {
 	f := roundFixture(t)
 	receipt := f.enqueue(t, attemptProject, "schema-flag-boundaries", "cli", 2, 1)
@@ -428,8 +455,169 @@ func TestOperationReadsRejectMalformedExecutionSchema(t *testing.T) {
 	}
 }
 
+func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
+	for _, mode := range []string{"shared", "cancelled-origin", "expired", "other-account", "changed-binding", "changed-fingerprint"} {
+		t.Run(mode, func(t *testing.T) {
+			f, a, _, now := cliWaitFixture(t)
+			capability := "test-capability"
+			if mode == "other-account" {
+				capability = "other-account"
+			}
+			f.configure(t, otherAttemptProject, capability, 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			other := f.enqueue(t, otherAttemptProject, "diagnostic-cli", "cli", 2, 1)
+			if mode == "cancelled-origin" {
+				timerControl(t, f, a.OperationID, "cancel", "cancel-diagnostic-origin")
+			}
+			if mode == "expired" {
+				*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+			}
+			if mode == "changed-binding" {
+				f.configure(t, otherAttemptProject, "other-account", 1, false)
+			}
+			if mode == "changed-fingerprint" {
+				changed := f.e.capabilities[capability]
+				changed.Fingerprint = strings.Repeat("f", 64)
+				f.e.capabilities[capability] = changed
+			}
+			mux := http.NewServeMux()
+			f.e.Register(mux)
+			tables := []string{"review_operations", "review_execution_attempts", "review_operation_waits", "review_cli_preflight", "review_execution_reservations", "events", "receipts"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			for _, suffix := range []string{"", "/status"} {
+				for _, version := range []string{"", "1", "2", "3"} {
+					req := httptest.NewRequest("GET", "/api/v1/projects/"+otherAttemptProject+"/reviews/operations/"+other.ID+suffix, nil)
+					req.Header.Set("Authorization", "Bearer "+f.other)
+					req.Header.Set(operationWaitHeader, version)
+					w := httptest.NewRecorder()
+					mux.ServeHTTP(w, req)
+					want := ""
+					if mode == "shared" || mode == "cancelled-origin" {
+						want = "cli_quota_wait"
+					}
+					if w.Code != http.StatusOK || w.Header().Get("X-FC-Review-Queued") != want {
+						t.Fatalf("%s schema %q: %d %v %s", suffix, version, w.Code, w.Header(), w.Body.String())
+					}
+					var body map[string]any
+					if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if body["state"] != "queued" || body["wait"] != nil || body["allowance"] != nil {
+						t.Fatal("diagnostic fabricated operation facts", body)
+					}
+					req = httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+other.ID+suffix, nil)
+					req.Header.Set("Authorization", "Bearer "+f.writer)
+					w = httptest.NewRecorder()
+					mux.ServeHTTP(w, req)
+					if w.Code == http.StatusOK || w.Header().Get("X-FC-Review-Queued") != "" {
+						t.Fatal("cross-project diagnostic leaked", w.Code, w.Header())
+					}
+				}
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("read changed state", table)
+				}
+			}
+		})
+	}
+}
+
 // Retained audit history can be invalid without remaining a live account timer.
 // The same sampled instant governs candidate selection and the admission guard.
+func TestCLIAccountRetryDeadlineFutureHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		offset                time.Duration
+		corrupt, otherAccount bool
+	}{
+		{"before", -time.Nanosecond, false, false},
+		{"exact", 0, false, false},
+		{"after", time.Nanosecond, false, false},
+		{"corrupt-before", -time.Nanosecond, true, false},
+		{"corrupt-exact", 0, true, false},
+		{"corrupt-after", time.Nanosecond, true, false},
+		{"other-account-corrupt-before", -time.Nanosecond, true, true},
+		{"other-account-corrupt-after", time.Nanosecond, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, a, _, now := cliWaitFixture(t)
+			capability := "test-capability"
+			if tc.otherAccount {
+				capability = "other-account"
+			}
+			f.configure(t, otherAttemptProject, capability, 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			due := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+			other := f.enqueue(t, otherAttemptProject, "future-history-cli", "cli", 2, 1)
+			timerControl(t, f, a.OperationID, "cancel", "cancel-future-history")
+			if tc.corrupt {
+				admissionSQL(t, f, `UPDATE review_cli_preflight SET body_json='{}' WHERE attempt_id=?`, a.ID)
+			}
+			*now = due.Add(tc.offset)
+			live := tc.offset < 0 && !tc.otherAccount
+			invalid := live && tc.corrupt
+			tables := []string{"review_operations", "review_execution_attempts", "review_execution_transitions", "review_operation_waits", "review_cli_preflight", "review_execution_reservations", "events", "receipts"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			got, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities[capability], *now)
+			if invalid {
+				if !isWaitUnavailable(err) || !got.IsZero() {
+					t.Error("invalid live history was accepted", got, err)
+				}
+			} else if err != nil || live && !got.Equal(due) || !live && !got.IsZero() {
+				t.Error("deadline does not describe only future account history", got, due, err)
+			}
+			pending, err := f.e.pending(t.Context())
+			if invalid {
+				if err != nil || len(pending) != 0 {
+					t.Error("pending did not isolate invalid live history", pending, err)
+				}
+			} else if err != nil || live && len(pending) != 0 || !live && (len(pending) != 1 || pending[0].ID != other.ID) {
+				t.Error("pending used expired or unrelated account history", pending, err)
+			}
+			scope := f.scope(t, otherAttemptProject, f.other, false)
+			if got := f.e.sharedCLIQuotaWait(t.Context(), scope, other.ID); got != (live && !invalid) {
+				t.Error("shared quota diagnostic differs from live validated deadline", got)
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("lookup changed retained history", table)
+				}
+			}
+			claim, err := f.e.StartAttempt(t.Context(), otherAttemptProject, other.ID)
+			if invalid {
+				if !isWaitUnavailable(err) || claim.ID != "" {
+					t.Error("claim accepted invalid live history", claim, err)
+				}
+			} else if err != nil || live && claim.ID != "" || !live && claim.ID == "" {
+				t.Error("claim used expired or unrelated account history", claim, err)
+			}
+			for _, table := range []string{"review_operation_waits", "review_cli_preflight"} {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("admission changed retained cooldown history", table)
+				}
+			}
+			if tc.corrupt {
+				if _, err := readOperationBase(t.Context(), f.store.DB(), attemptProject, a.OperationID); !isWaitUnavailable(err) {
+					t.Fatal("historical read stopped validating the corrupt audit record", err)
+				}
+			} else {
+				assertCLIWaitSnapshot(t, f)
+			}
+			assertCLIWaitNoCredit(t, f)
+		})
+	}
+}
 
 func TestCLIAccountRetryDeadlineLatestWithinSameMillisecond(t *testing.T) {
 	f, a, _, now := cliWaitFixture(t)
@@ -739,6 +927,39 @@ func TestWaitIsolationIsTypedAndBounded(t *testing.T) {
 	o.Channel = "invalid"
 	if e.skipUnavailableWait(t.Context(), o, waitUnavailable()) {
 		t.Fatal("invalid channel suppressed")
+	}
+}
+
+func TestPausedExpiredCLIWaitDoesNotReportQuotaHeader(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	timerControl(t, f, a.OperationID, "pause", "pause-quota-diagnostic")
+	due := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	for _, live := range []bool{true, false} {
+		*now = due
+		if live {
+			*now = due.Add(-time.Nanosecond)
+		}
+		for _, suffix := range []string{"", "/status"} {
+			for _, version := range []string{"", "1", "2", "3"} {
+				req := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID+suffix, nil)
+				req.Header.Set("Authorization", "Bearer "+f.writer)
+				req.Header.Set(operationWaitHeader, version)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+				want := ""
+				if live {
+					want = "cli_quota_wait"
+				}
+				if w.Code != http.StatusOK || w.Header().Get("X-FC-Review-Queued") != want {
+					t.Fatal(live, suffix, version, w.Code, w.Header(), w.Body.String())
+				}
+			}
+		}
 	}
 }
 

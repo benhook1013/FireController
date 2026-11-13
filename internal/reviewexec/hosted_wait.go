@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -394,4 +395,32 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		}
 	}
 	return result, err
+}
+
+func (e *Engine) controlOperationHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, err := e.store.Scope(r, "write")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var input OperationControl
+	if err := core.ReadJSON(w, r, &input); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	key, err := core.IdempotencyKey(r, "idempotency_key_required")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	value, err := e.ControlOperation(r.Context(), scope, key, r.PathValue("operation_id"), input)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, value)
 }

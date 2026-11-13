@@ -2,7 +2,7 @@
 
 This slice follows native CI observation and keeps an authorized review request
 alive when its provider has no available allowance. It does not discover new
-reviews, increase grants, adjudicate findings, or merge pull requests. This stage integrates Hosted cooldown retention and provider-free recovery above the retained-state and CLI behavior foundation. Public progress/control endpoints and bound client, CLI and MCP controls follow in dependent stages.
+reviews, increase grants, adjudicate findings, or merge pull requests. This slice delivers the server HTTP contract; bound client, CLI and MCP controls and wait diagnostics follow in a separate dependent slice.
 
 ## One request, multiple unused preparations
 
@@ -32,6 +32,35 @@ provider review or reopen terminal history. Explicit CLI requests made while a
 PR is draft remain queued until a bounded fresh source check observes readiness. A failed repository or pull probe leaves the request queued and emits a diagnostic with the operation ID, failed read and safe provider error code, at most once per operation per 30-second probe interval; provider bodies and credentials are excluded. An unknown Draft field uses the same bounded diagnostic with reason `draft_state_unknown`, without treating the PR as ready.
 
 Only one of the two supervisor workers probes retained Draft waits. Its scheduling pass selects at most one eligible probe and advances its rotation cursor at selection, so a local validation failure before probe claim cannot starve later waits; the other worker excludes Draft waits before applying the candidate limit, so slow probes do not hide ready work in other projects. Both workers retain the same authority, queue-priority, account and reservation guards.
+
+## Reading state
+
+Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`; round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape; version 2
+also understands CLI baselines. Version 3 adds retained provider allowance
+estimates. A full-capacity estimate is not the next retry time or a guarantee
+that a review can start. Older clients continue receiving their existing shapes. Version 3 exposes `wait.cli_allowance` for a queued CLI baseline, held-operation `allowance` facts, and the compact held Hosted `retry_not_before` deadline. The existing bound clients retain their earlier response contract; version 3 client support follows in the dependent slice. Legacy responses without these optional facts remain readable; absence does not imply zero allowance or a provider reset.
+
+The public control endpoint is
+`POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control`.
+The body contains `expected_revision` and `action` (`pause`, `resume`, `cancel`).
+Any credential with write permission in this project may control an undispatched queued request, including another worker's request, while retaining its own authenticated identity. The idempotency header is required.
+
+- `review_conflict` refuses a stale `expected_revision` or an operation whose revision has reached the maximum `int64` value. Read the current operation before deciding whether a new action is appropriate; rereading cannot resolve revision exhaustion.
+- `review_operation_started` refuses preparing, posting, active, uncertain or terminal operations; the control cannot stop issued provider work.
+- `idempotency_key_required` refuses a missing or invalid `Idempotency-Key`; supply a valid explicit key before submitting the intended request.
+- `idempotency_conflict` refuses reuse of the same key for a different action or request.
+- `forbidden` refuses a credential without write permission in this project; use an authorized project-write credential before retrying the intended action.
+- `not_found` refuses an operation that is not visible in this project; verify the selected project and operation ID. Do not retry with another key or guess another project's identity.
+- `validation_failed` refuses a malformed operation ID or request body, an `expected_revision` below 1, or an action other than `pause`, `resume` or `cancel`; correct the invalid fields before submitting the intended control.
+- `storage_unavailable` refuses a control when retained wait data is damaged or unavailable; retain the original request and idempotency key and inspect the retained state before attempting recovery. Do not submit a new key to bypass the failure.
+
+Request submission can separately fail with `review_inflight`. It refuses a new-key request while another operation for the same project, PR and channel is queued, preparing, posting, active or uncertain. Its `operation_id` detail names the existing request. Read and retain that operation; the queued-only HTTP control may cancel it when cancellation is intended, while issued work must finish or follow its original recovery path. Do not submit another key to bypass the pending request.
+
+After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
+
+Held-operation `allowance` facts and the compact held Hosted `retry_not_before` field require `X-FC-Operation-Wait: 3`, including terminal replies to request submission. Missing, older or unsupported versions omit these fields; engine-level retained facts and exact-key recovery remain unchanged.
+
+Reads distinguish missing or malformed required waiting dependencies from operational lookup failures. Required dependency damage remains `storage_unavailable`; cancellation, deadlines and transient storage errors retain their original classification. An absent optional held allowance observation remains absent rather than becoming a broken wait.
 
 ## Recovery and scope
 
