@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func TestCurrentConfigurationCorruptionIsCandidateLocal(t *testing.T) {
@@ -374,5 +375,62 @@ func TestSettlementRawPendingUsesCursorIndex(t *testing.T) {
 	}
 	if !indexed {
 		t.Fatal("raw cursor index unused")
+	}
+}
+
+func TestSourceRefreshCompletionConfigurationCorruptionIsLocal(t *testing.T) {
+	f := supervisorFixture(t)
+	r := refreshEnqueue(t, f, "completion-corruption", refreshRequest())
+	entered, release := make(chan struct{}), make(chan struct{})
+	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return reviewprovider.Repository{}, ctx.Err()
+		}
+		return reviewprovider.Repository{ID: id, FullName: "owner/repo"}, nil
+	}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.e.refreshNextScheduled(t.Context(), map[string]TargetReader{"test-capability": reader}, newSourceRefreshSchedule())
+		done <- err
+	}()
+	<-entered
+	admissionSQL(t, f, `UPDATE review_execution_config SET body_json='broken' WHERE project_id=?`, attemptProject)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal("completion stopped shared worker", err)
+	}
+	got := refreshRead(t, f, r.ID)
+	if got.State != "held" || got.Reason != "source_configuration_changed" {
+		t.Fatal(got)
+	}
+}
+func TestPreparationRecoveryBadFlagsRemainCandidateLocal(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "bad-flags", "hosted", 2, 1))
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "other-flags", "cli", 2, 1))
+	admissionSQL(t, f, `PRAGMA ignore_check_constraints=ON`)
+	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=2 WHERE id=?`, a.OperationID)
+	admissionSQL(t, f, `PRAGMA ignore_check_constraints=OFF`)
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	if err != nil || !skipped[a.ID] {
+		t.Fatal(skipped, err)
+	}
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAttempt(t.Context(), f.store.DB(), other.ProjectID, other.ID)
+	if err != nil || got.State != "cancelled" {
+		t.Fatal(got, err)
+	}
+	got, err = readAttempt(t.Context(), f.store.DB(), a.ProjectID, a.ID)
+	if err != nil || got.State != "preparing" {
+		t.Fatal(got, err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
+		t.Fatal("damaged reservation lost")
 	}
 }

@@ -834,3 +834,46 @@ func TestCLIExhaustionRecoveryFailureIsAccountLocal(t *testing.T) {
 		t.Fatal("unrelated account did not recover", a, err)
 	}
 }
+
+func TestCrossProjectBaselineCannotPoisonOtherAccountCooldown(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "cross-baseline", "cli", 2, 1))
+	admissionSQL(t, f, `UPDATE review_operation_waits SET baseline_attempt_id=? WHERE operation_id=?`, other.ID, a.OperationID)
+	due, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities["other-account"], *now)
+	if err != nil || !due.IsZero() {
+		t.Fatal("foreign baseline blocked unrelated account", due, err)
+	}
+	_, err = cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities["test-capability"], *now)
+	if !isWaitUnavailable(err) {
+		t.Fatal("original account lost damaged-history guard", err)
+	}
+}
+
+func TestMissingExpiredWaitDoesNotStopOtherCandidates(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID)).Add(time.Minute)
+	admissionSQL(t, f, `DELETE FROM review_operation_waits WHERE operation_id=?`, a.OperationID)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	healthy := f.enqueue(t, otherAttemptProject, "missing-wait-independent", "cli", 2, 1)
+	seen := []string{}
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		seen = append(seen, o.ID)
+		return Preparation{}, sourceHold("review_evidence_pending")
+	}}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || seen[0] != healthy.ID {
+		t.Fatal("independent candidate blocked", seen)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE operation_id='`+a.OperationID+`'`) != 1 {
+		t.Fatal("missing baseline created another attempt")
+	}
+}

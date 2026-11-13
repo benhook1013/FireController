@@ -615,6 +615,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 				checked.Observation = &observation
 			}
 			_, reason, err := e.refreshBinding(ctx, tx, checked)
+			if isStoredUnavailable(err, storedConfigurationHistory) {
+				reason, err = "source_configuration_changed", nil
+			}
 			if err != nil {
 				return err
 			}

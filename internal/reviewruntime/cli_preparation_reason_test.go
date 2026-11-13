@@ -197,15 +197,15 @@ func TestCLIExhaustionDirectoriesSyncsExistingAndCreatedParents(t *testing.T) {
 	root := filepath.Join(base, "recovery", "exhaustions")
 	var synced []string
 	syncParent := func(path string) error { synced = append(synced, path); return syncCaptureDirectory(path) }
-	if err := prepareCLIExhaustionDirectories(root, syncParent); err != nil {
+	if err := prepareCLIExhaustionDirectories(root, base, syncParent); err != nil {
 		t.Fatal(err)
 	}
-	if len(synced) < 3 || synced[len(synced)-3] != filepath.Dir(base) || synced[len(synced)-2] != base || synced[len(synced)-1] != filepath.Join(base, "recovery") {
+	if len(synced) != 2 || synced[len(synced)-2] != base || synced[len(synced)-1] != filepath.Join(base, "recovery") {
 		t.Fatalf("directory names were not synced in ancestor order: %v", synced)
 	}
 	first := append([]string(nil), synced...)
 	synced = nil
-	if err := prepareCLIExhaustionDirectories(root, syncParent); err != nil {
+	if err := prepareCLIExhaustionDirectories(root, base, syncParent); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(synced, first) {
@@ -217,10 +217,11 @@ func TestCLIExhaustionDirectoriesSyncsExistingAndCreatedParents(t *testing.T) {
 }
 
 func TestCLIExhaustionDirectoriesDoesNotHideParentSyncFailure(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "recovery", "exhaustions")
+	base := t.TempDir()
+	root := filepath.Join(base, "recovery", "exhaustions")
 	failure := errors.New("parent sync unavailable")
 	calls := 0
-	err := prepareCLIExhaustionDirectories(root, func(string) error { calls++; return failure })
+	err := prepareCLIExhaustionDirectories(root, base, func(string) error { calls++; return failure })
 	if !errors.Is(err, failure) || calls != 1 {
 		t.Fatalf("sync error lost: %v, calls %d", err, calls)
 	}
@@ -230,7 +231,7 @@ func TestCLIExhaustionDirectoriesRetriesUncertainDirectoryName(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "recovery", "exhaustions")
 	failure := errors.New("parent sync unavailable")
-	err := prepareCLIExhaustionDirectories(root, func(path string) error {
+	err := prepareCLIExhaustionDirectories(root, base, func(path string) error {
 		if path == base {
 			return failure
 		}
@@ -246,7 +247,7 @@ func TestCLIExhaustionDirectoriesRetriesUncertainDirectoryName(t *testing.T) {
 		t.Fatalf("continued beyond uncertain creation: %v", err)
 	}
 	reconciled := false
-	if err := prepareCLIExhaustionDirectories(root, func(path string) error {
+	if err := prepareCLIExhaustionDirectories(root, base, func(path string) error {
 		if path == base {
 			reconciled = true
 		}
@@ -259,5 +260,82 @@ func TestCLIExhaustionDirectoriesRetriesUncertainDirectoryName(t *testing.T) {
 	}
 	if !reconciled {
 		t.Fatal("retry skipped existing directory's parent sync")
+	}
+}
+
+func TestCLIExhaustionStoreResolvesAncestorBeforeLazyDirectories(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	store, err := NewCLIExhaustionStore(filepath.Join(link, "recovery", "exhaustions"), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(real, "recovery", "exhaustions")
+	if store.root != want {
+		t.Fatalf("unresolved lazy path: %s, want %s", store.root, want)
+	}
+	if _, err := os.Stat(want); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("constructor created storage: %v", err)
+	}
+	if err := prepareCLIExhaustionDirectories(store.root, store.boundary, syncCaptureDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := captureDirectories(store.root, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCLIExhaustionManagedBoundarySurvivesReconstruction(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "recovery", "exhaustions")
+	injected := errors.New("uncertain parent sync")
+	if err := prepareCLIExhaustionDirectories(root, base, func(path string) error { return injected }); !errors.Is(err, injected) {
+		t.Fatal(err)
+	}
+	// A restart keeps the configured custody boundary rather than trusting the
+	// deepest directory that happens to exist after the interrupted creation.
+	store, err := NewCLIExhaustionStore(root, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var synced []string
+	if err := prepareCLIExhaustionDirectories(store.root, store.boundary, func(path string) error {
+		if path != base && path != filepath.Join(base, "recovery") {
+			t.Fatal("sync escaped managed boundary", path)
+		}
+		synced = append(synced, path)
+		return syncCaptureDirectory(path)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(synced, []string{base, filepath.Join(base, "recovery")}) {
+		t.Fatal("restart skipped uncertain parent", synced)
+	}
+}
+
+func TestCLIExhaustionExecuteOnlyOutsideManagedBoundary(t *testing.T) {
+	parent := t.TempDir()
+	base := filepath.Join(parent, "data")
+	if err := os.Mkdir(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0111); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(parent, 0700)
+	root := filepath.Join(base, "exhaustions")
+	store, err := NewCLIExhaustionStore(root, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareCLIExhaustionDirectories(store.root, store.boundary, syncCaptureDirectory); err != nil {
+		t.Fatal("unrelated execute-only ancestor blocked recovery", err)
 	}
 }
