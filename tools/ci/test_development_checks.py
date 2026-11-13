@@ -70,9 +70,7 @@ class DevelopmentChecksTests(unittest.TestCase):
                         dict(LINUX_RESULT="failure"), dict(NATIVE_RESULT="cancelled")]:
             self.assertFalse(accepted(**(selected | changes)))
 
-    def test_validation_rejects_each_unsuccessful_prerequisite_with_gate_enabled_or_disabled(self):
-        # Execute the workflow's actual validation shell. Its behavior must not
-        # depend on the workflow concurrency group's selected activation mode.
+    def test_validation_rejects_each_unsuccessful_prerequisite(self):
         workflow = (SCRIPT.parents[2] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("\n  validate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertIn("    if: ${{ always() }}", gate)
@@ -81,19 +79,18 @@ class DevelopmentChecksTests(unittest.TestCase):
         script = gate.split("        run: |\n", 1)[1]
         results = dict(CHANGES_RESULT="success", STATIC_RESULT="success", QUALIFICATION_RESULT="success",
                        CONTAINER_RESULT="success", LINUX_RESULT="success", NATIVE_RESULT="success")
-        for setting in ("", "false", "true"):
-            for website in (False, True):
-                env = results | dict(WEBSITE_ONLY=str(website).lower(), EVENT_NAME="push",
-                                     SOURCE_REF="refs/heads/develop", FIRECONTROLLER_CI_INTERLEAVE=setting)
-                if website:
-                    env |= dict(LINUX_RESULT="skipped", NATIVE_RESULT="skipped")
-                self.assertEqual(subprocess.run(["bash", "-e", "-c", script], env=env).returncode, 0)
-                for family in results:
-                    for status in ("failure", "cancelled", "skipped", "", "unknown", "success"):
-                        expected = env[family]
-                        with self.subTest(setting=setting, website=website, family=family, status=status):
-                            result = subprocess.run(["bash", "-e", "-c", script], env=env | {family: status})
-                            self.assertEqual(result.returncode == 0, status == expected)
+        for website in (False, True):
+            env = results | dict(WEBSITE_ONLY=str(website).lower(), EVENT_NAME="push",
+                                 SOURCE_REF="refs/heads/develop")
+            if website:
+                env |= dict(LINUX_RESULT="skipped", NATIVE_RESULT="skipped")
+            self.assertEqual(subprocess.run(["bash", "-e", "-c", script], env=env).returncode, 0)
+            for family in results:
+                for status in ("failure", "cancelled", "skipped", "", "unknown", "success"):
+                    expected = env[family]
+                    with self.subTest(website=website, family=family, status=status):
+                        result = subprocess.run(["bash", "-e", "-c", script], env=env | {family: status})
+                        self.assertEqual(result.returncode == 0, status == expected)
 
 
 if __name__ == "__main__":

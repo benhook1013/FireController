@@ -7,18 +7,18 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/ci.yml'
-ACTIVATION_GATE = """concurrency:
-  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
-  queue: max
-  cancel-in-progress: false
+WORKFLOW_SUPERSESSION = """concurrency:
+  group: firecontroller-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 """
 
 
 def inventory(text):
     """Read the deliberately explicit workflow shape; reject unmapped jobs."""
     header, body = text.split('\njobs:\n', 1)
-    assert ACTIVATION_GATE in header
-    assert text.count('vars.') == 1
+    assert WORKFLOW_SUPERSESSION in header
+    assert len(re.findall(r'^  group:', header, re.M)) == 1
+    assert not re.search(r'^  queue:', header, re.M)
     assert len(re.findall(r'^concurrency:', header, re.M)) == 1
     assert re.search(r'^      - develop$', header, re.M)
     assert re.search(r'^      - main$', header, re.M)
@@ -26,7 +26,7 @@ def inventory(text):
     blocks = re.split(r'^  ([\w-]+):\n', body, flags=re.M)
     jobs = dict(zip(blocks[1::2], blocks[2::2]))
     assert set(jobs) == {'changes', 'static', 'linux', 'qualification', 'container', 'native-smoke', 'validate', 'publish'}
-    assert len(re.findall(r'^\s*queue:', text, re.M)) == 9
+    assert len(re.findall(r'^\s*queue:', text, re.M)) == 8
     assert len(re.findall(r'^\s*concurrency:', text, re.M)) == 9
     expected_names = {
         'changes': 'Select development checks', 'container': 'Container runtime',
@@ -146,10 +146,9 @@ class Scheduler:
 class DevelopmentRun:
     """Full/website DAG, with the real selector and gate prerequisites.
 
-    WorkflowAdmission chooses which instances may enter the shared lanes.
     This is a success-only DAG, not hosted timing or operational readiness.
     Failure/cancellation gate behavior is exercised by the real shell tests;
-    rejected-job completion and workflow-group release are not modeled here.
+    lane rejection and asynchronous cancellation are outside this DAG model.
     """
     def __init__(self, scheduler, jobs, run, website=False, publish=True, slow=None):
         self.scheduler, self.run = scheduler, run
@@ -183,61 +182,17 @@ class DevelopmentRun:
         self.advance()
 
 
-def workflow_group(setting, run_id):
-    """Model the pinned GitHub expression, whose string equality ignores case.
-
-    A missing repository variable evaluates to an empty string. Do not strip
-    whitespace or use Python truthiness: both would broaden activation.
-    """
-    enabled = isinstance(setting, str) and setting.lower() == 'true'
-    return f'firecontroller-ci-run-{run_id}' if enabled else 'firecontroller-ci'
-
-
 class WorkflowAdmission:
-    """Workflow groups are selected once; a setting change does not migrate them.
+    """Model GitHub's captured workflow group and latest-arrival replacement."""
+    def __init__(self):
+        self.active = {}
+        self.cancelled = []
 
-    Compatibility workflows always use the legacy group. Activated and still
-    serialized lane-capable workflows share Scheduler's twenty job groups.
-    The workflow queue and each job queue independently permit 100 waiters.
-    """
-    def __init__(self, scheduler, jobs):
-        self.scheduler, self.jobs = scheduler, jobs
-        self.groups, self.pending, self.runs, self.selected = {}, {}, {}, {}
-        self.rejected = []
-
-    def offer(self, run_id, setting='', compatibility=False, **options):
-        assert run_id not in self.selected
-        group = 'firecontroller-ci' if compatibility else workflow_group(setting, run_id)
-        self.selected[run_id] = group
-        request = (run_id, options)
-        if group not in self.groups:
-            self.start(group, request)
-        elif len(self.pending.setdefault(group, deque())) < 100:
-            self.pending[group].append(request)
-        else:
-            self.rejected.append(run_id)
-
-    def start(self, group, request):
-        run_id, options = request
-        self.groups[group] = run_id
-        self.runs[run_id] = DevelopmentRun(self.scheduler, self.jobs, run_id, **options)
-
-    def step(self):
-        for job in self.scheduler.step():
-            run = self.runs[job.run]
-            run.complete(job)
-            expected = (6 if run.website else 31) - (not run.publish)
-            if len(run.done) == expected:
-                group = self.selected[run.run]
-                del self.groups[group]
-                if self.pending.get(group):
-                    self.start(group, self.pending[group].popleft())
-
-    def finish(self):
-        while self.scheduler.active:
-            self.step()
-        assert not self.groups
-        assert not any(self.pending.values())
+    def submit(self, run, event, ref):
+        group = f'firecontroller-ci-{event}-{ref}'.lower()
+        if group in self.active:
+            self.cancelled.append(self.active[group])
+        self.active[group] = run
 
 
 class DevelopmentSchedulingTests(unittest.TestCase):
@@ -269,8 +224,7 @@ class DevelopmentSchedulingTests(unittest.TestCase):
 
     def test_exact_development_inventory_and_preserved_conditions(self):
         self.assertEqual(len(self.jobs), 31)
-        self.assertIn(ACTIVATION_GATE, self.text)
-        self.assertEqual(self.text.count('vars.'), 1)
+        self.assertIn(WORKFLOW_SUPERSESSION, self.text)
         self.assertEqual(self.text.count("if: needs.changes.outputs.website_only != 'true'"), 2)
         self.assertEqual(self.text.count('    needs: [changes]\n'), 2)
         self.assertIn('needs: [changes, static, linux, qualification, container, native-smoke]', self.text)
@@ -285,79 +239,38 @@ class DevelopmentSchedulingTests(unittest.TestCase):
                         self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
                         self.text.replace('shard: backup-0\n            slot: 0', 'shard: backup-0\n            slot: 19', 1),
                         self.text.replace('queue: max', 'queue: single', 1),
-                        self.text.replace(ACTIVATION_GATE, 'concurrency:\n  group: ${{ github.run_id }}\n  queue: max\n  cancel-in-progress: false\n'),
-                        self.text.replace("== 'true'", "!= 'false'", 1),
-                        self.text.replace('cancel-in-progress: false', 'cancel-in-progress: true', 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.ref', 'github.run_id'), 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.event_name', 'github.run_id'), 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
+                        self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
                         self.text + '\n  unnoticed:\n    runs-on: ubuntu-latest\n',
                         self.text.replace('    name: Publish tested container', '    name: changed'),
                         self.text.replace('        shard:', '        extra: [a, b]\n        shard:', 1)]:
             with self.assertRaises(AssertionError):
                 inventory(changed)
 
-    def test_gate_defaults_closed_and_uses_distinct_run_ids_only_when_enabled(self):
-        for setting in ('', 'false', 'FALSE', '0', '1', 'yes', ' true', 'true ', 'null', None):
-            with self.subTest(setting=setting):
-                self.assertEqual(workflow_group(setting, 42), 'firecontroller-ci')
-        for setting in ('true', 'True', 'TRUE'):
-            self.assertEqual(workflow_group(setting, 42), 'firecontroller-ci-run-42')
-            self.assertNotEqual(workflow_group(setting, 42), workflow_group(setting, 43))
+    def test_latest_arrival_supersedes_only_the_same_pr_or_push_ref(self):
+        admission = WorkflowAdmission()
+        requests = [
+            ('pr-45-old', 'pull_request', 'refs/pull/45/merge'),
+            ('pr-89', 'pull_request', 'refs/pull/89/merge'),
+            ('develop-old', 'push', 'refs/heads/develop'),
+            ('main-old', 'push', 'refs/heads/main'),
+            ('pr-45-new', 'pull_request', 'refs/pull/45/merge'),
+            ('develop-new', 'push', 'refs/heads/develop'),
+            ('main-new', 'push', 'refs/heads/main'),
+        ]
+        for request in requests:
+            admission.submit(*request)
+        self.assertEqual(admission.cancelled, ['pr-45-old', 'develop-old', 'main-old'])
+        self.assertEqual(set(admission.active.values()), {'pr-45-new', 'pr-89', 'develop-new', 'main-new'})
 
-    def test_disabled_gate_serializes_whole_runs_including_the_slow_tail(self):
-        s = Scheduler()
-        admission = WorkflowAdmission(s, self.jobs)
-        admission.offer('old', slow='Go race (backup-0)')
-        admission.offer('new', setting='false')
-        self.assertNotIn('new', admission.runs)
-        admission.finish()
-        old_end = max(end for _, end, job in s.intervals if job.run == 'old')
-        new_start = min(start for start, _, job in s.intervals if job.run == 'new')
-        self.assertGreaterEqual(new_start, old_end)
-        self.assertTrue(all(len({job.run for job in snapshot}) <= 1 for snapshot in s.snapshots))
-
-    def test_queued_lane_compatibility_and_enabled_workflows_share_twenty_slots(self):
-        s = Scheduler()
-        admission = WorkflowAdmission(s, self.jobs)
-        admission.offer('compatibility-active', compatibility=True, slow='Go race (backup-0)')
-        admission.offer('compatibility-pending', compatibility=True)
-        admission.offer('enabled', setting='true', publish=False)
-        self.assertNotIn('compatibility-pending', admission.runs)
-        admission.finish()
-        self.assertFalse(s.rejected)
-        self.assertFalse(admission.rejected)
-        self.assertEqual(max(map(len, s.snapshots)), 20)
-        self.assertTrue(any(len({job.run for job in snapshot}) > 1 for snapshot in s.snapshots))
-        # A queued workflow retains its original group despite later activation.
-        self.assertEqual(admission.selected['compatibility-pending'], 'firecontroller-ci')
-        first_end = max(end for _, end, job in s.intervals if job.run == 'compatibility-active')
-        pending_start = min(start for start, _, job in s.intervals if job.run == 'compatibility-pending')
-        self.assertGreaterEqual(pending_start, first_end)
-
-    def test_rollback_changes_future_groups_but_does_not_serialize_admitted_runs(self):
-        s = Scheduler()
-        admission = WorkflowAdmission(s, self.jobs)
-        admission.offer('enabled', setting='true', slow='Go race (backup-0)')
-        admission.step()
-        admission.offer('after-disable', setting='false')
-        admission.offer('waiting-after-disable', setting='false')
-        self.assertNotIn('waiting-after-disable', admission.runs)
-        admission.finish()
-        self.assertEqual(admission.selected['enabled'], 'firecontroller-ci-run-enabled')
-        self.assertEqual(admission.selected['after-disable'], 'firecontroller-ci')
-        self.assertTrue(any({'enabled', 'after-disable'} <= {j.run for j in snapshot}
-                            for snapshot in s.snapshots))
-        self.assertLessEqual(max(map(len, s.snapshots)), 20)
-        self.assertFalse(s.rejected)
-
-    def test_workflow_queue_overflow_does_not_replace_pending_or_running_revisions(self):
-        admission = WorkflowAdmission(Scheduler(), self.jobs)
-        admission.offer('running')
-        for index in range(100):
-            admission.offer(f'pending-{index}')
-        admission.offer('latest')
-        self.assertEqual(admission.rejected, ['latest'])
-        self.assertEqual(admission.groups['firecontroller-ci'], 'running')
-        self.assertEqual([r for r, _ in admission.pending['firecontroller-ci']],
-                         [f'pending-{index}' for index in range(100)])
+    def test_many_revisions_keep_one_run_per_pr(self):
+        admission = WorkflowAdmission()
+        for revision in range(120):
+            admission.submit(revision, 'pull_request', 'refs/pull/45/merge')
+        self.assertEqual(list(admission.active.values()), [119])
+        self.assertEqual(admission.cancelled, list(range(119)))
 
     def test_single_full_run_uses_twenty_after_selector(self):
         s = Scheduler()
@@ -379,7 +292,7 @@ class DevelopmentSchedulingTests(unittest.TestCase):
         self.finish(s, [run])
         self.assertNotIn('Publish tested container', run.done)
 
-    def test_enabled_interleaving_slow_tail_gate_and_publish_all_count(self):
+    def test_interleaving_slow_tail_gate_and_publish_all_count(self):
         s = Scheduler()
         slow = 'Go race (backup-0)'
         names = {name for name, _, _ in self.jobs}
@@ -401,15 +314,15 @@ class DevelopmentSchedulingTests(unittest.TestCase):
 
     def test_slow_tail_follows_reassigned_inventory_lanes(self):
         self.jobs = [(name, (lane + 7) % 20, family) for name, lane, family in self.jobs]
-        self.test_enabled_interleaving_slow_tail_gate_and_publish_all_count()
+        self.test_interleaving_slow_tail_gate_and_publish_all_count()
 
     def test_overlap_refuses_missing_slow_job(self):
         self.jobs = [('renamed' if name == 'Go race (backup-0)' else name, lane, family)
                      for name, lane, family in self.jobs]
         with self.assertRaises(AssertionError):
-            self.test_enabled_interleaving_slow_tail_gate_and_publish_all_count()
+            self.test_interleaving_slow_tail_gate_and_publish_all_count()
 
-    def test_enabled_interleaving_all_publishers_share_a_counted_lane(self):
+    def test_interleaving_all_publishers_share_a_counted_lane(self):
         publish_lane = next(lane for _, lane, family in self.jobs if family == 'publish')
         s = Scheduler()
         s.offer(Job('main', 'Publish tested container', publish_lane, 5))
@@ -437,7 +350,7 @@ class DevelopmentSchedulingTests(unittest.TestCase):
         run = DevelopmentRun(s, self.jobs, 'future')
         self.finish(s, [run])
         self.assertEqual(max(map(len, s.snapshots)) + 20, 40)
-        self.assertIn(ACTIVATION_GATE, self.text)
+        self.assertIn(WORKFLOW_SUPERSESSION, self.text)
 
 
 if __name__ == '__main__':
