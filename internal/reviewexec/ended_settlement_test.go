@@ -45,6 +45,9 @@ func endedSettlementFixture(t *testing.T, channel string) (*attemptFixture, Atte
 		if channel == "cli-interrupted" {
 			reason = "execution_interrupted"
 		}
+		if channel == "cli-invalid-capture" {
+			reason = "capture_invalid"
+		}
 		a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", reason, "")
 	}
 	if err != nil {
@@ -198,10 +201,10 @@ func TestEndedSettlementAdminGuardAuditFailureAndExactRetry(t *testing.T) {
 }
 
 func TestEndedSettlementPublicRouteRetainsOriginalSource(t *testing.T) {
-	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
+	for _, channel := range []string{"hosted", "cli", "cli-interrupted", "cli-invalid-capture"} {
 		t.Run(channel, func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
-			if channel == "cli-interrupted" {
+			if channel != "hosted" {
 				channel = "cli"
 			}
 			before := transferAuthorityRows(t, f, true)

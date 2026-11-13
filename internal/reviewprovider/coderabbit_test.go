@@ -165,6 +165,26 @@ func TestCLIReviewRequiresExactContextAndOneConsistentCompletion(t *testing.T) {
 	requireCLIInvalid(t, cliJSONLines(t, cliContextEvent(), complete), 0, syntheticCLIContext)
 }
 
+func TestCLIReviewCompletedWithWarningsRetainsPartialFindings(t *testing.T) {
+	terminal := map[string]any{
+		"type": "complete", "status": "review_completed", "outcome": "completed_with_warnings",
+		"findings": 1, "unreviewedFileCount": 8,
+	}
+	for _, exitCode := range []int{0, 1} {
+		got, err := ParseCLIReview(cliJSONLines(t, cliContextEvent(), cliFindingEvent(), terminal), exitCode, syntheticCLIContext)
+		if err != nil || got.Outcome != "failed" || got.Complete || got.ReportedFindings != 1 ||
+			len(got.Findings) != 1 || len(got.ReviewedFiles) != 0 || len(got.CoverageLimits) != 1 {
+			t.Fatalf("partial terminal lost evidence or gained completion: %+v, %v", got, err)
+		}
+	}
+	terminal["findings"] = 2
+	requireCLIInvalid(t, cliJSONLines(t, cliContextEvent(), cliFindingEvent(), terminal), 1, syntheticCLIContext)
+	terminal["findings"] = 1
+	requireCLIInvalid(t, cliJSONLines(t, cliFindingEvent(), terminal), 1, syntheticCLIContext)
+	terminal["unreviewedFileCount"] = nil
+	requireCLIInvalid(t, cliJSONLines(t, cliContextEvent(), cliFindingEvent(), terminal), 1, syntheticCLIContext)
+}
+
 func TestCLIReviewStrictJSONUnicodeAndKnownTypes(t *testing.T) {
 	for _, raw := range []string{
 		`{"type":"finding","title":"Title","comment":"truncated"`,
