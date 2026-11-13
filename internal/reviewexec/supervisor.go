@@ -543,13 +543,21 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if explicitCLI && reason == "pull_draft" {
 				reason = cliDraftWait
 			}
-			if ctx.Err() == nil && (o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted") {
+			if o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted" {
+				// Shutdown cannot discard already-retained quota proof. Keep the
+				// unused preparation reserved for startup's evidence-based recovery.
+				if ctx.Err() != nil {
+					return &PreparationRecoveryError{Err: ctx.Err()}
+				}
 				_, scheduleErr := e.persistCooldown(ctx, o, a)
 				if scheduleErr == nil {
 					return nil
 				}
+				if ctx.Err() != nil {
+					return &PreparationRecoveryError{Err: scheduleErr}
+				}
 				var refusal *core.Error
-				if ctx.Err() == nil && !cooldownEvidenceUnavailable(o.Channel, scheduleErr) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
+				if !cooldownEvidenceUnavailable(o.Channel, scheduleErr) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
 					return scheduleErr
 				}
 			}
