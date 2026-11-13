@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -71,8 +72,7 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 const partialCLIResults = ` FROM review_operations o
  CROSS JOIN review_execution_evidence e ON e.project_id=o.project_id AND e.attempt_id=o.attempt_id AND e.operation_id=o.id
  WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state='failed'
- AND json_extract(e.body_json,'$.capture.review.Complete')=0
- AND (o.reason IN('coverage_incomplete','cli_partial_settled') OR json_array_length(e.body_json,'$.capture.review.Findings')>0)`
+ AND json_extract(e.body_json,'$.capture.review.Complete')=0`
 
 const partialCLIPending = ` AND json_array_length(e.body_json,'$.capture.review.Findings')>0
  AND (NOT EXISTS(SELECT 1 FROM review_adjudication_state s WHERE s.project_id=e.project_id AND s.evidence_id=e.id)
@@ -86,10 +86,13 @@ const partialCLIPending = ` AND json_array_length(e.body_json,'$.capture.review.
 func partialCLIComparisonExists(ctx context.Context, q EvidenceQuery, project string, repo, number int64, head, base, ref, parent string, parentNumber int64) (bool, error) {
 	var exists bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1`+partialCLIResults+`
+ AND (o.reason IN('coverage_incomplete','cli_partial_settled') OR json_array_length(e.body_json,'$.capture.review.Findings')>0
+ OR (o.reason='capture_retained' AND json_extract(e.body_json,'$.capture.review.Outcome')='failed'
+ AND json_extract(e.body_json,'$.capture.review.coverage_limits[0]')=?))
  AND o.head_sha=? AND json_extract(e.body_json,'$.anchor.repository_id')=?
  AND json_extract(e.body_json,'$.anchor.base_sha')=? AND json_extract(e.body_json,'$.anchor.base_ref')=?
  AND json_extract(e.body_json,'$.anchor.parent_sha')=? AND json_extract(e.body_json,'$.anchor.parent_pull_number')=?)`,
-		project, number, head, repo, base, ref, parent, parentNumber).Scan(&exists)
+		project, number, reviewprovider.CLIUnreviewedFilesLimit, head, repo, base, ref, parent, parentNumber).Scan(&exists)
 	return exists, err
 }
 

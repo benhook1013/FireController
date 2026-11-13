@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
@@ -133,6 +134,19 @@ func TestOperationStatusExplainsRetainedCLIUnreviewedFiles(t *testing.T) {
 		status, err := f.e.ReadOperationStatus(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), a.OperationID)
 		if err != nil || status.Reason != want || status.State != "failed" || status.EvidenceID != receipt.ID || status.NextAction != "read_diagnostics" || evidenceState(t, f, a) != before {
 			t.Fatal(status, err)
+		}
+		anchor := *a.Anchor
+		err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			for _, head := range []string{anchor.CandidateSHA, strings.Repeat("f", 40)} {
+				got, err := partialCLIComparisonExists(ctx, tx, attemptProject, anchor.RepositoryID, anchor.PullNumber, head, anchor.BaseSHA, anchor.BaseRef, anchor.ParentSHA, anchor.ParentPullNumber)
+				if err != nil || got != (warning && head == anchor.CandidateSHA) {
+					t.Fatal("automatic retry guard", head, got, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }
