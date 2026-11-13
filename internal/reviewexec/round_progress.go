@@ -13,6 +13,7 @@ import (
 // not coverage or permission to dispatch.
 type RoundProgressChannel struct {
 	ActivityEvidence    *ActivityEvidence `json:"activity_evidence,omitempty"`
+	CancelledWait       *CancelledWait    `json:"cancelled_wait,omitempty"`
 	Wait                *OperationWait    `json:"wait,omitempty"`
 	Channel             string            `json:"channel"`
 	Configured          bool              `json:"configured"`
@@ -29,6 +30,13 @@ type RoundProgressChannel struct {
 	Pending             int64             `json:"pending"`
 	PendingExecution    *int64            `json:"pending_execution,omitempty"`
 	PendingAdjudication *int64            `json:"pending_adjudication,omitempty"`
+}
+
+// CancelledWait identifies the unused baseline of an explicitly cancelled queued request.
+type CancelledWait struct {
+	BaselineAttemptID string `json:"baseline_attempt_id"`
+	HeadSHA           string `json:"head_sha"`
+	CancelledAt       string `json:"cancelled_at"`
 }
 
 type RoundProgressItem struct {
@@ -104,6 +112,12 @@ func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope c
 					if err != nil {
 						return err
 					}
+					if progress.Wait == nil && progress.Pending == 0 {
+						progress.CancelledWait, err = readChannelCancelledWait(ctx, tx, scope.ProjectID, number, channel)
+						if err != nil {
+							return err
+						}
+					}
 				}
 				if len(activity) > 0 && activity[0] {
 					progress.ActivityEvidence, err = readActivityEvidence(ctx, tx, scope.ProjectID, number, channel)
@@ -158,4 +172,28 @@ func (e *Engine) readChannelWait(ctx context.Context, tx *sql.Tx, project string
 		wait = &copy
 	}
 	return wait, nil
+}
+
+func readChannelCancelledWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*CancelledWait, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT o.id FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='cancelled' AND o.attempt_id='' AND w.baseline_attempt_id IS NOT NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 1`, project, number, channel).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// This validates the original unused attempt, its owning operation and the
+	// retained allowance proof, not just an arbitrary held/cancelled state pair.
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	if o.ProjectID != project || o.PullNumber != number || o.Channel != channel || o.State != "cancelled" || o.AttemptID != "" || o.Wait == nil || o.Wait.BaselineAttemptID == "" || !sha.MatchString(o.HeadSHA) {
+		return nil, waitUnavailable()
+	}
+	if _, ok := attemptRecordedTime(o.UpdatedAt); !ok {
+		return nil, waitUnavailable()
+	}
+	return &CancelledWait{BaselineAttemptID: o.Wait.BaselineAttemptID, HeadSHA: o.HeadSHA, CancelledAt: o.UpdatedAt}, nil
 }

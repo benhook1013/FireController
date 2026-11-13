@@ -109,3 +109,88 @@ func TestRoundProgressStagesLegacyEpochAndStrictReadScope(t *testing.T) {
 	g.enqueue(t, attemptProject, "current-epoch-stage", "cli", 2, 1)
 	assertProgressStages(t, progressStageChannel(t, g, "view=stages", 1), 1, 0)
 }
+
+func TestRoundProgressStagesCancelledWaitRetainsExactUnusedBaseline(t *testing.T) {
+	fixtures := map[string]func(*testing.T) (*attemptFixture, Attempt){
+		"hosted": func(t *testing.T) (*attemptFixture, Attempt) {
+			f, a, _, _ := queuedCooldown(t)
+			return f, a
+		},
+		"cli": func(t *testing.T) (*attemptFixture, Attempt) {
+			f, a, _, _ := cliWaitFixture(t)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			return f, a
+		},
+	}
+	for channel, fixture := range fixtures {
+		t.Run(channel, func(t *testing.T) {
+			f, a := fixture(t)
+			if err := EnsureRoundSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			index := 0
+			if channel == "cli" {
+				index = 1
+			}
+			scope := evidenceReadScope(t, f, attemptProject, f.reader)
+			before, err := f.e.ReadRoundProgressStages(t.Context(), scope, []int64{2})
+			if err != nil || before.Items[0].Channels[index].Wait == nil || before.Items[0].Channels[index].CancelledWait != nil {
+				t.Fatal("queued wait became cancelled history", before, err)
+			}
+			timerControl(t, f, a.OperationID, "cancel", "cancel-progress-wait")
+			o := bindingOperation(t, f, scope, a.OperationID)
+			digest := func() string {
+				var value string
+				for _, table := range []string{"review_operations", "review_operation_waits", "review_execution_attempts", "review_execution_transitions", "review_execution_reservations", "receipts", "events"} {
+					value += snapshotTable(t, f, table)
+				}
+				return value + roundTables(t, f)
+			}
+			original := digest()
+			// No provider catalog or browser history is needed for this local
+			// association; the original allowance record remains authoritative.
+			f.e, err = New(f.store, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress, err := f.e.ReadRoundProgressStages(t.Context(), scope, []int64{4, 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := progress.Items[1].Channels[index]
+			want := &CancelledWait{BaselineAttemptID: a.ID, HeadSHA: o.HeadSHA, CancelledAt: o.UpdatedAt}
+			if !reflect.DeepEqual(got.CancelledWait, want) || got.Wait != nil || got.Pending != 0 || got.PendingExecution == nil || *got.PendingExecution != 0 || got.PendingAdjudication == nil || *got.PendingAdjudication != 0 {
+				t.Fatal("cancelled unused baseline lost or became pending", got, want)
+			}
+			if progress.Items[0].Channels[index].CancelledWait != nil || progress.Items[1].Channels[1-index].CancelledWait != nil {
+				t.Fatal("cancelled association crossed PR/channel", progress)
+			}
+			other, err := f.e.ReadRoundProgressStages(t.Context(), evidenceReadScope(t, f, otherAttemptProject, f.other), []int64{2})
+			if err != nil || other.Items[0].Channels[index].CancelledWait != nil {
+				t.Fatal("cancelled association crossed project", other, err)
+			}
+			legacy, err := f.e.ReadRoundProgress(t.Context(), scope, []int64{2})
+			if err != nil || legacy.Items[0].Channels[index].CancelledWait != nil {
+				t.Fatal("legacy progress gained cancellation metadata", legacy, err)
+			}
+			if digest() != original {
+				t.Fatal("progress rewrote original held attempt, wait, accounting or events")
+			}
+		})
+	}
+}
+
+func TestRoundProgressStagesCancelledWaitRejectsUnrelatedAttemptBinding(t *testing.T) {
+	f, a, _, _ := queuedCooldown(t)
+	if err := EnsureRoundSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	timerControl(t, f, a.OperationID, "cancel", "cancel-bound-wait")
+	unrelated := f.start(t, attemptProject, f.enqueue(t, attemptProject, "unrelated-wait-attempt", "hosted", 4, 1))
+	admissionSQL(t, f, `UPDATE review_operation_waits SET baseline_attempt_id=? WHERE operation_id=?`, unrelated.ID, a.OperationID)
+	if _, err := f.e.ReadRoundProgressStages(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), []int64{2}); err == nil {
+		t.Fatal("unrelated attempt supplied cancellation disposition")
+	}
+}
