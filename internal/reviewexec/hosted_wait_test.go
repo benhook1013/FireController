@@ -1029,3 +1029,14 @@ func TestCooldownRecoveryPreservesEvidenceWhenOriginalDriverIsAbsent(t *testing.
 		t.Fatal("reconciliation changed the original preparation", operation)
 	}
 }
+
+func TestHostedCooldownOffsetDeadlineRejected(t *testing.T) {
+	f, a, in := cooldownObservationFixture(t)
+	before := attemptState(t, f, a)
+	in.Observation.RetryNotBefore = in.Observation.RetryNotBefore.In(time.FixedZone("offset", 3600))
+	err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, 1, in)
+	attemptCode(t, err, "validation_failed")
+	if before != attemptState(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_operation_waits`) != 0 {
+		t.Fatal("invalid offset altered retained state")
+	}
+}

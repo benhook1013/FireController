@@ -54,7 +54,7 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	progress, err := e.readRoundProgress(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages")
+	progress, err := e.readRoundProgress(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages", r.Header.Get(operationWaitHeader))
 	if err != nil {
 		core.WriteError(w, err)
 		return
