@@ -136,13 +136,12 @@ class SelectionTests(unittest.TestCase):
         env = dict(STATIC_RESULT="success", LINUX_RESULT="success", QUALIFICATION_RESULT="success", NATIVE_RESULT="success")
         def accepted(values):
             return subprocess.run(["bash", "-e", "-c", script], env=values, capture_output=True).returncode == 0
-        for setting in ('', 'false', 'true', 'TRUE'):
-            selected = env | {'FIRECONTROLLER_CI_INTERLEAVE': setting}
-            self.assertTrue(accepted(selected))
-            for family in env:
-                for outcome in ["failure", "cancelled", "skipped", "", "timed_out", "neutral"]:
-                    with self.subTest(setting=setting, family=family, outcome=outcome):
-                        self.assertFalse(accepted(selected | {family: outcome}))
+        self.assertTrue(accepted(env))
+        for family in env:
+            for outcome in ["failure", "cancelled", "skipped", "", "timed_out", "neutral"]:
+                with self.subTest(family=family, outcome=outcome):
+                    self.assertFalse(accepted(env | {family: outcome}))
+
 
 
 if __name__ == "__main__":

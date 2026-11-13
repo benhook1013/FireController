@@ -10,13 +10,10 @@ on:
 permissions:
   contents: read
 
-# Every job acquires one of twenty shared repository slots before runner admission.
-# Default to the legacy lock; activate only after the documented alignment and drain.
-# Publishing this gate requires verifying the effective setting is disabled.
+# Supersede a PR or branch push independently. The jobs below share the runner budget.
 concurrency:
-  group: ${{ vars.FIRECONTROLLER_CI_INTERLEAVE == 'true' && format('firecontroller-ci-run-{0}', github.run_id) || 'firecontroller-ci' }}
-  queue: max
-  cancel-in-progress: false
+  group: firecontroller-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   static:
