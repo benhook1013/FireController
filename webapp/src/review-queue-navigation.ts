@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { notifyReadingNavigation, scrollToReadingTarget } from './reading-position';
+import { notifyReadingNavigation, retainReadingTarget, scrollToReadingTarget } from './reading-position';
 import type { ReviewPullSummary, ReviewQueue } from './types';
 
 export const reviewQueueHeadHash = '#review-queue-head';
@@ -10,6 +10,8 @@ export function scrollToReviewQueueTarget(element: HTMLElement): void {
   const previous = rows[rows.indexOf(element) - 1];
   if (!window.matchMedia('(min-width: 651px)').matches || !previous?.classList.contains('review-row-merged')) {
     scrollToReadingTarget(element);
+    const anchor = element.dataset?.readingAnchor;
+    if (anchor) retainReadingTarget(anchor, parseFloat(getComputedStyle(element).scrollMarginTop) || 0);
     return;
   }
   // Merged cards have variable heights. A fixed margin on the current head
@@ -17,6 +19,8 @@ export function scrollToReviewQueueTarget(element: HTMLElement): void {
   const edge = Math.max(0, document.querySelector('.mast')?.getBoundingClientRect().bottom ?? 0) + 12;
   notifyReadingNavigation();
   window.scrollBy({ top: previous.getBoundingClientRect().top - edge, left: 0, behavior: 'instant' });
+  const anchor = previous.dataset?.readingAnchor;
+  if (anchor) retainReadingTarget(anchor, edge);
 }
 
 type MergeHead = { state: 'head'; pull: ReviewPullSummary } | { state: 'unknown'; reason: 'unconfigured' | 'preceding' | 'next-page' } | { state: 'none' };

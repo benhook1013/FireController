@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { captureReadingPoint, notifyReadingNavigation, readingCorrection, saveReadingPosition, useReadingPosition } from './reading-position';
+import { captureReadingPoint, notifyReadingNavigation, readingCorrection, retainReadingTarget, saveReadingPosition, useReadingPosition } from './reading-position';
 
 const hooks = vi.hoisted(() => ({ effect: undefined as (() => void | (() => void)) | undefined }));
 vi.mock('react', async importOriginal => ({
@@ -70,4 +70,44 @@ describe('reading position across layout changes', () => {
       expect(scrollBy).not.toHaveBeenCalled();
     } finally { if (typeof cleanup === 'function') cleanup(); }
   });
+
+  it('keeps the requested queue offset when the first jump hits the bottom of the loading page', () => {
+    const events = new EventTarget();
+    let nextFrame = 0, top = 438, maxScrollY = 1000, resize = () => {};
+    const frames = new Map<number, FrameRequestCallback>();
+    const browser = Object.assign(events, {
+      innerHeight: 800, scrollY: 1000,
+      scrollBy: ({ top: delta }: ScrollToOptions) => {
+        const before = browser.scrollY;
+        browser.scrollY = Math.min(maxScrollY, before + (delta ?? 0));
+        top -= browser.scrollY - before;
+      },
+    });
+    vi.stubGlobal('window', browser);
+    vi.stubGlobal('history', { scrollRestoration: 'auto' });
+    vi.stubGlobal('document', { documentElement: { style: { overflowAnchor: '' } }, querySelector: () => null });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+    vi.stubGlobal('MutationObserver', class { observe() {} disconnect() {} });
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
+    const row = { dataset: { readingAnchor: 'review-pr-32' }, getBoundingClientRect: () => ({ top, bottom: top + 400, height: 400 }) };
+    const root = { querySelector: () => row, querySelectorAll: () => [row] } as unknown as HTMLElement;
+    const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(1000)); };
+
+    useReadingPosition({ current: root }, 'clamped-queue-jump', false);
+    const cleanup = hooks.effect!();
+    try {
+      retainReadingTarget('review-pr-32', 160);
+      flush();
+      expect(top).toBe(438);
+
+      // Delivery arrives above the queue and expands the scrollable page.
+      maxScrollY += 600;
+      top += 200;
+      resize();
+      flush();
+      expect(top).toBe(160);
+    } finally { if (typeof cleanup === 'function') cleanup(); }
+  });
+
 });

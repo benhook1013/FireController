@@ -61,6 +61,10 @@ export function notifyReadingNavigation(): void {
   window.dispatchEvent(new Event(navigationEvent));
 }
 
+export function retainReadingTarget(anchor: string, offset: number): void {
+  window.dispatchEvent(new CustomEvent(navigationEvent, { detail: { anchor, offset } }));
+}
+
 export function scrollToReadingTarget(element: HTMLElement): void {
   notifyReadingNavigation();
   element.scrollIntoView();
@@ -73,7 +77,8 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
-    let point = initial, pendingRestore = !!initial, frame = 0, ownScroll = false, readerUntil = 0;
+    let point = initial, pendingRestore = !!initial, frame = 0, readerUntil = 0;
+    let ownScrollY: number | undefined;
     const documentRoot = document.documentElement;
     const previousAnchoring = documentRoot.style.overflowAnchor;
     if (initial || element.querySelector(selector)) { documentRoot.style.overflowAnchor = 'none'; history.scrollRestoration = 'manual'; }
@@ -103,8 +108,9 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
         }
         if (delta !== undefined) {
           if (Math.abs(delta) > .5) {
-            ownScroll = true;
+            const before = window.scrollY;
             window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+            if (window.scrollY !== before) ownScrollY = window.scrollY;
           }
           pendingRestore = false;
         }
@@ -118,7 +124,11 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(reconcile); };
     const scroll = () => {
-      if (ownScroll) { ownScroll = false; return; }
+      if (ownScrollY !== undefined) {
+        const expected = ownScrollY;
+        ownScrollY = undefined;
+        if (window.scrollY === expected) return;
+      }
       // Browser reload restoration can emit scroll while only the loading
       // shell exists. Explicit wheel/touch/key input already cancels restore.
       if (pendingRestore) return;
@@ -128,16 +138,23 @@ export function useReadingPosition(root: RefObject<HTMLElement | null>, scope: s
       readerUntil = performance.now() + 100;
     };
     const reader = () => {
-      ownScroll = false;
+      ownScrollY = undefined;
       pendingRestore = false;
       readerUntil = performance.now() + 150;
       point = capture();
     };
     const key = (event: KeyboardEvent) => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) reader(); };
     const scrollbar = (event: PointerEvent) => { if (event.target === documentRoot) reader(); };
-    const navigate = () => {
+    const navigate = (event: Event) => {
       reader();
-      point = undefined;
+      const target = (event as CustomEvent<{ anchor: string; offset: number }>).detail;
+      point = target && { ...target, y: window.scrollY, before: [], after: [] };
+      if (point) {
+        // The requested offset can be unreachable until async content arrives.
+        // Keep it through layout changes instead of saving the clamped scroll.
+        readerUntil = 0;
+        ownScrollY = window.scrollY;
+      }
       schedule();
     };
     const save = () => savePoint(scope, point);
