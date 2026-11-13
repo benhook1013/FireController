@@ -142,6 +142,7 @@ type FindingView struct {
 }
 
 type RunSummary struct {
+	DisplayStartAt    string            `json:"display_start_at,omitempty"`
 	RetainedUndecided *int64            `json:"retained_undecided,omitempty"`
 	AcceptedSeverity  *AcceptedSeverity `json:"accepted_severity,omitempty"`
 	Source            string            `json:"source"`

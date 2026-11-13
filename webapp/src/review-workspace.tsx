@@ -105,7 +105,7 @@ function useSemanticHighlight(fingerprint: string, history?: Map<string, string>
 }
 export function runDisplayFingerprint(run: ReviewRunSummary, head: string): string {
   return JSON.stringify([run.channel, run.outcome, run.found, run.accepted, run.routed, run.fixed,
-    run.complete, run.finalized, run.attributable, run.retained_undecided, run.finished_at || run.started_at,
+    run.complete, run.finalized, run.attributable, run.retained_undecided, run.finished_at || run.started_at, run.display_start_at,
     !head || !run.head_sha ? 'unknown' : head === run.head_sha ? 'same' : 'different']);
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
@@ -378,9 +378,15 @@ export function ReviewPullView() {
     <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} sourceRetries={sourceRetries} /></footer>
   </>}</ReadState></article>;
 }
+function reviewStart(run: ReviewRunSummary): { value: string; label: string } | undefined {
+  if (run.source === 'github-hosted-observer') return undefined;
+  if (run.display_start_at) return { value: run.display_start_at, label: run.channel === 'hosted' ? 'CodeRabbit activity seen' : 'Started' };
+  if (!run.started_at) return undefined;
+  return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Requested' : 'Started' };
+}
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
-  const date = run.started_at;
+  const start = reviewStart(run);
   const partial = partialCLIResult(run);
   const { accepted, routed } = visibleReviewCounts(run);
   const highlight = useSemanticHighlight(runDisplayFingerprint(run, head), highlights, JSON.stringify([run.source, run.source_run_id]));
@@ -389,8 +395,8 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
     !partial && !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
-  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${date ? `Started ${time(date)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''}`;
-  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Start unknown</span>}</ReviewRoundPillDisplay>;
+  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${start ? `${start.label} ${time(start.value)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''}`;
+  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{start ? <RelativeTime value={start.value} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
 function RunningReviewPill({ evidence, channel }: { evidence: ReviewActivityEvidence; channel: ReviewChannel }) {
   const cli = evidence.kind === 'cli_process_spawned';
@@ -482,7 +488,7 @@ export function InlineReviewFindings({ number, run, snapshot }: { number: number
   </>}</ReadState>{!!query.error && !terminal(query.error) && <button type="button" onClick={() => { void query.refetch(); }} disabled={query.isFetching}>Retry findings</button>}</div>;
 }
 export function reviewDuration(run: ReviewRunSummary): string | undefined {
-  if (!run.started_at || !run.finished_at) return undefined;
+  if (run.source === 'github-hosted-observer' || !run.started_at || !run.finished_at) return undefined;
   const seconds = Math.floor((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000);
   if (!Number.isFinite(seconds) || seconds < 0) return undefined;
   if (seconds < 60) return `${seconds}s`;
@@ -505,13 +511,14 @@ export function ReviewHistoryRow({ number, run, snapshot, head, ordinal }: { num
   const title = run.channel === 'hosted' ? 'CodeRabbit Hosted' : run.channel === 'cli' ? 'CodeRabbit CLI' : run.channel === 'subagent' ? 'Subagent' : 'Manual';
   const round = `${title}${ordinal ? ` #${ordinal}` : ''}`;
   const duration = reviewDuration(run);
+  const start = reviewStart(run);
   const partial = partialCLIResult(run);
   const findingsID = `review-history-findings-${run.id}`;
   return <li className={`review-history-row review-history-row-${run.channel}`} data-run-id={run.id}>
     <div className="review-history-row-heading"><button className="review-history-toggle" type="button" aria-expanded={open} aria-controls={findingsID} aria-label={`${open ? 'Hide' : 'Show'} findings for ${round}`} onClick={() => setOpen(value => !value)}>
       <span className="review-history-disclosure" aria-hidden="true">{open ? '▾' : '▸'}</span>
       <span className={`review-history-kind review-history-kind-${run.channel}`}>{round}</span>
-      <span className="review-history-age">{run.started_at ? <RelativeTime value={run.started_at} /> : 'Start unknown'}{duration && <span className="review-history-duration"> · {duration}</span>}</span>
+      <span className="review-history-age">{start ? <RelativeTime value={start.value} /> : <span title="Start time unknown">—</span>}{duration && <span className="review-history-duration"> · {duration}</span>}</span>
       <span className="review-history-counts"><span className="review-count review-count-found">Found: <strong>{run.found}</strong></span><ReviewAcceptedCounts run={run} /><span className="review-count review-count-routed">Routed: <strong>{visibleReviewCounts(run).routed}</strong></span></span>
     </button><Link className="review-history-details-link" to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${round} run details`}>Run details ↗</Link></div>
     <div className="review-history-flags">{partial ? <span className="review-warning">Partial review{partialPendingText(run.retained_undecided)}</span> : <>{run.outcome !== 'completed' && <span>{reviewLabel(run.outcome)}</span>}{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</>}{!head || !run.head_sha ? <span className="review-warning">Head association unknown</span> : null}</div>
@@ -590,6 +597,7 @@ export function ReviewRunView() {
   const { session, key, home } = useWorkspace();
   const query = useQuery({ queryKey: [...key, 'reviews', snapshot ?? 'current', 'run', runId], queryFn: ({ signal }) => session.api.reviewRun(runId, snapshot, signalFor(session, signal)), staleTime: Infinity });
   const value = query.data;
+  const start = value && reviewStart(value.run);
   const pull = useQuery({ queryKey: [...key, 'reviews', value?.snapshot_id ?? snapshot ?? 'current', 'pull', value?.pull_number ?? 'unknown'], queryFn: ({ signal }) => session.api.reviewPull(value!.pull_number, value!.snapshot_id, signalFor(session, signal)), enabled: !!value, staleTime: Infinity });
-  return <><Link className="back-link" to={value ? reviewLink(home, 'pulls', value.pull_number, value.snapshot_id) : `${home}/reviews`}>← {value ? `PR #${value.pull_number} history` : 'Review queue'}</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">PR #{value.pull_number} · {value.run.channel} run</p><h2>Review findings</h2><p>{value.run.reviewer || 'Reviewer unknown'} · {value.run.scope}</p></div><ReviewProvenance value={value} /><section className="panel review-run-summary"><RunPill run={partialCLIResult(value.run) ? { ...value.run, retained_undecided: value.findings.filter(finding => finding.disposition === "unadjudicated").length } : value.run} snapshot={value.snapshot_id} head={pull.data?.pull.head_sha ?? ''} /><dl className="review-ref-grid"><div><dt>Original run source</dt><dd>{value.run.source}</dd></div><div><dt>Run head</dt><dd><code>{value.run.head_sha || 'Unknown'}</code></dd></div><div><dt>Observed PR head</dt><dd><code>{pull.data?.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Started / finished</dt><dd>{value.run.started_at ? <RelativeTime value={value.run.started_at} /> : 'Unknown'}<br />{value.run.finished_at ? <RelativeTime value={value.run.finished_at} /> : 'Unknown'}</dd></div></dl>{(!value.run.complete || !value.run.attributable) && <p className="notice">This run has incomplete or unattributed source evidence. Counts are historical observations.</p>}<ReadState error={pull.error} loading={pull.isPending} empty={false}>{!value.run.head_sha || !pull.data?.pull.head_sha ? <p className="review-warning">Head association is unknown.</p> : null}</ReadState></section>{value.run.source === 'native-executor' && /^review_evidence_[a-f0-9]{32}$/u.test(value.run.source_run_id) && <CapturedComparisonAssessment key={value.run.source_run_id} evidenceId={value.run.source_run_id} />}<ReviewCoverageLimits limits={value.run.coverage_limits} /><section className="panel review-findings"><div className="section-heading"><h3>Findings</h3></div>{value.findings.length ? <ul>{value.findings.map(finding => <ReviewFindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="empty">No findings recorded for this run.{!value.run.complete ? ' The source record is incomplete.' : ''}</p>}</section></>}</ReadState></>;
+  return <><Link className="back-link" to={value ? reviewLink(home, 'pulls', value.pull_number, value.snapshot_id) : `${home}/reviews`}>← {value ? `PR #${value.pull_number} history` : 'Review queue'}</Link><ReviewNotice /><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <><div className="page-heading"><p className="eyebrow">PR #{value.pull_number} · {value.run.channel} run</p><h2>Review findings</h2><p>{value.run.reviewer || 'Reviewer unknown'} · {value.run.scope}</p></div><ReviewProvenance value={value} /><section className="panel review-run-summary"><RunPill run={partialCLIResult(value.run) ? { ...value.run, retained_undecided: value.findings.filter(finding => finding.disposition === "unadjudicated").length } : value.run} snapshot={value.snapshot_id} head={pull.data?.pull.head_sha ?? ''} /><dl className="review-ref-grid"><div><dt>Original run source</dt><dd>{value.run.source}</dd></div><div><dt>Run head</dt><dd><code>{value.run.head_sha || 'Unknown'}</code></dd></div><div><dt>Observed PR head</dt><dd><code>{pull.data?.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>{start?.label ?? 'Started'} / finished</dt><dd>{start ? <RelativeTime value={start.value} /> : 'Unknown'}<br />{value.run.finished_at ? <RelativeTime value={value.run.finished_at} /> : 'Unknown'}</dd></div></dl>{(!value.run.complete || !value.run.attributable) && <p className="notice">This run has incomplete or unattributed source evidence. Counts are historical observations.</p>}<ReadState error={pull.error} loading={pull.isPending} empty={false}>{!value.run.head_sha || !pull.data?.pull.head_sha ? <p className="review-warning">Head association is unknown.</p> : null}</ReadState></section>{value.run.source === 'native-executor' && /^review_evidence_[a-f0-9]{32}$/u.test(value.run.source_run_id) && <CapturedComparisonAssessment key={value.run.source_run_id} evidenceId={value.run.source_run_id} />}<ReviewCoverageLimits limits={value.run.coverage_limits} /><section className="panel review-findings"><div className="section-heading"><h3>Findings</h3></div>{value.findings.length ? <ul>{value.findings.map(finding => <ReviewFindingView key={finding.source_finding_id} finding={finding} />)}</ul> : <p className="empty">No findings recorded for this run.{!value.run.complete ? ' The source record is incomplete.' : ''}</p>}</section></>}</ReadState></>;
 }

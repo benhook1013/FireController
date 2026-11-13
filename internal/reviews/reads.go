@@ -62,7 +62,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				core.WriteError(w, validationError("Use recent or merged for the queue view."))
 				return
 			}
-			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit)
+			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1")
 			if err == nil {
 				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
 			}
@@ -151,6 +151,12 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			if response.HasMore && lastPosition >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastPosition))
 			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				if err := rows.Close(); err != nil {
+					return err
+				}
+				return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+			}
 			return nil
 		})
 		if err != nil {
@@ -230,6 +236,9 @@ func pull(store *core.Store) http.HandlerFunc {
 			}
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
+			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Pull.RecentRuns)
 			}
 			return nil
 		})
@@ -363,6 +372,12 @@ func runs(store *core.Store) http.HandlerFunc {
 			if response.HasMore && lastOrder >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastOrder))
 			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				if err := rows.Close(); err != nil {
+					return err
+				}
+				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+			}
 			return nil
 		})
 		if err != nil {
@@ -412,7 +427,15 @@ func runDetail(store *core.Store) http.HandlerFunc {
 				return notFound("The review snapshot is unavailable.")
 			}
 			response, err = readRunDetail(ctx, tx, meta, runID)
-			return err
+			if err != nil || r.Header.Get(displayStartHeader) != "v1" {
+				return err
+			}
+			runs := []RunSummary{response.Run}
+			if err := attachDisplayStarts(ctx, tx, scope.ProjectID, runs); err != nil {
+				return err
+			}
+			response.Run = runs[0]
+			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)

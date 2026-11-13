@@ -148,7 +148,7 @@ func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, curso
 	return positions, rows.Err()
 }
 
-func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int) (QueueResponse, error) {
+func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart bool) (QueueResponse, error) {
 	filter := "reviews.queue:" + view + ":v1"
 	after, err := store.ParseCursor(scope, filter, token)
 	if err != nil {
@@ -241,6 +241,12 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			cursor.Position = positions[len(positions)-1]
 			payload, _ := json.Marshal(cursor)
 			response.Cursor = store.Cursor(scope, filter, string(payload))
+		}
+		if displayStart {
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
 		}
 		return nil
 	})

@@ -134,7 +134,7 @@ describe('per-PR inline retained review history', () => {
     for (const text of ['Incomplete record', 'Attribution unconfirmed', `dateTime="${value.started_at}"`]) expect(html).toContain(text);
     expect(html).not.toContain('Different observed head');
     const missing = markup(<ReviewHistoryRow number={27} run={{ ...value, started_at: '', head_sha: '' }} snapshot={snapshot} head="head" />);
-    expect(missing).toContain('Start unknown'); expect(missing).toContain('Head association unknown');
+    expect(missing).toContain('Start time unknown'); expect(missing).toContain('Head association unknown');
   });
   it('keeps partial and failed histories distinct from confirmed empty history', () => {
     const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false, channelTotals: {hosted: 0, cli: 0, manual: 0, subagent: 0} };

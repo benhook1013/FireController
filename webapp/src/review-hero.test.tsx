@@ -148,7 +148,7 @@ describe('merge-head recent review rounds', () => {
     const html = markup();
     expect(links(html)).toEqual(['h1', 'h2', 'h3', 'unknown']);
     expect(html).toContain('4 runs'); expect(html).not.toContain(' loaded</span>'); expect(html).not.toContain('No rounds recorded. Coverage is unknown.');
-    for (const text of ['Start unknown', 'Incomplete record', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
+    for (const text of ['Start time unknown', 'Incomplete record', 'Attribution unconfirmed', 'Head association unknown']) expect(html).toContain(text);
     expect(html).not.toContain('Counts not finalized');
     expect(html).toContain('<strong>5/?/?</strong>');
     expect(html).not.toContain('Current cli round limits'); expect(html).not.toContain('Load more');
