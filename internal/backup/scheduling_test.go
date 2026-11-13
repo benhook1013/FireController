@@ -220,6 +220,7 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 		{"missing-current-event", `DELETE FROM events WHERE event_type='review.scheduling_updated'`},
 		{"wrong-current-event-actor", `UPDATE events SET actor_id='principal_missing' WHERE event_type='review.scheduling_updated'`},
 		{"missing-domain", `DELETE FROM metadata WHERE key='schema:review_scheduling'`},
+		{"deleted-active-domain", `DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DELETE FROM metadata WHERE key='schema:review_scheduling'`},
 		{"missing-index", `DROP INDEX review_automatic_selections_pull`},
 		{"weakened-schema", `PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'revision>0','revision>=0') WHERE name='review_scheduling'; PRAGMA writable_schema=OFF`},
 		{"missing-worker", `UPDATE review_scheduling SET worker_id='worker_missing'`},
@@ -252,7 +253,10 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 	}
 	// A genuine predecessor may omit the entire optional domain. Startup adds
 	// empty controls only, never inferring enabled automation from old history.
-	old := schedulingBundleCopy(t, bundle.Path)
+	predecessor := newRestoreFixture(t)
+	selectionInventoryEngine(t, predecessor.store)
+	// No scheduling control or automatic selection has ever been accepted.
+	old := schedulingBundleCopy(t, restoreBundle(t, predecessor).Path)
 	mutateBundleSQL(t, old, `DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DELETE FROM metadata WHERE key='schema:review_scheduling'`)
 	if _, err := Inspect(t.Context(), old); err != nil {
 		t.Fatal("optional absent domain refused", err)

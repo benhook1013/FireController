@@ -804,16 +804,20 @@ func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("control race stopped supervisor", err)
 			}
-			if !verified || externalHosted != 0 {
-				t.Fatal("final verification admitted external action", verified, externalHosted)
+			if verified || externalHosted != 0 || driver.prepares.Load() != 1 {
+				t.Fatal("admission failed to refuse before external dispatch", verified, externalHosted)
 			}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("independent CLI work could not continue", err)
 			}
 			scope := selectionScope(t, f, attemptProject, f.writer, "read")
 			hosted, err := f.e.ReadOperation(t.Context(), scope, r.OperationID)
-			if err != nil || hosted.State != "failed" || hosted.Reason != "admission_changed" {
-				t.Fatal(hosted, err)
+			expected := "automation_authorization_changed"
+			if change == "pause" {
+				expected = "pull_scheduling_paused"
+			}
+			if err != nil || hosted.State != "queued" || hosted.Reason != expected || hosted.AttemptID != "" || hosted.ID != r.OperationID {
+				t.Fatal("refused preparation lost queued identity", hosted, err)
 			}
 			other, err := f.e.ReadOperation(t.Context(), scope, cli.ID)
 			if err != nil || other.State != "completed" || completedCLI != 1 {

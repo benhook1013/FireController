@@ -631,12 +631,12 @@ func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(
 				}}
 				err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver})
 				if corrupt {
-					attemptCode(t, err, "review_persistence_failed")
-					if op := roundOperation(t, f, receipt.ID); op.State == "held" {
-						t.Fatal("storage corruption was disguised as a normal policy hold", op)
+					op := roundOperation(t, f, receipt.ID)
+					if err != nil || op.State != "queued" || op.Reason != "automatic_scheduling_unavailable" || op.AttemptID != "" || op.ID != receipt.ID || preparing.ID == "" {
+						t.Fatal("typed project corruption lost its queued intent", op, err)
 					}
-					if driver.calls.Load() != 0 {
-						t.Fatal("corrupt retained source reached dispatch")
+					if driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+						t.Fatal("corrupt retained source reached dispatch or leaked reservation")
 					}
 					return
 				}

@@ -21,6 +21,7 @@ func TestCIWatchWorkflowRefusalsExplainInputRecovery(t *testing.T) {
 	}{
 		{"ci_watch_workflow_failures_unsupported", 409, "ordinary required-CI"},
 		{"ci_watch_workflow_capacity", 503, "workflow selections"},
+		{"ci_watch_response_limit", 503, "fewer targets"},
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			pins := ciWatchPins()

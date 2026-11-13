@@ -8,7 +8,7 @@ import (
 
 func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management"} {
+		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management", "malformed-state"} {
 			t.Run(channel+"/"+change, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				automatic := change != "explicit-pause"
@@ -32,6 +32,9 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 				reason := "automation_authorization_changed"
 				if change == "explicit-pause" || change == "automatic-pause" {
 					reason = "pull_scheduling_paused"
+				}
+				if change == "malformed-state" {
+					reason = "automatic_scheduling_unavailable"
 				}
 				var preparedAttempt Attempt
 				driver := &controlledDriver{prepare: func(ctx context.Context, op Operation, _ Configuration, a Attempt) (Preparation, error) {
@@ -58,6 +61,8 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 						admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 					case "lost-management":
 						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					case "malformed-state":
+						admissionSQL(t, f, `UPDATE review_execution_config SET body_json='{' WHERE project_id=?`, attemptProject)
 					}
 					intent := ""
 					if channel == "hosted" {
@@ -122,5 +127,20 @@ func TestSchedulingAdmitRefusalLeavesPreparationUntouched(t *testing.T) {
 	}
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 		t.Fatal("refused preparation retained capacity")
+	}
+}
+
+func TestSchedulingAdmissionDatabaseFailureStillStopsWithReservation(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	op := f.enqueue(t, attemptProject, "admission-storage-failure", "cli", 2, 1)
+	driver := &controlledDriver{prepare: func(ctx context.Context, op Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		admissionSQL(t, f, `ALTER TABLE review_execution_config RENAME TO unavailable_execution_config`)
+		return Preparation{Anchor: attemptAnchor(op.ProjectID, op.PullNumber)}, nil
+	}}
+	err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	after := roundOperation(t, f, op.ID)
+	if after.State != "preparing" || after.AttemptID == "" || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
+		t.Fatal("database failure was suppressed as a project-local refusal", after)
 	}
 }

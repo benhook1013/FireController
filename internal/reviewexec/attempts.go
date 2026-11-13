@@ -400,7 +400,7 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		}
 		operationState, operationAttempt := state, o.AttemptID
 		// Only an unused preparation may detach and retain the same queued intent.
-		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed"
+		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed" || reason == "automatic_scheduling_unavailable"
 		if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
 			operationState, operationAttempt = "queued", ""
 		}
