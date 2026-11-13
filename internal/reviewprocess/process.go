@@ -384,7 +384,10 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		Status       string `json:"status"`
 		Organization string `json:"organization"`
 	}
-	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || event.Status != "complete" || event.Organization != expectedOrganization {
+	// The provider can mark the whole report partial when its separate credits
+	// lookup is unavailable. Dispatch only uses the two independently validated
+	// sections below: inactive billing and included quota for this repository.
+	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || (event.Status != "complete" && event.Status != "partial") || event.Organization != expectedOrganization {
 		return zero, processError("usage_unavailable", false)
 	}
 	var billing map[string]json.RawMessage

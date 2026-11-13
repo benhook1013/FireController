@@ -216,6 +216,24 @@ func TestUsageParserRejectsMissingAmbiguousAndUntrustedFacts(t *testing.T) {
 	}
 }
 
+func TestUsageParserAcceptsPartialReportWithProvenBillingAndQuota(t *testing.T) {
+	complete := usageJSON("owner/repo", "owner", 1, 3, 1000, 3600000)
+	partial := strings.Replace(complete, `"status":"complete"`, `"status":"partial","reviewCredits":null`, 1)
+	if usage, err := parseUsage([]byte(partial), "owner/repo", "owner"); err != nil || usage.Remaining != 1 {
+		t.Fatalf("valid partial report: %+v %v", usage, err)
+	}
+	for _, input := range []string{
+		strings.Replace(partial, `"remaining":1`, `"remaining":null`, 1),
+		strings.Replace(partial, `"usageBillingStatus":"inactive"`, `"usageBillingStatus":"active"`, 1),
+		strings.Replace(partial, `"repository":"owner/repo"`, `"repository":"owner/other"`, 1),
+		strings.Replace(partial, `"status":"partial"`, `"status":"error"`, 1),
+	} {
+		if _, err := parseUsage([]byte(input), "owner/repo", "owner"); !errorCode(err, "usage_unavailable") {
+			t.Fatalf("unsafe allowance accepted: %v", err)
+		}
+	}
+}
+
 func TestUsageParserRequiresAvailableInactiveBilling(t *testing.T) {
 	valid := usageJSON("owner/repo", "owner", 1, 3, 0, 3600000)
 	const safeBilling = `"billingPeriod":{"state":"available","usageBillingStatus":"inactive"}`
