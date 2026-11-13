@@ -7,18 +7,18 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/ci.yml'
-COMPATIBILITY_LOCK = """concurrency:
-  group: firecontroller-ci
-  queue: max
-  cancel-in-progress: false
+WORKFLOW_SUPERSESSION = """concurrency:
+  group: firecontroller-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 """
 
 
 def inventory(text):
     """Read the deliberately explicit workflow shape; reject unmapped jobs."""
     header, body = text.split('\njobs:\n', 1)
-    assert COMPATIBILITY_LOCK in header
-    assert 'vars.' not in text
+    assert WORKFLOW_SUPERSESSION in header
+    assert len(re.findall(r'^  group:', header, re.M)) == 1
+    assert not re.search(r'^  queue:', header, re.M)
     assert len(re.findall(r'^concurrency:', header, re.M)) == 1
     assert re.search(r'^      - develop$', header, re.M)
     assert re.search(r'^      - main$', header, re.M)
@@ -26,7 +26,7 @@ def inventory(text):
     blocks = re.split(r'^  ([\w-]+):\n', body, flags=re.M)
     jobs = dict(zip(blocks[1::2], blocks[2::2]))
     assert set(jobs) == {'static', 'linux', 'qualification', 'native-smoke', 'validate'}
-    assert len(re.findall(r'^\s*queue:', text, re.M)) == 6
+    assert len(re.findall(r'^\s*queue:', text, re.M)) == 5
     assert len(re.findall(r'^\s*concurrency:', text, re.M)) == 6
     expected_names = {
         'static': 'Source and browser checks', 'linux': 'Go race (${{ matrix.shard }})',
@@ -71,6 +71,21 @@ def inventory(text):
     assert Counter(family for _, _, family in result) == {
         'linux': 22, 'native-smoke': 2, 'static': 1, 'qualification': 1, 'validate': 1,
     }
+    expected_lanes = {
+        'Source and browser checks': 2, 'Packaged qualification': 3,
+        'Native smoke (windows-latest)': 4, 'Native smoke (macos-latest)': 5,
+        'validate': 2,
+    }
+    race_order = [
+        'backup-0', 'reviewexec-0', 'reviews-0', 'reviewruntime-0', 'rest-0',
+        'backup-1', 'reviewexec-1', 'reviews-1', 'reviewruntime-1', 'rest-1',
+        'backup-2', 'reviewexec-2', 'reviews-2', 'backup-3', 'reviewexec-3',
+        'reviews-3', 'backup-4', 'reviewexec-4', 'backup-5', 'reviewexec-5',
+        'backup-6', 'backup-7',
+    ]
+    expected_lanes.update({f'Go race ({name})': index % 20
+                           for index, name in enumerate(race_order)})
+    assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
 
 
@@ -173,33 +188,17 @@ class LegacyRun:
         self.snapshots.append(tuple(job for job, _ in self.active.values()))
 
 
-class ProposedWorkflowAdmission:
-    """Captured group selection is immutable for an already submitted run.
-
-    This is a proposed future opt-in gate, NOT the current literal-lock workflow.
-    Models admission, not provider variable propagation timing. The caller
-    supplies a hypothetical value; the current workflow reads no variable.
-    """
+class WorkflowAdmission:
+    """Model GitHub's captured workflow group and latest-arrival replacement."""
     def __init__(self):
-        self.groups = {}
         self.active = {}
-        self.pending = {}
+        self.cancelled = []
 
-    def submit(self, run, variable='', legacy=False):
-        enabled = not legacy and variable.lower() == 'true'
-        group = f'firecontroller-ci-run-{run}' if enabled else 'firecontroller-ci'
-        self.groups[run] = group
-        if group not in self.active:
-            self.active[group] = run
-        else:
-            self.pending.setdefault(group, deque()).append(run)
-
-    def finish(self, run):
-        group = self.groups[run]
-        assert self.active[group] == run
-        del self.active[group]
-        if self.pending.get(group):
-            self.active[group] = self.pending[group].popleft()
+    def submit(self, run, event, ref):
+        group = f'firecontroller-ci-{event}-{ref}'.lower()
+        if group in self.active:
+            self.cancelled.append(self.active[group])
+        self.active[group] = run
 
 
 class SchedulingTests(unittest.TestCase):
@@ -237,10 +236,13 @@ class SchedulingTests(unittest.TestCase):
     def test_guards_refuse_missing_lane_extra_jobs_and_revision_changes(self):
         mutations = [
             self.text.replace('slot: 19', 'slot: 20'),
-            self.text.replace('queue: max', 'queue: single', 1),
-            self.text.replace('  group: firecontroller-ci\n', '  group: different-legacy-group\n', 1),
-            self.text.replace('  group: firecontroller-ci\n', '  group: ${{ github.run_id }}\n', 1),
-            self.text.replace('cancel-in-progress: false', 'cancel-in-progress: true', 1),
+            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.ref', 'github.run_id'), 1),
+            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.event_name', 'github.run_id'), 1),
+            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
+            self.text.replace('            slot: 19', '            slot: 18', 1),
+            self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
+            self.text.replace('      queue: max', '      queue: single', 1),
+            self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
             self.text.replace('            slot: 19\n', ''),
             self.text.replace('    steps:\n', '    steps:\n      - with:\n          ref: main\n', 1),
             self.text.replace('    name: validate', '    name: renamed'),
@@ -259,7 +261,7 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(len(s.active), 20)
         self.finish_runs(s, ['PR-A'])
 
-    def test_proposed_interleaving_independent_pr_and_develop_runs_overlap_including_gate(self):
+    def test_interleaving_independent_pr_and_develop_runs_overlap_including_gate(self):
         s = Scheduler()
         runs = ['PR-A', 'PR-B', 'develop']
         slow = 'Go race (reviewexec-5)'
@@ -276,7 +278,7 @@ class SchedulingTests(unittest.TestCase):
                             and any(j.name.startswith('Go race') for j in snapshot)
                             for snapshot in s.snapshots))
 
-    def test_proposed_interleaving_slow_tail_does_not_hold_other_nineteen_lanes(self):
+    def test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes(self):
         s = Scheduler()
         slow = 'Go race (backup-0)'
         slow_lanes = [lane for name, lane, _ in self.jobs if name == slow]
@@ -288,7 +290,7 @@ class SchedulingTests(unittest.TestCase):
         progressed = {j.lane for start, _, j in s.intervals if j.run == 'PR-B' and start < 100}
         self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
 
-    def test_proposed_interleaving_many_runs_with_uneven_durations_stay_within_budget(self):
+    def test_interleaving_many_runs_with_uneven_durations_stay_within_budget(self):
         s = Scheduler()
         runs = [f'PR-{index}' for index in range(20)]
         for index, run in enumerate(runs):
@@ -300,12 +302,12 @@ class SchedulingTests(unittest.TestCase):
         self.jobs = [(name.replace('reviewexec-5', 'reviewexec-renamed'), lane, family)
                      for name, lane, family in self.jobs]
         with self.assertRaisesRegex(AssertionError, 'reviewexec-5'):
-            self.test_proposed_interleaving_independent_pr_and_develop_runs_overlap_including_gate()
+            self.test_interleaving_independent_pr_and_develop_runs_overlap_including_gate()
 
     def test_slow_tail_follows_reassigned_inventory_lanes(self):
         self.jobs = [(name, (lane + 7) % 20, family)
                      for name, lane, family in self.jobs]
-        self.test_proposed_interleaving_slow_tail_does_not_hold_other_nineteen_lanes()
+        self.test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes()
 
     def test_affinity_explicitly_strands_spare_capacity(self):
         s = Scheduler()
@@ -327,70 +329,30 @@ class SchedulingTests(unittest.TestCase):
         # No queued work is displaced, but latest arrival is not guaranteed admission.
         self.assertEqual(s.pending[0][0].run, 'PR-0')
 
-    def test_current_workflow_requires_literal_compatibility_lock(self):
-        header = self.text.split('\njobs:\n', 1)[0]
-        self.assertIn(COMPATIBILITY_LOCK, header)
-        self.assertNotIn('vars.', self.text)
-        self.assertEqual(re.findall(r'^  group: (.+)$', header, re.M), ['firecontroller-ci'])
+    def test_latest_arrival_supersedes_only_the_same_pr_or_push_ref(self):
+        admission = WorkflowAdmission()
+        requests = [
+            ('pr-45-old', 'pull_request', 'refs/pull/45/merge'),
+            ('pr-89', 'pull_request', 'refs/pull/89/merge'),
+            ('develop-old', 'push', 'refs/heads/develop'),
+            ('main-old', 'push', 'refs/heads/main'),
+            ('pr-45-new', 'pull_request', 'refs/pull/45/merge'),
+            ('develop-new', 'push', 'refs/heads/develop'),
+            ('main-new', 'push', 'refs/heads/main'),
+        ]
+        for request in requests:
+            admission.submit(*request)
+        self.assertEqual(admission.cancelled, ['pr-45-old', 'develop-old', 'main-old'])
+        self.assertEqual(set(admission.active.values()), {'pr-45-new', 'pr-89', 'develop-new', 'main-new'})
 
-    def test_literal_lock_admission_serializes_with_legacy_workflows(self):
-        gate = ProposedWorkflowAdmission()
-        # legacy=True selects the literal lock, matching the verified current header.
-        gate.submit('old', legacy=True)
-        gate.submit('new', legacy=True)
-        gate.submit('another', legacy=True)
-        self.assertEqual(list(gate.active.values()), ['old'])
-        gate.finish('old')
-        self.assertEqual(list(gate.active.values()), ['new'])
-        gate.finish('new')
-        self.assertEqual(list(gate.active.values()), ['another'])
+    def test_many_revisions_keep_one_run_per_pr(self):
+        admission = WorkflowAdmission()
+        for revision in range(120):
+            admission.submit(revision, 'pull_request', 'refs/pull/45/merge')
+        self.assertEqual(list(admission.active.values()), [119])
+        self.assertEqual(admission.cancelled, list(range(119)))
 
-    def test_proposed_interleaving_gate_matches_github_case_insensitive_comparison(self):
-        for value in ('true', 'TRUE', 'True'):
-            gate = ProposedWorkflowAdmission()
-            gate.submit('run', variable=value)
-            self.assertEqual(gate.groups['run'], 'firecontroller-ci-run-run')
-        for value in ('', 'false', '1', 'true ', 'enabled'):
-            gate = ProposedWorkflowAdmission()
-            gate.submit('run', variable=value)
-            self.assertEqual(gate.groups['run'], 'firecontroller-ci')
-
-    def test_proposed_interleaving_activation_does_not_reassign_already_queued_groups(self):
-        gate = ProposedWorkflowAdmission()
-        gate.submit('default-running')
-        gate.submit('default-queued')
-        gate.submit('enabled', variable='true')
-        self.assertEqual(gate.groups['default-queued'], 'firecontroller-ci')
-        self.assertEqual(set(gate.active.values()), {'default-running', 'enabled'})
-        # Previously gated runs still use lanes, even across activation.
-        s = Scheduler()
-        for run in gate.active.values():
-            self.offer_run(s, run)
-        self.finish_runs(s, ['default-running', 'enabled'])
-        gate.finish('default-running')
-        self.assertIn('default-queued', gate.active.values())
-
-    def test_proposed_interleaving_rollback_affects_future_groups_not_existing_runs(self):
-        gate = ProposedWorkflowAdmission()
-        gate.submit('enabled-A', variable='true')
-        gate.submit('enabled-B', variable='true')
-        gate.submit('rollback-A', variable='false')
-        gate.submit('rollback-B')
-        runs = ['enabled-A', 'enabled-B', 'rollback-A']
-        self.assertEqual(set(gate.active.values()), set(runs))
-        self.assertEqual(gate.groups['enabled-A'], 'firecontroller-ci-run-enabled-A')
-        s = Scheduler()
-        for run in runs:
-            self.offer_run(s, run)
-        self.finish_runs(s, runs)
-        gate.finish('rollback-A')
-        self.assertIn('rollback-B', gate.active.values())
-
-    def test_proposed_interleaving_legacy_workflow_is_outside_new_lane_bound(self):
-        admission = ProposedWorkflowAdmission()
-        admission.submit('legacy', legacy=True)
-        admission.submit('new', variable='true')
-        self.assertEqual(set(admission.active.values()), {'legacy', 'new'})
+    def test_legacy_workflow_is_outside_shared_lane_bound(self):
         s = Scheduler()
         self.offer_run(s, 'new')
         legacy = LegacyRun(self.jobs, 'legacy')
