@@ -31,6 +31,12 @@ function activeAttemptStatus(attempt: ReviewAttemptSummary, progress?: ReviewRou
   return { text: attempt.state === 'active' ? 'Reviewing' : 'Preparing', activity: { startedAt, explanation, ...(evidence ? { evidence } : {}) } };
 }
 
+const githubRateLimit = 'GitHub rate limit. The review did not start.';
+const sourceRateLimitWait = 'source_rate_limit_wait';
+function isGitHubPreparationHold(reason?: string): boolean {
+  return reason === 'preparation_source_resolution_provider_rate_limited' || reason === 'preparation_source_refresh_provider_rate_limited';
+}
+
 // Keep the reason readable without requiring a mouse hover. Raw codes remain
 // in the existing Attempts details, including unknown future reason codes.
 export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
@@ -50,16 +56,18 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     process_not_started: 'The review process could not start',
     execution_interrupted: 'The review process was interrupted',
     cli_partial_settled: 'The CLI review ended without full coverage',
+    source_rate_limit_wait: 'GitHub rate limit delayed preparation',
     cli_partial_comparison_already_reviewed: 'Automatic CLI is waiting for the comparison to change',
     capture_retention_failed: 'The review result could not be retained',
     source_obligations_pending: 'Carried review work is still pending',
     routed_findings_pending: 'Incoming findings still need handling',
     review_evidence_pending: 'Earlier review results still need handling',
   };
+  if (isGitHubPreparationHold(attempt.reason)) return githubRateLimit;
   if (attempt.reason && Object.hasOwn(causes, attempt.reason)) return causes[attempt.reason];
   if (attempt.reason) {
     const words = attempt.reason.replaceAll('_', ' ');
-    return `${words[0].toUpperCase()}${words.slice(1)}`;
+    return `${words[0].toUpperCase()}${words.slice(1)}`.replace(/\b(?:ci|cli)\b/giu, acronym => acronym.toUpperCase());
   }
   return attempt.state === 'uncertain' ? 'The provider outcome is unconfirmed' : 'No reason was recorded';
 }
@@ -77,10 +85,14 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   // An unconfirmed provider outcome must be reconciled, even when another
   // request or a closed grant exists. Do not present it as safe to retry.
   if (attempt?.state === 'uncertain') return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
-  if (progress?.wait) return undefined; // Render the actual retained wait badge.
+  if (progress?.wait && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
   if (attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state)) {
     return activeAttemptStatus(attempt, progress);
   }
+  if (progress?.source_retry && !progress.wait?.paused) return { text: 'Queued' };
+  const githubHold = stopped && isGitHubPreparationHold(attempt.reason);
+  const priorSourceWait = stopped && attempt.reason === sourceRateLimitWait;
+  if ((githubHold || priorSourceWait) && (progress?.pending_execution ?? 0) > 0) return { text: 'Queued' };
   if ((progress?.pending_execution ?? 0) > 0) return {
     text: stopped && !settled ? 'Retry pending' : 'Pending',
     cause: stopped && !settled ? `Previous attempt: ${reviewAttemptCause(attempt)}` : undefined,
@@ -95,7 +107,8 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   if (attempt?.state === 'held' && progress?.channel === attempt.channel && progress.pending_execution === 0 && progress.pending_adjudication === 0 && validCancelledWait(cancelled) && cancelled.baseline_attempt_id === attempt.source_attempt_id && cancelled.head_sha === attempt.head_sha && attempt.reason === (attempt.channel === 'hosted' ? 'hosted_allowance_cooldown' : 'allowance_exhausted') && !attempt.source_run_id && !attempt.trigger_id && !attempt.provider_review_id && attempt.finished_at && Number.isFinite(Date.parse(attempt.finished_at)) && Date.parse(attempt.finished_at) <= Date.parse(cancelled.cancelled_at)) {
     return undefined; // The request is gone; its unused baseline stays in history.
   }
-  if (stopped && !settled) {
+  if (stopped && !settled && !priorSourceWait) {
+    if (githubHold) return { text: 'Needs agent attention', kind: 'attention', cause: githubRateLimit, description: 'See Attempts in review history.' };
     // A known admission hold is more useful than a generic process alert.
     if (attempt.state === 'held' && attempt.reason === 'predecessor_unfinished') return { text: 'Dependency pending', cause: reviewAttemptCause(attempt), description: `Predecessor work holds this attempt. No retry is confirmed. ${diagnostic}` };
     return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The review attempt stopped. This is a process issue, not a PR review verdict. ${progress ? 'No pending recovery is recorded.' : 'Current recovery status is unavailable.'} ${diagnostic}` };

@@ -12,11 +12,14 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 	if len(r.URL.RawQuery) > 4096 {
 		return nil, invalid()
 	}
-	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view", "include_activity_evidence")
+	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view", "include_activity_evidence", "include_source_retry")
 	if err != nil {
 		return nil, err
 	}
 	if query.Has("include_activity_evidence") && (query.Get("include_activity_evidence") != "true" || query.Get("view") != "stages") {
+		return nil, invalid()
+	}
+	if query.Has("include_source_retry") && (query.Get("include_source_retry") != "true" || query.Get("view") != "stages") {
 		return nil, invalid()
 	}
 	if query.Has("view") && query.Get("view") != "stages" {
@@ -57,7 +60,8 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	progress, err := e.readRoundProgressWithQueuePriority(r.Context(), scope, numbers, r.URL.Query().Get("view") == "stages", r.Header.Get(operationWaitHeader) == "5", r.URL.Query().Get("include_activity_evidence") == "true")
+	query := r.URL.Query()
+	progress, err := e.readRoundProgressWithQueuePriority(r.Context(), scope, numbers, query.Get("view") == "stages", r.Header.Get(operationWaitHeader) == "5", query.Get("include_activity_evidence") == "true", query.Get("include_source_retry") == "true")
 	if err != nil {
 		core.WriteError(w, err)
 		return

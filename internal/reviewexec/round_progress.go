@@ -15,6 +15,7 @@ type RoundProgressChannel struct {
 	ActivityEvidence    *ActivityEvidence `json:"activity_evidence,omitempty"`
 	CancelledWait       *CancelledWait    `json:"cancelled_wait,omitempty"`
 	Wait                *OperationWait    `json:"wait,omitempty"`
+	SourceRetry         *SourceRetry      `json:"source_retry,omitempty"`
 	Channel             string            `json:"channel"`
 	Configured          bool              `json:"configured"`
 	Revision            int64             `json:"revision"`
@@ -125,6 +126,12 @@ func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope c
 						return err
 					}
 				}
+				if len(activity) > 1 && activity[1] {
+					progress.SourceRetry, err = readChannelSourceRetry(ctx, tx, scope.ProjectID, number, channel)
+					if err != nil {
+						return err
+					}
+				}
 				item.Channels = append(item.Channels, progress)
 			}
 			out.Items = append(out.Items, item)
@@ -136,6 +143,27 @@ func (e *Engine) readRoundProgressWithQueuePriority(ctx context.Context, scope c
 		return RoundProgress{}, err
 	}
 	return out, nil
+}
+
+// Source-only waits need not have an allowance timer. Only read the retry
+// attached to a current queued operation, never an older stopped attempt.
+func readChannelSourceRetry(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*SourceRetry, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state='queued' AND reason=? AND attempt_id='' ORDER BY created_at,id LIMIT 1`, project, number, channel, sourceRetryReason).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	if o.Wait == nil || o.Wait.SourceRetry == nil {
+		return nil, waitUnavailable()
+	}
+	return o.Wait.SourceRetry, nil
 }
 
 // Project only a current queued intent, never infer a timer from a held run.

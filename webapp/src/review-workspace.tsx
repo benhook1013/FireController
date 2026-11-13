@@ -1,4 +1,4 @@
-import { reviewAttemptStatus, type ReviewAttemptStatus } from './review-attempt-status';
+import { reviewAttemptCause, reviewAttemptStatus, type ReviewAttemptStatus } from './review-attempt-status';
 import { ReviewAttemptBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
 import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
@@ -28,7 +28,7 @@ import { githubThreadContext } from './review-source-readiness';
 import './review-queue.css';
 import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
-import type { ReviewActivityEvidence, ReviewProgressItem, ReviewRoundProgress } from './review-progress';
+import type { ReviewActivityEvidence, ReviewProgressItem, ReviewRoundProgress, ReviewSourceRetry } from './review-progress';
 import { currentReviewFronts, reviewQueueBadges, reviewChannelPosition, type ReviewChannelPosition, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
 import { useReviewQueueFrame } from './review-frame-view';
@@ -61,7 +61,7 @@ function reviewAttemptReason(attempt: ReviewAttemptSummary): string | undefined 
     hosted_allowance_cooldown: 'Waiting for hosted allowance',
     allowance_exhausted: 'CLI allowance exhausted',
   };
-  return Object.hasOwn(labels, attempt.reason) ? labels[attempt.reason] : reviewLabel(attempt.reason);
+  return Object.hasOwn(labels, attempt.reason) ? labels[attempt.reason] : reviewAttemptCause(attempt);
 }
 function ReviewNotice({ history = false }: { history?: boolean }) {
   const { home } = useWorkspace();
@@ -339,10 +339,23 @@ function ArchiveProgress({ shown, expected, snapshot, label, hasMore, busy, more
   if (!hasMore && shown === expected) return null;
   return <div className="pager"><span>{shown} of {expected} {label}{!hasMore && <small>History count changed; refresh to reload.</small>}</span>{hasMore && <button type="button" onClick={more} disabled={busy}>Load more {label}</button>}</div>;
 }
-export function ReviewAttempts({ number, snapshot, expected: latestExpected }: { number: number; snapshot: string; expected: number }) {
+export function ReviewAttempts({ number, snapshot, expected: latestExpected, sourceRetries = [] }: { number: number; snapshot: string; expected: number; sourceRetries?: ReviewSourceRetry[] }) {
   const archive = useReviewArchive<ReviewAttemptItem>('attempts', number, snapshot, latestExpected);
   const expected = archive.expected;
-  return <section className="panel review-attempts" aria-label={`PR #${number} attempts`}><details><summary>Attempts ({expected})</summary>{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}{archive.loading ? <PageSkeleton rows={2} label="Loading retained attempts" /> : archive.items.length === 0 ? <p className="review-empty">{expected === 0 ? 'No attempts recorded.' : 'No attempts loaded.'}</p> : <ul>{archive.items.map(attempt => <li key={JSON.stringify([attempt.source, attempt.source_attempt_id])}><div><span className="review-channel">{attempt.channel}</span><strong>{reviewLabel(attempt.state)}</strong>{reviewAttemptReason(attempt) && <><small>Reason</small><span title={attempt.reason}>{reviewAttemptReason(attempt)}</span></>}</div><div><small>Original source</small><span>{attempt.source}</span></div><div><small>Started</small>{attempt.started_at ? <RelativeTime value={attempt.started_at} /> : 'Unknown'}</div><div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div><div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div><div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div></li>)}</ul>}<ArchiveProgress shown={archive.items.length} expected={expected} snapshot={snapshot} label="attempts" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></details></section>;
+  return <section className="panel review-attempts" aria-label={`PR #${number} attempts`}><details><summary>Attempts ({expected})</summary>{!!archive.error && <ReadState error={archive.error} loading={false} empty={false}>{null}</ReadState>}{archive.loading ? <PageSkeleton rows={2} label="Loading retained attempts" /> : archive.items.length === 0 ? <p className="review-empty">{expected === 0 ? 'No attempts recorded.' : 'No attempts loaded.'}</p> : <ul>{archive.items.map(attempt => {
+    const reason = reviewAttemptReason(attempt);
+    const retry = attempt.source === 'native-executor' && attempt.state === 'held' && attempt.reason === 'source_rate_limit_wait'
+      ? sourceRetries.find(candidate => candidate.attempt_id === attempt.source_attempt_id)
+      : undefined;
+    return <li key={JSON.stringify([attempt.source, attempt.source_attempt_id])}>
+      <div><span className="review-channel">{attempt.channel}</span><strong>{reviewLabel(attempt.state)}</strong>{reason && <><small>Reason</small><span title={attempt.reason}>{reason}</span></>}{retry && <><small>Retry at or after</small><time dateTime={retry.retry_not_before}>{time(retry.retry_not_before)}</time></>}</div>
+      <div><small>Original source</small><span>{attempt.source}</span></div>
+      <div><small>Started</small>{attempt.started_at ? <RelativeTime value={attempt.started_at} /> : 'Unknown'}</div>
+      <div><small>Duration</small>{attempt.duration_seconds === null ? 'Unknown' : `${attempt.duration_seconds}s`}</div>
+      <div><small>Head</small><code>{attempt.head_sha || 'Unknown'}</code></div>
+      <div><small>Source attempt / run</small><span>{attempt.source_attempt_id}</span><span>{attempt.source_run_id || 'No run attached'}</span></div>
+    </li>;
+  })}</ul>}<ArchiveProgress shown={archive.items.length} expected={expected} snapshot={snapshot} label="attempts" hasMore={archive.hasMore} busy={archive.busy} more={archive.more} /></details></section>;
 }
 export function ReviewPullView() {
   const { number: rawNumber = '' } = useParams();
@@ -353,14 +366,16 @@ export function ReviewPullView() {
   const value = query.data;
   const fronts = useReviewFronts(!!value);
   const progress = useReviewProgress(value ? [value.pull.number] : []);
+  const currentProgress = progress.data?.items.find(item => item.pull_number === number);
+  const sourceRetries = currentProgress?.channels.flatMap(channel => channel.source_retry && !channel.wait?.paused ? [channel.source_retry] : []);
   const currentFronts = value ? currentReviewFronts(value.snapshot_id, [value.pull], fronts.data) : undefined;
   const channels = fronts.data?.configured ? fronts.data.channels.map(channel => channel.channel) : undefined;
   const queueLink = <Link className="review-details-link" to={`${home}${reviewQueueHeadHash}`}>Review queue ↗</Link>;
   return <article className="review-detail-page"><ReadState error={query.error} loading={query.isPending} empty={false}>{value && <>
-    <ul className="review-queue review-detail-overview" aria-label={`PR #${value.pull.number} overview`}><ReviewQueueRow pull={value.pull} snapshot={value.snapshot_id} progress={progress.data?.items.find(item => item.pull_number === value.pull.number)} fronts={currentFronts} channels={channels} footer={queueLink} anchor={false} rail /></ul>
+    <ul className="review-queue review-detail-overview" aria-label={`PR #${value.pull.number} overview`}><ReviewQueueRow pull={value.pull} snapshot={value.snapshot_id} progress={currentProgress} fronts={currentFronts} channels={channels} footer={queueLink} anchor={false} rail /></ul>
     <ReviewRoutedFindings number={number} /><ReviewObligations number={number} excludeRoutes />
     <ReviewRoundHistory key={number} number={number} snapshot={value.snapshot_id} head={value.pull.head_sha} expected={value.pull.run_count} channelTotals={value.pull.run_counts} context={<ReviewGitHubThreads pull={value.pull} snapshot={value.snapshot_id} fronts={fronts.data} />} />
-    <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} /></footer>
+    <footer className="review-detail-technical"><details className="review-comparison-details"><summary>Comparison and source details</summary><dl className="review-ref-grid"><div><dt>Observed head</dt><dd><code>{value.pull.head_sha || 'Unknown'}</code></dd></div><div><dt>Base</dt><dd>{value.pull.base_ref || 'Unknown'}<code>{value.pull.base_sha}</code></dd></div><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details><ReviewAttempts key={`attempts:${number}`} number={number} snapshot={value.snapshot_id} expected={value.pull.attempt_count} sourceRetries={sourceRetries} /></footer>
   </>}</ReadState></article>;
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
@@ -406,7 +421,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);
   const running = returned ? undefined : status?.activity?.evidence;
   const badge = (returned && status?.activity) || running ? undefined : status;
-  const waiting = historical ? undefined : progress?.wait;
+  const waiting = historical || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
   const partials = channel === 'cli' ? recentRuns.filter(partialCLIResult).reverse() : [];
   const completed = runs.filter(run => run.channel === channel && run.outcome === 'completed' && run.id !== returned?.id);
   const pills = [

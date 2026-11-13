@@ -138,6 +138,33 @@ func TestSourceRetrySupervisorDoesNotDispatchOrDuplicate(t *testing.T) {
 	}
 }
 
+func TestRoundProgressShowsOnlyCurrentSourceRetryOnOptIn(t *testing.T) {
+	f, r, now := sourceFixture(t)
+	a := scheduleSourceFixture(t, f, r, *now)
+	path := roundProgressPath(attemptProject) + "?pull_numbers=2&view=stages"
+	read := func(query string) RoundProgressChannel {
+		t.Helper()
+		response := versionWaitRead(t, f, path+query, "5")
+		var progress RoundProgress
+		if err := json.Unmarshal(response.Body.Bytes(), &progress); err != nil || len(progress.Items) != 1 {
+			t.Fatalf("invalid progress: %s", response.Body.String())
+		}
+		return progress.Items[0].Channels[1]
+	}
+	if got := read("&include_activity_evidence=true"); got.SourceRetry != nil {
+		t.Fatal("source retry escaped opt-in", got)
+	}
+	if got := read("&include_source_retry=true"); got.SourceRetry == nil || got.SourceRetry.AttemptID != a.ID ||
+		got.SourceRetry.RetryNotBefore != now.Add(time.Minute).Format(time.RFC3339Nano) || got.Used != 0 {
+		t.Fatal("missing current retry or changed accounting", got)
+	}
+	*now = now.Add(time.Minute)
+	f.start(t, attemptProject, r)
+	if got := read("&include_source_retry=true"); got.SourceRetry != nil {
+		t.Fatal("old retry masked a newer attempt", got)
+	}
+}
+
 func TestHostedCooldownKeepsOriginalRequestThroughGitHubSourceRefreshLimit(t *testing.T) {
 	f, original, cooldown, now := queuedCooldown(t)
 	completionNoticeSchema(t, f)

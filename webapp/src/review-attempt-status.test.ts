@@ -165,3 +165,15 @@ it('keeps a settled partial CLI attempt in history and shows only the current qu
   expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Pending', cause: undefined, description: undefined });
   expect(reviewAttemptCause(settled)).toBe('The CLI review ended without full coverage');
 });
+
+it('shows a GitHub preparation stop only when no current request supersedes it', () => {
+  const held = { ...attempt, state: 'held' as const, reason: 'preparation_source_resolution_provider_rate_limited' };
+  expect(reviewAttemptStatus(held, progress)).toMatchObject({ text: 'Needs agent attention', cause: 'GitHub rate limit. The review did not start.' });
+  expect(reviewAttemptStatus(held, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Queued' });
+  const source_retry = { attempt_id: held.source_attempt_id, observed_at: held.started_at, retry_not_before: held.finished_at, sequence: 1 };
+  expect(reviewAttemptStatus({ ...held, reason: 'source_rate_limit_wait' }, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(held, { ...progress, source_retry })).toEqual({ text: 'Queued' });
+  expect(reviewAttemptStatus(held, { ...progress, source_retry, wait: { paused: true } })).toBeUndefined();
+  expect(reviewAttemptStatus({ ...held, state: 'preparing', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Preparing' });
+  expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Reviewing' });
+});

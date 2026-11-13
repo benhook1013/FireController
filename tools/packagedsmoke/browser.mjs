@@ -925,7 +925,27 @@ try {
   checkpoint = 'fallback-observation';
   // An unknown predecessor prevents the stored queue from claiming an open
   // head. Use the real observation API, not a fabricated browser response.
-  await write('POST', '/reviews/observations', observation(0, [pull(33, 'unknown', 'Unknown preceding smoke PR'), open]), 201);
+  const sourceObserved = new Date().toISOString();
+  const sourceDeadline = new Date(Date.parse(sourceObserved) + 3600000).toISOString();
+  const sourceAttempt = {source_attempt_id:'review_attempt_'+'c'.repeat(32),channel:'hosted',head_sha:open.head_sha,state:'held',reason:'source_rate_limit_wait',started_at:sourceObserved,finished_at:sourceObserved,duration_seconds:0,source_run_id:'',trigger_id:'',provider_review_id:''};
+  const terminalSourceAttempt = {...sourceAttempt,source_attempt_id:'review_attempt_'+'d'.repeat(32),channel:'cli',reason:'preparation_source_resolution_provider_rate_limited'};
+  const sourceProgressPattern = config.origin + prefix + '/reviews/rounds/progress?*';
+  const sourceProgress = async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    const channel = payload.items.find(item => item.pull_number === 33)?.channels.find(item => item.channel === 'hosted');
+    if (channel) channel.source_retry = {attempt_id:sourceAttempt.source_attempt_id,observed_at:sourceObserved,retry_not_before:sourceDeadline,sequence:1};
+    await route.fulfill({response,json:payload});
+  };
+  await page.route(sourceProgressPattern, sourceProgress);
+  await write('POST', '/reviews/observations', observation(0, [{...pull(33, 'unknown', 'Unknown preceding smoke PR'),attempts:[sourceAttempt,terminalSourceAttempt]}, open]), 201);
+  const sourceRow = page.locator('#review-pr-33');
+  const hostedSourceLane = sourceRow.getByRole('region',{name:'Hosted CodeRabbit',exact:true});
+  const cliSourceLane = sourceRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
+  await expect(hostedSourceLane.getByText('Queued',{exact:true})).toBeVisible();
+  await expect(hostedSourceLane).not.toContainText('GitHub rate limit');
+  await expect(cliSourceLane.getByText('GitHub rate limit. The review did not start.',{exact:true})).toBeVisible();
+  await page.unroute(sourceProgressPattern, sourceProgress);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   const fallbackHero = page.getByRole('region', {name:'Review queue head', exact:true});
   await fallbackHero.getByRole('heading', {name:'Queue head not determined', exact:true}).waitFor();
@@ -1268,6 +1288,7 @@ try {
   await expect(attemptsPanel.getByText('Reason',{exact:true})).toHaveCount(2);
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toBeVisible();
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toHaveText(reasonText);
+  await expect(attemptsPanel.getByTitle('cli_partial_settled',{exact:true})).toHaveText('The CLI review ended without full coverage');
   await expect(attemptsPanel.getByText('Uncertain',{exact:true})).toBeVisible();
   need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   checkpoint = 'attempt-reason-reads';
