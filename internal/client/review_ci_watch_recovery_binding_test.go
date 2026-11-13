@@ -45,7 +45,7 @@ func TestCIWatchWorkflowRefusalsExplainInputRecovery(t *testing.T) {
 			defer server.Close()
 			_, err := newClient(t, server).WatchCI(t.Context(), pins, 0)
 			var failure *client.Error
-			if !errors.As(err, &failure) || failure.Code != test.code || failure.Status != test.status || failure.RequestID != "workflow-refusal" || posts.Load() != 1 {
+			if !errors.As(err, &failure) || failure.Code != test.code || failure.Status != test.status || strings.Contains(failure.Message, "private provider text") || failure.RequestID != "workflow-refusal" || posts.Load() != 1 {
 				t.Fatal("refusal changed identity or retried", err, posts.Load())
 			}
 			details, ok := failure.Details.(map[string]any)
