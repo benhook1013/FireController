@@ -26,7 +26,7 @@ func (e *Engine) reconcilePreparingDrivers(ctx context.Context, drivers map[stri
 	}
 	rows, err := e.store.DB().QueryContext(ctx, `SELECT a.project_id,a.id,a.operation_id,
  EXISTS(SELECT 1 FROM review_hosted_allowance_queries q WHERE q.attempt_id=a.id)
- AND EXISTS(SELECT 1 FROM review_hosted_observations h WHERE h.attempt_id=a.id)
+ OR EXISTS(SELECT 1 FROM review_hosted_observations h WHERE h.attempt_id=a.id)
  FROM review_execution_attempts a
  JOIN review_operations o ON o.id=a.operation_id AND o.attempt_id=a.id
  WHERE a.state='preparing' AND o.state='preparing' AND o.channel='hosted'
@@ -57,9 +57,18 @@ func (e *Engine) reconcilePreparingDrivers(ctx context.Context, drivers map[stri
 		if err != nil {
 			return nil, err
 		}
-		o, err := readOperationBase(ctx, e.store.DB(), id.project, id.operation)
+		o, err := readOperationIdentity(ctx, e.store.DB(), id.project, id.operation)
 		if err != nil {
 			return nil, err
+		}
+		o.Wait, err = readOperationWait(ctx, e.store.DB(), o)
+		if err != nil {
+			if !isWaitUnavailable(err) {
+				return nil, err
+			}
+			skipped[id.attempt] = true
+			slog.WarnContext(ctx, "Hosted preparation wait is unavailable", "operation_id", id.operation, "attempt_id", id.attempt)
+			continue
 		}
 		var replayed bool
 		for key, capability := range e.capabilities {

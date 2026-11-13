@@ -72,17 +72,17 @@ func attemptRecordingStamp(ctx context.Context, tx *sql.Tx, o Operation, a *Atte
 // StartAttempt reserves both the external target and the provider account.
 // It does no provider work; preparing has not authorized an external action.
 func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt, error) {
-	return e.startAttempt(ctx, project, id, 0)
+	return e.startAttempt(ctx, project, id, 0, 0)
 }
 
-func (e *Engine) startAttempt(ctx context.Context, project, id string, draftReadyRevision int64) (Attempt, error) {
+func (e *Engine) startAttempt(ctx context.Context, project, id string, draftReadyRevision int64, expectedRevision int64) (Attempt, error) {
 	var result Attempt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		o, err := readOperation(ctx, tx, project, id)
 		if err != nil {
 			return err
 		}
-		if o.State != "queued" {
+		if o.State != "queued" || expectedRevision > 0 && o.Revision != expectedRevision {
 			return conflict()
 		}
 		now := e.sampleExecutionTime()
