@@ -6,16 +6,19 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -652,5 +655,262 @@ func TestReviewOrderStructureSkipsQuotedTokens(t *testing.T) {
 		if _, ok := reviewOrderSQLStructure(token); ok {
 			t.Fatal("unclosed accepted", token)
 		}
+	}
+}
+
+func backupCLIExhaustionArtifact(t *testing.T, f *restoreFixture) (string, []byte) {
+	t.Helper()
+	attempt, operation := core.NewID("review_attempt"), core.NewID("review_operation")
+	at := "2026-01-01T00:00:00Z"
+	anchor := reviewexec.Anchor{RepositoryID: 991, Repository: "synthetic/restore", PullNumber: 2, BaseRef: "main", CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("c", 64), ObservedAt: at}
+	record := reviewexec.CLIExhaustionRecovery{
+		Operation:   reviewexec.Operation{ID: operation, ProjectID: f.project, ActorID: f.principal, WorkerID: f.worker, ConfigurationRevision: 1, PolicyRevision: 1, CapabilityFingerprint: strings.Repeat("f", 64), PullNumber: 2, Channel: "cli", HeadSHA: anchor.CandidateSHA, State: "preparing", Revision: 2, Reason: "preparing", AttemptID: attempt, CreatedAt: at, UpdatedAt: at},
+		Attempt:     reviewexec.Attempt{ID: attempt, OperationID: operation, ProjectID: f.project, Provider: "coderabbit", Account: "fixture-account", State: "preparing", Revision: 1},
+		Observation: reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: at, Remaining: 0, Limit: 5, FullCapacityInMS: 12000, RollingWindowMS: 3600000, ChangedFiles: 2},
+	}
+	store, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(t.Context(), record); err != nil {
+		t.Fatal(err)
+	}
+	path := "cli-exhaustion-captures/" + attempt + ".json"
+	body, err := os.ReadFile(filepath.Join(f.dir, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewruntime.DecodeCLIExhaustionArtifact(attempt, body); err != nil {
+		t.Fatal("saved artifact decode", err)
+	}
+	var preflight int
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM review_cli_preflight WHERE attempt_id=?", attempt).Scan(&preflight); err != nil || preflight != 0 {
+		t.Fatal("artifact fixture already SQL-retained", preflight, err)
+	}
+	return path, body
+}
+
+func TestInventoryCLIExhaustionPreSQLWithoutWorkspaceRoundTrip(t *testing.T) {
+	f := newRestoreFixture(t)
+	path, body := backupCLIExhaustionArtifact(t, f)
+	before := backupRows(t, f.store.DB())
+	a, err := hashPrivate(t.Context(), filepath.Join(f.dir, path), maxCLIExhaustionArtifactBytes)
+	if err != nil {
+		t.Fatal("hash", err)
+	}
+	a.Path = path
+	if err := validateCLIExhaustionArtifact(t.Context(), f.dir, a); err != nil {
+		t.Fatal("direct validation", err)
+	}
+	bundle := restoreBundle(t, f)
+	if bundle.ArtifactCount != 3 {
+		t.Fatal("unreferenced negative capture omitted", bundle.ArtifactCount)
+	}
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "inactive")
+	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{bundle.Path, destination} {
+		copied, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil || string(copied) != string(body) {
+			t.Fatal("negative capture bytes changed", err)
+		}
+		attempt, _, _ := artifactPath(path)
+		if _, err := reviewruntime.DecodeCLIExhaustionArtifact(attempt, copied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
+		t.Fatal("backup changed source SQL")
+	}
+	// A declared artifact must not disappear unnoticed.
+	if err := os.Remove(filepath.Join(bundle.Path, path)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(t.Context(), bundle.Path); err == nil {
+		t.Fatal("missing exhaustion artifact accepted")
+	}
+}
+
+func TestInventoryCLIExhaustionRejectsInvalidPrivateArtifacts(t *testing.T) {
+	for _, kind := range []string{"malformed", "digest", "oversize", "symlink", "directory-symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			path, body := backupCLIExhaustionArtifact(t, f)
+			full := filepath.Join(f.dir, path)
+			switch kind {
+			case "malformed":
+				if err := os.WriteFile(full, []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "digest":
+				var envelope map[string]any
+				if err := json.Unmarshal(body, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				oldHash, ok := envelope["sha256"].(string)
+				if !ok {
+					t.Fatal("missing envelope digest")
+				}
+				changed := strings.Replace(string(body), oldHash, strings.Repeat("0", 64), 1)
+				if err := os.WriteFile(full, []byte(changed), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "oversize":
+				if err := os.WriteFile(full, []byte(strings.Repeat("x", int(maxCLIExhaustionArtifactBytes)+1)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Remove(full); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(f.dir, "bootstrap-admin.token"), full); err != nil {
+					t.Fatal(err)
+				}
+			case "directory-symlink":
+				dir := filepath.Dir(full)
+				if err := os.Rename(dir, dir+"-original"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(dir+"-original", dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := Create(t.Context(), f.store, f.dir, filepath.Join(t.TempDir(), "bundles"))
+			backupCode(t, err, "backup_invalid")
+		})
+	}
+}
+
+func TestInventoryCLIExhaustionRestoredPreparingAttemptReplaysWithoutDriver(t *testing.T) {
+	f := newRestoreFixture(t)
+	engine, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "replay-cap", Provider: "coderabbit", Account: "replay-account", Channels: []string{"cli"}, Fingerprint: strings.Repeat("e", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "/", nil)
+	request.SetPathValue("project_id", f.project)
+	request.Header.Set("Authorization", "Bearer "+f.token)
+	request.Header.Set("X-FC-Instance", f.store.InstanceID())
+	request.Header.Set("X-FC-Worker", f.worker)
+	scope, err := f.store.AdminScope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(1)
+	if _, err := engine.Configure(t.Context(), scope, "replay-config", reviewexec.Configuration{ExpectedRevision: &revision, CapabilityID: "replay-cap", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}); err != nil {
+		t.Fatal("configure", err)
+	}
+	if _, err := engine.ConfigurePolicy(t.Context(), scope, "replay-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &revision, RequiredChannels: []string{"cli"}, PausedChannels: []string{}}); err != nil {
+		t.Fatal("policy", err)
+	}
+	raw, err := engine.Enqueue(t.Context(), scope, "pre-sql-exhaustion", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	if err != nil {
+		t.Fatal("enqueue", err)
+	}
+	var receipt reviewexec.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := engine.StartAttempt(t.Context(), f.project, receipt.ID)
+	if err != nil {
+		t.Fatal("prepare", err)
+	}
+	execution, err := engine.ExecutionContext(t.Context(), f.project, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	anchor := reviewexec.Anchor{RepositoryID: 991, Repository: "synthetic/restore", PullNumber: 2, BaseRef: "main", CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("c", 64), ObservedAt: at}
+	record := reviewexec.CLIExhaustionRecovery{Operation: execution.Operation, Attempt: attempt, Observation: reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: at, Remaining: 0, Limit: 5, FullCapacityInMS: 12000, RollingWindowMS: 3600000, ChangedFiles: 2}}
+	source, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Save(t.Context(), record); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM review_cli_preflight WHERE attempt_id=?", attempt.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatal("pre-SQL fixture not pending", count, err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "restored")
+	restored, err := Restore(t.Context(), bundle.Path, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Activate coordination with an explicit synthetic predecessor fence. This
+	// does not supply a provider, executable, credential or workspace manager.
+	tokenFile := filepath.Join(t.TempDir(), "activation.token")
+	if err := os.WriteFile(tokenFile, []byte("synthetic-replay-activation-token-1234567890"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Activate(t.Context(), destination, ActivationRequest{ExpectedInstanceID: restored.InstanceID, FencedPredecessorID: restored.SourceInstanceID, AdminTokenFile: tokenFile}); err != nil {
+		t.Fatal(err)
+	}
+	store := activationOpen(t, destination)
+	if err := store.DB().QueryRow("SELECT count(*) FROM review_cli_preflight WHERE attempt_id=?", attempt.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatal("restore unexpectedly performed SQL replay", count, err)
+	}
+	var pendingState string
+	if err := store.DB().QueryRow("SELECT state FROM review_execution_attempts WHERE id=?", attempt.ID).Scan(&pendingState); err != nil || pendingState != "preparing" {
+		t.Fatal("restore changed original preparing attempt", pendingState, err)
+	}
+	if err := StartupGuard(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(destination, "cli-exhaustion-captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := reviewexec.New(store, nil, reviewexec.WithCLIExhaustionRecovery(recovery))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := restarted.Start(ctx, nil)
+	if err != nil {
+		cancel()
+		t.Fatal("startup replay", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var state, currentAttempt, baseline, attemptState, body, deadline string
+	if err := store.DB().QueryRow("SELECT o.state,o.attempt_id,w.baseline_attempt_id,w.retry_not_before,a.state,p.body_json FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id JOIN review_cli_preflight p ON p.attempt_id=a.id WHERE o.id=?", receipt.ID).Scan(&state, &currentAttempt, &baseline, &deadline, &attemptState, &body); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" || currentAttempt != "" || baseline != attempt.ID || attemptState != "held" || deadline == "" || !strings.Contains(body, record.Observation.ObservedAt) {
+		t.Fatal("restored startup lost original cooldown", state, currentAttempt, baseline, attemptState, deadline)
+	}
+	for _, query := range []string{"SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?", "SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?", "SELECT count(*) FROM review_round_completions WHERE operation_id=?"} {
+		id := attempt.ID
+		if strings.Contains(query, "operation_id") {
+			id = receipt.ID
+		}
+		if err := store.DB().QueryRow(query, id).Scan(&count); err != nil || count != 0 {
+			t.Fatal("replay created capacity or credit", query, count, err)
+		}
+	}
+	before := backupRows(t, store.DB())
+	if err := restarted.ReplayCLIExhaustion(t.Context(), record); err != nil {
+		t.Fatal("exact repeated replay", err)
+	}
+	if !reflect.DeepEqual(before, backupRows(t, store.DB())) {
+		t.Fatal("repeated replay changed rows/events")
+	}
+	path := filepath.Join("cli-exhaustion-captures", attempt.ID+".json")
+	original, err := os.ReadFile(filepath.Join(f.dir, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := os.ReadFile(filepath.Join(destination, path))
+	if err != nil || string(original) != string(copied) {
+		t.Fatal("replay changed retained artifact", err)
 	}
 }

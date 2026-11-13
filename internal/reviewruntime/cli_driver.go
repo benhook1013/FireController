@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -17,18 +18,19 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
-	store      *core.Store
-	engine     *reviewexec.Engine
-	capability OperatorCapability
-	manager    *reviewworkspace.Manager
-	captures   *CaptureStore
-	reader     reviewexec.TargetReader
-	fetch      func(context.Context, int64, string, string, string, string) error
-	verify     func(context.Context, reviewworkspace.Workspace) error
-	usage      func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
-	review     func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
-	mu         sync.Mutex
-	prepared   map[string]*cliPrepared
+	store       *core.Store
+	engine      *reviewexec.Engine
+	capability  OperatorCapability
+	manager     *reviewworkspace.Manager
+	captures    *CaptureStore
+	exhaustions *CLIExhaustionStore
+	reader      reviewexec.TargetReader
+	fetch       func(context.Context, int64, string, string, string, string) error
+	verify      func(context.Context, reviewworkspace.Workspace) error
+	usage       func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
+	review      func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
+	mu          sync.Mutex
+	prepared    map[string]*cliPrepared
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
@@ -72,7 +74,11 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
+	exhaustions, err := NewCLIExhaustionStore(filepath.Join(filepath.Dir(captures.root), "cli-exhaustion-captures"))
+	if err != nil {
+		return nil, err
+	}
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, exhaustions: exhaustions, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
 }
 
 // A successful preflight can be held by admission before Dispatch. Expire only
@@ -143,9 +149,18 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 			}
 			// A negative observation never grants dispatch permission.
 			observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+			retentionCtx, retentionCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			retainErr := d.exhaustions.Save(retentionCtx, reviewexec.CLIExhaustionRecovery{Operation: current.Operation, Attempt: attempt, Observation: observation})
+			retentionCancel()
+			if retainErr != nil {
+				return preparation, &reviewexec.PreparationRecoveryError{Err: retainErr}
+			}
 			if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
 				return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
 			}); err != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+				}
 				var held *core.Error
 				if errors.As(err, &held) && held.Code == "review_held" {
 					return preparation, err

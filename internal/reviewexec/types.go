@@ -112,6 +112,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	cliExhaustionRecovery      CLIExhaustionRecoverySource
 	automaticCursor            string
 	automaticCLICursor         string
 	automaticMu                sync.Mutex
