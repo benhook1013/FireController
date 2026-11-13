@@ -987,3 +987,70 @@ func TestSchedulingPlanningDigestCompatibility(t *testing.T) {
 	schedulingEnable(t, f, 1, true)
 	check(true)
 }
+
+func TestRetainedOperationScannerRequiresNativeSQLiteValues(t *testing.T) {
+	for _, value := range []any{[]byte("queued"), int64(1), nil} {
+		var destination string
+		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
+			t.Fatalf("accepted non-TEXT operation field %T", value)
+		}
+	}
+	for _, value := range []any{"1", []byte("1"), float64(1), nil} {
+		var destination int64
+		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
+			t.Fatalf("accepted non-INTEGER operation field %T", value)
+		}
+	}
+	for _, value := range []any{true, "true", "1", []byte("1"), float64(1), int64(2), nil} {
+		var destination bool
+		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
+			t.Fatalf("accepted non-native boolean operation field %T", value)
+		}
+	}
+	var text string
+	var integer int64
+	var flag bool
+	if operationValue(&text).Scan("queued") != nil || text != "queued" || operationValue(&integer).Scan(int64(3)) != nil || integer != 3 || operationValue(&flag).Scan(int64(1)) != nil || !flag || operationValue(&flag).Scan(int64(0)) != nil || flag {
+		t.Fatal("rejected native SQLite operation values")
+	}
+}
+
+func TestSchedulingRefusedAuthorizerDoesNotSettleReplacementBasis(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			if channel == "hosted" {
+				schedulingEnable(t, f, 0, true)
+				schedulingGenerate(t, f, true)
+			} else {
+				schedulingCLIEnable(t, f, 0, true)
+				schedulingCLIGenerate(t, f, true)
+			}
+			original := schedulingLatest(t, f)
+			reader := &refreshTestReader{}
+			reader.repository = func(context.Context, int64) (reviewprovider.Repository, error) {
+				admissionSQL(t, f, `INSERT INTO workers VALUES(?,'replacement-worker','Replacement manager')`, attemptProject)
+				continuityConfigure(t, f, 1, true, true)
+				return reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, nil
+			}
+			selectionNext(t, f, reader)
+			got := selectionRead(t, f, original.ID)
+			if got.State != "held" || got.Reason != "automation_authorization_changed" || got.OperationID != "" {
+				t.Fatal("changed authorizer was not refused", got)
+			}
+			var settled string
+			if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, original.ID).Scan(&settled); err != nil || settled != "" {
+				t.Fatal("refused intent settled replacement authorization", settled, err)
+			}
+			if channel == "hosted" {
+				schedulingGenerate(t, f, true)
+			} else {
+				schedulingCLIGenerate(t, f, true)
+			}
+			next := schedulingLatest(t, f)
+			if next.ID == original.ID || next.WorkerID != "replacement-worker" {
+				t.Fatal("replacement manager could not select new intent", next)
+			}
+		})
+	}
+}

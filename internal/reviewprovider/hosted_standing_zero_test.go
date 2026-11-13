@@ -1002,6 +1002,12 @@ func TestHostedStandingZeroHistoricalCheckpointEnvelopeContinuity(t *testing.T) 
 			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl></details>\n<details>\n<summary><strong>Unrelated section</strong></summary>\n<dl>\n<dd>", 1)
 		},
 
+		"multiline sibling dd before claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "</dd\n><dd\n>\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"multiline sibling dd after release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd\r\n><dd\r\n>", 1)
+		},
 		"sibling dd before claim": func(b string) string {
 			return strings.Replace(b, standingHistoricalCheckpointTest, "</dd><dd>\n"+standingHistoricalCheckpointTest, 1)
 		},

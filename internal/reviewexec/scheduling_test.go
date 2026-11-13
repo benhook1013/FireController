@@ -730,6 +730,80 @@ func TestSchedulingAncestorRoundChangesKeepOriginalChild(t *testing.T) {
 	}
 }
 
+func TestSchedulingCancelledChildIgnoresAncestorRoundProgress(t *testing.T) {
+	for _, change := range []string{"close", "grant-and-taper", "completed-review"} {
+		t.Run(change, func(t *testing.T) {
+			f := schedulingFixture(t)
+			schedulingCleanHosted(t, f, 1, 81)
+			one := int64(1)
+			_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "stack-for-cancelled-child", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			schedulingEnable(t, f, 0, true)
+			schedulingGenerate(t, f, true)
+			selectionNext(t, f, schedulingStackReader())
+			first := schedulingLatest(t, f)
+			scope := selectionScope(t, f, attemptProject, f.writer, "write")
+			child, err := f.e.ReadOperation(t.Context(), scope, first.OperationID)
+			if err != nil || child.PullNumber != 4 {
+				t.Fatal("dependent child not selected", child, err)
+			}
+			if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-dependent-child", child.ID, OperationControl{ExpectedRevision: child.Revision, Action: "cancel"}); err != nil {
+				t.Fatal(err)
+			}
+			// Cancellation removes busy suppression; a changed ancestor digest
+			// would now create a replacement selection for this same child.
+			childBasis := func() string {
+				var basis string
+				if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					var err error
+					basis, err = automaticPullBasisChannel(ctx, tx, attemptProject, 4, "hosted")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return basis
+			}
+			before := childBasis()
+			switch change {
+			case "close":
+				control := roundRead(t, f, 2, "hosted")
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-parent-after-child", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+			case "grant-and-taper":
+				roundGrant(t, f, 2, "hosted", 0, 1, 2, "parent-reopened-after-child")
+				retainHistoricalRoundTaper(t, f, 2, "hosted")
+			case "completed-review":
+				roundGrant(t, f, 2, "hosted", 0, 1, 2, "parent-reopened-after-child")
+				schedulingCleanHosted(t, f, 2, 82)
+				control := roundRead(t, f, 2, "hosted")
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-completed-parent", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if after := childBasis(); after != before {
+				t.Fatal("ancestor progress changed terminal child's basis", before, after)
+			}
+			// The parent's own changed basis may justify a planning pass. Its
+			// source read must not recreate the cancelled child.
+			schedulingGenerate(t, f, true)
+			selectionNext(t, f, schedulingStackReader())
+			if count := attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE pull_number=4 AND channel='hosted'`); count != 1 {
+				t.Fatal("ancestor progress recreated terminal child operation", count)
+			}
+			for range 3 {
+				schedulingGenerate(t, f, false)
+			}
+			current, err := f.e.ReadOperation(t.Context(), scope, child.ID)
+			if err != nil || current.State != "cancelled" {
+				t.Fatal("cancelled child identity changed", current, err)
+			}
+		})
+	}
+}
+
 func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *testing.T) {
 	for _, change := range []string{"pause", "disable", "withdraw"} {
 		t.Run(change, func(t *testing.T) {
@@ -783,16 +857,20 @@ func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("control race stopped supervisor", err)
 			}
-			if !verified || externalHosted != 0 {
-				t.Fatal("final verification admitted external action", verified, externalHosted)
+			if verified || externalHosted != 0 || driver.prepares.Load() != 1 {
+				t.Fatal("admission failed to refuse before external dispatch", verified, externalHosted)
 			}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("independent CLI work could not continue", err)
 			}
 			scope := selectionScope(t, f, attemptProject, f.writer, "read")
 			hosted, err := f.e.ReadOperation(t.Context(), scope, r.OperationID)
-			if err != nil || hosted.State != "failed" || hosted.Reason != "admission_changed" {
-				t.Fatal(hosted, err)
+			expected := "automation_authorization_changed"
+			if change == "pause" {
+				expected = "pull_scheduling_paused"
+			}
+			if err != nil || hosted.State != "queued" || hosted.Reason != expected || hosted.AttemptID != "" || hosted.ID != r.OperationID {
+				t.Fatal("refused preparation lost queued identity", hosted, err)
 			}
 			other, err := f.e.ReadOperation(t.Context(), scope, cli.ID)
 			if err != nil || other.State != "completed" || completedCLI != 1 {

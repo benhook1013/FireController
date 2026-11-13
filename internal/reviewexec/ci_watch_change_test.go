@@ -53,7 +53,7 @@ func TestCIWatchSameFailedObservationWaitsWithoutChangingGate(t *testing.T) {
 	request := func(after, header, wait string) *httptest.ResponseRecorder {
 		body := `{"targets":[{"pull_number":42,"head_sha":"` + head + `"`
 		if after != "" {
-			body += `,"after_observation_key":` + after
+			body += `,"base_sha":"` + lifecyclePull(42).BaseSHA + `","after_observation_key":` + after
 		}
 		body += `}]}`
 		req := httptest.NewRequest("POST", path, strings.NewReader(body))
@@ -94,7 +94,7 @@ func TestCIWatchSameFailedObservationWaitsWithoutChangingGate(t *testing.T) {
 	}
 	key := first.Targets[0].ObservationKey
 	ciWatchRegistered(t, s, 0)
-	pin := CIWatchTarget{PullNumber: 42, HeadSHA: head, AfterObservationKey: key}
+	pin := CIWatchTarget{PullNumber: 42, HeadSHA: head, BaseSHA: first.Targets[0].ObservedBaseSHA, AfterObservationKey: key}
 	watch, cancel := startCIWatch(t, f, scope, []CIWatchTarget{pin})
 	defer cancel()
 	legacy := async("", "", "2")
@@ -245,5 +245,27 @@ func TestCIWatchFailureBaselineNeverSuppressesOtherTerminalFacts(t *testing.T) {
 		if value.State != want || value.Targets[0].State != state || value.Targets[0].WaitingForChange != (state == "failed") {
 			t.Fatal("baseline changed other terminal facts", state, value)
 		}
+	}
+}
+
+func TestCIWatchRearmRequiresExplicitBaseBeforeAdmission(t *testing.T) {
+	f, s, _, reader, scope := ciWatchFixture(t)
+	pin := CIWatchTarget{PullNumber: 42, HeadSHA: strings.Repeat("a", 40), AfterObservationKey: strings.Repeat("c", 64)}
+	if _, err := f.e.WatchCI(t.Context(), scope, []CIWatchTarget{pin}, 0); err == nil {
+		t.Fatal("engine accepted unpinned rearm")
+	}
+	body := `{"targets":[{"pull_number":42,"head_sha":"` + pin.HeadSHA + `","after_observation_key":"` + pin.AfterObservationKey + `"}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+f.reader)
+	req.Header.Set("X-FC-CI-Watch", "change-v3")
+	req.Header.Set("Prefer", "wait=0")
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	if w.Code != 400 || len(s.watchers) != 0 || reader.calls != 0 {
+		t.Fatal("HTTP unpinned rearm admitted work", w.Code, w.Body.String())
+	}
+	pin.BaseSHA = strings.Repeat("b", 40)
+	if !validCIWatchTargets([]CIWatchTarget{pin}) {
+		t.Fatal("explicit rearm rejected")
 	}
 }

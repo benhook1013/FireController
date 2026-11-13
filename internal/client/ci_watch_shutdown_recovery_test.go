@@ -28,10 +28,11 @@ func TestCIWatchShutdownRecoveryUsesOriginalComparison(t *testing.T) {
 				seconds = 3
 				for i := range pins {
 					pins[i].BaseSHA = ""
+					pins[i].AfterObservationKey = ""
 				}
 			case "mixed":
 				seconds = 3
-				pins[0].BaseSHA = ""
+				pins[1].BaseSHA = ""
 			}
 			var posts atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

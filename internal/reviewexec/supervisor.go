@@ -127,6 +127,8 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 	return e.pendingForWorker(ctx, true)
 }
 
+type pendingScanPosition struct{ createdAt, id string }
+
 func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -147,7 +149,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
-	SELECT o.project_id,o.id,o.channel,o.capability_fingerprint FROM review_operations o
+	SELECT o.project_id,o.id,o.channel,o.capability_fingerprint,o.created_at FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
@@ -181,7 +183,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		if !ok {
 			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 			if err != nil {
-				if automaticProjectRefused(err) {
+				if e.skipUnavailableConfiguration(ctx, o, err) || automaticProjectRefused(err) {
 					return Operation{}, nil
 				}
 				return Operation{}, err
@@ -240,7 +242,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		drafts := make([]Operation, 0, cliDraftProbeCapacity+1)
 		for rows.Next() {
 			o := Operation{Channel: "cli", Reason: cliDraftWait}
-			if err := rows.Scan(&o.ProjectID, &o.ID, &o.Channel, &o.CapabilityFingerprint); err != nil {
+			if err := rows.Scan(&o.ProjectID, &o.ID, &o.Channel, &o.CapabilityFingerprint, &o.CreatedAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -266,7 +268,23 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 			}
 		}
 	}
-	rows, err := tx.QueryContext(ctx, query+` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait') ORDER BY o.created_at,o.id`, args...)
+	// Each supervisor worker retains only a scan position, never eligibility.
+	// Advance before validating a row so a single expensive blocked candidate
+	// cannot restart the same prefix after every bounded-snapshot timeout.
+	worker := 0
+	if probeDrafts {
+		worker = 1
+	}
+	e.pendingScanMu.Lock()
+	cursor := e.pendingScanCursor[worker]
+	e.pendingScanMu.Unlock()
+	advance := func(position pendingScanPosition) {
+		e.pendingScanMu.Lock()
+		e.pendingScanCursor[worker] = position
+		e.pendingScanMu.Unlock()
+	}
+	ordinaryArgs := append(append([]any(nil), args...), cursor.createdAt, cursor.createdAt, cursor.id)
+	rows, err := tx.QueryContext(ctx, query+` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait') AND (o.created_at>? OR (o.created_at=? AND o.id>?)) ORDER BY o.created_at,o.id`, ordinaryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -275,10 +293,12 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	// accounts. The read transaction supplies the overall scan deadline.
 	limit := len(out) + 256
 	for len(out) < limit && rows.Next() {
-		var project, operation, channel, fingerprint string
-		if err := rows.Scan(&project, &operation, &channel, &fingerprint); err != nil {
+		var project, operation, channel, fingerprint, createdAt string
+		if err := rows.Scan(&project, &operation, &channel, &fingerprint, &createdAt); err != nil {
+			advance(cursor)
 			return nil, err
 		}
+		advance(pendingScanPosition{createdAt, operation})
 		if channel == "cli" {
 			if cfg, ok := configurations[project]; ok {
 				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
@@ -291,6 +311,9 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 		o, err := readCandidate(project, operation)
 		if err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				advance(cursor) // Never rotate past an operational storage failure.
+			}
 			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
 				return out, nil
 			}
@@ -301,11 +324,17 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 	}
 	if err := rows.Err(); err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			advance(cursor)
+		}
 		if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
 			return out, nil
 		}
 		return nil, err
 	}
+	if len(out) < limit {
+		advance(pendingScanPosition{})
+	} // End of snapshot: wrap to oldest next pass.
 	return out, nil
 }
 
@@ -490,6 +519,11 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 		if err != nil {
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
+			}
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				// Only proven retained project corruption is local. No intent
+				// was admitted; retain the queued identity for a repaired read.
+				return e.finishPreparation(a, "held", "automatic_scheduling_unavailable")
 			}
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {

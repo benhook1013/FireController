@@ -560,6 +560,9 @@ func TestCLISharedQuotaHTTPDiagnostics(t *testing.T) {
 					if mode == "shared" || mode == "cancelled-origin" {
 						want = "cli_quota_wait"
 					}
+					if mode == "changed-fingerprint" {
+						want = "" // Current capability drift omits best-effort diagnostics.
+					}
 					if w.Code != http.StatusOK || w.Header().Get("X-FC-Review-Queued") != want {
 						t.Fatalf("%s schema %q: %d %v %s", suffix, version, w.Code, w.Header(), w.Body.String())
 					}

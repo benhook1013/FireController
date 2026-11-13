@@ -254,34 +254,40 @@ func TestHostedSubmittedAdditionalOnlyRejectsUnprovenBody(t *testing.T) {
 		return func(body string) string { return strings.Replace(body, old, next, 1) }
 	}
 	cases := map[string]func(string) string{
-		"generated envelope missing":  replace("<!-- coderabbit-ai-generated:v1 -->", ""),
-		"unknown generated envelope":  replace("coderabbit-ai-generated:v1", "coderabbit-ai-generated:v2"),
-		"zero category":               replace("Additional comments: 1", "Additional comments: 0"),
-		"category count mismatch":     replace("Additional comments: 1", "Additional comments: 2"),
-		"category overflow":           replace("Additional comments: 1", "Additional comments: 9999999999999999999999999"),
-		"unknown category":            replace("Additional comments: 1", "Other comments: 1"),
-		"group count mismatch":        replace("docs/example.md-24-24: 1", "docs/example.md-24-24: 2"),
-		"group range mismatch":        replace("docs/example.md-24-24: 1", "docs/example.md-25-25: 1"),
-		"zero location":               replace("`24-24`:", "`0-24`:"),
-		"reversed location":           replace("`24-24`:", "`25-24`:"),
-		"path not selected":           replace("<summary>docs/example.md-24-24: 1", "<summary>docs/absent.md-24-24: 1"),
-		"unsafe path":                 replace("<summary>docs/example.md-24-24: 1", "<summary>../example.md-24-24: 1"),
-		"missing title":               replace("**Consider the optional example wording.**", "Consider the optional example wording."),
-		"unbalanced wrappers":         replace("</dd>\n</dl>", "</dl>\n</dd>"),
-		"duplicate bare break":        replace("<dd>\n<br>", "<dd>\n<br>\n<br>"),
-		"misplaced break":             replace("_Source: Linters/SAST tools_", "_Source: Linters/SAST tools_\n<br>"),
-		"missing h6":                  replace("<h6>\n", ""),
-		"unknown h6":                  replace("<h6>\n", "<h5>\n"),
-		"missing status footer":       replace("<!-- This is an auto-generated comment by CodeRabbit for review status -->", ""),
-		"unknown trailer":             func(body string) string { return body + "\nUnknown findings: 1" },
-		"unknown prefix":              func(body string) string { return "Unknown results\n" + body },
-		"quoted envelope":             func(body string) string { return "> " + strings.ReplaceAll(body, "\n", "\n> ") },
-		"fenced envelope":             func(body string) string { return "```\n" + body + "\n```" },
-		"additional block in prompt":  replace("<details>\n", "<details>\n<summary>🤖 Prompt to fix review comments</summary>\n<details>\n"),
-		"positive actionable claim":   replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: 1**"),
-		"zero actionable claim":       replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: 0**"),
-		"invalid actionable claim":    replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: unknown**"),
-		"additional actionable claim": replace("_Source: Linters/SAST tools_", "**Actionable comments posted: 1**\n_Source: Linters/SAST tools_"),
+		"generated envelope missing":               replace("<!-- coderabbit-ai-generated:v1 -->", ""),
+		"unknown generated envelope":               replace("coderabbit-ai-generated:v1", "coderabbit-ai-generated:v2"),
+		"zero category":                            replace("Additional comments: 1", "Additional comments: 0"),
+		"category count mismatch":                  replace("Additional comments: 1", "Additional comments: 2"),
+		"category overflow":                        replace("Additional comments: 1", "Additional comments: 9999999999999999999999999"),
+		"unknown category":                         replace("Additional comments: 1", "Other comments: 1"),
+		"group count mismatch":                     replace("docs/example.md-24-24: 1", "docs/example.md-24-24: 2"),
+		"group range mismatch":                     replace("docs/example.md-24-24: 1", "docs/example.md-25-25: 1"),
+		"zero location":                            replace("`24-24`:", "`0-24`:"),
+		"reversed location":                        replace("`24-24`:", "`25-24`:"),
+		"path not selected":                        replace("<summary>docs/example.md-24-24: 1", "<summary>docs/absent.md-24-24: 1"),
+		"unsafe path":                              replace("<summary>docs/example.md-24-24: 1", "<summary>../example.md-24-24: 1"),
+		"missing title":                            replace("**Consider the optional example wording.**", "Consider the optional example wording."),
+		"unbalanced wrappers":                      replace("</dd>\n</dl>", "</dl>\n</dd>"),
+		"duplicate bare break":                     replace("<dd>\n<br>", "<dd>\n<br>\n<br>"),
+		"misplaced break":                          replace("_Source: Linters/SAST tools_", "_Source: Linters/SAST tools_\n<br>"),
+		"missing h6":                               replace("<h6>\n", ""),
+		"unknown h6":                               replace("<h6>\n", "<h5>\n"),
+		"missing status footer":                    replace("<!-- This is an auto-generated comment by CodeRabbit for review status -->", ""),
+		"unknown trailer":                          func(body string) string { return body + "\nUnknown findings: 1" },
+		"unknown prefix":                           func(body string) string { return "Unknown results\n" + body },
+		"quoted envelope":                          func(body string) string { return "> " + strings.ReplaceAll(body, "\n", "\n> ") },
+		"fenced envelope":                          func(body string) string { return "```\n" + body + "\n```" },
+		"additional block in prompt":               replace("<details>\n", "<details>\n<summary>🤖 Prompt to fix review comments</summary>\n<details>\n"),
+		"positive actionable claim":                replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: 1**"),
+		"zero actionable claim":                    replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: 0**"),
+		"invalid actionable claim":                 replace("<!-- coderabbit-ai-generated:v1 -->", "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: unknown**"),
+		"additional actionable claim":              replace("_Source: Linters/SAST tools_", "**Actionable comments posted: 1**\n_Source: Linters/SAST tools_"),
+		"comment after actionable claim":           replace("_Source: Linters/SAST tools_", "**Actionable comments posted: 1** <!-- note -->\n_Source: Linters/SAST tools_"),
+		"comment before actionable claim":          replace("_Source: Linters/SAST tools_", "<!-- note --> **Actionable comments posted: 1**\n_Source: Linters/SAST tools_"),
+		"comment inside actionable label":          replace("_Source: Linters/SAST tools_", "**Actionable comments <!-- note -->posted: 1**\n_Source: Linters/SAST tools_"),
+		"multiline comment then actionable claim":  replace("_Source: Linters/SAST tools_", "<!-- note\n--> **Actionable comments posted: 1**\n_Source: Linters/SAST tools_"),
+		"comment after malformed actionable claim": replace("_Source: Linters/SAST tools_", "**Actionable comments posted: unknown** <!-- note -->\n_Source: Linters/SAST tools_"),
+		"missing actionable separator":             replace("_Source: Linters/SAST tools_", "**Actionable comments posted 1**\n_Source: Linters/SAST tools_"),
 		"empty additional": func(body string) string {
 			start := strings.Index(body, "<details>")
 			end := strings.Index(body, "<h6>")
@@ -439,5 +445,24 @@ func TestHostedSubmittedAdditionalOnlyCountsEveryItem(t *testing.T) {
 	got = f.extract(t)
 	if got.Complete || got.Publication.State == "attributed" || len(got.Findings) != 0 {
 		t.Fatal("duplicated additional item supplied a count", got.Reason)
+	}
+}
+
+func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
+	for _, prose := range []string{
+		"Preserve the actionable comments posted label.",
+		"Actionable comments posted by the reviewer remain unverified.",
+		"Preserve the actionable <!-- ordinary comment -->comments posted label.",
+		"<!-- Actionable comments posted: 99 -->",
+		"<!-- hidden\nActionable comments posted: 99\n-->",
+	} {
+		t.Run(prose, func(t *testing.T) {
+			f := submittedAdditionalFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", prose+"\n_Source: Linters/SAST tools_", 1)
+			got := f.extract(t)
+			if !got.Complete || len(got.Findings) != 1 || !strings.Contains(got.Findings[0].Detail, prose) {
+				t.Fatalf("ordinary prose or hidden example lost positive source inventory: %+v", got)
+			}
+		})
 	}
 }

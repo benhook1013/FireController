@@ -212,3 +212,34 @@ func TestCIWatchInvalidProviderResponsesKeepCanonicalGuidance(t *testing.T) {
 		t.Fatal("unrelated reason lost bounded-wait fallback", out)
 	}
 }
+
+func TestCIWatchPendingCommitStatusExplainsEndedWait(t *testing.T) {
+	item := client.CIWatchTargetResult{State: "pending", ObservedAt: "2026-11-01T00:00:00Z", Pending: 1, Checks: []client.ReviewCIContext{{Context: "build", State: "pending", CommitStatus: &client.ReviewCICommitStatus{ID: 991, State: "pending"}}}}
+	raw := client.CIWatchResult{State: "pending", TimedOut: true, Targets: []client.CIWatchTargetResult{item}}
+	out := client.AgentCIWatch(raw)
+	d := out.Targets[0].Diagnostic
+	if d == nil || !strings.Contains(d.NextAction, "do not rerun CI") || !strings.Contains(d.NextAction, "bounded wait has ended") || !strings.Contains(d.NextAction, "another bounded CI wait") || !reflect.DeepEqual(out.CIWatchResult, raw) {
+		t.Fatal("pending status lost advice or mutated facts", out)
+	}
+}
+
+func TestCIWatchWorkflowMismatchAllowsRegenerationBeforeReconciliation(t *testing.T) {
+	for _, historical := range []bool{false, true} {
+		_, raw := ciWorkflowFailureSample()
+		item := &raw.Targets[0]
+		item.Reason = "ci_merge_base_mismatch"
+		item.WorkflowAttentionBasis = "head_only_current_comparison_unproven"
+		if historical {
+			item.WorkflowFailures[0].Basis = "historical_same_head_failure_supersession_unproven"
+		}
+		out := client.AgentCIWatch(raw)
+		d := out.Targets[0].Diagnostic
+		if d == nil {
+			t.Fatal("missing mismatch diagnostic")
+		}
+		first, next := strings.Index(d.NextAction, "First allow GitHub to regenerate"), strings.Index(d.NextAction, "If the mismatch persists")
+		if first < 0 || next <= first || !strings.Contains(d.NextAction, "stable live base") || !strings.Contains(d.NextAction, "reconcile the actual PR/base") || !reflect.DeepEqual(out.CIWatchResult, raw) {
+			t.Fatal("mismatch skipped regeneration or changed facts", d)
+		}
+	}
+}

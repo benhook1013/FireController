@@ -597,8 +597,9 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if _, err = tx.ExecContext(ctx, `SAVEPOINT review_selection_finish`); err != nil {
 				return err
 			}
+			bindingValidated := false
 			defer func() {
-				if resultErr == nil {
+				if resultErr == nil && bindingValidated {
 					var pull int64
 					var reason string
 					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &reason); err != nil {
@@ -641,6 +642,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if reason != "" {
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
+			bindingValidated = true
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err
 			}

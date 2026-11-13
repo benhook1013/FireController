@@ -1,8 +1,8 @@
 package reviewprovider
 
 import (
+	"regexp"
 	"strconv"
-	"strings"
 )
 
 // The observed markerless additional-only submission has one counted category,
@@ -32,6 +32,11 @@ func (p *submittedReviewParser) additionalOnly() bool {
 	return true
 }
 
+// A count declaration has a label separator (including malformed values), a
+// numeric value without its separator, or a bare formatted label. Mentioning
+// the phrase in ordinary finding prose is not a declaration.
+var submittedActionableClaim = regexp.MustCompile(`(?i)actionable comments posted(?:[ \t]*:|[ \t]+[0-9]+\b|[ \t]*(?:\*\*|$))`)
+
 // Complete provider collections independently prove the absence of attached or
 // in-window orphan roots before this check. The positive counted category must
 // decode in full, and every additional finding must name a selected file. These
@@ -44,7 +49,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	// Category bodies are HTML blockquotes, not quoted examples. Do not let
 	// their visible count claims disappear behind publication metadata scopes.
 	for _, line := range lines {
-		if !line.hidden && strings.Contains(strings.ToLower(line.text), "actionable comments posted") {
+		if submittedActionableClaim.MatchString(line.countText) {
 			return false
 		}
 	}

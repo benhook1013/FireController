@@ -32,6 +32,9 @@ type OperationStatus struct {
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
 	switch o.State {
 	case "queued":
+		if o.Wait != nil && o.Wait.Paused {
+			return "queued", "resume_or_cancel"
+		}
 		return "queued", "wait"
 	case "preparing":
 		return "preparing", "wait"

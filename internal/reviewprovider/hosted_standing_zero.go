@@ -161,6 +161,9 @@ func standingHistoricalCheckpointLine(line string) bool {
 // with one generated release-notes region. Only a complete envelope can exempt
 // its one standalone historical checkpoint line from the numeric-claim guard.
 // All other lines, including other claims in that same region, remain guarded.
+// Line-based ancestry cannot credit an owner across an unfinished HTML tag.
+var standingIncompleteOwnerTag = regexp.MustCompile(`(?i)</?(?:dd|dl|details)(?:[ \t/][^>]*|)$`)
+
 type standingHistoricalParser struct {
 	phase, claimLine         int
 	seen, invalid, bodyBreak bool
@@ -204,6 +207,9 @@ func (p *standingHistoricalParser) line(line string, stack []string, index int, 
 	}
 	if p.phase == 0 || p.phase == 11 {
 		return
+	}
+	if standingIncompleteOwnerTag.MatchString(line) {
+		p.invalid = true
 	}
 	if inRecent {
 		p.invalid = true

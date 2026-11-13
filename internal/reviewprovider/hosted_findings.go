@@ -52,6 +52,7 @@ var findingConfirmation = regexp.MustCompile(`^✅ Confirmed as addressed by @[A
 type findingLine struct {
 	start, end, next, quote int
 	text                    string
+	countText               string // Visible comment-excluded text for contradictory count checks only.
 	hidden                  bool
 }
 
@@ -110,12 +111,10 @@ func findingLines(body string) ([]findingLine, bool) {
 			}
 		} else if comment {
 			l.hidden = true
-			if strings.Contains(trimmed, "-->") {
-				comment = false
-			}
+			l.countText = findingCommentVisible(trimmed, &comment)
 		} else if strings.Contains(trimmed, "<!--") && !strings.HasPrefix(trimmed, "<!-- cr-comment") && !publicationMarker.MatchString(trimmed) {
 			l.hidden = true
-			comment = !strings.Contains(trimmed[strings.Index(trimmed, "<!--")+4:], "-->")
+			l.countText = findingCommentVisible(trimmed, &comment)
 		} else if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
 			n := 0
 			for n < len(trimmed) && trimmed[n] == trimmed[0] {
@@ -126,10 +125,37 @@ func findingLines(body string) ([]findingLine, bool) {
 				l.hidden = true
 			}
 		}
+		if !l.hidden {
+			l.countText = l.text
+		}
 		lines = append(lines, l)
 		offset = next
 	}
 	return lines, fence == 0 && pre == 0 && !comment
+}
+
+// Keep comment-adjacent visible text available to count refusal checks without
+// promoting mixed comment lines into structural metadata or changing offsets.
+func findingCommentVisible(text string, comment *bool) string {
+	var visible strings.Builder
+	for text != "" {
+		if *comment {
+			end := strings.Index(text, "-->")
+			if end < 0 {
+				break
+			}
+			text, *comment = text[end+3:], false
+			continue
+		}
+		start := strings.Index(text, "<!--")
+		if start < 0 {
+			visible.WriteString(text)
+			break
+		}
+		visible.WriteString(text[:start])
+		text, *comment = text[start+4:], true
+	}
+	return visible.String()
 }
 
 type findingDecoder struct {
