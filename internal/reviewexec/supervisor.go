@@ -62,11 +62,12 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	if !e.running.CompareAndSwap(false, true) {
 		return nil, conflict()
 	}
-	if err := e.reconcilePreparingDrivers(ctx, owned); err != nil {
+	skipped, err := e.reconcilePreparingDrivers(ctx, owned)
+	if err != nil {
 		e.running.Store(false)
 		return nil, err
 	}
-	if err := e.RecoverInterrupted(ctx); err != nil {
+	if err := e.recoverInterrupted(ctx, skipped); err != nil {
 		e.running.Store(false)
 		return nil, err
 	}
