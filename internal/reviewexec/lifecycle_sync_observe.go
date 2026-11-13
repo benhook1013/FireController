@@ -132,7 +132,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
 	collectCI := state == "open" && (target.forceCI || target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
-		target.due.ciCommit = ""
+		// A failed collection supplies no replacement commit identity. Keep a
+		// known webhook alias only while its original comparison still binds;
+		// this does not preserve CI success or bypass normal retry backoff.
+		if target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef {
+			target.due.ciCommit = ""
+		}
 		ciCollected = true
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
