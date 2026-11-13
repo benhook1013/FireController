@@ -64,15 +64,20 @@ func readHostedQuery(ctx context.Context, tx EvidenceQuery, a Attempt, o Operati
 		}
 	}
 	var record HostedAllowanceQuery
-	var id, project, attempt, operation, fingerprint, body string
+	var storedID sql.NullString
+	var project, attempt, operation, fingerprint, body string
 	var revision int64
-	err := tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,capability_fingerprint,revision,body_json FROM review_hosted_allowance_queries WHERE attempt_id=?`, a.ID).Scan(&id, &project, &attempt, &operation, &fingerprint, &revision, &body)
+	err := tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,capability_fingerprint,revision,body_json FROM review_hosted_allowance_queries WHERE attempt_id=?`, a.ID).Scan(&storedID, &project, &attempt, &operation, &fingerprint, &revision, &body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, core.Fail("not_found", "The hosted allowance query is unavailable in this project.", 404)
 	}
 	if err != nil {
 		return record, err
 	}
+	if !storedID.Valid {
+		return HostedAllowanceQuery{}, hostedQueryUnavailable()
+	}
+	id := storedID.String
 	if len(body) > hostedQueryLimit || strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &record) != nil || encoded(record) != body {
 		return HostedAllowanceQuery{}, hostedQueryUnavailable()
 	}

@@ -292,8 +292,9 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		e.pendingScanCursor[worker] = position
 		e.pendingScanMu.Unlock()
 	}
-	ordinaryArgs := append(append([]any(nil), args...), cursor.createdAt, cursor.createdAt, cursor.id)
-	rows, err := tx.QueryContext(ctx, query+` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait') AND (o.created_at>? OR (o.created_at=? AND o.id>?)) ORDER BY o.created_at,o.id`, ordinaryArgs...)
+	// Read raw ordered candidates first: SQL-side eligibility filters must not
+	// consume the entire snapshot before we can advance the scan cursor.
+	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id,o.channel,o.capability_fingerprint,o.created_at,o.reason FROM review_operations o WHERE o.state='queued' AND (o.created_at,o.id)>(?,?) ORDER BY o.created_at,o.id`, cursor.createdAt, cursor.id)
 	if err != nil {
 		return nil, err
 	}
@@ -309,14 +310,33 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 	}
 	for len(out) < limit && rows.Next() {
-		var project, operation, channel, fingerprint, createdAt string
-		if err := rows.Scan(&project, &operation, &channel, &fingerprint, &createdAt); err != nil {
+		var project, operation, channel, fingerprint, createdAt, reason string
+		if err := rows.Scan(&project, &operation, &channel, &fingerprint, &createdAt, &reason); err != nil {
 			advance(cursor)
 			return nil, err
 		}
 		before := position
 		position = pendingScanPosition{createdAt, operation}
 		advance(position)
+		if channel == "cli" && reason == cliDraftWait {
+			continue
+		}
+		var eligible string
+		filterArgs := append(append([]any(nil), args...), operation)
+		filterErr := tx.QueryRowContext(ctx, `SELECT id FROM (`+query+` AND o.id=?)`, filterArgs...).Scan(&eligible)
+		if errors.Is(filterErr, sql.ErrNoRows) {
+			continue
+		}
+		if filterErr != nil {
+			if !errors.Is(filterErr, context.DeadlineExceeded) {
+				advance(cursor)
+			}
+			if len(out) != 0 && errors.Is(filterErr, context.DeadlineExceeded) {
+				resumeReturned()
+				return out, nil
+			}
+			return nil, filterErr
+		}
 		if channel == "cli" {
 			if cfg, ok := configurations[project]; ok {
 				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
@@ -496,7 +516,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 		if draftReady {
 			draftReadyRevision = o.Revision
 		}
-		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision)
+		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision, o.Revision)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
