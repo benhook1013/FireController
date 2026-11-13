@@ -34,6 +34,7 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 		key          lifecycleKey
 		metadata, ci bool
 		head         string
+		capability   string
 	}
 	var matches []match
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -102,7 +103,7 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 				// a different head. A base push concerns that PR's current merge.
 				ci := hint.CI && (sameHead || knownCI || basePush)
 				if metadata || ci {
-					matches = append(matches, match{lifecycleKey{p.id, number}, metadata, ci, head})
+					matches = append(matches, match{lifecycleKey{p.id, number}, metadata, ci, head, p.c.CapabilityID})
 				}
 			}
 			err = rows.Err()
@@ -129,11 +130,16 @@ func (e *Engine) HintGitHub(ctx context.Context, hint githubhook.Hint) error {
 	defer s.mu.Unlock()
 	extra := 0
 	for _, match := range matches {
+		if s.readers[match.capability] == nil {
+			return lifecycleHintUnavailable()
+		}
 		if _, exists := s.due[match.key]; !exists {
 			extra++
 		}
 	}
-	if len(s.due)+extra > 64*100 {
+	// Ordinary observations may already occupy more entries. Existing keys
+	// need no new capacity and must still accept their refresh hints.
+	if extra > 0 && len(s.due)+extra > 64*100 {
 		return lifecycleHintUnavailable()
 	}
 	// Admission is complete. Mutate both kinds of demand under one lock,
