@@ -1,18 +1,13 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-type AppendCheckpointRequest struct {
+type checkpointArchiveContent struct {
 	ExpectedJobRevision int64    `json:"expected_job_revision"`
 	Done                string   `json:"done"`
 	Next                string   `json:"next"`
@@ -35,19 +30,6 @@ type Checkpoint struct {
 	CreatedAt   string   `json:"created_at"`
 }
 
-type CheckpointReceipt struct {
-	ID          string `json:"id"`
-	Sequence    int64  `json:"sequence"`
-	JobRevision int64  `json:"job_revision"`
-	Outcome     string `json:"outcome"`
-}
-
-type LatestCheckpointResult struct {
-	JobID       string      `json:"job_id"`
-	JobRevision int64       `json:"job_revision"`
-	Checkpoint  *Checkpoint `json:"checkpoint"`
-}
-
 func checkpointText(value string, max int, required bool) bool {
 	if !utf8.ValidString(value) || len(value) > max || required && strings.TrimSpace(value) == "" {
 		return false
@@ -60,9 +42,7 @@ func checkpointText(value string, max int, required bool) bool {
 	return true
 }
 
-// ValidateCheckpointRequest is local admission only, shared by transports so
-// malformed content is rejected before opening a credential or connection.
-func ValidateCheckpointRequest(request AppendCheckpointRequest) error {
+func validateCheckpointArchiveContent(request checkpointArchiveContent) error {
 	if request.ExpectedJobRevision < 1 {
 		return fail("invalid_revision", "A positive expected job revision is required.", "Read the current job revision and supply it explicitly.", 400)
 	}
@@ -82,26 +62,6 @@ func ValidateCheckpointRequest(request AppendCheckpointRequest) error {
 	return nil
 }
 
-func (c *Client) AppendCheckpoint(ctx context.Context, key, id string, request AppendCheckpointRequest) (CheckpointReceipt, error) {
-	if !validMutationKey(key) || !validID(id) {
-		return CheckpointReceipt{}, mutationValidation()
-	}
-	if err := ValidateCheckpointRequest(request); err != nil {
-		return CheckpointReceipt{}, err
-	}
-	if request.Evidence == nil {
-		request.Evidence = []string{}
-	}
-	var result CheckpointReceipt
-	if err := c.mutate(ctx, http.MethodPost, c.projectPath("jobs", id, "checkpoints"), key, request, http.StatusCreated, &result); err != nil {
-		return CheckpointReceipt{}, err
-	}
-	if !validID(result.ID) || result.Sequence < 1 || result.JobRevision != request.ExpectedJobRevision || result.Outcome != "created" {
-		return CheckpointReceipt{}, unknownMutation("invalid_response", "The service returned an invalid checkpoint receipt; its outcome is unknown.", http.StatusCreated)
-	}
-	return result, nil
-}
-
 func (c *Client) validCheckpoint(value Checkpoint, jobID string) bool {
 	if !validID(value.ID) || value.ProjectID != c.identity.ProjectID || value.JobID != jobID || value.Sequence < 1 || !validID(value.ActorID) || value.WorkerID != "" && !validID(value.WorkerID) || value.Evidence == nil {
 		return false
@@ -112,51 +72,7 @@ func (c *Client) validCheckpoint(value Checkpoint, jobID string) bool {
 	if _, err := time.Parse(time.RFC3339Nano, value.CreatedAt); err != nil {
 		return false
 	}
-	return ValidateCheckpointRequest(AppendCheckpointRequest{value.JobRevision, value.Done, value.Next, value.Blocker, value.Evidence}) == nil
-}
-
-func (c *Client) LatestCheckpoint(ctx context.Context, id string) (LatestCheckpointResult, error) {
-	if !validID(id) {
-		return LatestCheckpointResult{}, validation()
-	}
-	var value LatestCheckpointResult
-	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("jobs", id, "checkpoints", "latest"), nil, true, "", nil, http.StatusOK, false, &value, 128<<10, decodeLatestCheckpoint); err != nil {
-		return LatestCheckpointResult{}, err
-	}
-	if value.JobID != id || value.JobRevision < 1 {
-		return LatestCheckpointResult{}, invalidResponse()
-	}
-	if value.Checkpoint != nil && (!c.validCheckpoint(*value.Checkpoint, id) || value.Checkpoint.JobRevision > value.JobRevision) {
-		return LatestCheckpointResult{}, invalidResponse()
-	}
-	return value, nil
-}
-
-func decodeLatestCheckpoint(data []byte, dst any) error {
-	value, ok := dst.(*LatestCheckpointResult)
-	if !ok || strictjson.Validate(data) != nil {
-		return strictjson.ErrSyntax
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil || len(fields) != 3 || !completeShape(data, &struct {
-		JobID       string `json:"job_id"`
-		JobRevision int64  `json:"job_revision"`
-	}{}) {
-		return strictjson.ErrSyntax
-	}
-	checkpoint, present := fields["checkpoint"]
-	if !present || json.Unmarshal(fields["job_id"], &value.JobID) != nil || json.Unmarshal(fields["job_revision"], &value.JobRevision) != nil {
-		return strictjson.ErrSyntax
-	}
-	value.Checkpoint = nil
-	if !bytes.Equal(bytes.TrimSpace(checkpoint), []byte("null")) {
-		var full Checkpoint
-		if decodeResponse(checkpoint, &full) != nil {
-			return strictjson.ErrSyntax
-		}
-		value.Checkpoint = &full
-	}
-	return nil
+	return validateCheckpointArchiveContent(checkpointArchiveContent{value.JobRevision, value.Done, value.Next, value.Blocker, value.Evidence}) == nil
 }
 
 func (c *Client) CheckpointHistory(ctx context.Context, id string, options PageOptions) (Page[Checkpoint], error) {

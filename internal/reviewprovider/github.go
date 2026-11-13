@@ -35,6 +35,8 @@ const (
 // never discovers repositories or chooses review targets. CI inventory movement
 // permits one bounded recollection of the same immutable commit.
 type GitHub struct {
+	readGate   func(context.Context) error
+	quota      *GitHubQuota
 	token      string
 	baseURL    string
 	httpClient *http.Client
@@ -50,13 +52,16 @@ func NewGitHub(token string) (*GitHub, error) {
 	if !validToken(token) {
 		return nil, &Error{Code: "provider_unavailable", Message: "The provider credential is invalid."}
 	}
+	// Each adapter owns its bounded idle pool. Fresh metadata windows should
+	// not pay connection setup for every PR; reads and deadlines stay fresh.
 	client := &http.Client{
 		Timeout: githubRequestLimit,
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DisableKeepAlives:     true,
-			TLSHandshakeTimeout:   githubRequestLimit,
-			ResponseHeaderTimeout: githubRequestLimit,
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        8,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     30 * time.Second,
+			TLSHandshakeTimeout: githubRequestLimit,
 		},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -129,6 +134,20 @@ func (g *GitHub) Repository(ctx context.Context, id int64) (Repository, error) {
 func (g *GitHub) Pull(ctx context.Context, repository string, number int64) (Pull, error) {
 	pull, _, err := g.pullWithIdentity(ctx, repository, number)
 	return pull, err
+}
+
+// PullWithRepository returns the validated base repository identity from the
+// same GitHub response as the PR metadata.
+func (g *GitHub) PullWithRepository(ctx context.Context, repository string, number int64) (Pull, Repository, error) {
+	pull, raw, err := g.pullWithIdentity(ctx, repository, number)
+	if err != nil {
+		return Pull{}, Repository{}, err
+	}
+	repo, err := normalizeRepository(raw.Base.Repo, pull.RepositoryID)
+	if err != nil {
+		return Pull{}, Repository{}, invalidResponse(false, http.StatusOK)
+	}
+	return pull, repo, nil
 }
 
 // Keep the ordinary Pull read/normalization identical while letting a bounded
@@ -309,6 +328,7 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	response, err := g.httpClient.Do(request)
+	g.quota.observe(ctx, time.Now(), path, response, false, false)
 	if err != nil {
 		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
@@ -385,8 +405,18 @@ func (g *GitHub) getPages(ctx context.Context, path string, dst any) error {
 }
 
 func (g *GitHub) requestBytes(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
+	return g.requestBytesWithClient(ctx, g.httpClient, method, path, query, body)
+}
+
+func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
+	}
+	if g.readGate != nil {
+		if err := g.readGate(ctx); err != nil {
+			g.quota.observe(ctx, time.Now(), path, nil, false, true)
+			return nil, nil, 0, err
+		}
 	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path + "?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
@@ -400,7 +430,17 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	cached, conditional := g.conditionalRequest(request)
-	response, err := g.httpClient.Do(request)
+	if conditional && query.Has("page") && query.Get("per_page") == strconv.Itoa(githubPageSize) {
+		// An unchanged body cannot prove the list still ends here. A new
+		// page can appear after a full terminal page without changing its ETag.
+		var rows []json.RawMessage
+		if json.Unmarshal(cached.body, &rows) == nil && len(rows) == githubPageSize && !paginationContinues(cached.headers.Values("Link")) {
+			request.Header.Del("If-None-Match")
+			conditional = false
+		}
+	}
+	response, err := client.Do(request)
+	g.quota.observe(ctx, time.Now(), path, response, conditional, false)
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
@@ -432,6 +472,7 @@ func providerTransportError(ctx context.Context, err error, unknown bool) *Error
 	if ctx != nil {
 		failure.cause = ctx.Err()
 	}
+	failure.transport = ctx != nil && failure.cause == nil && err != nil
 	switch {
 	case ctx == nil || errors.Is(failure.cause, context.Canceled):
 		failure.Message = "The provider request was canceled."
@@ -455,27 +496,40 @@ func providerTransportTimeout(err error) bool {
 
 func statusError(response *http.Response, mutation bool) error {
 	status := response.StatusCode
-	retry := retryAfter(response.Header, time.Now())
+	now := time.Now()
+	retry := retryAfter(response.Header, now)
+	failure := func(code, message string, status int, retry int64, unknown bool) *Error {
+		result := providerError(code, message, status, retry, unknown)
+		result.RetryTiming = retryTiming(response.Header, now)
+		if code == "provider_rate_limited" && !mutation {
+			result.RetryTiming = sourceRetryTiming(response.Header, now)
+		}
+		result.retryDirected = len(response.Header.Values("Retry-After")) > 0
+		for _, remaining := range response.Header.Values("X-RateLimit-Remaining") {
+			result.retryDirected = result.retryDirected || strings.TrimSpace(remaining) == "0"
+		}
+		return result
+	}
 	unknown := mutation && (status == http.StatusRequestTimeout || status >= 200 && status < 300 || status >= 300 && status < 400 || status >= 500)
 	switch {
 	case status == http.StatusNotFound:
-		return providerError("provider_not_found", "The requested provider resource was not found.", status, retry, false)
+		return failure("provider_not_found", "The requested provider resource was not found.", status, retry, false)
 	case status == http.StatusTooManyRequests:
-		return providerError("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
+		return failure("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
 	case status == http.StatusForbidden && (response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""):
-		return providerError("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
+		return failure("provider_rate_limited", "The provider rate limit was reached.", status, retry, unknown)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return providerError("provider_unauthorized", "The provider rejected authorization.", status, retry, false)
+		return failure("provider_unauthorized", "The provider rejected authorization.", status, retry, false)
 	case status >= 500:
-		return providerError("provider_unavailable", "The provider is temporarily unavailable.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider is temporarily unavailable.", status, retry, unknown)
 	case status == http.StatusRequestTimeout:
-		return providerError("provider_unavailable", "The provider request timed out.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider request timed out.", status, retry, unknown)
 	case status >= 300 && status < 400:
-		return providerError("provider_unavailable", "The provider returned an unsupported redirect.", status, retry, unknown)
+		return failure("provider_unavailable", "The provider returned an unsupported redirect.", status, retry, unknown)
 	case status >= 200 && status < 300:
-		return providerError("provider_invalid_response", "The provider returned an unexpected success response.", status, retry, unknown)
+		return failure("provider_invalid_response", "The provider returned an unexpected success response.", status, retry, unknown)
 	default:
-		return providerError("provider_unavailable", "The provider request was rejected.", status, retry, false)
+		return failure("provider_unavailable", "The provider request was rejected.", status, retry, false)
 	}
 }
 
@@ -979,10 +1033,12 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
 		return Pull{}, errors.New("invalid base repository")
 	}
+	var headRepositoryID int64
 	if raw.Head.Repo != nil {
 		if _, err := normalizeRepository(*raw.Head.Repo, 0); err != nil {
 			return Pull{}, errors.New("invalid head repository")
 		}
+		headRepositoryID = raw.Head.Repo.ID
 	}
 	mergedAt := ""
 	if raw.MergedAt != nil {
@@ -1017,7 +1073,7 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	default:
 		mergeState = "UNKNOWN"
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, HeadRepositoryID: headRepositoryID, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {
@@ -1180,3 +1236,7 @@ func parseTimestamp(value string) (time.Time, error) {
 	}
 	return parsed, nil
 }
+
+// SetReadGate installs a local pre-read throttle before this adapter is shared.
+// It must never be changed while requests are in flight. Mutations do not retry.
+func (g *GitHub) SetReadGate(gate func(context.Context) error) { g.readGate = gate }

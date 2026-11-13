@@ -112,8 +112,7 @@ func testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T, la
 	if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) {
 		t.Fatal("status annotation changed frozen source counts", err)
 	}
-	// Automatic checkpoint publication belongs to a later consuming slice.
-	for table, want := range map[string]int{"review_operations": 1, "review_execution_attempts": 1, "review_execution_evidence": 1, "review_checkpoint_publications": 0} {
+	for table, want := range map[string]int{"review_operations": 1, "review_execution_attempts": 1, "review_execution_evidence": 1, "review_checkpoint_publications": 1, "review_round_completions": 0} {
 		if got := cliCount(t, f.f.store, "SELECT count(*) FROM "+table); got != want {
 			t.Fatal("same-attempt recovery duplicated work or credited status text", table, got, want)
 		}

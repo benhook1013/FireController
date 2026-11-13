@@ -70,7 +70,7 @@ func decodeRoundHistory(body string) (RoundControl, bool, error) {
 }
 
 // initializeRoundControl installs only an absent first rule inside the caller's
-// transaction. Existing controls and accepted work are untouched.
+// transaction. Existing explicit/adopted controls and accepted work are untouched.
 func initializeRoundControl(ctx context.Context, tx *sql.Tx, scope core.Scope, pull int64, channel string, minimum, maximum int64) error {
 	if !roundScope(scope.ProjectID, pull, channel) || minimum < 0 || maximum < 1 || maximum > 1000 || minimum > maximum {
 		return invalid()
@@ -168,8 +168,8 @@ func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, e
 	return count, nil
 }
 
-// An explicit grant asks for another completion before the preserved streak
-// may stop discovery again. Historical baseline fields remain decode-only.
+// Original adoption carries earned progress; only a later explicit grant asks
+// for another completion before the preserved streak may stop discovery again.
 func roundTaperBoundary(bound RoundControl, used int64) bool {
 	return bound.Tapered || used > bound.Used || bound.Revision == 1 && hasRoundOrigin(bound)
 }

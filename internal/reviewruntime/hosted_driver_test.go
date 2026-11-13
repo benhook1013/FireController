@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
@@ -17,6 +19,7 @@ import (
 type driverHostedProvider struct {
 	*cliDriverReader
 	t                                                                *testing.T
+	pullNumber                                                       int64
 	actor, bot                                                       reviewprovider.Author
 	comments                                                         []reviewprovider.IssueComment
 	queries, reviews, histories, baselines, observations, activities int
@@ -28,18 +31,25 @@ type driverHostedProvider struct {
 	baselineHook                                                     func(context.Context, *reviewprovider.HostedPublicationSnapshot) error
 }
 
+func (p *driverHostedProvider) targetPull() int64 {
+	if p.pullNumber == 0 {
+		return 2
+	}
+	return p.pullNumber
+}
+
 func (p *driverHostedProvider) CurrentActor(ctx context.Context) (reviewprovider.Author, error) {
 	return p.actor, ctx.Err()
 }
 func (p *driverHostedProvider) ObserveHostedActivity(ctx context.Context, repo, head string, selector reviewprovider.HostedActivitySelector) (reviewprovider.HostedActivity, error) {
 	p.activities++
-	if repo != "owner/repo" || head != p.pulls[2].HeadSHA || selector.ProviderActorID != p.bot.ID {
+	if repo != "owner/repo" || head != p.pulls[p.targetPull()].HeadSHA || selector.ProviderActorID != p.bot.ID {
 		p.t.Fatal("wrong activity scope")
 	}
 	return reviewprovider.HostedActivity{State: p.activity, ObservedAt: time.Now().UTC()}, ctx.Err()
 }
 func (p *driverHostedProvider) PostIssueComment(ctx context.Context, repo string, number int64, body string) (reviewprovider.IssueComment, error) {
-	if repo != "owner/repo" || number != 2 {
+	if repo != "owner/repo" || number != p.targetPull() {
 		p.t.Fatal("wrong post scope")
 	}
 	if err := ctx.Err(); err != nil {
@@ -76,7 +86,7 @@ func (p *driverHostedProvider) IssueComments(ctx context.Context, repo string, n
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if repo != "owner/repo" || number != 2 {
+	if repo != "owner/repo" || number != p.targetPull() {
 		p.t.Fatal("wrong history scope")
 	}
 	if p.histories > p.delay && len(p.comments) == 1 {
@@ -89,7 +99,7 @@ func (p *driverHostedProvider) ObserveHosted(ctx context.Context, repo string, n
 	if err := ctx.Err(); err != nil {
 		return reviewprovider.HostedPublicationSnapshot{}, err
 	}
-	if repo != "owner/repo" || number != 2 {
+	if repo != "owner/repo" || number != p.targetPull() {
 		p.t.Fatal("wrong observation scope")
 	}
 	var trigger reviewprovider.IssueComment
@@ -110,12 +120,13 @@ func (p *driverHostedProvider) ObserveHosted(ctx context.Context, repo string, n
 	}
 	p.observations++
 	at := time.Now().UTC()
-	body := "**Actionable comments posted: 1**\n\n" + hostedRetainScope(p.pulls[2].BaseSHA, p.pulls[2].HeadSHA) + "\n\n" + hostedRetainPublicationMarker()
+	target := p.pulls[p.targetPull()]
+	body := "**Actionable comments posted: 1**\n\n" + hostedRetainScope(target.BaseSHA, target.HeadSHA) + "\n\n" + hostedRetainPublicationMarker()
 	if p.partial {
 		body = "Provider is still collecting evidence."
 	}
 	line := int64(1)
-	return reviewprovider.HostedPublicationSnapshot{Complete: true, ObservedAt: time.Now().UTC(), IssueComments: append([]reviewprovider.IssueComment(nil), p.comments...), Reviews: []reviewprovider.HostedReview{{ID: 300, Body: body, State: "commented", HeadSHA: p.pulls[2].HeadSHA, Author: p.bot, SubmittedAt: at}}, ReviewComments: []reviewprovider.ReviewComment{{ID: 301, ReviewID: 300, Body: hostedRetainInline(1, "Synthetic retained finding."), Author: p.bot, Path: "reviewed.txt", OriginalLine: &line, Side: "RIGHT", HeadSHA: p.pulls[2].HeadSHA, OriginalHeadSHA: p.pulls[2].HeadSHA, CreatedAt: at, UpdatedAt: at}}}, nil
+	return reviewprovider.HostedPublicationSnapshot{Complete: true, ObservedAt: time.Now().UTC(), IssueComments: append([]reviewprovider.IssueComment(nil), p.comments...), Reviews: []reviewprovider.HostedReview{{ID: 300, Body: body, State: "commented", HeadSHA: target.HeadSHA, Author: p.bot, SubmittedAt: at}}, ReviewComments: []reviewprovider.ReviewComment{{ID: 301, ReviewID: 300, Body: hostedRetainInline(1, "Synthetic retained finding."), Author: p.bot, Path: "reviewed.txt", OriginalLine: &line, Side: "RIGHT", HeadSHA: target.HeadSHA, OriginalHeadSHA: target.HeadSHA, CreatedAt: at, UpdatedAt: at}}}, nil
 }
 
 type hostedDriverFixture struct {
@@ -259,10 +270,12 @@ func TestHostedDriverFinalGuardsPreventReviewPOST(t *testing.T) {
 				p.BaseSHA = strings.Repeat("9", 40)
 				f.provider.pulls[2] = p
 			case "configuration":
-				f.configure(t, "independent", []int64{2, 4})
+				// Suffix cleanup preserves the admitted target's configuration;
+				// changing dependency mode must still refuse final dispatch.
+				f.configure(t, "stacked", []int64{2, 4})
 			case "policy":
 				one := int64(1)
-				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "pause-hosted", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, PausedChannels: []string{"hosted"}})
+				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "pause-hosted", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 1})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -306,7 +319,7 @@ func TestHostedDriverActivityAndFileCeilingHoldBeforeQuery(t *testing.T) {
 				f.provider.activity = "active"
 			} else {
 				one := int64(1)
-				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "file-ceiling", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, PausedChannels: []string{}, MaxReviewFiles: 1})
+				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "file-ceiling", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 1})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -369,7 +382,7 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 				f.provider.reply = strings.Replace(runtimeAllowanceAvailable, "Reviews are available now.", "More reviews will be available in 3 minutes.", 1)
 			}
 			if mode == "unknown" {
-				f.provider.delay = 1000 // No attributed reply arrives in these eight passes.
+				f.provider.delay = 1000 // No attributed reply arrives in the bounded preparation window.
 			}
 			if mode == "unsupported" {
 				f.provider.delay = 0
@@ -394,8 +407,14 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 			if mode == "delayed" && (f.provider.histories != 2 || waits != 1) {
 				t.Fatal("delayed reply retried query or skipped observation")
 			}
-			if mode == "unknown" && (f.provider.histories != 8 || waits != 7) {
+			if mode == "unknown" && (f.provider.histories != 16 || waits != 15) {
 				t.Fatal("unknown allowance exceeded observation budget")
+			}
+			if mode == "unknown" {
+				var refusal *core.Error
+				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "hosted_allowance_reply_pending" {
+					t.Fatal("missing specific pending-reply diagnosis", err)
+				}
 			}
 			observations, readErr := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
 			expectedObservations := f.provider.histories
@@ -418,8 +437,21 @@ func TestHostedDriverDelayedAndUnavailableAllowanceNeverRepostsQuery(t *testing.
 					t.Fatal("indexed query source not readable", captureErr)
 				}
 			}
-			if _, stopErr := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, "held", "allowance_fixture_stopped", ""); stopErr != nil {
+			holdReason := "allowance_fixture_stopped"
+			if mode == "cooldown" {
+				holdReason = "hosted_allowance_cooldown"
+			}
+			if _, stopErr := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, "held", holdReason, ""); stopErr != nil {
 				t.Fatal(stopErr)
+			}
+			if mode == "cooldown" {
+				held, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), op.ID)
+				if err != nil || held.Allowance == nil || held.Allowance.Kind != "hosted_cooldown" || held.Allowance.RetryNotBefore == "" || held.Allowance.Remaining != nil {
+					t.Fatal("hosted held timing unavailable", held, err)
+				}
+				if _, err := f.engine.ReadHostedAllowance(t.Context(), f.project, a.ID); err == nil {
+					t.Fatal("cooldown became positive allowance")
+				}
 			}
 			eventCount := cliCount(t, f.store, `SELECT count(*) FROM events`)
 			for _, observation := range observations {
@@ -572,6 +604,40 @@ func TestHostedDriverInvalidPostReceiptNeverRecordsTrigger(t *testing.T) {
 			result, err := f.hosted.Dispatch(t.Context(), op, a, func(context.Context, string) error { callbacks++; return nil })
 			if err != nil || result.State != "uncertain" || callbacks != 0 || f.provider.reviews != 1 || hostedDriverJournal(t, f, a.ID) != "posting" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("invalid returned receipt gained trigger identity", mode, result, err, callbacks)
+			}
+		})
+	}
+}
+
+func TestHostedDriverAllowanceReplyAfterEighthObservation(t *testing.T) {
+	for _, cooldown := range []bool{false, true} {
+		t.Run(strconv.FormatBool(cooldown), func(t *testing.T) {
+			f := newHostedDriverFixture(t)
+			f.provider.delay = 8
+			if cooldown {
+				f.provider.reply = strings.Replace(runtimeAllowanceAvailable, "Reviews are available now.", "More reviews will be available in 3 minutes.", 1)
+			}
+			op, a, c := f.startHosted(t)
+			waits := 0
+			f.hosted.wait = func(ctx context.Context, d time.Duration) error {
+				waits++
+				if d != 2*time.Second {
+					t.Fatal("changed observation spacing")
+				}
+				return ctx.Err()
+			}
+			_, err := f.hosted.Prepare(t.Context(), op, c, a)
+			if (err != nil) != cooldown || f.provider.queries != 1 || f.provider.reviews != 0 || waits != 8 || f.provider.histories != 9 {
+				t.Fatal("late allowance reply lost or query reposted", err, waits, f.provider.histories)
+			}
+			if cooldown {
+				var refusal *core.Error
+				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "hosted_allowance_cooldown" {
+					t.Fatal("late cooldown not retained", err)
+				}
+			}
+			if hostedDriverJournal(t, f, a.ID) != "preparing" || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+				t.Fatal("allowance observation started or credited a review")
 			}
 		})
 	}

@@ -42,7 +42,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	if ctx == nil || reader == nil || captures == nil || engine == nil {
 		return RecoveredHosted{}, core.Fail("validation_failed", "Use the configured hosted recovery capability.", 400)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "hosted_recovery"), 20*time.Second)
 	defer cancel()
 	bound, err := engine.ReadHostedRecovery(ctx, project, attemptID, capabilityID)
 	if err != nil {
@@ -54,7 +54,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 		result.Reason = "already_completed"
 		return result, nil
 	}
-	if attempt.State == "rate_limited" || attempt.State == "failed" && bound.Operation.Reason == "hosted_review_skipped" {
+	if attempt.State == "rate_limited" || attempt.State == "failed" && (bound.Operation.Reason == "hosted_review_skipped" || bound.Operation.Reason == reviewexec.HostedFinishedIncompleteReason) {
 		result.Reason = bound.Operation.Reason
 		return result, nil
 	}
@@ -63,6 +63,9 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	defer func() {
 		reason := hostedRecoveryObserverReason(result.Reason, failure)
 		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, reason, hostedObserverFailure(reason, failure))
+		if failure == nil && (result.State == "completed" || result.State == "rate_limited" || result.State == "failed") {
+			engine.ForgetHostedObserver(check)
+		}
 	}()
 	if !settle && attempt.State != "active" {
 		result.Reason = "trigger_recording_pending"
@@ -135,7 +138,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 				return result, err
 			}
 			if captured.Complete {
-				result.TriggerCommentID = trigger.CommentID
+				result.TriggerCommentID, sourceAt = trigger.CommentID, record.Snapshot.ObservedAt
 				return finish(captured.Receipt.ID)
 			}
 		}
@@ -218,6 +221,19 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			if settle && !finishedUnproven {
 				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, externalID)
+			} else if settle && finishedUnproven && captured.Reason == "hosted_finished_inventory_unproven" {
+				// A fresh, complete collection has again proved the original
+				// provider command finished. Missing inventory remains incomplete,
+				// but cannot occupy the repository lane indefinitely.
+				_, err = engine.ReleaseFinishedHosted(ctx, project, attempt.ID, attempt.Revision, reviewexec.HostedIncompleteCapture{
+					CaptureID: captured.Capture.ID, SHA256: captured.Capture.SHA256, Bytes: captured.Capture.Bytes,
+				})
+				var refusal *core.Error
+				if errors.As(err, &refusal) && refusal.Code == "hosted_incomplete_grace" {
+					err = nil
+				} else if err == nil {
+					result.State, result.Reason = "failed", reviewexec.HostedFinishedIncompleteReason
+				}
 			}
 		}
 		return result, err

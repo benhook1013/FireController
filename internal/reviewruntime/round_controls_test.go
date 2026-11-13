@@ -78,7 +78,7 @@ func TestRoundControlsCloseAfterPrepareBlocksRealRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
-	if err != nil || result.State != "failed" {
+	if err != nil || result.State != "failed" || result.Reason != "review_round_closed" {
 		t.Fatal("closed channel reached provider", result, err)
 	}
 	after, err := os.ReadFile(f.log)

@@ -69,10 +69,10 @@ func response(t *testing.T, code int, stdout, stderr string) map[string]string {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result) != 5 {
+	if len(result) != 8 {
 		t.Fatalf("unexpected context fields: %v", result)
 	}
-	for _, key := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id"} {
+	for _, key := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id", "client_version", "client_source_revision", "client_source_state"} {
 		if result[key] == "" {
 			t.Fatalf("missing context field %s", key)
 		}
@@ -227,18 +227,111 @@ func TestRelativeDefaultDirectoryCannotSelectWorkspaceConfiguration(t *testing.T
 }
 
 func TestVersionDoesNotNeedOrReadConfiguration(t *testing.T) {
-	code, stdout, stderr := run([]string{"version"}, map[string]string{"FC_PROFILE": "missing"})
-	if code != 0 || stderr != "" {
-		t.Fatalf("code=%d stderr=%s", code, stderr)
+	missing := filepath.Join(t.TempDir(), "nonexistent-profiles.json")
+	for _, args := range [][]string{{"version"}, {"--profiles-file", missing, "--profile=bound-role", "version"}, {"version", "--profile", "missing", "--profiles-file=" + missing}} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, &stderr)
+		}
+		var result map[string]string
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result) != 3 || result["version"] != cli.Version || result["source_revision"] == "" || result["source_state"] == "" {
+			t.Fatalf("version=%s err=%v", &stdout, err)
+		}
 	}
-	var result map[string]string
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result) != 1 || result["version"] == "" {
-		t.Fatalf("version=%s err=%v", stdout, err)
+}
+
+func TestLocalHelpUsesBoundSelectorsWithoutConfigurationOrNetwork(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	// An existing malformed file cannot be mistaken for a successfully resolved
+	// profile; the local commands must finish before any configuration admission.
+	path := filepath.Join(t.TempDir(), "malformed-profiles.json")
+	before := []byte(`PRIVATE_NOT_CONFIGURATION`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"help", "--help", "-h"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, []string{"--profiles-file", path, "--profile=bound-role", spelling}, map[string]string{"FC_PROFILE": "unrelated", "FC_SERVER": service.URL}, &stdout, &stderr)
+		if code != cli.ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 {
+			t.Fatalf("local help %s: code=%d bytes=%d stderr=%s", spelling, code, stdout.Len(), &stderr)
+		}
+		var result struct {
+			Usage         string `json:"usage"`
+			Binding       string `json:"binding"`
+			CommandGroups []struct {
+				Name     string `json:"name"`
+				Commands []struct {
+					Command string `json:"command"`
+					Scope   string `json:"scope"`
+				} `json:"commands"`
+			} `json:"command_groups"`
+			Documentation struct {
+				Basis string   `json:"basis"`
+				Paths []string `json:"paths"`
+			} `json:"documentation"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Usage == "" || result.Binding == "" || len(result.CommandGroups) == 0 || !strings.Contains(result.Documentation.Basis, "same release") || len(result.Documentation.Paths) == 0 {
+			t.Fatalf("incomplete help: %s err=%v", &stdout, err)
+		}
+		for _, required := range []string{"doctor", "context", "jobs read JOB_ID", "notes read NOTE_ID", "inbox thread CONVERSATION_ID", "inbox send --to WORKER_ID --body TEXT --key KEY"} {
+			found := false
+			for _, group := range result.CommandGroups {
+				for _, command := range group.Commands {
+					if command.Command == required && command.Scope != "" {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing scoped discovery %q", required)
+			}
+		}
+		if strings.Contains(stdout.String(), path) || strings.Contains(stdout.String(), "PRIVATE_NOT_CONFIGURATION") || strings.Contains(stdout.String(), service.URL) {
+			t.Fatal("local help exposed configuration input")
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("local help contacted service")
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("local help changed profile file", err)
+	}
+}
+
+func TestLocalHelpAndVersionRejectMalformedArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "extra"}, {"--help", "extra"}, {"-h", "extra"}, {"version", "extra"}, {"jobs", "--help", "extra"},
+		{"help", "--unknown"}, {"version", "--unknown"}, {"help", "--profile"}, {"version", "--profiles-file="},
+		{"help", "--profile=a", "--profile=b"}, {"--profiles-file=a", "--profiles-file=b", "version"},
+		{"help", "--profile", " padded "}, {"version", "--profile", "bad\x00profile"}, {"help", "--profiles-file", "bad\npath"},
+	} {
+		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
+	}
+	code, stdout, stderr := run([]string{"unsupported-command"}, nil)
+	if code != cli.ExitUsage || stdout != "" || !strings.Contains(stderr, "bound launcher with help") || strings.Contains(stderr, "Use fc ") {
+		t.Fatal("unsupported command assumed an executable name", code, stdout, stderr)
+	}
+}
+
+func TestLocalHelpAndVersionReportOutputFailure(t *testing.T) {
+	for _, command := range []string{"help", "version"} {
+		var stderr bytes.Buffer
+		code := cli.Run([]string{"--profiles-file", "nonexistent", "--profile=bound-role", command}, nil, setupFailingWriter{}, &stderr)
+		if code != cli.ExitConfig || !strings.Contains(stderr.String(), `"code":"output_failed"`) || strings.Contains(stderr.String(), "private output failure") {
+			t.Fatal(command, code, stderr.String())
+		}
 	}
 }
 
 func TestUsageAndSelectionErrorsKeepStdoutClean(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"context", "extra"}, {"context", "--unknown"}, {"context", "--profile"}, {"context", "--profiles-file="}, {"context", "--profile", "a", "--profile", "b"}, {"context", "--profiles-file", "a", "--profiles-file", "b"}, {"version", "--profile", "a"}, {"context", "--profile", "--profiles-file", "a"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"context", "extra"}, {"context", "--unknown"}, {"context", "--profile"}, {"context", "--profiles-file="}, {"context", "--profile", "a", "--profile", "b"}, {"context", "--profiles-file", "a", "--profiles-file", "b"}, {"context", "--profile", "--profiles-file", "a"}} {
 		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
 	}
 	failure(t, []string{"context"}, nil, cli.ExitConfig, "profile_required")
@@ -682,7 +775,7 @@ func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
 	}
 
 	doctor := decodeSuccess("doctor")
-	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 6 {
+	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 10 || doctor["client_source_revision"] == nil {
 		t.Fatalf("doctor output is not the configured verified identity: %v", doctor)
 	}
 	workers := decodeSuccess("workers", "list", "--limit", "1")
@@ -820,5 +913,61 @@ func TestReadOptionDashValuesReachTheirExistingFieldValidation(t *testing.T) {
 	}
 	if reads.Load() != 2 || f.resolverHit.Load() != providerCalls {
 		t.Fatal("read values bypassed field validation or performed provider work")
+	}
+}
+
+func TestOpenJobsCLIUsesBoundListsAndRejectsOpenMutations(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "open-cli")
+	worker := f.worker(t, project, "Builder")
+	for _, status := range []string{"parked", "completed", "blocked", "active"} {
+		f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/jobs", f.admin, "", map[string]string{"title": status, "worker_id": worker, "status": status})
+	}
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {project, worker}})
+	lookups := f.resolverHit.Load()
+	cursor := ""
+	for _, want := range []string{"active", "blocked", "parked"} {
+		args := []string{"--profiles-file", path, "--profile", "chosen", "jobs", "assigned", "--status", "open", "--limit", "1"}
+		if cursor != "" {
+			args = append(args, "--cursor", cursor)
+		}
+		code, out, diagnostics := run(args, nil)
+		if code != 0 || diagnostics != "" {
+			t.Fatal("open list failed", code, diagnostics)
+		}
+		var page struct {
+			Items []struct {
+				Status string `json:"status"`
+			} `json:"items"`
+			Cursor  string `json:"cursor"`
+			HasMore bool   `json:"has_more"`
+		}
+		if json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || page.Items[0].Status != want || page.HasMore != (want != "parked") {
+			t.Fatal("open ordered continuation", out)
+		}
+		cursor = page.Cursor
+	}
+	if f.resolverHit.Load() != lookups {
+		t.Fatal("list performed provider work")
+	}
+	missing := filepath.Join(t.TempDir(), "must-not-read-profiles")
+	for _, args := range [][]string{{"jobs", "list", "--status", "Open"}, {"jobs", "create", "--title", "Invalid", "--status", "open", "--key", "key"}, {"jobs", "list", "--status", "open", "--status", "active"}} {
+		failure(t, append([]string{"--profiles-file", missing, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "invalid_arguments")
+	}
+}
+
+func TestAssignedHistorySelectionRejectsAmbiguityBeforeProfile(t *testing.T) {
+	for _, args := range [][]string{
+		{"jobs", "assigned", "--all", "--status", "open"},
+		{"jobs", "assigned", "--status", "completed", "--all"},
+		{"jobs", "assigned", "--all", "--all"},
+		{"jobs", "assigned", "--all=true"},
+	} {
+		var out, stderr bytes.Buffer
+		if code := cli.Run(args, nil, &out, &stderr); code != cli.ExitUsage || out.Len() != 0 {
+			t.Fatalf("ambiguous selection accepted: %v code=%d error=%s", args, code, &stderr)
+		}
 	}
 }

@@ -71,6 +71,14 @@ func TestReviewCICLIPublicRefreshIdentityAndLocalUnavailable(t *testing.T) {
 	if code != cli.ExitConflict || out != "" || !strings.Contains(stderr, "reviews_ci_unavailable") || requests.Load() != before+2 || f.resolverHit.Load() != providers {
 		t.Fatal("local CI read refreshed/polled or invented success", code, stderr)
 	}
+	for _, phrase := range []string{"No completed retained source observation with CI", "reviews ci-wait", "final merge branch", "retained selected-base CI", "reviews source-refresh --ci"} {
+		if !strings.Contains(stderr, phrase) {
+			t.Fatal("CLI lost CI-specific routing", phrase, stderr)
+		}
+	}
+	if strings.Contains(stderr, "current access") {
+		t.Fatal("missing CI looked like credential failure", stderr)
+	}
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_source_refreshes`).Scan(&count); err != nil || count != 2 {
 		t.Fatal("local unavailable assessment enqueued work", count, err)
 	}

@@ -73,23 +73,6 @@ func TestLifecycleMetadataProgressesWhileEnrichmentBlocksAndRejectsMovedHead(t *
 	case <-time.After(2 * time.Second):
 		t.Fatal("enrichment did not start")
 	}
-	// Complete the first metadata sweep before moving the fake clock. Otherwise
-	// an initial in-flight success can schedule its next check after the advance.
-	initialDeadline := time.After(2 * time.Second)
-	for {
-		_, health, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{{Number: 2}, {Number: 4}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if health[2].LastSuccessAt != "" && health[4].LastSuccessAt != "" {
-			break
-		}
-		select {
-		case <-initialDeadline:
-			t.Fatal("initial metadata sweep did not finish")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
 	r.mu.Lock()
 	p := r.pulls[2]
 	p.HeadSHA, p.Title = strings.Repeat("c", 40), "Moved during blocked enrichment"

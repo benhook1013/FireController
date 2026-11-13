@@ -2,8 +2,8 @@ package reviewexec
 
 import (
 	"context"
-	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,162 +11,182 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func TestRunSelectionFreshWindowsReachLongMergedPrefix(t *testing.T) {
+func TestRunSelectionOpenHeadBoundsAndJoinsLookahead(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			f := selectionFixtureWithQueue(t, []int64{1, 2, 3, 4})
+			expected := int64(4)
+			receipt, _ := selectionEnqueue(t, f, "no-lookahead", channel, &expected)
+			var calls atomic.Int32
+			var active atomic.Int32
+			var mu sync.Mutex
+			identities := map[int64]int{}
+			reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+				calls.Add(1)
+				active.Add(1)
+				defer active.Add(-1)
+				mu.Lock()
+				identities[n]++
+				mu.Unlock()
+				if repo != "owner/repo" || n < 1 || n > expected {
+					t.Errorf("source outside exact asserted window: %s/%d", repo, n)
+				}
+				return selectionSnapshotReader{}.Pull(ctx, repo, n)
+			}}
+			selectionNext(t, f, reader)
+			got := selectionRead(t, f, receipt.ID)
+			if got.State != "held" || got.Reason != "expected_pr_mismatch" || calls.Load() != 4 || reader.calls.Load() != 5 || active.Load() != 0 || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+				t.Fatal(got, calls.Load(), reader.calls.Load())
+			}
+			mu.Lock()
+			for _, n := range []int64{1, 2, 3, 4} {
+				if identities[n] != 1 {
+					t.Errorf("metadata identity not read exactly once: %d=%d", n, identities[n])
+				}
+			}
+			if len(identities) != 4 {
+				t.Error("unexpected speculative identities", identities)
+			}
+			mu.Unlock()
+		})
+	}
+}
+
+func TestRunSelectionLiveTailReadsEachRequiredPullOnce(t *testing.T) {
 	queue := make([]int64, 40)
 	for i := range queue {
 		queue[i] = int64(i + 1)
 	}
 	f := selectionFixtureWithQueue(t, queue)
-	expected := int64(34)
-	receipt, _ := selectionEnqueue(t, f, "long-fresh-prefix", "hosted", &expected)
+	receipt, _ := selectionEnqueue(t, f, "held-live-tail", "hosted", nil)
 	r := selectionRead(t, f, receipt.ID)
 	c, err := f.e.configurationRevision(t.Context(), r.ProjectID, r.ConfigurationRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var active, maximum, suffix atomic.Int32
-	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for current > maximum.Load() {
-			previous := maximum.Load()
-			if current <= previous || maximum.CompareAndSwap(previous, current) {
-				break
-			}
-		}
-		if n > expected {
-			suffix.Add(1)
-		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return reviewprovider.Pull{}, ctx.Err()
-		case <-timer.C:
-		}
-		p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
-		if n < expected {
-			p.State, p.Merged = "closed", true
-		}
-		return p, nil
+	var calls atomic.Int32
+	reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+		calls.Add(1)
+		p, err := selectionSnapshotReader{}.Pull(ctx, repo, n)
+		p.IsDraft = new(true)
+		return p, err
 	}}
-	// The production budget stays fifteen seconds. Scale only this private
-	// phase's budget: sequential acquisition needs850ms, four fresh slots225ms.
-	choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-	if err != nil || choice.state != "selected" || choice.number != expected || len(choice.prefix) != int(expected) {
-		t.Fatal("long merged prefix exhausted selection before the live target", choice.state, choice.reason, choice.number, len(choice.prefix), err)
-	}
-	if maximum.Load() < 2 || maximum.Load() > 4 || suffix.Load() != 0 || active.Load() != 0 || reader.calls.Load() != expected+1 {
-		t.Fatal("source window exceeded its bound, assertion or phase", maximum.Load(), suffix.Load(), active.Load(), reader.calls.Load())
-	}
-	reader.calls.Store(0)
-	selectionNext(t, f, reader)
-	selected := selectionRead(t, f, receipt.ID)
-	if selected.State != "selected" || selected.OperationID == "" || reader.calls.Load() != expected+1 || suffix.Load() != 0 || active.Load() != 0 {
-		t.Fatal("ordinary worker did not link exactly the asserted original target", selected, reader.calls.Load(), active.Load())
-	}
-	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), selected.OperationID)
-	if err != nil || op.PullNumber != expected || op.Channel != "hosted" || op.HeadSHA != strings.Repeat("a", 40) || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
-		t.Fatal("source selection started work or changed the child binding", op, err)
-	}
-	// Omitting the optional assertion uses the same fast fresh windows. Its
-	// discarded lookahead supplies neither child identity nor review credit.
-	reader.calls.Store(0)
-	explicit, _ := selectionEnqueue(t, f, "long-fresh-prefix-explicit", "cli", nil)
-	selectionNext(t, f, reader)
-	selected = selectionRead(t, f, explicit.ID)
-	op, err = f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), selected.OperationID)
-	if err != nil || selected.State != "selected" || op.PullNumber != expected || op.Channel != "cli" || reader.calls.Load() > expected+4 || suffix.Load() > 3 || active.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
-		t.Fatal("explicit selection required an assertion or used lookahead as authority", selected, op, reader.calls.Load(), suffix.Load(), err)
+	choice, err := f.e.chooseRun(t.Context(), r, 801, c, reader)
+	if err != nil || choice.state != "held" || choice.reason != "pull_draft" || len(choice.prefix) != 40 || calls.Load() != 40 {
+		t.Fatal(choice, calls.Load(), err)
 	}
 }
 
-func TestRunSelectionFreshWindowCancellationJoinsAllReads(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	entered := make(chan struct{}, 4)
+func TestRunSelectionClosedUnmergedCanReopen(t *testing.T) {
+	f := selectionFixtureWithQueue(t, []int64{1, 2})
+	reopened := false
+	reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+		p, err := selectionSnapshotReader{}.Pull(ctx, repo, n)
+		if n == 1 && !reopened {
+			p.State = "closed"
+		}
+		if n == 2 {
+			p.IsDraft = new(true)
+		}
+		return p, err
+	}}
+	receipt, _ := selectionEnqueue(t, f, "closed-unmerged", "cli", nil)
+	selectionNext(t, f, reader)
+	if got := selectionRead(t, f, receipt.ID); got.State != "held" {
+		t.Fatal(got)
+	}
+	reopened = true
+	reader.calls.Store(0)
+	receipt, _ = selectionEnqueue(t, f, "reopened", "cli", nil)
+	selectionNext(t, f, reader)
+	got := selectionRead(t, f, receipt.ID)
+	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
+	if err != nil || got.State != "selected" || op.PullNumber != 1 || reader.calls.Load() != 2 {
+		t.Fatal(got, op, reader.calls.Load(), err)
+	}
+}
+
+func TestRunSelectionSourceFailureRetainsOnlyAcquiredPrefix(t *testing.T) {
+	f := selectionFixtureWithQueue(t, []int64{1, 2, 3})
+	receipt, _ := selectionEnqueue(t, f, "ordered-source-failure", "cli", nil)
 	var active atomic.Int32
-	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, _ int64) (reviewprovider.Pull, error) {
+	var identities [3]atomic.Int32
+	speculative := make(chan struct{})
+	reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
 		active.Add(1)
 		defer active.Add(-1)
-		entered <- struct{}{}
+		if repo != "owner/repo" || n < 1 || n > 3 {
+			t.Errorf("source outside bounded failure window: %s/%d", repo, n)
+			return reviewprovider.Pull{}, nil
+		}
+		identities[n-1].Add(1)
+		if n == 2 {
+			select {
+			case <-speculative:
+			case <-ctx.Done():
+				return reviewprovider.Pull{}, ctx.Err()
+			}
+			return reviewprovider.Pull{}, &reviewprovider.Error{Code: "provider_unauthorized", Message: "Private provider response"}
+		}
+		p, err := selectionSnapshotReader{merged: true}.Pull(ctx, repo, n)
+		if n == 3 {
+			// A successful later result is available before the ordered error,
+			// but must never become retained source or admission authority.
+			defer close(speculative)
+		}
+		return p, err
+	}}
+	selectionNext(t, f, reader)
+	got := selectionRead(t, f, receipt.ID)
+	frame, ok, err := readFrontFrame(t.Context(), f.store.DB(), attemptProject, "cli")
+	if err != nil || !ok || got.State != "held" || got.Reason != "source_unauthorized" || got.OperationID != "" || frame.complete || len(frame.prefix) != 1 || frame.prefix[0].Number != 1 || !frame.prefix[0].Merged || frame.prefix[0].HeadSHA != strings.Repeat("a", 40) || reader.calls.Load() != 4 || active.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal(got, frame, reader.calls.Load(), active.Load(), err)
+	}
+	for i := range identities {
+		if identities[i].Load() != 1 {
+			t.Errorf("PR%d metadata reads = %d, want 1", i+1, identities[i].Load())
+		}
+	}
+}
+
+func TestRunSelectionCancellationStopsCurrentRead(t *testing.T) {
+	f := selectionFixtureWithQueue(t, []int64{1, 2, 3})
+	receipt, _ := selectionEnqueue(t, f, "cancel-source", "cli", nil)
+	r := selectionRead(t, f, receipt.ID)
+	c, err := f.e.configurationRevision(t.Context(), r.ProjectID, r.ConfigurationRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	entered := make(chan struct{})
+	var active, started atomic.Int32
+	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+		active.Add(1)
+		defer active.Add(-1)
+		// Wait for the entire three-member window before cancelling.
+		// Only the last entrant closes the barrier; concurrent reads must not
+		// close the same channel repeatedly.
+		if started.Add(1) == 3 {
+			close(entered)
+		}
 		<-ctx.Done()
 		return reviewprovider.Pull{}, ctx.Err()
 	}}
-	reads := &runReads{reader: reader, pulls: map[string]map[int64]reviewprovider.Pull{}}
-	budget := runSourceBudget{remaining: time.Second}
-	done := make(chan error, 1)
-	go func() {
-		done <- budget.read(ctx, func(source context.Context) error {
-			reads.pullWindow(source, "owner/repo", 801, []int64{1, 2, 3, 4})
-			return nil
-		})
-	}()
-	for range 4 {
-		select {
-		case <-entered:
-		case <-time.After(time.Second):
-			t.Fatal("metadata window did not start its bounded readers")
-		}
+	done := make(chan struct{})
+	go func() { defer close(done); f.e.chooseRun(ctx, r, 801, c, reader) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("read never started")
 	}
 	cancel()
 	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) || active.Load() != 0 || len(reads.pulls["owner/repo"]) != 0 {
-			t.Fatal("canceled window retained source or leaked readers", err, active.Load())
-		}
+	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("metadata readers did not join on cancellation")
+		t.Fatal("read not joined")
 	}
-}
-
-func TestRunSelectionEarlyMismatchCancelsLookaheadAndFailureRetainsPrefix(t *testing.T) {
-	f := selectionFixtureWithQueue(t, []int64{1, 2, 3})
-	expected := int64(3)
-	receipt, _ := selectionEnqueue(t, f, "early-window-mismatch", "cli", &expected)
-	r := selectionRead(t, f, receipt.ID)
-	c, err := f.e.configurationRevision(t.Context(), r.ProjectID, r.ConfigurationRevision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blocked, failed := make(chan struct{}), make(chan struct{})
-	var joined atomic.Bool
-	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-		switch n {
-		case 1:
-			<-blocked
-			<-failed
-			return selectionSnapshotReader{}.Pull(ctx, "owner/repo", n)
-		case 2:
-			close(blocked)
-			<-ctx.Done()
-			joined.Store(true)
-			return reviewprovider.Pull{}, ctx.Err()
-		default:
-			close(failed)
-			return reviewprovider.Pull{}, &reviewprovider.Error{Code: "provider_unauthorized", Message: "Private provider response"}
-		}
-	}}
-	started := time.Now()
-	choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-	if err != nil || choice.state != "held" || choice.reason != "expected_pr_mismatch" || len(choice.prefix) != 1 || !joined.Load() || time.Since(started) >= 500*time.Millisecond {
-		t.Fatal("unused slow/failed lookahead overrode the earlier fresh candidate", choice.state, choice.reason, len(choice.prefix), joined.Load(), time.Since(started), err)
-	}
-	// The next real worker phase uses a fresh merged first member, then a
-	// required provider failure. Only that ordered, verified prefix is retained.
-	reader = &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-		if n == 2 {
-			return reviewprovider.Pull{}, &reviewprovider.Error{Code: "provider_unauthorized", Message: "Private provider response"}
-		}
-		return selectionSnapshotReader{merged: true}.Pull(ctx, "owner/repo", n)
-	}}
-	choice, err = f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectionNext(t, f, reader)
-	held := selectionRead(t, f, receipt.ID)
-	if err != nil || held.State != "held" || held.Reason != "source_unauthorized" || held.OperationID != "" || choice.reason != held.Reason || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 1 || !choice.prefix[0].Pull.Merged || choice.prefix[0].ObservedAt == "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
-		t.Fatal("source failure lost verified prefix, leaked lookahead or created work", held, choice, err)
+	if active.Load() != 0 || reader.calls.Load() != 4 {
+		t.Fatal(active.Load(), reader.calls.Load())
 	}
 }

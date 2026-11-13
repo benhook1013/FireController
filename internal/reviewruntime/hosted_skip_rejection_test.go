@@ -30,7 +30,7 @@ func TestHostedSkippedTriggerRecoverySettlesOriginalOnceWithoutCredit(t *testing
 			if err != nil || got.State != "failed" || got.Reason != "hosted_review_skipped" || got.EvidenceID != "" || got.TriggerCommentID != trigger.ID {
 				t.Fatal("proven original command skip remained pending or claimed quota/completion", got, err)
 			}
-			if recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f) != 0 || recoveryRuntimeCount(t, f, "review_hosted_observations") != 1 {
+			if recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_hosted_observations") != 1 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 				t.Fatal("skip lost its observation, retained a reservation or gained review credit")
 			}
 			beforeEvents, beforeCalls := recoveryRuntimeCount(t, f, "events"), len(reader.calls)
@@ -64,7 +64,7 @@ func TestHostedSkippedTriggerLiveDriverDefersSettlementToSupervisor(t *testing.T
 	if _, err := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, result.State, result.Reason, result.ExternalID); err != nil {
 		t.Fatal(err)
 	}
-	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || nativeHostedCredit(t, f.cliEvidenceFixture) != 0 {
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
 		t.Fatal("skipped trigger retained reservation or gained completion credit")
 	}
 }
@@ -86,5 +86,32 @@ func TestHostedSkippedReplyRetainsQualifiedBotRefreshBoundary(t *testing.T) {
 	result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	if err != nil || result.rejectionState != "failed" || result.Complete || result.Reason != "hosted_review_skipped" || result.Receipt.ID != "" {
 		t.Fatal("qualified unrelated bot update hid command skip or manufactured review credit", result, err)
+	}
+}
+
+func TestHostedHeadChangedRecoverySettlesOriginalWithoutCredit(t *testing.T) {
+	f, record := runtimeAnnotatedStandingFixture(t, nil)
+	trigger, reply := record.Snapshot.IssueComments[0], record.Snapshot.IssueComments[2]
+	reply.Body = strings.Replace(runtimeSkippedCommandReply(), "Review skipped.", "Head commit changed.", 1)
+	record.Snapshot.IssueComments = []reviewprovider.IssueComment{trigger, reply}
+	// The recovery reader timestamps the observation at the real clock.
+	record.Snapshot.ReviewComments[0].UpdatedAt = trigger.CreatedAt.Add(time.Nanosecond)
+	reply.CreatedAt = trigger.CreatedAt.Add(2 * time.Nanosecond)
+	reply.UpdatedAt = reply.CreatedAt
+	record.Snapshot.IssueComments[1] = reply
+	reader := &hostedRecoveryReader{record: record, repositoryID: record.RepositoryID}
+	result, err := recoverRuntime(t, f.f, f.captures, f.a, reader)
+	if err != nil || result.State != "failed" || result.Reason != "hosted_review_skipped" || result.EvidenceID != "" || result.TriggerCommentID != trigger.ID {
+		t.Fatal("head-change refusal did not settle the original attempt", result, err)
+	}
+	for table, want := range map[string]int{"review_execution_reservations": 0, "review_execution_evidence": 0, "review_hosted_observations": 2, "review_round_completions": 0} {
+		if got := recoveryRuntimeCount(t, f.f, table); got != want {
+			t.Fatalf("%s = %d, want %d", table, got, want)
+		}
+	}
+	calls := len(reader.calls)
+	replay, err := recoverRuntime(t, f.f, f.captures, f.a, reader)
+	if err != nil || replay.State != result.State || replay.Reason != result.Reason || len(reader.calls) != calls {
+		t.Fatal("terminal refusal replay collected or settled again", replay, err)
 	}
 }

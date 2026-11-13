@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
@@ -38,7 +39,7 @@ func TestOperationStatusEvidenceIdentityAndCompactHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	retained, err := f.e.ReadOperationStatus(t.Context(), scope, a.OperationID)
-	if err != nil || retained.EvidenceID != capture.ID || retained.Stage != "provider_wait" {
+	if err != nil || retained.EvidenceID != capture.ID || retained.Stage != "result_captured" || retained.State != "active" || retained.NextAction != "wait" {
 		t.Fatal("capture invented terminal operation", retained, err)
 	}
 	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "controlled_completion", ""); err != nil {
@@ -54,10 +55,13 @@ func TestOperationStatusEvidenceIdentityAndCompactHTTP(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 11 {
+	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 14 {
 		t.Fatal("unexpected compact fields", w.Body.String())
 	}
-	for _, secret := range []string{"project_id", "actor_id", "worker_id", "configuration_revision", "capability_fingerprint", "head_sha", "allowance", "Literal", "source text", "private-test-account"} {
+	if _, present := fields["head_sha"]; present {
+		t.Fatal("head escaped its bounded settlement target")
+	}
+	for _, secret := range []string{"project_id", "actor_id", "worker_id", "configuration_revision", "capability_fingerprint", "allowance", "Literal", "source text", "private-test-account"} {
 		if strings.Contains(w.Body.String(), secret) {
 			t.Fatal("private/full diagnostics escaped", secret)
 		}
@@ -107,6 +111,43 @@ func TestOperationStatusMissingAndIncompleteEvidenceDoNotInventCoverage(t *testi
 				t.Fatal(v)
 			}
 		})
+	}
+}
+
+func TestOperationStatusExplainsRetainedCLIUnreviewedFiles(t *testing.T) {
+	for _, warning := range []bool{false, true} {
+		f, a, in := evidenceFixture(t, "cli", true)
+		in.Review = reviewprovider.ParsedReview{Outcome: "failed", ReviewedFiles: []string{}, Findings: []reviewprovider.ParsedFinding{}}
+		want := "capture_retained"
+		if warning {
+			in.Review.CoverageLimits = []string{reviewprovider.CLIUnreviewedFilesLimit}
+			want = "cli_provider_reported_unreviewed_files"
+		}
+		receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "failed", "capture_retained", ""); err != nil {
+			t.Fatal(err)
+		}
+		before := evidenceState(t, f, a)
+		status, err := f.e.ReadOperationStatus(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), a.OperationID)
+		if err != nil || status.Reason != want || status.State != "failed" || status.EvidenceID != receipt.ID || status.NextAction != "read_diagnostics" || evidenceState(t, f, a) != before {
+			t.Fatal(status, err)
+		}
+		anchor := *a.Anchor
+		err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			for _, head := range []string{anchor.CandidateSHA, strings.Repeat("f", 40)} {
+				got, err := partialCLIComparisonExists(ctx, tx, attemptProject, anchor.RepositoryID, anchor.PullNumber, head, anchor.BaseSHA, anchor.BaseRef, anchor.ParentSHA, anchor.ParentPullNumber)
+				if err != nil || got != (warning && head == anchor.CandidateSHA) {
+					t.Fatal("automatic retry guard", head, got, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 func TestOperationStatusStageOnlyUsesDurableFacts(t *testing.T) {
@@ -177,5 +218,23 @@ func TestOperationStatusHostedEvidenceAndProjectIsolation(t *testing.T) {
 	attemptCode(t, err, "not_found")
 	if before != evidenceState(t, f, a) {
 		t.Fatal("Hosted status changed evidence or accounting")
+	}
+}
+
+func TestOperationStatusMissingCooldownDeadlineStaysUnknown(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "no-cooldown-observation", "hosted", 2, 1))
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "held", "hosted_allowance_cooldown", ""); err != nil {
+		t.Fatal(err)
+	}
+	before := attemptState(t, f, a)
+	w := statusHTTP(t, f, a.OperationID, "", "")
+	var got OperationStatus
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.RetryNotBefore != "" || strings.Contains(w.Body.String(), "retry_not_before") || got.State != "held" {
+		t.Fatal("missing deadline was invented or hold changed", w.Code, w.Body.String())
+	}
+	if attemptState(t, f, a) != before {
+		t.Fatal("read changed retained state")
 	}
 }

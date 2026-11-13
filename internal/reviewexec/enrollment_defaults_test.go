@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/roundadoptionmodel"
 )
 
 // Existing lifecycle tests start from the authentic predecessor format: one
@@ -71,7 +72,7 @@ func assertEnrollmentDefault(t *testing.T, f *attemptFixture, pull int64, channe
 	c := roundRead(t, f, pull, channel)
 	maximum, taper := int64(6), int64(2)
 	if channel == "hosted" {
-		maximum, taper = 3, 2
+		maximum = 3
 	}
 	if !c.Configured || c.Revision != 1 || c.Epoch != 1 || c.Minimum != 2 || c.Maximum != maximum || c.Taper != taper || c.Used != 0 || c.Dry != 0 || c.Closed || c.Tapered || c.OriginSource != "" {
 		t.Fatalf("incorrect new enrollment default %d/%s: %+v", pull, channel, c)
@@ -155,6 +156,51 @@ func TestEnrollmentAddsOnlyNewPairsAndPreservesExistingEdits(t *testing.T) {
 	replayed, err := f.e.Configure(t.Context(), scope, "initial", initial)
 	if err != nil || !bytes.Equal(replayed, initialReceipt) || enrollmentState(t, f) != beforeReplay {
 		t.Fatal("original configuration receipt retry changed later allocations", err)
+	}
+}
+
+func TestEnrollmentPreservesExplicitPreparedAdoptionBeforeExecutionExists(t *testing.T) {
+	f := newAttemptFixture(t)
+	if _, err := f.store.DB().Exec(`INSERT INTO workers(project_id,id,name) VALUES(?,'adoption-worker','Importer')`, attemptProject); err != nil {
+		t.Fatal(err)
+	}
+	p := adoptionPrepared()
+	p.MinimumRemaining = 1
+	p.MaximumRemaining = 9
+	admin := adoptionScope(t, f, f.admin, true)
+	preview, err := f.e.PreviewRoundAdoption(t.Context(), admin, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p}
+	if _, err := f.e.ApplyRoundAdoption(t.Context(), admin, "before-enrollment", input); err != nil {
+		t.Fatal(err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_config`) != 0 {
+		t.Fatal("adoption implicitly configured execution")
+	}
+	retained := roundRead(t, f, 2, "cli")
+	zero, minimum, maximum := int64(0), int64(1), int64(9)
+	if _, err := f.e.ConfigureRoundControl(t.Context(), admin, "explicit-before-enrollment", 4, "hosted", RoundControlRequest{ExpectedRevision: &zero, Action: "grant", Minimum: &minimum, Maximum: &maximum}); err != nil {
+		t.Fatal(err)
+	}
+	explicit := roundRead(t, f, 4, "hosted")
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "after-import", enrollmentConfiguration(0, []int64{2, 4}, []string{"cli", "hosted"})); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundRead(t, f, 2, "cli"), retained) {
+		t.Fatal("enrollment replaced adopted policy/provenance")
+	}
+	assertEnrollmentDefault(t, f, 2, "hosted")
+	assertEnrollmentDefault(t, f, 4, "cli")
+	if !reflect.DeepEqual(roundRead(t, f, 4, "hosted"), explicit) {
+		t.Fatal("enrollment replaced a preexisting explicit control")
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_round_adoptions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_round_changes`) != 4 {
+		t.Fatal("adoption and default were duplicated")
+	}
+	if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("prepared adoption and native defaults formed invalid retained state", err)
 	}
 }
 

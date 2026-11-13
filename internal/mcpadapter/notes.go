@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+const maxNoteArgumentsBytes = 128 << 10
 
 type noteToolCall struct {
 	name, id, key             string
@@ -33,7 +37,10 @@ func noteArguments(name string, data json.RawMessage) (arguments, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
-	if len(data) > 128<<10 || strictjson.Validate(data) != nil {
+	if len(data) > maxNoteArgumentsBytes {
+		return args, &Diagnostic{Code: "invalid_arguments", Message: fmt.Sprintf("arguments exceed %d encoded JSON bytes (128 KiB), independently of the body limit of %d decoded UTF-8 bytes.", maxNoteArgumentsBytes, client.MaxNoteBodyBytes), Action: "Shorten the encoded payload and send only declared fields; omit unchanged fields in note_update. No request was sent.", Details: map[string]any{"field": "arguments", "max_encoded_bytes": maxNoteArgumentsBytes}}
+	}
+	if strictjson.Validate(data) != nil {
 		return args, invalidArguments()
 	}
 	var fields map[string]json.RawMessage
@@ -69,8 +76,8 @@ func noteArguments(name string, data json.RawMessage) (arguments, error) {
 		if in.Kind != nil {
 			n.create.Kind = *in.Kind
 		}
-		if client.ValidateCreateNoteRequest(n.create) != nil {
-			return args, invalidArguments()
+		if err := client.ValidateCreateNoteRequest(n.create); err != nil {
+			return args, noteValidationDiagnostic(err)
 		}
 	case "note_update":
 		var in struct {
@@ -90,8 +97,8 @@ func noteArguments(name string, data json.RawMessage) (arguments, error) {
 		}
 		n.key, n.id = in.Key, in.ID
 		n.update = client.UpdateNoteRequest{ExpectedRevision: *in.ExpectedRevision, WorkerID: in.WorkerID, JobID: in.JobID, Phase: in.Phase, Kind: in.Kind, Body: in.Body, Status: in.Status, StatusReason: in.Reason}
-		if client.ValidateUpdateNoteRequest(n.update) != nil {
-			return args, invalidArguments()
+		if err := client.ValidateUpdateNoteRequest(n.update); err != nil {
+			return args, noteValidationDiagnostic(err)
 		}
 	case "note_read", "note_revision_read":
 		if name == "note_read" {
@@ -165,6 +172,16 @@ func noteArguments(name string, data json.RawMessage) (arguments, error) {
 	}
 	return args, nil
 }
+func noteValidationDiagnostic(err error) *Diagnostic {
+	var failure *client.Error
+	if errors.As(err, &failure) {
+		if details, ok := failure.Details.(map[string]any); ok && details["field"] == "body" {
+			return &Diagnostic{Code: "invalid_arguments", Message: failure.Message, Action: failure.Action, Details: failure.Details}
+		}
+	}
+	return invalidArguments()
+}
+
 func noteToolPage(p *client.PageOptions, limit *int, cursor *string) bool {
 	if limit != nil {
 		if *limit < 1 || *limit > 100 {
@@ -219,8 +236,13 @@ func noteDefinitions() []definition {
 	page := func() map[string]any {
 		return map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}}
 	}
-	create := map[string]any{"idempotency_key": id(), "worker_id": str(128), "job_id": str(128), "phase": str(200), "kind": kind, "body": str(16 << 10)}
-	update := map[string]any{"idempotency_key": id(), "note_id": id(), "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "worker_id": str(128), "job_id": str(128), "phase": str(200), "kind": kind, "body": str(16 << 10), "status": status, "status_reason": str(1024)}
+	body := func() map[string]any {
+		v := str(client.MaxNoteBodyBytes)
+		v["description"] = fmt.Sprintf("Nonblank UTF-8 text, at most %d decoded UTF-8 bytes (16 KiB), not characters or encoded JSON bytes.", client.MaxNoteBodyBytes)
+		return v
+	}
+	create := map[string]any{"idempotency_key": id(), "worker_id": str(128), "job_id": str(128), "phase": str(200), "kind": kind, "body": body()}
+	update := map[string]any{"idempotency_key": id(), "note_id": id(), "expected_revision": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(math.MaxInt64 - 1)}, "worker_id": str(128), "job_id": str(128), "phase": str(200), "kind": kind, "body": body(), "status": status, "status_reason": str(1024)}
 	list := page()
 	list["worker_id"] = id()
 	list["all_workers"], list["direct_only"] = map[string]any{"type": "boolean"}, map[string]any{"type": "boolean"}
@@ -228,10 +250,10 @@ func noteDefinitions() []definition {
 	history := page()
 	history["note_id"] = id()
 	return []definition{
-		{"note_create", "Create one private project note. Worker defaults to the bound worker; explicit empty worker_id creates job/phase-only scope. Kind defaults to reminder. Body is exact nonblank UTF-8 up to 16 KiB; preserve the original key and arguments after an uncertain response. No job, message, pause or provider side effect.", schema(create, "idempotency_key", "body")},
-		{"note_update", "Patch only supplied note fields with an explicit revision and original idempotency key. Omitted fields are preserved; empty scope strings clear selectors. Dismissal needs a nonblank status_reason; pending/consumed clears old reason. A status change needs no body echo. After an uncertain response, retry the exact original key and arguments; no automatic retry.", schema(update, "idempotency_key", "note_id", "expected_revision")},
+		{"note_create", "Create one private project note. Worker defaults to the bound worker; otherwise target an existing same-project worker or job. Phase is an optional label, not a target. Kind defaults to reminder. Body is exact nonblank text up to 16384 decoded UTF-8 bytes (16 KiB), not characters or encoded JSON bytes; MCP arguments are limited to 131072 encoded JSON bytes (128 KiB); preserve the original key and arguments after an uncertain response. No job, message, pause or provider side effect.", schema(create, "idempotency_key", "body")},
+		{"note_update", "Patch only supplied note fields with an explicit revision and original idempotency key. Body is limited to 16384 decoded UTF-8 bytes (16 KiB), not characters or encoded JSON bytes; MCP arguments are limited to 131072 encoded JSON bytes (128 KiB). Omitted fields are preserved; empty scope strings clear selectors, but an explicit scope change must leave a worker or job target. Retained phase-only notes remain readable and can be changed by body/status without a scope change. Dismissal needs a nonblank status_reason; pending/consumed clears old reason. A status change needs no body echo. After an uncertain response, retry the exact original key and arguments; no automatic retry.", schema(update, "idempotency_key", "note_id", "expected_revision")},
 		{"note_read", "Read one full current note without consuming it or loading history.", schema(map[string]any{"note_id": id()}, "note_id")},
-		{"note_list", "Read one compact note page, pending by default. Default scope is the bound worker plus currently assigned jobs; explicit worker_id selects that project worker and its assigned jobs. direct_only disables assignment expansion, all_workers selects project scope. Do not combine all_workers with worker_id or direct_only. Other exact filters combine with AND. Default 20, maximum 100, no automatic pagination, full bodies or reasons.", schema(list)},
+		{"note_list", "Read one compact note page, pending by default. Default scope is the bound worker plus currently assigned jobs; explicit worker_id selects that project worker and its assigned jobs. direct_only disables assignment expansion, all_workers selects project scope. Do not combine all_workers with worker_id or direct_only. Explicit job_id selects all notes for that exact job, independent of worker defaults/assignment, and continues job_read note cursors directly. Other exact filters combine with AND. Default 20, maximum 100, no automatic pagination, full bodies or reasons.", schema(list)},
 		{"note_history", "Read one compact newest-revision-first note history page with actor attribution, default 20, maximum 100. No full bodies/reasons or automatic followup.", schema(history, "note_id")},
 		{"note_revision_read", "Read one full immutable note revision with actor attribution.", schema(map[string]any{"note_id": id(), "revision": map[string]any{"type": "integer", "minimum": 1}}, "note_id", "revision")},
 	}

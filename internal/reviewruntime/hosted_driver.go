@@ -77,10 +77,10 @@ func NewHostedDriver(store *core.Store, engine *reviewexec.Engine, capability Op
 	capability.Channels = slices.Clone(capability.Channels)
 	settings := *capability.Hosted
 	capability.Hosted = &settings
-	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitHosted, prepared: map[string]*hostedPrepared{}}, nil
+	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitPreparation, prepared: map[string]*hostedPrepared{}}, nil
 }
 
-func waitHosted(ctx context.Context, duration time.Duration) error {
+func waitPreparation(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -109,18 +109,56 @@ func (d *HostedDriver) HostedObservationReader() reviewexec.ExternalHostedReader
 }
 
 func (d *HostedDriver) checkIdle(ctx context.Context, plan reviewexec.SourcePlan) error {
+	if reason := d.activityRefusal(ctx, plan); reason != "" {
+		return reviewHold(reason)
+	}
+	return nil
+}
+
+// Return only maintained reason codes, never provider messages, URLs or bodies.
+// Each action boundary classifies its own observation without rewriting history.
+func (d *HostedDriver) activityRefusal(ctx context.Context, plan reviewexec.SourcePlan) string {
 	settings := d.capability.Hosted
 	observation, err := d.provider.ObserveHostedActivity(ctx, plan.Repository.FullName, plan.Pull.HeadSHA, reviewprovider.HostedActivitySelector{Mode: settings.ProgressMode, ProviderActorID: settings.ProviderActorID, AppID: settings.ProgressAppID})
 	if err != nil {
-		return reviewHold("provider_activity_unproven")
+		var failure *reviewprovider.Error
+		if errors.As(err, &failure) {
+			switch failure.Code {
+			case "provider_rate_limited":
+				return "provider_activity_rate_limited"
+			case "provider_unauthorized":
+				return "provider_activity_unauthorized"
+			case "provider_not_found":
+				return "provider_activity_not_found"
+			case "provider_invalid_response":
+				return "provider_activity_response_invalid"
+			case "provider_unavailable":
+				return "provider_activity_unavailable"
+			}
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			return "provider_activity_unavailable"
+		}
+		return "provider_activity_unproven"
 	}
 	if observation.State == "active" {
-		return reviewHold("provider_review_active")
+		return "provider_review_active"
 	}
-	if observation.State != "idle" || observation.ObservedAt.IsZero() || observation.ObservedAt.Location() != time.UTC || time.Since(observation.ObservedAt) > time.Minute || observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
-		return reviewHold("provider_activity_unproven")
+	now := time.Now()
+	if observation.ObservedAt.IsZero() || observation.ObservedAt.Location() != time.UTC || now.Sub(observation.ObservedAt) > time.Minute || observation.ObservedAt.After(now.Add(5*time.Second)) {
+		return "provider_activity_observation_invalid"
 	}
-	return nil
+	if observation.State == "idle" {
+		return ""
+	}
+	if observation.State == "unproven" {
+		switch observation.Reason {
+		case "activity_ambiguous":
+			return "provider_activity_ambiguous"
+		case "activity_state_unknown":
+			return "provider_activity_state_unknown"
+		}
+	}
+	return "provider_activity_unproven"
 }
 
 func (d *HostedDriver) purgePrepared() {
@@ -136,14 +174,18 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if ctx == nil {
 		return preparation, reviewHold("execution_binding_changed")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "hosted_preparation"), 2*time.Minute)
 	defer cancel()
 	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("execution_context", err)
 	}
 	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "hosted" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
 		return preparation, reviewHold("execution_binding_changed")
+	}
+	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		return preparation, reviewexec.PreparationFailureAt("retry_baseline", err)
 	}
 	d.mu.Lock()
 	d.purgePrepared()
@@ -165,37 +207,62 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	reads := newSourceReads(d.provider)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
-		return preparation, err
+		var refusal *core.Error
+		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) {
+			return preparation, reviewHold("source_unavailable")
+		}
+		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)
 	}
 	if err := d.checkIdle(ctx, plan); err != nil {
 		return preparation, err
 	}
 	workspace, fileCount, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("workspace", err)
+	}
+	plan, err = refreshMaterializedSource(ctx, d.provider, current.RepositoryID, current.Configuration, current.Operation, plan)
+	if err != nil {
+		return preparation, reviewexec.PreparationFailureAt("source_refresh", err)
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
+	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
+		return preparation, reviewHold("source_changed")
+	}
 	actor, err := d.provider.CurrentActor(ctx)
 	if err != nil {
 		return preparation, reviewHold("provider_actor_unproven")
 	}
 	var observed ObservedHostedAllowance
-	for pass := 0; pass < 8; pass++ {
+	for pass := 0; pass < 16; pass++ {
 		observed, err = ObserveHostedAllowance(ctx, d.provider, d.captures, d.engine, attempt, anchor, plan.Repository, actor, d.providerActor())
 		if err != nil {
-			return preparation, reviewHold("hosted_allowance_unproven")
+			return preparation, reviewHold(hostedAllowanceFailureReason(observed.Reason, err))
 		}
 		if observed.Observation.State == "available_observed" {
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
+			if err := retryAllowanceRetention(ctx, d.wait, func() error {
+				return RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture)
+			}); err != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+				}
+				return preparation, reviewHold("hosted_allowance_unproven")
+			}
+			if observed.Observation.Reason == reviewprovider.HostedChatCooldownReason {
+				return preparation, reviewHold("hosted_chat_cooldown")
+			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
-		if observed.Reason != "allowance_not_proven" || pass == 7 {
+		if pass == 15 && observed.Reason == "allowance_not_proven" && observed.Observation.QueryCommentID != 0 {
+			return preparation, reviewHold("hosted_allowance_reply_pending")
+		}
+		if observed.Reason != "allowance_not_proven" || pass == 15 {
 			return preparation, reviewHold("hosted_allowance_unproven")
 		}
 		if err := d.wait(ctx, 2*time.Second); err != nil {
-			return preparation, err
+			return preparation, reviewexec.PreparationFailureAt("allowance_wait", err)
 		}
 	}
 	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
@@ -205,16 +272,26 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		return preparation, reviewHold("standing_baseline_unproven")
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("attempt_publication", err)
 	}
 	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: operation.ID, AttemptID: attempt.ID, HeadSHA: operation.HeadSHA})
 	if err != nil {
-		return preparation, err
+		return preparation, reviewexec.PreparationFailureAt("trigger_intent", err)
 	}
 	d.mu.Lock()
 	d.prepared[attempt.ID] = &hostedPrepared{operation: current.Operation, configuration: current.Configuration, plan: plan, workspace: workspace, anchor: anchor, postingActor: actor, expires: time.Now().Add(time.Minute)}
 	d.mu.Unlock()
 	return reviewexec.Preparation{Anchor: anchor, Intent: intent}, nil
+}
+
+// A timer retries the original comparison rather than authorizing new source.
+// Observation time and repository spelling may change; stable source must not.
+func sameHostedRetryComparison(baseline, current reviewexec.Anchor) bool {
+	baseline.ObservedAt = ""
+	current.ObservedAt = ""
+	baseline.Repository = ""
+	current.Repository = ""
+	return baseline == current
 }
 
 func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operation, attempt reviewexec.Attempt, recordTrigger func(context.Context, string) error) (reviewexec.Result, error) {
@@ -242,11 +319,15 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	reads := newSourceReads(d.provider)
 	currentSource, predecessors, err := resolveReviewSource(ctx, d.engine, reads, prepared.anchor.RepositoryID, prepared.configuration, operation)
 	if err != nil {
-		return failed("source_admission_changed")
+		var refusal *core.Error
+		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+			return failed(refusal.Code)
+		}
+		return failed(actionRefusalReason(err, "source_admission_changed"))
 	}
 	// Preserve the exact semantic comparison checked by RecheckSource while
 	// keeping the current plan and using this phase's single provider read set.
-	if currentSource.Repository != prepared.plan.Repository || currentSource.Pull.Number != prepared.plan.Pull.Number || currentSource.Pull.RepositoryID != prepared.plan.Pull.RepositoryID || currentSource.Pull.HeadSHA != prepared.plan.Pull.HeadSHA || currentSource.Pull.BaseSHA != prepared.plan.Pull.BaseSHA || currentSource.Pull.BaseRef != prepared.plan.Pull.BaseRef || currentSource.ParentSHA != prepared.plan.ParentSHA || currentSource.ParentPullNumber != prepared.plan.ParentPullNumber {
+	if !samePreparedSource(currentSource, prepared.plan) {
 		return failed("source_changed")
 	}
 	if err := d.verify(ctx, prepared.workspace); err != nil {
@@ -256,15 +337,19 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	if err != nil || actor.ID != prepared.postingActor.ID || actor.Kind != prepared.postingActor.Kind {
 		return failed("provider_actor_changed")
 	}
-	if err := d.checkIdle(ctx, currentSource); err != nil {
-		return failed("provider_activity_changed")
+	if reason := d.activityRefusal(ctx, currentSource); reason != "" {
+		return failed(reason)
 	}
 	bound, err := d.engine.ReadHostedRecovery(ctx, operation.ProjectID, attempt.ID, d.capability.ID)
 	if err != nil || bound.Attempt.Revision != attempt.Revision || bound.Attempt.Intent != body {
 		return failed("execution_binding_changed")
 	}
 	if err := d.engine.VerifyHostedAction(ctx, operation.ProjectID, attempt.ID, attempt.Revision, currentSource, predecessors...); err != nil {
-		return failed("admission_changed")
+		var refusal *core.Error
+		if errors.As(err, &refusal) && refusal.Code == "external_hosted_pending" {
+			return failed(refusal.Code)
+		}
+		return failed(actionRefusalReason(err, "admission_changed"))
 	}
 	comment, err := d.provider.PostIssueComment(ctx, prepared.plan.Repository.FullName, operation.PullNumber, body)
 	if err != nil {
@@ -304,4 +389,47 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		}
 	}
 	return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_pending", ExternalID: externalID}, nil
+}
+
+// Keep only maintained stage facts and typed failure classes. Provider text,
+// private capture paths and unknown errors never become operation reasons.
+func hostedAllowanceFailureReason(stage string, err error) string {
+	var held *core.Error
+	if errors.As(err, &held) && held.Code == "review_held" {
+		if details, ok := held.Details.(map[string]string); ok && details["reason"] == "hosted_chat_cooldown" {
+			return "hosted_chat_cooldown"
+		}
+	}
+	switch stage {
+	case "query_history_incomplete":
+		var provider *reviewprovider.Error
+		if errors.As(err, &provider) {
+			switch provider.Code {
+			case "provider_invalid_response":
+				return "hosted_allowance_history_invalid"
+			case "provider_unavailable", "provider_rate_limited", "provider_unauthorized", "provider_not_found":
+				return "hosted_allowance_history_unavailable"
+			}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "hosted_allowance_history_unavailable"
+		}
+	case "query_capture_unavailable":
+		var local *core.Error
+		if errors.As(err, &local) {
+			switch local.Code {
+			case "validation_failed":
+				return "hosted_allowance_capture_invalid"
+			case "capture_unavailable", "storage_unavailable":
+				return "hosted_allowance_capture_unavailable"
+			}
+		}
+	case "query_post_unproven":
+		return "hosted_allowance_query_post_unproven"
+	case "query_recording_pending":
+		return "hosted_allowance_query_recording_pending"
+	case "query_capture_recording_pending":
+		return "hosted_allowance_capture_recording_pending"
+	}
+	return "hosted_allowance_unproven"
 }

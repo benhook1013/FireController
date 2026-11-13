@@ -63,7 +63,7 @@ func readinessFixture(t *testing.T) (*attemptFixture, Attempt, string, *readines
 	t.Helper()
 	f, a, id, _ := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, id, 0)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	r := newReadinessTestReader()
 	got := collectReadiness(t, f, r, "readiness", 2, 1)
 	return f, a, id, r, got
@@ -112,7 +112,7 @@ func TestSourceReadinessReadyCompactReadAndOptionsReplay(t *testing.T) {
 	}
 	// Execution pauses preserve already earned review credit and source binding.
 	f.configure(t, attemptProject, "test-capability", 1, true)
-	assessmentPolicy(t, f, 2, []string{"cli"}, []string{"cli"})
+	assessmentPolicy(t, f, 2, []string{"cli"})
 	if paused := readReadiness(t, f, r, a, 2); paused.State != "ready_as_observed" || paused.ConfigurationRevision != 2 || paused.PolicyRevision != 3 {
 		t.Fatal(paused)
 	}
@@ -369,7 +369,7 @@ func TestSourceReadinessIncomingObligationsHoldAlreadyCoveredReceiver(t *testing
 
 func TestSourceReadinessPendingNativeCaptureAndRequiredPolicyChange(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 1, false)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	adjudicationComplete(t, f, a)
 	r := newReadinessTestReader()
 	collectReadiness(t, f, r, "pending-native-readiness", 2, 1)
@@ -383,7 +383,7 @@ func TestSourceReadinessPendingNativeCaptureAndRequiredPolicyChange(t *testing.T
 	if got = readReadiness(t, f, r, a, 2); got.State != "ready_as_observed" {
 		t.Fatal(got)
 	}
-	assessmentPolicy(t, f, 2, []string{"cli", "hosted"}, []string{})
+	assessmentPolicy(t, f, 2, []string{"cli", "hosted"})
 	if got = readReadiness(t, f, r, a, 2); got.State != "held" || !slices.Contains(got.Reasons, "review_coverage_missing") || got.PolicyRevision != 3 {
 		t.Fatal(got)
 	}
@@ -531,8 +531,8 @@ func TestSourceReadinessCollectionUsesOneBoundedBudget(t *testing.T) {
 	reader.ci = func(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 		deadline, ok := ctx.Deadline()
 		remaining := time.Until(deadline)
-		if !ok || remaining <= 30*time.Second || remaining > 45*time.Second {
-			t.Error("readiness does not share selected45s budget", remaining)
+		if !ok || remaining <= 55*time.Second || remaining > 70*time.Second {
+			t.Error("readiness does not share selected70s budget", remaining)
 		}
 		o := sourceCITestObservation(target, "not_required")
 		o.Candidate.MergeState = "verified"
@@ -542,7 +542,7 @@ func TestSourceReadinessCollectionUsesOneBoundedBudget(t *testing.T) {
 	}
 	reader.review = func(ctx context.Context, target reviewprovider.CITarget) (reviewprovider.PullReviewObservation, error) {
 		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > 45*time.Second {
+		if !ok || time.Until(deadline) > 70*time.Second {
 			t.Error("review collection escaped operation budget")
 		}
 		return reviewprovider.PullReviewObservation{Target: target, State: "complete", ObservedAt: time.Now().UTC(), PullState: "OPEN", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", Threads: []reviewprovider.PullReviewThread{}}, nil
@@ -556,7 +556,7 @@ func TestSourceReadinessCollectionUsesOneBoundedBudget(t *testing.T) {
 func TestSourceReadinessImportedBrowserHistoryCannotSupplyNativeCredit(t *testing.T) {
 	f := newAttemptFixture(t)
 	f.configure(t, attemptProject, "test-capability", 0, false)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}

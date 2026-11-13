@@ -7,7 +7,9 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-const conditionalMaxEntries = 256
+// Metadata, publication pages and CI inventories share this adapter's cache.
+// Keep a larger small-response working set without increasing retained bytes.
+const conditionalMaxEntries = 2048
 const conditionalMaxBytes = 16 << 20
 
 type conditionalEntry struct {
@@ -15,6 +17,23 @@ type conditionalEntry struct {
 	body    []byte
 	headers http.Header
 	used    uint64
+}
+
+// A cached Link without rel=next describes an apparent end. On a full
+// page that conclusion can become stale while the ETag remains unchanged.
+func paginationContinues(headers []string) bool {
+	for _, value := range headers {
+		links, err := parseLinkHeader(value)
+		if err != nil {
+			return false
+		}
+		for _, link := range links {
+			if link.next {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Cache scope is one authenticated adapter. It never substitutes for a server

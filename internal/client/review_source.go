@@ -35,7 +35,7 @@ func (r ReviewSourceResult) MarshalJSON() ([]byte, error) {
 }
 
 func ValidateReviewSourceWait(seconds int) error {
-	if seconds < 0 || seconds > 60 {
+	if seconds < 0 || seconds > 900 {
 		return mutationValidation()
 	}
 	return nil
@@ -69,6 +69,7 @@ type ReviewSourceObservation struct {
 }
 
 type ReviewSourceOperation struct {
+	Action                string                          `json:"action,omitempty"`
 	ID                    string                          `json:"id"`
 	ProjectID             string                          `json:"project_id"`
 	PullNumber            int64                           `json:"pull_number"`
@@ -114,7 +115,9 @@ func ValidateReviewSourceRequest(request ReviewSourceRequest) error {
 
 func ValidateReviewSourceRefreshID(id string) error {
 	if !validReviewOpaqueID(id, "review_refresh_") {
-		return validation()
+		err := fail("validation_failed", "refresh_id must be review_refresh_ followed by exactly 32 lowercase hexadecimal characters.", "Copy the full refresh_id from the original source-refresh receipt or retained assessment, including its prefix. Do not start another refresh to repair this read. No request was sent.", 400)
+		err.Details = map[string]string{"field": "refresh_id", "format": "review_refresh_ followed by 32 lowercase hexadecimal characters"}
+		return err
 	}
 	return nil
 }
@@ -165,6 +168,7 @@ func (c *Client) RefreshReviewSource(ctx context.Context, key string, request Re
 	}
 	if value.Operation != nil {
 		operation := value.Operation
+		operation.Action = sourceHoldAction(operation.State, operation.Reason)
 		if !c.validSourceOperation(*operation) || operation.PullNumber != request.PullNumber || operation.HeadSHA != request.HeadSHA || operation.ConfigurationRevision != request.ExpectedConfigurationRevision || operation.IncludeCI != request.IncludeCI || operation.IncludeReadiness != request.IncludeReadiness || !oneReviewOf(operation.State, "completed", "held") {
 			return ReviewSourceResult{}, unknownMutation("invalid_response", "The service returned invalid source refresh facts; its outcome is unknown.", status)
 		}
@@ -185,6 +189,7 @@ func (c *Client) ReviewSourceOperation(ctx context.Context, id string) (ReviewSo
 	if value.ID != id || !c.validSourceOperation(value) {
 		return ReviewSourceOperation{}, invalidResponse()
 	}
+	value.Action = sourceHoldAction(value.State, value.Reason)
 	return value, nil
 }
 

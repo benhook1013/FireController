@@ -96,7 +96,7 @@ func TestRestoreResumeProvidersCommandReleaseReplayAndStartup(t *testing.T) {
 	}
 	first := runBackupResult(t, resumptionCommandArgs(f)...)
 	var summary backup.ProviderResumptionSummary
-	if json.Unmarshal(first, &summary) != nil || summary.State != "coordination_active" || summary.ProvidersHeld || summary.InstanceID != f.instance || summary.SourceInstanceID != f.predecessor || summary.ReleasedAt == "" || summary.Counts.QueuedOperations != 1 || summary.Counts.Attempts != 2 || summary.Counts.SourceRefreshes != 1 || summary.Counts.Publications != 1 || summary.Counts.PausedProjects != 1 {
+	if json.Unmarshal(first, &summary) != nil || summary.State != "coordination_active" || summary.ProvidersHeld || summary.InstanceID != f.instance || summary.SourceInstanceID != f.predecessor || summary.ReleasedAt == "" || summary.Counts.Selections != 0 || summary.Counts.QueuedOperations != 1 || summary.Counts.Attempts != 2 || summary.Counts.SourceRefreshes != 1 || summary.Counts.Publications != 1 || summary.Counts.PausedProjects != 1 {
 		t.Fatal("operator did not return exact compact reconciliation counts", summary)
 	}
 	if !bytes.Equal(original["review_execution_evidence"], activationWorkRows(t, f.dir)["review_execution_evidence"]) {
@@ -108,6 +108,19 @@ func TestRestoreResumeProvidersCommandReleaseReplayAndStartup(t *testing.T) {
 	}
 	var reason, reference string
 	err = db.QueryRow(`SELECT json_extract(value,'$.request.reason'),json_extract(value,'$.request.evidence_reference') FROM metadata WHERE key='restore:provider_release'`).Scan(&reason, &reference)
+	if err == nil {
+		var states string
+		err = db.QueryRow(`SELECT group_concat(pull_number||':'||state||':'||reason||':'||attempt_state,',') FROM (SELECT o.pull_number,o.state,o.reason,COALESCE(a.state,'') AS attempt_state FROM review_operations o LEFT JOIN review_execution_attempts a ON a.id=o.attempt_id ORDER BY o.pull_number)`).Scan(&states)
+		if err != nil || states != "1:held:restore_reconciled:,2:cancelled:restore_reconciled:cancelled,3:cancelled:restore_reconciled:cancelled,4:completed:capture_completed:completed" {
+			db.Close()
+			t.Fatal("release did not reconcile the intended queued/preparing/uncertain work while preserving completion", states, err)
+		}
+		var reservations int
+		if err = db.QueryRow(`SELECT count(*) FROM review_execution_reservations`).Scan(&reservations); err != nil || reservations != 0 {
+			db.Close()
+			t.Fatal("release retained a provider reservation", reservations, err)
+		}
+	}
 	db.Close()
 	if err != nil || reason != "  --literal <settled> & résumé  " || reference != "private-proof://literal?value=<safe>&other=1" || bytes.Contains(first, []byte(reason)) || bytes.Contains(first, []byte(reference)) {
 		t.Fatal("operator changed literal private values or exposed them in summary", err)

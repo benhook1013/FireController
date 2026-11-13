@@ -51,7 +51,7 @@ func historyViewsAttempt(index int) (string, string) {
 	return source, external
 }
 func historyViewsPullBody(title string, count int) []any {
-	return []any{title, "merged", strings.Repeat("a", 40), "main", strings.Repeat("b", 40), "unknown", "unknown", true, count, count, "[]", "[]", "{}"}
+	return []any{title, "merged", strings.Repeat("a", 40), "main", strings.Repeat("b", 40), "unknown", "unknown", true, count, count, "[]", "[]", "{}", int64(1)}
 }
 func historyViewsRunBody(source, external string, index int, fixed int) []any {
 	found := 0

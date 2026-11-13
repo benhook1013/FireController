@@ -1,8 +1,11 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -90,5 +93,36 @@ func TestRunSelectionSourceTimeoutStillProducesSourceHold(t *testing.T) {
 	got := selectionRead(t, f, receipt.ID)
 	if got.State != "held" || got.Reason != "source_fetch_timeout" || got.OperationID != "" || reader.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 		t.Fatal("source timeout lost its protective hold", got, reader.calls.Load())
+	}
+}
+
+func TestSlowReviewSelectionLogsPhaseDurations(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	run := Run{ID: "selection", ProjectID: "project", Channel: "hosted"}
+	choice := runChoice{sourceElapsed: 2 * time.Second, prefix: make([]SourcePlan, 58)}
+	logSlowRunSelection(t.Context(), run, choice, 97, 5*time.Second, time.Second)
+	if output.Len() != 0 {
+		t.Fatal("ordinary selection emitted a warning")
+	}
+	logSlowRunSelection(t.Context(), run, choice, 97, 5*time.Second, 8*time.Second)
+	var got struct {
+		SelectionID string `json:"selection_id"`
+		QueueSize   int    `json:"queue_size"`
+		Prefix      int    `json:"evaluated_prefix"`
+		Total       int    `json:"duration_ms"`
+		Source      int    `json:"source_read_ms"`
+		Local       int    `json:"local_selection_ms"`
+		Settlement  int    `json:"settlement_ms"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SelectionID != run.ID || got.QueueSize != 97 || got.Prefix != 58 ||
+		got.Total != 13000 || got.Source != 2000 || got.Local != 3000 || got.Settlement != 8000 {
+		t.Fatalf("incorrect selection timing: %+v", got)
 	}
 }

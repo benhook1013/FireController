@@ -156,8 +156,8 @@ func TestReviewOperationWaitReadRemainsPureAndBounded(t *testing.T) {
 		_, err = unloaded.WaitReviewOperation(t.Context(), executionOperationID, seconds)
 		checkError(t, err, "validation_failed")
 	}
-	if calls.Load() != 2 || client.ValidateReviewOperationWait(0) != nil || client.ValidateReviewOperationWait(900) != nil || client.ValidateReviewSourceWait(61) == nil {
-		t.Fatal("review wait widened source limits or added I/O")
+	if calls.Load() != 2 || client.ValidateReviewOperationWait(0) != nil || client.ValidateReviewOperationWait(900) != nil || client.ValidateReviewSourceWait(900) != nil || client.ValidateReviewSourceWait(901) == nil {
+		t.Fatal("review wait exceeded supported limits or added I/O")
 	}
 	if client.ReviewOperationBudget(0) != 5*time.Second || client.ReviewOperationBudget(2) != 5*time.Second || client.ReviewOperationBudget(900) != 905*time.Second || client.SourceRefreshBudget(60) != 65*time.Second {
 		t.Fatal("request budgets changed")

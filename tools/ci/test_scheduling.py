@@ -25,10 +25,12 @@ def inventory(text):
     assert '  pull_request:\n' in header
     blocks = re.split(r'^  ([\w-]+):\n', body, flags=re.M)
     jobs = dict(zip(blocks[1::2], blocks[2::2]))
-    assert set(jobs) == {'static', 'linux', 'qualification', 'native-smoke', 'validate'}
-    assert len(re.findall(r'^\s*queue:', text, re.M)) == 5
-    assert len(re.findall(r'^\s*concurrency:', text, re.M)) == 6
+    assert set(jobs) == {'changes', 'static', 'linux', 'qualification', 'container', 'native-smoke', 'validate', 'publish'}
+    assert len(re.findall(r'^\s*queue:', text, re.M)) == 8
+    assert len(re.findall(r'^\s*concurrency:', text, re.M)) == 9
     expected_names = {
+        'changes': 'Select development checks', 'container': 'Container runtime',
+        'publish': 'Publish tested container',
         'static': 'Source and browser checks', 'linux': 'Go race (${{ matrix.shard }})',
         'qualification': 'Packaged qualification',
         'native-smoke': 'Native smoke (${{ matrix.os }})', 'validate': 'validate',
@@ -64,24 +66,25 @@ def inventory(text):
         else:
             assert slot[1].isdigit()
             result.append((expected_names[job], int(slot[1]), job))
-    assert len(result) == 27
-    assert len({name for name, _, _ in result}) == 27
+    assert len(result) == 31
+    assert len({name for name, _, _ in result}) == 31
     assert {lane for _, lane, _ in result} == set(range(20))
     assert all(0 <= lane < 20 for _, lane, _ in result)
     assert Counter(family for _, _, family in result) == {
-        'linux': 22, 'native-smoke': 2, 'static': 1, 'qualification': 1, 'validate': 1,
+        'linux': 23, 'changes': 1, 'container': 1, 'publish': 1, 'native-smoke': 2, 'static': 1, 'qualification': 1, 'validate': 1,
     }
     expected_lanes = {
-        'Source and browser checks': 2, 'Packaged qualification': 3,
+        'Select development checks': 6, 'Source and browser checks': 2,
+        'Packaged qualification': 3, 'Container runtime': 8,
         'Native smoke (windows-latest)': 4, 'Native smoke (macos-latest)': 5,
-        'validate': 2,
+        'validate': 2, 'Publish tested container': 7,
     }
     race_order = [
         'backup-0', 'reviewexec-0', 'reviews-0', 'reviewruntime-0', 'rest-0',
         'backup-1', 'reviewexec-1', 'reviews-1', 'reviewruntime-1', 'rest-1',
-        'backup-2', 'reviewexec-2', 'reviews-2', 'backup-3', 'reviewexec-3',
-        'reviews-3', 'backup-4', 'reviewexec-4', 'backup-5', 'reviewexec-5',
-        'backup-6', 'backup-7',
+        'backup-2', 'reviewexec-2', 'reviews-2', 'reviewruntime-2',
+        'backup-3', 'reviewexec-3', 'reviews-3', 'backup-4', 'reviewexec-4',
+        'backup-5', 'reviewexec-5', 'backup-6', 'backup-7',
     ]
     expected_lanes.update({f'Go race ({name})': index % 20
                            for index, name in enumerate(race_order)})
@@ -140,52 +143,43 @@ class Scheduler:
         return done
 
 
-class LegacyRun:
-    """Pre-lane admission: 16 Linux shards plus independent non-matrix jobs.
+class DevelopmentRun:
+    """Full/website DAG, with the real selector and gate prerequisites.
 
-    The unchanged job inventory comes from the current workflow. The historical
-    linux max-parallel is 16; validate needs every other family to finish. Jobs
-    consume runners directly, never a shared lane, with immediate availability.
+    This is a success-only DAG, not hosted timing or operational readiness.
+    Failure/cancellation gate behavior is exercised by the real shell tests;
+    lane rejection and asynchronous cancellation are outside this DAG model.
     """
-    def __init__(self, jobs, run, duration=lambda name: 1):
-        self.now = 0
-        self.active = {}
-        self.pending_linux = deque()
-        self.intervals = []
-        self.snapshots = []
-        self.families = {name: family for name, _, family in jobs}
-        self.completed = set()
-        self.required = {name for name, _, family in jobs if family != 'validate'}
-        self.gate = Job(run, 'validate', -1, duration('validate'))
-        for name, _, family in jobs:
-            job = Job(run, name, -1, duration(name))
-            if family == 'linux':
-                self.pending_linux.append(job)
-            elif family != 'validate':
-                self.start(job)
-        self.admit_linux()
+    def __init__(self, scheduler, jobs, run, website=False, publish=True, slow=None):
+        self.scheduler, self.run = scheduler, run
+        self.jobs, self.website, self.publish = jobs, website, publish
+        self.slow = slow
+        self.done = set()
+        self.offered = set()
+        self.advance()
 
-    def start(self, job):
-        assert job.name not in self.active and job.name not in self.completed
-        self.active[job.name] = (job, self.now + job.duration)
-        self.intervals.append((self.now, self.now + job.duration, job))
-        self.snapshots.append(tuple(job for job, _ in self.active.values()))
+    def advance(self):
+        for name, lane, family in self.jobs:
+            if name in self.offered:
+                continue
+            if family in ('linux', 'native-smoke'):
+                if self.website or 'Select development checks' not in self.done:
+                    continue
+            elif family == 'validate':
+                required = {n for n, _, f in self.jobs if f not in ('validate', 'publish')
+                            and not (self.website and f in ('linux', 'native-smoke'))}
+                if not required <= self.done:
+                    continue
+            elif family == 'publish':
+                if not self.publish or 'validate' not in self.done:
+                    continue
+            self.offered.add(name)
+            duration = 100 if name == self.slow else 1
+            self.scheduler.offer(Job(self.run, name, lane, duration))
 
-    def admit_linux(self):
-        running = sum(self.families[name] == 'linux' for name in self.active)
-        while self.pending_linux and running < 16:
-            self.start(self.pending_linux.popleft())
-            running += 1
-
-    def step(self):
-        self.now = min(end for _, end in self.active.values())
-        for name in [name for name, (_, end) in self.active.items() if end == self.now]:
-            del self.active[name]
-            self.completed.add(name)
-        self.admit_linux()
-        if self.completed == self.required:
-            self.start(self.gate)
-        self.snapshots.append(tuple(job for job, _ in self.active.values()))
+    def complete(self, job):
+        self.done.add(job.name)
+        self.advance()
 
 
 class WorkflowAdmission:
@@ -201,133 +195,59 @@ class WorkflowAdmission:
         self.active[group] = run
 
 
-class SchedulingTests(unittest.TestCase):
+class DevelopmentSchedulingTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
         self.jobs = inventory(self.text)
 
-    def offer_run(self, scheduler, run, duration=lambda name: 1):
-        for name, lane, family in self.jobs:
-            if family != 'validate':
-                scheduler.offer(Job(run, name, lane, duration(name)))
-
-    def finish_runs(self, scheduler, runs):
-        completed = Counter()
-        gate_lane = next(lane for _, lane, family in self.jobs if family == 'validate')
+    def finish(self, scheduler, runs):
+        by_id = {run.run: run for run in runs}
         while scheduler.active:
             for job in scheduler.step():
-                if job.name != 'validate':
-                    completed[job.run] += 1
-                    if completed[job.run] == 26:
-                        scheduler.offer(Job(job.run, 'validate', gate_lane))
-        self.assertEqual(completed, {run: 26 for run in runs})
-        self.assertEqual(len(scheduler.intervals), 27 * len(runs))
+                by_id[job.run].complete(job)
         self.assertFalse(scheduler.rejected)
         self.assertLessEqual(max(map(len, scheduler.snapshots)), 20)
         for run in runs:
-            gate_start = next(start for start, _, j in scheduler.intervals
-                              if j.run == run and j.name == 'validate')
-            self.assertTrue(all(end <= gate_start for _, end, j in scheduler.intervals
-                                if j.run == run and j.name != 'validate'))
+            expected = 6 if run.website else 31
+            if not run.publish:
+                expected -= 1
+            self.assertEqual(len(run.done), expected)
+            intervals = {job.name: (start, end) for start, end, job in scheduler.intervals if job.run == run.run}
+            gate_start = intervals['validate'][0]
+            for name, (_, end) in intervals.items():
+                if name not in ('validate', 'Publish tested container'):
+                    self.assertLessEqual(end, gate_start)
+                if name.startswith(('Go race', 'Native smoke')):
+                    self.assertGreaterEqual(intervals[name][0], intervals['Select development checks'][1])
+            if run.publish:
+                self.assertGreaterEqual(intervals['Publish tested container'][0], intervals['validate'][1])
 
-    def test_real_inventory_includes_every_required_context(self):
-        self.assertEqual(len(self.jobs), 27)
+    def test_exact_development_inventory_and_preserved_conditions(self):
+        self.assertEqual(len(self.jobs), 31)
+        self.assertIn(WORKFLOW_SUPERSESSION, self.text)
+        self.assertEqual(self.text.count("if: needs.changes.outputs.website_only != 'true'"), 2)
+        self.assertEqual(self.text.count('    needs: [changes]\n'), 2)
+        self.assertIn('needs: [changes, static, linux, qualification, container, native-smoke]', self.text)
+        self.assertIn("if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')", self.text)
+        self.assertIn('      packages: write', self.text)
+        self.assertIn('      actions: read', self.text)
+        self.assertIn("python3 tools/ci/development-checks.py --base", self.text)
+        self.assertIn('          sha256sum --check firecontroller-image.tar.sha256', self.text)
 
-    def test_guards_refuse_missing_lane_extra_jobs_and_revision_changes(self):
-        mutations = [
-            self.text.replace('slot: 19', 'slot: 20'),
-            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.ref', 'github.run_id'), 1),
-            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.event_name', 'github.run_id'), 1),
-            self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
-            self.text.replace('            slot: 19', '            slot: 18', 1),
-            self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
-            self.text.replace('      queue: max', '      queue: single', 1),
-            self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
-            self.text.replace('            slot: 19\n', ''),
-            self.text.replace('    steps:\n', '    steps:\n      - with:\n          ref: main\n', 1),
-            self.text.replace('    name: validate', '    name: renamed'),
-            self.text.replace('      - develop\n', ''),
-            self.text + '\n  uncounted:\n    runs-on: ubuntu-latest\n',
-            self.text.replace('        shard:', '        other: [one, two]\n        shard:', 1),
-        ]
-        for changed in mutations:
-            with self.subTest(changed=changed[-100:]):
-                with self.assertRaises(AssertionError):
-                    inventory(changed)
-
-    def test_single_run_can_use_all_twenty(self):
-        s = Scheduler()
-        self.offer_run(s, 'PR-A')
-        self.assertEqual(len(s.active), 20)
-        self.finish_runs(s, ['PR-A'])
-
-    def test_interleaving_independent_pr_and_develop_runs_overlap_including_gate(self):
-        s = Scheduler()
-        runs = ['PR-A', 'PR-B', 'develop']
-        slow = 'Go race (reviewexec-5)'
-        self.assertIn(slow, [name for name, _, _ in self.jobs])
-        for run in runs:
-            self.offer_run(s, run, lambda name, run=run: 50 if run == 'PR-B' and name == slow else 3)
-        self.finish_runs(s, runs)
-        self.assertTrue(any(len({j.run for j in snapshot}) > 1 for snapshot in s.snapshots))
-        self.assertTrue(any(any(j.name == 'validate' for j in snapshot)
-                            and any(j.name != 'validate' for j in snapshot)
-                            for snapshot in s.snapshots))
-        # Both matrix and non-matrix jobs consume the same finite lane budget.
-        self.assertTrue(any(any(j.name == 'Packaged qualification' for j in snapshot)
-                            and any(j.name.startswith('Go race') for j in snapshot)
-                            for snapshot in s.snapshots))
-
-    def test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes(self):
-        s = Scheduler()
-        slow = 'Go race (backup-0)'
-        slow_lanes = [lane for name, lane, _ in self.jobs if name == slow]
-        self.assertEqual(len(slow_lanes), 1, f'{slow} missing from workflow inventory')
-        slow_lane = slow_lanes[0]
-        self.offer_run(s, 'PR-A', lambda name: 100 if name == slow else 1)
-        self.offer_run(s, 'PR-B')
-        self.finish_runs(s, ['PR-A', 'PR-B'])
-        progressed = {j.lane for start, _, j in s.intervals if j.run == 'PR-B' and start < 100}
-        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
-
-    def test_interleaving_many_runs_with_uneven_durations_stay_within_budget(self):
-        s = Scheduler()
-        runs = [f'PR-{index}' for index in range(20)]
-        for index, run in enumerate(runs):
-            self.offer_run(s, run, lambda name: 1 + (sum(map(ord, name)) + index) % 17)
-        self.finish_runs(s, runs)
-        self.assertEqual(max(map(len, s.snapshots)), 20)
-
-    def test_overlap_refuses_missing_slow_job(self):
-        self.jobs = [(name.replace('reviewexec-5', 'reviewexec-renamed'), lane, family)
-                     for name, lane, family in self.jobs]
-        with self.assertRaisesRegex(AssertionError, 'reviewexec-5'):
-            self.test_interleaving_independent_pr_and_develop_runs_overlap_including_gate()
-
-    def test_slow_tail_follows_reassigned_inventory_lanes(self):
-        self.jobs = [(name, (lane + 7) % 20, family)
-                     for name, lane, family in self.jobs]
-        self.test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes()
-
-    def test_affinity_explicitly_strands_spare_capacity(self):
-        s = Scheduler()
-        s.offer(Job('PR-A', 'slow', 0, 100))
-        s.offer(Job('PR-B', 'ready', 0))
-        self.assertEqual(len(s.active), 1)
-        self.assertEqual(len(s.pending[0]), 1)
-        self.assertEqual(sum(not q for lane, q in s.pending.items() if lane != 0), 19)
-
-    def test_queue_overflow_can_reject_latest_live_revision(self):
-        s = Scheduler()
-        s.offer(Job('old', 'running', 0, 100))
-        for index in range(100):
-            s.offer(Job(f'PR-{index}', 'waiting', 0))
-        latest = Job('PR-newest-live', 'required check', 0)
-        s.offer(latest)
-        self.assertEqual(s.rejected, [latest])
-        self.assertEqual(len(s.pending[0]), 100)
-        # No queued work is displaced, but latest arrival is not guaranteed admission.
-        self.assertEqual(s.pending[0][0].run, 'PR-0')
+    def test_inventory_refuses_uncounted_jobs_and_altered_lock(self):
+        for changed in [self.text.replace('slot: 19', 'slot: 20'),
+                        self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
+                        self.text.replace('shard: backup-0\n            slot: 0', 'shard: backup-0\n            slot: 19', 1),
+                        self.text.replace('queue: max', 'queue: single', 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.ref', 'github.run_id'), 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.event_name', 'github.run_id'), 1),
+                        self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
+                        self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
+                        self.text + '\n  unnoticed:\n    runs-on: ubuntu-latest\n',
+                        self.text.replace('    name: Publish tested container', '    name: changed'),
+                        self.text.replace('        shard:', '        extra: [a, b]\n        shard:', 1)]:
+            with self.assertRaises(AssertionError):
+                inventory(changed)
 
     def test_latest_arrival_supersedes_only_the_same_pr_or_push_ref(self):
         admission = WorkflowAdmission()
@@ -352,46 +272,85 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(list(admission.active.values()), [119])
         self.assertEqual(admission.cancelled, list(range(119)))
 
-    def test_legacy_workflow_is_outside_shared_lane_bound(self):
+    def test_single_full_run_uses_twenty_after_selector(self):
         s = Scheduler()
-        self.offer_run(s, 'new')
-        legacy = LegacyRun(self.jobs, 'legacy')
-        families = Counter(legacy.families[name] for name in legacy.active)
-        self.assertEqual(families, {'linux': 16, 'static': 1, 'qualification': 1, 'native-smoke': 2})
-        self.assertEqual(len(legacy.pending_linux), 6)
-        self.assertNotIn('validate', legacy.active)
-        self.assertEqual(len(s.active), 20)
-        # Both admitted runs start at model time zero. Legacy jobs occupy real
-        # modeled runner intervals but bypass the new run's shared lane budget.
-        self.assertGreater(len(s.active) + len(legacy.active), 20)
-        self.finish_runs(s, ['new'])
-        while legacy.active:
-            legacy.step()
-        self.assertEqual(legacy.completed, {name for name, _, _ in self.jobs})
-        intervals = s.intervals + legacy.intervals
-        times = {start for start, _, _ in intervals}
-        peak = max(sum(start <= now < end for start, end, _ in intervals) for now in times)
-        self.assertEqual(peak, 40)
+        run = DevelopmentRun(s, self.jobs, 'develop')
+        self.finish(s, [run])
+        self.assertEqual(max(map(len, s.snapshots)), 20)
 
-    def test_legacy_matrix_refills_and_validation_waits_for_every_family(self):
-        # Long non-matrix work must not consume Linux matrix permits or let the
-        # gate start early after all race shards finish.
-        legacy = LegacyRun(self.jobs, 'legacy', lambda name: 5 if name == 'Packaged qualification' else 1)
-        legacy.step()
-        self.assertEqual(sum(legacy.families[name] == 'linux' for name in legacy.active), 6)
-        self.assertFalse(legacy.pending_linux)
-        legacy.step()
-        self.assertEqual(set(legacy.active), {'Packaged qualification'})
-        while legacy.active:
-            legacy.step()
-        self.assertEqual(len(legacy.intervals), len(self.jobs))
-        self.assertEqual(legacy.completed, {name for name, _, _ in self.jobs})
-        self.assertEqual(max(map(len, legacy.snapshots)), 20)
-        self.assertLessEqual(max(sum(legacy.families[j.name] == 'linux' for j in snapshot)
-                                 for snapshot in legacy.snapshots), 16)
-        gate_start = next(start for start, _, job in legacy.intervals if job.name == 'validate')
-        self.assertTrue(all(end <= gate_start for _, end, job in legacy.intervals
-                            if job.name != 'validate'))
+    def test_website_only_dag_preserves_six_jobs_and_skips_only_race_native(self):
+        s = Scheduler()
+        run = DevelopmentRun(s, self.jobs, 'develop-website', website=True)
+        self.finish(s, [run])
+        self.assertEqual(run.done, {'Select development checks', 'Source and browser checks',
+                                   'Packaged qualification', 'Container runtime', 'validate',
+                                   'Publish tested container'})
+
+    def test_pr_does_not_publish(self):
+        s = Scheduler()
+        run = DevelopmentRun(s, self.jobs, 'PR', publish=False)
+        self.finish(s, [run])
+        self.assertNotIn('Publish tested container', run.done)
+
+    def test_interleaving_slow_tail_gate_and_publish_all_count(self):
+        s = Scheduler()
+        slow = 'Go race (backup-0)'
+        names = {name for name, _, _ in self.jobs}
+        self.assertIn(slow, names)
+        self.assertIn('Go race (backup-5)', names)
+        slow_lane, = [lane for name, lane, _ in self.jobs if name == slow]
+        runs = [DevelopmentRun(s, self.jobs, 'PR-A', publish=False, slow=slow),
+                DevelopmentRun(s, self.jobs, 'develop-B', slow='Go race (backup-5)'),
+                DevelopmentRun(s, self.jobs, 'develop-website', website=True)]
+        self.finish(s, runs)
+        self.assertTrue(any(len({job.run for job in snapshot}) > 1 for snapshot in s.snapshots))
+        for name in ('Select development checks', 'validate', 'Publish tested container'):
+            self.assertTrue(any(any(job.name == name for job in snapshot)
+                                and any(job.name.startswith('Go race') for job in snapshot)
+                                for snapshot in s.snapshots), name)
+        progressed = {job.lane for start, _, job in s.intervals
+                      if job.run == 'develop-B' and start < 100}
+        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
+
+    def test_slow_tail_follows_reassigned_inventory_lanes(self):
+        self.jobs = [(name, (lane + 7) % 20, family) for name, lane, family in self.jobs]
+        self.test_interleaving_slow_tail_gate_and_publish_all_count()
+
+    def test_overlap_refuses_missing_slow_job(self):
+        self.jobs = [('renamed' if name == 'Go race (backup-0)' else name, lane, family)
+                     for name, lane, family in self.jobs]
+        with self.assertRaises(AssertionError):
+            self.test_interleaving_slow_tail_gate_and_publish_all_count()
+
+    def test_interleaving_all_publishers_share_a_counted_lane(self):
+        publish_lane = next(lane for _, lane, family in self.jobs if family == 'publish')
+        s = Scheduler()
+        s.offer(Job('main', 'Publish tested container', publish_lane, 5))
+        s.offer(Job('develop', 'Publish tested container', publish_lane, 5))
+        self.assertEqual(len(s.active), 1)
+        self.assertEqual(len(s.pending[publish_lane]), 1)
+        s.step()
+        self.assertEqual(s.active[publish_lane][0].run, 'develop')
+
+    def test_affinity_and_latest_overflow_remain_explicit_limits(self):
+        s = Scheduler()
+        s.offer(Job('old', 'slow', 0, 100))
+        for n in range(100):
+            s.offer(Job(str(n), 'ready', 0))
+        latest = Job('latest', 'required', 0)
+        s.offer(latest)
+        self.assertEqual(len(s.active), 1)
+        self.assertEqual(s.rejected, [latest])
+        self.assertEqual(len(s.pending[0]), 100)
+
+    def test_legacy_overlap_counterexample_requires_drain_before_activation(self):
+        # An enabled independent run group cannot coordinate with a legacy
+        # workflow lacking job lanes. This is a rollout prohibition, not a cap.
+        s = Scheduler()
+        run = DevelopmentRun(s, self.jobs, 'future')
+        self.finish(s, [run])
+        self.assertEqual(max(map(len, s.snapshots)) + 20, 40)
+        self.assertIn(WORKFLOW_SUPERSESSION, self.text)
 
 
 if __name__ == '__main__':

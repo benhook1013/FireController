@@ -15,10 +15,9 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func admissionPolicy(t *testing.T, f *attemptFixture, previous int64, paused ...string) {
+func admissionPolicy(t *testing.T, f *attemptFixture, previous int64) {
 	t.Helper()
 	input := policyInput(previous)
-	input.PausedChannels = append([]string{}, paused...)
 	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "admission-policy-"+strconv.FormatInt(previous, 10), input)
 }
 
@@ -34,19 +33,11 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 		t.Fatal("missing policy allocated request effects")
 	}
 	// Required channels describe sufficiency, not which channel may run. An
-	// optional CLI request remains independent of an explicitly paused hosted lane.
+	// optional CLI request remains independent of required hosted coverage.
 	input := policyInput(0)
 	input.RequiredChannels = []string{"hosted"}
-	input.PausedChannels = []string{"hosted"}
 	policyConfigure(t, f, f.scope(t, attemptProject, f.admin, true), "explicit-policy", input)
 	before = policyState(t, f)
-	hosted := request
-	hosted.Channel = "hosted"
-	_, err = f.e.Enqueue(t.Context(), scope, "paused-hosted", hosted)
-	attemptCode(t, err, "reviews_paused")
-	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
-		t.Fatal("paused channel allocated request effects")
-	}
 	original, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
 	if err != nil {
 		t.Fatal(err)
@@ -62,16 +53,16 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 	prepared := f.start(t, attemptProject, receipt)
 	active, err := f.e.Admit(t.Context(), attemptProject, prepared.ID, prepared.Revision, attemptAnchor(attemptProject, 2), "")
 	if err != nil {
-		t.Fatal("hosted pause blocked CLI admission", err)
+		t.Fatal("required hosted coverage blocked CLI admission", err)
 	}
 	if err := f.e.VerifyAction(t.Context(), attemptProject, active.ID, active.Revision); err != nil {
-		t.Fatal("hosted pause blocked CLI final check", err)
+		t.Fatal("required hosted coverage blocked CLI final check", err)
 	}
 	operation, err = f.e.ReadOperation(t.Context(), scope, receipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admissionPolicy(t, f, 1, "cli")
+	f.configure(t, attemptProject, "test-capability", 1, true)
 	before = policyState(t, f)
 	replay, err := f.e.Enqueue(t.Context(), scope, "cli-key", request)
 	if err != nil || !bytes.Equal(original, replay) || policyState(t, f) != before {
@@ -81,7 +72,9 @@ func TestPolicyAdmissionEnqueueRequiresPolicyAndRetainsKeyedRevision(t *testing.
 	if err != nil || !reflect.DeepEqual(operation, retained) {
 		t.Fatal("replay silently adopted new policy", retained, err)
 	}
-	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", request)
+	pausedRequest := request
+	pausedRequest.ExpectedConfigurationRevision = 2
+	_, err = f.e.Enqueue(t.Context(), scope, "new-paused-key", pausedRequest)
 	attemptCode(t, err, "reviews_paused")
 	if policyState(t, f) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
 		t.Fatal("paused new key changed journal")
@@ -104,8 +97,8 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 			case "changed":
 				admissionPolicy(t, f, 1)
 			case "paused":
-				admissionPolicy(t, f, 1, "cli")
-				reason = "policy_paused"
+				f.configure(t, attemptProject, "test-capability", 1, true)
+				reason = "configuration_changed"
 			case "missing":
 				if _, err := f.store.DB().Exec(`DELETE FROM review_policy_config WHERE project_id=?`, attemptProject); err != nil {
 					t.Fatal(err)
@@ -122,8 +115,12 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
-			if err != nil || operation.State != "held" || operation.Reason != reason || operation.AttemptID != "" {
-				t.Fatal("policy did not durably hold request", operation, err)
+			wantState := "held"
+			if state == "paused" {
+				wantState, reason = "queued", ""
+			}
+			if err != nil || operation.State != wantState || operation.Reason != reason || operation.AttemptID != "" {
+				t.Fatal("admission did not preserve the expected request state", operation, err)
 			}
 			if driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
 				t.Fatal("held request reached driver")
@@ -131,6 +128,19 @@ func TestPolicyAdmissionStartHoldsWithoutPreparingOrDispatch(t *testing.T) {
 			for _, table := range []string{"review_execution_attempts", "review_execution_reservations", "review_execution_transitions"} {
 				if attemptCount(t, f.store, "SELECT count(*) FROM "+table) != 0 {
 					t.Fatal("held request created attempt state", table)
+				}
+			}
+			if state == "paused" {
+				if operation.Revision != 1 {
+					t.Fatal("pause revised original intent", operation)
+				}
+				f.configure(t, attemptProject, "test-capability", 2, false)
+				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
+				if err != nil || resumed.State != "completed" || resumed.ID != receipt.ID || resumed.ConfigurationRevision != 1 || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+					t.Fatal("resume failed to dispatch original intent", resumed, err)
 				}
 			}
 		})
@@ -148,7 +158,7 @@ func TestPolicyAdmissionBetweenPreparationAndAdmitIsReadOnlyFailure(t *testing.T
 				t.Fatal("preparation context did not expose exact binding", current, err)
 			}
 			if paused {
-				admissionPolicy(t, f, 1, "cli")
+				f.configure(t, attemptProject, "test-capability", 1, true)
 			} else {
 				admissionPolicy(t, f, 1)
 			}
@@ -174,7 +184,9 @@ func TestVerifyActionCurrentBindingsAndReservation(t *testing.T) {
 	}{
 		{"unchanged", "", nil},
 		{"policy-changed", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1) }},
-		{"policy-paused", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) { admissionPolicy(t, f, 1, "cli") }},
+		{"policy-paused", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
+			f.configure(t, attemptProject, "test-capability", 1, true)
+		}},
 		{"policy-unbound", "review_conflict", func(t *testing.T, f *attemptFixture, a Attempt) {
 			admissionSQL(t, f, `UPDATE review_operations SET policy_revision=0 WHERE id=?`, a.OperationID)
 		}},
@@ -314,6 +326,9 @@ func TestPolicyAdmissionVersionTwoMigrationRetainsUnboundJournal(t *testing.T) {
 	admissionSQL(t, f, `DROP TABLE review_cli_preflight`)
 	admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_coverage`)
 	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN policy_revision`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
+	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreCooldownAttemptSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution'`)
 	var sequence int
 	var name, path string
@@ -463,11 +478,13 @@ func TestVerifyActionStackedRequiresExactActualParentWitness(t *testing.T) {
 	if adjudicationState(t, f, child) != before {
 		t.Fatal("moved actual parent refusal changed retained state")
 	}
-	// The proof was ready at preparation, but a real current correction now needs
-	// a fix. The final guard must check predecessors and target in the same read.
+	// A late accepted ancestor finding does not change the child's pinned diff.
+	// The final guard preserves that obligation without making it a review gate.
 	adjudicationDecide(t, f, id, "late-predecessor-acceptance", 2, 0, "accepted")
 	afterCorrection := adjudicationState(t, f, child)
-	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...), "review_held")
+	if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, dependencies...); err != nil {
+		t.Fatal("ancestor fix work blocked child review", err)
+	}
 	if adjudicationState(t, f, child) != afterCorrection {
 		t.Fatal("late predecessor refusal mutated state")
 	}
@@ -523,9 +540,6 @@ func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
 	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-hop-stack", Configuration{ExpectedRevision: &previous, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{3, 2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
-	// Newly enrolled ancestors get discovery defaults; bound this fixture to
-	// its one deliberate native completion before testing published branch identity.
-	roundGrant(t, f, 3, "cli", 1, 0, 1, "two-hop-single-grandparent-round")
 	grandparentAnchor := attemptAnchor(attemptProject, 3)
 	grandparentAnchor.CandidateSHA = input.ExpectedAnchor.ParentSHA
 	grandparentAnchor.ParentSHA = grandparentAnchor.BaseSHA
@@ -552,6 +566,12 @@ func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
 	}
 	adjudicationComplete(t, f, grandparent)
 	_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "two-hop-finalize-grandparent", grandparentReceipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// New queue members receive finite round defaults in this later slice. Close
+	// only this fixture's already-finalized ancestor so discovery is complete.
+	_, err = f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-hop-close-grandparent", 3, "cli", RoundControlRequest{ExpectedRevision: adjudicationRevision(1), Action: "close"})
 	if err != nil {
 		t.Fatal(err)
 	}

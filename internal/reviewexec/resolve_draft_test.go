@@ -10,7 +10,7 @@ func TestResolveDraftRefusesExecutionButAllowsSourceObservation(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
 		t.Run(channel, func(t *testing.T) {
 			reader, config, request := sourceFixture()
-			request.Channel = channel
+			request.Channel, request.AllowOutOfOrder = channel, true
 			prepared, err := reviewexec.ResolveSource(t.Context(), reader, 701, config, request)
 			if err != nil {
 				t.Fatal(err)

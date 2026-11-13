@@ -16,6 +16,10 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateSelectionPhysical(ctx, q); err != nil {
 		return err
 	}
+	orderColumn, limitColumn, err := operationFlagColumns(ctx, q)
+	if err != nil {
+		return err
+	}
 	var bad bool
 	// Storage classes and empty keys are checked before scanned string keysets.
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections s LEFT JOIN projects p ON p.id=s.project_id LEFT JOIN workers w ON w.project_id=s.project_id AND w.id=s.worker_id WHERE p.id IS NULL OR w.id IS NULL OR NOT EXISTS(SELECT 1 FROM credentials c WHERE c.principal_id=s.actor_id))`).Scan(&bad); err != nil {
@@ -54,6 +58,22 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			if invalidChild {
 				return runUnavailable()
 			}
+			if orderColumn != "0" {
+				if err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE id=(SELECT operation_id FROM review_selections WHERE id=?) AND (typeof(allow_out_of_order)!='integer' OR allow_out_of_order!=0))`, k.id).Scan(&invalidChild); err != nil {
+					return err
+				}
+				if invalidChild {
+					return runUnavailable()
+				}
+			}
+			if limitColumn != "0" {
+				if err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE id=(SELECT operation_id FROM review_selections WHERE id=?) AND (typeof(override_file_limit)!='integer' OR override_file_limit!=0))`, k.id).Scan(&invalidChild); err != nil {
+					return err
+				}
+				if invalidChild {
+					return runUnavailable()
+				}
+			}
 			r, err := readRun(ctx, q, k.project, k.id)
 			if err != nil {
 				return err
@@ -69,8 +89,8 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			if err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=1024 THEN body_json END FROM review_policy_config WHERE project_id=? AND revision=?`, r.ProjectID, r.PolicyRevision).Scan(&policyBody); err != nil {
 				return runUnavailable()
 			}
-			var p Policy
-			if strictjson.Decode([]byte(policyBody), &p) != nil || !validPolicy(p) || slices.Contains(p.PausedChannels, r.Channel) {
+			_, legacyPauses, policyErr := decodeRetainedPolicy(policyBody)
+			if policyErr != nil || slices.Contains(legacyPauses, r.Channel) {
 				return runUnavailable()
 			}
 			if r.State == "selected" {

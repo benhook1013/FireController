@@ -6,11 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -372,5 +376,254 @@ func TestMalformedJobQueryEncodingIsRejectedBeforeReturningData(t *testing.T) {
 	}
 	if a.lookups != before {
 		t.Fatal("invalid local query performed provider work")
+	}
+}
+
+func TestOpenJobsGlobalPagingAndIsolation(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("open-jobs", "example/open-jobs")
+	other := a.createProject("other-open-jobs", "example/other-open-jobs")
+	token := a.grant(project, "open-jobs-reader-and-writer", "read", "write")
+	otherToken := a.grant(other, "other-open-jobs-reader", "read", "write")
+	worker := a.createWorker(project, "Selected")
+	otherWorker := a.createWorker(project, "Other")
+	prefix := "/api/v1/projects/" + project + "/jobs"
+	var expected []jobValue
+	var all []jobValue
+	for _, status := range []string{"parked", "completed", "blocked", "active"} {
+		for i := 0; i < 3; i++ {
+			assigned := worker
+			if i == 1 {
+				assigned = otherWorker
+			}
+			response := a.call(http.MethodPost, prefix, token, fmt.Sprintf("create-%s-%d", status, i), map[string]any{"title": status, "status": status, "worker_id": assigned})
+			if response.Code != http.StatusCreated {
+				t.Fatal("create", response.Code, response.Body.String())
+			}
+			var receipt receipt
+			decodeResponse(t, response, &receipt)
+			item := jobValue{ID: receipt.ID, Status: status, WorkerID: assigned}
+			all = append(all, item)
+			if status != "completed" {
+				expected = append(expected, item)
+			}
+		}
+	}
+	completed := a.call(http.MethodPost, "/api/v1/projects/"+other+"/jobs", otherToken, "complete-only", map[string]any{"title": "Completed elsewhere", "status": "completed"})
+	if completed.Code != http.StatusCreated {
+		t.Fatal(completed.Code)
+	}
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].Status != expected[j].Status {
+			return expected[i].Status < expected[j].Status
+		}
+		return expected[i].ID < expected[j].ID
+	})
+	digest := func() string {
+		// All persisted effects of job calls remain fixed across the read workload.
+		h := sha256.New()
+		names, err := a.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tables []string
+		for names.Next() {
+			var name string
+			if err := names.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			tables = append(tables, name)
+		}
+		if err := names.Err(); err != nil {
+			t.Fatal(err)
+		}
+		names.Close()
+		for _, table := range tables {
+			h.Write([]byte(table + "\n"))
+			rows, err := a.store.DB().Query(`SELECT * FROM "` + table + `" ORDER BY rowid`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cols, err := rows.Columns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				values := make([]any, len(cols))
+				targets := make([]any, len(cols))
+				for i := range values {
+					targets[i] = &values[i]
+				}
+				if err := rows.Scan(targets...); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.Marshal(values)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.Write(body)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+		}
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	plan, err := a.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,title,COALESCE(worker_id,''),status,revision FROM jobs WHERE project_id=? AND status=? AND id>? ORDER BY id LIMIT ?`, project, "blocked", "job_cursor", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for plan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := plan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		t.Log("open continuation branch:", detail)
+		if strings.Contains(detail, "SCAN jobs") || !strings.Contains(detail, "id>?") {
+			t.Fatal("continuation branch does not seek beyond the prior ID", detail)
+		}
+	}
+	if err := plan.Err(); err != nil {
+		t.Fatal(err)
+	}
+	plan.Close()
+	workerPlan, err := a.store.DB().Query(`EXPLAIN QUERY PLAN SELECT id,title,COALESCE(worker_id,''),status,revision FROM jobs WHERE project_id=? AND status=? AND id>? AND worker_id=? ORDER BY id LIMIT ?`, project, "blocked", "job_cursor", worker, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for workerPlan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := workerPlan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		t.Log("assigned open continuation branch:", detail)
+		if strings.Contains(detail, "SCAN jobs") || !strings.Contains(detail, "id>?") {
+			t.Fatal("assigned continuation scanned the prior ID prefix", detail)
+		}
+	}
+	if err := workerPlan.Err(); err != nil {
+		t.Fatal(err)
+	}
+	workerPlan.Close()
+	before := digest()
+	read := func(path, credential string) (items []jobValue, cursor string, more bool) {
+		t.Helper()
+		response := a.call(http.MethodGet, path, credential, "", nil)
+		if response.Code != 200 {
+			t.Fatal("read", response.Code, response.Body.String())
+		}
+		var page struct {
+			Items   []jobValue `json:"items"`
+			Cursor  string     `json:"cursor"`
+			HasMore bool       `json:"has_more"`
+		}
+		decodeResponse(t, response, &page)
+		if page.Items == nil {
+			t.Fatal("null page")
+		}
+		return page.Items, page.Cursor, page.HasMore
+	}
+	var got []jobValue
+	cursor := ""
+	firstCursor := ""
+	for page := 0; page < 10; page++ {
+		items, next, more := read(prefix+"?status=open&limit=2&cursor="+url.QueryEscape(cursor), token)
+		if len(items) > 2 {
+			t.Fatal("unbounded page")
+		}
+		for _, item := range items {
+			got = append(got, jobValue{ID: item.ID, Status: item.Status, WorkerID: item.WorkerID})
+		}
+		if page == 0 {
+			firstCursor = next
+		}
+		if !more {
+			break
+		}
+		if next == "" || next == cursor {
+			t.Fatal("invalid continuation")
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, expected) {
+		t.Fatalf("open global order/coverage mismatch: got %v want %v", got, expected)
+	}
+	var assigned []jobValue
+	for _, item := range expected {
+		if item.WorkerID == worker {
+			assigned = append(assigned, item)
+		}
+	}
+	var selected []jobValue
+	cursor = ""
+	for page := 0; page < 10; page++ {
+		items, next, more := read(prefix+"?status=open&worker_id="+worker+"&limit=2&cursor="+url.QueryEscape(cursor), token)
+		for _, item := range items {
+			selected = append(selected, jobValue{ID: item.ID, Status: item.Status, WorkerID: item.WorkerID})
+		}
+		if !more {
+			break
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(selected, assigned) {
+		t.Fatal("assigned open pages differ")
+	}
+	items, cursor, more := read("/api/v1/projects/"+other+"/jobs?status=open", otherToken)
+	if len(items) != 0 || cursor != "" || more {
+		t.Fatal("completed-only project did not yield empty open page")
+	}
+	for _, path := range []string{prefix + "?status=active&cursor=" + url.QueryEscape(firstCursor), prefix + "?cursor=" + url.QueryEscape(firstCursor), prefix + "?status=open&worker_id=" + worker + "&cursor=" + url.QueryEscape(firstCursor), "/api/v1/projects/" + other + "/jobs?status=open&cursor=" + url.QueryEscape(firstCursor), prefix + "?status=open&cursor=malformed"} {
+		credential := token
+		if strings.Contains(path, other) {
+			credential = otherToken
+		}
+		if response := a.call(http.MethodGet, path, credential, "", nil); response.Code != 400 {
+			t.Fatal("foreign/malformed cursor accepted", response.Code)
+		}
+	}
+	// A valid signature cannot make an invalid open-list position admissible.
+	request := httptest.NewRequest(http.MethodGet, prefix, nil)
+	request.SetPathValue("project_id", project)
+	request.Header.Set("Authorization", "Bearer "+token)
+	scope, err := a.store.Scope(request, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, _ := json.Marshal([]string{project, "", "open"})
+	for _, position := range []string{`["completed","job_one"]`, `["active"]`, `["active",""]`, `["active","job_one","extra"]`, `null`} {
+		signed := a.store.Cursor(scope, "jobs-open-v1:"+string(filter), position)
+		if response := a.call(http.MethodGet, prefix+"?status=open&cursor="+url.QueryEscape(signed), token, "", nil); response.Code != 400 {
+			t.Fatal("malformed signed position accepted", position, response.Code)
+		}
+	}
+	// Existing no-filter and exact-state lists keep their original global ID order.
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	items, _, _ = read(prefix, token)
+	for i, item := range items {
+		if item.ID != all[i].ID {
+			t.Fatal("old ID ordering changed")
+		}
+	}
+	items, _, _ = read(prefix+"?status=blocked", token)
+	last := ""
+	for _, item := range items {
+		if item.Status != "blocked" || item.ID <= last {
+			t.Fatal("specific-status ordering changed")
+		}
+		last = item.ID
+	}
+	if digest() != before {
+		t.Fatal("job reads changed retained rows")
+	}
+	// Open remains an invalid stored/mutated status.
+	if response := a.call(http.MethodPost, prefix, token, "refuse-open-create", map[string]any{"title": "Invalid", "status": "open"}); response.Code != 400 {
+		t.Fatal("open accepted as job state")
+	}
+	if response := a.call(http.MethodPatch, prefix+"/"+all[0].ID, token, "refuse-open-edit", map[string]any{"expected_revision": 1, "status": "open"}); response.Code != 400 {
+		t.Fatal("open accepted as edited state")
 	}
 }

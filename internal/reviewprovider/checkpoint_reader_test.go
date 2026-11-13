@@ -90,7 +90,7 @@ func TestCheckpointCommentsCompletePaginationAndConflicts(t *testing.T) {
 		t.Run(strconv.FormatBool(conflict), func(t *testing.T) {
 			second := checkpointComment(t, 32, p)
 			if conflict {
-				second.Body = strings.Replace(second.Body, "Found 3", "Found 99", 1)
+				second.Body = strings.Replace(second.Body, "3 Found", "99 Found", 1)
 			}
 			var calls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

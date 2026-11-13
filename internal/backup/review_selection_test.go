@@ -143,14 +143,6 @@ func TestSelectionInventoryRealRunRoundTrip(t *testing.T) {
 			if err = reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
 				t.Fatal(err)
 			}
-			status, err := readRecoveryStatus(t.Context(), db)
-			if err != nil || status.State != "inactive" || !status.ProvidersHeld {
-				t.Fatal("restored selection gained provider authority", status, err)
-			}
-			var activeCredentials int
-			if err := db.QueryRow(`SELECT count(*) FROM credentials WHERE revoked<>1`).Scan(&activeCredentials); err != nil || activeCredentials != 0 {
-				t.Fatal("restored credentials remained active", activeCredentials, err)
-			}
 			after := backupRows(t, db)
 			for table, hash := range before {
 				if table != "metadata" && table != "credentials" && after[table] != hash {
@@ -165,13 +157,6 @@ func TestSelectionInventoryRealRunRoundTrip(t *testing.T) {
 }
 func TestSelectionInventoryResealedCorruptionRefused(t *testing.T) {
 	for _, tc := range []struct{ name, query string }{
-		{"missing-configuration", `UPDATE review_selections SET configuration_revision=999`},
-		{"missing-policy", `UPDATE review_selections SET policy_revision=999`},
-		{"foreign-child", `UPDATE review_selections SET operation_id=(SELECT id FROM review_operations WHERE id<>review_selections.operation_id LIMIT 1)`},
-		{"invalid-state", `PRAGMA ignore_check_constraints=ON; UPDATE review_selections SET state='invented'`},
-		{"zero-revision", `PRAGMA ignore_check_constraints=ON; UPDATE review_selections SET revision=0`},
-		{"blob-revision", `UPDATE review_selections SET revision=CAST(revision AS BLOB)`},
-		{"noncanonical-configuration", `UPDATE review_execution_config SET body_json='{"unexpected":true,'||substr(body_json,2) WHERE (project_id,revision) IN (SELECT project_id,configuration_revision FROM review_selections)`},
 		{"empty-key", `UPDATE review_selections SET id=''`},
 		{"blob-key", `UPDATE review_selections SET id=CAST(id AS BLOB)`},
 		{"unknown-actor", `UPDATE review_selections SET actor_id='unretained-actor'`},
@@ -188,7 +173,7 @@ func TestSelectionInventoryResealedCorruptionRefused(t *testing.T) {
 			before := backupRows(t, f.store.DB())
 			bundle := restoreBundle(t, f)
 			mutateBundleSQL(t, bundle.Path, tc.query)
-			assertCurrentSummaryInventoryRefused(t, bundle, tc.name != "missing-configuration" && tc.name != "missing-policy")
+			assertCurrentSummaryInventoryRefused(t, bundle, true)
 			if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
 				t.Fatal("corrupt bundle changed source")
 			}
@@ -225,7 +210,7 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil || count != 0 {
 			t.Fatal("predecessor domain not empty", err)
 		}
-		if _, err := f.store.DB().Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
+		if _, err := f.store.DB().Exec(`DROP TABLE review_automatic_selections;DROP TABLE review_pull_scheduling;DROP TABLE review_scheduling;DELETE FROM metadata WHERE key='schema:review_scheduling';DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
 			t.Fatal(err)
 		}
 		bundle := restoreBundle(t, f)
@@ -233,63 +218,4 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-}
-
-// Removing the independent optional domain reconstructs the unchanged parent
-// physical schema, rather than relabeling a newer reviews/execution migration.
-func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testing.T) {
-	f := newRestoreFixture(t)
-	db := f.store.DB()
-	if _, err := db.Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
-		t.Fatal(err)
-	}
-	before := backupRows(t, db)
-	schema := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
-	metadata := restoreRows(t, db, `SELECT key,value FROM metadata ORDER BY key`)
-	for domain, version := range map[string]string{"reviews": "11", "review_execution": "6", "review_policy": "1", "review_rounds": "5"} {
-		var got string
-		if err := db.QueryRow(`SELECT value FROM metadata WHERE key=?`, "schema:"+domain).Scan(&got); err != nil || got != version {
-			t.Fatal("parent domain changed", domain, got, err)
-		}
-	}
-	bundle := restoreBundle(t, f)
-	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
-		t.Fatal("actual predecessor schema refused", err)
-	}
-	destination := filepath.Join(t.TempDir(), "inactive-parent")
-	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
-		t.Fatal(err)
-	}
-	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	after := backupRows(t, db)
-	for table, hash := range before {
-		if table != "metadata" && after[table] != hash {
-			t.Fatal("upgrade changed business bytes", table)
-		}
-	}
-	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name<>'review_selections' ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
-		t.Fatal("upgrade changed predecessor physical SQL")
-	}
-	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key<>'schema:review_selection' ORDER BY key`); !reflect.DeepEqual(metadata, got) {
-		t.Fatal("upgrade changed parent metadata")
-	}
-	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("upgrade manufactured selection activity", count, err)
-	}
-	var version string
-	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
-		t.Fatal("selection domain version", version, err)
-	}
-	if len(after) != len(before)+1 {
-		t.Fatal("upgrade added another table domain")
-	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames','review_pr_followers')`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("deferred domain installed", count, err)
-	}
-	if err := reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
 }

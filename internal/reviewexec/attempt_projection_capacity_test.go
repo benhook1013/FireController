@@ -20,42 +20,77 @@ func replaceAttemptCapacity(t *testing.T, f *attemptFixture, total bool, spare i
 	}
 	queue := []reviews.PullInput{projectionPull(1), projectionPull(2), projectionPull(4)}
 	queue[0].State = "merged"
-	counts := []int{0, 100 - spare, 0}
-	if total {
-		counts = []int{50, 50 - spare, 100}
-	}
-	for n := range queue {
-		for i := 0; i < counts[n]; i++ {
-			queue[n].Attempts = append(queue[n].Attempts, reviews.Attempt{SourceAttemptID: fmt.Sprintf("imported-%d-%d", queue[n].Number, i), Channel: "cli", HeadSHA: queue[n].HeadSHA, State: "prepared"})
-		}
-	}
-	request := reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 801, Source: "capacity-replacement", ObservedAt: stamp(), Queue: queue}
-	w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, fmt.Sprintf("replace-%d", revision), encoded(request))
-	if w.Code != 201 {
+	request := reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 801, Source: "replacement-before-transfer", ObservedAt: stamp(), Queue: queue}
+	if w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, fmt.Sprintf("replace-%d", revision), encoded(request)); w.Code != 201 {
 		t.Fatal("canonical replacement", w.Code, w.Body.String())
+	}
+	counts := []int{0, 101 - spare, 0}
+	if total {
+		counts = []int{51, 51 - spare, 101}
+	}
+	for batch := 0; ; batch++ {
+		var selected []reviews.PullInput
+		remaining := 200
+		for n := range queue {
+			if counts[n] <= 0 || remaining == 0 {
+				continue
+			}
+			pull := queue[n]
+			pull.Complete = false
+			count := min(counts[n], 100, remaining)
+			remaining -= count
+			for i := 0; i < count; i++ {
+				pull.Attempts = append(pull.Attempts, reviews.Attempt{SourceAttemptID: fmt.Sprintf("imported-%d-%d-%d", pull.Number, batch, i), Channel: "cli", HeadSHA: pull.HeadSHA, State: "prepared"})
+			}
+			counts[n] -= count
+			selected = append(selected, pull)
+		}
+		if len(selected) == 0 {
+			break
+		}
+		transferProjectionBatch(t, f, fmt.Sprintf("replacement-%d-%d", revision, batch), []reviews.TransferGroup{{Source: "capacity-replacement", Pulls: selected}})
 	}
 }
 
-func TestAttemptProjectionReplacementHistoryAllowsOriginalTransitions(t *testing.T) {
+func TestAttemptProjectionReplacementGrowthProjectsJournalTransitions(t *testing.T) {
 	for _, total := range []bool{false, true} {
-		for _, boundary := range []string{"admit", "advance", "restart-preparing", "restart-active"} {
+		for _, boundary := range []string{"explicit", "admit", "advance", "restart-preparing", "restart-active"} {
 			t.Run(fmt.Sprintf("total-%t/%s", total, boundary), func(t *testing.T) {
 				f := attemptProjectionFixture(t, true)
-				a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "retained-live", "cli", 2, 1))
-				var err error
+				a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "capacity-live", "cli", 2, 1))
 				if boundary == "advance" || boundary == "restart-active" {
+					var err error
 					a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "")
 					if err != nil {
 						t.Fatal(err)
 					}
 				}
 				replaceAttemptCapacity(t, f, total, 0)
-				var before reviews.PullResponse
-				projectionRead(t, f, "/pulls/2", &before)
-				history := projectionDigest(t, f, before.SnapshotID)
-				if _, err = f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil); err != nil {
-					t.Fatal("retained history blocked publication", err)
+				before := projectionDigest(t, f, "")
+				events := attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`)
+				transitions := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`)
+				var prior reviews.PullResponse
+				projectionRead(t, f, "/pulls/2", &prior)
+				historical := projectionDigest(t, f, prior.SnapshotID)
+				// Exercise explicit recovery independently. The automatic cases
+				// below must restore an omitted attempt on their own transition.
+				if boundary == "explicit" {
+					receipt, err := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil)
+					if err != nil || receipt.ID == "" || projectionDigest(t, f, "") == before || projectionDigest(t, f, prior.SnapshotID) != historical || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != events+1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != transitions {
+						t.Fatal("explicit growth recovery changed journal or failed to project", receipt, err)
+					}
+					_, projected := projectedAttempt(t, f, a)
+					if projected.State != a.State {
+						t.Fatal("explicit growth state not retained")
+					}
+					after := projectionDigest(t, f, "")
+					if replay, replayErr := f.e.PublishAttempt(t.Context(), attemptProject, a.ID, nil); replayErr != nil || replay != receipt || projectionDigest(t, f, "") != after || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != events+1 {
+						t.Fatal("explicit growth replay repeated effects", replayErr)
+					}
+					return
 				}
+				var err error
+
 				want := "active"
 				switch boundary {
 				case "admit":
@@ -64,6 +99,7 @@ func TestAttemptProjectionReplacementHistoryAllowsOriginalTransitions(t *testing
 					a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured", "")
 					want = "completed"
 				default:
+					// Start performs synchronous crash recovery before launching workers.
 					restarted, newErr := New(f.store, attemptCapabilities, WithNativeProjection())
 					if newErr != nil {
 						t.Fatal(newErr)
@@ -73,20 +109,21 @@ func TestAttemptProjectionReplacementHistoryAllowsOriginalTransitions(t *testing
 					done, startErr := restarted.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
 					cancel()
 					if startErr != nil {
-						t.Fatal(startErr)
+						t.Fatal("restart recovery", startErr)
 					}
 					select {
-					case err = <-done:
+					case stopErr := <-done:
+						if stopErr != nil {
+							t.Fatal(stopErr)
+						}
 					case <-time.After(3 * time.Second):
 						t.Fatal("supervisor shutdown timed out")
 					}
-					if err == nil {
-						err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-							var e error
-							a, e = readAttempt(ctx, tx, attemptProject, a.ID)
-							return e
-						})
-					}
+					err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+						var readErr error
+						a, readErr = readAttempt(ctx, tx, attemptProject, a.ID)
+						return readErr
+					})
 					want = "uncertain"
 					if boundary == "restart-preparing" {
 						want = "cancelled"
@@ -96,25 +133,31 @@ func TestAttemptProjectionReplacementHistoryAllowsOriginalTransitions(t *testing
 					}
 				}
 				if err != nil || a.State != want {
-					t.Fatal("retained original transition", a, err)
+					t.Fatalf("journal transition after retained growth: state=%s want=%s err=%v", a.State, want, err)
+				}
+				if projectionDigest(t, f, "") == before || projectionDigest(t, f, prior.SnapshotID) != historical || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.observed'`) != events+1 {
+					t.Fatal("growth transition lost current update or rewrote pinned history")
 				}
 				_, projected := projectedAttempt(t, f, a)
-				if projected.State != want || history != projectionDigest(t, f, before.SnapshotID) {
-					t.Fatal("transition lost projection or changed pinned history", projected)
+				if projected.State != want {
+					t.Fatal("growth transition not projected", projected)
+				}
+				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != transitions+1 {
+					t.Fatal("journal transition not retained exactly once")
 				}
 				reservations := 0
 				if want == "active" || want == "uncertain" {
 					reservations = 1
 				}
 				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != reservations {
-					t.Fatal("reservation semantics changed")
+					t.Fatal("journal reservation semantics changed")
 				}
 			})
 		}
 	}
 }
 
-func TestAttemptProjectionExistingNativeUpdatesAtCapacity(t *testing.T) {
+func TestAttemptProjectionExistingNativeUpdatesAfterRetainedGrowth(t *testing.T) {
 	for _, total := range []bool{false, true} {
 		t.Run(fmt.Sprintf("total-%t", total), func(t *testing.T) {
 			f := attemptProjectionFixture(t, true)
@@ -127,7 +170,7 @@ func TestAttemptProjectionExistingNativeUpdatesAtCapacity(t *testing.T) {
 			}
 			_, projected := projectedAttempt(t, f, a)
 			if projected.State != "active" {
-				t.Fatal("existing native row skipped at capacity")
+				t.Fatal("existing native row skipped after retained growth")
 			}
 			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured", "")
 			if err != nil {
@@ -143,7 +186,7 @@ func TestAttemptProjectionExistingNativeUpdatesAtCapacity(t *testing.T) {
 	}
 }
 
-func TestAttemptProjectionFullMissingRowStillRejectsCorruptJournal(t *testing.T) {
+func TestAttemptProjectionRetainedGrowthStillRejectsCorruptJournal(t *testing.T) {
 	f := attemptProjectionFixture(t, true)
 	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "corrupt-at-full", "cli", 2, 1))
 	replaceAttemptCapacity(t, f, false, 0)
@@ -152,7 +195,7 @@ func TestAttemptProjectionFullMissingRowStillRejectsCorruptJournal(t *testing.T)
 	transitions := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`)
 	_, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "")
 	if err == nil {
-		t.Fatal("capacity swallowed corrupt journal timing")
+		t.Fatal("retained growth swallowed corrupt journal timing")
 	}
 	if projectionDigest(t, f, "") != before || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != transitions {
 		t.Fatal("corrupt transition committed partial state")
@@ -186,23 +229,33 @@ func missingTargetCapacityObservation(t *testing.T, f *attemptFixture, fullPulls
 	}
 }
 
-func TestAttemptProjectionMissingTargetBeyondFormerHistoryCaps(t *testing.T) {
+func TestAttemptProjectionMissingTargetGrowthAllowsPreparation(t *testing.T) {
 	for _, kind := range []string{"global-attempts", "pull-rows"} {
 		t.Run(kind, func(t *testing.T) {
 			f := attemptProjectionFixture(t, false)
 			missingTargetCapacityObservation(t, f, kind == "pull-rows", kind == "global-attempts", false)
-			receipt := f.enqueue(t, attemptProject, "missing-target-with-history", "cli", 2, 1)
-			driver := &controlledDriver{}
+			request := f.enqueue(t, attemptProject, "missing-target-at-capacity", "cli", 2, 1)
+			before := projectionDigest(t, f, "")
+			driver := &controlledDriver{prepare: func(ctx context.Context, _ Operation, _ Configuration, a Attempt) (Preparation, error) {
+				metadata := projectionPull(2)
+				if _, err := f.e.PublishAttempt(ctx, attemptProject, a.ID, &metadata); err != nil {
+					return Preparation{}, err
+				}
+				return Preparation{Anchor: attemptAnchor(attemptProject, 2)}, nil
+			}}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal(err)
 			}
-			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), receipt.ID)
-			if err != nil || operation.State != "completed" || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
-				t.Fatal("history blocked original authorized work", operation, err)
+			operation, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), request.ID)
+			if err != nil || operation.State != "completed" || operation.AttemptID == "" || driver.prepares.Load() != 1 || driver.calls.Load() != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || projectionDigest(t, f, "") == before {
+				t.Fatal("retained totals blocked preparation/new native PR", operation, err)
 			}
-			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
-				t.Fatal("completed ledger retained reservation")
+			after := projectionDigest(t, f, "")
+			events := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+			if err = f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || projectionDigest(t, f, "") != after || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events || driver.prepares.Load() != 1 || driver.calls.Load() != 1 {
+				t.Fatal("completed growth work repeated effects", err)
 			}
+
 		})
 	}
 }
@@ -247,14 +300,18 @@ func TestAttemptProjectionMissingTargetCapacityAllowsInitialMetadataWithinBounds
 }
 
 func TestAttemptProjectionMissingTargetReadFailuresRollbackBeforePreparation(t *testing.T) {
-	for _, table := range []string{"review_pulls"} {
+	for _, table := range []string{"review_pulls", "review_workspace"} {
 		t.Run(table, func(t *testing.T) {
 			f := attemptProjectionFixture(t, false)
 			missingTargetCapacityObservation(t, f, false, false, false)
 			receipt := f.enqueue(t, attemptProject, "storage-error-before-preparation", "cli", 2, 1)
 			// Break only the owned fixture's read schema, preserving a genuine queued
 			// operation so StartAttempt, rather than the pending query, reaches failure.
-			admissionSQL(t, f, `DROP VIEW `+table)
+			kind := "VIEW"
+			if table == "review_workspace" {
+				kind = "TABLE"
+			}
+			admissionSQL(t, f, `DROP `+kind+` `+table)
 			beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 			a, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID)
 			if err == nil || a.ID != "" {

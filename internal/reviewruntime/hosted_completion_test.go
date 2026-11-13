@@ -34,11 +34,9 @@ func TestHostedCompletionUnchangedPollingSurvivesJournalLimitAndRestart(t *testi
 		t.Fatal(err)
 	}
 	files := hostedCapacityArtifacts(t, f.hostedCaptures)
-	backoff := hostedRecoveryBackoffMinimum
 	for range 205 {
 		gate.resume(t)
-		backoff = min(backoff*2, hostedRecoveryBackoffMaximum)
-		gate.interval(t, backoff)
+		gate.interval(t, 30*time.Second)
 	}
 	after, err := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
 	if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(files, hostedCapacityArtifacts(t, f.hostedCaptures)) {
@@ -61,7 +59,7 @@ func TestHostedCompletionUnchangedPollingSurvivesJournalLimitAndRestart(t *testi
 	// A provider timestamp change alone is a genuine source change.
 	providerTime = providerTime.Add(time.Nanosecond)
 	gate.resume(t)
-	gate.interval(t, 2*hostedRecoveryBackoffMinimum)
+	gate.interval(t, 30*time.Second)
 	after, err = f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
 	if err != nil || len(after) != len(before)+1 {
 		t.Fatal("provider timestamp change was discarded", err)

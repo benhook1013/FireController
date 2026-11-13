@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -61,35 +60,20 @@ func (c *Client) CreateJob(ctx context.Context, key string, request CreateJobReq
 	return result, nil
 }
 
-func (c *Client) EditJob(ctx context.Context, key, id string, request EditJobRequest) (JobReceipt, error) {
-	if !validMutationKey(key) || !validID(id) || request.ExpectedRevision < 1 || request.ExpectedRevision == math.MaxInt64 || request.Title == nil && request.Brief == nil && request.WorkerID == nil && request.Status == nil {
+func (c *Client) UpdateJob(ctx context.Context, key, id string, request UpdateJobRequest) (JobReceipt, error) {
+	if !validMutationKey(key) || !validID(id) {
 		return JobReceipt{}, mutationValidation()
 	}
-	if request.Title != nil {
-		value := strings.TrimSpace(*request.Title)
-		if !utf8.ValidString(value) || value == "" || len(value) > 240 {
-			return JobReceipt{}, mutationValidation()
-		}
-		request.Title = &value
-	}
-	if request.Brief != nil && (!utf8.ValidString(*request.Brief) || len(*request.Brief) > 32<<10) {
-		return JobReceipt{}, mutationValidation()
-	}
-	if request.WorkerID != nil {
-		value := strings.TrimSpace(*request.WorkerID)
-		if value != "" && !validID(value) {
-			return JobReceipt{}, mutationValidation()
-		}
-		request.WorkerID = &value
-	}
-	if request.Status != nil && !validStatus(*request.Status) {
-		return JobReceipt{}, mutationValidation()
-	}
-	var result JobReceipt
-	if err := c.mutate(ctx, http.MethodPatch, c.projectPath("jobs", id), key, request, http.StatusOK, &result); err != nil {
+	var err error
+	request, err = normalizeJobPatch(request)
+	if err != nil {
 		return JobReceipt{}, err
 	}
-	if result.ID != id || !validID(result.ID) || result.Revision != request.ExpectedRevision+1 || result.Outcome != "updated" {
+	var result JobReceipt
+	if err = c.mutate(ctx, http.MethodPatch, c.projectPath("jobs", id), key, request, http.StatusOK, &result); err != nil {
+		return JobReceipt{}, err
+	}
+	if result.ID != id || !(result.Outcome == "updated" && result.Revision == request.ExpectedRevision+1 || result.Outcome == "unchanged" && result.Revision == request.ExpectedRevision) {
 		return JobReceipt{}, unknownMutation("invalid_response", "The service returned an invalid job receipt; its outcome is unknown.", http.StatusOK)
 	}
 	return result, nil
@@ -113,17 +97,26 @@ func (c *Client) MarkSeen(ctx context.Context, key, id string) (MessageReceipt, 
 	return c.transition(ctx, key, id, "seen")
 }
 
-func (c *Client) Acknowledge(ctx context.Context, key, id string) (MessageReceipt, error) {
-	return c.transition(ctx, key, id, "ack")
+func (c *Client) Acknowledge(ctx context.Context, key, id string, selectedWorker ...string) (MessageReceipt, error) {
+	if _, err := c.selectedWorker(selectedWorker); err != nil {
+		return MessageReceipt{}, err
+	}
+	return c.transition(ctx, key, id, "ack", selectedWorker...)
 }
 
-func (c *Client) transition(ctx context.Context, key, id, action string) (MessageReceipt, error) {
+func (c *Client) transition(ctx context.Context, key, id, action string, selectedWorker ...string) (MessageReceipt, error) {
 	if !validMutationKey(key) || !validID(id) {
 		return MessageReceipt{}, mutationValidation()
 	}
 	var result MessageReceipt
 	path := c.projectPath("messages", id, action)
-	if err := c.mutate(ctx, http.MethodPost, path, key, struct{}{}, http.StatusOK, &result); err != nil {
+	var input struct {
+		WorkerID string `json:"worker_id,omitempty"`
+	}
+	if len(selectedWorker) == 1 {
+		input.WorkerID = selectedWorker[0]
+	}
+	if err := c.mutate(ctx, http.MethodPost, path, key, input, http.StatusOK, &result); err != nil {
 		return MessageReceipt{}, err
 	}
 	want := action

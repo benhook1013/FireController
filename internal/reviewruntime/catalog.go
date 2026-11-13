@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -60,16 +61,17 @@ func validHostedSettings(settings *HostedSettings) bool {
 // The credential is accessible only through GitHubCredential; private paths are
 // omitted when this value is logged or marshaled.
 type OperatorCapability struct {
-	ID                        string            `json:"id"`
-	Account                   string            `json:"account"`
-	Organization              string            `json:"organization"`
-	Channels                  []string          `json:"channels"`
-	GitExecutable             string            `json:"-"`
-	CLIExecutable             string            `json:"-"`
-	AuthenticationEnvironment map[string]string `json:"-"`
-	Fingerprint               string            `json:"fingerprint"`
-	Hosted                    *HostedSettings   `json:"-"`
-	githubCredential          string
+	ID                         string            `json:"id"`
+	Account                    string            `json:"account"`
+	Organization               string            `json:"organization"`
+	Channels                   []string          `json:"channels"`
+	GitExecutable              string            `json:"-"`
+	CLIExecutable              string            `json:"-"`
+	CLIAllowanceTimeoutSeconds int               `json:"-"`
+	AuthenticationEnvironment  map[string]string `json:"-"`
+	Fingerprint                string            `json:"fingerprint"`
+	Hosted                     *HostedSettings   `json:"-"`
+	githubCredential           string
 }
 
 func (c OperatorCapability) String() string           { return fmt.Sprintf("OperatorCapability{id:%q}", c.ID) }
@@ -77,19 +79,33 @@ func (c OperatorCapability) GoString() string         { return c.String() }
 func (c OperatorCapability) GitHubCredential() string { return c.githubCredential }
 
 type catalogFile struct {
-	Version      int              `json:"version"`
-	Capabilities []capabilityFile `json:"capabilities"`
+	Version                   int                            `json:"version"`
+	Capabilities              []capabilityFile               `json:"capabilities"`
+	CLIAuthenticationProfiles []cliAuthenticationProfileFile `json:"cli_authentication_profiles,omitempty"`
 }
-type capabilityFile struct {
+
+// Named profiles are private operator configuration, not client profiles or
+// provider credentials. They resolve to the same closed process environment as
+// an inline capability. No login or provider command runs while loading them.
+type cliAuthenticationProfileFile struct {
 	ID                        string            `json:"id"`
 	Account                   string            `json:"account"`
 	Organization              string            `json:"organization"`
-	Channels                  []string          `json:"channels"`
-	GitHubCredentialFile      string            `json:"github_credential_file"`
-	GitExecutable             string            `json:"git_executable"`
-	CLIExecutable             string            `json:"cli_executable"`
 	AuthenticationEnvironment map[string]string `json:"authentication_environment"`
-	Hosted                    *HostedSettings   `json:"hosted,omitempty"`
+}
+
+type capabilityFile struct {
+	ID                         string            `json:"id"`
+	Account                    string            `json:"account"`
+	Organization               string            `json:"organization"`
+	Channels                   []string          `json:"channels"`
+	GitHubCredentialFile       string            `json:"github_credential_file"`
+	GitExecutable              string            `json:"git_executable"`
+	CLIExecutable              string            `json:"cli_executable"`
+	CLIAllowanceTimeoutSeconds *int              `json:"cli_allowance_timeout_seconds,omitempty"`
+	AuthenticationEnvironment  map[string]string `json:"authentication_environment"`
+	CLIAuthenticationProfile   string            `json:"cli_authentication_profile,omitempty"`
+	Hosted                     *HostedSettings   `json:"hosted,omitempty"`
 }
 
 var allowedAuthenticationEnvironment = map[string]bool{
@@ -120,12 +136,33 @@ func LoadCatalog(path string) (Catalog, error) {
 	if err := validateCapabilityShapes(data, file.Capabilities); err != nil {
 		return Catalog{}, configurationError()
 	}
+	profiles, err := loadCLIAuthenticationProfiles(data, file.CLIAuthenticationProfiles)
+	if err != nil {
+		return Catalog{}, configurationError()
+	}
 	result := Catalog{Version: 1, Capabilities: make([]OperatorCapability, 0, len(file.Capabilities))}
 	ids := make(map[string]bool, len(file.Capabilities))
 	for _, input := range file.Capabilities {
+		if input.CLIAuthenticationProfile != "" {
+			profile, ok := profiles[input.CLIAuthenticationProfile]
+			if !ok || !slices.Contains(input.Channels, "cli") || input.Account != profile.Account || input.Organization != profile.Organization {
+				return Catalog{}, configurationError()
+			}
+			input.AuthenticationEnvironment = profile.AuthenticationEnvironment
+		}
 		capability, err := loadCapability(input, filepath.Dir(absolute))
 		if err != nil || ids[capability.ID] {
 			return Catalog{}, configurationError()
+		}
+		for _, profile := range profiles {
+			if capability.Account != profile.Account && overlappingAuthenticationPaths(capability.AuthenticationEnvironment, profile.AuthenticationEnvironment) {
+				return Catalog{}, configurationError()
+			}
+		}
+		for _, other := range result.Capabilities {
+			if capability.Account != other.Account && overlappingAuthenticationPaths(capability.AuthenticationEnvironment, other.AuthenticationEnvironment) {
+				return Catalog{}, configurationError()
+			}
 		}
 		ids[capability.ID] = true
 		result.Capabilities = append(result.Capabilities, capability)
@@ -152,8 +189,15 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 				return errors.New("shape")
 			}
 		}
-		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "hosted"} {
+		for _, name := range []string{"github_credential_file", "cli_executable", "authentication_environment", "cli_authentication_profile", "hosted", "cli_allowance_timeout_seconds"} {
 			if value, ok := fields[name]; ok && isNull(value) {
+				return errors.New("shape")
+			}
+		}
+		if rawProfile, ok := fields["cli_authentication_profile"]; ok {
+			var id string
+			_, inline := fields["authentication_environment"]
+			if json.Unmarshal(rawProfile, &id) != nil || !validIdentifier(id) || inline {
 				return errors.New("shape")
 			}
 		}
@@ -184,6 +228,54 @@ func validateCapabilityShapes(data []byte, capabilities []capabilityFile) error 
 	return nil
 }
 
+func loadCLIAuthenticationProfiles(data []byte, inputs []cliAuthenticationProfileFile) (map[string]cliAuthenticationProfileFile, error) {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil || len(inputs) > 32 {
+		return nil, configurationError()
+	}
+	if raw, present := root["cli_authentication_profiles"]; present && (isNull(raw) || inputs == nil) {
+		return nil, configurationError()
+	}
+	profiles := make(map[string]cliAuthenticationProfileFile, len(inputs))
+	for _, profile := range inputs {
+		if !validIdentifier(profile.ID) || !validIdentifier(profile.Account) || !validOrganization(profile.Organization) || len(profile.AuthenticationEnvironment) > 7 || profile.AuthenticationEnvironment["HOME"] == "" && profile.AuthenticationEnvironment["USERPROFILE"] == "" {
+			return nil, configurationError()
+		}
+		if _, duplicate := profiles[profile.ID]; duplicate {
+			return nil, configurationError()
+		}
+		for key, value := range profile.AuthenticationEnvironment {
+			if !allowedAuthenticationEnvironment[key] || !validAbsolutePath(value) {
+				return nil, configurationError()
+			}
+		}
+		for _, other := range profiles {
+			if profile.Account != other.Account && overlappingAuthenticationPaths(profile.AuthenticationEnvironment, other.AuthenticationEnvironment) {
+				return nil, configurationError()
+			}
+		}
+		profiles[profile.ID] = profile
+	}
+	return profiles, nil
+}
+
+// Check the configured paths without opening authentication files or following
+// symlinks. Filesystem/mount aliases still require operator verification.
+func overlappingAuthenticationPaths(first, second map[string]string) bool {
+	for _, a := range first {
+		for _, b := range second {
+			a, b = filepath.Clean(a), filepath.Clean(b)
+			for _, pair := range [][2]string{{a, b}, {b, a}} {
+				relative, err := filepath.Rel(pair[0], pair[1])
+				if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapability, error) {
 	var empty OperatorCapability
 	if !validIdentifier(input.ID) || !validIdentifier(input.Account) || !validOrganization(input.Organization) || len(input.Channels) < 1 || len(input.Channels) > 2 || !validExecutable(input.GitExecutable) || len(input.AuthenticationEnvironment) > 7 {
@@ -203,6 +295,15 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 	}
 	if seen["cli"] && !validExecutable(input.CLIExecutable) || !seen["cli"] && input.CLIExecutable != "" && !validExecutable(input.CLIExecutable) {
 		return empty, configurationError()
+	}
+	timeoutSeconds := 0
+	if input.CLIAllowanceTimeoutSeconds != nil {
+		if !seen["cli"] || *input.CLIAllowanceTimeoutSeconds < 1 || *input.CLIAllowanceTimeoutSeconds > 60 {
+			return empty, configurationError()
+		}
+		if *input.CLIAllowanceTimeoutSeconds != 15 {
+			timeoutSeconds = *input.CLIAllowanceTimeoutSeconds
+		}
 	}
 	environment := make(map[string]string, len(input.AuthenticationEnvironment))
 	for key, value := range input.AuthenticationEnvironment {
@@ -229,7 +330,7 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 	if len(token) > maxCredentialTokenBytes || containsWhitespaceOrControl(token) {
 		return empty, configurationError()
 	}
-	capability := OperatorCapability{ID: input.ID, Account: input.Account, Organization: input.Organization, Channels: channels, GitExecutable: input.GitExecutable, CLIExecutable: input.CLIExecutable, AuthenticationEnvironment: environment, githubCredential: token}
+	capability := OperatorCapability{ID: input.ID, Account: input.Account, Organization: input.Organization, Channels: channels, GitExecutable: input.GitExecutable, CLIExecutable: input.CLIExecutable, CLIAllowanceTimeoutSeconds: timeoutSeconds, AuthenticationEnvironment: environment, githubCredential: token}
 	if input.Hosted != nil {
 		owned := *input.Hosted
 		capability.Hosted = &owned
@@ -245,16 +346,17 @@ func loadCapability(input capabilityFile, catalogDirectory string) (OperatorCapa
 func capabilityFingerprint(capability OperatorCapability) (string, error) {
 	tokenHash := sha256.Sum256([]byte(capability.githubCredential))
 	canonical := struct {
-		ID                        string            `json:"id"`
-		Account                   string            `json:"account"`
-		Organization              string            `json:"organization"`
-		Channels                  []string          `json:"channels"`
-		GitExecutable             string            `json:"git_executable"`
-		CLIExecutable             string            `json:"cli_executable"`
-		AuthenticationEnvironment map[string]string `json:"authentication_environment"`
-		CredentialSHA256          string            `json:"credential_sha256"`
-		Hosted                    *HostedSettings   `json:"hosted,omitempty"`
-	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:]), capability.Hosted}
+		ID                         string            `json:"id"`
+		Account                    string            `json:"account"`
+		Organization               string            `json:"organization"`
+		Channels                   []string          `json:"channels"`
+		GitExecutable              string            `json:"git_executable"`
+		CLIExecutable              string            `json:"cli_executable"`
+		AuthenticationEnvironment  map[string]string `json:"authentication_environment"`
+		CredentialSHA256           string            `json:"credential_sha256"`
+		Hosted                     *HostedSettings   `json:"hosted,omitempty"`
+		CLIAllowanceTimeoutSeconds int               `json:"cli_allowance_timeout_seconds,omitempty"`
+	}{capability.ID, capability.Account, capability.Organization, capability.Channels, capability.GitExecutable, capability.CLIExecutable, capability.AuthenticationEnvironment, hex.EncodeToString(tokenHash[:]), capability.Hosted, capability.CLIAllowanceTimeoutSeconds}
 	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err
@@ -269,7 +371,10 @@ func readPrivateFile(path string, limit int64) ([]byte, string, error) {
 		return nil, "", err
 	}
 	before, err := os.Lstat(absolute)
-	if err != nil || !privateRegular(before) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(before) {
 		return nil, "", errors.New("file")
 	}
 	if before.Size() > limit {
@@ -281,19 +386,31 @@ func readPrivateFile(path string, limit int64) ([]byte, string, error) {
 	}
 	defer file.Close()
 	after, err := file.Stat()
-	if err != nil || !privateRegular(after) || !os.SameFile(before, after) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(after) || !os.SameFile(before, after) {
 		return nil, "", errors.New("file")
 	}
 	pathAfter, err := os.Lstat(absolute)
-	if err != nil || !privateRegular(pathAfter) || !os.SameFile(before, pathAfter) {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(pathAfter) || !os.SameFile(before, pathAfter) {
 		return nil, "", errors.New("file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil || int64(len(data)) > limit {
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) > limit {
 		return nil, "", errors.New("large")
 	}
 	afterRead, err := file.Stat()
-	if err != nil || !privateRegular(afterRead) || !os.SameFile(before, afterRead) || afterRead.Size() > limit {
+	if err != nil {
+		return nil, "", err
+	}
+	if !privateRegular(afterRead) || !os.SameFile(before, afterRead) || afterRead.Size() > limit {
 		return nil, "", errors.New("file")
 	}
 	return data, absolute, nil

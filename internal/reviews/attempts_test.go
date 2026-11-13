@@ -48,7 +48,7 @@ func seedAttemptArchive(t *testing.T, f *apiFixture, count int) string {
 			attempts = count
 			compact = mustJSON(latest)
 		}
-		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, 0, attempts, "[]", compact, "{}"}
+		body := []any{pull.Title, pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA, pull.CIState, pull.Mergeability, pull.Complete, 0, attempts, "[]", compact, "{}", int64(1)}
 		if err := write.pull(t.Context(), tx, pull.Number, position, body); err != nil {
 			t.Fatal(err)
 		}

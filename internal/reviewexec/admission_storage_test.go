@@ -78,7 +78,7 @@ func (q admissionObligationFailure) QueryContext(ctx context.Context, query stri
 
 func TestAdmissionObligationTransientRetriesWithoutFalseHold(t *testing.T) {
 	for _, failure := range []error{admissionStorageCode(5), admissionStorageCode(6), core.Fail("overloaded", "Safe transient failure.", 503)} {
-		f := selectionFixture(t)
+		f := frontFixture(t)
 		retainObligationSource(t, f, attemptProject, "transient-importer", "transient-source", strings.Repeat("c", 64), 0)
 		// Resolve normally, then retry against the complete retained graph for
 		// that same PR rather than relying on an empty unrelated target list.
@@ -150,7 +150,7 @@ func TestAdmissionObligationTransientRetriesWithoutFalseHold(t *testing.T) {
 }
 
 func TestFrontOperationalQueryFailureDoesNotBecomeHeld(t *testing.T) {
-	f := selectionFixture(t)
+	f := frontFixture(t)
 	var beforeVersion string
 	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_adoption_obligations'`).Scan(&beforeVersion); err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func TestExecutionContextNonOverloadFailureRemainsUnchanged(t *testing.T) {
 			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "execution-read-error", "cli", 2, 1))
 			want := "review_conflict"
 			if failure == "policy" {
-				admissionPolicy(t, f, 1, "cli")
+				admissionPolicy(t, f, 1)
 			} else {
 				if err := f.store.DB().Close(); err != nil {
 					t.Fatal(err)

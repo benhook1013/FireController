@@ -92,7 +92,7 @@ func TestIdentityPreflightRecoveryRespectsCancellationAndInstancePin(t *testing.
 func TestIdentityPreflightRecoversSeveralReadsThenSendsOriginalWriteOnce(t *testing.T) {
 	var identities, mutations atomic.Int64
 	title := "Retain the exact selected update"
-	request := client.EditJobRequest{ExpectedRevision: 7, Title: &title}
+	request := client.UpdateJobRequest{ExpectedRevision: 7, Title: &title}
 	wantBody, _ := json.Marshal(request)
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Instance") != "instance-one" {
@@ -125,7 +125,7 @@ func TestIdentityPreflightRecoversSeveralReadsThenSendsOriginalWriteOnce(t *test
 	if identities.Load() != 4 || mutations.Load() != 0 {
 		t.Fatal("bootstrap dispatched selected work", identities.Load(), mutations.Load())
 	}
-	receipt, err := c.EditJob(t.Context(), "original-update-key", "job-one", request)
+	receipt, err := c.UpdateJob(t.Context(), "original-update-key", "job-one", request)
 	if err != nil || receipt.Revision != 8 || mutations.Load() != 1 || identities.Load() != 4 {
 		t.Fatal(receipt, err, mutations.Load(), identities.Load())
 	}

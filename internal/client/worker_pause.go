@@ -61,24 +61,32 @@ func ValidateWorkerPauseRequest(request ReplaceWorkerPauseRequest) error {
 	return nil
 }
 
-func (c *Client) workerPausePath(parts ...string) []string {
-	return c.projectPath(append([]string{"workers", c.identity.WorkerID, "pause"}, parts...)...)
+func (c *Client) workerPausePath(worker string, parts ...string) []string {
+	return c.projectPath(append([]string{"workers", worker, "pause"}, parts...)...)
 }
 
 // WorkerPause reads only current pause state, never jobs, focus or history.
-func (c *Client) WorkerPause(ctx context.Context) (WorkerPause, error) {
-	var value WorkerPause
-	// A 1024-byte reason may expand sixfold in canonical escaped JSON.
-	if err := c.requestBounded(ctx, http.MethodGet, c.workerPausePath(), nil, true, "", nil, http.StatusOK, false, &value, 8<<10, decodeResponse); err != nil {
+func (c *Client) WorkerPause(ctx context.Context, selectedWorker ...string) (WorkerPause, error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
 		return WorkerPause{}, err
 	}
-	if value.WorkerID != c.identity.WorkerID || value.Revision < 0 || !validWorkerPause(value.Paused, value.Reason) || value.Revision == 0 && value.Paused {
+	var value WorkerPause
+	// A 1024-byte reason may expand sixfold in canonical escaped JSON.
+	if err := c.requestBounded(ctx, http.MethodGet, c.workerPausePath(worker), nil, true, "", nil, http.StatusOK, false, &value, 8<<10, decodeResponse); err != nil {
+		return WorkerPause{}, err
+	}
+	if value.WorkerID != worker || value.Revision < 0 || !validWorkerPause(value.Paused, value.Reason) || value.Revision == 0 && value.Paused {
 		return WorkerPause{}, invalidResponse()
 	}
 	return value, nil
 }
 
-func (c *Client) ReplaceWorkerPause(ctx context.Context, key string, request ReplaceWorkerPauseRequest) (WorkerPauseReceipt, error) {
+func (c *Client) ReplaceWorkerPause(ctx context.Context, key string, request ReplaceWorkerPauseRequest, selectedWorker ...string) (WorkerPauseReceipt, error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return WorkerPauseReceipt{}, err
+	}
 	if !validMutationKey(key) {
 		return WorkerPauseReceipt{}, mutationValidation()
 	}
@@ -86,17 +94,21 @@ func (c *Client) ReplaceWorkerPause(ctx context.Context, key string, request Rep
 		return WorkerPauseReceipt{}, err
 	}
 	var value WorkerPauseReceipt
-	if err := c.mutate(ctx, http.MethodPut, c.workerPausePath(), key, request, http.StatusOK, &value); err != nil {
+	if err := c.mutate(ctx, http.MethodPut, c.workerPausePath(worker), key, request, http.StatusOK, &value); err != nil {
 		return WorkerPauseReceipt{}, err
 	}
-	if value.ID != c.identity.WorkerID || !(value.Outcome == "updated" && value.Revision == request.ExpectedRevision+1 || value.Outcome == "unchanged" && value.Revision == request.ExpectedRevision) {
+	if value.ID != worker || !(value.Outcome == "updated" && value.Revision == request.ExpectedRevision+1 || value.Outcome == "unchanged" && value.Revision == request.ExpectedRevision) {
 		return WorkerPauseReceipt{}, unknownMutation("invalid_response", "The service returned an invalid worker-pause receipt; its outcome is unknown.", http.StatusOK)
 	}
 	return value, nil
 }
 
 // WorkerPauseHistory reads one explicit revision page without automatic followup.
-func (c *Client) WorkerPauseHistory(ctx context.Context, options PageOptions) (Page[WorkerPauseHistoryEntry], error) {
+func (c *Client) WorkerPauseHistory(ctx context.Context, options PageOptions, selectedWorker ...string) (Page[WorkerPauseHistoryEntry], error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return Page[WorkerPauseHistoryEntry]{}, err
+	}
 	if options.Limit == 0 {
 		options.Limit = 20
 	}
@@ -105,7 +117,7 @@ func (c *Client) WorkerPauseHistory(ctx context.Context, options PageOptions) (P
 		return Page[WorkerPauseHistoryEntry]{}, validation()
 	}
 	var page Page[WorkerPauseHistoryEntry]
-	if err = c.get(ctx, c.workerPausePath("history"), query, true, &page); err != nil {
+	if err = c.get(ctx, c.workerPausePath(worker, "history"), query, true, &page); err != nil {
 		return Page[WorkerPauseHistoryEntry]{}, err
 	}
 	if !validPage(page, options) || page.Cursor != "" && !validOpaqueCursor(page.Cursor) {
@@ -113,7 +125,7 @@ func (c *Client) WorkerPauseHistory(ctx context.Context, options PageOptions) (P
 	}
 	var previous int64
 	for _, entry := range page.Items {
-		if entry.WorkerID != c.identity.WorkerID || entry.Revision < 1 || !validWorkerPause(entry.Paused, entry.Reason) || !validID(entry.ActorID) || entry.ActorWorkerID != "" && !validID(entry.ActorWorkerID) || !validJobProgressTime(entry.CreatedAt) || previous != 0 && entry.Revision >= previous {
+		if entry.WorkerID != worker || entry.Revision < 1 || !validWorkerPause(entry.Paused, entry.Reason) || !validID(entry.ActorID) || entry.ActorWorkerID != "" && !validID(entry.ActorWorkerID) || !validJobProgressTime(entry.CreatedAt) || previous != 0 && entry.Revision >= previous {
 			return Page[WorkerPauseHistoryEntry]{}, invalidResponse()
 		}
 		previous = entry.Revision

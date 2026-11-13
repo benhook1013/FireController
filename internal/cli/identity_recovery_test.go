@@ -11,15 +11,14 @@ import (
 	"github.com/benhook1013/FireController/internal/cli"
 )
 
-func TestCLIRecoversSlowIdentityBeforeSendingOneJobMutation(t *testing.T) {
+func TestCLIRecoversTimedOutIdentityBeforeSendingOneJobMutation(t *testing.T) {
 	f := setupServiceFixture(t)
 	project := f.project(t, "identity-recovery")
 	worker := f.worker(t, project, "Builder")
 	var identities, writes atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" && identities.Add(1) == 1 {
-			time.Sleep(6 * time.Second) // Bootstrap may use more than the ordinary call budget.
-			http.Error(w, "synthetic gateway restart", 503)
+			<-r.Context().Done() // Exercise the actual five-second HTTP timeout.
 			return
 		}
 		if r.Method != "GET" {

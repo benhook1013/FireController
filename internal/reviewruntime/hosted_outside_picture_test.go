@@ -42,7 +42,7 @@ func TestRecoverHostedOutsidePicturePreservesOriginalAttempt(t *testing.T) {
 		t.Fatal("mixed inventory lost source kinds")
 	}
 	adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scope(t, f.writer, false), got.EvidenceID)
-	if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || nativeHostedCredit(t, f) != 0 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
+	if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || recoveryRuntimeCount(t, f, "review_round_completions") != 0 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
 		t.Fatal("capture invented completion credit/finalization or retained reservation", err)
 	}
 	calls := len(reader.calls)

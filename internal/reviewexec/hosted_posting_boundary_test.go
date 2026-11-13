@@ -9,7 +9,7 @@ import (
 func TestReadHostedPostingBoundaryIndependentOfCapabilityAndCurrentEligibility(t *testing.T) {
 	f, a, admitted := hostedRecoveryFixture(t)
 	f.configure(t, attemptProject, "other-account", 1, true)
-	admissionPolicy(t, f, 1, "hosted")
+	admissionPolicy(t, f, 1)
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	reader, err := New(f.store, nil)
 	if err != nil {

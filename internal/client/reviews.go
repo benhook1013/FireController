@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/reviewsize"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -80,6 +81,7 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
+	ReviewSize     *reviewsize.Assessment       `json:"review_size,omitempty"`
 	Observation    *ReviewPullObservationHealth `json:"observation,omitempty"`
 	Diff           *ReviewPullDiff              `json:"diff,omitempty"`
 	IsDraft        *bool                        `json:"is_draft,omitempty"`
@@ -306,6 +308,9 @@ func (c *Client) validReviewMeta(project string, revision int64, snapshot, sourc
 }
 
 func (c *Client) validReviewPull(value ReviewPullSummary) bool {
+	if value.ReviewSize != nil && !reviewsize.Valid(*value.ReviewSize, value.Number) {
+		return false
+	}
 	if !validPullObservationHealth(value.Observation) {
 		return false
 	}
@@ -520,6 +525,29 @@ func reviewShape(data []byte, typ reflect.Type) bool {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(trimmed, &fields) != nil || fields == nil {
 			return false
+		}
+		if typ == reflect.TypeOf(ReviewAllowanceObservation{}) {
+			var kind string
+			if json.Unmarshal(fields["kind"], &kind) != nil {
+				return false
+			}
+			var required []string
+			switch kind {
+			case "cli_exhausted":
+				required = []string{"kind", "observed_at", "remaining", "limit", "full_capacity_in_ms", "rolling_window_ms"}
+			case "hosted_cooldown", "hosted_chat_cooldown":
+				required = []string{"kind", "observed_at", "retry_not_before"}
+			default:
+				return false
+			}
+			if len(fields) != len(required) {
+				return false
+			}
+			for _, name := range required {
+				if _, ok := fields[name]; !ok {
+					return false
+				}
+			}
 		}
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)

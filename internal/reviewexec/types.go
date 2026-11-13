@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // Capability names an operator-owned adapter/account without exposing secrets.
@@ -40,12 +41,15 @@ type Request struct {
 	PullNumber                    int64  `json:"pull_number"`
 	Channel                       string `json:"channel"`
 	HeadSHA                       string `json:"head_sha"`
+	AllowOutOfOrder               bool   `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit             bool   `json:"override_file_limit,omitempty"`
 }
 
 type Receipt struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	Revision int64  `json:"revision"`
+	ReviewSize *reviewsize.Assessment `json:"review_size,omitempty"`
+	ID         string                 `json:"id"`
+	State      string                 `json:"state"`
+	Revision   int64                  `json:"revision"`
 }
 
 // Anchor is supplied only by the trusted admission worker after fresh provider
@@ -64,24 +68,42 @@ type Anchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 
+type AllowanceObservation struct {
+	Kind             string `json:"kind"`
+	ObservedAt       string `json:"observed_at"`
+	Remaining        *int64 `json:"remaining,omitempty"`
+	Limit            *int64 `json:"limit,omitempty"`
+	FullCapacityInMS *int64 `json:"full_capacity_in_ms,omitempty"`
+	RollingWindowMS  *int64 `json:"rolling_window_ms,omitempty"`
+	RetryNotBefore   string `json:"retry_not_before,omitempty"`
+}
+
 type Operation struct {
-	Observer              *HostedObserverStatus `json:"observer,omitempty"`
-	ID                    string                `json:"id"`
-	ProjectID             string                `json:"project_id"`
-	ActorID               string                `json:"actor_id"`
-	WorkerID              string                `json:"worker_id"`
-	ConfigurationRevision int64                 `json:"configuration_revision"`
-	PolicyRevision        int64                 `json:"policy_revision"`
-	CapabilityFingerprint string                `json:"capability_fingerprint"`
-	PullNumber            int64                 `json:"pull_number"`
-	Channel               string                `json:"channel"`
-	HeadSHA               string                `json:"head_sha"`
-	State                 string                `json:"state"`
-	Revision              int64                 `json:"revision"`
-	Reason                string                `json:"reason"`
-	AttemptID             string                `json:"attempt_id"`
-	CreatedAt             string                `json:"created_at"`
-	UpdatedAt             string                `json:"updated_at"`
+	Observer              *HostedObserverStatus  `json:"observer,omitempty"`
+	HostedQuery           *HostedQueryDiagnostic `json:"hosted_query,omitempty"`
+	Wait                  *OperationWait         `json:"wait,omitempty"`
+	SourceRefusal         *SourceRefusal         `json:"source_refusal,omitempty"`
+	EvidenceID            string                 `json:"evidence_id,omitempty"`
+	PendingEvidence       *PendingEvidence       `json:"pending_evidence,omitempty"`
+	Allowance             *AllowanceObservation  `json:"allowance,omitempty"`
+	ID                    string                 `json:"id"`
+	ProjectID             string                 `json:"project_id"`
+	ActorID               string                 `json:"actor_id"`
+	WorkerID              string                 `json:"worker_id"`
+	ConfigurationRevision int64                  `json:"configuration_revision"`
+	PolicyRevision        int64                  `json:"policy_revision"`
+	CapabilityFingerprint string                 `json:"capability_fingerprint"`
+	PullNumber            int64                  `json:"pull_number"`
+	Channel               string                 `json:"channel"`
+	HeadSHA               string                 `json:"head_sha"`
+	AllowOutOfOrder       bool                   `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool                   `json:"override_file_limit,omitempty"`
+	State                 string                 `json:"state"`
+	Revision              int64                  `json:"revision"`
+	Reason                string                 `json:"reason"`
+	AttemptID             string                 `json:"attempt_id"`
+	CreatedAt             string                 `json:"created_at"`
+	UpdatedAt             string                 `json:"updated_at"`
 }
 
 type Attempt struct {
@@ -99,10 +121,28 @@ type Attempt struct {
 
 type Engine struct {
 	runSourceBudget            time.Duration
+	hostedRetainedDecoder      HostedRetainedDecoder
+	sourceReadGroups           map[string]string
+	draftProbeCursor           string
+	draftProbePermit           atomic.Bool
+	draftProbeMu               sync.Mutex
+	draftProbeNext             map[string]time.Time
+	cliExhaustionRecovery      CLIExhaustionRecoverySource
+	automaticCursor            string
+	automaticCLICursor         string
+	automaticMu                sync.Mutex
+	automaticNext              time.Time
+	hostedObserverMu           sync.Mutex
+	hostedObservers            map[hostedObserverKey]*hostedObserverEntry
+	hostedAccountNext          map[hostedAccountKey]time.Time
+	schedulingNow              func() time.Time
+	configurationFailureMu     sync.Mutex
+	configurationFailureNext   map[string]time.Time
+	deploymentMu               sync.Mutex
+	deploymentDraining         bool
+	deploymentActive           int
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
-	hostedObserverMu           sync.Mutex
-	hostedObservers            map[string]*hostedObserverEntry
 	operationMu                sync.Mutex
 	operationWaiters           map[string]map[*operationWaiter]struct{}
 	operationWaiterPrincipals  map[string]int
@@ -132,11 +172,18 @@ type Engine struct {
 	running                    atomic.Bool
 	publishAdjudication        func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error
 	publishAttempt             func(context.Context, *sql.Tx, Attempt) error
+	publishQueue               func(context.Context, *sql.Tx, core.Scope, []int64, []int64) error
 }
 
 // EngineOption composes trusted application integrations before an engine is
 // exposed to handlers or supervised workers.
 type EngineOption func(*Engine)
+
+// WithExecutionClock selects the trusted scheduling clock. Journal/provider
+// timestamps and observation freshness retain their independent clocks.
+func WithExecutionClock(now func() time.Time) EngineOption {
+	return func(e *Engine) { e.schedulingNow = now }
+}
 
 // WithResultWaitLifetime binds only HTTP result waits to an application
 // lifecycle. It never cancels an accepted operation or its provider work.
@@ -166,6 +213,11 @@ func New(store *core.Store, capabilities []Capability, options ...EngineOption) 
 			return nil, invalid()
 		}
 		option(e)
+	}
+	for id, group := range e.sourceReadGroups {
+		if _, ok := e.capabilities[id]; !ok || !hash.MatchString(group) {
+			return nil, invalid()
+		}
 	}
 	return e, nil
 }

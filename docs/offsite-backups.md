@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Local retention rules are unchanged. Local creation uses hidden staging and atomic publication; an interruption can leave hidden staging for separate cleanup, as described in [local backups](backups.md).
+The optional rclone push, compact status and fetch commands are implemented. Packaged plain and encrypted round trips pass against loopback S3 and an independent Docker MinIO fixture, including cloud retention, authentication failure, corruption refusal and inactive recovery with source data removed. Focused race tests cover uncertain publication, restart, cancellation and ownership boundaries. Real OneDrive/Google Drive/MEGA authorization and cloud recovery remain pending until an account is connected. Local retention rules are unchanged. Local creation uses hidden staging and atomic publication; an interruption can leave hidden staging for separate cleanup, as described in [local backups](backups.md).
 
 ## One backup format, optional transport
 
@@ -55,9 +55,9 @@ To check an independent local S3 implementation, supply `FC_TEST_S3_ENDPOINT=htt
 
 Exercise actual rclone upload/download against a disposable local S3-compatible service, including encrypted transport, unchanged-source retry, restart after an uncertain publication, independent retention, corruption, permission/authentication failure and bounded cancellation. Download and inspect a complete native bundle and restore it inactive with source data unavailable. Keep fixture credentials and containers private and remove owned test resources afterward. These checks establish the common transfer boundary, not AWS-specific behavior, physical durability or real OneDrive/Google Drive/MEGA account authorization. Live cloud upload/download/restore remains pending until an account is connected.
 
-Google Drive account setup is separate from transfer qualification. The transfer commands consume an existing private rclone configuration; they do not provide a Google account-connection helper.
+Google account connection and maintainer branding are described in [Google Drive setup](google-drive-setup.md).
 
-## Redacted status reporting
+## Website reporting
 
 An operator can publish a small redacted report from the existing local transfer ledger:
 
@@ -67,8 +67,10 @@ fcd backup-offsite-status --config /private/offsite.json --health-file /private/
 
 `--health-file` is accepted only by the status command; when supplied, it must name an absolute report path. Omit it for status output without writing a report; an explicitly empty value is rejected. The optional label defaults to `Offsite backup`; the maximum snapshot age defaults to three hours and can be selected from one minute through thirty days. These reporting options never start an upload, download or remote verification. Existing status output and transfer ownership remain unchanged.
 
-Publish into a dedicated existing private directory. The resulting owner-private report is a redacted local output for monitoring consumers. It must never expose the rclone configuration or transfer state. A new report does not reverify remote bytes or update the successful snapshot time.
+Publish into a dedicated existing private directory and make the resulting owner-private regular file readable by the daemon's operating-system user. Mount only that redacted directory into a container, read-only. Never mount the rclone configuration or transfer state into the serving daemon. Select each report explicitly with repeated daemon `--backup-offsite-health-file /private/reports/onedrive.json` flags, up to eight reports. Use a separate deployment timer to republish once a minute, for example with `OnActiveSec=1s` and `OnUnitActiveSec=1min`. The initial activation trigger is required because `OnUnitActiveSec` alone schedules only after its unit has already run. Reports older than five minutes are unavailable as `report_stale`, independently of the snapshot age selected by `--health-max-age`. The hourly example `backup-push` timer does not publish or refresh reports. A publisher failure leaves the prior report to age out. The mirror binds the source instance, so a restore cannot silently claim a predecessor's offsite protection.
 
-Report freshness is separate from snapshot freshness: consumers classify reports observed more than five minutes ago as `report_stale`, even when the backup satisfies `--health-max-age`. Run the status command above on a separate recurring schedule, for example a systemd timer with `OnActiveSec=1s` and `OnUnitActiveSec=1min`, to start after activation and refresh comfortably within that window. `OnUnitActiveSec` alone has no initial activation to schedule from. The hourly example `backup-push` timer does not publish or refresh health reports.
+A running transfer remains current through its configured transfer timeout plus the five-minute reporting grace. The publisher includes that timeout in the redacted mirror; its own five-minute freshness check still applies independently. When updating a separately installed publisher, qualify its binary hash and install the matching daemon reader before it starts writing the new mirror field.
+
+The site separately considers snapshot age, recent failed attempts and retention failures. An unchanged transfer does not reverify remote bytes, and publishing a new report does not update the successful snapshot's time. The status is evidence of recorded successful backups, rather than continuous cloud integrity verification.
 
 If a valid retained snapshot or attempt timestamp is ahead of the current reporting clock, status publication returns `offsite_health_clock_ahead` and preserves the previous report. This distinguishes a possible clock rollback from an invalid ledger without rewriting retained timestamps or publishing a fresh healthy report. Malformed timestamps and ledger corruption still return `offsite_state_invalid`.

@@ -5,20 +5,16 @@ package packagedsmoke
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -112,7 +108,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		inputs[path] = sha256.Sum256(body)
 	}
 	data := filepath.Join(private, "data")
-	bootstrap := startSelectionDaemon(t, ctx, binaries["fcd"], data, env)
+	bootstrap := startDaemon(t, ctx, binaries["fcd"], data, env)
 	adminFile := filepath.Join(data, "bootstrap-admin.token")
 	admin, err := os.ReadFile(adminFile)
 	if err != nil {
@@ -122,11 +118,19 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	project, worker, _, workerFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
 	originalSnapshot := seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 0, []int64{2, 3}, true)
 	initial := readUpgradeState(t, ctx, data)
+	if _, ok := initial.tables["review_front_frames"]; !ok || initial.counts["review_front_frames"] != 0 {
+		t.Fatal("fresh packaged front cache is absent or already populated")
+	}
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		if _, ok := initial.tables[name]; !ok || initial.counts[name] != 0 {
+			t.Fatal("fresh selection fixture must have empty notification tables", name)
+		}
+	}
 	// The enabled automatic observer starts independently of explicit selection.
 	// Hold both lanes' first source GETs before submitting any selection, so exact
 	// selection counts and metadata conservation have a deterministic boundary.
 	firstObserver := provider.holdNextObserver(t)
-	daemon := startSelectionDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
+	daemon := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	firstObserver.awaitStarted(t, ctx)
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
@@ -164,6 +168,49 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		return out
 	}
 	call("profile", "create", "--server", gateway.URL, "--instance", bootstrap.instance, "--project", project, "--worker", worker, "--credential-file", workerFile)
+	// These are ordinary local project reads, without worker/session attribution
+	// or a provider-capable tool. The same gateway and current daemon are used.
+	workerToken, err := os.ReadFile(workerFile)
+	if err != nil {
+		t.Fatal("private front-read authority unavailable")
+	}
+	privateWorkerToken := bytes.TrimSpace(workerToken)
+	frontTransport := &http.Transport{Proxy: nil}
+	t.Cleanup(frontTransport.CloseIdleConnections)
+	frontHTTP := &http.Client{Transport: frontTransport, Timeout: stepTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	frontReads := 0
+	readFront := func() reviewexec.FrontSnapshot {
+		t.Helper()
+		readCtx, stop := context.WithTimeout(ctx, stepTimeout)
+		defer stop()
+		request, err := http.NewRequestWithContext(readCtx, http.MethodGet, gateway.URL+"/api/v1/projects/"+project+"/reviews/fronts", nil)
+		if err != nil {
+			t.Fatal("front-read request unavailable")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(privateWorkerToken))
+		request.Header.Set("X-FC-Instance", bootstrap.instance)
+		response, err := frontHTTP.Do(request)
+		if err != nil {
+			t.Fatal("packaged local front read unavailable")
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
+		response.Body.Close()
+		frontReads++
+		if err != nil || response.StatusCode != http.StatusOK || len(body) > 64<<10 || bytes.Contains(body, privateWorkerToken) {
+			t.Fatal("invalid/private packaged front response")
+		}
+		safe(body)
+		var value reviewexec.FrontSnapshot
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			t.Fatal("invalid packaged front JSON")
+		}
+		if value.ProjectID != project || !value.Configured || value.RepositoryID != 991 || value.PolicyRevision != 1 || len(value.Channels) != 1 || value.Channels[0].Channel != "cli" {
+			t.Fatal("packaged front scope/configuration differs")
+		}
+		return value
+	}
 	originalArgs := []string{"reviews", "start", "--channel", "cli", "--expect-pr", "3", "--expected-configuration-revision", "1", "--key", "selected-once", "--wait-seconds", "0"}
 	enqueueStarted := time.Now()
 	original := call(originalArgs...)
@@ -182,11 +229,9 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		}
 	}
 	assertSelected(selected)
-	var operation client.ReviewOperation
-	decode(t, call("reviews", "operation", selected.Operation.ID, "--diagnostics"), &operation)
-	if !reflect.DeepEqual(operation, *selected.Operation) {
-		t.Fatal("retained selection child differs from exact operation read")
-	}
+	// The deliberate preparation refusal is actionable, so it must create one
+	// requester-only Controller notice, not review completion or PR2 credit.
+	originalNotice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID)
 	gitBefore, err := os.ReadFile(gitLog)
 	if err != nil || bytes.Count(gitBefore, []byte("invocation\n")) != 1 || bytes.Contains(gitBefore, []byte(providerToken)) {
 		t.Fatal("trusted Git fixture was not invoked safely")
@@ -227,6 +272,19 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	}
 	if !reflect.DeepEqual(provider.inventory(), expectedFirst) {
 		t.Fatal("stored metadata reads reacquired provider facts")
+	}
+	fronts := readFront()
+	if fronts.ConfigurationRevision != 1 || fronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(fronts.Queue, []int64{2, 3}) {
+		t.Fatal("front response is not bound to the current stored queue")
+	}
+	front := fronts.Channels[0]
+	_, observedErr := time.Parse(time.RFC3339Nano, front.SourceObservedAt)
+	_, checkedErr := time.Parse(time.RFC3339Nano, front.CheckedAt)
+	if front.State != "ready" || front.Reason != "" || front.PullNumber != 3 || front.HeadSHA != strings.Repeat("a", 40) || front.BaseSHA != strings.Repeat("b", 40) || front.BaseRef != "main" || observedErr != nil || checkedErr != nil {
+		t.Fatal("verified selected front was not retained with its source identities/times")
+	}
+	if !reflect.DeepEqual(provider.inventory(), expectedFirst) {
+		t.Fatal("local front read acquired provider facts")
 	}
 	// Expect-PR is a genuine assertion: the closed channel front remains PR3,
 	// so another explicit invocation expecting PR2 creates no native child/Git.
@@ -335,10 +393,39 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	daemon.stop(t)
 	firstObserver.awaitCancelled(t, ctx)
 	beforeRestart := readUpgradeState(t, ctx, data)
+	if notice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID); notice != originalNotice {
+		t.Fatal("reads, exact replay or lost-output recovery changed the original stopped notice")
+	}
+	// Explicit selection follows only the PR whose native child was admitted.
+	// Inspect the stopped daemon's database read-only, without adding API traffic.
+	if initial.counts["review_pr_followers"] != 0 || beforeRestart.counts["review_pr_followers"] != 1 {
+		t.Fatal("selection created missing or extra notification followers")
+	}
+	followerURL := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(data, "firecontroller.sqlite")), RawQuery: "mode=ro"}
+	followerDB, err := sql.Open("sqlite", followerURL.String())
+	if err != nil {
+		t.Fatal("selection follower snapshot unavailable")
+	}
+	var followerProject, followerWorker, followerMode, followerUpdated string
+	var followerPull, followerRevision int64
+	followerErr := followerDB.QueryRowContext(ctx, `SELECT project_id,pull_number,worker_id,mode,revision,updated_at FROM review_pr_followers`).Scan(&followerProject, &followerPull, &followerWorker, &followerMode, &followerRevision, &followerUpdated)
+	followerCloseErr := followerDB.Close()
+	followerAt, followerTimeErr := time.Parse(time.RFC3339Nano, followerUpdated)
+	if followerErr != nil || followerCloseErr != nil || followerProject != project || followerWorker != worker || followerPull != 3 || followerMode != "auto" || followerRevision != 1 || followerTimeErr != nil || followerAt.IsZero() {
+		t.Fatal("selection did not retain exactly its acting worker's PR3 auto-follow; held PR2 must have no follower")
+	}
 	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 1, []int64{3, 2}, false)
 	afterConfig := readUpgradeState(t, ctx, data)
+	for _, name := range []string{"review_pr_followers", "inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		if beforeRestart.counts[name] != 1 || afterConfig.tables[name] != beforeRestart.tables[name] || afterConfig.counts[name] != 1 {
+			t.Fatal("configuration edit changed the original selection's follower or stopped notice", name)
+		}
+	}
+	if notice := readRunSelectionStoppedNotice(t, ctx, data, project, worker, selected.Operation.ID); notice != originalNotice {
+		t.Fatal("configuration edit changed the original stopped-notice event")
+	}
 	secondObserver := provider.holdNextObserver(t)
-	restarted := startSelectionDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
+	restarted := startDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	secondObserver.awaitStarted(t, ctx)
 	if restarted.instance != bootstrap.instance {
 		t.Fatal("restart changed instance")
@@ -347,6 +434,17 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	targetMu.Lock()
 	target = next
 	targetMu.Unlock()
+	changedFronts := readFront()
+	local := changedFronts.Channels[0]
+	if changedFronts.ConfigurationRevision != 2 || changedFronts.SnapshotID != currentSnapshot || !reflect.DeepEqual(changedFronts.Queue, []int64{3, 2}) || local.State != "held" || local.Reason != "local_queue_position" || local.PullNumber != 3 || local.HeadSHA != strings.Repeat("a", 40) || local.BaseSHA != strings.Repeat("b", 40) || local.BaseRef != "main" {
+		t.Fatal("changed configuration lost its stored position or reused provider readiness")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, local.CheckedAt); err != nil || local.SourceObservedAt != "" || !reflect.DeepEqual(provider.inventory(), expectedProvider) {
+		t.Fatal("local position borrowed provider observation time or reacquired source")
+	}
+	if beforeRestart.tables["review_front_frames"] != afterConfig.tables["review_front_frames"] || beforeRestart.counts["review_front_frames"] != afterConfig.counts["review_front_frames"] {
+		t.Fatal("configuration edit changed retained source frame")
+	}
 	replayArgs := append([]string(nil), originalArgs...)
 	replayArgs[len(replayArgs)-1] = "2"
 	var replay client.ReviewRunState
@@ -366,7 +464,15 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if !reflect.DeepEqual(final, afterConfig) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
-	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	changed := map[string]bool{"review_front_frames": true, "review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	// The exact one-row follower delta was asserted above; final deep equality
+	// still protects it through configuration changes, replay, reads and restart.
+	changed["review_pr_followers"] = true
+	// Only the three exact one-row stopped-notice deltas proved above are
+	// allowed; their contents and event remain immutable through recovery.
+	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
+		changed[name] = true
+	}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
@@ -375,7 +481,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatalf("selection changed unrelated table %s", name)
 		}
 	}
-	if beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 || beforeRestart.counts["review_round_operation_bindings"] != 1 {
+	if beforeRestart.counts["review_front_frames"] != 1 || beforeRestart.counts["review_selections"] != 2 || beforeRestart.counts["review_operations"] != 1 || beforeRestart.counts["review_execution_attempts"] != 1 || beforeRestart.counts["review_execution_reservations"] != 0 || beforeRestart.counts["review_round_operation_bindings"] != 1 {
 		t.Fatal("selection duplicated work or retained false reservation")
 	}
 	for _, name := range []string{"review_execution_evidence", "review_adjudication_state", "review_round_completions"} {
@@ -393,10 +499,74 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
-	if unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
+	if frontReads != 2 || unexpected.Load() != 0 || provider.forbidden.Load() != 0 {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
-	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
+	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d local_front_reads=2 loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 stopped_notices=1 notice_conversations=1 notice_recipients=1 notice_events=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
+}
+
+// Exact immutable values outside the fixed fields checked by the joined query.
+// Comparing this record before and after replay also protects the notice event
+// while unrelated operation/configuration events legitimately advance.
+type runSelectionStoppedNotice struct {
+	messageID, conversationID, messageAt, eventAt, actor, payload string
+	messageSequence, eventSequence                                int64
+}
+
+func readRunSelectionStoppedNotice(t *testing.T, ctx context.Context, data, project, worker, operation string) runSelectionStoppedNotice {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, stepTimeout)
+	defer cancel()
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(data, "firecontroller.sqlite")), RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal("selection notification snapshot unavailable")
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal("selection notification snapshot transaction unavailable")
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`SELECT count(*) FROM inbox_conversations`,
+		`SELECT count(*) FROM inbox_messages`,
+		`SELECT count(*) FROM inbox_recipient_state`,
+		`SELECT count(*) FROM events WHERE event_type='message.sent'`,
+	} {
+		var count int
+		if err = tx.QueryRowContext(ctx, query).Scan(&count); err != nil || count != 1 {
+			t.Fatal("selection did not retain exactly one stopped notice, root, recipient and event")
+		}
+	}
+	body := "CLI review request stopped for PR #3.\nThis review request stopped before review dispatch.\nOperation: " + operation + "\nRead the original operation and current PR state before acting. Acknowledge this notice once handled."
+	var notice runSelectionStoppedNotice
+	// Every table has exactly one notice row. Require its real requester,
+	// one-way root, untouched pending receipt and original held operation.
+	err = tx.QueryRowContext(ctx, `SELECT m.id,m.conversation_id,m.sequence,m.created_at,e.sequence,e.created_at,e.actor_id,e.payload_json
+ FROM inbox_messages m
+ JOIN inbox_conversations c ON c.project_id=m.project_id AND c.id=m.conversation_id AND c.root_message_id=m.id
+ JOIN inbox_recipient_state r ON r.project_id=m.project_id AND r.message_id=m.id AND r.worker_id=m.recipient_worker_id
+ JOIN review_operations o ON o.project_id=m.project_id AND o.id=? AND o.worker_id=m.recipient_worker_id
+ JOIN events e ON e.project_id=m.project_id AND e.resource_id=m.id AND e.actor_id=o.actor_id AND e.event_type='message.sent' AND e.revision=1
+ WHERE m.project_id=? AND m.recipient_worker_id=? AND m.origin_kind='controller' AND m.sender_worker_id IS NULL AND m.reply_to_message_id IS NULL AND m.body=?
+ AND r.seen=0 AND r.acknowledged=0 AND r.revision=1
+ AND o.pull_number=3 AND o.channel='cli' AND o.state='held' AND o.reason='source_unavailable'`, operation, project, worker, body).Scan(&notice.messageID, &notice.conversationID, &notice.messageSequence, &notice.messageAt, &notice.eventSequence, &notice.eventAt, &notice.actor, &notice.payload)
+	if err != nil || !strings.HasPrefix(notice.messageID, "msg_") || !strings.HasPrefix(notice.conversationID, "conv_") || notice.messageSequence != 1 || notice.eventSequence <= 0 || notice.actor == "" {
+		t.Fatal("selection stopped notice lost its original scope, content or pending recipient")
+	}
+	for _, value := range []string{notice.messageAt, notice.eventAt} {
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || at.IsZero() {
+			t.Fatal("selection stopped notice has invalid creation time")
+		}
+	}
+	var payload map[string]string
+	if json.Unmarshal([]byte(notice.payload), &payload) != nil || !reflect.DeepEqual(payload, map[string]string{"conversation_id": notice.conversationID, "recipient_worker_id": worker, "sender_worker_id": "", "origin_kind": "controller"}) {
+		t.Fatal("selection stopped-notice event lost its exact recipient or Controller origin")
+	}
+	return notice
 }
 
 func runSelectionShellQuote(value string) string {
@@ -446,7 +616,7 @@ func seedRunSelectionConfiguration(t *testing.T, ctx context.Context, data, cata
 	}
 	prefix := "/api/v1/projects/" + project + "/reviews"
 	if initial {
-		call(prefix+"/policy", "policy", map[string]any{"expected_revision": 0, "required_channels": []string{"cli"}, "paused_channels": []string{}, "max_review_files": 0})
+		call(prefix+"/policy", "policy", map[string]any{"expected_revision": 0, "required_channels": []string{"cli"}, "max_review_files": 0})
 	}
 	call(prefix+"/execution/configuration", fmt.Sprintf("configuration-%d", previous), map[string]any{"expected_revision": previous, "capability_id": cap.ID, "mode": "independent", "queue": queue, "channels": []string{"cli"}, "paused": false})
 	if initial {
@@ -551,7 +721,7 @@ func (f *runSelectionHTTPSFixture) totalInventory() map[string]int {
 func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelectionHTTPSFixture {
 	t.Helper()
 	f := &runSelectionHTTPSFixture{paths: map[string]int{}, stopObservers: make(chan struct{})}
-	cert, ca := selectionCertificate(t)
+	cert, ca := historyCollectionCertificate(t)
 	f.ca = filepath.Join(private, "fixture-ca.pem")
 	if os.WriteFile(f.ca, ca, 0600) != nil {
 		t.Fatal("private CA unavailable")
@@ -672,64 +842,4 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 	})
 	t.Cleanup(func() { close(f.stopObservers) })
 	return f
-}
-
-func startSelectionDaemon(t *testing.T, ctx context.Context, binary, data string, env []string, extra ...string) *daemonProcess {
-	t.Helper()
-	args := append([]string{"--data-dir", data, "--listen", "127.0.0.1:0"}, extra...)
-	d := &daemonProcess{command: exec.CommandContext(ctx, binary, args...), output: &listeningOutput{record: make(chan listeningRecord, 1)}, stderr: &boundedOutput{}, done: make(chan struct{})}
-	d.command.Env, d.command.Stdout, d.command.Stderr = env, d.output, d.stderr
-	d.command.WaitDelay = time.Second
-	if err := d.command.Start(); err != nil {
-		t.Fatal("packaged daemon could not start")
-	}
-	go func() { d.err = d.command.Wait(); close(d.done) }()
-	t.Cleanup(func() { d.stop(t) })
-	select {
-	case record := <-d.output.record:
-		host, _, err := net.SplitHostPort(record.Address)
-		if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || record.Event != "listening" || record.InstanceID == "" {
-			t.Fatal("packaged daemon listening record was invalid")
-		}
-		d.instance, d.address = record.InstanceID, record.Address
-	case <-d.done:
-		// Report bounded fingerprints, never captured diagnostics or private values.
-		diagnostic := d.stderr.bytes()
-		t.Fatalf("packaged daemon exited before readiness (exit=%d stderr_bytes=%d stderr_sha256=%x)", d.command.ProcessState.ExitCode(), len(diagnostic), sha256.Sum256(diagnostic))
-	case <-time.After(stepTimeout):
-		t.Fatal("packaged daemon readiness exceeded five seconds")
-	}
-	return d
-}
-
-func selectionCertificate(t *testing.T) (tls.Certificate, []byte) {
-	t.Helper()
-	now := time.Now()
-	caPublic, caKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal("fixture CA generation failed")
-	}
-	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Disposable collection fixture CA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
-	rootDER, err := x509.CreateCertificate(rand.Reader, root, root, caPublic, caKey)
-	if err != nil {
-		t.Fatal("fixture CA signing failed")
-	}
-	leafPublic, leafKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal("fixture TLS generation failed")
-	}
-	leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "api.github.com"}, DNSNames: []string{"api.github.com"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, root, leafPublic, caKey)
-	if err != nil {
-		t.Fatal("fixture TLS signing failed")
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		t.Fatal("fixture TLS key unavailable")
-	}
-	cert, err := tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
-	if err != nil {
-		t.Fatal("fixture TLS pair unavailable")
-	}
-	return cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER})
 }

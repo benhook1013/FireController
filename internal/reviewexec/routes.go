@@ -156,7 +156,8 @@ func sameRouteOrigin(a, b ReviewRoute) bool {
 }
 
 // readFindingRoute never loads source adjudication, avoiding recursive loaders.
-// Consumers validate the current source link before using an active obligation.
+// Source-sensitive consumers also validate the current source link; receiving
+// policy separately preserves this self/current-history/origin boundary.
 func readFindingRoute(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewRoute, error) {
 	var route ReviewRoute
 	var repositoryID, finding, sourcePull, targetPull, revision, hasFix int64
@@ -514,15 +515,16 @@ func (e *Engine) ListFindingRoutes(ctx context.Context, scope core.Scope, target
 	return result, nil
 }
 
-// pendingIncomingRoutes reads the exact indexed unresolved count only when its
-// receiving scope has no invalidated route authority. Paging remains independent.
+// Receiving policy needs exact unresolved obligations and valid retained route
+// authority, including apparently resolved rows. A dependency change leaves an
+// indexed invalidation until that route is validated by its owning mutation.
 func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
 	var dirty bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_route_policy_invalidations WHERE project_id=? AND target_pull_number=?)`, project, pull).Scan(&dirty); err != nil {
 		return 0, err
 	}
 	if dirty {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	var pending int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_route_policy_facts WHERE project_id=? AND target_pull_number=? AND active=1 AND pending=1`, project, pull).Scan(&pending); err != nil {
@@ -531,7 +533,7 @@ func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull
 	// Browser JSON must preserve the exact count; this is a wire precision
 	// invariant, not a practical retained-route capacity or page-size limit.
 	if pending < 0 || pending > 1<<53-1 {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	return pending, nil
 }

@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 func validateConfigurationShape(c Configuration) error {
-	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || len(c.Queue) == 0 || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
+	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || c.Queue == nil || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
 		return invalid()
 	}
 	numbers := map[int64]bool{}
@@ -50,27 +53,16 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 // Configure retains every configuration revision. An update never silently
 // rebinds an already queued request to another provider or source policy.
 func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c Configuration) (json.RawMessage, error) {
+	scope = scope.RequireAdministration()
 	if err := validateConfigurationShape(c); err != nil {
 		return nil, err
 	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// Recheck admin at the transaction boundary even for direct Go callers.
-		var admin int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials WHERE principal_id=? AND is_admin=1 AND revoked=0`, scope.PrincipalID).Scan(&admin); err != nil {
-			return nil, err
-		}
-		if admin != 1 {
-			return nil, core.Fail("forbidden", "Administrative permission is required.", 403)
-		}
-		if err := e.validateConfiguration(c); err != nil {
-			return nil, err
-		}
+		// The administrative requirement is rechecked by Mutate before both
+		// new writes and receipt replay, including direct Go callers.
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
-		}
-		if revision != *c.ExpectedRevision {
-			return nil, conflict()
 		}
 		var previous Configuration
 		if revision > 0 {
@@ -80,57 +72,98 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 				return nil, err
 			}
 		}
-		defaults, err := enrollmentRoundDefaults(ctx, tx, scope.ProjectID)
+		operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
 		if err != nil {
 			return nil, err
 		}
-		for _, pull := range c.Queue {
-			for _, channel := range c.Channels {
-				if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
-					continue
-				}
-				// Removing and re-adding a legacy pair must not grant new rounds
-				// over retained native work that was accepted without a control.
-				var retained bool
-				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=?)`, scope.ProjectID, pull, channel).Scan(&retained); err != nil {
-					return nil, err
-				}
-				if retained {
-					continue
-				}
-				bounds := defaults.CLI
-				if channel == "hosted" {
-					bounds = defaults.Hosted
-				}
-				if err := initializeRoundControl(ctx, tx, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
-					return nil, err
-				}
-			}
+		if !operator && (revision == 0 || c.CapabilityID != previous.CapabilityID) {
+			return nil, core.Fail("operator_capability_binding_required", "A service operator must establish or change this project's provider capability; preserve its current capability_id for project management.", 403)
 		}
-		revision++
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
+		if err := e.validateConfiguration(c); err != nil {
 			return nil, err
 		}
-		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", scope.ProjectID, revision, map[string]any{"revision": revision, "paused": c.Paused}); err != nil {
-			return nil, err
+		// Check current installation support before revision conflicts for new
+		// writes. Authorized exact receipt replay has already returned from
+		// Mutate, so removing a capability never invalidates historical recovery.
+		if revision != *c.ExpectedRevision {
+			return nil, conflict()
 		}
-		return Receipt{ID: scope.ProjectID, State: "configured", Revision: revision}, nil
+		return e.persistConfiguration(ctx, tx, scope, previous, c, revision)
 	})
 }
 
+// persistConfiguration is shared by administrative replacement and narrow
+// ordinary queue edits. Callers establish authority and the exact prior revision.
+func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, c Configuration, revision int64) (Receipt, error) {
+	if revision == math.MaxInt64 {
+		return Receipt{}, core.Fail("revision_exhausted", "The execution configuration revision cannot advance further.", 409)
+	}
+	// Enrolling a new PR/channel installs the current project plan atomically.
+	// Existing pairs are deliberately untouched by pause/order/capability
+	// edits, including installations upgraded from unconfigured controls.
+	defaults, err := enrollmentRoundDefaults(ctx, tx, scope.ProjectID)
+	if err != nil {
+		return Receipt{}, err
+	}
+	for _, pull := range c.Queue {
+		for _, channel := range c.Channels {
+			if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
+				continue
+			}
+			// Removing and re-adding a legacy pair must not grant new rounds
+			// over retained native work that was accepted without a control.
+			var retained bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=?)`, scope.ProjectID, pull, channel).Scan(&retained); err != nil {
+				return Receipt{}, err
+			}
+			if retained {
+				continue
+			}
+			bounds := defaults.CLI
+			if channel == "hosted" {
+				bounds = defaults.Hosted
+			}
+			if err := initializeRoundControl(ctx, tx, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
+				return Receipt{}, err
+			}
+		}
+	}
+	if e.publishQueue != nil {
+		if err := e.publishQueue(ctx, tx, scope, previous.Queue, c.Queue); err != nil {
+			return Receipt{}, err
+		}
+	}
+	for _, number := range c.Queue {
+		if !slices.Contains(previous.Queue, number) {
+			if err := e.followExplicitWork(ctx, tx, scope, number); err != nil {
+				return Receipt{}, err
+			}
+		}
+	}
+	revision++
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, scope.ProjectID, revision, encoded(c)); err != nil {
+		return Receipt{}, err
+	}
+	if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", scope.ProjectID, revision, map[string]any{"revision": revision, "paused": c.Paused}); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{ID: scope.ProjectID, State: "configured", Revision: revision}, nil
+}
+
 func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configuration, int64, error) {
-	var body string
-	var revision int64
+	var rawRevision, rawBody any
 	var c Configuration
-	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&revision, &body)
+	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&rawRevision, &rawBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, 0, core.Fail("reviews_unconfigured", "Review execution is not configured for this project.", 409)
 	}
 	if err != nil {
 		return c, 0, err
 	}
-	if json.Unmarshal([]byte(body), &c) != nil {
-		return c, 0, core.Fail("storage_unavailable", "Stored review configuration is unavailable.", 500)
+	revision, revisionOK := rawRevision.(int64)
+	body, bodyOK := rawBody.(string)
+	if !revisionOK || revision < 1 || !bodyOK || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+		return c, 0, &automaticProjectStateError{newStoredUnavailable(storedConfigurationHistory, "Stored review configuration is unavailable.")}
 	}
 	return c, revision, nil
 }
@@ -142,7 +175,11 @@ func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, r Re
 		return nil, invalid()
 	}
 	result, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.request", Target: "requests", Key: key, Request: r}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		return e.enqueueRequestTx(ctx, tx, scope, r)
+		receipt, err := e.enqueueRequestTx(ctx, tx, scope, r)
+		if err == nil {
+			err = e.followExplicitWork(ctx, tx, scope, r.PullNumber)
+		}
+		return receipt, err
 	})
 	if err == nil {
 		select {
@@ -158,14 +195,18 @@ const (
 	requestGlobalCapacity  = 256
 )
 
-// enqueueRequestTx preserves ordinary admission inside a selection child transaction.
+// enqueueRequestTx shares native acceptance after the caller has established
+// current authority. scope supplies checked attribution; it is not authentication.
 func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
+	if err := requirePullScheduling(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err
 	}
 	if revision != r.ExpectedConfigurationRevision {
-		return Receipt{}, conflict()
+		return Receipt{}, configurationRevisionConflict(revision)
 	}
 	if c.Paused {
 		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this project.", 409)
@@ -176,15 +217,30 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 	if !slices.Contains(c.Queue, r.PullNumber) || !slices.Contains(c.Channels, r.Channel) {
 		return Receipt{}, core.Fail("review_not_configured", "The selected PR or channel is not configured.", 409)
 	}
+	var pending string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM review_operations WHERE project_id=? AND pull_number=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain') ORDER BY created_at,id LIMIT 1`, scope.ProjectID, r.PullNumber, r.Channel).Scan(&pending)
+	if err == nil {
+		channelName := "CLI"
+		if r.Channel == "hosted" {
+			channelName = "Hosted"
+		}
+		return Receipt{}, &core.Error{Code: "review_inflight", Message: "This PR already has a pending " + channelName + " review request; keep or control that original operation.", Status: 409, Details: map[string]string{"operation_id": pending}}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Receipt{}, err
+	}
 	if err := requireSourceObligationsClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
+	if err := requireIncomingRoutesClear(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
+	if err := requireExternalHostedSettled(ctx, tx, scope.ProjectID, r.PullNumber, r.Channel); err != nil {
 		return Receipt{}, err
 	}
 	policy, err := readPolicy(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err
-	}
-	if slices.Contains(policy.Policy.PausedChannels, r.Channel) {
-		return Receipt{}, core.Fail("reviews_paused", "Review execution is paused for this channel.", 409)
 	}
 	var local, total int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain')`, scope.ProjectID).Scan(&total, &local); err != nil {
@@ -194,28 +250,115 @@ func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Sc
 		return Receipt{}, core.Fail("overloaded", "Review request capacity is occupied; recover or finish existing operations.", 503)
 	}
 	id, at := core.NewID("review_operation"), stamp()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,allow_out_of_order,override_file_limit) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',1,'','',?,?,?,?)`, id, scope.ProjectID, scope.PrincipalID, scope.WorkerID, revision, policy.Revision, e.capabilities[c.CapabilityID].Fingerprint, r.PullNumber, r.Channel, r.HeadSHA, at, at, r.AllowOutOfOrder, r.OverrideFileLimit); err != nil {
 		return Receipt{}, err
 	}
-	if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel}); err != nil {
+	if err = bindRoundControl(ctx, tx, Operation{ID: id, ProjectID: scope.ProjectID, PullNumber: r.PullNumber, Channel: r.Channel, State: "queued"}); err != nil {
 		return Receipt{}, err
 	}
 	if err = core.AppendEvent(ctx, tx, scope, "review.requested", id, 1, map[string]any{"pull_number": r.PullNumber, "channel": r.Channel}); err != nil {
 		return Receipt{}, err
 	}
-	return Receipt{ID: id, State: "queued", Revision: 1}, nil
+	return Receipt{ID: id, State: "queued", Revision: 1, ReviewSize: reviews.ReviewSizeForHead(ctx, tx, scope.ProjectID, r.PullNumber, r.HeadSHA)}, nil
 }
 
 func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
-	var o Operation
-	err := tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
+	o, err := readOperationBase(ctx, tx, project, id)
+	if err == nil {
+		o.Allowance, err = readHeldAllowance(ctx, tx, o)
 	}
 	return o, err
 }
 
+// retainedOperationDecodeError is produced only by a destination scanner after
+// SQL has returned a value. Query, transaction and context errors never acquire
+// this classification, so priority can isolate corrupt candidates safely.
+type retainedOperationDecodeError struct{ error }
+
+func (e *retainedOperationDecodeError) Unwrap() error { return e.error }
+
+type operationValueScanner[T string | int64 | bool] struct{ destination *T }
+
+func (s operationValueScanner[T]) Scan(value any) error {
+	// SQLite returns TEXT as string and INTEGER as int64. Conversion here
+	// would hide corrupt BLOB/text fields before candidate-local isolation.
+	var native bool
+	switch any(*s.destination).(type) {
+	case string:
+		_, native = value.(string)
+	case int64:
+		_, native = value.(int64)
+	case bool:
+		n, ok := value.(int64)
+		native = ok && (n == 0 || n == 1)
+	}
+	if !native {
+		return &retainedOperationDecodeError{core.Fail("storage_unavailable", "Stored review operation is unavailable.", 500)}
+	}
+	var decoded sql.Null[T]
+	if err := decoded.Scan(value); err != nil || !decoded.Valid {
+		return &retainedOperationDecodeError{core.Fail("storage_unavailable", "Stored review operation is unavailable.", 500)}
+	}
+	*s.destination = decoded.V
+	return nil
+}
+
+func operationValue[T string | int64 | bool](destination *T) sql.Scanner {
+	return operationValueScanner[T]{destination: destination}
+}
+
+func isRetainedOperationDecodeError(err error) bool {
+	var malformed *retainedOperationDecodeError
+	return errors.As(err, &malformed)
+}
+
+func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
+	var o Operation
+	orderColumn, limitColumn, err := operationFlagColumns(ctx, tx)
+	if err != nil {
+		return o, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+`,`+limitColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(operationValue(&o.ID), operationValue(&o.ProjectID), operationValue(&o.ActorID), operationValue(&o.WorkerID), operationValue(&o.ConfigurationRevision), operationValue(&o.PolicyRevision), operationValue(&o.CapabilityFingerprint), operationValue(&o.PullNumber), operationValue(&o.Channel), operationValue(&o.HeadSHA), operationValue(&o.State), operationValue(&o.Revision), operationValue(&o.Reason), operationValue(&o.AttemptID), operationValue(&o.CreatedAt), operationValue(&o.UpdatedAt), operationValue(&o.AllowOutOfOrder), operationValue(&o.OverrideFileLimit))
+	if errors.Is(err, sql.ErrNoRows) {
+		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
+	}
+	if err == nil {
+		o.Wait, err = readOperationWait(ctx, tx, o)
+		if err == nil && o.State == "queued" && o.Reason == sourceRetryReason && (o.Wait == nil || o.Wait.SourceRetry == nil) {
+			err = waitUnavailable()
+		}
+	}
+	return o, err
+}
+
+// Older retained snapshots supply false only for flags introduced after their
+// declared version. Missing or malformed current columns fail the operation read.
+func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string, error) {
+	var version string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil {
+		return "", "", err
+	}
+	const order = `CASE WHEN typeof(allow_out_of_order)='integer' AND allow_out_of_order IN (0,1) THEN allow_out_of_order END`
+	const limit = `CASE WHEN typeof(override_file_limit)='integer' AND override_file_limit IN (0,1) THEN override_file_limit END`
+	switch version {
+	case "1", "2", "3", "4", "5", "6":
+		return "0", "0", nil
+	case "7":
+		return order, "0", nil
+	case "8", "9", "10":
+		return order, limit, nil
+	default:
+		return "", "", adjudicationStorageError()
+	}
+}
+
 func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string) (Operation, error) {
+	return e.readOperationProjection(ctx, scope, id, false)
+}
+
+// Evidence is optional response metadata, never written into the operation
+// journal. Read both identities under one authorization and database snapshot.
+func (e *Engine) readOperationProjection(ctx context.Context, scope core.Scope, id string, evidence bool, sourceDetails ...bool) (Operation, error) {
 	if !identifier.MatchString(id) {
 		return Operation{}, invalid()
 	}
@@ -223,7 +366,22 @@ func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string)
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		o, err = readOperation(ctx, tx, scope.ProjectID, id)
+		if err == nil && evidence {
+			var facts operationEvidenceFacts
+			facts, err = operationStatusEvidence(ctx, tx, o)
+			o.EvidenceID = facts.ID
+		}
+		if err == nil && len(sourceDetails) > 0 && sourceDetails[0] {
+			o.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
+			if o.SourceRefusal != nil && o.SourceRefusal.BaseRef != "" && (len(sourceDetails) < 2 || !sourceDetails[1]) {
+				o.SourceRefusal = nil
+			}
+		}
+		if err == nil && len(sourceDetails) > 2 && sourceDetails[2] {
+			o.HostedQuery, err = readHostedQueryDiagnostic(ctx, tx, o)
+		}
 		return err
 	})
+	o.Wait = currentOperationWait(o)
 	return o, err
 }

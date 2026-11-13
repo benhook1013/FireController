@@ -417,7 +417,7 @@ func TestHistoryMigrationStartupRejectsExistingHistoryReferenceCorruption(t *tes
 			f, _, _, _ := historyMigrationLegacyFixture(t)
 			groups := append(reviewSchemaMigrations(), historyMigrationSQL())
 			if version == 5 {
-				groups = append(groups, CurrentSummarySchemaSQL())
+				groups = append(groups, CurrentSummarySchemaSQLV8())
 			}
 			if err := historyMigrationEnsure(t, f, groups); err != nil {
 				t.Fatal(err)

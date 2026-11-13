@@ -1,6 +1,8 @@
 package reviewexec
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -281,4 +283,25 @@ func TestRoundInitialGrantSerializesWithUnboundEnqueue(t *testing.T) {
 			roundSnapshotValid(t, f)
 		})
 	}
+}
+
+func roundSnapshotValid(t *testing.T, f *attemptFixture) {
+	t.Helper()
+	if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func roundPendingCount(t *testing.T, f *attemptFixture, pull int64, channel string) int64 {
+	t.Helper()
+	var pending int64
+	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
+		c, err := readRoundRecord(ctx, tx, attemptProject, pull, channel)
+		if err != nil {
+			return err
+		}
+		pending, err = roundOccupied(ctx, tx, c, "")
+		return err
+	})
+	return pending
 }

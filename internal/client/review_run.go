@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+
+	"github.com/benhook1013/FireController/internal/reviewsize"
 )
 
 // ReviewRunRequest authorizes one channel-front selection, never a queue drain.
@@ -86,7 +88,7 @@ func (c *Client) validReviewRun(s ReviewRunState) bool {
 		}
 	case "selected":
 		op := s.Operation
-		return r.Reason == "" && ValidateReviewOperationID(r.OperationID) == nil && op != nil && c.validReviewOperation(*op) && op.ID == r.OperationID && op.ProjectID == r.ProjectID && op.ActorID == r.ActorID && op.WorkerID == r.WorkerID && op.Channel == r.Channel && op.ConfigurationRevision == r.ConfigurationRevision && op.PolicyRevision == r.PolicyRevision && (r.ExpectedPullNumber == 0 || op.PullNumber == r.ExpectedPullNumber)
+		return r.Reason == "" && ValidateReviewOperationID(r.OperationID) == nil && op != nil && c.validReviewOperation(*op) && !op.AllowOutOfOrder && !op.OverrideFileLimit && op.ID == r.OperationID && op.ProjectID == r.ProjectID && op.ActorID == r.ActorID && op.WorkerID == r.WorkerID && op.Channel == r.Channel && op.ConfigurationRevision == r.ConfigurationRevision && op.PolicyRevision == r.PolicyRevision && (r.ExpectedPullNumber == 0 || op.PullNumber == r.ExpectedPullNumber)
 	default:
 		return false
 	}
@@ -107,6 +109,9 @@ func (c *Client) RunReview(ctx context.Context, key string, r ReviewRunRequest, 
 		return ReviewRunResult{}, mutationValidation()
 	}
 	var result ReviewRunResult
+	var queuedCause string
+	var reservation *queuedReservation
+	var draining bool
 	var status int
 	decode := func(raw []byte, _ any) error {
 		if status == http.StatusOK {
@@ -116,11 +121,16 @@ func (c *Client) RunReview(ctx context.Context, key string, r ReviewRunRequest, 
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(raw, result.Receipt)
 	}
-	if err = c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "selections"), nil, true, key, body, http.StatusAccepted, true, &result, 64<<10, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+	if err = c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "selections"), nil, true, key, body, http.StatusAccepted, true, &result, 64<<10, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, sourceRefusalV4: true, operationWait: true, queuedCause: &queuedCause, queuedReservation: &reservation, deploymentDraining: &draining}); err != nil {
 		return ReviewRunResult{}, err
 	}
 	valid := false
 	if state := result.Result; state != nil {
+		if state.Operation != nil {
+			state.Operation.queuedCause = queuedCause
+			state.Operation.queuedReservation = boundQueuedReservation(reservation, state.Operation.ID, state.Operation.Channel)
+			state.Operation.deploymentDraining = draining
+		}
 		selection := state.Selection
 		valid = c.validReviewRun(*state) && !reviewRunPending(*state) && selection.WorkerID == c.identity.WorkerID && selection.Channel == r.Channel
 		if r.ExpectedPullNumber != nil {
@@ -132,7 +142,7 @@ func (c *Client) RunReview(ctx context.Context, key string, r ReviewRunRequest, 
 			valid = valid && selection.ConfigurationRevision == *r.ExpectedConfigurationRevision
 		}
 	} else if receipt := result.Receipt; receipt != nil {
-		valid = ValidateReviewRunSelectionID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1
+		valid = ValidateReviewRunSelectionID(receipt.ID) == nil && receipt.State == "queued" && receipt.Revision == 1 && (receipt.ReviewSize == nil || r.ExpectedPullNumber != nil && reviewsize.Valid(*receipt.ReviewSize, *r.ExpectedPullNumber))
 	}
 	if !valid {
 		return ReviewRunResult{}, unknownMutation("invalid_response", "The service returned invalid selection facts; its outcome is unknown.", status)
@@ -148,13 +158,23 @@ func (c *Client) WaitReviewSelection(ctx context.Context, id string, waitSeconds
 		return ReviewRunState{}, validation()
 	}
 	var result ReviewRunState
+	var queuedCause string
+	var reservation *queuedReservation
+	var draining bool
 	var status int
 	err := resumeResultWait(ctx, waitSeconds, func(ctx context.Context, remaining int) error {
 		result = ReviewRunState{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "selections", id), nil, true, "", nil, http.StatusOK, false, &result, 64<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status})
+		queuedCause, draining = "", false
+		reservation = nil
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "selections", id), nil, true, "", nil, http.StatusOK, false, &result, 64<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, sourceRefusalV4: true, operationWait: true, queuedCause: &queuedCause, queuedReservation: &reservation, deploymentDraining: &draining})
 	})
 	if err != nil {
-		return ReviewRunState{}, reviewSelectionWaitTargetError(err, id)
+		return ReviewRunState{}, reviewWaitTargetError(err, id, nil)
+	}
+	if result.Operation != nil {
+		result.Operation.queuedCause = queuedCause
+		result.Operation.queuedReservation = boundQueuedReservation(reservation, result.Operation.ID, result.Operation.Channel)
+		result.Operation.deploymentDraining = draining
 	}
 	if result.Selection.ID != id || !c.validReviewRun(result) {
 		return ReviewRunState{}, invalidResponse()

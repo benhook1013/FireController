@@ -15,6 +15,12 @@ func workerPauseTool(name string) bool {
 
 func workerPauseArguments(name string, data json.RawMessage) (arguments, error) {
 	var args arguments
+	cleaned, worker, ok := selectedWorkerArguments(data)
+	if !ok {
+		return args, invalidArguments()
+	}
+	data = cleaned
+	args.worker = worker
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
@@ -77,6 +83,7 @@ func workerPauseArguments(name string, data json.RawMessage) (arguments, error) 
 
 func workerPauseDefinitions() []definition {
 	schema := func(properties map[string]any, required ...string) map[string]any {
+		properties["worker_id"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 128}
 		out := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
 		if len(required) > 0 {
 			out["required"] = required
@@ -84,8 +91,8 @@ func workerPauseDefinitions() []definition {
 		return out
 	}
 	return []definition{
-		{"worker_pause_read", "Read the bound worker's explicit coordination pause and independent revision. This does not report presence or stop execution.", schema(map[string]any{})},
-		{"worker_pause_replace", "Replace the bound worker's coordination pause using an explicit revision and idempotency key. Reason is exact UTF-8 text of at most 1024 bytes; only TAB and newline controls are allowed. An unpaused state requires empty reason. Does not stop agents or change jobs, messages, focus or review execution. Retain the original key and arguments after an uncertain response; no automatic retry.", schema(map[string]any{"idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "paused": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string", "maxLength": 1024}}, "idempotency_key", "expected_revision", "paused", "reason")},
-		{"worker_pause_history", "Read one explicit newest-first pause-history page for the bound worker, without automatic pagination or job reads.", schema(map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}})},
+		{"worker_pause_read", "Read the selected same-project worker's (default bound worker) explicit coordination pause and independent revision. This does not report presence or stop execution.", schema(map[string]any{})},
+		{"worker_pause_replace", "Replace the selected same-project worker's (default bound worker) coordination pause using an explicit revision and idempotency key. Reason is exact UTF-8 text of at most 1024 bytes; only TAB and newline controls are allowed. An unpaused state requires empty reason. Does not stop agents or change jobs, messages, focus or review execution. Retain the original key and arguments after an uncertain response; no automatic retry.", schema(map[string]any{"idempotency_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "expected_revision": map[string]any{"type": "integer", "minimum": 0, "maximum": int64(math.MaxInt64 - 1)}, "paused": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string", "maxLength": 1024}}, "idempotency_key", "expected_revision", "paused", "reason")},
+		{"worker_pause_history", "Read one explicit newest-first pause-history page for the selected same-project worker (default bound worker), without automatic pagination or job reads.", schema(map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "cursor": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}})},
 	}
 }

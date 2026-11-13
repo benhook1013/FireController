@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CapturedComparisonRefusal, CapturedComparisonResult } from './App';
+import { CapturedComparisonRefusal, CapturedComparisonResult } from './review-workspace';
 
 describe('captured comparison refusal presentation', () => {
   it('explains the repository binding refusal without suggesting a refresh', () => {
@@ -29,13 +29,13 @@ describe('carried captured assessment presentation', () => {
     const html = renderToStaticMarkup(<CapturedComparisonResult evidenceId="test" />);
     expect(html).toContain('2 carried source obligation(s) remain pending.');
     expect(html).toContain('1 incoming routed finding obligation(s) remain pending.');
-    expect(html).toContain(`<dt>Required rounds complete</dt><dd>${complete ? 'Yes' : 'No'}</dd>`);
+    expect(html).toContain(`<dt>Review rounds</dt><dd>${complete ? 'Finished' : 'More required'}</dd>`);
   });
   it('preserves unconfigured status alongside carried obligations', () => {
     assessmentContext.data = { state: 'unconfigured', source_obligations_pending: 1, policy_revision: 0, anchor: { pull_number: 7 }, channels: [] };
     const html = renderToStaticMarkup(<CapturedComparisonResult evidenceId="test" />);
     expect(html).toContain('Project review requirements are unconfigured.');
     expect(html).toContain('1 carried source obligation(s) remain pending.');
-    expect(html).not.toContain('Required rounds complete');
+    expect(html).not.toContain('<dt>Review rounds</dt>');
   });
 });

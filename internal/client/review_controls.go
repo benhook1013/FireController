@@ -30,13 +30,13 @@ type ReviewAnchor struct {
 	ObservedAt       string `json:"observed_at"`
 }
 type ReviewHostedPublication struct {
-	SubmittedReview   *ReviewHostedSubmittedReview `json:"submitted_review,omitempty"`
 	PublicationID     string                       `json:"publication_id"`
 	ProviderAttemptID string                       `json:"provider_attempt_id"`
 	TriggerCommentID  int64                        `json:"trigger_comment_id"`
 	ReviewIDs         []int64                      `json:"review_ids"`
 	ObservedBaseSHA   string                       `json:"observed_base_sha"`
 	StandingSummary   *ReviewHostedStandingSummary `json:"standing_summary,omitempty"`
+	SubmittedReview   *ReviewHostedSubmittedReview `json:"submitted_review,omitempty"`
 }
 type ReviewHostedSubmittedReview struct {
 	ProviderRunID            string `json:"provider_run_id"`
@@ -159,7 +159,10 @@ func ValidateReviewDecisionRequest(r ReviewDecisionRequest) error {
 	return nil
 }
 func ValidateReviewFixRequest(r ReviewFixRequest) error {
-	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || r.ExpectedSHA != "" && !controlHex(r.ExpectedSHA, 40) || !controlHex(r.FixSHA, 40) || !controlText(r.ProofNote, 2048, true) {
+	if err := reviewFixSHAValidation("", r.ExpectedSHA, r.FixSHA); err != nil {
+		return err
+	}
+	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || !controlText(r.ProofNote, 2048, true) {
 		return mutationValidation()
 	}
 	return nil
@@ -274,8 +277,10 @@ func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAncho
 		if hosted.PublicationID != "" || hosted.ProviderAttemptID != "" || len(hosted.ReviewIDs) != 1 || len(capture.Findings) == 0 || !controlUUID(submitted.ProviderRunID) || submitted.AcknowledgementCommentID <= 0 || submitted.AcknowledgementCommentID == hosted.TriggerCommentID {
 			return false
 		}
-	} else if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
-		return false
+	} else {
+		if !controlUUID(hosted.PublicationID) || !controlUUID(hosted.ProviderAttemptID) || len(hosted.ReviewIDs) < 1 || len(hosted.ReviewIDs) > 200 {
+			return false
+		}
 	}
 	reviews := make(map[int64]bool, len(hosted.ReviewIDs))
 	for _, id := range hosted.ReviewIDs {
@@ -285,8 +290,8 @@ func validHostedControlCapture(capture ReviewEvidenceCapture, anchor ReviewAncho
 		reviews[id] = true
 	}
 	fingerprints := make(map[string]bool, len(capture.Findings))
-	// Provenance labels may grow. Review/comment identity and location shape
-	// remain required, independently of that bounded display label.
+	// Provenance labels may grow. The review/comment-bound source identity
+	// and location shape remain required, independent of the display label.
 	for _, finding := range capture.Findings {
 		source := finding.Source
 		if source == nil || !controlHex(source.Fingerprint, 24) || fingerprints[source.Fingerprint] || !reviews[source.ReviewID] || !validExecutionIdentifier(source.Kind) || !oneReviewOf(source.Side, "", "LEFT", "RIGHT") || finding.Path == "" {

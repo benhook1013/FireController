@@ -334,6 +334,38 @@ func TestComparisonMigrationSetMismatchRollsBack(t *testing.T) {
 	}
 }
 
+func TestComparisonUpgradeReleasesSourceWhileKeepingOpenReceiver(t *testing.T) {
+	f, a, evidence, plan := routeProjectionFixture(t, false)
+	route := createProjectionRoute(t, f, evidence.ID, "migrate-outgoing-route", 0, 0)
+	adjudicationDecide(t, f, evidence.ID, "migrate-outgoing-source-decision", 1, 1, "rejected")
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "migrate-outgoing-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	routeDecision(t, f, route.ID, "migrate-outgoing-receiver-accept", 1, "accepted")
+
+	// Recreate the earlier derived proof from the same canonical records.
+	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='1' WHERE key='schema:review_comparison'; UPDATE review_comparison_proofs SET state='pending' WHERE operation_id=?`, a.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("pre-upgrade snapshot must validate", err)
+	}
+	before := comparisonSourceRows(t, f)
+	coverageRead(t, f, a, plan, false)
+	if err := ensureComparisonSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("upgraded snapshot must validate", err)
+	}
+	coverageRead(t, f, a, plan, true)
+	if pending, err := routePending(t, f, 4); err != nil || pending != 1 {
+		t.Fatal("upgrade cleared receiving work", pending, err)
+	}
+	if after := comparisonSourceRows(t, f); !reflect.DeepEqual(after, before) {
+		t.Fatal("upgrade rewrote canonical records")
+	}
+}
+
 // Build more than one migration page through real journal/capture/adjudication
 // APIs. These are local synthetic captures, not live provider executions.
 func comparisonMigrationRetainedHistory(t *testing.T) (*attemptFixture, Attempt, SourcePlan) {
@@ -376,7 +408,7 @@ func TestComparisonMigrationRetainedHistoryLongerBudgetAndRollback(t *testing.T)
 				t.Fatal("startup changed retained source rows or DDL")
 			}
 		}
-		migrations := [][]string{ComparisonSchemaSQL()}
+		migrations := [][]string{ComparisonSchemaSQL(), nil}
 		partial := func(ctx context.Context, conn *sql.Conn) error {
 			if err := refreshComparisonProof(ctx, conn, attemptProject, proofs[0].operation); err != nil {
 				return err
@@ -473,4 +505,56 @@ func TestComparisonMigrationRetainedHistoryLongerBudgetAndRollback(t *testing.T)
 		assertComparisonDomainAbsent(t, f)
 		assertSource() // Corruption is retained for diagnosis, never repaired.
 	})
+}
+
+func TestAttemptRebuildRepairRestoresInvalidationAndProofs(t *testing.T) {
+	for _, stage := range []string{"schema-eight-upgrade", "already-schema-ten"} {
+		t.Run(stage, func(t *testing.T) {
+			f, a, id, _ := coverageFixture(t, 0, false)
+			coverageFinalize(t, f, a, id, 0)
+			for _, event := range []string{"insert", "update", "delete"} {
+				admissionSQL(t, f, "DROP TRIGGER review_comparison_dirty_review_execution_attempts_"+event)
+			}
+			admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
+			// A retained dirty proof must be re-derived from unchanged valid source.
+			admissionSQL(t, f, `UPDATE review_comparison_proofs SET state='dirty'`)
+			if stage == "schema-eight-upgrade" {
+				restorePreCooldownAttemptSchema(t, f)
+				admissionSQL(t, f, `UPDATE metadata SET value='8' WHERE key='schema:review_execution'`)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'review_comparison_dirty_review_execution_attempts_%'`); n != 3 {
+				t.Fatal("attempt triggers lost", n)
+			}
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE state='ready'`); n != 1 {
+				t.Fatal("repair failed to rederive retained proof", n)
+			}
+			admissionSQL(t, f, `UPDATE review_execution_attempts SET revision=revision WHERE id=?`, a.ID)
+			if n := attemptCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE state='dirty'`); n != 1 {
+				t.Fatal("repaired trigger did not invalidate proof", n)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal("idempotent repaired startup", err)
+			}
+		})
+	}
+}
+
+func TestComparisonRepairReplacesStaleReadyProof(t *testing.T) {
+	f, a, id, _ := coverageFixture(t, 0, false)
+	coverageFinalize(t, f, a, id, 0)
+	before := snapshotTable(t, f, "review_comparison_proofs")
+	for _, event := range []string{"insert", "update", "delete"} {
+		admissionSQL(t, f, "DROP TRIGGER review_comparison_dirty_review_execution_attempts_"+event)
+	}
+	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
+	admissionSQL(t, f, `UPDATE review_comparison_proofs SET candidate_sha=? WHERE state='ready'`, strings.Repeat("f", 40))
+	if err := EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotTable(t, f, "review_comparison_proofs") != before {
+		t.Fatal("stale ready proof not replaced from original authority")
+	}
 }

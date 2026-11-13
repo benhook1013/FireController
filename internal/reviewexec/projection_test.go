@@ -82,7 +82,7 @@ func projectionDigest(t *testing.T, f *attemptFixture, snapshot string) string {
 	h := sha256.New()
 	tables := []string{"review_snapshots", "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls"}
 	if snapshot == "" {
-		tables = append(tables, "review_workspace")
+		tables = append(tables, "review_workspace", "review_pull_versions", "review_run_versions", "review_finding_versions", "review_attempt_versions", "review_retired_versions", "review_pull_memberships", "review_run_memberships", "review_attempt_memberships", "review_retired_memberships", "review_current_pulls", "review_current_runs", "review_current_attempts", "review_current_retired")
 	}
 	for _, table := range tables {
 		query, args := "SELECT * FROM "+table+" WHERE project_id=?", []any{attemptProject}
@@ -127,6 +127,18 @@ func projectionDigest(t *testing.T, f *attemptFixture, snapshot string) string {
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// Tampering targets the exact retained native body selected by this snapshot,
+// never every version of a producer or a writable compatibility view.
+func projectionNativeVersion(t *testing.T, f *attemptFixture, snapshot, evidenceID string) (string, int64) {
+	t.Helper()
+	var id string
+	var version int64
+	if err := f.store.DB().QueryRow(`SELECT id,version_revision FROM review_runs WHERE project_id=? AND snapshot_id=? AND source='native-executor' AND source_run_id=?`, attemptProject, snapshot, evidenceID).Scan(&id, &version); err != nil {
+		t.Fatal(err)
+	}
+	return id, version
 }
 
 func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) {
@@ -226,7 +238,7 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	projectionRead(t, f, "/pulls/2", &pull)
 	projectionRead(t, f, "/pulls/1", &mergedNow)
 	// Source freshness and current PR metadata are not review decisions.
-	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(projectionAttempts(t, f, pull), projectionAttempts(t, f, oldPull)) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
+	if pull.Pull.Title != current.Title || pull.Pull.HeadSHA != current.HeadSHA || pull.Pull.BaseSHA != current.BaseSHA || pull.Pull.CIState != current.CIState || pull.Pull.Mergeability != current.Mergeability || !reflect.DeepEqual(projectionAttempts(t, f, 2, pull.SnapshotID), projectionAttempts(t, f, 2, oldPull.SnapshotID)) || pull.ObservedAt != oldPull.ObservedAt || !reflect.DeepEqual(mergedNow.Pull, oldMerged.Pull) || mergedNow.Pull.State != "merged" {
 		t.Fatal("current facts, merged history, or conservative freshness changed")
 	}
 	var queue reviews.QueueResponse

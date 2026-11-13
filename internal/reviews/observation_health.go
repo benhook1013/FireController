@@ -20,6 +20,8 @@ type PullObservationHealth struct {
 	NextCheckAt     string `json:"next_check_at,omitempty"`
 	Error           string `json:"error,omitempty"`
 	CICheckedAt     string `json:"ci_checked_at,omitempty"`
+	CIGateState     string `json:"ci_gate_state,omitempty"`
+	CIGateRef       string `json:"ci_gate_ref,omitempty"`
 	CIError         string `json:"ci_error,omitempty"`
 	HostedCheckedAt string `json:"hosted_checked_at,omitempty"`
 	HostedError     string `json:"hosted_error,omitempty"`

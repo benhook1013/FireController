@@ -40,7 +40,7 @@ func TestRoundControlsHTTPOrdinaryWriterGrantCloseReopenAndReplay(t *testing.T) 
 	login.Header.Set("Authorization", "Bearer "+f.reader)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	id := strings.Repeat("b", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, id, false)
+	_, cookie, err := f.store.CreateBrowserSession(login, id)
 	if err != nil {
 		t.Fatal(err)
 	}

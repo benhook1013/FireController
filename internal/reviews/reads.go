@@ -30,7 +30,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "include_observation")
+		query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "view", "include_observation", "include_merge_status")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -39,11 +39,14 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			core.WriteError(w, validationError("Use include_observation=true for runtime observer health."))
 			return
 		}
+		if selected, ok := query["include_merge_status"]; ok && (len(selected) != 1 || selected[0] != "true") {
+			core.WriteError(w, validationError("Use include_merge_status=true for the browser merge projection."))
+			return
+		}
 		selectedHealth := health
 		if query.Get("include_observation") != "true" {
 			selectedHealth = nil
 		}
-
 		if len(r.URL.RawQuery) > 4096 {
 			core.WriteError(w, validationError("The query exceeds its bounded size."))
 			return
@@ -51,6 +54,26 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 		limit, err := core.PageLimit(r)
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		if _, selected := query["view"]; selected {
+			view := query.Get("view")
+			if view != "recent" && view != "merged" {
+				core.WriteError(w, validationError("Use recent or merged for the queue view."))
+				return
+			}
+			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1", r.Header.Get("X-FC-Queue-Topology") == "v1")
+			if err == nil {
+				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
+			}
+			if err != nil {
+				core.WriteError(w, err)
+				return
+			}
+			if query.Get("include_merge_status") == "true" {
+				includeMergeStatus(response.Items)
+			}
+			core.WriteJSON(w, http.StatusOK, response)
 			return
 		}
 		filter := "reviews.queue:v1"
@@ -79,7 +102,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			response.Configured = true
 			setMetaQueue(&response, meta)
 			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position
-				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.position>? AND NOT EXISTS (
+				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position>? AND NOT EXISTS (
 					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
 				) ORDER BY p.position LIMIT ?`,
 				scope.ProjectID, meta.SnapshotID, position, limit+1)
@@ -124,8 +147,15 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			if err := rows.Err(); err != nil {
 				return err
 			}
+			attachReviewSizes(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			if response.HasMore && lastPosition >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastPosition))
+			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				if err := rows.Close(); err != nil {
+					return err
+				}
+				return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
 			}
 			return nil
 		})
@@ -137,7 +167,9 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			core.WriteError(w, err)
 			return
 		}
-
+		if query.Get("include_merge_status") == "true" {
+			includeMergeStatus(response.Items)
+		}
 		core.WriteJSON(w, http.StatusOK, response)
 	}
 }
@@ -149,9 +181,13 @@ func pull(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "include_merge_status")
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		if selected, ok := query["include_merge_status"]; ok && (len(selected) != 1 || selected[0] != "true") {
+			core.WriteError(w, validationError("Use include_merge_status=true for the browser merge projection."))
 			return
 		}
 		if len(r.URL.RawQuery) > 4096 {
@@ -201,11 +237,17 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
 			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Pull.RecentRuns)
+			}
 			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)
 			return
+		}
+		if query.Get("include_merge_status") == "true" {
+			response.Pull.MergeStatus = mergeStatus(response.Pull)
 		}
 		core.WriteJSON(w, http.StatusOK, response)
 	}
@@ -218,7 +260,7 @@ func runs(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "limit", "cursor", "channel", "view")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -240,6 +282,14 @@ func runs(store *core.Store) http.HandlerFunc {
 		channel := query.Get("channel")
 		if _, selected := query["channel"]; selected && !oneOf(channel, "hosted", "cli", "subagent", "manual") {
 			core.WriteError(w, validationError("Select hosted, cli, subagent or manual for the runs channel."))
+			return
+		}
+		if view, selected := query["view"]; selected {
+			if len(view) != 1 || view[0] != "timeline" {
+				core.WriteError(w, validationError("Select timeline for the runs view."))
+				return
+			}
+			serveTimelineRuns(w, r, store, scope, number, channel, limit, query.Get("snapshot"), query.Get("cursor"))
 			return
 		}
 		filter := fmt.Sprintf("reviews.runs:%d:v1", number)
@@ -322,6 +372,12 @@ func runs(store *core.Store) http.HandlerFunc {
 			if response.HasMore && lastOrder >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastOrder))
 			}
+			if r.Header.Get(displayStartHeader) == "v1" {
+				if err := rows.Close(); err != nil {
+					return err
+				}
+				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+			}
 			return nil
 		})
 		if err != nil {
@@ -339,13 +395,17 @@ func runDetail(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "validation_failed", "snapshot")
+		query, err := core.QueryKeys(r, "validation_failed", "snapshot", "view")
 		if err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		if len(r.URL.RawQuery) > 4096 {
 			core.WriteError(w, validationError("The query exceeds its bounded size."))
+			return
+		}
+		if view, selected := query["view"]; selected && (len(view) != 1 || view[0] != "display") {
+			core.WriteError(w, validationError("Select display for the run detail view."))
 			return
 		}
 		runID := r.PathValue("run_id")
@@ -367,11 +427,22 @@ func runDetail(store *core.Store) http.HandlerFunc {
 				return notFound("The review snapshot is unavailable.")
 			}
 			response, err = readRunDetail(ctx, tx, meta, runID)
-			return err
+			if err != nil || r.Header.Get(displayStartHeader) != "v1" {
+				return err
+			}
+			runs := []RunSummary{response.Run}
+			if err := attachDisplayStarts(ctx, tx, scope.ProjectID, runs); err != nil {
+				return err
+			}
+			response.Run = runs[0]
+			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)
 			return
+		}
+		if query.Get("view") == "display" {
+			addFindingDisplaySeverity(&response)
 		}
 		body, err := json.Marshal(response)
 		if err != nil || len(body)+1 > maxRunDetailBytes {

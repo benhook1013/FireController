@@ -32,9 +32,7 @@ func reviewObservation() reviews.ObservationRequest {
 				}
 				pull.Runs = append(pull.Runs, run)
 			}
-			for j := 0; j < 6; j++ {
-				pull.Attempts = append(pull.Attempts, reviews.Attempt{SourceAttemptID: "unknown-duration-" + strconv.Itoa(j), Channel: "manual", State: "unknown", SourceRunID: "run-5"})
-			}
+			pull.Attempts = []reviews.Attempt{{SourceAttemptID: "unknown-duration", Channel: "manual", State: "unknown", SourceRunID: "run-5"}}
 		}
 		observation.Queue = append(observation.Queue, pull)
 	}
@@ -77,7 +75,11 @@ func TestReviewCommandsReadNativeSnapshotWithoutEffects(t *testing.T) {
 	if empty.Configured || len(empty.Items) != 0 || empty.Revision != 0 {
 		t.Fatal("unconfigured review workspace was hidden")
 	}
-	f.call(t, "POST", "/api/v1/projects/"+project+"/reviews/observations", f.admin, "", reviewObservation())
+	observation := reviewObservation()
+	for k := 1; k < 6; k++ {
+		observation.Queue[0].Attempts = append(observation.Queue[0].Attempts, reviews.Attempt{SourceAttemptID: "unknown-duration-" + strconv.Itoa(k), Channel: "manual", State: "unknown", SourceRunID: "run-5"})
+	}
+	f.call(t, "POST", "/api/v1/projects/"+project+"/reviews/observations", f.admin, "", observation)
 	counts := func() [2]int {
 		t.Helper()
 		var out [2]int
@@ -100,17 +102,17 @@ func TestReviewCommandsReadNativeSnapshotWithoutEffects(t *testing.T) {
 	}
 	var pull client.ReviewPull
 	invoke(&pull, "pull", "1", "--snapshot", queue.SnapshotID)
-	if len(pull.Pull.LatestAttempts) != 1 || pull.Pull.LatestAttempts[0].DurationSeconds != nil || pull.Pull.Complete {
+	if pull.Pull.AttemptCount != 6 || pull.Pull.Complete {
 		t.Fatal("unknown duration or incomplete source observation was repaired")
 	}
 	var attempts, attemptTail client.ReviewAttempts
 	out = invoke(&attempts, "attempts", "1", "--snapshot", queue.SnapshotID)
-	if len(attempts.Items) != 5 || !attempts.HasMore || attempts.Cursor == "" || attempts.Items[0].Source != "synthetic CLI fixture" || attempts.Items[0].SourceAttemptID != "unknown-duration-5" || strings.Contains(out, "PRIVATE_FINDING_DETAIL") {
-		t.Fatal("attempt archive default-five page lost original producer or drained history")
+	if len(attempts.Items) != 5 || !attempts.HasMore || attempts.Items[0].SourceAttemptID != "unknown-duration-5" || attempts.Items[0].DurationSeconds != nil || attempts.Items[0].Source != "synthetic CLI fixture" || strings.Contains(out, "PRIVATE_FINDING_DETAIL") {
+		t.Fatal("attempt archive default, order, origin or nullable duration changed")
 	}
 	invoke(&attemptTail, "attempts", "1", "--snapshot", queue.SnapshotID, "--cursor", attempts.Cursor)
-	if len(attemptTail.Items) != 1 || attemptTail.HasMore || attemptTail.SnapshotID != queue.SnapshotID || attemptTail.Items[0].SourceAttemptID != "unknown-duration-0" {
-		t.Fatal("attempt continuation lost pinned tail")
+	if len(attemptTail.Items) != 1 || attemptTail.HasMore || attemptTail.SnapshotID != attempts.SnapshotID || attemptTail.Items[0].SourceAttemptID != "unknown-duration" {
+		t.Fatal("explicit attempt continuation lost an item")
 	}
 	var runs, last client.ReviewRuns
 	out = invoke(&runs, "runs", "1", "--snapshot", queue.SnapshotID)
@@ -144,7 +146,8 @@ func TestReviewCommandSelectorsFailBeforeProfileOrNetwork(t *testing.T) {
 		{"pull"}, {"pull", "0"}, {"pull", "01"}, {"pull", "+1"}, {"pull", "2147483648"}, {"pull", "1", "--limit", "1"},
 		{"runs", "1", "--snapshot", ""}, {"runs", "1", "--snapshot", "review_snapshot_" + strings.Repeat("A", 32)},
 		{"run", "../other"}, {"run", "review_run_" + strings.Repeat("a", 32), "--snapshot", "x", "--snapshot", "y"},
-		{"attempts"}, {"attempts", "0"}, {"attempts", "01"}, {"attempts", "1", "--snapshot", ""}, {"attempts", "1", "--limit", "101"}, {"attempts", "1", "--cursor", " padded "}, {"observe"}, {"queue", "--project", "other"},
+		{"attempts"}, {"attempts", "0"}, {"attempts", "01"}, {"attempts", "1", "--limit", "101"}, {"attempts", "1", "--cursor", " bad"}, {"attempts", "1", "--snapshot", "bad"}, {"attempts", "1", "--limit", "1", "--limit", "2"},
+		{"observe"}, {"queue", "--project", "other"},
 	} {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			for _, profilesPath := range []string{"/unavailable/profiles.json", path} {

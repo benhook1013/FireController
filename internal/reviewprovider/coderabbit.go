@@ -33,6 +33,9 @@ type ParsedReview struct {
 	CoverageLimits   []string `json:"coverage_limits,omitempty"`
 }
 
+// CLIUnreviewedFilesLimit is the retained marker for a CodeRabbit warning terminal.
+const CLIUnreviewedFilesLimit = "CodeRabbit reported unreviewed files."
+
 const (
 	cliCaptureMax       = 16 << 20
 	cliLineMax          = 256 << 10
@@ -144,6 +147,18 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedRe
 			if !valid {
 				return invalid()
 			}
+			if text["outcome"] == "completed_with_warnings" {
+				_, countPresent := fields["findings"]
+				var unreviewed int64
+				raw, unreviewedPresent := fields["unreviewedFileCount"]
+				if contexts != 1 || !contextValid || findingsBeforeContext ||
+					!countPresent || numbers["findings"] != int64(len(result.Findings)) ||
+					!unreviewedPresent || json.Unmarshal(raw, &unreviewed) != nil || unreviewed < 1 {
+					return invalid()
+				}
+				result.ReportedFindings, result.ReviewedFiles = numbers["findings"], files
+				result.CoverageLimits = []string{CLIUnreviewedFilesLimit}
+			}
 			if terminal == "completed" {
 				_, countPresent := fields["findings"]
 				_, filesPresent := fields["reviewedFiles"]
@@ -166,6 +181,13 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedRe
 }
 
 func cliTerminal(fields map[string]string) (string, bool) {
+	if fields["outcome"] == "completed_with_warnings" {
+		if fields["type"] != "complete" || fields["status"] != "review_completed" ||
+			fields["state"] != "" || fields["errorType"] != "" {
+			return "", false
+		}
+		return "failed", true
+	}
 	var outcome string
 	switch fields["type"] {
 	case "rate_limit", "rate_limited":

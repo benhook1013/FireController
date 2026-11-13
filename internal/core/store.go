@@ -50,13 +50,17 @@ type Store struct {
 	eventGroups      map[messageTopic]map[*messageWaiter]struct{}
 	eventCount       int
 	principalWaiters map[string]int
+	workerContact    workerContactState
 
 	schemaMigrationTimeout time.Duration
 }
 
 func (s *Store) InstanceID() string { return s.instanceID }
 func (s *Store) DB() *sql.DB        { return s.db }
-func (s *Store) Close() error       { return errors.Join(s.db.Close(), s.writer.Close()) }
+func (s *Store) Close() error {
+	s.closeWorkerContact()
+	return errors.Join(s.db.Close(), s.writer.Close())
+}
 
 func Open(ctx context.Context, dataDir string, options ...OpenOption) (*Store, error) {
 	configuration := storeOptions{schemaMigrationTimeout: DefaultSchemaMigrationTimeout}
@@ -103,7 +107,7 @@ func Open(ctx context.Context, dataDir string, options ...OpenOption) (*Store, e
 		return nil, Fail("storage_unavailable", "The database could not be opened.", 500)
 	}
 	writer.SetMaxOpenConns(1)
-	s := &Store{writer: writer, admission: make(chan struct{}, 1), schemaMigrationTimeout: configuration.schemaMigrationTimeout}
+	s := &Store{writer: writer, admission: make(chan struct{}, 1), workerContact: newWorkerContactState(time.Now()), schemaMigrationTimeout: configuration.schemaMigrationTimeout}
 	if err = s.initialize(ctx, dataDir); err != nil {
 		_ = writer.Close()
 		return nil, err
@@ -119,6 +123,18 @@ func Open(ctx context.Context, dataDir string, options ...OpenOption) (*Store, e
 	if err = s.db.PingContext(ctx); err != nil {
 		_ = s.Close()
 		return nil, storageError(err)
+	}
+	if err = s.ensureProjectHandles(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err = s.ensureProjectManagement(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err = s.ensureWorkerRetirements(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
 	}
 	return s, nil
 }

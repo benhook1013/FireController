@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func validCoverageSource(current SourcePlan) bool {
@@ -19,10 +22,11 @@ func validCoverageSource(current SourcePlan) bool {
 // native evidence on any head. Covered does not claim that later code was reviewed;
 // Pending dominates admission even when a prior review is complete.
 type ComparisonState struct {
-	RoundsConfigured bool `json:"rounds_configured,omitempty"`
-	RoundsComplete   bool `json:"rounds_complete,omitempty"`
 	Covered          bool
 	Pending          bool
+	ExternalPending  bool
+	RoundsConfigured bool
+	RoundsComplete   bool
 }
 
 // Coverage reports completed PR/channel review progress only when no native
@@ -62,6 +66,36 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	return result, nil
 }
 
+// Retained partial findings are obligations even after execution releases its
+// reservation. Use existing operation/evidence indexes, independently of the
+// completed-round proof ledger and the currently published browser snapshot.
+const partialCLIResults = ` FROM review_operations o
+ CROSS JOIN review_execution_evidence e ON e.project_id=o.project_id AND e.attempt_id=o.attempt_id AND e.operation_id=o.id
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state='failed'
+ AND json_extract(e.body_json,'$.capture.review.Complete')=0`
+
+const partialCLIPending = ` AND json_array_length(e.body_json,'$.capture.review.Findings')>0
+ AND (NOT EXISTS(SELECT 1 FROM review_adjudication_state s WHERE s.project_id=e.project_id AND s.evidence_id=e.id)
+ OR EXISTS(SELECT 1 FROM review_adjudication_state s, json_each(s.body_json,'$.findings') f
+ WHERE s.project_id=e.project_id AND s.evidence_id=e.id
+ AND (json_extract(f.value,'$.disposition')='unadjudicated' OR
+ (json_extract(f.value,'$.disposition')='accepted' AND json_extract(f.value,'$.fix_sha')=''))))`
+
+// Compare the admitted Git identities. A change in scheduling or adjudication
+// alone must not spend another automatic CLI run on the same partial input.
+func partialCLIComparisonExists(ctx context.Context, q EvidenceQuery, project string, repo, number int64, head, base, ref, parent string, parentNumber int64) (bool, error) {
+	var exists bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1`+partialCLIResults+`
+ AND (o.reason IN('coverage_incomplete','cli_partial_settled') OR json_array_length(e.body_json,'$.capture.review.Findings')>0
+ OR (o.reason='capture_retained' AND json_extract(e.body_json,'$.capture.review.Outcome')='failed'
+ AND json_extract(e.body_json,'$.capture.review.coverage_limits[0]')=?))
+ AND o.head_sha=? AND json_extract(e.body_json,'$.anchor.repository_id')=?
+ AND json_extract(e.body_json,'$.anchor.base_sha')=? AND json_extract(e.body_json,'$.anchor.base_ref')=?
+ AND json_extract(e.body_json,'$.anchor.parent_sha')=? AND json_extract(e.body_json,'$.anchor.parent_pull_number')=?)`,
+		project, number, reviewprovider.CLIUnreviewedFilesLimit, head, repo, base, ref, parent, parentNumber).Scan(&exists)
+	return exists, err
+}
+
 const (
 	comparisonDirtyExists   = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty')`
 	comparisonPendingExists = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending')`
@@ -83,18 +117,44 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 		return ComparisonState{}, err
 	}
 	if dirty {
-		return ComparisonState{}, adjudicationStorageError()
+		return ComparisonState{}, &automaticProjectStateError{adjudicationStorageError()}
 	}
-	c, err := readRoundControl(ctx, tx, project, number, channel)
+	if channel == "cli" && !result.Pending {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1"+partialCLIResults+partialCLIPending+")", project, number).Scan(&result.Pending); err != nil {
+			return ComparisonState{}, err
+		}
+	}
+	if channel == "hosted" {
+		ids, err := reviews.PendingExternalHosted(ctx, tx, project, repositoryID, number, 1)
+		if err != nil {
+			return ComparisonState{}, err
+		}
+		result.ExternalPending = len(ids) > 0
+		result.Pending = result.Pending || result.ExternalPending
+		if !result.Covered {
+			// A deliberately counted and fixed batch supplies earned channel
+			// coverage for its original repository, across later head movement.
+			err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM review_round_external_credits credit
+ JOIN review_round_external_members member ON member.batch_id=credit.batch_id AND member.project_id=credit.project_id
+ JOIN review_run_versions v ON v.project_id=member.project_id AND v.id=member.run_id AND v.pull_number=credit.pull_number AND v.finalized=1
+ JOIN review_snapshots s ON s.project_id=v.project_id AND s.revision=v.version_revision
+ WHERE credit.project_id=? AND credit.pull_number=? AND s.repository_id=?)`, project, number, repositoryID).Scan(&result.Covered)
+			if err != nil {
+				return ComparisonState{}, err
+			}
+		}
+	}
+	rounds, err := readRoundControl(ctx, tx, project, number, channel)
 	if err != nil {
 		return ComparisonState{}, err
 	}
-	result.RoundsConfigured = c.Configured
-	result.RoundsComplete = c.Configured && (c.Closed || roundDone(c))
+	result.RoundsConfigured = rounds.Configured
+	result.RoundsComplete = rounds.Configured && (rounds.Closed || roundDone(rounds))
 	return result, nil
 }
 
-func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, state ReviewAdjudication, channel string) (bool, error) {
+func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidence, state ReviewAdjudication, channel string, requireReceivingFix bool) (bool, error) {
 	if channel != "cli" && channel != "hosted" || channel == "cli" && evidence.Capture.Hosted != nil || channel == "hosted" && validateHostedEvidenceMetadata(evidence.Capture.Hosted, evidence.Anchor, evidence.Capture.Review) != nil {
 		return false, adjudicationStorageError()
 	}
@@ -130,7 +190,9 @@ func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidenc
 			if err != nil {
 				return false, err
 			}
-			ready = ready && resolved
+			if requireReceivingFix {
+				ready = ready && resolved
+			}
 			continue
 		}
 		if finding.FixSHA == "" {

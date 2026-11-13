@@ -13,10 +13,13 @@ import (
 
 // Register mounts provider-free project-map and job association endpoints.
 func Register(mux *http.ServeMux, store *core.Store) {
+	registerImport(mux, store)
 	base := "/api/v1/projects/{project_id}"
 	mux.HandleFunc("POST "+base+"/map/entries", createEntry(store))
 	mux.HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
+	mux.HandleFunc("PATCH "+base+"/map/entries/{entry_id}", updateEntry(store))
 	mux.HandleFunc("GET "+base+"/map/entries", listEntries(store))
+	mux.HandleFunc("GET "+base+"/map/editorial", editorialEntries(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}", getEntry(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history", entryHistory(store))
 	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history/{revision}", getRevision(store))
@@ -145,12 +148,7 @@ func createEntry(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "map.entries.create", Target: "map.entries", Key: key, Request: value}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			at := stamp()
-			e := entry(value, scope.ProjectID, core.NewID("map_entry"), 1, at, at)
-			if err := writeEntry(ctx, tx, scope, e, true); err != nil {
-				return nil, err
-			}
-			return Receipt{e.ID, 1, "created"}, nil
+			return createEntryTx(ctx, tx, scope, value)
 		})
 		respond(w, json.RawMessage(result), err, 201)
 	}
@@ -186,25 +184,7 @@ func replaceEntry(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "map.entries.replace", Target: id, Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			current, err := readEntry(ctx, tx, scope.ProjectID, id)
-			if err != nil {
-				return nil, err
-			}
-			if current.Revision != req.ExpectedRevision {
-				return nil, conflict(current.Revision)
-			}
-			old := editable(current)
-			if old.Kind != value.Kind || !retainsPhases(old, value) {
-				return nil, invalid()
-			}
-			if equalEditable(old, value) {
-				return Receipt{id, current.Revision, "unchanged"}, nil
-			}
-			next := entry(value, scope.ProjectID, id, current.Revision+1, current.CreatedAt, stamp())
-			if err := writeEntry(ctx, tx, scope, next, false); err != nil {
-				return nil, err
-			}
-			return Receipt{id, next.Revision, "updated"}, nil
+			return replaceEntryTx(ctx, tx, scope, id, req.ExpectedRevision, value)
 		})
 		respond(w, json.RawMessage(result), err, 200)
 	}
@@ -236,7 +216,7 @@ func listEntries(store *core.Store) http.HandlerFunc {
 		}
 		query := r.URL.Query()
 		kind := query.Get("kind")
-		if values, present := query["kind"]; present && (values[0] != "workstream" && values[0] != "return_point") {
+		if values, present := query["kind"]; present && !validKind(values[0]) {
 			core.WriteError(w, invalid())
 			return
 		}
@@ -283,7 +263,7 @@ func listEntries(store *core.Store) http.HandlerFunc {
 				if err = rows.Scan(&item.ID, &item.Kind, &item.Title, &item.State, &item.Archived, &item.Revision); err != nil {
 					return err
 				}
-				if !entryID.MatchString(item.ID) || item.Kind != "workstream" && item.Kind != "return_point" || !named(item.Title, 240) || !short(item.State, 240) || item.Revision < 1 {
+				if !entryID.MatchString(item.ID) || !validKind(item.Kind) || !named(item.Title, 240) || !short(item.State, 240) || item.Revision < 1 {
 					return unavailable()
 				}
 				if len(result.Items) == limit {
@@ -371,6 +351,34 @@ func entryHistoryQuery(project, id string, before int64, limit int) (string, []a
 	return query + ` ORDER BY revision DESC LIMIT ?`, append(args, limit)
 }
 
+// ReadRevision returns one exact retained map revision through the same bounded
+// canonical decoder used by the authenticated history endpoint.
+func ReadRevision(ctx context.Context, tx *sql.Tx, project, id string, rev int64) (Revision, error) {
+	if ctx == nil || tx == nil || !validID(project) || !entryID.MatchString(id) || rev < 1 {
+		return Revision{}, invalid()
+	}
+	var value Revision
+	var raw sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT revision,actor_id,created_at,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entry_history WHERE project_id=? AND entry_id=? AND revision=?`, maxEntryBytes, project, id, rev).Scan(&value.Revision, &value.ActorID, &value.CreatedAt, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Revision{}, notFound()
+	}
+	if err != nil {
+		return Revision{}, err
+	}
+	if !raw.Valid {
+		return Revision{}, unavailable()
+	}
+	value.State, err = decodeEntry(raw.String)
+	if err != nil {
+		return Revision{}, err
+	}
+	if value.State.ID != id || value.State.ProjectID != project || value.State.Revision != rev || value.State.UpdatedAt != value.CreatedAt || !validID(value.ActorID) {
+		return Revision{}, unavailable()
+	}
+	return value, nil
+}
+
 func getRevision(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := scopeFor(store, w, r, "read")
@@ -388,26 +396,58 @@ func getRevision(store *core.Store) http.HandlerFunc {
 		}
 		var value Revision
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
-			var raw sql.NullString
-			err := tx.QueryRowContext(ctx, `SELECT revision,actor_id,created_at,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END FROM project_map_entry_history WHERE project_id=? AND entry_id=? AND revision=?`, maxEntryBytes, scope.ProjectID, id, rev).Scan(&value.Revision, &value.ActorID, &value.CreatedAt, &raw)
-			if errors.Is(err, sql.ErrNoRows) {
-				return notFound()
-			}
-			if err != nil {
-				return err
-			}
-			if !raw.Valid {
-				return unavailable()
-			}
-			value.State, err = decodeEntry(raw.String)
-			if err != nil {
-				return err
-			}
-			if value.State.ID != id || value.State.ProjectID != scope.ProjectID || value.State.Revision != rev || value.State.UpdatedAt != value.CreatedAt || !validID(value.ActorID) {
-				return unavailable()
-			}
-			return nil
+			var err error
+			value, err = ReadRevision(ctx, tx, scope.ProjectID, id, rev)
+			return err
 		})
 		respond(w, value, err, 200)
 	}
+}
+
+// These transaction helpers are shared by ordinary mutations and prepared
+// imports. Their caller owns authorization, admission, receipt and commit.
+func createEntryTx(ctx context.Context, tx *sql.Tx, scope core.Scope, value Editable) (Receipt, error) {
+	if err := validateEditable(value); err != nil {
+		return Receipt{}, err
+	}
+	at := stamp()
+	e := entry(value, scope.ProjectID, core.NewID("map_entry"), 1, at, at)
+	if err := writeEntry(ctx, tx, scope, e, true); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{e.ID, 1, "created"}, nil
+}
+func admitEntryReplacement(current Entry, expected int64, value Editable) (bool, error) {
+	if !validGuard(&expected, 1) {
+		return false, invalid()
+	}
+	if err := validateEditable(value); err != nil {
+		return false, err
+	}
+	if current.Revision != expected {
+		return false, conflict(current.Revision)
+	}
+	old := editable(current)
+	if old.Kind != value.Kind || !retainsPhases(old, value) {
+		return false, invalid()
+	}
+	return !equalEditable(old, value), nil
+}
+func replaceEntryTx(ctx context.Context, tx *sql.Tx, scope core.Scope, id string, expected int64, value Editable) (Receipt, error) {
+	current, err := readEntry(ctx, tx, scope.ProjectID, id)
+	if err != nil {
+		return Receipt{}, err
+	}
+	changed, err := admitEntryReplacement(current, expected, value)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if !changed {
+		return Receipt{id, current.Revision, "unchanged"}, nil
+	}
+	next := entry(value, scope.ProjectID, id, current.Revision+1, current.CreatedAt, stamp())
+	if err := writeEntry(ctx, tx, scope, next, false); err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{id, next.Revision, "updated"}, nil
 }

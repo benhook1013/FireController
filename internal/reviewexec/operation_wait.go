@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -88,6 +86,10 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 	}
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
+	var deadline time.Time
+	if waitSeconds > 0 {
+		deadline = time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	}
 	canceled := func() error {
 		return resultWaitCanceled(waitCtx, "The review result wait was canceled; the retained operation is unchanged.")
 	}
@@ -95,7 +97,12 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
-		value, err := e.ReadOperation(waitCtx, scope, id)
+		var value Operation
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var err error
+			value, err = e.ReadOperation(readCtx, scope, id)
+			return err
+		})
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
@@ -138,7 +145,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 			delete(e.operationWaiterPrincipals, waiter.principal)
 		}
 	}()
-	timer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		value, err := read()
@@ -160,23 +167,15 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 }
 
 func operationPreference(r *http.Request, defaultSeconds int) (int, error) {
-	values, present := r.Header["Prefer"]
-	if !present {
-		return defaultSeconds, nil
-	}
-	if len(values) != 1 || !strings.HasPrefix(values[0], "wait=") {
-		return 0, invalid()
-	}
-	raw := strings.TrimPrefix(values[0], "wait=")
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 0 || seconds > 900 || strconv.Itoa(seconds) != raw {
-		return 0, invalid()
-	}
-	return seconds, nil
+	return core.WaitPreference(r, defaultSeconds)
 }
 
 func operationResponseDeadline(w http.ResponseWriter, seconds int) error {
-	err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Duration(seconds+5) * time.Second))
+	return operationResponseDeadlineAt(w, time.Now().Add(time.Duration(seconds+5)*time.Second))
+}
+
+func operationResponseDeadlineAt(w http.ResponseWriter, deadline time.Time) error {
+	err := http.NewResponseController(w).SetWriteDeadline(deadline)
 	if err != nil && !errors.Is(err, http.ErrNotSupported) {
 		return core.Fail("internal_error", "The review result response deadline could not be established; no action was accepted.", 500)
 	}

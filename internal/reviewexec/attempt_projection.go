@@ -10,7 +10,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func probeAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
 		return err
@@ -46,13 +46,20 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 		supplied = &copy
 	}
 	var receipt reviews.Receipt
-	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		attempt, err := readAttempt(ctx, tx, project, attemptID)
-		if err != nil {
+	local, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// A retry re-reads the exact attempt and current PR in its own transaction.
+	// The projection replay check recognizes a committed write without another
+	// snapshot or event. This path never repeats allowance or provider work.
+	err := retrySourceRefreshLocal(local, func() error {
+		return e.store.BackgroundWrite(local, func(ctx context.Context, tx *sql.Tx) error {
+			attempt, err := readAttempt(ctx, tx, project, attemptID)
+			if err != nil {
+				return err
+			}
+			receipt, err = publishJournalAttempt(ctx, tx, attempt, supplied, false)
 			return err
-		}
-		receipt, err = publishJournalAttempt(ctx, tx, attempt, supplied, false)
-		return err
+		})
 	})
 	if err != nil {
 		return reviews.Receipt{}, err
@@ -60,10 +67,63 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 	return receipt, nil
 }
 
-func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool) (reviews.Receipt, error) {
-	operation, err := readOperation(ctx, tx, attempt.ProjectID, attempt.OperationID)
+func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool, recovered ...bool) (reviews.Receipt, error) {
+	// Publication needs journal ownership, not optional allowance presentation.
+	// Damaged allowance evidence must not roll back a safe local hold.
+	operation, err := readOperationBase(ctx, tx, attempt.ProjectID, attempt.OperationID)
 	if err != nil {
 		return reviews.Receipt{}, err
+	}
+	if operation.AttemptID != attempt.ID {
+		// History may retain an unused preparation that detached before dispatch.
+		original, draft, err := historicalUnusedPreparationOperation(ctx, tx, operation, attempt, true)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) || isWaitUnavailable(err) {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			return reviews.Receipt{}, err
+		}
+		if !draft {
+			var source bool
+			original, source, err = historicalSourceRetryOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			draft = source
+		}
+		if !draft {
+			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				if isWaitUnavailable(err) {
+					return reviews.Receipt{}, publicationConflict()
+				}
+				return reviews.Receipt{}, err
+			}
+			if operation.Channel == "cli" {
+				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Observation.Remaining != 0 {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			} else {
+				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Input.Observation.State != "cooldown_observed" {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			}
+		}
+		operation = original
 	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, publicationConflict()
@@ -91,7 +151,15 @@ func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, met
 	if err != nil || unchanged {
 		return receipt, err
 	}
-	return reviews.PublishNative(ctx, tx, core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}, reviews.NativePublication{Pull: pull, Attempt: &projected})
+	scope := core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+	publication := reviews.NativePublication{Pull: pull, Attempt: &projected}
+	if len(recovered) > 0 && recovered[0] {
+		if operation.Reason != "hosted_retained_evidence_recovered" {
+			return reviews.Receipt{}, publicationConflict()
+		}
+		return reviews.PublishRecoveredHostedAttempt(ctx, tx, scope, publication)
+	}
+	return reviews.PublishNative(ctx, tx, scope, publication)
 }
 
 func journalBrowserAttempt(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt) (reviews.Attempt, error) {

@@ -11,8 +11,11 @@ import (
 // EnsureSchema creates the fixed reviews read-model schema during startup.
 // Request handlers never perform DDL or compatibility migrations.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
-	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), completedChannelRunCountsMigrationSQL(), ExternalHostedSchemaSQL())
-	return store.EnsureSchemaWithBackfill(ctx, "reviews", migrations, ensureCurrentReviewIndexes)
+	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), ExternalHostedSchemaSQL(), deliverySelectionMigrationSQL(), completedChannelRunCountsMigrationSQL())
+	if err := store.EnsureSchemaWithCompatibility(ctx, "reviews", migrations, reconcileReviewSchemaLineage, ensureCurrentReviewIndexes); err != nil {
+		return err
+	}
+	return EnsureNotificationSchema(ctx, store)
 }
 
 // ensureCurrentReviewIndexes runs after pending DDL, in the same exclusive

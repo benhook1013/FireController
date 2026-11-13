@@ -293,7 +293,10 @@ func captureDirectories(root string, create bool) error {
 			}
 			info, err = os.Lstat(path)
 		}
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || i == 0 && !captureMode(info, 0700) {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || i == 0 && !captureMode(info, 0700) {
 			return errors.New("directory")
 		}
 	}

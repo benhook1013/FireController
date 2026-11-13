@@ -14,13 +14,12 @@ import (
 	"github.com/benhook1013/FireController/internal/profile"
 )
 
-func TestMCPRecoversSlowIdentityBeforeSendingOneJobMutation(t *testing.T) {
+func TestMCPRecoversTimedOutIdentityBeforeSendingOneJobMutation(t *testing.T) {
 	var identities, writes atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {
 			if identities.Add(1) == 1 {
-				time.Sleep(6 * time.Second)
-				http.Error(w, "synthetic gateway restart", 503)
+				<-r.Context().Done()
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

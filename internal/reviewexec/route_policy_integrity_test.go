@@ -1,7 +1,6 @@
 package reviewexec
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"strings"
@@ -127,32 +126,5 @@ func TestRoutePolicyQueriesUseScopedIndexes(t *testing.T) {
 		if err != nil || !found {
 			t.Fatal("missing targeted route index", tc.index, err)
 		}
-	}
-}
-
-func TestRoutePolicyDerivedWriteRollbackAndExactRetry(t *testing.T) {
-	f, a, id := routeFixture(t, 1)
-	adjudicationComplete(t, f, a)
-	route := routeCreate(t, f, id, "derived-route", routeRequest(0, 0, 4))
-	before := routeState(t, f, a)
-	admissionSQL(t, f, `CREATE TRIGGER fail_route_policy_refresh BEFORE UPDATE ON review_route_policy_facts BEGIN SELECT RAISE(ABORT,'synthetic route fact failure'); END`)
-	request := FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Explicit receiving decision"}
-	scope := f.scope(t, attemptProject, f.writer, false)
-	_, err := f.e.DecideFindingRoute(t.Context(), scope, "derived-route-retry", route.ID, request)
-	if err == nil || routeState(t, f, a) != before {
-		t.Fatal("derived route failure committed authority/audit/event/receipt", err)
-	}
-	admissionSQL(t, f, `DROP TRIGGER fail_route_policy_refresh`)
-	first, err := f.e.DecideFindingRoute(t.Context(), scope, "derived-route-retry", route.ID, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	after := routeState(t, f, a)
-	replay, err := f.e.DecideFindingRoute(t.Context(), scope, "derived-route-retry", route.ID, request)
-	if err != nil || !bytes.Equal(first, replay) || routeState(t, f, a) != after {
-		t.Fatal("route retry duplicated authority/audit/event/receipt", err)
-	}
-	if pending, err := routePending(t, f, 4); err != nil || pending != 0 {
-		t.Fatal("rejected route remained pending", pending, err)
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"unicode"
@@ -11,11 +12,30 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
-	if call.subcommand == "start" || call.subcommand == "run-read" {
-		return parseReviewRun(call, args)
+	if call.subcommand == "watch" {
+		var ok bool
+		call.reviewWatch, ok = parseReviewWatch(args)
+		return call, ok
 	}
-	if call.subcommand == "operations" {
-		return parseOperationList(call, args)
+	if call.subcommand == "scheduling" {
+		var ok bool
+		call.reviewScheduling, ok = parseReviewScheduling(args)
+		return call, ok
+	}
+	if call.subcommand == "activity" {
+		var ok bool
+		call.reviewActivity, ok = parseReviewActivity(args)
+		return call, ok
+	}
+	if call.subcommand == "ci-wait" {
+		var ok bool
+		call.ciWatch, ok = parseCIWatch(args)
+		return call, ok
+	}
+	if call.subcommand == "queue" && hasActiveQueueFlag(args) {
+		options, ok := parseReviewActiveQueue(args)
+		call.reviewActiveQueue, call.limit, call.cursor = true, options.Limit, options.Cursor
+		return call, ok
 	}
 	if call.subcommand == "operation" {
 		var ok bool
@@ -24,6 +44,12 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			call.waitSeconds = call.reviewOperationStatus.WaitSeconds
 		}
 		return call, ok
+	}
+	if call.subcommand == "operations" {
+		return parseOperationList(call, args)
+	}
+	if call.subcommand == "start" || call.subcommand == "run-read" {
+		return parseReviewRun(call, args)
 	}
 	if call.subcommand == "source-assess" || call.subcommand == "ci-assess" || call.subcommand == "readiness" {
 		if call.subcommand == "ci-assess" {
@@ -50,7 +76,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	}
 	list := call.subcommand == "queue" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "routes"
 	switch call.subcommand {
-	case "queue", "pull", "runs", "attempts", "run", "evidence", "adjudication", "assess", "source-operation", "route", "routes", "publication":
+	case "queue", "pull", "runs", "attempts", "run", "evidence", "adjudication", "operation", "assess", "source-operation", "route", "routes", "publication":
 	case "execution":
 		return call, len(args) == 0
 	default:
@@ -67,7 +93,7 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			continue
 		}
 		flag, value, assigned := strings.Cut(argument, "=")
-		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "run") && flag == "--snapshot") {
+		if seen[flag] || !(list && (flag == "--limit" || flag == "--cursor") || call.subcommand == "routes" && flag == "--pr" || call.subcommand == "operation" && flag == "--wait-seconds" || (call.subcommand == "pull" || call.subcommand == "runs" || call.subcommand == "attempts" || call.subcommand == "run") && flag == "--snapshot") {
 			return call, false
 		}
 		seen[flag] = true
@@ -79,6 +105,12 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 			value = args[i]
 		}
 		switch flag {
+		case "--wait-seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || strconv.Itoa(seconds) != value || client.ValidateReviewOperationWait(seconds) != nil {
+				return call, false
+			}
+			call.waitSeconds = seconds
 		case "--pr":
 			number, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || number < 1 || number > 2147483647 || strconv.FormatInt(number, 10) != value {
@@ -118,8 +150,18 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 	if call.subcommand == "route" {
 		return call, client.ValidateReviewRouteID(call.position[0]) == nil
 	}
+	if call.subcommand == "operation" {
+		return call, client.ValidateReviewOperationID(call.position[0]) == nil
+	}
 	if call.subcommand == "source-operation" {
-		return call, client.ValidateReviewSourceRefreshID(call.position[0]) == nil
+		if err := client.ValidateReviewSourceRefreshID(call.position[0]); err != nil {
+			var field *client.Error
+			if errors.As(err, &field) {
+				call.argumentDiagnostic = &diagnostic{Code: "invalid_arguments", Message: field.Message, Action: field.Action, Details: field.Details}
+			}
+			return call, false
+		}
+		return call, true
 	}
 	if call.subcommand == "run" {
 		return call, reviewID(call.position[0], "review_run_")
@@ -149,6 +191,15 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "scheduling":
+		return executeReviewScheduling(ctx, service, call.reviewScheduling)
+	case "activity":
+		return service.ReviewActivity(ctx, call.reviewActivity)
+	case "operations":
+		return service.ReviewOperations(ctx, call.reviewOperations)
+	case "ci-wait":
+		value, err := service.WatchCI(ctx, call.ciWatch.targets, call.ciWatch.seconds)
+		return client.AgentCIWatch(value), err
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])
 	case "route":
@@ -156,42 +207,60 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "routes":
 		return service.ReviewFindingRoutes(ctx, call.pullNumber, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "execution":
-		return service.ReviewExecution(ctx)
-	case "operations":
-		return service.ReviewOperations(ctx, call.reviewOperations)
+		return service.ReviewExecutionWithScheduling(ctx)
+	case "watch":
+		return service.WatchReviews(ctx, call.reviewWatch.options, call.reviewWatch.seconds)
 	case "operation":
 		return executeReviewOperationStatus(ctx, service, call.reviewOperationStatus)
 	case "source-operation":
-		return service.ReviewSourceOperation(ctx, call.position[0])
+		value, err := service.ReviewSourceOperation(ctx, call.position[0])
+		return client.AgentReviewSourceOperation(value), err
 	case "source-assess":
-		return service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
+		value, err := service.ReviewSourcePolicyAssessment(ctx, call.pullNumber)
+		return client.AgentReviewSourcePolicy(value), err
 	case "readiness":
-		return service.ReviewSourceReadiness(ctx, call.pullNumber)
+		value, err := service.ReviewSourceReadiness(ctx, call.pullNumber)
+		return client.AgentReviewReadiness(value), err
 	case "ci-assess":
+		var value client.ReviewSourceCIAssessment
+		var err error
 		if call.reviewCIDiagnostics {
-			return service.ReviewSourceCIDiagnostics(ctx, call.pullNumber)
+			value, err = service.ReviewSourceCIDiagnostics(ctx, call.pullNumber)
+		} else {
+			value, err = service.ReviewSourceCIAssessment(ctx, call.pullNumber)
 		}
-		return service.ReviewSourceCIAssessment(ctx, call.pullNumber)
+		return client.AgentReviewCI(value), err
 	case "queue":
+		if call.reviewActiveQueue {
+			return runReviewActiveQueue(ctx, service, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
+		}
 		return service.ReviewQueue(ctx, client.PageOptions{Limit: call.limit, Cursor: call.cursor})
 	case "pull":
 		return service.ReviewPull(ctx, call.pullNumber, call.snapshot)
 	case "attempts":
 		return service.ReviewAttempts(ctx, call.pullNumber, client.ReviewAttemptOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
 	case "runs":
-		return service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
+		value, err := service.ReviewRuns(ctx, call.pullNumber, client.ReviewRunOptions{PageOptions: client.PageOptions{Limit: call.limit, Cursor: call.cursor}, Snapshot: call.snapshot})
+		return client.AgentReviewRuns(value), err
 	case "evidence":
 		return service.ReviewEvidence(ctx, call.position[0])
 	case "adjudication":
 		return service.ReviewAdjudication(ctx, call.position[0])
 	case "assess":
-		return service.ReviewPolicyAssessment(ctx, call.position[0])
+		value, err := service.ReviewPolicyAssessment(ctx, call.position[0])
+		return client.AgentReviewPolicy(value), err
 	default: // parseReview admits only the explicit run-detail command here.
 		return service.ReviewRun(ctx, call.position[0], call.snapshot)
 	}
 }
 
 func parseReviewControl(operation string, args []string) (*mutationInvocation, bool) {
+	if operation == "settle-hosted" {
+		return parseExternalHostedSettlement(args)
+	}
+	if operation == "decide-batch" || operation == "fix-batch" {
+		return parseReviewBatch(operation, args)
+	}
 	if operation == "publish" || operation == "publication-recover" {
 		return parseReviewPublication(operation, args)
 	}
@@ -350,8 +419,9 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	case "fix":
 		call.reviewFix = client.ReviewFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
-		if client.ValidateReviewFixRequest(call.reviewFix) != nil {
-			return nil, false
+		if err := client.ValidateReviewFixRequest(call.reviewFix); err != nil {
+			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
+			return call, false
 		}
 	case "route-create":
 		target, err := strconv.ParseInt(values["--target-pr"], 10, 64)
@@ -369,8 +439,9 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	case "route-fix":
 		call.reviewRouteFix = client.ReviewRouteFixRequest{ExpectedRevision: revision, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
-		if client.ValidateReviewRouteFixRequest(call.reviewRouteFix) != nil {
-			return nil, false
+		if err := client.ValidateReviewRouteFixRequest(call.reviewRouteFix); err != nil {
+			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
+			return call, false
 		}
 	case "finalize":
 		call.reviewFinalize = client.ReviewFinalizeRequest{ExpectedRevision: revision}
@@ -408,7 +479,7 @@ func reviewSourceFlags(args []string, flags ...string) (map[string]string, bool)
 }
 
 func parseReviewRequest(args []string) (*mutationInvocation, bool) {
-	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true}
+	allowed := map[string]bool{"--key": true, "--expect-config": true, "--channel": true, "--head": true, "--wait-seconds": true, "--out-of-order": true, "--override-file-limit": true}
 	values := map[string]string{}
 	var positions []string
 	for i := 0; i < len(args); i++ {
@@ -423,6 +494,16 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		if _, duplicate := values[flag]; duplicate {
 			return nil, false
 		}
+		if flag == "--out-of-order" || flag == "--override-file-limit" {
+			if !assigned {
+				value = "true"
+			}
+			if value != "true" && value != "false" {
+				return nil, false
+			}
+			values[flag] = value
+			continue
+		}
 		if !assigned {
 			i++
 			if i >= len(args) {
@@ -432,7 +513,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		values[flag] = value
 	}
-	if len(positions) != 1 || len(values) < 4 || len(values) > 5 || !validMutationKey(values["--key"]) {
+	if len(positions) != 1 || len(values) < 4 || len(values) > 7 || !validMutationKey(values["--key"]) {
 		return nil, false
 	}
 	number, err := strconv.ParseInt(positions[0], 10, 64)
@@ -451,7 +532,7 @@ func parseReviewRequest(args []string) (*mutationInvocation, bool) {
 		}
 		seconds = parsed
 	}
-	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"]}
+	request := client.ReviewRequest{ExpectedConfigurationRevision: revision, PullNumber: number, Channel: values["--channel"], HeadSHA: values["--head"], AllowOutOfOrder: values["--out-of-order"] == "true", OverrideFileLimit: values["--override-file-limit"] == "true"}
 	if client.ValidateReviewRequest(request) != nil {
 		return nil, false
 	}
@@ -512,4 +593,13 @@ func parseReviewPublication(operation string, args []string) (*mutationInvocatio
 	}
 	call.reviewCheckpoint = client.ReviewCheckpointRequest{EvidenceID: id, ExpectedRevision: revision}
 	return call, client.ValidateReviewCheckpointRequest(call.reviewCheckpoint) == nil
+}
+
+func hasActiveQueueFlag(args []string) bool {
+	for _, value := range args {
+		if value == "--active" || strings.HasPrefix(value, "--active=") {
+			return true
+		}
+	}
+	return false
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func TestCarriedObligationsRepositoryChangeHoldsAdmissionAndSelection(t *testing.T) {
-	f := selectionFixture(t)
+	f := frontFixture(t)
 	retainObligationSource(t, f, attemptProject, "repository-source-importer", "retained-source", strings.Repeat("c", 64), 0)
 	admissionSQL(t, f, `UPDATE projects SET github_repository_id=999 WHERE id=?`, attemptProject)
 	checkHold := func(err error) {
@@ -64,15 +64,17 @@ func TestCarriedObligationsRepositoryChangeHoldsAdmissionAndSelection(t *testing
 		if err != nil || !settled || got.State != "held" || got.Reason != "repository_changed" || got.OperationID != "" {
 			t.Fatal("selection did not settle as repository hold", got, settled, err)
 		}
-
+		if front := frontChannel(t, frontRead(t, f), "cli"); front.State != "held" || front.Reason != "repository_changed" || front.PullNumber != 2 {
+			t.Fatal("front lost repository-change diagnostic", front)
+		}
 	}
 	var retainedRepository int64
 	if err := f.store.DB().QueryRow(`SELECT repository_id FROM review_adoption_sources WHERE project_id=?`, attemptProject).Scan(&retainedRepository); err != nil || retainedRepository != 801 {
 		t.Fatal("retained source rebound or lost", retainedRepository, err)
 	}
-	// Both held selections perform exactly one repository read and a two-PR
-	// metadata window; neither local front inspection repeats those reads.
-	if reader.calls.Load() != 6 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+	// Each held selection reads its repository and first PR. Reading
+	// the retained front adds no provider calls.
+	if reader.calls.Load() != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 		t.Fatal("protective hold granted work or repeated source reads", reader.calls.Load())
 	}
 }

@@ -34,7 +34,17 @@ func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[
 // migration deadline and atomic rollback, including schema version metadata.
 // Work must honor the context and use bounded batches, with no filesystem, network or
 // provider calls, and must not commit or roll back the connection itself.
-func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
+func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) error {
+	return s.EnsureSchemaWithCompatibility(ctx, domain, migrations, nil, backfill)
+}
+
+// EnsureSchemaWithCompatibility runs a repository-owned predecessor check before
+// pending migrations, inside the same exclusive transaction and deadline. The
+// callback receives the retained numeric version and may repair only recognized
+// historical layouts. It must not change version metadata, commit, roll back,
+// or perform external I/O. It also runs for current versions to reject ambiguous
+// layouts rather than silently treating their version stamp as sufficient proof.
+func (s *Store) EnsureSchemaWithCompatibility(ctx context.Context, domain string, migrations [][]string, compatibility func(context.Context, *sql.Conn, int) error, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
 	if domain == "" || len(migrations) == 0 {
 		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
 	}
@@ -84,6 +94,11 @@ func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, mig
 	}
 	if version > len(migrations) {
 		return Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
+	}
+	if compatibility != nil {
+		if err = compatibility(ctx, conn, version); err != nil {
+			return err
+		}
 	}
 	needsBackfill := version < len(migrations)
 	for _, migration := range migrations[version:] {

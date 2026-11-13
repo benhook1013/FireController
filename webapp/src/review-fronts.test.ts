@@ -1,0 +1,170 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Api } from './api';
+import { currentReviewFronts, reviewQueueBadges, reviewChannelPosition, type ReviewFronts } from './review-fronts';
+import type { ReviewPullSummary } from './types';
+import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
+
+const snapshot='review_snapshot_a';
+const sha='a'.repeat(40),base='b'.repeat(40),time='2026-10-19T13:00:00Z';
+const front=(channel:'cli'|'hosted',number:number)=>({channel,state:'ready' as const,pull_number:number,head_sha:sha,base_sha:base,base_ref:'main',source_observed_at:time,checked_at:time});
+const priority=(number:number)=>({pull_number:number,head_sha:sha,base_sha:base,base_ref:'main'});
+const value=():ReviewFronts=>({project_id:'project_one',configured:true,repository_id:123,configuration_revision:2,policy_revision:1,snapshot_id:snapshot,queue:[1,2,3,4],channels:[{...front('hosted',2),queued_priority:priority(2)},{...front('cli',3),queued_priority:priority(3)}]});
+const pull=(number:number):ReviewPullSummary=>({number,title:'Work',state:'open',head_sha:sha,base_sha:base,base_ref:'main',ci_state:'unknown',mergeability:'unknown',complete:false,run_count:0,run_counts:{hosted:0,cli:0,subagent:0,manual:0},attempt_count:0,recent_runs:[],latest_attempts:[]});
+const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({channel,configured:true,revision:1,epoch:1,closed,minimum:0,maximum:5,taper:2,used:0,dry:0,tapered:false,pending:0});
+afterEach(()=>vi.unstubAllGlobals());
+
+describe('current review position badges',()=>{
+  it('distinguishes a verified front, local queue position and carried admission hold',()=>{
+    const v=value();v.channels=[front('hosted',2)];
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)?.text).toBe('Up next');
+    v.channels=[{...front('hosted',2),state:'held',reason:'source_obligations_pending'}];
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Carried work',description:expect.stringContaining('holds new reviews')});
+    expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
+    const stopped={...v,channels:[{...front('hosted',2),state:'held' as const,reason:'local_queue_position',source_observed_at:undefined}]};
+    const local=currentReviewFronts(snapshot,[pull(2)],stopped);
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',local)).toMatchObject({text:'Queue position',description:expect.stringContaining('have not been verified')});
+    for (const changed of [{...pull(2),head_sha:'c'.repeat(40)},{...pull(2),base_sha:'c'.repeat(40)},{...pull(2),base_ref:'other'},{...pull(2),state:'merged' as const}]) expect(reviewChannelPosition(changed,snapshot,'hosted',v)).toBeUndefined();
+    expect(reviewChannelPosition(pull(2),'other-snapshot','hosted',v)).toBeUndefined();
+    expect(reviewChannelPosition(pull(2),snapshot,'cli',v)).toBeUndefined();
+  });
+  it.each(['hosted', 'cli'] as const)('distinguishes finalized fixes from results pending for %s without inferring from the recent preview', channel => {
+    const v = value();
+    v.channels = [{ ...front(channel, 2), state: 'held', reason: 'review_fixes_pending' }];
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'Review results are finalized, and accepted findings still need fixes before another review in this channel.' });
+    v.channels[0].reason = 'review_evidence_pending';
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toMatchObject({ text: 'Results pending', description: expect.stringContaining('capture or adjudication') });
+    v.channels[0].reason = 'external_hosted_pending';
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)?.text).toBe('Manual results pending');
+  });
+  it('marks the earliest remaining PR even when the eligible fronts are later',()=>{
+    const v=value();
+    v.channels=[{...front('hosted',3),queued_priority:priority(2)},{...front('cli',4),queued_priority:priority(3)}];
+    expect(reviewQueueBadges(pull(1),snapshot,v)).toEqual([]);
+    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(reviewChannelPosition(pull(3),snapshot,'hosted',v)?.text).toBe('Up next');
+    v.channels[0].queued_priority=priority(4);
+    expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['cli']});
+  });
+  it('rejects a contradictory loaded priority and never promotes the eligible target as a fallback',()=>{
+    const v=value();v.channels=[{...front('hosted',3),queued_priority:priority(2)}];
+    const current=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)},pull(3),pull(4)],v);
+    expect(reviewQueueBadges(pull(3),snapshot,current)).toEqual([]);
+    expect(reviewQueueBadges(pull(4),snapshot,current)).toEqual([]);
+    expect(currentReviewFronts('review_snapshot_old',[pull(2)],v)).toBeUndefined();
+    expect(reviewQueueBadges(pull(4),snapshot,currentReviewFronts(snapshot,[pull(4)],v))[0]?.text).toBe('Queued');
+  });
+  it('uses current controls for closure without converting missing controls into completion',()=>{
+    const progress:ReviewProgressItem={pull_number:2,channels:[control('hosted',true),control('cli',true)]};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
+    progress.channels[1]={...control('cli'),configured:false,revision:0,epoch:0,maximum:0,taper:0};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)).toEqual([]);
+  });
+	 it('keeps confirmed closure independent of a replacement source snapshot',()=>{
+	   const progress:ReviewProgressItem={pull_number:2,channels:[control('hosted',true),control('cli',true)]};
+	   const stale=currentReviewFronts('review_snapshot_new',[pull(2)],value());
+	   expect(stale).toBeUndefined();
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,progress,['hosted','cli'])[0]?.text).toBe('Review closed');
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,undefined,['hosted','cli'])).toEqual([]);
+	   progress.channels[0]=control('hosted');
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',stale,progress,['hosted','cli'])).toEqual([]);
+	   const fresh={...value(),snapshot_id:'review_snapshot_new'};
+	   expect(reviewQueueBadges(pull(2),'review_snapshot_new',fresh,progress,['hosted','cli'])[0]?.text).toBe('Review front');
+	 });
+  it('does not close an unbounded grant at its required zero placeholder',()=>{
+    const progress:ReviewProgressItem={pull_number:2,channels:[{...control('hosted'),maximum_unbounded:true,maximum:0,minimum:3000,used:2000},control('cli',true)]};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review front');
+    progress.channels[0]={...progress.channels[0],tapered:true,minimum:0};
+    expect(reviewQueueBadges(pull(2),snapshot,value(),progress)[0]?.text).toBe('Review closed');
+  });
+  it('keeps service-derived local fronts when older merged rows are not loaded',()=>{
+    const v=value();v.channels=[{...front('hosted',3),state:'held',reason:'local_queue_position',queued_priority:priority(3)},{...front('cli',2),state:'held',reason:'local_queue_position',queued_priority:priority(2)}];
+    const pulls=[pull(2),pull(3),pull(4)];
+    const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
+    const current=currentReviewFronts(snapshot,pulls,v);
+    expect(reviewQueueBadges(pull(2),snapshot,current,progress[0])[0]?.text).toBe('Review front');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(4),snapshot,current,progress[2])[0]?.text).toBe('Queued');
+    expect(reviewChannelPosition(pull(2),snapshot,'cli',current)?.text).toBe('Queue position');
+    const unavailable={...v,channels:v.channels.map(c=>({channel:c.channel,state:'unknown' as const,reason:'source_frame_unavailable'}))};
+    expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable),progress[1])).toEqual([]);
+  });
+  it('rejects another snapshot, changed source identity, retired lifecycle and unknown positions',()=>{
+    expect(reviewQueueBadges(pull(2),'review_snapshot_old',value())).toEqual([]);
+    expect(reviewQueueBadges({...pull(2),head_sha:'c'.repeat(40)},snapshot,value())).toEqual([]);
+    expect(reviewQueueBadges({...pull(2),state:'merged'},snapshot,value())).toEqual([]);
+    const unknown=value();unknown.channels=unknown.channels.map(c=>({channel:c.channel,state:'unknown',reason:'source_frame_unavailable'}));
+    expect(reviewQueueBadges(pull(4),snapshot,unknown)).toEqual([]);
+  });
+});
+
+async function connected():Promise<Api>{
+  vi.stubGlobal('location',{origin:'https://service.example'});
+  const json=(body:unknown)=>new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
+  vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL)=>String(input).endsWith('/instance')?json({instance_id:'instance_one'}):String(input).endsWith('/browser-session')?json({session_id:'a'.repeat(32),instance_id:'instance_one',project_id:'project_one',expires_at:new Date(Date.now()+3600000).toISOString(),allow_writes:false,can_edit_presentation:false}):json({id:'project_one',name:'Project',github_repository_id:123,repository:'owner/repository'})));
+  const api=Api.resume('project_one','a'.repeat(32),'instance_one');await api.connect();return api;
+}
+describe('bounded front response admission',()=>{
+  it('uses one local scoped cookie read with no provider or mutation route',async()=>{
+    const api=await connected();const read=vi.fn(async()=>new Response(JSON.stringify(value()),{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',read);
+    expect(await api.reviewFronts()).toEqual(value());expect(read).toHaveBeenCalledTimes(1);
+    const [url,init]=read.mock.calls[0] as unknown as [string,RequestInit];
+    expect(url).toBe('https://service.example/api/v1/projects/project_one/reviews/fronts');expect(init.method??'GET').toBe('GET');expect(new Headers(init.headers).has('authorization')).toBe(false);expect(new Headers(init.headers).has('x-fc-worker')).toBe(false);api.close();
+  });
+  it('accepts the display-specific fixes hold without adding response fields', async () => {
+    const api = await connected(), v = value();
+    v.channels = [{ ...front('hosted', 2), state: 'held', reason: 'review_fixes_pending' }];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(v), { headers: { 'content-type': 'application/json' } })));
+    expect(await api.reviewFronts()).toEqual(v);
+    api.close();
+  });
+  it('admits a locally checked position without inventing provider observation time',async()=>{
+    const api=await connected();const local=value();local.channels=[{...front('cli',3),state:'held',reason:'local_queue_position',source_observed_at:undefined}];
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(local),{headers:{'content-type':'application/json'}})));
+    expect(await api.reviewFronts()).toEqual(local);
+    for(const reason of [undefined,'review_evidence_pending']){local.channels=[{...local.channels[0],reason}];await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});}
+    api.close();
+  });
+  it.each([
+    (v:Record<string,unknown>)=>({...v,project_id:'another_project'}),
+    (v:Record<string,unknown>)=>({...v,queue:[2,2]}),
+    (v:Record<string,unknown>)=>({...v,snapshot_id:undefined}),
+    (v:Record<string,unknown>)=>({...v,policy_revision:0}),
+    (v:Record<string,unknown>)=>({...v,channels:[{...front('cli',3),state:['ready']}]}),
+    (v:Record<string,unknown>)=>({...v,channels:[{...front('cli',3),head_sha:'bad'}]}),
+    (v:Record<string,unknown>)=>({...v,channels:[{...front('cli',3),source_observed_at:'2026-02-30T00:00:00Z'}]}),
+    (v:Record<string,unknown>)=>({...v,channels:[{...front('cli',3),extra:'unknown'}]}),
+  ])('refuses malformed or contradictory front claims',async(change)=>{
+    const api=await connected();vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(change(value() as unknown as Record<string,unknown>)),{headers:{'content-type':'application/json'}})));
+    await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});api.close();
+  });
+});
+
+describe('independent queued priority during source failure',()=>{
+  const waiting=():ReviewFronts=>({...value(),channels:[{channel:'hosted',state:'unknown',reason:'source_budget_exhausted',checked_at:time,source_progress:{verified_pull_count:0,queue_pull_count:4,next_unverified_pull_number:1},queued_priority:{pull_number:2,head_sha:sha,base_sha:base,base_ref:'main'}}]});
+  it('keeps priority visible without making a ready claim, including later queued work',()=>{
+    const v=waiting();
+    expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Source unverified',description:expect.stringContaining('Source verification unavailable')});
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(v.channels[0].state).toBe('unknown');
+    expect(v.channels[0].pull_number).toBeUndefined();
+    expect(reviewQueueBadges(pull(2),snapshot,v,{pull_number:2,channels:[control('hosted',true)]})[0]?.text).toBe('Review closed');
+    expect(reviewQueueBadges(pull(2),'old',v)).toEqual([]);
+    const changed=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)}],v);
+    expect(reviewQueueBadges(pull(2),snapshot,changed)).toEqual([]);
+    expect(reviewQueueBadges(pull(3),snapshot,changed)).toEqual([]);
+  });
+  it('validates priority separately from verified eligibility and accepts source diagnostics',async()=>{
+    const api=await connected(); const v=waiting();
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(v),{headers:{'content-type':'application/json'}})));
+    expect(await api.reviewFronts()).toEqual(v);
+    v.channels[0].queued_priority!.pull_number=999;
+    await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});
+    v.channels[0].queued_priority!.pull_number=2;
+    v.channels[0].source_progress!.next_unverified_pull_number=4;
+    await expect(api.reviewFronts()).rejects.toMatchObject({code:'invalid_response'});
+    api.close();
+  });
+});

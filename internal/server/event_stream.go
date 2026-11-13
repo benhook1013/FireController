@@ -44,6 +44,10 @@ func registerEventStream(mux *http.ServeMux, store *core.Store, shutdownContext 
 }
 
 func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) {
+	if !project {
+		w.Header().Add("Vary", core.InboxOriginHeader)
+		r = r.WithContext(core.WithControllerInbox(r.Context(), core.RequestsControllerInbox(r)))
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		message := "Use GET for the message event stream."
@@ -54,7 +58,7 @@ func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) 
 		return
 	}
 	authCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	scope, err := a.store.Scope(r.WithContext(authCtx), "read")
+	scope, err := a.store.ScopeWithLifetime(r.WithContext(authCtx), "read", r.Context())
 	cancel()
 	if err != nil {
 		core.WriteError(w, err)
@@ -74,10 +78,15 @@ func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) 
 		return
 	}
 	for name, values := range query {
-		if len(values) != 1 || name != "cursor" && name != "limit" {
+		if len(values) != 1 || name != "cursor" && name != "limit" && (project || name != "include_assignments") {
 			core.WriteError(w, invalid)
 			return
 		}
+	}
+	includeAssignments, err := assignmentSelection(query)
+	if err != nil {
+		core.WriteError(w, err)
+		return
 	}
 	if query.Get("cursor") == "" {
 		core.WriteError(w, invalid)
@@ -161,7 +170,7 @@ func (a *api) eventStream(w http.ResponseWriter, r *http.Request, project bool) 
 				return core.Fail("stream_failed", "The event batch could not be encoded.", 500)
 			}
 			return frame("message-events", page.Cursor, data)
-		}, heartbeat)
+		}, heartbeat, includeAssignments)
 	}
 	if err == nil || r.Context().Err() != nil || transportFailed {
 		return

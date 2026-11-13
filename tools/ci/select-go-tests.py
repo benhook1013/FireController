@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 PREFIX = "github.com/benhook1013/FireController/"
-FAMILIES = {"backup": 8, "reviewexec": 6, "reviews": 4, "reviewruntime": 2}
+FAMILIES = {"backup": 8, "reviewexec": 6, "reviews": 4, "reviewruntime": 3}
 REST_SHARDS = 2
 
 

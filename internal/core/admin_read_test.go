@@ -39,7 +39,7 @@ func TestReadReauthorizesAdministrativeScopeInSnapshot(t *testing.T) {
 	}
 	// Preserve ordinary project read access while withdrawing administrative
 	// authority after the HTTP boundary obtained its scope.
-	if _, err := store.DB().Exec(`INSERT INTO grants SELECT id,'read-project',1,0 FROM credentials WHERE principal_id=?`, admin.PrincipalID); err != nil {
+	if _, err := store.DB().Exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) SELECT id,'read-project',1,0 FROM credentials WHERE principal_id=?`, admin.PrincipalID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().Exec(`UPDATE credentials SET is_admin=0 WHERE principal_id=?`, admin.PrincipalID); err != nil {

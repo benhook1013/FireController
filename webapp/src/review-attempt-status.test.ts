@@ -1,0 +1,186 @@
+import { describe, expect, it } from 'vitest';
+import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
+import type { ReviewAttemptSummary } from './types';
+import type { ReviewRoundProgress } from './review-progress';
+
+const attempt: ReviewAttemptSummary = { source_attempt_id: 'attempt', channel: 'cli', head_sha: 'a'.repeat(40), state: 'failed', reason: 'admission_changed', started_at: '2026-11-01T00:00:00Z', finished_at: '2026-11-01T00:00:20Z', duration_seconds: 20, source_run_id: '', trigger_id: '', provider_review_id: '' };
+const progress: ReviewRoundProgress = { channel: 'cli', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 7, taper: 2, used: 6, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 };
+
+describe('attempt activity is separate from a PR review verdict', () => {
+  it('shows unresolved process attention, retaining diagnostics without a Failed verdict', () => {
+    const value = reviewAttemptStatus(attempt, progress, { text: 'Up next' });
+    expect(value).toMatchObject({ text: 'Needs agent attention', kind: 'attention' });
+    expect(value?.description).toContain('process issue, not a PR review verdict');
+    expect(value?.description).toContain('No pending recovery is recorded');
+    expect(value?.description).toContain('failed (admission_changed)');
+    expect(progress.used).toBe(6); expect(attempt.reason).toBe('admission_changed');
+  });
+  it('does not infer retry from head movement, queue position, missing progress or combined pending counts', () => {
+    expect(reviewAttemptStatus({ ...attempt, head_sha: 'b'.repeat(40) }, undefined, { text: 'Up next' })?.description).toContain('Current recovery status is unavailable');
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: undefined, pending_adjudication: undefined })).toMatchObject({ text: 'Pending' });
+  });
+  it('uses explicit execution and adjudication stages instead of the older failure', () => {
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Retry pending' });
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_adjudication: 1 })).toEqual({ text: 'Needs adjudication' });
+    expect(reviewAttemptStatus(undefined, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Pending' });
+  });
+  it('defers to actual provider waits or pause without claiming a running retry', () => {
+    for (const paused of [false, true]) expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1, wait: { paused, baseline_attempt_id: `review_attempt_${'a'.repeat(32)}`, retry_not_before: '2026-11-02T00:00:00Z' } })).toBeUndefined();
+  });
+  it('distinguishes preparation from active execution without using the current head as a cancellation signal', () => {
+    for (const state of ['preparing', 'prepared', 'posting', 'active'] as const) {
+      expect(reviewAttemptStatus({ ...attempt, state, reason: undefined, finished_at: '' }, progress)).toMatchObject({ text: state === 'active' ? 'Reviewing' : 'Preparing', activity: { startedAt: attempt.started_at } });
+    }
+    expect(reviewAttemptStatus({ ...attempt, state: 'active' }, progress)).toBeUndefined();
+  });
+  it('does not hide an uncertain provider outcome behind a new request, adjudication or closure', () => {
+    for (const change of [{}, { pending: 1, pending_execution: 1 }, { pending: 1, pending_adjudication: 1 }, { closed: true }, { wait: { paused: false } }]) {
+      expect(reviewAttemptStatus({ ...attempt, state: 'uncertain' }, { ...progress, ...change })).toMatchObject({ text: 'Needs agent attention', kind: 'attention' });
+    }
+  });
+  it('explains a stopped dependency attempt without inventing an automatic retry', () => {
+    const result = reviewAttemptStatus({ ...attempt, state: 'held', reason: 'predecessor_unfinished' }, progress);
+    expect(result?.text).toBe('Dependency pending'); expect(result?.description).toContain('No retry is confirmed');
+    expect(reviewAttemptStatus({ ...attempt, state: 'held', reason: 'predecessor_unfinished' }, { ...progress, pending: 1, pending_execution: 1 })?.text).toBe('Retry pending');
+  });
+  it('keeps merged/closed history quiet and closed grants separate from unfinished activity', () => {
+    expect(reviewAttemptStatus(attempt, progress, { text: 'Up next' }, true)).toMatchObject({ text: 'Past attempt', kind: 'history' });
+    expect(reviewAttemptStatus({ ...attempt, state: 'active', finished_at: '' }, progress, undefined, true)?.text).toBe('Past attempt');
+    expect(reviewAttemptStatus(attempt, { ...progress, closed: true })).toEqual({ text: 'Closed' });
+    expect(reviewAttemptStatus({ ...attempt, state: 'active', finished_at: '' }, { ...progress, closed: true })?.text).toBe('Reviewing');
+    expect(reviewAttemptStatus({ ...attempt, state: 'completed' }, progress, undefined, true)).toBeUndefined();
+    expect(reviewAttemptStatus({ ...attempt, state: 'uncertain' }, progress, undefined, true)?.description).toContain('provider outcome remains unconfirmed');
+  });
+  it('keeps cancelled and unknown states distinct and resumes normal position after completion', () => {
+    expect(reviewAttemptStatus({ ...attempt, state: 'cancelled' }, progress)).toMatchObject({ text: 'Attempt cancelled', kind: 'history' });
+    expect(reviewAttemptStatus({ ...attempt, state: 'unknown' }, progress)).toMatchObject({ text: 'Status unknown', kind: 'attention' });
+    expect(reviewAttemptStatus({ ...attempt, state: 'completed' }, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
+  });
+});
+
+
+describe('visible attempt reasons', () => {
+  it.each([
+    ['admission_changed', 'Review eligibility changed before start'],
+    ['predecessor_unfinished', 'Waiting for earlier PR work'],
+    ['hosted_finished_inventory_unproven', 'The finished review could not be verified'],
+    ['hosted_finished_incomplete', 'Review output was incomplete; capacity released'],
+    ['allowance_exhausted', 'Included CLI quota was exhausted'],
+    ['constructor', 'Constructor'],
+    ['new_safe_reason', 'New safe reason'],
+  ])('explains %s without hiding the diagnostic', (reason, cause) => {
+    const value = { ...attempt, reason };
+    expect(reviewAttemptCause(value)).toBe(cause);
+    const status = reviewAttemptStatus(value, progress);
+    expect(status?.cause).toBe(cause); expect(status?.description).toContain(reason);
+  });
+  it('makes absent reasons explicit and keeps a past failure separate from pending recovery', () => {
+    expect(reviewAttemptStatus({ ...attempt, reason: undefined }, progress)?.cause).toBe('No reason was recorded');
+    expect(reviewAttemptStatus({ ...attempt, state: 'uncertain', reason: undefined }, progress)?.cause).toBe('The provider outcome is unconfirmed');
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })?.cause).toBeUndefined();
+    expect(reviewAttemptStatus({ ...attempt, state: 'completed', reason: undefined }, progress)?.cause).toBeUndefined();
+  });
+});
+
+it('does not infer that a changed source prevented provider execution', () => {
+  const value = reviewAttemptStatus({ ...attempt, state: 'uncertain', reason: 'source_changed' }, progress);
+  expect(value?.cause).toBe('The review comparison changed');
+  expect(value?.cause).not.toContain('before start');
+  expect(value?.description).toContain('provider outcome is unconfirmed');
+});
+
+describe('cancelled queued waits do not become current process attention', () => {
+  const held = { ...attempt, source_attempt_id: `review_attempt_${'a'.repeat(32)}`, state: 'held' as const, reason: 'allowance_exhausted' };
+  const cancelled_wait = { baseline_attempt_id: held.source_attempt_id, head_sha: held.head_sha, cancelled_at: '2026-11-01T00:01:00Z' };
+  const current = { ...progress, cancelled_wait };
+  it('shows no current badge for the exact unused held baseline while preserving full history', () => {
+    const before = JSON.stringify({ held, current });
+    const value = reviewAttemptStatus(held, current, { text: 'Up next' });
+    expect(value).toBeUndefined();
+    expect(reviewAttemptStatus(held, current, undefined, true)).toMatchObject({ text: 'Past attempt', kind: 'history' });
+    expect(reviewAttemptStatus(held, current, undefined, true)?.description).toContain('held (allowance_exhausted)');
+    expect(JSON.stringify({ held, current })).toBe(before);
+    expect(reviewAttemptStatus({ ...held, channel: 'hosted', reason: 'hosted_allowance_cooldown' }, { ...current, channel: 'hosted' })).toBeUndefined();
+  });
+  it('does not hide unrelated, newer, dispatched or unknown failures using a cancelled request', () => {
+    for (const change of [
+      { source_attempt_id: `review_attempt_${'c'.repeat(32)}` }, { head_sha: 'b'.repeat(40) }, { channel: 'hosted' as const },
+      { state: 'failed' as const }, { state: 'rate_limited' as const }, { state: 'uncertain' as const },
+      { reason: 'capture_retention_failed' }, { reason: undefined },
+      { source_run_id: 'review_evidence_retained' }, { trigger_id: '42' }, { provider_review_id: 'provider-review' },
+      { finished_at: '' }, { finished_at: 'invalid' }, { finished_at: '2026-11-01T00:02:00Z' },
+    ]) expect(reviewAttemptStatus({ ...held, ...change }, current)?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus({ ...held, state: 'unknown' }, current)?.text).toBe('Status unknown');
+    expect(reviewAttemptStatus(held, { ...current, cancelled_wait: { ...cancelled_wait, baseline_attempt_id: 'invalid' } })?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus(held, { ...current, pending_execution: undefined, pending_adjudication: undefined })?.text).toBe('Needs agent attention');
+    expect(reviewAttemptStatus(held, progress)?.text).toBe('Needs agent attention');
+  });
+  it('keeps actual waiting, newer execution, adjudication and closure ahead of cancelled history', () => {
+    expect(reviewAttemptStatus(held, { ...current, wait: { paused: true } })).toBeUndefined();
+    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_execution: 1 })?.text).toBe('Retry pending');
+    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_adjudication: 1 })?.text).toBe('Needs adjudication');
+    expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, current)?.text).toBe('Reviewing');
+    expect(reviewAttemptStatus(held, { ...current, closed: true })?.text).toBe('Closed');
+  });
+});
+
+
+describe('activity timing describes evidence, not inferred provider start', () => {
+  const active = { ...attempt, state: 'active' as const, reason: undefined, finished_at: '' };
+  it('keeps the preparation time available without implying execution', () => {
+    const result = reviewAttemptStatus(active)!;
+    expect(result.activity?.startedAt).toBe(active.started_at);
+    expect(result.activity?.explanation).toBe('Waiting for confirmation that the review started.');
+  });
+  it('distinguishes a sent Hosted request from unconfirmed delivery', () => {
+    const hosted = { ...active, channel: 'hosted' as const, trigger_id: '42' };
+    expect(reviewAttemptStatus(hosted)).toMatchObject({
+      text: 'Reviewing',
+      activity: { explanation: 'Review requested. Waiting for CodeRabbit to report progress.' },
+    });
+    expect(reviewAttemptStatus({ ...hosted, trigger_id: '' })?.activity?.explanation).toBe('Waiting for confirmation that the review started.');
+  });
+  it.each(['', 'invalid'])('does not invent unknown or invalid attempt timing: %s', started_at => {
+    expect(reviewAttemptStatus({ ...active, started_at })?.activity?.startedAt).toBe('');
+  });
+  it('distinguishes preparation and sending a request', () => {
+    for (const state of ['preparing', 'prepared', 'posting'] as const) {
+      const result = reviewAttemptStatus({ ...active, state, channel: 'hosted' })!;
+      expect(result.text).toBe('Preparing');
+      expect(result.activity?.explanation).toBe(state === 'posting' ? 'Sending the review request to CodeRabbit.' : 'Preparing the review.');
+    }
+  });
+  it('does not attach current-activity details to old or finished attempts', () => {
+    expect(reviewAttemptStatus(active, progress, undefined, true)?.activity).toBeUndefined();
+    expect(reviewAttemptStatus({ ...active, finished_at: attempt.finished_at }, progress)?.activity).toBeUndefined();
+    expect(reviewAttemptStatus(active, { ...progress, wait: { paused: true } })?.activity).toBeUndefined();
+  });
+});
+
+it('keeps a settled partial CLI attempt in history and shows only the current queue status', () => {
+  const settled = { ...attempt, state: 'failed' as const, reason: 'cli_partial_settled' };
+  expect(reviewAttemptStatus(settled, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(settled, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
+  expect(reviewAttemptStatus(settled, progress, undefined, true)).toBeUndefined();
+  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Pending', cause: undefined, description: undefined });
+  expect(reviewAttemptCause(settled)).toBe('The CLI review ended without full coverage');
+});
+
+it('shows a GitHub preparation stop only when no current request supersedes it', () => {
+  const held = { ...attempt, state: 'held' as const, reason: 'preparation_source_resolution_provider_rate_limited' };
+  expect(reviewAttemptStatus(held, progress)).toMatchObject({ text: 'Needs agent attention', cause: 'GitHub rate limit. The review did not start.' });
+  expect(reviewAttemptStatus(held, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Queued' });
+  const source_retry = { attempt_id: held.source_attempt_id, observed_at: held.started_at, retry_not_before: held.finished_at, sequence: 1 };
+  expect(reviewAttemptStatus({ ...held, reason: 'source_rate_limit_wait' }, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(held, { ...progress, source_retry })).toEqual({ text: 'Queued' });
+  expect(reviewAttemptStatus(held, { ...progress, source_retry, wait: { paused: true } })).toBeUndefined();
+  expect(reviewAttemptStatus({ ...held, state: 'preparing', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Preparing' });
+  expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, { ...progress, source_retry })).toMatchObject({ text: 'Reviewing' });
+});
+
+it('shows the PR’s own fixes when the channel front advances', () => {
+  const completed = { ...attempt, state: 'completed' as const };
+  expect(reviewAttemptStatus(completed, { ...progress, fixes_pending: true })).toMatchObject({ text: 'Fixes pending' });
+  expect(reviewAttemptStatus(completed, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(completed, { ...progress, fixes_pending: true }, undefined, true)).toBeUndefined();
+});

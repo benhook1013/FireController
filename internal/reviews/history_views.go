@@ -10,7 +10,7 @@ var historyPullRecordV4 = historyRecordSpec{
 
 var historyPullRecord = func() historyRecordSpec {
 	spec := historyPullRecordV4
-	spec.body = append(append([]string{}, spec.body...), "metadata_json")
+	spec.body = append(append([]string{}, spec.body...), "metadata_json", "delivery_selected")
 	return spec
 }()
 

@@ -62,7 +62,7 @@ func testRecoverHostedAdditionalComments(t *testing.T, summaryOnly bool) {
 	if err != nil || replay.Reason != "already_completed" || replay.EvidenceID != final.EvidenceID || len(reader.calls) != calls || recoveryRuntimeCount(t, f, "review_execution_transitions") != transitions {
 		t.Fatal("replay duplicated recovery", replay, err)
 	}
-	if recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || nativeHostedCredit(t, f) != 0 {
+	if recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 		t.Fatal("recovery duplicated evidence or awarded unadjudicated credit")
 	}
 }

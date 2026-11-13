@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -16,11 +19,31 @@ import (
 // Operator configuration is composed once, before accepting requests. Ordinary
 // installations have no provider drivers or review-workspace directories.
 func buildReviewExecution(store *core.Store, dataDir string, catalog reviewruntime.Catalog, options ...reviewexec.EngineOption) (*reviewexec.Engine, map[string]reviewexec.Driver, error) {
+	groups := make(map[string]string, len(catalog.Capabilities))
 	capabilities := make([]reviewexec.Capability, 0, len(catalog.Capabilities))
 	for _, capability := range catalog.Capabilities {
+		digest := sha256.Sum256([]byte("firecontroller-source-read-v1\x00" + capability.GitHubCredential()))
+		groups[capability.ID] = hex.EncodeToString(digest[:])
 		capabilities = append(capabilities, reviewexec.Capability{ID: capability.ID, Provider: "coderabbit", Account: capability.Account, Channels: capability.Channels, Fingerprint: capability.Fingerprint})
 	}
-	options = append(options, reviewexec.WithNativeProjection())
+	var hostedCaptures *reviewruntime.HostedCaptureStore
+	for _, capability := range catalog.Capabilities {
+		if slices.Contains(capability.Channels, "hosted") {
+			var err error
+			hostedCaptures, err = reviewruntime.NewHostedCaptureStore(filepath.Join(dataDir, "hosted-review-captures"))
+			if err != nil {
+				return nil, nil, err
+			}
+			options = append(options, reviewexec.WithHostedRetainedDecoder(reviewruntime.HostedRetainedDecoder(hostedCaptures)))
+			break
+		}
+	}
+	options = append(options, reviewexec.WithNativeProjection(), reviewexec.WithSourceReadGroups(groups))
+	recoveryStore, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(dataDir, "cli-exhaustion-captures"))
+	if err != nil {
+		return nil, nil, err
+	}
+	options = append(options, reviewexec.WithCLIExhaustionRecovery(recoveryStore))
 	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
 		return nil, nil, err
@@ -33,8 +56,8 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 	if err != nil {
 		return nil, nil, core.Fail("configuration_invalid", "The private review data directory is unavailable.", 500)
 	}
+	quotas := make(map[string]*reviewprovider.GitHubQuota)
 	var captures *reviewruntime.CaptureStore
-	var hostedCaptures *reviewruntime.HostedCaptureStore
 	for _, capability := range catalog.Capabilities {
 		manager, err := reviewworkspace.New(filepath.Join(root, "review-workspaces", capability.ID), capability.GitExecutable)
 		if err != nil {
@@ -44,6 +67,12 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		if err != nil {
 			return nil, nil, err
 		}
+		group := groups[capability.ID]
+		if _, ok := quotas[group]; !ok {
+			quotas[group] = reviewprovider.NewGitHubQuota()
+		}
+		provider.SetQuotaTelemetry(quotas[group])
+		provider.SetReadGate(func(ctx context.Context) error { return engine.SourceReadGate(ctx, group) })
 		var cli *reviewruntime.CLIDriver
 		var hosted *reviewruntime.HostedDriver
 		if slices.Contains(capability.Channels, "cli") {
@@ -53,7 +82,11 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 					return nil, nil, err
 				}
 			}
-			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment)
+			var processOptions []reviewprocess.Option
+			if capability.CLIAllowanceTimeoutSeconds != 0 {
+				processOptions = append(processOptions, reviewprocess.WithUsageTimeout(time.Duration(capability.CLIAllowanceTimeoutSeconds)*time.Second))
+			}
+			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment, processOptions...)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -139,4 +172,15 @@ func (d *reviewChannelDriver) Dispatch(ctx context.Context, operation reviewexec
 
 func (d *reviewChannelDriver) StartRecovery(ctx context.Context) (<-chan error, error) {
 	return d.hosted.StartRecovery(ctx)
+}
+
+func (d *reviewChannelDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) {
+	return d.cli.StartCLIRecovery(ctx)
+}
+
+func (d *reviewChannelDriver) StartWorkspaceCleanup(ctx context.Context) (<-chan error, error) {
+	if d.cli != nil {
+		return d.cli.StartWorkspaceCleanup(ctx)
+	}
+	return d.hosted.StartWorkspaceCleanup(ctx)
 }

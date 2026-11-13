@@ -21,6 +21,7 @@ import (
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -85,7 +86,7 @@ func newObserverTestFixture(t *testing.T) *observerTestFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, jobs.EnsureSchema, inbox.EnsureSchema} {
+	for _, ensure := range []func(context.Context, *core.Store) error{reviews.EnsureSchema, reviewexec.EnsureSchema, jobs.EnsureSchema, inbox.EnsureSchema} {
 		if err := ensure(t.Context(), store); err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +118,7 @@ func newObserverTestFixture(t *testing.T) *observerTestFixture {
 		if _, err := f.engine.Configure(t.Context(), scope, "configure", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: project, Mode: "independent", Queue: []int64{1}, Channels: []string{"hosted"}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, PausedChannels: []string{}}); err != nil {
+		if _, err := f.engine.ConfigurePolicy(t.Context(), scope, "policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -364,8 +365,6 @@ func TestReviewWorkersSupervisorFailureRemainsFatalAndJoinsObservers(t *testing.
 	}
 }
 
-// Selection acquisition is owned by the same daemon cancellation/join boundary
-// as supervisor and recovery observers. It cannot leave provider reads behind.
 type selectionOwnedDriver struct {
 	*observerTestDriver
 	reader *selectionOwnedReader

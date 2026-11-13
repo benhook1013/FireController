@@ -43,7 +43,7 @@ func TestHostedRejectedTriggerSettlesOnceWithoutReviewCredit(t *testing.T) {
 			if err != nil || got.State != "rate_limited" || got.Reason != "hosted_review_rate_limited" || got.EvidenceID != "" || got.TriggerCommentID != trigger.ID {
 				t.Fatal("original rejection did not settle", got, err)
 			}
-			if recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f) != 0 || recoveryRuntimeCount(t, f, "review_hosted_observations") != 1 {
+			if recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_hosted_observations") != 1 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 				t.Fatal("rejection lost raw proof, retained reservation or gained review credit")
 			}
 			beforeEvents, beforeCalls := recoveryRuntimeCount(t, f, "events"), len(reader.calls)
@@ -78,7 +78,7 @@ func TestHostedDriverRateLimitedReplyLeavesSettlementToSupervisor(t *testing.T) 
 	if _, err = f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, result.State, result.Reason, result.ExternalID); err != nil {
 		t.Fatal("supervisor settlement", err)
 	}
-	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || nativeHostedCredit(t, f.cliEvidenceFixture) != 0 {
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 {
 		t.Fatal("rejected trigger retained reservation or gained credit")
 	}
 }

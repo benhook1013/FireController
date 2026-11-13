@@ -152,7 +152,7 @@ func TestReviewRoundsCLILocalHelpWithoutCredentials(t *testing.T) {
 		full := append([]string{"--profiles-file", "/unavailable/round-profile", "reviews", "rounds"}, args...)
 		code, out, stderr := run(full, map[string]string{"FC_PROFILE": "missing"})
 		var help map[string]any
-		if code != cli.ExitSuccess || stderr != "" || json.Unmarshal([]byte(out), &help) != nil || !strings.Contains(help["usage"].(string), "fc reviews rounds") {
+		if code != cli.ExitSuccess || stderr != "" || json.Unmarshal([]byte(out), &help) != nil || !strings.Contains(help["usage"].(string), "reviews rounds") {
 			t.Fatal("local round help reached credentials or was invalid", args, code, stderr)
 		}
 	}

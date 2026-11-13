@@ -56,65 +56,6 @@ func validateUpdate(req updateRequest) error {
 	}
 	return nil
 }
-func appendUpdate(store *core.Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := store.Scope(r, "write")
-		if err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		if _, err = core.QueryKeys(r, "invalid_query"); err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		var req updateRequest
-		if err = core.ReadJSON(w, r, &req); err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		if req.Evidence == nil {
-			req.Evidence = []string{}
-		}
-		if err = validateUpdate(req); err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		key, err := core.IdempotencyKey(r, "idempotency_key_required")
-		if err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		jobID := r.PathValue("job_id")
-		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "jobs.update", Target: jobID, Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			current, err := readJob(ctx, tx, scope.ProjectID, jobID)
-			if err != nil {
-				return nil, err
-			}
-			if current.Revision != req.ExpectedJobRevision {
-				return nil, revisionConflict(current.Revision)
-			}
-			evidence, err := json.Marshal(req.Evidence)
-			if err != nil {
-				return nil, err
-			}
-			id := core.NewID("job_update")
-			var sequence int64
-			err = tx.QueryRowContext(ctx, `INSERT INTO job_updates(id,project_id,job_id,job_revision,actor_id,worker_id,body,evidence_json,created_at) VALUES(?,?,?,?,?,?,?,?,?) RETURNING sequence`, id, scope.ProjectID, jobID, current.Revision, scope.PrincipalID, scope.WorkerID, req.Body, string(evidence), timestamp()).Scan(&sequence)
-			if err != nil {
-				return nil, err
-			}
-			if err = core.AppendEvent(ctx, tx, scope, "job.update_appended", id, 1, map[string]any{"job_id": jobID, "sequence": sequence}); err != nil {
-				return nil, err
-			}
-			return checkpointReceipt{ID: id, Sequence: sequence, JobRevision: current.Revision, Outcome: "created"}, nil
-		})
-		if err != nil {
-			core.WriteError(w, err)
-			return
-		}
-		core.WriteJSON(w, http.StatusCreated, json.RawMessage(result))
-	}
-}
 func updateHistory(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, err := store.Scope(r, "read")

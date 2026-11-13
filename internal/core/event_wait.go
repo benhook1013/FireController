@@ -79,7 +79,8 @@ func (s *Store) addEventWaiter(scope Scope, topic messageTopic) (*messageWaiter,
 
 // MessageEvents returns a bounded page after a scoped snapshot/replay cursor.
 // Waiting occupies no database transaction and performs no provider work.
-func (s *Store) MessageEvents(ctx context.Context, scope Scope, cursor string, limit int, wait time.Duration) (EventPage, error) {
+// The optional assignment selection changes only the unseen suffix, not cursor identity.
+func (s *Store) MessageEvents(ctx context.Context, scope Scope, cursor string, limit int, wait time.Duration, includeAssignments ...bool) (EventPage, error) {
 	if scope.WorkerID == "" || cursor == "" || limit < 1 || limit > 100 || wait < 0 || wait > 4*time.Second {
 		return EventPage{}, Fail("validation_failed", "Use a selected worker, snapshot cursor, limit 1-100 and wait 0-4000 milliseconds.", 400)
 	}
@@ -93,9 +94,9 @@ func (s *Store) MessageEvents(ctx context.Context, scope Scope, cursor string, l
 			return EventPage{}, err
 		}
 		defer release()
-		return s.waitMessageEvents(ctx, scope, after, limit, wait, waiter)
+		return s.waitMessageEvents(ctx, scope, after, limit, wait, waiter, len(includeAssignments) > 0 && includeAssignments[0])
 	}
-	return s.readMessageEvents(ctx, scope, after, limit)
+	return s.readMessageEvents(ctx, scope, after, limit, len(includeAssignments) > 0 && includeAssignments[0])
 }
 
 func (s *Store) messageEventPosition(scope Scope, cursor string) (int64, error) {
@@ -114,11 +115,11 @@ func (s *Store) eventPosition(scope Scope, feed, cursor string) (int64, error) {
 	return after, nil
 }
 
-func (s *Store) waitMessageEvents(ctx context.Context, scope Scope, after int64, limit int, wait time.Duration, waiter *messageWaiter) (EventPage, error) {
+func (s *Store) waitMessageEvents(ctx context.Context, scope Scope, after int64, limit int, wait time.Duration, waiter *messageWaiter, includeAssignments bool) (EventPage, error) {
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	for {
-		page, err := s.readMessageEvents(ctx, scope, after, limit)
+		page, err := s.readMessageEvents(ctx, scope, after, limit, includeAssignments)
 		if err != nil || len(page.Items) > 0 {
 			return page, err
 		}
@@ -133,7 +134,7 @@ func (s *Store) waitMessageEvents(ctx context.Context, scope Scope, after int64,
 			return EventPage{}, storageError(ctx.Err())
 		case <-waiter.ready:
 		case <-deadline.C:
-			page, err = s.readMessageEvents(ctx, scope, after, limit)
+			page, err = s.readMessageEvents(ctx, scope, after, limit, includeAssignments)
 			page.TimedOut = err == nil && len(page.Items) == 0
 			return page, err
 		}

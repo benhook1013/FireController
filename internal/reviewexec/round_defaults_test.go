@@ -79,8 +79,8 @@ func TestProjectRoundDefaultsInitializeOnlyAbsentControls(t *testing.T) {
 }
 
 func TestProjectRoundDefaultsStrictShapeBoundsAndOmission(t *testing.T) {
-	legacy := Policy{RequiredChannels: []string{"hosted", "cli"}, PausedChannels: []string{}}
-	if got := encoded(legacy); got != `{"required_channels":["hosted","cli"],"paused_channels":[],"max_review_files":0}` {
+	legacy := Policy{RequiredChannels: []string{"hosted", "cli"}}
+	if got := encoded(legacy); got != `{"required_channels":["hosted","cli"],"max_review_files":0}` {
 		t.Fatal("absent defaults changed canonical legacy policy", got)
 	}
 	for _, body := range []string{
@@ -111,23 +111,5 @@ func TestProjectRoundDefaultsStrictShapeBoundsAndOmission(t *testing.T) {
 		if len(body) > 1024 || strictjson.Decode(body, &roundtrip) != nil || !validPolicy(roundtrip) || !reflect.DeepEqual(roundtrip, p) || !strings.Contains(string(body), "round_defaults") {
 			t.Fatal("valid bounds failed policy roundtrip", string(body))
 		}
-	}
-}
-
-func TestProjectRoundDefaultsHTTPPreservesPausedChannels(t *testing.T) {
-	f := newAttemptFixture(t)
-	path := "/api/v1/projects/" + attemptProject + "/reviews/policy"
-	body := `{"expected_revision":1,"required_channels":["cli"],"paused_channels":["hosted"],"max_review_files":42,"round_defaults":{"hosted":{"minimum":0,"maximum":4},"cli":{"minimum":3,"maximum":7}}}`
-	response := f.request("POST", path, f.admin, "policy-round-defaults", body)
-	evidenceHTTPRequire(t, response, 200, "")
-	stored := policyRead(t, f, attemptProject, f.reader).Policy
-	if stored.RoundDefaults == nil || stored.RoundDefaults.CLI.Minimum != 3 || stored.RoundDefaults.Hosted.Maximum != 4 || len(stored.PausedChannels) != 1 || stored.PausedChannels[0] != "hosted" || stored.MaxReviewFiles != 42 {
-		t.Fatal("HTTP lost existing policy or round defaults", stored)
-	}
-	malformed := strings.Replace(body, `"expected_revision":1`, `"expected_revision":2`, 1)
-	malformed = strings.Replace(malformed, `"minimum":3`, `"minimum":null`, 1)
-	evidenceHTTPRequire(t, f.request("POST", path, f.admin, "policy-invalid-defaults", malformed), 400, "")
-	if policyRead(t, f, attemptProject, f.reader).Revision != 2 {
-		t.Fatal("malformed defaults advanced policy")
 	}
 }

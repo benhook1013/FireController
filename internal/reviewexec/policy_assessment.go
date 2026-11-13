@@ -26,11 +26,11 @@ type PolicyAssessment struct {
 }
 
 type PolicyAssessmentChannel struct {
-	RoundsConfigured bool   `json:"rounds_configured,omitempty"`
-	RoundsComplete   bool   `json:"rounds_complete,omitempty"`
 	Channel          string `json:"channel"`
 	Covered          bool   `json:"covered"`
 	Pending          bool   `json:"pending"`
+	RoundsConfigured bool   `json:"rounds_configured,omitempty"`
+	RoundsComplete   bool   `json:"rounds_complete,omitempty"`
 }
 
 // ReadPolicyAssessment authorizes and evaluates retained evidence and the

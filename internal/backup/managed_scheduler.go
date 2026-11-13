@@ -18,7 +18,11 @@ import (
 
 const managedSettlementTimeout = 5 * time.Second
 
+// DefaultMaxBytes bounds retained managed copies, not transient snapshot space.
+const DefaultMaxBytes int64 = 5 << 30
+
 type ScheduleConfig struct {
+	MaxBytes    int64         `json:"max_bytes,omitempty"`
 	Destination string        `json:"destination"`
 	Interval    time.Duration `json:"interval"`
 	Timeout     time.Duration `json:"timeout"`
@@ -33,8 +37,8 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 	if cfg == (ScheduleConfig{}) {
 		return cfg, nil
 	}
-	if cfg.Destination == "" || strings.TrimSpace(cfg.Destination) != cfg.Destination || len(cfg.Destination) > 2048 || strings.IndexFunc(cfg.Destination, unicode.IsControl) >= 0 || cfg.Interval < time.Minute || cfg.Interval > 30*24*time.Hour || cfg.Keep < 1 || cfg.Keep > 1000 || cfg.Timeout < 0 || cfg.Timeout > 24*time.Hour {
-		return ScheduleConfig{}, core.Fail("configuration_invalid", "Supply a private backup destination, interval from one minute to thirty days, keep from one to one thousand, and a positive timeout no greater than twenty-four hours.", 400)
+	if cfg.Destination == "" || strings.TrimSpace(cfg.Destination) != cfg.Destination || len(cfg.Destination) > 2048 || strings.IndexFunc(cfg.Destination, unicode.IsControl) >= 0 || cfg.Interval < time.Minute || cfg.Interval > 30*24*time.Hour || cfg.Keep < 1 || cfg.Keep > 1000 || cfg.Timeout < 0 || cfg.Timeout > 24*time.Hour || cfg.MaxBytes < 0 {
+		return ScheduleConfig{}, core.Fail("configuration_invalid", "Supply a private backup destination, interval from one minute to thirty days, keep from one to one thousand, a positive timeout no greater than twenty-four hours, and a nonnegative retained-byte budget (zero uses 5 GiB).", 400)
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute

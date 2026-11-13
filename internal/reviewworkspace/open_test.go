@@ -220,3 +220,44 @@ func TestOpenRejectsRedirectedOwnedWorkspace(t *testing.T) {
 		t.Fatal("redirected workspace refusal changed state")
 	}
 }
+
+func TestReopenAndChangedFilesDistinguishOperationalFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fault executable")
+	}
+	f := newFixture(t)
+	w := boundOpenFixture(t, f, "operational")
+	wrapper := filepath.Join(t.TempDir(), "git-fault")
+	for _, command := range []string{"rev-parse", "--name-only", "symbolic-ref"} {
+		t.Run(command, func(t *testing.T) {
+			script := "#!/bin/sh\nfor arg do if [ \"$arg\" = '" + command + "' ]; then exit 75; fi; done\nexec '" + f.git + "' \"$@\"\n"
+			if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			manager, err := reviewworkspace.New(f.root, wrapper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command != "--name-only" {
+				if _, err := openPrepared(manager, t.Context(), w); !reviewworkspace.IsOperationalError(err) {
+					t.Fatalf("Open lost operational failure: %v", err)
+				}
+			}
+			if _, err := manager.ChangedFiles(t.Context(), w); !reviewworkspace.IsOperationalError(err) {
+				t.Fatalf("ChangedFiles lost operational failure: %v", err)
+			}
+		})
+	}
+	if _, err := openPrepared(f.manager, t.Context(), w); err != nil {
+		t.Fatal("valid retry failed", err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Directory, "untracked"), []byte("dirty"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openPrepared(f.manager, t.Context(), w); err == nil || reviewworkspace.IsOperationalError(err) {
+		t.Fatal("verified dirty source must be permanent", err)
+	}
+	if _, err := f.manager.ChangedFiles(t.Context(), w); err == nil || reviewworkspace.IsOperationalError(err) {
+		t.Fatal("verified dirty source must be permanent", err)
+	}
+}

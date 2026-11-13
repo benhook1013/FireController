@@ -35,6 +35,9 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
 var keyPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var roundKeyPattern = regexp.MustCompile(`^public_round_[a-f0-9]{32}$`)
 var repositoryPart = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
+var jobIDPattern = regexp.MustCompile(`^job_[a-f0-9]{32}$`)
+var mapEntryIDPattern = regexp.MustCompile(`^map_entry_[a-f0-9]{32}$`)
+var workerIDPattern = regexp.MustCompile(`^worker_[a-f0-9]{32}$`)
 
 func ValidSlug(slug string) bool { return slugPattern.MatchString(slug) }
 
@@ -80,6 +83,24 @@ type EnrolledReview struct {
 	URL    string `json:"url"`
 }
 
+type JobRef struct {
+	Key             string `json:"key"`
+	JobID           string `json:"job_id"`
+	SummaryRevision int64  `json:"summary_revision"`
+}
+
+type MapRef struct {
+	Key      string `json:"key"`
+	EntryID  string `json:"entry_id"`
+	Revision int64  `json:"revision"`
+}
+
+type WorkerRef struct {
+	Key      string `json:"key"`
+	WorkerID string `json:"worker_id"`
+	Label    string `json:"label"`
+}
+
 // Manifest is a complete approved editorial selection. It carries no private
 // source revision, worker identity, repository binding or publication clock.
 type Manifest struct {
@@ -91,6 +112,9 @@ type Manifest struct {
 	Progress     []Card                   `json:"progress"`
 	WorkerLanes  []WorkerLane             `json:"worker_lanes"`
 	Reviews      []EnrolledReview         `json:"reviews"`
+	JobRefs      []JobRef                 `json:"job_refs,omitempty"`
+	MapRefs      []MapRef                 `json:"map_refs,omitempty"`
+	WorkerRefs   []WorkerRef              `json:"worker_refs,omitempty"`
 }
 
 // RoundFacts is a narrow input boundary for retained review summaries. Key is
@@ -197,14 +221,18 @@ func normalizeLinks(in []Link) ([]Link, error) {
 }
 
 func NormalizeManifest(in Manifest) (Manifest, error) {
-	if !slugPattern.MatchString(in.Slug) || !publicText(in.Description, 8<<10, true, false) || len(in.ProjectMap) > MaxCards || len(in.Progress) > MaxCards || len(in.WorkerLanes) > MaxWorkerLanes || len(in.Reviews) > MaxReviews {
+	// Queue headings are private operational metadata, not public appearance.
+	if len(in.Presentation.ReviewGroups) != 0 || len(in.Presentation.WorkerOrder) != 0 || in.Presentation.SuggestedMaxPRFiles != 0 {
+		return Manifest{}, invalidModel()
+	}
+	if !slugPattern.MatchString(in.Slug) || !publicText(in.Description, 8<<10, true, false) || len(in.ProjectMap)+len(in.MapRefs) > MaxCards || len(in.Progress)+len(in.JobRefs) > MaxCards || len(in.WorkerLanes)+len(in.WorkerRefs) > MaxWorkerLanes || len(in.Reviews) > MaxReviews {
 		return Manifest{}, invalidModel()
 	}
 	presentation, err := presentationmodel.Normalize(in.Presentation)
 	if err != nil {
 		return Manifest{}, invalidModel()
 	}
-	out := Manifest{Slug: in.Slug, Presentation: presentation, Description: in.Description, ProjectMap: make([]Card, len(in.ProjectMap)), Progress: make([]Card, len(in.Progress)), WorkerLanes: make([]WorkerLane, len(in.WorkerLanes)), Reviews: make([]EnrolledReview, len(in.Reviews))}
+	out := Manifest{Slug: in.Slug, Presentation: presentation, Description: in.Description, ProjectMap: make([]Card, len(in.ProjectMap)), Progress: make([]Card, len(in.Progress)), WorkerLanes: make([]WorkerLane, len(in.WorkerLanes)), Reviews: make([]EnrolledReview, len(in.Reviews)), JobRefs: make([]JobRef, len(in.JobRefs)), MapRefs: make([]MapRef, len(in.MapRefs)), WorkerRefs: make([]WorkerRef, len(in.WorkerRefs))}
 	if out.Links, err = normalizeLinks(in.Links); err != nil {
 		return Manifest{}, err
 	}
@@ -235,6 +263,36 @@ func NormalizeManifest(in Manifest) (Manifest, error) {
 		}
 		lane.Milestones = milestones
 		out.WorkerLanes[i] = lane
+	}
+	for i, ref := range in.JobRefs {
+		if !keyPattern.MatchString(ref.Key) || keys[ref.Key] || !jobIDPattern.MatchString(ref.JobID) || ref.SummaryRevision < 1 {
+			return Manifest{}, invalidModel()
+		}
+		keys[ref.Key] = true
+		out.JobRefs[i] = ref
+	}
+	for i, ref := range in.MapRefs {
+		if !keyPattern.MatchString(ref.Key) || keys[ref.Key] || !mapEntryIDPattern.MatchString(ref.EntryID) || ref.Revision < 1 {
+			return Manifest{}, invalidModel()
+		}
+		keys[ref.Key] = true
+		out.MapRefs[i] = ref
+	}
+	for i, ref := range in.WorkerRefs {
+		if !keyPattern.MatchString(ref.Key) || keys[ref.Key] || !workerIDPattern.MatchString(ref.WorkerID) || !publicText(ref.Label, 120, false, true) {
+			return Manifest{}, invalidModel()
+		}
+		keys[ref.Key] = true
+		out.WorkerRefs[i] = ref
+	}
+	if len(out.JobRefs) == 0 {
+		out.JobRefs = nil
+	}
+	if len(out.MapRefs) == 0 {
+		out.MapRefs = nil
+	}
+	if len(out.WorkerRefs) == 0 {
+		out.WorkerRefs = nil
 	}
 	numbers := make(map[int64]bool, len(in.Reviews))
 	for i, review := range in.Reviews {
@@ -378,37 +436,8 @@ func normalizeContent(manifest Manifest, facts []ReviewFacts, roundLimit int) (C
 	return out, nil
 }
 
-// DecodeContent validates canonical retained public content against the same
-// allowlist as publication construction, independently of any private source.
-func DecodeContent(raw []byte) (Content, error) {
-	var content Content
-	if len(raw) > MaxContentBytes || strictjson.Decode(raw, &content) != nil {
-		return Content{}, invalidModel()
-	}
-	manifest := EditorialManifest(content)
-	facts := make([]ReviewFacts, len(content.Reviews))
-	for i, review := range content.Reviews {
-		manifest.Reviews[i] = EnrolledReview{Number: review.Number, Title: review.Title, URL: review.URL}
-		copyRounds := func(in []PublicRound) []RoundFacts {
-			out := make([]RoundFacts, len(in))
-			for j, round := range in {
-				out[j] = RoundFacts{Key: round.Key, Completed: true, Finalized: true, Complete: round.Complete, Found: round.Found, Accepted: round.Accepted, Routed: round.Routed, ObservedAt: round.ObservedAt, DurationMilliseconds: round.DurationMilliseconds}
-			}
-			return out
-		}
-		facts[i] = ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLI: copyRounds(review.CLI), Hosted: copyRounds(review.Hosted), CLIHasMore: review.CLIHasMore, HostedHasMore: review.HostedHasMore}
-	}
-	validated, err := BuildContent(manifest, facts)
-	if err != nil {
-		return Content{}, err
-	}
-	canonical, err := json.Marshal(validated)
-	if err != nil || string(canonical) != string(raw) {
-		return Content{}, invalidModel()
-	}
-	return validated, nil
-}
-
+// BuildContent remains the strict retained-content boundary. Historical reads
+// never trim a selected round or reinterpret earlier canonical content.
 func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	out, err := normalizeContent(manifest, facts, MaxChannelRounds)
 	if err != nil {
@@ -420,6 +449,9 @@ func BuildContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	return out, nil
 }
 
+// BuildWindowContent admits the bounded union of prior approved and current
+// eligible summaries. It preserves every editorial selection while exposing an
+// honest finite review window, without mutating either input.
 func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error) {
 	enrolled := make(map[int64]bool, len(manifest.Reviews))
 	for _, review := range manifest.Reviews {
@@ -492,4 +524,35 @@ func BuildWindowContent(manifest Manifest, facts []ReviewFacts) (Content, error)
 		return Content{}, invalidModel()
 	}
 	return out, nil
+}
+
+// DecodeContent validates canonical retained public content against the same
+// allowlist as publication construction, independently of any private source.
+func DecodeContent(raw []byte) (Content, error) {
+	var content Content
+	if len(raw) > MaxContentBytes || strictjson.Decode(raw, &content) != nil {
+		return Content{}, invalidModel()
+	}
+	manifest := EditorialManifest(content)
+	facts := make([]ReviewFacts, len(content.Reviews))
+	for i, review := range content.Reviews {
+		manifest.Reviews[i] = EnrolledReview{Number: review.Number, Title: review.Title, URL: review.URL}
+		copyRounds := func(in []PublicRound) []RoundFacts {
+			out := make([]RoundFacts, len(in))
+			for j, round := range in {
+				out[j] = RoundFacts{Key: round.Key, Completed: true, Finalized: true, Complete: round.Complete, Found: round.Found, Accepted: round.Accepted, Routed: round.Routed, ObservedAt: round.ObservedAt, DurationMilliseconds: round.DurationMilliseconds}
+			}
+			return out
+		}
+		facts[i] = ReviewFacts{Number: review.Number, Lifecycle: review.Lifecycle, CLI: copyRounds(review.CLI), Hosted: copyRounds(review.Hosted), CLIHasMore: review.CLIHasMore, HostedHasMore: review.HostedHasMore}
+	}
+	validated, err := BuildContent(manifest, facts)
+	if err != nil {
+		return Content{}, err
+	}
+	canonical, err := json.Marshal(validated)
+	if err != nil || string(canonical) != string(raw) {
+		return Content{}, invalidModel()
+	}
+	return validated, nil
 }

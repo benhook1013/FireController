@@ -2,7 +2,13 @@
 // It has no storage, job, inbox or project-selection dependencies.
 package reviewprovider
 
-import "time"
+import (
+	"errors"
+	"net/http"
+	"time"
+)
+
+var ErrCombinedPullUnsupported = errors.New("combined pull and repository observation is unsupported")
 
 // Error carries only safe diagnostics. OutcomeUnknown distinguishes a possible
 // external side effect from a rejected request; callers retain its attempt.
@@ -11,11 +17,27 @@ type Error struct {
 	Message           string
 	Status            int
 	RetryAfterSeconds int64
-	OutcomeUnknown    bool
-	cause             error
+	// RetryTiming is independent of the legacy rounded/capped scheduling hint.
+	// Only proven evidence supplies a provider floor; it never authorizes retry.
+	RetryTiming    RetryTimingEvidence
+	OutcomeUnknown bool
+	cause          error
+	transport      bool
+	retryDirected  bool
 }
 
 func (e *Error) Error() string { return e.Message }
+
+// RetryableSourceRead identifies a transient failure of an already known
+// read-only operation, without overriding a provider-directed wait.
+func (e *Error) RetryableSourceRead() bool {
+	return e != nil && e.Code == "provider_unavailable" && !e.OutcomeUnknown &&
+		e.cause == nil && !e.retryDirected && e.RetryAfterSeconds == 0 &&
+		e.RetryTiming.State != "proven" && e.RetryTiming.State != "unsupported" &&
+		(e.transport || e.Status == http.StatusRequestTimeout ||
+			e.Status == http.StatusInternalServerError || e.Status == http.StatusBadGateway ||
+			e.Status == http.StatusServiceUnavailable || e.Status == http.StatusGatewayTimeout)
+}
 
 // Unwrap retains only a safe caller-context sentinel, never a transport body or URL.
 func (e *Error) Unwrap() error {
@@ -45,6 +67,7 @@ type Pull struct {
 	Merged           bool
 	HeadSHA          string
 	HeadRef          string `json:",omitempty"`
+	HeadRepositoryID int64  `json:",omitempty"`
 	BaseSHA          string
 	BaseRef          string
 	ChangedFiles     int64

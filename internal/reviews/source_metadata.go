@@ -96,6 +96,7 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 		number   int64
 		position int
 		body     []any
+		notice   bool
 	}
 	changes := []change{}
 	invalid := []int64{}
@@ -175,7 +176,7 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 			body[7] = int64(0)
 		}
 		if !reflect.DeepEqual(old, body) {
-			changes = append(changes, change{pull.Number, position, body})
+			changes = append(changes, change{pull.Number, position, body, statuses != nil && old[1] == "open" && (pull.State == "merged" || pull.State == "closed")})
 		}
 	}
 	if len(changes) == 0 {
@@ -204,6 +205,13 @@ func publishSourceMetadata(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 	}
 	if err := write.applyCurrent(ctx, tx, id, revision); err != nil {
 		return SourcePublication{}, err
+	}
+	for _, c := range changes {
+		if c.notice {
+			if err := publishTerminalNotices(ctx, tx, scope, id, c.number, c.body[1].(string), c.body[0].(string)); err != nil {
+				return SourcePublication{}, err
+			}
+		}
 	}
 	if err := core.AppendEvent(ctx, tx, scope, "review.observed", id, next, map[string]any{"snapshot_id": id, "source": nativeSource}); err != nil {
 		return SourcePublication{}, err

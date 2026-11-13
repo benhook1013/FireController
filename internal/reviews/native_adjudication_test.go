@@ -355,20 +355,13 @@ func TestNativeAdjudicationZeroFindingsAndIncompleteFinalization(t *testing.T) {
 }
 
 func TestNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t *testing.T) {
-	assertNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t, nativeGrowthNativeBatch)
-}
-func TestNativeAdjudicationGrowthCallerFailureAndExactMutationReplayAfterTransfer(t *testing.T) {
-	assertNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t, nativeGrowthTransferBatch)
-}
-func assertNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t *testing.T, seed nativeGrowthSeeder) {
-	t.Helper()
 	for _, mode := range []string{"caller_failure", "event_failure", "exact_replay"} {
 		t.Run(mode, func(t *testing.T) {
 			f, input, original := nativeAdjudicationFixture(t)
 			oldBytes := nativeSnapshotBytes(t, f, original.ID)
 			var previous Receipt
 			for batch := 0; batch < 3; batch++ {
-				previous = seed(t, f, nativePull(2), "retained-before-adjudication", batch*75, 75, 0)
+				previous = nativeGrowthTransferBatch(t, f, nativePull(2), "retained-before-adjudication", batch*75, 75, 0)
 			}
 			if _, err := f.store.DB().Exec(`CREATE TABLE adjudication_test_ledger(note TEXT NOT NULL)`); err != nil {
 				t.Fatal(err)

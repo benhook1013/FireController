@@ -10,11 +10,27 @@ import (
 // evaluatedFront is shared with admission. A diagnostic hold retains the actual
 // blocking predecessor, whereas the legacy adapter intentionally returns zero.
 type evaluatedFront struct {
-	state, reason string
-	plan          *SourcePlan
+	state, reason  string
+	plan           *SourcePlan
+	blockingPull   int64
+	blockingReason string
+}
+
+func (f evaluatedFront) holdsPull(number int64) bool {
+	return number != 0 && f.state == "held" && f.plan != nil && f.plan.Pull.Number == number
 }
 
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
+	if plan.schedulingPaused {
+		control, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
+		if err != nil {
+			return evaluatedFront{}, err
+		}
+		if !control.Paused {
+			return evaluatedFront{state: "unknown", reason: "source_prefix_incomplete"}, nil
+		}
+		return evaluatedFront{state: "held", reason: "pull_scheduling_paused"}, nil
+	}
 	if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
 		return evaluatedFront{state: "unknown", reason: "source_unavailable"}, nil
 	}
@@ -58,14 +74,8 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 		}
 		return evaluatedFront{}, err
 	}
-	if r.Channel == "hosted" {
-		pending, err := selectionExternalHostedPending(ctx, q, r.ProjectID, repo, plan.Pull.Number)
-		if err != nil {
-			return evaluatedFront{}, err
-		}
-		if pending {
-			return evaluatedFront{state: "held", reason: "external_hosted_pending", plan: plan}, nil
-		}
+	if state.ExternalPending {
+		return evaluatedFront{state: "held", reason: "external_hosted_pending", plan: plan}, nil
 	}
 	if state.Pending {
 		return evaluatedFront{state: "held", reason: "review_evidence_pending", plan: plan}, nil
@@ -73,10 +83,67 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	if state.RoundsConfigured && state.RoundsComplete || !state.RoundsConfigured && state.Covered {
 		return evaluatedFront{state: "complete", plan: plan}, nil
 	}
+	scheduling, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
+	if err != nil {
+		return evaluatedFront{}, err
+	}
+	if scheduling.Paused {
+		return evaluatedFront{state: "held", reason: "pull_scheduling_paused", plan: plan}, nil
+	}
+	suppressed, err := e.automaticPullSuppressed(ctx, q, r, plan)
+	if err != nil {
+		return evaluatedFront{}, err
+	}
+	if suppressed {
+		return evaluatedFront{state: "held", reason: "automatic_intent_retained", plan: plan}, nil
+	}
 	if plan.Pull.State != "open" {
 		return evaluatedFront{state: "held", reason: "front_unavailable", plan: plan}, nil
 	}
 	return evaluatedFront{state: "ready", plan: plan}, nil
+}
+
+// evaluateCandidatePlan shares source-identity checks with lane diagnostics.
+// Ancestor review sufficiency is not permission to review a child's pinned diff.
+func (e *Engine) evaluateCandidatePlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan, byNumber map[int64]*SourcePlan) (evaluatedFront, error) {
+	return evaluateCandidateLocalState(plan, byNumber, func(p *SourcePlan) (evaluatedFront, error) { return e.evaluateFrontPlan(ctx, q, r, repo, p) })
+}
+
+func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePlan, evaluate func(*SourcePlan) (evaluatedFront, error)) (evaluatedFront, error) {
+	result, err := evaluate(plan)
+	if err != nil || result.state != "ready" {
+		return result, err
+	}
+	seen := map[int64]bool{plan.Pull.Number: true}
+	parentNumber, parentSHA := plan.ParentPullNumber, plan.ParentSHA
+	for parentNumber != 0 {
+		parent := byNumber[parentNumber]
+		reason := ""
+		switch {
+		case seen[parentNumber]:
+			reason = "parent_cycle"
+		case parent == nil:
+			reason = "parent_source_unavailable"
+		case parent.Pull.HeadSHA != parentSHA:
+			reason = "parent_moved"
+		case parent.Repository.ID != plan.Repository.ID || !sameTarget(parent.Pull, plan.Repository.ID, parentNumber):
+			reason = "parent_identity_changed"
+		case parent.SourceReason != "":
+			reason = parent.SourceReason
+		case parent.Pull.IsDraft != nil && *parent.Pull.IsDraft:
+			reason = "pull_draft"
+		case parent.Pull.State != "open" || parent.Pull.Merged:
+			reason = "parent_unavailable"
+		}
+		if reason != "" {
+			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
+		}
+		seen[parentNumber] = true
+		// The parent supplies source identity, not review completion or allowance.
+		// Its findings, rounds and PR pause remain obligations on that parent.
+		parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
+	}
+	return result, nil
 }
 
 func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan, complete bool) (evaluatedFront, error) {
@@ -87,7 +154,7 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 	var firstHeld *evaluatedFront
 	for i := range prefix {
 		plan := &prefix[i]
-		result, err := e.evaluateFrontPlan(ctx, q, r, repo, plan)
+		result, err := e.evaluateCandidatePlan(ctx, q, r, repo, plan, byNumber)
 		if err != nil {
 			return evaluatedFront{}, err
 		}
@@ -98,27 +165,11 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 			continue
 		}
 		if result.state == "ready" {
-			seen := map[int64]bool{plan.Pull.Number: true}
-			parentNumber, parentSHA := plan.ParentPullNumber, plan.ParentSHA
-			for parentNumber != 0 {
-				parent := byNumber[parentNumber]
-				if seen[parentNumber] || parent == nil || parent.Pull.HeadSHA != parentSHA {
-					result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
-					break
-				}
-				seen[parentNumber] = true
-				parentState, err := e.evaluateFrontPlan(ctx, q, r, repo, parent)
-				if err != nil {
-					return evaluatedFront{}, err
-				}
-				if parentState.state != "complete" {
-					result = evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan}
-					break
-				}
-				parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
-			}
+			return result, nil
 		}
-		if result.state == "ready" {
+		if result.state == "held" && plan.Pull.Number == r.ExpectedPullNumber {
+			// With no earlier ready PR, report the asserted target's own hold.
+			result.plan = plan
 			return result, nil
 		}
 		if firstHeld == nil {
@@ -156,21 +207,4 @@ func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, pre
 		return 0, "", nil
 	}
 	return 0, result.reason, nil
-}
-
-// Only verified observer captures still in current membership hold selection.
-// Historical copies reconciled to a native capture no longer participate.
-func selectionExternalHostedPending(ctx context.Context, q EvidenceQuery, project string, repository, pull int64) (bool, error) {
-	var pending bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1
- FROM review_current_runs c
- JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision
- JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision
- JOIN review_snapshots s ON s.project_id=v.project_id AND s.revision=v.version_revision
- WHERE c.project_id=? AND v.source='github-hosted-observer' AND v.channel='hosted'
- AND v.complete=1 AND v.attributable=1 AND v.outcome='completed' AND v.finalized=0 AND s.repository_id=? AND c.pull_number=?
- AND EXISTS(SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.snapshot_id AND e.revision=s.revision
- AND e.event_type='review.observed' AND json_extract(e.payload_json,'$.source')='github-hosted-observer'
- AND json_extract(e.payload_json,'$.pull_number')=v.pull_number AND json_type(e.payload_json,'$.native_coverage')='false'))`, project, repository, pull).Scan(&pending)
-	return pending, err
 }

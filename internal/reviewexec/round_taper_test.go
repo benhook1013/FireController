@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func retainHistoricalRoundTaper(t *testing.T, f *attemptFixture, pull int64, cha
 func retainRoundV4Changes(t *testing.T, f *attemptFixture) {
 	t.Helper()
 	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
-		for _, q := range []string{`PRAGMA defer_foreign_keys=ON`, `CREATE TEMP TABLE fixture_round_changes AS SELECT * FROM review_round_changes`, `DROP TABLE review_round_changes`, RoundSchemaV4SQL()[1], `INSERT INTO review_round_changes SELECT * FROM temp.fixture_round_changes`, `DROP TABLE temp.fixture_round_changes`} {
+		for _, q := range []string{`PRAGMA defer_foreign_keys=ON`, `DROP TABLE review_round_external_members`, `DROP TABLE review_round_external_credits`, `CREATE TEMP TABLE fixture_round_changes AS SELECT * FROM review_round_changes`, `DROP TABLE review_round_changes`, RoundSchemaV4SQL()[1], `INSERT INTO review_round_changes SELECT * FROM temp.fixture_round_changes`, `DROP TABLE temp.fixture_round_changes`} {
 			if _, err := tx.ExecContext(ctx, q); err != nil {
 				return err
 			}
@@ -57,6 +58,56 @@ func setRoundTaper(t *testing.T, f *attemptFixture, pull int64, channel string, 
 		t.Fatal("invalid taper receipt")
 	}
 	return b
+}
+
+func TestRoundTaperCarriedProgressAndImmutableOrigin(t *testing.T) {
+	for _, kind := range []string{"earned", "minimum", "old_latch", "closed"} {
+		t.Run(kind, func(t *testing.T) {
+			f := adoptionFixture(t)
+			p := adoptionPrepared()
+			switch kind {
+			case "minimum":
+				p.MinimumRemaining = 1
+			case "old_latch":
+				p.Taper = 1
+				p.InitialDry = 1
+				p.Tapered = true
+			case "closed":
+				p.Closed = true
+			}
+			adoptRound(t, f, p, "adopt")
+			original := roundRead(t, f, 2, "cli")
+			var first string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&first); err != nil {
+				t.Fatal(err)
+			}
+			receipt := setRoundTaper(t, f, 2, "cli", 1, 2, "retune")
+			c := roundRead(t, f, 2, "cli")
+			want := original
+			want.Revision = c.Revision
+			want.ActorID = c.ActorID
+			want.UpdatedAt = c.UpdatedAt
+			want.Taper = 2
+			want.Tapered = kind == "earned" || kind == "closed"
+			if c != want {
+				t.Fatalf("retune lost baseline or progress: got %+v want %+v", c, want)
+			}
+			adoptionValid(t, f)
+			before := roundTables(t, f)
+			replay := setRoundTaper(t, f, 2, "cli", 1, 2, "retune")
+			if string(replay) != string(receipt) || before != roundTables(t, f) {
+				t.Fatal("exact replay changed retained state")
+			}
+			var after string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&after); err != nil || after != first {
+				t.Fatal("original adoption rewritten", err)
+			}
+			var grant int64
+			if err := f.store.DB().QueryRow(`SELECT grant_revision FROM review_round_controls`).Scan(&grant); err != nil || grant != 1 {
+				t.Fatal("retune replaced grant", err)
+			}
+		})
+	}
 }
 
 func TestRoundTaperDoesNotSwallowReopenedOrPendingRound(t *testing.T) {
@@ -84,7 +135,7 @@ func TestRoundTaperDoesNotSwallowReopenedOrPendingRound(t *testing.T) {
 	if before != roundTables(t, f) {
 		t.Fatal("pending completion counted twice")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundTaperRejectsMalformedUnconfiguredAndAtomicFailure(t *testing.T) {
@@ -112,71 +163,113 @@ func TestRoundTaperRejectsMalformedUnconfiguredAndAtomicFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	setRoundTaper(t, f, 2, "cli", 1, 1, "retry")
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
-func TestRoundTaperNativeClosedHistoryPreservesAllowanceAndSameValue(t *testing.T) {
-	f := roundFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 0, 8, "initial-native")
+func TestRoundTaperV4UpgradeAndFailurePreserveAuthority(t *testing.T) {
+	f := adoptionFixture(t)
+	adoptRound(t, f, adoptionPrepared(), "old-adoption")
 	a, id := roundCapture(t, f, 0, false)
 	roundFinalize(t, f, a, id, 0, false)
-	one := int64(1)
-	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-native", 2, "cli", RoundControlRequest{ExpectedRevision: &one, Action: "close"}); err != nil {
+	retainRoundV4Changes(t, f)
+	if _, err := f.store.DB().Exec(`UPDATE metadata SET value='4' WHERE key='schema:review_rounds'`); err != nil {
 		t.Fatal(err)
 	}
-	before := roundRead(t, f, 2, "cli")
-	setRoundTaper(t, f, 2, "cli", 2, 1, "lower-native")
-	after := roundRead(t, f, 2, "cli")
-	if !after.Closed || !after.Tapered || after.Used != before.Used || after.Dry != before.Dry || after.Minimum != before.Minimum || after.Maximum != before.Maximum || after.Epoch != before.Epoch {
-		t.Fatal("threshold altered native grant or counters", before, after)
-	}
-	three := int64(3)
-	history := attemptCount(t, f.store, `SELECT count(*) FROM review_round_changes`)
-	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "same-native", 2, "cli", RoundControlRequest{ExpectedRevision: &three, Action: "taper", Taper: &one}); err != nil {
+	adoptionValid(t, f)
+	before := roundTables(t, f)
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_round5 BEFORE UPDATE OF value ON metadata WHEN NEW.key='schema:review_rounds' AND NEW.value='5' BEGIN SELECT RAISE(ABORT,'fixture'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if actual := roundRead(t, f, 2, "cli"); actual != after || attemptCount(t, f.store, `SELECT count(*) FROM review_round_changes`) != history {
-		t.Fatal("same threshold changed control history", actual)
+	if err := EnsureRoundSchema(t.Context(), f.store); err == nil {
+		t.Fatal("injected upgrade succeeded")
 	}
-	setRoundTaper(t, f, 2, "cli", 3, 3, "raise-native")
-	raised := roundRead(t, f, 2, "cli")
-	if !raised.Closed || raised.Tapered || raised.Minimum != before.Minimum || raised.Maximum != before.Maximum || raised.Used != before.Used || raised.Dry != before.Dry {
-		t.Fatal("raise reopened closure or changed allowance", raised)
+	var v, ddl string
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_rounds'`).Scan(&v); err != nil {
+		t.Fatal(err)
 	}
-	roundSnapshotValid(t, f)
+	if err := f.store.DB().QueryRow(`SELECT sql FROM sqlite_schema WHERE name='review_round_changes'`).Scan(&ddl); err != nil {
+		t.Fatal(err)
+	}
+	if before != roundTables(t, f) || v != "4" || strings.TrimSuffix(ddl, ";") != strings.TrimSuffix(RoundSchemaV4SQL()[1], ";") {
+		t.Fatal("failed migration changed retained schema or records")
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER fail_round5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRoundSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	if before != roundTables(t, f) {
+		t.Fatal("upgrade changed historical authority")
+	}
+	setRoundTaper(t, f, 2, "cli", 1, 2, "after-upgrade")
+	adoptionValid(t, f)
 }
 
-func TestRoundTaperNativeHistoryRejectsAlteredAllowance(t *testing.T) {
-	for _, field := range []string{"minimum", "maximum"} {
+func TestRoundTaperHistoryRejectsRewrittenLimitsOrOrigin(t *testing.T) {
+	for _, field := range []string{"maximum", "initial_dry", "origin_key"} {
 		t.Run(field, func(t *testing.T) {
-			f := roundFixture(t)
-			roundGrant(t, f, 2, "cli", 0, 0, 8, "initial-native")
-			setRoundTaper(t, f, 2, "cli", 1, 1, "threshold-native")
-			if _, err := f.store.DB().Exec(`UPDATE review_round_changes SET body_json=json_set(body_json,'$.control.` + field + `',3) WHERE action='taper'`); err != nil {
+			f := adoptionFixture(t)
+			adoptRound(t, f, adoptionPrepared(), "adopt")
+			setRoundTaper(t, f, 2, "cli", 1, 2, "retune")
+			value := any(3)
+			if field == "origin_key" {
+				value = "different-origin"
+			}
+			if _, err := f.store.DB().Exec(`UPDATE review_round_changes SET body_json=json_set(body_json,?,?) WHERE revision=2`, "$.control."+field, value); err != nil {
 				t.Fatal(err)
 			}
 			if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err == nil {
-				t.Fatal("threshold rewrite accepted", field)
+				t.Fatal("retune changed unrelated historical state", field)
 			}
 		})
 	}
 }
 
-func TestRoundNativeRejectsUnsupportedCarriedBaseline(t *testing.T) {
-	f := roundFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 0, 8, "native")
-	c := roundRead(t, f, 2, "cli")
-	for _, change := range []func(*RoundControl){
-		func(v *RoundControl) { v.OriginSource = "unsupported" },
-		func(v *RoundControl) { v.InitialDry = 1 },
-		func(v *RoundControl) { v.InitiallyTapered = true },
-		func(v *RoundControl) { v.MaximumUnbounded = true; v.Maximum = 0 },
-	} {
-		changed := c
-		change(&changed)
-		if validRoundControl(changed) {
-			t.Fatal("unverified carried baseline accepted", changed)
-		}
+func TestRoundTaperSameValueRetainsHistoricalLatch(t *testing.T) {
+	f := adoptionFixture(t)
+	p := adoptionPrepared()
+	p.Tapered = true
+	p.InitialDry = 0
+	adoptRound(t, f, p, "adopt")
+	before := roundRead(t, f, 2, "cli")
+	var changes, events int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_round_changes`).Scan(&changes); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	rev, taper := int64(1), int64(3)
+	request := RoundControlRequest{ExpectedRevision: &rev, Action: "taper", Taper: &taper}
+	b, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "unchanged", 2, "cli", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt RoundControlReceipt
+	if json.Unmarshal(b, &receipt) != nil || receipt.Revision != 1 || receipt.Outcome != "taper_updated" || roundRead(t, f, 2, "cli") != before {
+		t.Fatal("same threshold reinterpreted carried proof")
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_round_changes`) != changes || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events {
+		t.Fatal("no-op created setting history/event")
+	}
+	state := roundTables(t, f)
+	replay, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "unchanged", 2, "cli", request)
+	if err != nil || string(replay) != string(b) || roundTables(t, f) != state {
+		t.Fatal("no-op replay changed state", err)
+	}
+	adoptionValid(t, f)
+}
+
+func TestRoundTaperHistoryRetainsOriginalAdoptionValidation(t *testing.T) {
+	f := adoptionFixture(t)
+	adoptRound(t, f, adoptionPrepared(), "adopt")
+	setRoundTaper(t, f, 2, "cli", 1, 2, "retune")
+	if _, err := f.store.DB().Exec(`UPDATE review_round_changes SET body_json=json_set(body_json,'$.initial_dry',3,'$.dry',3) WHERE revision=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err == nil {
+		t.Fatal("corrupt original dry baseline accepted")
 	}
 }
 
@@ -192,6 +285,12 @@ func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := roundFixture(t)
+			checkSnapshot := func() {
+				t.Helper()
+				if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
+					t.Fatal("validate retained round history", err)
+				}
+			}
 			seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 8, "legacy")
 			// Capture late work before taper, then finalize it after the legacy streak
 			// freezes. Every completion remains backed by its original native evidence.
@@ -206,7 +305,7 @@ func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.
 			if before.Used != 4 || before.Dry != 3 || !before.Tapered {
 				t.Fatal("legacy fixture did not retain frozen streak", before)
 			}
-			roundSnapshotValid(t, f)
+			checkSnapshot()
 			var original string
 			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&original); err != nil {
 				t.Fatal(err)
@@ -225,13 +324,13 @@ func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.
 			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&retained); err != nil || retained != original || attemptCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != completions {
 				t.Fatal("conversion rewrote history or manufactured credit", err)
 			}
-			roundSnapshotValid(t, f)
+			checkSnapshot()
 			roundFinalize(t, f, pending, pendingEvidence, 4, false)
 			after := roundRead(t, f, 2, "cli")
 			if after.Used != 5 || after.Dry != tc.dry+1 || after.Tapered != tc.tapered {
 				t.Fatal("later cumulative completion built on stale legacy streak", after)
 			}
-			roundSnapshotValid(t, f)
+			checkSnapshot()
 			// Exact receipt replay after later completion cannot convert or count again.
 			state := roundTables(t, f)
 			revision := int64(1)

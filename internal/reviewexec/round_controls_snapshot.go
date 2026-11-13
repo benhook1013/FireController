@@ -18,17 +18,25 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_rounds'`).Scan(&version); err != nil {
 		return err
 	}
-	if version != 1 && version != 2 && version != 3 && version != 4 && version != 5 {
+	if version < 1 || version > roundSchemaVersion {
 		return roundUnavailable()
 	}
 	if err := validateRoundPhysicalVersion(ctx, q, version); err != nil {
 		return err
 	}
-	for _, query := range []string{
+	queries := []string{
 		`SELECT EXISTS(SELECT 1 FROM review_round_changes h LEFT JOIN review_round_controls c USING(project_id,pull_number,channel) WHERE c.project_id IS NULL)`,
 		`SELECT EXISTS(SELECT 1 FROM review_round_operation_bindings b LEFT JOIN review_operations o ON o.id=b.operation_id LEFT JOIN review_round_controls c ON c.project_id=b.project_id AND c.pull_number=b.pull_number AND c.channel=b.channel LEFT JOIN review_round_changes g ON g.project_id=b.project_id AND g.pull_number=b.pull_number AND g.channel=b.channel AND g.revision=b.grant_revision AND g.epoch=b.epoch WHERE o.id IS NULL OR c.project_id IS NULL OR o.project_id!=b.project_id OR o.pull_number!=b.pull_number OR o.channel!=b.channel OR g.action IS NULL OR g.action!='grant')`,
 		`SELECT EXISTS(SELECT 1 FROM review_round_completions c LEFT JOIN review_round_operation_bindings b ON b.operation_id=c.operation_id WHERE b.operation_id IS NULL OR b.project_id!=c.project_id OR b.pull_number!=c.pull_number OR b.channel!=c.channel OR b.epoch!=c.epoch)`,
-	} {
+	}
+	if version >= 6 {
+		queries = append(queries,
+			`SELECT EXISTS(SELECT 1 FROM review_round_external_credits x LEFT JOIN review_round_controls c USING(project_id,pull_number,channel) LEFT JOIN review_round_changes h ON h.project_id=x.project_id AND h.pull_number=x.pull_number AND h.channel=x.channel AND h.revision=x.revision AND h.epoch=x.epoch WHERE c.project_id IS NULL OR c.epoch<x.epoch OR h.project_id IS NULL OR h.action='close')`,
+			`SELECT EXISTS(SELECT 1 FROM review_round_external_members m LEFT JOIN review_round_external_credits x USING(batch_id) WHERE x.batch_id IS NULL OR x.project_id!=m.project_id)`,
+			`SELECT EXISTS(SELECT 1 FROM review_round_external_credits x JOIN review_round_completions n USING(project_id,pull_number,channel,epoch,ordinal))`,
+		)
+	}
+	for _, query := range queries {
 		var bad bool
 		if err := q.QueryRowContext(ctx, query).Scan(&bad); err != nil {
 			return err
@@ -73,7 +81,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 			break
 		}
 	}
-	if err := validateRoundBindings(ctx, q); err != nil {
+	if err := validateRoundBindings(ctx, q, version); err != nil {
 		return err
 	}
 	return validateRoundAdoptions(ctx, q)
@@ -82,7 +90,7 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 // Physical validation precedes keyset traversal: SQLite TEXT affinity alone
 // permits BLOB keys that cannot be resumed using a scanned Go string cursor.
 func validateRoundPhysical(ctx context.Context, q EvidenceQuery) error {
-	return validateRoundPhysicalVersion(ctx, q, 5)
+	return validateRoundPhysicalVersion(ctx, q, roundSchemaVersion)
 }
 func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version int) error {
 	expected := map[string]string{}
@@ -95,6 +103,8 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 		definitions = RoundSchemaV3SQL()
 	} else if version == 4 {
 		definitions = RoundSchemaV4SQL()
+	} else if version == 5 {
+		definitions = RoundSchemaV5SQL()
 	}
 	for _, statement := range definitions {
 		fields := strings.Fields(statement)
@@ -104,7 +114,7 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 		name := strings.Split(fields[2], "(")[0]
 		expected[name] = strings.TrimSuffix(strings.TrimSpace(statement), ";")
 	}
-	rows, err := q.QueryContext(ctx, `SELECT CASE WHEN length(name)<=128 THEN name END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE (tbl_name IN ('review_round_controls','review_round_changes','review_round_operation_bindings','review_round_completions') AND (type='table' OR sql IS NOT NULL)) OR name='review_round_operations_scope' LIMIT 7`)
+	rows, err := q.QueryContext(ctx, `SELECT CASE WHEN length(name)<=128 THEN name END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql END FROM sqlite_schema WHERE (tbl_name IN ('review_round_controls','review_round_changes','review_round_operation_bindings','review_round_completions','review_round_external_credits','review_round_external_members') AND (type='table' OR sql IS NOT NULL)) OR name='review_round_operations_scope' LIMIT ?`, len(expected)+1)
 	if err != nil {
 		return err
 	}
@@ -131,12 +141,20 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 	if len(seen) != len(expected) {
 		return roundUnavailable()
 	}
-	for _, table := range []struct{ name, integers, text string }{
+	type roundTable struct{ name, integers, text string }
+	tables := []roundTable{
 		{"review_round_controls", "pull_number revision epoch grant_revision closed minimum maximum taper used dry tapered", "project_id actor_id created_at updated_at channel"},
 		{"review_round_changes", "pull_number revision epoch", "project_id channel action body_json worker_id"},
 		{"review_round_operation_bindings", "pull_number epoch grant_revision", "operation_id project_id channel"},
 		{"review_round_completions", "pull_number epoch ordinal accepted", "operation_id evidence_id project_id channel completed_at"},
-	} {
+	}
+	if version >= 6 {
+		tables = append(tables,
+			roundTable{"review_round_external_credits", "pull_number epoch revision ordinal accepted", "batch_id project_id channel completed_at"},
+			roundTable{"review_round_external_members", "", "batch_id project_id run_id"},
+		)
+	}
+	for _, table := range tables {
 		if table.name == "review_round_controls" && version >= 2 {
 			table.integers += " initial_dry initially_tapered"
 			table.text += " origin_source origin_key origin_sha256"
@@ -149,7 +167,7 @@ func validateRoundPhysicalVersion(ctx context.Context, q EvidenceQuery, version 
 			checks = append(checks, "typeof("+column+")!='integer'")
 		}
 		for _, column := range strings.Fields(table.text) {
-			if column == "operation_id" || column == "evidence_id" || column == "project_id" {
+			if column == "operation_id" || column == "evidence_id" || column == "project_id" || column == "batch_id" || column == "run_id" {
 				checks = append(checks, column+"=''")
 			}
 			limit := 128
@@ -181,7 +199,7 @@ type roundProgress struct {
 	at      string
 }
 
-func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, operationID string) (string, int64, error) {
+func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, operationID string, external bool) (string, int64, error) {
 	op, err := readOperation(ctx, q, project, operationID)
 	if err != nil {
 		return "", 0, err
@@ -202,6 +220,12 @@ func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, ope
 	}
 	if state.FrozenCounts == nil || evidence.OperationID != operationID || evidence.AttemptID != op.AttemptID || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
 		return "", 0, roundUnavailable()
+	}
+	if external {
+		credited, err := hasCreditedNativeHostedAlias(ctx, q, project, op.PullNumber, evidence.Capture.Hosted)
+		if err != nil || credited {
+			return "", 0, err
+		}
 	}
 	return evidence.ID, state.FrozenCounts.Accepted, nil
 }
@@ -247,7 +271,7 @@ func roundEpochProgress(ctx context.Context, q EvidenceQuery, grant RoundControl
 			if action != "grant" || v.ordinal != last+1 || v.ordinal > roundSafeInteger || !grant.MaximumUnbounded && v.ordinal > grant.Maximum || !identifier.MatchString(v.op) || !identifier.MatchString(v.evidence) || !roundTime(v.at) {
 				return roundEpochState{}, roundUnavailable()
 			}
-			evidence, accepted, err := roundCompletionAuthority(ctx, q, grant.ProjectID, v.op)
+			evidence, accepted, err := roundCompletionAuthority(ctx, q, grant.ProjectID, v.op, false)
 			if err != nil {
 				return roundEpochState{}, err
 			}
@@ -391,7 +415,7 @@ func validateRoundHistory(ctx context.Context, q EvidenceQuery, project string, 
 	return nil
 }
 
-func validateRoundBindings(ctx context.Context, q EvidenceQuery) error {
+func validateRoundBindings(ctx context.Context, q EvidenceQuery, version int) error {
 	last := ""
 	for {
 		rows, err := q.QueryContext(ctx, `SELECT operation_id,project_id,pull_number,channel,epoch,grant_revision FROM review_round_operation_bindings WHERE operation_id>? ORDER BY operation_id LIMIT 64`, last)
@@ -425,7 +449,7 @@ func validateRoundBindings(ctx context.Context, q EvidenceQuery) error {
 			if err != nil {
 				return err
 			}
-			expected, _, err := roundCompletionAuthority(ctx, q, b.project, b.id)
+			expected, _, err := roundCompletionAuthority(ctx, q, b.project, b.id, version >= 6)
 			if err != nil {
 				return err
 			}

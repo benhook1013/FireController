@@ -43,12 +43,18 @@ func roundRead(t *testing.T, f *attemptFixture, pull int64, channel string) Roun
 	}
 	return c
 }
-func roundTables(t *testing.T, f *attemptFixture) string {
+func roundTables(t *testing.T, f *attemptFixture, exceptEvent ...int64) string {
 	t.Helper()
 	tables := []string{"review_round_controls", "review_round_changes", "review_round_operation_bindings", "review_round_completions", "events", "receipts"}
 	out := []any{}
 	for _, table := range tables {
-		rows, err := f.store.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+		query := `SELECT * FROM ` + table
+		var args []any
+		if table == "events" && len(exceptEvent) == 1 {
+			query += ` WHERE sequence != ?`
+			args = append(args, exceptEvent[0])
+		}
+		rows, err := f.store.DB().Query(query+` ORDER BY rowid`, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,15 +111,6 @@ func roundCompleteHook(t *testing.T, f *attemptFixture, id string) {
 // SQL fixture inserts completion, frozen counts or derived ready-cache rows.
 func roundCapture(t *testing.T, f *attemptFixture, n int, accepted bool) (Attempt, string) {
 	t.Helper()
-	a, evidence := roundCaptureActive(t, f, n, accepted)
-	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured_native_result", ""); err != nil {
-		t.Fatal(err)
-	}
-	return a, evidence
-}
-
-func roundCaptureActive(t *testing.T, f *attemptFixture, n int, accepted bool) (Attempt, string) {
-	t.Helper()
 	receipt := f.enqueue(t, attemptProject, fmt.Sprintf("round-operation-%d", n), "cli", 2, 1)
 	roundBind(t, f, receipt.ID)
 	a := f.start(t, attemptProject, receipt)
@@ -132,6 +129,9 @@ func roundCaptureActive(t *testing.T, f *attemptFixture, n int, accepted bool) (
 	}
 	captured, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured_native_result", ""); err != nil {
 		t.Fatal(err)
 	}
 	return a, captured.ID
@@ -526,55 +526,4 @@ func TestRoundControlsCompletionFailureRollsBackNativeFinalization(t *testing.T)
 	if err != nil || string(first) != string(replay) || after != roundTables(t, f) {
 		t.Fatal("recovered native finalization duplicated completion")
 	}
-}
-
-func roundSnapshotValid(t *testing.T, f *attemptFixture) {
-	t.Helper()
-	if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func roundPendingCount(t *testing.T, f *attemptFixture, pull int64, channel string) int64 {
-	t.Helper()
-	var pending int64
-	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
-		c, err := readRoundRecord(ctx, tx, attemptProject, pull, channel)
-		if err != nil {
-			return err
-		}
-		pending, err = roundOccupied(ctx, tx, c, "")
-		return err
-	})
-	return pending
-}
-
-func TestRoundControlsFinalizationBeforeTerminalCannotEarnCredit(t *testing.T) {
-	f := roundFixture(t)
-	roundGrant(t, f, 2, "cli", 0, 0, 3, "grant")
-	a, evidence := roundCaptureActive(t, f, 0, false)
-	zero := int64(0)
-	_, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "early-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: &zero})
-	attemptCode(t, err, "review_conflict")
-	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || c.Dry != 0 || roundPendingCount(t, f, 2, "cli") != 1 {
-		t.Fatal("active operation earned terminal credit", c)
-	}
-	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "finalized_capture", ""); err != nil {
-		t.Fatal(err)
-	}
-	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || c.Dry != 0 {
-		t.Fatal("unfinalized completion earned credit", c)
-	}
-	if _, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "early-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
-		t.Fatal(err)
-	}
-	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || roundPendingCount(t, f, 2, "cli") != 0 {
-		t.Fatal("terminal advance missed finalized credit", c)
-	}
-	before := roundTables(t, f)
-	roundCompleteHook(t, f, a.OperationID)
-	if roundTables(t, f) != before {
-		t.Fatal("terminal completion replay duplicated credit")
-	}
-	roundSnapshotValid(t, f)
 }

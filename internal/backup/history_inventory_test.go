@@ -35,8 +35,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
-		t.Fatal("owning startup must install reviews v11", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+		t.Fatal("owning startup must install reviews v12", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +45,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 11 {
+	if err != nil || versions["reviews"] != 12 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -174,9 +174,10 @@ func TestHistoryInventoryLegacyVersionsRejectViews(t *testing.T) {
 func historyInventorySeedPull(t *testing.T, store *core.Store) {
 	t.Helper()
 	if _, err := store.DB().Exec(`INSERT INTO projects VALUES('history-private','Private sentinel',701,'owner/history');
+ INSERT INTO project_handles VALUES('history-private','private-sentinel');
  INSERT INTO review_snapshots VALUES('history-private','review_snapshot_11111111111111111111111111111111',1,701,'synthetic-import','','','');
  INSERT INTO review_workspace VALUES('history-private',1,'review_snapshot_11111111111111111111111111111111');
- INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]','{}');
+ INSERT INTO review_pull_versions VALUES('history-private',7,1,'Retained merged PR','merged','','main','','success','mergeable',1,0,0,'[]','[]','{}',1);
  INSERT INTO review_pull_memberships VALUES('history-private',7,1,NULL,1,0);
  INSERT INTO review_current_pulls VALUES('history-private',7,1,0);
  INSERT INTO review_current_totals(project_id,pull_number,run_count,attempt_count,incomplete_run_count) VALUES('history-private',7,0,0,0)`); err != nil {
@@ -545,15 +546,20 @@ func TestHistoryInventoryV4ThroughV9RemainSupportedWithoutFutureMetadata(t *test
 	for _, version := range []int{4, 5, 6, 7, 8, 9} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
-			if _, err := f.store.DB().Exec(`DROP INDEX review_run_versions_external_source; DROP TABLE review_hosted_discovery_state`); err != nil {
-				t.Fatal(err)
-			}
 			if version < 9 {
 				removeChannelRunCountsForLegacyFixture(t, f.store)
 			} else {
+				// Schema nine predates external Hosted discovery and Delivery
+				// selection; preserve its channel totals while removing only
+				// those later physical additions from this private fixture.
+				for _, statement := range []string{`DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN delivery_selected`, reviews.HistoryReadViewSQLV10()["review_pulls"], `DROP INDEX review_run_versions_external_source`, `DROP TABLE review_hosted_discovery_state`} {
+					if _, err := f.store.DB().Exec(statement); err != nil {
+						t.Fatal(err)
+					}
+				}
 				// Schema nine counted every retained outcome, including this
 				// fixture's unfinished Hosted round. Reconstruct its original
-				// aggregate rather than retaining schema ten's completed count.
+				// aggregate rather than retaining schema twelve's completed count.
 				if _, err := f.store.DB().Exec(`UPDATE review_current_totals AS t SET (hosted_run_count,cli_run_count,subagent_run_count,manual_run_count)=(
  SELECT coalesce(sum(v.channel='hosted'),0),coalesce(sum(v.channel='cli'),0),coalesce(sum(v.channel='subagent'),0),coalesce(sum(v.channel='manual'),0)
  FROM review_current_runs r
@@ -661,7 +667,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 11 {
+			if err != nil || versions["reviews"] != 12 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
@@ -747,163 +753,5 @@ func TestHistoryInventoryV6LiveCacheCorruptionRefusesCreateAndRetries(t *testing
 	}
 	if _, err = Inspect(t.Context(), bundle.Path); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func installLegacyReviewInventorySchema(ctx context.Context, store *core.Store, version int) error {
-	migrations := [][]string{{
-		`CREATE TABLE IF NOT EXISTS review_snapshots (
- project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
- snapshot_id TEXT NOT NULL,
- revision INTEGER NOT NULL CHECK (revision >= 1),
- repository_id INTEGER NOT NULL CHECK (repository_id > 0),
- source TEXT NOT NULL,
- observed_at TEXT NOT NULL,
- recorded_at TEXT NOT NULL,
- payload_sha256 TEXT NOT NULL,
- PRIMARY KEY (project_id, snapshot_id),
- UNIQUE (project_id, revision)
-);`,
-		`CREATE TABLE IF NOT EXISTS review_workspace (
- project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
- revision INTEGER NOT NULL CHECK (revision >= 1),
- snapshot_id TEXT NOT NULL,
- FOREIGN KEY (project_id, snapshot_id) REFERENCES review_snapshots(project_id, snapshot_id)
-);`,
-		`CREATE TABLE IF NOT EXISTS review_pulls (
- project_id TEXT NOT NULL,
- snapshot_id TEXT NOT NULL,
- position INTEGER NOT NULL CHECK (position >= 0),
- number INTEGER NOT NULL CHECK (number > 0 AND number <= 2147483647),
- title TEXT NOT NULL,
- state TEXT NOT NULL,
- head_sha TEXT NOT NULL,
- base_ref TEXT NOT NULL,
- base_sha TEXT NOT NULL,
- ci_state TEXT NOT NULL,
- mergeability TEXT NOT NULL,
- complete INTEGER NOT NULL CHECK (complete IN (0,1)),
- run_count INTEGER NOT NULL CHECK (run_count >= 0),
- attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
- recent_runs_json TEXT NOT NULL,
- latest_attempts_json TEXT NOT NULL,
- PRIMARY KEY (project_id, snapshot_id, number),
- UNIQUE (project_id, snapshot_id, position),
- FOREIGN KEY (project_id, snapshot_id) REFERENCES review_snapshots(project_id, snapshot_id) ON DELETE CASCADE
-);`,
-		`CREATE INDEX IF NOT EXISTS review_pulls_snapshot_position
- ON review_pulls(project_id, snapshot_id, position);`,
-		`CREATE TABLE IF NOT EXISTS review_runs (
- project_id TEXT NOT NULL,
- snapshot_id TEXT NOT NULL,
- pull_number INTEGER NOT NULL,
- run_order INTEGER NOT NULL CHECK (run_order >= 0),
- id TEXT NOT NULL,
- source TEXT NOT NULL,
- source_run_id TEXT NOT NULL,
- channel TEXT NOT NULL,
- head_sha TEXT NOT NULL,
- reviewer TEXT NOT NULL,
- scope TEXT NOT NULL,
- outcome TEXT NOT NULL,
- attributable INTEGER NOT NULL CHECK (attributable IN (0,1)),
- complete INTEGER NOT NULL CHECK (complete IN (0,1)),
- started_at TEXT NOT NULL,
- finished_at TEXT NOT NULL,
- found INTEGER NOT NULL CHECK (found >= 0),
- accepted INTEGER NOT NULL CHECK (accepted >= 0),
- routed INTEGER NOT NULL CHECK (routed >= 0),
- finalized INTEGER NOT NULL CHECK (finalized IN (0,1)),
- fixed INTEGER NOT NULL CHECK (fixed >= 0),
-	coverage_limits_json TEXT NOT NULL,
- PRIMARY KEY (project_id, snapshot_id, pull_number, id),
- UNIQUE (project_id, snapshot_id, pull_number, run_order),
- UNIQUE (project_id, snapshot_id, source, source_run_id),
- FOREIGN KEY (project_id, snapshot_id, pull_number)
-  REFERENCES review_pulls(project_id, snapshot_id, number) ON DELETE CASCADE
-);`,
-		`CREATE INDEX IF NOT EXISTS review_runs_project_source_id
- ON review_runs(project_id, source, source_run_id, finalized);`,
-		`CREATE INDEX IF NOT EXISTS review_runs_snapshot_pull_order
- ON review_runs(project_id, snapshot_id, pull_number, run_order DESC);`,
-		`CREATE TABLE IF NOT EXISTS review_findings (
- project_id TEXT NOT NULL,
- snapshot_id TEXT NOT NULL,
- pull_number INTEGER NOT NULL,
- run_id TEXT NOT NULL,
- position INTEGER NOT NULL CHECK (position >= 0),
- source_finding_id TEXT NOT NULL,
- title TEXT NOT NULL,
- detail TEXT NOT NULL,
- severity TEXT NOT NULL,
- disposition TEXT NOT NULL,
- decision_reason TEXT NOT NULL,
- actor TEXT NOT NULL,
- decided_at TEXT NOT NULL,
- fix_sha TEXT NOT NULL,
- proof_note TEXT NOT NULL,
- resolved_at TEXT NOT NULL,
- PRIMARY KEY (project_id, snapshot_id, pull_number, run_id, source_finding_id),
- UNIQUE (project_id, snapshot_id, pull_number, run_id, position),
- FOREIGN KEY (project_id, snapshot_id, pull_number, run_id)
-  REFERENCES review_runs(project_id, snapshot_id, pull_number, id) ON DELETE CASCADE
-);`,
-		`CREATE INDEX IF NOT EXISTS review_findings_run_position
- ON review_findings(project_id, snapshot_id, pull_number, run_id, position);`,
-		`CREATE TABLE IF NOT EXISTS review_attempts (
- project_id TEXT NOT NULL,
- snapshot_id TEXT NOT NULL,
- pull_number INTEGER NOT NULL,
- position INTEGER NOT NULL CHECK (position >= 0),
- source TEXT NOT NULL,
- source_attempt_id TEXT NOT NULL,
- channel TEXT NOT NULL,
- head_sha TEXT NOT NULL,
- state TEXT NOT NULL,
- started_at TEXT NOT NULL,
- finished_at TEXT NOT NULL,
- duration_seconds INTEGER CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
- source_run_id TEXT NOT NULL,
- trigger_id TEXT NOT NULL,
- provider_review_id TEXT NOT NULL,
- PRIMARY KEY (project_id, snapshot_id, source, source_attempt_id),
- UNIQUE (project_id, snapshot_id, pull_number, position),
- FOREIGN KEY (project_id, snapshot_id, pull_number)
-  REFERENCES review_pulls(project_id, snapshot_id, number) ON DELETE CASCADE
-);`,
-		`CREATE INDEX IF NOT EXISTS review_attempts_snapshot_pull_position
- ON review_attempts(project_id, snapshot_id, pull_number, position);`,
-		`CREATE TABLE IF NOT EXISTS review_retired_pulls (
- project_id TEXT NOT NULL,
- snapshot_id TEXT NOT NULL,
- position INTEGER NOT NULL CHECK (position >= 0),
- number INTEGER NOT NULL CHECK (number > 0 AND number <= 2147483647),
- reason TEXT NOT NULL CHECK (reason IN ('superseded','defunct')),
- PRIMARY KEY (project_id, snapshot_id, number),
- UNIQUE (project_id, snapshot_id, position),
- FOREIGN KEY (project_id, snapshot_id) REFERENCES review_snapshots(project_id, snapshot_id) ON DELETE CASCADE
-);`,
-	}, {
-		`ALTER TABLE review_runs ADD COLUMN snapshot_revision INTEGER NOT NULL DEFAULT 0`,
-		`UPDATE review_runs SET snapshot_revision=(SELECT revision FROM review_snapshots s WHERE s.project_id=review_runs.project_id AND s.snapshot_id=review_runs.snapshot_id)`,
-		`DROP INDEX review_runs_project_source_id`,
-		`CREATE INDEX review_runs_project_source_id ON review_runs(project_id,source,source_run_id,finalized,snapshot_revision DESC)`,
-		`CREATE TRIGGER review_runs_snapshot_revision_insert BEFORE INSERT ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END`,
-		`CREATE TRIGGER review_runs_snapshot_revision_update BEFORE UPDATE OF project_id,snapshot_id,snapshot_revision ON review_runs WHEN NEW.snapshot_revision IS NOT (SELECT revision FROM review_snapshots WHERE project_id=NEW.project_id AND snapshot_id=NEW.snapshot_id) BEGIN SELECT RAISE(ABORT,'invalid review snapshot revision'); END`,
-	}, {
-		`ALTER TABLE review_findings ADD COLUMN route_json TEXT NOT NULL DEFAULT 'null'`,
-	}}
-	return store.EnsureSchema(ctx, "reviews", migrations[:version]...)
-}
-
-func removeChannelRunCountsForLegacyFixture(t *testing.T, store *core.Store) {
-	t.Helper()
-	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"hosted_run_count", "cli_run_count", "subagent_run_count", "manual_run_count"} {
-		if _, err := store.DB().Exec(`ALTER TABLE review_current_totals DROP COLUMN ` + name); err != nil {
-			t.Fatal(err)
-		}
 	}
 }

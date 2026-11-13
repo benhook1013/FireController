@@ -11,6 +11,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -86,7 +87,7 @@ func (e *Engine) EnqueueSourceRefresh(ctx context.Context, scope core.Scope, key
 			return nil, err
 		}
 		if revision != r.ExpectedConfigurationRevision {
-			return nil, conflict()
+			return nil, configurationRevisionConflict(revision)
 		}
 		if e.validateConfiguration(c) != nil {
 			return nil, core.Fail("capability_unavailable", "The configured source reader is unavailable.", 409)
@@ -295,7 +296,7 @@ func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revisi
 		return c, err
 	}
 	if len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
-		return c, refreshStorageError()
+		return c, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 	}
 	return c, nil
 }
@@ -490,6 +491,7 @@ func (e *Engine) refreshNext(ctx context.Context, readers map[string]TargetReade
 func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]TargetReader, schedule *sourceRefreshSchedule) (bool, error) {
 	var selected *sourceRefresh
 	var configuration Configuration
+	var metadataPins map[int64]reviews.SourceMetadataPin
 	var changed string
 
 	var project, id string
@@ -527,6 +529,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			var reason string
 			configuration, reason, err = e.refreshBinding(ctx, tx, r)
+			if isStoredUnavailable(err, storedConfigurationHistory) {
+				reason, err = "source_configuration_changed", nil
+			}
 			if err != nil {
 				return err
 			}
@@ -536,6 +541,12 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			if reason != "" {
 				changed = r.ID
 				return e.updateSourceRefresh(ctx, tx, r, "held", reason, nil, "null", "null")
+			}
+			if e.publishAttempt != nil {
+				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, []int64{r.PullNumber})
+				if err != nil {
+					return err
+				}
 			}
 			if err = e.updateSourceRefresh(ctx, tx, r, "running", "", nil, "null", "null"); err != nil {
 				return err
@@ -558,13 +569,16 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 		return changed != "", err
 	}
 	r := *selected
+	// Reserve the bounded source phase plus a complete gate read, including
+	// its final rechecks. Readiness adds the provider's review-state phase.
 	budget := 15 * time.Second
-	if r.IncludeReadiness {
-		budget = 45 * time.Second
-	} else if r.IncludeCI {
-		budget = 30 * time.Second
+	if r.IncludeCI || r.IncludeReadiness {
+		budget += reviewprovider.CIObservationTimeout
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, budget)
+	if r.IncludeReadiness {
+		budget += 15 * time.Second
+	}
+	operationCtx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "source_refresh"), budget)
 	defer cancel()
 	readCtx, sourceCancel := context.WithTimeout(operationCtx, 15*time.Second)
 	plan, readErr := ResolveSourceObservation(readCtx, readers[r.capability], r.repositoryID, configuration, r.PullNumber, r.HeadSHA)
@@ -615,6 +629,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			retainedCI, retainedReview := "null", "null"
 			if state == "completed" {
 				retainedCI, retainedReview = ciBody, reviewBody
+				if err = publishSourceRefreshStatus(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker}, r.repositoryID, metadataPins, plan, ci, review); err != nil {
+					return err
+				}
 			}
 			return e.updateSourceRefresh(ctx, tx, r, state, reason, retained, retainedCI, retainedReview)
 		})
@@ -677,7 +694,8 @@ func (e *Engine) ReadSourcePolicyAssessment(ctx context.Context, scope core.Scop
 		}
 		observation := *r.Observation
 		result = SourcePolicyAssessment{ProjectID: scope.ProjectID, RefreshID: r.ID, Source: "observed_comparison", ConfigurationRevision: r.ConfigurationRevision, SourceObservedAt: observation.ObservedAt, EvaluatedAt: stamp(), State: "unconfigured", Target: observation, Channels: []PolicyAssessmentChannel{}}
-		// Source applicability shares CI/readiness's target-scoped binding.
+		// Applicability is shared with CI/readiness; current reader authorization
+		// remains independent of the actor who originally collected the source.
 		revision, bindingReason, err := e.assessmentSourceBinding(ctx, tx, r)
 		if err != nil {
 			return err
@@ -763,9 +781,10 @@ func (e *Engine) notifySourceRefresh(id string) {
 	}
 }
 func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id string, maxWait time.Duration) (SourceRefreshOperation, error) {
-	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 60*time.Second {
+	if ctx == nil || e == nil || e.store == nil || !validRefreshID(id) || !identifier.MatchString(scope.PrincipalID) || maxWait < 0 || maxWait > 900*time.Second {
 		return SourceRefreshOperation{}, invalid()
 	}
+	deadline := time.Now().Add(maxWait)
 	waitCtx, cleanupWait := e.resultWaitContext(ctx)
 	defer cleanupWait()
 	canceled := func() error {
@@ -775,7 +794,12 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 		if waitCtx.Err() != nil {
 			return SourceRefreshOperation{}, canceled()
 		}
-		value, err := e.ReadSourceRefresh(waitCtx, scope, id)
+		var value SourceRefreshOperation
+		err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+			var readErr error
+			value, readErr = e.ReadSourceRefresh(readCtx, scope, id)
+			return readErr
+		})
 		if waitCtx.Err() != nil {
 			return SourceRefreshOperation{}, canceled()
 		}
@@ -813,7 +837,7 @@ func (e *Engine) WaitSourceRefresh(ctx context.Context, scope core.Scope, id str
 			delete(e.sourceWaiterPrincipals, waiter.principal)
 		}
 	}()
-	timer := time.NewTimer(maxWait)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
 		value, err := read()

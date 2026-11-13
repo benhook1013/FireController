@@ -20,7 +20,7 @@ func TestPolicyAssessmentCarriedObligationsWithoutPolicy(t *testing.T) {
 				state := "unconfigured"
 				var channels []PolicyAssessmentChannel
 				if configured {
-					assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+					assessmentPolicy(t, f, 1, []string{"cli"})
 					revision, state = 2, "sufficient"
 					channels = []PolicyAssessmentChannel{{Channel: "cli", Covered: true}}
 				} else {

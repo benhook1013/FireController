@@ -253,7 +253,7 @@ func TestRestoredProviderWorkCapacityRollback(t *testing.T) {
 	// Canonical queued rows use one genuine request as a template. No provider
 	// evidence or completion is synthesized by this capacity fixture.
 	original := f.enqueue(t, attemptProject, "capacity-template", "cli", 2, 1)
-	_, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO review_operations SELECT 'overflow-'||x,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations,n WHERE id=?`, original.ID)
+	_, err := f.store.DB().Exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT 'overflow-'||x,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations,n WHERE id=?`, original.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

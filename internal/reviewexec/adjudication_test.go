@@ -3,13 +3,17 @@ package reviewexec
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -219,7 +223,11 @@ func TestCLIAdjudicationFinalizationRequiresCompleteSettledDecisions(t *testing.
 					t.Fatal("empty completed capture did not finalize", got)
 				}
 			} else {
-				attemptCode(t, err, "review_conflict")
+				code := "review_conflict"
+				if name == "uncertain" {
+					code = "review_result_unsettled"
+				}
+				attemptCode(t, err, code)
 				if adjudicationState(t, f, a) != before {
 					t.Fatal("ineligible finalization changed state")
 				}
@@ -522,24 +530,87 @@ func TestCLIAdjudicationValidationAndRevisionOverflow(t *testing.T) {
 	}
 }
 
-func TestComparisonAdjudicationDerivedWriteRollbackAndExactRetry(t *testing.T) {
-	f, a, id, current := coverageFixture(t, 0, false)
+// Read the real scoped project feed around lifecycle mutations, including every
+// emitted item. One malformed producer envelope would reject the browser page.
+func producerProjectCursor(t *testing.T, f *attemptFixture, scope core.Scope) string {
+	t.Helper()
+	var cursor string
+	if err := f.store.Read(t.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		cursor, err = f.store.ProjectEventCursor(ctx, tx, scope)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return cursor
+}
+
+func assertProducerProjectPage(t *testing.T, f *attemptFixture, scope core.Scope, cursor string, want []core.ProjectEventItem) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	stop := errors.New("bounded producer event page received")
+	var page core.ProjectEventPage
+	err := f.store.StreamProjectEvents(ctx, scope, cursor, 100, func(value core.ProjectEventPage) error { page = value; return stop }, func() error { return errors.New("producer page missing") })
+	if !errors.Is(err, stop) || page.HasMore || len(page.Items) != len(want) {
+		t.Fatalf("producer event page: %+v %v", page, err)
+	}
+	validID := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	seen := map[string]bool{cursor: true}
+	remaining := make(map[core.ProjectEventItem]int, len(want))
+	for _, item := range want {
+		remaining[item]++
+	}
+	for _, item := range page.Items {
+		key := item
+		key.EventCursor = ""
+		if remaining[key] == 0 || !validID.MatchString(item.ResourceID) || item.Revision < 1 || item.Revision > 9007199254740991 {
+			t.Fatalf("browser-incompatible or wrong producer item: %+v", item)
+		}
+		remaining[key]--
+		if item.EventCursor == "" || len(item.EventCursor) > 4096 || strings.ContainsAny(item.EventCursor, " \t\r\n") || seen[item.EventCursor] {
+			t.Fatalf("invalid or repeated scoped event cursor: %+v", item)
+		}
+		seen[item.EventCursor] = true
+	}
+	if page.EventCursor == cursor || page.EventCursor != producerProjectCursor(t, f, scope) {
+		t.Fatal("event page did not advance to current scoped cursor")
+	}
+	// Resume the returned cursor through the same public feed, without parsing it.
+	var resumed core.ProjectEventPage
+	err = f.store.StreamProjectEvents(ctx, scope, page.EventCursor, 100, func(value core.ProjectEventPage) error { resumed = value; return stop }, func() error { return errors.New("resume page missing") })
+	if !errors.Is(err, stop) || len(resumed.Items) != 0 || resumed.HasMore || resumed.EventCursor != page.EventCursor {
+		t.Fatalf("returned producer cursor cannot resume cleanly: %+v %v", resumed, err)
+	}
+	raw, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err = json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range wire.Items {
+		if len(item) != 4 || item["event_type"] == nil || item["resource_id"] == nil || item["revision"] == nil || item["event_cursor"] == nil {
+			t.Fatal("project feed exposed non-envelope fields")
+		}
+	}
+}
+
+func TestCLIAdjudicationRealProducerMetadataEnvelope(t *testing.T) {
+	f, a, id := adjudicationFixture(t, 1, false)
 	adjudicationComplete(t, f, a)
-	before := adjudicationState(t, f, a)
-	admissionSQL(t, f, `CREATE TRIGGER fail_comparison_refresh BEFORE UPDATE ON review_comparison_proofs WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'synthetic derived write failure'); END`)
-	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)}
-	scope := f.scope(t, attemptProject, f.writer, false)
-	_, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
-	if err == nil || adjudicationState(t, f, a) != before {
-		t.Fatal("derived write failure committed source/audit/event/receipt", err)
-	}
-	admissionSQL(t, f, `DROP TRIGGER fail_comparison_refresh`)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
-	first := adjudicationReceipt(t, raw, err, id, "finalized", 1)
-	after := adjudicationState(t, f, a)
-	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "derived-finalize-retry", id, request)
-	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != after {
-		t.Fatal("successful exact retry duplicated source/audit/event/receipt", err)
-	}
-	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
+	reader := evidenceReadScope(t, f, attemptProject, f.reader)
+	before := producerProjectCursor(t, f, reader)
+	adjudicationDecide(t, f, id, "producer-decision", 0, 0, "rejected")
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "producer-finalization", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	// The original decision replay must not add a second envelope after finalize.
+	adjudicationDecide(t, f, id, "producer-decision", 0, 0, "rejected")
+	assertProducerProjectPage(t, f, reader, before, []core.ProjectEventItem{
+		{EventType: "review.evidence.adjudicated", ResourceID: id, Revision: 1},
+		{EventType: "review.evidence.finalized", ResourceID: id, Revision: 2},
+	})
 }

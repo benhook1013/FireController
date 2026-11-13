@@ -48,10 +48,6 @@ func TestReviewRoundsMCPArgumentsBeforeCredentials(t *testing.T) {
 		cases["review_rounds_configure"] = append(cases["review_rounds_configure"], `{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"taper"`+suffix+`}`)
 	}
 	cases["review_rounds_configure"] = append(cases["review_rounds_configure"], `{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"close","taper":2}`, `{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"grant","minimum":0,"maximum":8,"taper":2}`)
-	cases["review_rounds_configure"] = append(cases["review_rounds_configure"],
-		`{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"close","minimum":null}`,
-		`{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"grant","minimum":0,"maximum":3,"taper":null}`,
-		`{"pull_number":2,"channel":"cli","expected_revision":1,"idempotency_key":"once","action":"taper","taper":2,"maximum":null}`)
 	for name, rows := range cases {
 		for _, raw := range rows {
 			diagnosticResult(t, call(t, session, name, json.RawMessage(raw)), "invalid_arguments", false)

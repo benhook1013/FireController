@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
@@ -42,11 +43,41 @@ func reviewHold(reason string) error {
 }
 
 func sameOperation(left, right reviewexec.Operation) bool {
-	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel
+	return left.ID == right.ID && left.ProjectID == right.ProjectID && left.ActorID == right.ActorID && left.WorkerID == right.WorkerID && left.ConfigurationRevision == right.ConfigurationRevision && left.PolicyRevision == right.PolicyRevision && left.CapabilityFingerprint == right.CapabilityFingerprint && left.PullNumber == right.PullNumber && left.HeadSHA == right.HeadSHA && left.Channel == right.Channel && left.AllowOutOfOrder == right.AllowOutOfOrder && left.OverrideFileLimit == right.OverrideFileLimit
 }
 
 func operationRequest(operation reviewexec.Operation) reviewexec.Request {
-	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel}
+	return reviewexec.Request{ExpectedConfigurationRevision: operation.ConfigurationRevision, PullNumber: operation.PullNumber, HeadSHA: operation.HeadSHA, Channel: operation.Channel, AllowOutOfOrder: operation.AllowOutOfOrder, OverrideFileLimit: operation.OverrideFileLimit}
+}
+
+func samePreparedSource(left, right reviewexec.SourcePlan) bool {
+	return left.Repository == right.Repository && left.Pull.Number == right.Pull.Number && left.Pull.RepositoryID == right.Pull.RepositoryID && left.Pull.HeadSHA == right.Pull.HeadSHA && left.Pull.BaseSHA == right.Pull.BaseSHA && left.Pull.BaseRef == right.Pull.BaseRef && left.ParentSHA == right.ParentSHA && left.ParentPullNumber == right.ParentPullNumber
+}
+
+// Slow cold materialization must not turn an aged observation into fresh facts.
+// Read the provider again and require the exact comparison we materialized.
+func refreshMaterializedSource(ctx context.Context, reader reviewexec.TargetReader, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation, prepared reviewexec.SourcePlan) (reviewexec.SourcePlan, error) {
+	current, err := reviewexec.ResolveSource(ctx, newSourceReads(reader), repositoryID, configuration, operationRequest(operation))
+	if err != nil {
+		return reviewexec.SourcePlan{}, err
+	}
+	if !samePreparedSource(current, prepared) {
+		return reviewexec.SourcePlan{}, reviewHold("source_changed")
+	}
+	return current, nil
+}
+
+// Slow preparation may age the source beyond the admission window. Fresh
+// comparisons need no extra provider reads; aged ones must be verified again.
+func refreshAgedMaterializedSource(ctx context.Context, reader reviewexec.TargetReader, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation, prepared reviewexec.SourcePlan, now time.Time) (reviewexec.SourcePlan, error) {
+	observed, err := time.Parse(time.RFC3339Nano, prepared.ObservedAt)
+	if err != nil {
+		return reviewexec.SourcePlan{}, reviewHold("source_unavailable")
+	}
+	if !observed.Before(now.Add(-30 * time.Second)) {
+		return prepared, nil
+	}
+	return refreshMaterializedSource(ctx, reader, repositoryID, configuration, operation, prepared)
 }
 
 // Each phase has its own memoizer. Repeated stack-resolution reads within one
@@ -115,6 +146,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if err != nil {
 		return plan, nil, err
 	}
+	if comparison.ExternalPending {
+		return plan, nil, core.Fail("external_hosted_pending", "Settle the pending manual Hosted results before starting another Hosted review for this PR.", 409)
+	}
 	if comparison.Pending {
 		return plan, nil, core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
@@ -128,7 +162,7 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 	if comparison.Covered && !rounds {
 		return plan, nil, reviewHold("target_already_covered")
 	}
-	if configuration.Mode != "stacked" {
+	if configuration.Mode != "stacked" || operation.AllowOutOfOrder {
 		return plan, nil, nil
 	}
 
@@ -174,13 +208,8 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			}
 			return plan, nil, err
 		}
-		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
-		if err != nil {
-			return plan, nil, err
-		}
-		if !covered {
-			return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
-		}
+		// Both channels retain every source witness without requiring an ancestor's
+		// findings or review rounds to finish. Target-local guards remain above.
 		predecessors = append(predecessors, preceding)
 		number = preceding.ParentPullNumber
 	}
@@ -192,6 +221,9 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 // reading provider metadata or obtaining any channel's allowance.
 func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int64, string, string, string, string) error, verify func(context.Context, reviewworkspace.Workspace) error, manager *reviewworkspace.Manager, credential string, current reviewexec.ExecutionContext, plan reviewexec.SourcePlan, attemptID string) (reviewworkspace.Workspace, int64, error) {
 	if err := fetch(ctx, current.RepositoryID, plan.Repository.FullName, plan.Pull.HeadSHA, plan.Pull.BaseSHA, credential); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return reviewworkspace.Workspace{}, 0, reviewHold("source_fetch_timeout")
+		}
 		return reviewworkspace.Workspace{}, 0, reviewHold("source_unavailable")
 	}
 	workspace, err := manager.Prepare(ctx, current.RepositoryID, attemptID, plan.Pull.HeadSHA, plan.Pull.BaseSHA)
@@ -205,12 +237,11 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 	if err := verify(ctx, workspace); err != nil {
 		return reviewworkspace.Workspace{}, 0, reviewHold("workspace_changed")
 	}
-	paths, err := manager.ChangedFiles(ctx, workspace)
-	if err != nil || len(paths) == 0 {
+	count, err := manager.ReviewFileCount(ctx, workspace)
+	if err != nil || count == 0 {
 		return reviewworkspace.Workspace{}, 0, reviewHold("comparison_unavailable")
 	}
-	count := int64(len(paths))
-	if ceiling := current.Policy.Policy.MaxReviewFiles; ceiling > 0 && count > ceiling {
+	if ceiling := current.Policy.Policy.MaxReviewFiles; !current.Operation.OverrideFileLimit && ceiling > 0 && count > ceiling {
 		return reviewworkspace.Workspace{}, 0, reviewHold("project_file_limit")
 	}
 	return workspace, count, nil
@@ -219,19 +250,41 @@ func prepareReviewWorkspace(ctx context.Context, fetch func(context.Context, int
 // publishPreparedAttempt preserves current PR facts. Only an absent projection
 // permits initial display metadata from this phase's verified source plan.
 func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, project, attemptID string, plan reviewexec.SourcePlan) error {
-	_, err := engine.PublishAttempt(ctx, project, attemptID, nil)
-	if err == nil {
-		return nil
-	}
-	var missing *core.Error
-	if !errors.As(err, &missing) || missing.Code != "review_projection_missing" {
-		return err
-	}
 	metadata := reviews.PullInput{Number: plan.Pull.Number, Title: pullDisplayTitle(plan.Pull.Title), State: plan.Pull.State, HeadSHA: plan.Pull.HeadSHA, BaseRef: plan.Pull.BaseRef, BaseSHA: plan.Pull.BaseSHA, CIState: "unknown", Mergeability: "unknown", Complete: false}
-	_, err = engine.PublishAttempt(ctx, project, attemptID, &metadata)
+	_, err := engine.PublishAttempt(ctx, project, attemptID, &metadata)
 	return err
 }
 
 func reviewPredecessorHold(number int64, cause string) error {
-	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
+	return &core.Error{Code: "review_held", Message: "An ancestor does not establish the selected source comparison.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
+}
+
+// Keep quiet, proven stop classes through final dispatch admission. No arbitrary
+// error code or detail becomes a persisted result reason.
+func actionRefusalReason(err error, fallback string) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "review_evidence_pending", "review_round_closed", "review_round_complete", "review_round_capacity", "review_round_changed":
+			return failure.Code
+		case "review_held":
+			if details, ok := failure.Details.(map[string]string); ok {
+				switch reason := details["reason"]; reason {
+				case "pull_draft", "target_already_covered", "hosted_chat_cooldown", "cli_partial_comparison_already_reviewed":
+					return reason
+				}
+				if details["reason"] == "target_changed" {
+					switch reason := details["stop_reason"]; reason {
+					case "target_merged", "target_closed", "target_superseded":
+						return reason
+					}
+				}
+			}
+		}
+	}
+	var provider *reviewprovider.Error
+	if errors.As(err, &provider) && provider.Code == "provider_rate_limited" {
+		return provider.Code
+	}
+	return fallback
 }

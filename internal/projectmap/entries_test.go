@@ -32,6 +32,9 @@ type fixture struct {
 }
 
 func setup(t *testing.T) *fixture {
+	return setupWithMapSchema(t, projectmap.EnsureSchema)
+}
+func setupWithMapSchema(t *testing.T, initialize func(context.Context, *core.Store) error) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
@@ -45,7 +48,7 @@ func setup(t *testing.T) *fixture {
 	if err = jobs.EnsureSchema(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
-	if err = projectmap.EnsureSchema(t.Context(), store); err != nil {
+	if err = initialize(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
 	token, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))

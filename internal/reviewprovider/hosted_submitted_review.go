@@ -139,6 +139,10 @@ func parseSubmittedReview(body, head string) (run string, count int, selected ma
 }
 
 func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run string, count int, selected map[string]bool, ok bool) {
+	return parseSubmittedReviewKind(body, head, current, marked, false)
+}
+
+func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly bool) (run string, count int, selected map[string]bool, ok bool) {
 	if !validBody(body) {
 		return
 	}
@@ -150,47 +154,53 @@ func parseSubmittedReviewEnvelope(body, head string, current, marked bool) (run 
 	if !p.take("<!-- coderabbit-ai-generated:v1 -->", true) {
 		return
 	}
-	if line, _ := p.next(); !current || line.text != "---" {
-		claim, valid := p.text()
-		match := publicationActionable.FindStringSubmatch(claim)
-		if !valid || match == nil {
+	if additionalOnly {
+		if !current || marked || !p.additionalOnly() || !p.take("<h6>", false) {
 			return
 		}
-		count, _ = strconv.Atoi(match[1])
-		if count < 1 || count > 200 || !p.caution(body) {
-			return
-		}
-	}
-	if !p.take("---", false) {
-		return
-	}
-	if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
-		if count == 0 || !p.take(line.text, true) {
-			return
-		}
-		checkbox, found := p.next()
-		if !found || checkbox.quote != 0 || !checkbox.hidden || !submittedAutofix.MatchString(checkbox.text) {
-			return
-		}
-		p.at++
-		if !p.take("<!-- autofix_checkbox_end -->", true) {
-			return
-		}
-	}
-	// The optional prompt is opaque. findingBlock retains visibility across
-	// fences/quotes, so examples cannot close the prompt and become metadata.
-	if current {
-		if !p.currentPrompt(body) || !p.take("<h6>", false) {
-			return
-		}
-	} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
-		end, complete := findingBlock(lines, p.at, 0)
-		label := submittedReviewParser{lines: lines, at: p.at + 1}
-		header, visible := label.next()
-		if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
-			p.at = end + 1
-			if !p.take("---", false) {
+	} else {
+		if line, _ := p.next(); !current || line.text != "---" {
+			claim, valid := p.text()
+			match := publicationActionable.FindStringSubmatch(claim)
+			if !valid || match == nil {
 				return
+			}
+			count, _ = strconv.Atoi(match[1])
+			if count < 1 || count > 200 || !p.caution(body) {
+				return
+			}
+		}
+		if !p.take("---", false) {
+			return
+		}
+		if line, _ := p.next(); line.text == "<!-- autofix_checkbox_start -->" {
+			if count == 0 || !p.take(line.text, true) {
+				return
+			}
+			checkbox, found := p.next()
+			if !found || checkbox.quote != 0 || !checkbox.hidden || !submittedAutofix.MatchString(checkbox.text) {
+				return
+			}
+			p.at++
+			if !p.take("<!-- autofix_checkbox_end -->", true) {
+				return
+			}
+		}
+		// The optional prompt is opaque. findingBlock retains visibility across
+		// fences/quotes, so examples cannot close the prompt and become metadata.
+		if current {
+			if !p.currentPrompt(body) || !p.take("<h6>", false) {
+				return
+			}
+		} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
+			end, complete := findingBlock(lines, p.at, 0)
+			label := submittedReviewParser{lines: lines, at: p.at + 1}
+			header, visible := label.next()
+			if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
+				p.at = end + 1
+				if !p.take("---", false) {
+					return
+				}
 			}
 		}
 	}
@@ -354,6 +364,12 @@ func submittedRunReused(body, run string) bool {
 }
 
 func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPublication, intent HostedTriggerIntent, provider Author, closing time.Time) (HostedPublication, bool) {
+	return resolveSubmittedReviewBound(snapshot, result, intent, provider, closing, nil)
+}
+
+// A non-nil baseline permits only independently proven terminal publication
+// settlement; ordinary extraction retains its submission-time edit boundary.
+func resolveSubmittedReviewBound(snapshot HostedPublicationSnapshot, result HostedPublication, intent HostedTriggerIntent, provider Author, closing time.Time, baseline *HostedPublicationSnapshot) (HostedPublication, bool) {
 	if len(result.EligibleReviews) != 1 {
 		return result, false
 	}
@@ -362,7 +378,12 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 	if !valid {
 		run, count, selected, valid = parseSubmittedReviewEnvelope(review.Body, intent.HeadSHA, true, false)
 	}
-	if !valid || count == 0 {
+	additionalOnly := false
+	if !valid {
+		run, count, selected, valid = parseSubmittedReviewKind(review.Body, intent.HeadSHA, true, false, true)
+		additionalOnly = valid
+	}
+	if !valid || count == 0 && !additionalOnly {
 		return result, false
 	}
 	inside := func(at time.Time) bool {
@@ -405,6 +426,9 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 	if ack == nil {
 		return result, false
 	}
+	if baseline != nil && !submittedSettlementBaseline(*baseline, result, review, *ack, provider, run) {
+		return result, false
+	}
 	roots := []ReviewComment{}
 	for _, comment := range snapshot.ReviewComments {
 		if comment.InReplyToID != 0 {
@@ -416,7 +440,16 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 			}
 			continue
 		}
-		if !publicationActor(comment.Author, provider) || comment.OriginalHeadSHA != intent.HeadSHA || !inside(comment.CreatedAt) || comment.CreatedAt.After(review.SubmittedAt) || comment.UpdatedAt.After(review.SubmittedAt) || strings.TrimSpace(comment.Body) == "" || !selected[comment.Path] {
+		editBound := !comment.UpdatedAt.After(review.SubmittedAt)
+		if baseline != nil {
+			editBound = comment.UpdatedAt.Before(ack.UpdatedAt) && comment.CreatedAt.After(result.Trigger.CreatedAt)
+			for _, old := range baseline.ReviewComments {
+				if old.ID == comment.ID {
+					editBound = false
+				}
+			}
+		}
+		if !publicationActor(comment.Author, provider) || comment.OriginalHeadSHA != intent.HeadSHA || !inside(comment.CreatedAt) || comment.CreatedAt.After(review.SubmittedAt) || !editBound || strings.TrimSpace(comment.Body) == "" || !selected[comment.Path] {
 			return result, false
 		}
 		copy := comment
@@ -426,7 +459,11 @@ func resolveSubmittedReview(snapshot HostedPublicationSnapshot, result HostedPub
 		copy.OriginalStartLine = copyPublicationLine(comment.OriginalStartLine)
 		roots = append(roots, copy)
 	}
-	if !hostedInlineCountMatches(roots, count) {
+	if additionalOnly {
+		if snapshot.ReviewComments == nil || len(roots) != 0 || !publicationCountAbsent(result) || !submittedAdditionalInventory(review, selected) {
+			return result, false
+		}
+	} else if !hostedInlineCountMatches(roots, count) {
 		return result, false
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })

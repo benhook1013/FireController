@@ -126,7 +126,10 @@ func TestRouteProjectionReceiverStatePreservesSourceAndCoverage(t *testing.T) {
 	rejectedDigest := projectionDigest(t, f, rejected.SnapshotID)
 	body, err = f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "receiver-correct-accept", route.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(2), Disposition: "accepted", Reason: "New receiving evidence requires a fix"})
 	adjudicationReceipt(t, body, err, route.ID, "adjudicated", 3)
-	coverageRead(t, f, a, plan, false)
+	coverageRead(t, f, a, plan, true)
+	if pending, err := routePending(t, f, 4); err != nil || pending != 1 {
+		t.Fatal("receiver acceptance removed its open fix obligation", pending, err)
+	}
 	fix := FindingRouteFixRequest{ExpectedRevision: adjudicationRevision(3), ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("d", 40), ProofNote: "Receiving proof <script>literal</script>"}
 	body, err = f.e.RecordFindingRouteFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "receiver-fix", route.ID, fix)
 	adjudicationReceipt(t, body, err, route.ID, "fix_recorded", 4)
@@ -194,7 +197,7 @@ func TestRouteProjectionLedgerOnlyInitialPublicationUsesLatestReceiverProof(t *t
 	adjudicationDecide(t, f, evidence.ID, "ledger-only-local", 1, 1, "rejected")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "ledger-only-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
-	coverageRead(t, f, a, plan, false)
+	coverageRead(t, f, a, plan, true)
 	body, err = f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "ledger-only-reject", route.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Resolved at receiving PR"})
 	adjudicationReceipt(t, body, err, route.ID, "adjudicated", 2)
 	coverageRead(t, f, a, plan, true)

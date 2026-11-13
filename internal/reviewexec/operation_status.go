@@ -5,26 +5,45 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	Observer   *HostedObserverStatus `json:"observer,omitempty"`
-	ID         string                `json:"id"`
-	PullNumber int64                 `json:"pull_number"`
-	Channel    string                `json:"channel"`
-	State      string                `json:"state"`
-	Revision   int64                 `json:"revision"`
-	Stage      string                `json:"stage"`
-	Reason     string                `json:"reason"`
-	AttemptID  string                `json:"attempt_id"`
-	EvidenceID string                `json:"evidence_id,omitempty"`
-	UpdatedAt  string                `json:"updated_at"`
-	NextAction string                `json:"next_action"`
+	SettlementTarget   *SettlementTarget     `json:"settlement_target,omitempty"`
+	Observer           *HostedObserverStatus `json:"observer,omitempty"`
+	Wait               *OperationWait        `json:"wait,omitempty"`
+	SourceRefusal      *SourceRefusal        `json:"source_refusal,omitempty"`
+	PendingEvidence    *PendingEvidence      `json:"pending_evidence,omitempty"`
+	ID                 string                `json:"id"`
+	PullNumber         int64                 `json:"pull_number"`
+	Channel            string                `json:"channel"`
+	State              string                `json:"state"`
+	Revision           int64                 `json:"revision"`
+	Stage              string                `json:"stage"`
+	Reason             string                `json:"reason"`
+	AttemptID          string                `json:"attempt_id"`
+	EvidenceID         string                `json:"evidence_id,omitempty"`
+	ReviewFinishedAt   string                `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt string                `json:"evidence_recorded_at,omitempty"`
+	RetryNotBefore     string                `json:"retry_not_before,omitempty"`
+	UpdatedAt          string                `json:"updated_at"`
+	NextAction         string                `json:"next_action"`
+}
+
+// SettlementTarget contains original-attempt guards, not settlement eligibility
+// or proof that external work has stopped.
+type SettlementTarget struct {
+	AttemptRevision int64  `json:"attempt_revision"`
+	RepositoryID    int64  `json:"repository_id"`
+	HeadSHA         string `json:"head_sha"`
+	ExternalID      string `json:"external_id"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
@@ -34,6 +53,9 @@ func operationStatusStage(o Operation, evidence string, complete bool) (string, 
 	case "preparing":
 		return "preparing", "wait"
 	case "posting", "active":
+		if evidence != "" && complete {
+			return "result_captured", "wait"
+		}
 		return "provider_wait", "wait"
 	case "completed":
 		if evidence != "" {
@@ -59,79 +81,146 @@ func operationStatusStage(o Operation, evidence string, complete bool) (string, 
 }
 
 // ReadOperationStatus selects one operation and at most its unique evidence row.
-// Only bounded identity/anchor/completion scalars are projected from the normalized
-// evidence journal. It never opens capture files or loads findings/provider bodies.
+// Only bounded identity/anchor/completion scalars and the original validated
+// Hosted cooldown deadline are projected from local journals. It never opens
+// capture files, loads findings or fetches provider bodies.
 func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id string) (OperationStatus, error) {
 	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(id, "review_operation_") {
 		return OperationStatus{}, invalid()
 	}
 	var result OperationStatus
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
-		o, err := readOperation(ctx, tx, scope.ProjectID, id)
+		o, err := readOperationBase(ctx, tx, scope.ProjectID, id)
 		if err != nil {
 			return err
 		}
 		if !validOperationSummary(OperationSummary{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, HeadSHA: o.HeadSHA, WorkerID: o.WorkerID, State: o.State, Reason: o.Reason, AttemptID: o.AttemptID, Revision: o.Revision, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt}) {
 			return adjudicationStorageError()
 		}
-		evidence, complete, err := operationStatusEvidence(ctx, tx, o)
+		facts, err := operationStatusEvidence(ctx, tx, o)
 		if err != nil {
 			return err
 		}
-		stage, next := operationStatusStage(o, evidence, complete)
-		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: evidence, UpdatedAt: o.UpdatedAt, NextAction: next}
+		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
+		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
+		if o.Channel == "cli" && o.State == "failed" && o.Reason == "capture_retained" && facts.ProviderReportedUnreviewedFiles {
+			result.Reason = "cli_provider_reported_unreviewed_files"
+		}
+		result.SettlementTarget = facts.SettlementTarget
+		result.Wait = currentOperationWait(o)
 		result.Observer = e.observerStatus(o)
+		result.SourceRefusal, err = readSourceRefusal(ctx, tx, o)
+		if err != nil {
+			return err
+		}
+		if o.Channel == "hosted" && o.State == "held" && (o.Reason == "hosted_allowance_cooldown" || o.Reason == "hosted_chat_cooldown") {
+			allowance, err := readHeldAllowance(ctx, tx, o)
+			if err != nil {
+				return err
+			}
+			if allowance != nil {
+				result.RetryNotBefore = allowance.RetryNotBefore
+			}
+		}
 		return nil
 	})
 	return result, err
 }
 
-func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (string, bool, error) {
+type operationEvidenceFacts struct {
+	Repository                      string
+	SettlementTarget                *SettlementTarget
+	ID                              string
+	Complete                        bool
+	ProviderReportedUnreviewedFiles bool
+	ReviewFinishedAt                string
+	EvidenceRecordedAt              string
+}
+
+func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (operationEvidenceFacts, error) {
 	if o.AttemptID == "" {
-		return "", false, nil
+		return operationEvidenceFacts{}, nil
 	}
 	var attemptOperation, attemptProject, attemptAnchor string
-	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome sql.NullString
-	var complete, hosted sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,
+	var attemptRevision int64
+	var externalID sql.NullString
+	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome, finished, recorded sql.NullString
+	var complete, hosted, unreviewed sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,a.revision,
+ CASE WHEN length(CAST(a.external_id AS BLOB))<=128 THEN a.external_id END,
  CASE WHEN length(CAST(a.anchor_json AS BLOB))<=2048 THEN a.anchor_json ELSE '' END,
  e.id,e.project_id,e.operation_id,e.attempt_id,
  json_extract(e.body_json,'$.id'),json_extract(e.body_json,'$.project_id'),json_extract(e.body_json,'$.operation_id'),json_extract(e.body_json,'$.attempt_id'),
  CASE WHEN length(CAST(json_extract(e.body_json,'$.anchor') AS BLOB))<=2048 THEN json_extract(e.body_json,'$.anchor') END,
  CASE WHEN length(CAST(json_extract(e.body_json,'$.capture.expected_anchor') AS BLOB))<=2048 THEN json_extract(e.body_json,'$.capture.expected_anchor') END,
  json_extract(e.body_json,'$.capability_fingerprint'),json_extract(e.body_json,'$.capture.review.Outcome'),CASE json_type(e.body_json,'$.capture.review.Complete') WHEN 'true' THEN 1 WHEN 'false' THEN 0 END,
- CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END
- FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &hosted)
+ CASE WHEN json_type(e.body_json,'$.capture.finished_at')='text' AND length(CAST(json_extract(e.body_json,'$.capture.finished_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.capture.finished_at') END,
+ CASE WHEN json_type(e.body_json,'$.recorded_at')='text' AND length(CAST(json_extract(e.body_json,'$.recorded_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.recorded_at') END,
+ CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END,
+ CASE WHEN ? AND json_extract(e.body_json,'$.capture.review.coverage_limits[0]')=? THEN 1 ELSE 0 END
+ FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.Channel == "cli" && o.State == "failed" && o.Reason == "capture_retained", reviewprovider.CLIUnreviewedFilesLimit, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptRevision, &externalID, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted, &unreviewed)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, adjudicationStorageError()
+		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
 	if err != nil {
-		return "", false, err
+		return operationEvidenceFacts{}, err
 	}
 	if attemptOperation != o.ID || attemptProject != o.ProjectID {
-		return "", false, adjudicationStorageError()
+		return operationEvidenceFacts{}, adjudicationStorageError()
+	}
+	var facts operationEvidenceFacts
+	var admitted, captured, want Anchor
+	// Preparing attempts have no admission yet. Do not invent a settlement target
+	// from current PR metadata, and do not require evidence to expose an admission.
+	if attemptAnchor != "null" {
+		if json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || encoded(admitted) != attemptAnchor || !validEvidenceAnchor(admitted) || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA || attemptRevision < 1 || attemptRevision == math.MaxInt64 || !externalID.Valid || externalID.String != "" && !identifier.MatchString(externalID.String) {
+			return operationEvidenceFacts{}, adjudicationStorageError()
+		}
+		facts.Repository = admitted.Repository
+		facts.SettlementTarget = &SettlementTarget{AttemptRevision: attemptRevision, RepositoryID: admitted.RepositoryID, HeadSHA: admitted.CandidateSHA, ExternalID: externalID.String}
 	}
 	if !id.Valid {
-		return "", false, nil
+		return facts, nil
 	}
-	var admitted, captured, want Anchor
-	if !hostedObservationID(id.String, "review_evidence_") || project.String != o.ProjectID || operation.String != o.ID || attempt.String != o.AttemptID || bodyID.String != id.String || bodyProject.String != o.ProjectID || bodyOperation.String != o.ID || bodyAttempt.String != o.AttemptID || !anchor.Valid || !expected.Valid || !fingerprint.Valid || fingerprint.String != o.CapabilityFingerprint || !complete.Valid || complete.Int64 < 0 || complete.Int64 > 1 || !outcome.Valid || !hosted.Valid || hosted.Int64 < 0 || hosted.Int64 > 1 || (hosted.Int64 == 1) != (o.Channel == "hosted") || json.Unmarshal([]byte(attemptAnchor), &admitted) != nil || json.Unmarshal([]byte(anchor.String), &captured) != nil || json.Unmarshal([]byte(expected.String), &want) != nil || !validEvidenceAnchor(admitted) || captured != admitted || want != admitted || admitted.PullNumber != o.PullNumber || admitted.CandidateSHA != o.HeadSHA {
-		return "", false, adjudicationStorageError()
+	if !hostedObservationID(id.String, "review_evidence_") || project.String != o.ProjectID || operation.String != o.ID || attempt.String != o.AttemptID || bodyID.String != id.String || bodyProject.String != o.ProjectID || bodyOperation.String != o.ID || bodyAttempt.String != o.AttemptID || !anchor.Valid || !expected.Valid || !fingerprint.Valid || fingerprint.String != o.CapabilityFingerprint || !complete.Valid || complete.Int64 < 0 || complete.Int64 > 1 || !outcome.Valid || !hosted.Valid || hosted.Int64 < 0 || hosted.Int64 > 1 || (hosted.Int64 == 1) != (o.Channel == "hosted") || facts.SettlementTarget == nil || json.Unmarshal([]byte(anchor.String), &captured) != nil || json.Unmarshal([]byte(expected.String), &want) != nil || captured != admitted || want != admitted {
+		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
-	return id.String, complete.Int64 == 1 && outcome.String == "completed", nil
+	facts.ID, facts.Complete = id.String, complete.Int64 == 1 && outcome.String == "completed"
+	facts.ProviderReportedUnreviewedFiles = complete.Int64 == 0 && outcome.String == "failed" && unreviewed.Int64 == 1
+	_, finishOK := hostedObservationTime(finished.String)
+	_, recordedOK := hostedObservationTime(recorded.String)
+	if finishOK && recordedOK {
+		facts.ReviewFinishedAt, facts.EvidenceRecordedAt = finished.String, recorded.String
+	}
+	return facts, nil
 }
 
 // Waiting owns only result collection; the final compact read reauthorizes and
 // rereads its unique ledger binding after the existing notification wait.
 func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id string, seconds int) (OperationStatus, error) {
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	if _, _, err := e.WaitOperation(ctx, scope, id, seconds); err != nil {
 		return OperationStatus{}, err
 	}
-	return e.ReadOperationStatus(ctx, scope, id)
+	waitCtx, cleanup := e.resultWaitContext(ctx)
+	defer cleanup()
+	var value OperationStatus
+	err := core.RetryReadAdmission(waitCtx, deadline, func(readCtx context.Context) error {
+		var readErr error
+		value, readErr = e.ReadOperationStatus(readCtx, scope, id)
+		return readErr
+	})
+	if waitCtx.Err() != nil {
+		return OperationStatus{}, resultWaitCanceled(waitCtx, "The review result wait was canceled; the retained operation is unchanged.")
+	}
+	return value, err
 }
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-Hosted-Observer")
+	w.Header().Add("Vary", operationWaitHeader)
+	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", pendingEvidenceHeader)
+	w.Header().Add("Vary", "X-FC-Source-Refusal")
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -161,8 +250,17 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		core.WriteError(w, err)
 		return
 	}
+	value.PendingEvidence, err = e.pendingEvidenceForResponse(r, scope, value.ID, value.State, value.Reason)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	value.SourceRefusal = sourceRefusalForResponse(value.SourceRefusal, r.Header.Get("X-FC-Source-Refusal"), value.Reason)
+	e.queuedResponseHeader(w, r, scope, value.ID, value.State, value.Channel, value.Revision)
+	e.deploymentResponseHeader(w)
 	if r.Header.Get("X-FC-Hosted-Observer") != "1" {
 		value.Observer = nil
 	}
+	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
 	core.WriteJSON(w, http.StatusOK, value)
 }

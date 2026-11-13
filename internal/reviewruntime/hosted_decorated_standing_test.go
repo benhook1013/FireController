@@ -76,7 +76,7 @@ func TestRetainHostedDecoratedStandingOriginalAttemptAndFinalization(t *testing.
 				t.Fatal("lost exact standing-zero proof or invented review identity", evidence)
 			}
 			adjudication, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), retained.Receipt.ID)
-			if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || nativeHostedCredit(t, f.f) != 0 || cliAttemptState(t, f.f.store, original.ID) != before {
+			if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 || cliAttemptState(t, f.f.store, original.ID) != before {
 				t.Fatal("capture granted completion credit or changed reservation/intent", err)
 			}
 			currentRaw := hostedBridgeBytes(t, f, retained.Capture)
@@ -103,7 +103,7 @@ func TestRetainHostedDecoratedStandingOriginalAttemptAndFinalization(t *testing.
 				t.Fatal(err)
 			}
 			adjudication, err = f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), retained.Receipt.ID)
-			if err != nil || adjudication.Finalized || nativeHostedCredit(t, f.f) != 0 {
+			if err != nil || adjudication.Finalized || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
 				t.Fatal("settlement alone finalized source or granted round credit", err)
 			}
 			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "decorated-finalize", retained.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
@@ -129,7 +129,7 @@ func TestRetainHostedDecoratedStandingBareAckHasNoInventoryOrCredit(t *testing.T
 	before := cliAttemptState(t, f.f.store, f.a.ID)
 	inputBefore, _ := json.Marshal(record)
 	retained, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
-	if err != nil || retained.Complete || retained.Reason != inventory.Reason || !validHostedReference(retained.Capture) || retained.Receipt.ID != "" || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f.f) != 0 || cliAttemptState(t, f.f.store, f.a.ID) != before || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 1 {
+	if err != nil || retained.Complete || retained.Reason != inventory.Reason || !validHostedReference(retained.Capture) || retained.Receipt.ID != "" || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 || cliAttemptState(t, f.f.store, f.a.ID) != before || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 1 {
 		t.Fatal("ACK without inventory gained evidence/credit or lost original reservation", retained, err)
 	}
 	raw, err := f.captures.Read(t.Context(), f.a.ID, retained.Capture)
