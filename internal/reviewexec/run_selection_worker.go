@@ -166,6 +166,7 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
+	orderedQueue  []int64
 	state, reason string
 	sourceReason  string
 	sourceElapsed time.Duration
@@ -249,14 +250,19 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		choice.state, choice.reason, choice.sourceReason = "held", reason, reason
 		return choice
 	}
-	queue := c.Queue
-	if index := slices.Index(queue, r.ExpectedPullNumber); index >= 0 {
-		queue = queue[:index+1]
-	}
+	var queue []int64
 	var history map[int64]SourcePlan
 	err = retryRunSelectionRead(ctx, func() error {
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
+			queue, err = reviews.OrderedExecutionQueue(ctx, tx, r.ProjectID, c.Queue)
+			if err != nil {
+				return err
+			}
+			choice.orderedQueue = queue
+			if index := slices.Index(queue, r.ExpectedPullNumber); index >= 0 {
+				queue = queue[:index+1]
+			}
 			history, err = readRunHistory(ctx, tx, r.ProjectID, repo, queue)
 			return err
 		})
@@ -738,6 +744,15 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
 			bindingValidated = true
+			if choice.orderedQueue != nil {
+				order, err := reviews.OrderedExecutionQueue(ctx, tx, current.ProjectID, c.Queue)
+				if err != nil {
+					return err
+				}
+				if !slices.Equal(order, choice.orderedQueue) {
+					return updateRun(ctx, tx, current, "held", "selection_changed", "")
+				}
+			}
 			validHistory, err := runHistoryCurrent(ctx, tx, current, repo, c, choice)
 			if err != nil {
 				return err

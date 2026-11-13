@@ -67,6 +67,7 @@ type Pull struct {
 	Merged           bool
 	HeadSHA          string
 	HeadRef          string `json:",omitempty"`
+	HeadRepositoryID int64  `json:",omitempty"`
 	BaseSHA          string
 	BaseRef          string
 	ChangedFiles     int64

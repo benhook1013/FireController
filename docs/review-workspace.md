@@ -20,6 +20,8 @@ During native selection or source-refresh settlement, an invalid optional displa
 
 The browser shows observed file and line counts, a Draft badge when known true on an open PR, and a bold relative age from the actual merge time. Older records with unknown metadata omit those details. Public projection retains its explicit allowlist; adding private display facts does not enroll them for publication.
 
+Delivery and the current Reviews tab request the same topology projection before pagination. Recent merges appear newest first, followed by independent ready PRs and active stacks in parent-before-child order. Sibling lines follow configured order. A child with a verified in-queue parent shows a link to that PR. Drafts follow active work when their dependencies allow it. Incomplete or ambiguous active topology retains the configured relative order. The browser opts in with `X-FC-Queue-Topology: v1` on `view=recent`; the resulting page positions and cursor belong to that projection.
+
 ## API and scope
 
 All paths below are relative to `/api/v1/projects/{project_id}`. Existing instance authentication, current project grants, bounded transactions and safe error envelopes apply.

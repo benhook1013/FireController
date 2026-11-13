@@ -17,21 +17,22 @@ type ObservationRequest struct {
 }
 
 type PullInput struct {
-	MergeStateStatus string     `json:"merge_state_status,omitempty"`
-	Diff             *PullDiff  `json:"diff,omitempty"`
-	IsDraft          *bool      `json:"is_draft,omitempty"`
-	MergedAt         string     `json:"merged_at,omitempty"`
-	Number           int64      `json:"number"`
-	Title            string     `json:"title"`
-	State            string     `json:"state"`
-	HeadSHA          string     `json:"head_sha"`
-	BaseRef          string     `json:"base_ref"`
-	BaseSHA          string     `json:"base_sha"`
-	CIState          string     `json:"ci_state"`
-	Mergeability     string     `json:"mergeability"`
-	Complete         bool       `json:"complete"`
-	Runs             []RunInput `json:"runs"`
-	Attempts         []Attempt  `json:"attempts"`
+	Branches         *PullBranches `json:"-"`
+	MergeStateStatus string        `json:"merge_state_status,omitempty"`
+	Diff             *PullDiff     `json:"diff,omitempty"`
+	IsDraft          *bool         `json:"is_draft,omitempty"`
+	MergedAt         string        `json:"merged_at,omitempty"`
+	Number           int64         `json:"number"`
+	Title            string        `json:"title"`
+	State            string        `json:"state"`
+	HeadSHA          string        `json:"head_sha"`
+	BaseRef          string        `json:"base_ref"`
+	BaseSHA          string        `json:"base_sha"`
+	CIState          string        `json:"ci_state"`
+	Mergeability     string        `json:"mergeability"`
+	Complete         bool          `json:"complete"`
+	Runs             []RunInput    `json:"runs"`
+	Attempts         []Attempt     `json:"attempts"`
 }
 
 type RetiredPull struct {
@@ -167,6 +168,7 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	ParentPullNumber int64                  `json:"parent_pull_number,omitempty"`
 	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`
 	mergeStateStatus string
 	MergeStatus      *MergeStatus           `json:"merge_status,omitempty"`

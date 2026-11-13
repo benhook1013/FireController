@@ -62,7 +62,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				core.WriteError(w, validationError("Use recent or merged for the queue view."))
 				return
 			}
-			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1")
+			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1", r.Header.Get("X-FC-Queue-Topology") == "v1")
 			if err == nil {
 				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
 			}

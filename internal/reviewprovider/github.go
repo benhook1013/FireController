@@ -1033,10 +1033,12 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	if _, err := normalizeRepository(raw.Base.Repo, 0); err != nil {
 		return Pull{}, errors.New("invalid base repository")
 	}
+	var headRepositoryID int64
 	if raw.Head.Repo != nil {
 		if _, err := normalizeRepository(*raw.Head.Repo, 0); err != nil {
 			return Pull{}, errors.New("invalid head repository")
 		}
+		headRepositoryID = raw.Head.Repo.ID
 	}
 	mergedAt := ""
 	if raw.MergedAt != nil {
@@ -1071,7 +1073,7 @@ func normalizePull(raw githubPull, expectedNumber int64) (Pull, error) {
 	default:
 		mergeState = "UNKNOWN"
 	}
-	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
+	return Pull{Title: raw.Title, Number: raw.Number, RepositoryID: raw.Base.Repo.ID, State: raw.State, Merged: raw.Merged, HeadSHA: raw.Head.SHA, HeadRef: headRef, HeadRepositoryID: headRepositoryID, BaseSHA: raw.Base.SHA, BaseRef: raw.Base.Ref, ChangedFiles: raw.ChangedFiles, Additions: raw.Additions, Deletions: raw.Deletions, IsDraft: raw.Draft, MergedAt: mergedAt, Mergeability: mergeability, MergeStateStatus: mergeState}, nil
 }
 
 func normalizeIssueComment(raw githubIssueComment) (IssueComment, error) {

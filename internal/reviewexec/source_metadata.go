@@ -29,6 +29,12 @@ func sourceDisplayPull(plan SourcePlan) reviews.PullInput {
 	if p.ChangedFiles >= 0 && p.Additions != nil && p.Deletions != nil {
 		pull.Diff = &reviews.PullDiff{Files: p.ChangedFiles, Additions: *p.Additions, Deletions: *p.Deletions}
 	}
+	if p.HeadRef != "" && p.HeadRepositoryID > 0 && plan.Repository.DefaultBranch != "" {
+		pull.Branches = &reviews.PullBranches{HeadRepositoryID: p.HeadRepositoryID, HeadRef: p.HeadRef, DeliveryRef: plan.Repository.DefaultBranch}
+		if !reviews.ValidSourceDisplayMetadata(pull) {
+			pull.Branches = nil
+		}
+	}
 	return pull
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -148,8 +149,12 @@ func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, curso
 	return positions, rows.Err()
 }
 
-func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart bool) (QueueResponse, error) {
+func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart, topology bool) (QueueResponse, error) {
 	filter := "reviews.queue:" + view + ":v1"
+	topology = topology && view == "recent"
+	if topology {
+		filter += ":topology"
+	}
 	after, err := store.ParseCursor(scope, filter, token)
 	if err != nil {
 		return QueueResponse{}, err
@@ -173,14 +178,41 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		response.Configured = true
 		setMetaQueue(&response, meta)
 		cursor.Snapshot = meta.SnapshotID
-		newest, head, err := inspectQueueWindow(ctx, tx, scope.ProjectID, meta.SnapshotID)
-		if err != nil {
-			return err
-		}
-		response.HeadPosition = head
-		positions, err := queueWindowPositions(ctx, tx, scope.ProjectID, cursor, newest, limit)
-		if err != nil {
-			return err
+		var positions []int
+		var parents map[int64]int64
+		var displayPositions map[int]int
+		if topology {
+			nodes, repository, err := readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
+			if err != nil {
+				return err
+			}
+			cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
+			ordered, verifiedParents := orderedRecentNodes(nodes, repository, cutoff)
+			parents = verifiedParents
+			displayPositions = make(map[int]int)
+			headSeen := false
+			for i, n := range ordered {
+				if !headSeen && n.state != "merged" && n.state != "closed" {
+					headSeen = true
+					if n.state == "open" {
+						response.HeadPosition = new(i)
+					}
+				}
+				if i > cursor.Position && len(positions) <= limit {
+					positions = append(positions, n.position)
+					displayPositions[n.position] = i
+				}
+			}
+		} else {
+			newest, head, err := inspectQueueWindow(ctx, tx, scope.ProjectID, meta.SnapshotID)
+			if err != nil {
+				return err
+			}
+			response.HeadPosition = head
+			positions, err = queueWindowPositions(ctx, tx, scope.ProjectID, cursor, newest, limit)
+			if err != nil {
+				return err
+			}
 		}
 		response.HasMore = len(positions) > limit
 		if response.HasMore {
@@ -218,6 +250,10 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 				return err
 			}
 			item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = metadata.Diff, metadata.IsDraft, metadata.MergedAt, metadata.MergeStateStatus
+			if topology {
+				position = displayPositions[position]
+				item.ParentPullNumber = parents[item.Number]
+			}
 			item.QueuePosition, item.Complete = &position, complete != 0
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
 				return err
@@ -236,9 +272,15 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		if topology {
+			slices.SortFunc(response.Items, func(a, b PullSummary) int { return *a.QueuePosition - *b.QueuePosition })
+		}
 		attachReviewSizes(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 		if response.HasMore {
 			cursor.Position = positions[len(positions)-1]
+			if topology {
+				cursor.Position = displayPositions[cursor.Position]
+			}
 			payload, _ := json.Marshal(cursor)
 			response.Cursor = store.Cursor(scope, filter, string(payload))
 		}

@@ -28,6 +28,9 @@ type frontPull struct {
 	ParentSHA            string `json:"parent_sha"`
 	ObservedAt           string `json:"observed_at"`
 	SourceReason         string `json:"source_reason,omitempty"`
+	// Selection order is retained on the first entry only when it differs
+	// from configured order. Old frames keep their original exact-prefix proof.
+	SelectionOrder []int64 `json:"selection_order,omitempty"`
 }
 type frontFrame struct {
 	repository, configuration           int64
@@ -53,14 +56,32 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	}
 	observed := ""
 	var latest time.Time
+	queue := c.Queue
+	if len(f.prefix) > 0 && f.prefix[0].SelectionOrder != nil {
+		queue = f.prefix[0].SelectionOrder
+		if len(queue) != len(c.Queue) {
+			return false
+		}
+		seen := make(map[int64]bool, len(queue))
+		for _, number := range queue {
+			if seen[number] || !slices.Contains(c.Queue, number) {
+				return false
+			}
+			seen[number] = true
+		}
+	}
 	for i, p := range f.prefix {
+		inOrder := p.Number == queue[i]
+		if i > 0 && p.SelectionOrder != nil {
+			return false
+		}
 		if p.SourceReason == "pull_scheduling_paused" {
-			if p.Number != c.Queue[i] || p.State != "" || p.Merged || p.HeadSHA != "" || p.BaseSHA != "" || p.BaseRef != "" || p.ParentPullNumber != 0 || p.ParentSHA != "" || p.ObservedAt != "" {
+			if !inOrder || p.State != "" || p.Merged || p.HeadSHA != "" || p.BaseSHA != "" || p.BaseRef != "" || p.ParentPullNumber != 0 || p.ParentSHA != "" || p.ObservedAt != "" {
 				return false
 			}
 			continue
 		}
-		if p.Number != c.Queue[i] || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) || p.SourceReason != "" && !perPullSourceHold(p.SourceReason) {
+		if !inOrder || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) || p.SourceReason != "" && !perPullSourceHold(p.SourceReason) {
 			return false
 		}
 		if p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.ParentPullNumber == p.Number || c.Mode == "independent" && p.ParentPullNumber != 0 {
@@ -110,6 +131,9 @@ func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Confi
 		}
 	}
 	f.complete = len(f.prefix) == len(c.Queue) && f.sourceReason == "" && !slices.ContainsFunc(choice.prefix, func(p SourcePlan) bool { return p.schedulingPaused })
+	if len(f.prefix) > 0 && choice.orderedQueue != nil && !slices.Equal(choice.orderedQueue, c.Queue) {
+		f.prefix[0].SelectionOrder = choice.orderedQueue
+	}
 	body, err := json.Marshal(f.prefix)
 	if err != nil {
 		return err

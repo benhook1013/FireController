@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
@@ -92,7 +93,13 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 		out.Configured = true
 		out.ConfigurationRevision = revision
 		out.PolicyRevision = policy.Revision
-		out.Queue = append(out.Queue, c.Queue...)
+		order, err := reviews.OrderedExecutionQueue(ctx, tx, scope.ProjectID, c.Queue)
+		if err != nil {
+			return err
+		}
+		configuredQueue := c.Queue
+		c.Queue = order
+		out.Queue = append(out.Queue, order...)
 		var recoveryHeld bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&recoveryHeld); err != nil {
 			return err
@@ -129,6 +136,8 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 			case frame.repository != out.RepositoryID:
 				value.Reason = "repository_changed"
 			case frame.configuration != revision:
+				value.Reason = "configuration_changed"
+			case !frontMatchesQueueOrder(frame, configuredQueue, c.Queue):
 				value.Reason = "configuration_changed"
 			case frame.sourceReason != "":
 				value.Reason = frame.sourceReason
@@ -220,6 +229,13 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 		return FrontSnapshot{}, err
 	}
 	return out, nil
+}
+
+func frontMatchesQueueOrder(frame frontFrame, configured, current []int64) bool {
+	if len(frame.prefix) > 0 && frame.prefix[0].SelectionOrder != nil {
+		return slices.Equal(frame.prefix[0].SelectionOrder, current)
+	}
+	return slices.Equal(configured, current)
 }
 
 // Visibility is a local acquisition fact, not a demand to import old history.

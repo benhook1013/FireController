@@ -128,7 +128,14 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 				return nil, err
 			}
 		}
-		queue, err := changedQueue(previous.Queue, action, r)
+		baseQueue := previous.Queue
+		if action == "add" && len(baseQueue) >= 100 && !slices.Contains(baseQueue, r.PullNumber) {
+			baseQueue, err = compactMergedQueue(ctx, tx, scope.ProjectID, previous, r.Before, r.After)
+			if err != nil {
+				return nil, err
+			}
+		}
+		queue, err := changedQueue(baseQueue, action, r)
 		if err != nil {
 			return nil, err
 		}

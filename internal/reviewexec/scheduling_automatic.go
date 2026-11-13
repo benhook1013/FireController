@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 var errAutomaticParentCycle = errors.New("automatic scheduling retained parent cycle")
@@ -306,6 +307,11 @@ func automaticPlanningBasis(ctx context.Context, tx *sql.Tx, project string, c C
 }
 
 func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project string, c Configuration, ignoreSelection string, channel string) (string, bool, error) {
+	order, err := reviews.OrderedExecutionQueue(ctx, tx, project, c.Queue)
+	if err != nil {
+		return "", false, err
+	}
+	c.Queue = order
 	limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, project, c, channel)
 	if err != nil {
 		return "", false, err
@@ -403,6 +409,10 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 		return pending, err
 	}
 	c, _, err := readConfiguration(ctx, tx, r.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	c.Queue, err = reviews.OrderedExecutionQueue(ctx, tx, r.ProjectID, c.Queue)
 	if err != nil {
 		return false, err
 	}
