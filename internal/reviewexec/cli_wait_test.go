@@ -1022,3 +1022,36 @@ func TestCLIAccountRetryLookupUsesLiveRangesWithRetainedHistory(t *testing.T) {
 		t.Fatal("expired history changed live account result", due, err, q.queries)
 	}
 }
+
+type exhaustionRecoverySourceFunc func(context.Context, string) (CLIExhaustionRecovery, bool, error)
+
+func (f exhaustionRecoverySourceFunc) LoadCLIExhaustion(ctx context.Context, id string) (CLIExhaustionRecovery, bool, error) {
+	return f(ctx, id)
+}
+func TestCLIExhaustionRecoveryFailureIsAccountLocal(t *testing.T) {
+	f := supervisorFixture(t)
+	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "recovery-io-failure", "cli", 2, 1))
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "unrelated-interruption", "cli", 2, 1))
+	f.e.cliExhaustionRecovery = exhaustionRecoverySourceFunc(func(_ context.Context, id string) (CLIExhaustionRecovery, bool, error) {
+		if id == first.ID {
+			return CLIExhaustionRecovery{}, false, errors.New("temporary private store outage")
+		}
+		return CLIExhaustionRecovery{}, false, nil
+	})
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.e.recoverInterrupted(t.Context(), skipped); err != nil {
+		t.Fatal(err)
+	}
+	a, err := readAttempt(t.Context(), f.store.DB(), attemptProject, first.ID)
+	if err != nil || a.State != "preparing" {
+		t.Fatal("unavailable evidence released account", a, err)
+	}
+	a, err = readAttempt(t.Context(), f.store.DB(), otherAttemptProject, other.ID)
+	if err != nil || a.State != "cancelled" {
+		t.Fatal("unrelated account did not recover", a, err)
+	}
+}

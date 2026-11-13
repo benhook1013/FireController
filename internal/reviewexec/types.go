@@ -112,6 +112,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	cliExhaustionRecovery      CLIExhaustionRecoverySource
 	runSourceBudget            time.Duration
 	schedulingNow              func() time.Time
 	configurationFailureMu     sync.Mutex
