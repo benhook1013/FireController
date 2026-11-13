@@ -165,3 +165,85 @@ func TestLifecycleFrontierRefusalConsumesDivergentSchedulerWake(t *testing.T) {
 		t.Fatal("frontier refusal left scheduler wake unconsumed", due)
 	}
 }
+
+func TestLifecycleHostedInventorySkipsUnchangedHealthyPolls(t *testing.T) {
+	f, s, clock := lifecycleFixture(t)
+	pull := lifecyclePull(2)
+	r := externalReader(externalSnapshot(0, pull.HeadSHA))
+	r.pull = func(context.Context, string, int64) (reviewprovider.Pull, error) { return pull, nil }
+	lifecycleTick(t, f, s, r)
+	for range 4 {
+		clock.Add(time.Minute)
+		lifecycleTick(t, f, s, r)
+	}
+	if r.archiveCalls != 1 || r.ciCalls.Load() != 1 {
+		t.Fatalf("unchanged PR polled too early: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+	}
+	clock.Add(time.Minute)
+	lifecycleTick(t, f, s, r)
+	if r.archiveCalls != 2 || r.ciCalls.Load() != 2 {
+		t.Fatalf("missing scheduled refresh: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+	}
+	clock.Add(time.Minute)
+	pull.HeadSHA = strings.Repeat("c", 40)
+	lifecycleTick(t, f, s, r)
+	if r.archiveCalls != 3 || r.ciCalls.Load() != 3 {
+		t.Fatalf("new comparison was delayed: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+	}
+}
+
+type combinedLifecycleReader struct {
+	refreshTestReader
+	combined func(context.Context, string, int64) (reviewprovider.Pull, reviewprovider.Repository, error)
+}
+
+func (r *combinedLifecycleReader) PullWithRepository(ctx context.Context, name string, number int64) (reviewprovider.Pull, reviewprovider.Repository, error) {
+	return r.combined(ctx, name, number)
+}
+
+func TestLifecycleCombinesPullAndRepositoryWithoutTrustingReusedName(t *testing.T) {
+	for _, scenario := range []string{"unchanged", "redirect", "reused_name", "throttled"} {
+		t.Run(scenario, func(t *testing.T) {
+			combined, identity, direct := 0, 0, 0
+			pull := lifecyclePull(2)
+			repo := reviewprovider.Repository{ID: 801, FullName: "owner/renamed", DefaultBranch: "main"}
+			r := &combinedLifecycleReader{refreshTestReader: refreshTestReader{
+				repository: func(context.Context, int64) (reviewprovider.Repository, error) { identity++; return repo, nil },
+				pull: func(_ context.Context, name string, _ int64) (reviewprovider.Pull, error) {
+					direct++
+					if name != repo.FullName {
+						t.Fatal("fallback used an unverified repository name", name)
+					}
+					return pull, nil
+				},
+			}}
+			r.combined = func(_ context.Context, name string, number int64) (reviewprovider.Pull, reviewprovider.Repository, error) {
+				combined++
+				if name != "owner/original" || number != 2 {
+					t.Fatal("combined read used wrong selector", name, number)
+				}
+				switch scenario {
+				case "redirect":
+					return reviewprovider.Pull{}, reviewprovider.Repository{}, &reviewprovider.Error{Status: 301}
+				case "reused_name":
+					return lifecyclePull(2), reviewprovider.Repository{ID: 802, FullName: name}, nil
+				case "throttled":
+					return reviewprovider.Pull{}, reviewprovider.Repository{}, &reviewprovider.Error{Code: "provider_rate_limited", Status: 429}
+				default:
+					return pull, repo, nil
+				}
+			}
+			got, bound, err := readLifecyclePull(t.Context(), lifecycleTarget{reader: r, repository: 801, repositoryName: "owner/original", number: 2})
+			if scenario == "throttled" {
+				if err == nil || identity != 0 || direct != 0 {
+					t.Fatal("throttle caused more network work", err, identity, direct)
+				}
+				return
+			}
+			wantFallback := scenario != "unchanged"
+			if err != nil || !sameTarget(got, 801, 2) || bound != repo || combined != 1 || (identity == 1 && direct == 1) != wantFallback {
+				t.Fatal("wrong bound observation or call count", got, bound, err, combined, identity, direct)
+			}
+		})
+	}
+}

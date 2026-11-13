@@ -50,18 +50,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		return err
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	repo, err := target.reader.Repository(readCtx, target.repository)
-	if err != nil {
-		cancel()
-		providerErr = err
-		return nil
-	}
-	if repo.ID != target.repository || !repository.MatchString(repo.FullName) {
-		cancel()
-		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
-		return nil
-	}
-	pull, err := target.reader.Pull(readCtx, repo.FullName, target.number)
+	pull, repo, err := readLifecyclePull(readCtx, target)
 	cancel()
 	if err != nil {
 		providerErr = err
@@ -164,7 +153,11 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	var external []reviewprovider.ExternalHostedRun
 	var hostedCollected bool
 	var externalErr error
-	if !target.ciOnly {
+	// Keep catching up incomplete inventory and check a new comparison
+	// immediately. Only repeat a healthy scan on the slower fallback cadence.
+	observedComparison := lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state}
+	hostedDue := observedComparison != target.due.hostedComparison || target.due.hostedError != "" || !s.options.Now().Before(target.due.hostedCheckedAt.Add(healthyHostedInterval))
+	if !target.ciOnly && hostedDue {
 		external, hostedCollected, externalErr = collectExternalHosted(ctx, target, repo.FullName, providerErr)
 	}
 	if externalErr != nil && (providerErr == nil || lifecycleProviderDelay(externalErr, 0) > lifecycleProviderDelay(providerErr, 0)) {
@@ -232,6 +225,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 		if hostedCollected {
 			target.due.hostedCheckedAt = s.options.Now()
+			target.due.hostedComparison = observedComparison
 			target.due.hostedError = lifecycleErrorCode(externalErr)
 			if externalErr == nil && externalDeferred {
 				target.due.hostedError = lifecycleErrorCode(externalHostedUnproven())
@@ -239,6 +233,33 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 	}
 	return err
+}
+
+// Try the configured name first, but trust only the ID in the provider's
+// response. A renamed repository can be recovered through its stable ID.
+func readLifecyclePull(ctx context.Context, target lifecycleTarget) (reviewprovider.Pull, reviewprovider.Repository, error) {
+	if reader, ok := target.reader.(interface {
+		PullWithRepository(context.Context, string, int64) (reviewprovider.Pull, reviewprovider.Repository, error)
+	}); ok && repository.MatchString(target.repositoryName) {
+		pull, repo, err := reader.PullWithRepository(ctx, target.repositoryName, target.number)
+		if err == nil && repo.ID == target.repository && repository.MatchString(repo.FullName) {
+			return pull, repo, nil
+		}
+		var failure *reviewprovider.Error
+		if err != nil && !errors.Is(err, reviewprovider.ErrCombinedPullUnsupported) &&
+			(!errors.As(err, &failure) || (failure.Code != "provider_not_found" && failure.Status != 301 && failure.Status != 302 && failure.Status != 307 && failure.Status != 308)) {
+			return reviewprovider.Pull{}, reviewprovider.Repository{}, err
+		}
+	}
+	repo, err := target.reader.Repository(ctx, target.repository)
+	if err != nil {
+		return reviewprovider.Pull{}, reviewprovider.Repository{}, err
+	}
+	if repo.ID != target.repository || !repository.MatchString(repo.FullName) {
+		return reviewprovider.Pull{}, reviewprovider.Repository{}, &reviewprovider.Error{Code: "provider_invalid_response"}
+	}
+	pull, err := target.reader.Pull(ctx, repo.FullName, target.number)
+	return pull, repo, err
 }
 
 func (e *Engine) lifecycleEnrichmentCurrent(ctx context.Context, tx *sql.Tx, target *lifecycleTarget, comparison lifecycleComparison) (bool, error) {

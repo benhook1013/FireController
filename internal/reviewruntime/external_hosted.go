@@ -17,6 +17,14 @@ func (r *hostedArchiveSource) Repository(ctx context.Context, id int64) (reviewp
 func (r *hostedArchiveSource) Pull(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
 	return r.provider.Pull(ctx, repository, number)
 }
+func (r *hostedArchiveSource) PullWithRepository(ctx context.Context, repository string, number int64) (reviewprovider.Pull, reviewprovider.Repository, error) {
+	if reader, ok := r.provider.(interface {
+		PullWithRepository(context.Context, string, int64) (reviewprovider.Pull, reviewprovider.Repository, error)
+	}); ok {
+		return reader.PullWithRepository(ctx, repository, number)
+	}
+	return reviewprovider.Pull{}, reviewprovider.Repository{}, reviewprovider.ErrCombinedPullUnsupported
+}
 func (r *hostedArchiveSource) ObserveHosted(ctx context.Context, repository string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
 	if archive, ok := r.provider.(interface {
 		ObserveHostedArchive(context.Context, string, int64, reviewprovider.Author) (reviewprovider.HostedPublicationSnapshot, error)

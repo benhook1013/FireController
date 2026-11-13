@@ -136,6 +136,20 @@ func (g *GitHub) Pull(ctx context.Context, repository string, number int64) (Pul
 	return pull, err
 }
 
+// PullWithRepository returns the validated base repository identity from the
+// same GitHub response as the PR metadata.
+func (g *GitHub) PullWithRepository(ctx context.Context, repository string, number int64) (Pull, Repository, error) {
+	pull, raw, err := g.pullWithIdentity(ctx, repository, number)
+	if err != nil {
+		return Pull{}, Repository{}, err
+	}
+	repo, err := normalizeRepository(raw.Base.Repo, pull.RepositoryID)
+	if err != nil {
+		return Pull{}, Repository{}, invalidResponse(false, http.StatusOK)
+	}
+	return pull, repo, nil
+}
+
 // Keep the ordinary Pull read/normalization identical while letting a bounded
 // parent lookup verify the fresh wire repository identity before discarding it.
 func (g *GitHub) pullWithIdentity(ctx context.Context, repository string, number int64) (Pull, githubPull, error) {

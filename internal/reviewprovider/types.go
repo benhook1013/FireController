@@ -3,9 +3,12 @@
 package reviewprovider
 
 import (
+	"errors"
 	"net/http"
 	"time"
 )
+
+var ErrCombinedPullUnsupported = errors.New("combined pull and repository observation is unsupported")
 
 // Error carries only safe diagnostics. OutcomeUnknown distinguishes a possible
 // external side effect from a rejected request; callers retain its attempt.
