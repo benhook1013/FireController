@@ -645,16 +645,26 @@ func TestCooldownRecoveryPreservesOnlyProvenFuturePreparingWait(t *testing.T) {
 				if o.State != "queued" || o.AttemptID != "" || o.Wait == nil {
 					t.Fatal("preparation crash lost known timer", o)
 				}
+			} else if scenario == "unknown" {
+				// With no original replay driver, query+observation evidence remains
+				// preparing and reserved until it can be reconciled, never cancelled.
+				if o.Wait != nil || o.State != "preparing" || o.AttemptID != a.ID {
+					t.Fatal("missing driver discarded replayable preparation", o)
+				}
 			} else if o.Wait != nil || o.State != "cancelled" && scenario != "old held" || scenario == "old held" && o.State != "held" {
 				t.Fatal("unproven/elapsed/terminal work reopened", o)
 			}
-			if scenario == "elapsed" || scenario == "unknown" {
+			if scenario == "elapsed" {
 				recovered, err := readAttempt(t.Context(), f.store.DB(), attemptProject, a.ID)
 				if err != nil || recovered.State != "cancelled" || recovered.Revision != a.Revision+1 || o.Reason != "supervisor_interrupted" {
 					t.Fatal("interrupted unused preparation lost its cancellation history", recovered, o, err)
 				}
 			}
-			if before != hostedAllowanceOnlyAttemptOptional(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+			reservations := 0
+			if scenario == "unknown" {
+				reservations = 1
+			}
+			if before != hostedAllowanceOnlyAttemptOptional(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != reservations {
 				t.Fatal("recovery changed retained query/source or reserved capacity")
 			}
 			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
