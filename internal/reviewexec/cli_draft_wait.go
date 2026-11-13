@@ -245,7 +245,7 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		FROM review_execution_transitions first
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
-		AND last.state='held' AND first.external_id='' AND last.external_id=''`, draft || transient, a.ID).Scan(&startedAt, &heldAt, &occupied)
+		AND last.state='held' AND first.external_id='' AND last.external_id=''`, transient, a.ID).Scan(&startedAt, &heldAt, &occupied)
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -255,5 +255,16 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		return Operation{}, false, waitUnavailable()
 	}
 	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", reason, nil
+	if draft {
+		// A fresh draft observation can detach an unused positive permit.
+		// Damaged optional allowance does not prevent historical attribution.
+		record, err := readCLIAllowanceRecord(ctx, q, o, a)
+		if err != nil && !errors.Is(err, errAllowanceObservationAbsent) && !storedAllowanceUnavailable(err) {
+			return Operation{}, false, err
+		}
+		if err == nil && record.Observation.Remaining <= 0 {
+			return Operation{}, false, waitUnavailable()
+		}
+	}
 	return o, true, nil
 }

@@ -282,6 +282,8 @@ An explicit CLI request for an exact PR and head can wait in the existing operat
 
 The controller rechecks waiting requests using bounded source reads. When the PR is ready, the same operation enters normal preparation for the originally requested head. Changed head, closed PR or invalid local authority cannot start a review. The current comparison, dependencies, grants, pauses, allowance and final provider-action guards still apply. Waiting survives restart. A historical terminal `pull_draft` hold stays terminal.
 
+If a PR returns to Draft after a positive allowance check and before admission, the request returns to the queue and the unused attempt stays in history. Unreadable optional allowance metadata does not prevent this transition when the attempt journal establishes that dispatch never began. A valid exhausted observation remains distinct, and operational storage failures still abort the transition.
+
 A failed repository or PR readiness probe retains the queued request and reports only its operation ID, failed read and safe provider error code, at most once per operation per thirty-second probe interval. An unknown Draft field reports `draft_state_unknown` and does not establish readiness. Provider response bodies and credentials are excluded.
 
 ### Durable CLI quota waiting
