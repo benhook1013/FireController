@@ -134,3 +134,43 @@ func TestReviewLaneDiagnosticPausedPlaceholderStrictShape(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewLaneDiagnosticPendingSelectionStrictShape(t *testing.T) {
+	cases := map[string]func(*client.ReviewLaneDiagnostic){
+		"queued":          func(v *client.ReviewLaneDiagnostic) {},
+		"selecting":       func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.State = "selecting" },
+		"omitted":         func(v *client.ReviewLaneDiagnostic) { v.PendingSelection = nil },
+		"bad-id":          func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.ID = "review_operation_wrong" },
+		"selected":        func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.State = "selected" },
+		"held":            func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.State = "held" },
+		"missing-created": func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.CreatedAt = "" },
+		"bad-updated":     func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.UpdatedAt = "yesterday" },
+		"reversed-times":  func(v *client.ReviewLaneDiagnostic) { v.PendingSelection.UpdatedAt = "2026-11-10T19:00:00Z" },
+		"cli":             func(v *client.ReviewLaneDiagnostic) { v.Channel = "cli" },
+	}
+	for name, edit := range cases {
+		t.Run(name, func(t *testing.T) {
+			value := sampleLaneDiagnostic()
+			value.Channel = "hosted"
+			value.PendingSelection = &client.ReviewLanePendingSelection{ID: "review_selection_" + strings.Repeat("a", 32), State: "queued", CreatedAt: "2026-11-10T20:00:00Z", UpdatedAt: "2026-11-10T20:01:00Z"}
+			edit(&value)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				write(w, 200, value)
+			}))
+			defer srv.Close()
+			c := newClient(t, srv)
+			_, err := c.ReviewLaneDiagnostic(t.Context(), value.Channel)
+			if name == "queued" || name == "selecting" || name == "omitted" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				checkError(t, err, "invalid_response")
+			}
+		})
+	}
+}

@@ -297,3 +297,77 @@ func TestLaneDiagnosticRetainedPausedPlaceholderStrictClient(t *testing.T) {
 		})
 	}
 }
+
+func TestLaneDiagnosticHostedPreChildSelection(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "diagnostic-hosted", "hosted", nil)
+	scope := selectionScope(t, f, attemptProject, f.reader, "read")
+	check := func(state string) {
+		t.Helper()
+		before := selectionCounts(t, f)
+		out, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "hosted")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := selectionRead(t, f, receipt.ID)
+		if out.PendingSelection == nil || *out.PendingSelection != (LanePendingSelection{ID: run.ID, State: state, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}) {
+			t.Fatal(out.PendingSelection, run)
+		}
+		if selectionCounts(t, f) != before {
+			t.Fatal("diagnostic mutated journals")
+		}
+		cli, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "cli")
+		if err != nil || cli.PendingSelection != nil {
+			t.Fatal(cli, err)
+		}
+	}
+	check("queued")
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		r, err := readRun(ctx, tx, attemptProject, receipt.ID)
+		if err != nil {
+			return err
+		}
+		return updateRun(ctx, tx, r, "selecting", "", "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("selecting")
+	// Reset the synthetic claim so the real selector can create its child.
+	if _, err := f.store.DB().Exec(`UPDATE review_selections SET state='queued' WHERE id=?`, receipt.ID); err != nil {
+		t.Fatal(err)
+	}
+	reader := &refreshTestReader{}
+	selectionNext(t, f, reader)
+	run := selectionRead(t, f, receipt.ID)
+	if run.State != "selected" || run.OperationID == "" {
+		t.Fatal(run)
+	}
+	before, calls := selectionCounts(t, f), reader.calls.Load()
+	out, err := f.e.ReadLaneDiagnostic(t.Context(), scope, "hosted")
+	if err != nil || out.PendingSelection != nil {
+		t.Fatal(out, err)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil || strings.Contains(string(raw), "pending_selection") {
+		t.Fatal(string(raw), err)
+	}
+	if selectionCounts(t, f) != before || reader.calls.Load() != calls {
+		t.Fatal("diagnostic performed work")
+	}
+}
+
+func TestLaneDiagnosticRejectsCorruptPendingSelection(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "diagnostic-corrupt", "hosted", nil)
+	if _, err := f.store.DB().Exec(`UPDATE review_selections SET updated_at='not-a-time' WHERE id=?`, receipt.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := selectionCounts(t, f)
+	if _, err := f.e.ReadLaneDiagnostic(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), "hosted"); err == nil {
+		t.Fatal("corrupt retained selection became an empty healthy lane")
+	}
+	if selectionCounts(t, f) != before {
+		t.Fatal("diagnostic repaired the journal")
+	}
+}
