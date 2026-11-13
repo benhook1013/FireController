@@ -108,6 +108,10 @@ func TestExternalHostedRehashedFrontierAndEvidenceIndexCorruptionRefused(t *test
 func TestExternalHostedAuthenticSchemaNineBackupRemainsSupported(t *testing.T) {
 	testAuthenticChannelCountSchemaBackup(t, 9)
 }
+func TestExternalHostedAuthenticSchemaTenBackupRemainsSupported(t *testing.T) {
+	testAuthenticChannelCountSchemaBackup(t, 10)
+}
+
 func TestExternalHostedEvidenceThreeBackupRemainsSupported(t *testing.T) {
 	f := externalHostedInventoryFixture(t)
 	if _, err := f.store.DB().Exec(`DROP TABLE review_activity_evidence; DROP INDEX review_evidence_hosted_publication; DROP INDEX review_evidence_hosted_run; UPDATE metadata SET value='3' WHERE key='schema:review_evidence'`); err != nil {

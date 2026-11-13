@@ -614,7 +614,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		return nil, err
 	}
 	if versions["reviews"] >= 4 {
-		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"]); err != nil {
+		if err = validateHistoryPhysicalSchema(ctx, db, versions["reviews"], actual["review_hosted_discovery_state"]); err != nil {
 			return nil, err
 		}
 	}
@@ -726,6 +726,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	for name, spec := range tables {
 		expected := spec.domain == "" || versions[spec.domain] >= spec.since
+		// Main and develop assigned different layouts to reviews version 10.
+		// The physical schema check validates the exact selected layout.
+		if name == "review_hosted_discovery_state" && versions["reviews"] == 10 {
+			expected = actual[name]
+		}
 		if spec.domain == "reviews" && versions["reviews"] >= 4 {
 			switch name {
 			case "review_pulls", "review_runs", "review_findings", "review_attempts", "review_retired_pulls":
@@ -1058,7 +1063,6 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		{4, reviews.ValidateHistoryReferences},
 		{5, reviews.ValidateCurrentSummaries},
 		{6, reviews.ValidateCurrentRunOrder},
-		{10, reviews.ValidateExternalHostedFrontiers},
 		{8, reviews.ValidateAttemptReasonsHistory},
 		{7, reviews.ValidatePullMetadataHistory},
 	} {
@@ -1070,6 +1074,20 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 				return unavailable()
 			}
 			return invalid()
+		}
+	}
+	if versions["reviews"] >= 10 {
+		var hasHostedDiscovery bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_hosted_discovery_state')`).Scan(&hasHostedDiscovery); err != nil {
+			return invalid()
+		}
+		if hasHostedDiscovery {
+			if err = reviews.ValidateExternalHostedFrontiers(ctx, tx); err != nil {
+				if checkContext(ctx) != nil {
+					return unavailable()
+				}
+				return invalid()
+			}
 		}
 	}
 	if err = validateSharedProjectRows(ctx, tx, versions); err != nil {
@@ -1403,7 +1421,7 @@ type physicalSchemaObject struct{ kind, definition string }
 
 // Exact canonical DDL binds CHECK, PK, UNIQUE, default and partial-index
 // semantics in addition to the independent column/FK inventory below.
-func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
+func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version int, hasHostedDiscovery bool) error {
 	expected := map[string]physicalSchemaObject{}
 	var names []string
 	definitions := reviews.HistorySchemaSQLV6()
@@ -1429,7 +1447,7 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		definitions = append(definitions, reviews.CurrentRunOrderSchemaSQL()...)
 		expectedTables, expectedObjects = 16, 27
 	}
-	if version >= 10 {
+	if version >= 11 || version == 10 && hasHostedDiscovery {
 		definitions = append(definitions, reviews.ExternalHostedSchemaSQL()...)
 		expectedTables, expectedObjects = 17, 29
 	}

@@ -20,7 +20,7 @@ func TestChannelRunCountsCanonicalSchema(t *testing.T) {
 			t.Fatalf("totals DDL mismatch\nactual %s\nexpected %s", actual, s)
 		}
 	}
-	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), 11); err != nil {
+	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), 11, true); err != nil {
 		t.Fatal("physical", err)
 	}
 	if err := validateHistoryViews(t.Context(), store.DB(), 11); err != nil {
