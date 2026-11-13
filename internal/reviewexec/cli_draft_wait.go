@@ -225,7 +225,6 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 		EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=first.attempt_id AND revision NOT IN (1,2))
 		OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=first.attempt_id)
 		OR EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=first.attempt_id)
-		OR EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id)
 		FROM review_execution_transitions first
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
@@ -239,5 +238,14 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 		return Operation{}, false, waitUnavailable()
 	}
 	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
+	// A fresh draft observation can detach an unused positive permit. Validate
+	// its original attribution without granting it authority to dispatch.
+	record, err := readCLIAllowanceRecord(ctx, q, o, a)
+	if err != nil && !errors.Is(err, errAllowanceObservationAbsent) {
+		return Operation{}, false, err
+	}
+	if err == nil && record.Observation.Remaining <= 0 {
+		return Operation{}, false, waitUnavailable()
+	}
 	return o, true, nil
 }
