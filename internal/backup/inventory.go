@@ -21,9 +21,12 @@ import (
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+const maxCLIExhaustionArtifactBytes int64 = reviewruntime.MaxCLIExhaustionArtifactBytes
 
 var cliName = regexp.MustCompile(`^review_attempt_[0-9a-f]{32}\.json$`)
 var hostedName = regexp.MustCompile(`^review_attempt_[0-9a-f]{32}-hosted-[0-9a-f]{64}\.json$`)
@@ -34,6 +37,10 @@ func artifactPath(path string) (string, int64, bool) {
 		return "", 0, false
 	}
 	switch parts[0] {
+	case "cli-exhaustion-captures":
+		if cliName.MatchString(parts[1]) {
+			return strings.TrimSuffix(parts[1], ".json"), maxCLIExhaustionArtifactBytes, true
+		}
 	case "review-captures":
 		if cliName.MatchString(parts[1]) {
 			return strings.TrimSuffix(parts[1], ".json"), maxCLICaptureBytes, true
@@ -51,7 +58,7 @@ func artifactPath(path string) (string, int64, bool) {
 // same bound. Database bytes and artifact sums stream without a deployment cap.
 func copyInventory(ctx context.Context, source, destination string) ([]Artifact, error) {
 	items := make([]Artifact, 0)
-	for _, name := range []string{"review-captures", "hosted-review-captures"} {
+	for _, name := range []string{"review-captures", "hosted-review-captures", "cli-exhaustion-captures"} {
 		dir := filepath.Join(source, name)
 		_, err := os.Lstat(dir)
 		if errors.Is(err, os.ErrNotExist) {
@@ -129,9 +136,9 @@ func checkBundleFiles(ctx context.Context, root string, expected map[string]bool
 	}
 	var entries []os.DirEntry
 	for {
-		batch, e := directory.ReadDir(6)
+		batch, e := directory.ReadDir(7)
 		entries = append(entries, batch...)
-		if len(entries) > 5 {
+		if len(entries) > 6 {
 			directory.Close()
 			return invalid()
 		}
@@ -154,7 +161,7 @@ func checkBundleFiles(ctx context.Context, root string, expected map[string]bool
 			return unavailable()
 		}
 		name := entry.Name()
-		if name == "review-captures" || name == "hosted-review-captures" {
+		if name == "review-captures" || name == "hosted-review-captures" || name == "cli-exhaustion-captures" {
 			dir := filepath.Join(root, name)
 			if privateDirectory(dir, false) != nil {
 				return invalid()
@@ -1024,6 +1031,13 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	refs := map[string]Artifact{}
 	for _, a := range m.Artifacts {
 		refs[a.Path] = a
+		// Negative allowance artifacts precede SQL retention and survive without
+		// a worktree. Inventory all of them, not only SQL-referenced records.
+		if strings.HasPrefix(a.Path, "cli-exhaustion-captures/") {
+			if err := validateCLIExhaustionArtifact(ctx, dataDir, a); err != nil {
+				return err
+			}
+		}
 	}
 	if versions["review_evidence"] > 0 {
 		if err = validateEvidenceReferences(ctx, tx, refs); err != nil {
@@ -1693,4 +1707,43 @@ func validateAdministrationContent(ctx context.Context, db sqlReader, versions m
 		}
 	}
 	return nil
+}
+
+// Validate the exact copied private bytes, without opening a mutable runtime
+// store or requiring an extant SQL preflight row or repository workspace.
+func validateCLIExhaustionArtifact(ctx context.Context, root string, a Artifact) error {
+	attempt, limit, ok := artifactPath(a.Path)
+	if !ok || limit != maxCLIExhaustionArtifactBytes || a.Bytes <= 0 || a.Bytes > limit {
+		return invalid()
+	}
+	path := filepath.Join(root, filepath.FromSlash(a.Path))
+	before, err := privateFile(path)
+	if err != nil || before.Size() != a.Bytes {
+		return invalid()
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return unavailable()
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return invalid()
+	}
+	data, err := io.ReadAll(contextReader{ctx, io.LimitReader(f, limit+1)})
+	if err != nil {
+		return unavailable()
+	}
+	after, err := privateFile(path)
+	if err != nil || !os.SameFile(before, after) || int64(len(data)) != a.Bytes {
+		return invalid()
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != a.SHA256 {
+		return invalid()
+	}
+	if _, err := reviewruntime.DecodeCLIExhaustionArtifact(attempt, data); err != nil {
+		return invalid()
+	}
+	return checkContext(ctx)
 }
