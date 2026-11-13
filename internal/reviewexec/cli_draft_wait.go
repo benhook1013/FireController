@@ -239,9 +239,11 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 	}
 	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
 	// A fresh draft observation can detach an unused positive permit. Validate
-	// its original attribution without granting it authority to dispatch.
+	// its original attribution without granting it authority to dispatch. Corrupt
+	// optional allowance cannot prevent history-only projection of this proven
+	// unused attempt; operational lookup failures still abort the transaction.
 	record, err := readCLIAllowanceRecord(ctx, q, o, a)
-	if err != nil && !errors.Is(err, errAllowanceObservationAbsent) {
+	if err != nil && !errors.Is(err, errAllowanceObservationAbsent) && !storedAllowanceUnavailable(err) {
 		return Operation{}, false, err
 	}
 	if err == nil && record.Observation.Remaining <= 0 {
