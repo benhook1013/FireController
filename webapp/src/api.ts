@@ -817,6 +817,11 @@ export class Api {
     if (!validWorker(value, this.projectId) || value.id !== workerId) throw new ApiError('invalid_response', 'The service returned an invalid worker.');
     return value;
   }
+  async renameWorker(workerId: string, actingWorker: string, expectedName: string, name: string, key: string, signal?: AbortSignal): Promise<Pick<Worker, 'id' | 'name'>> {
+    if (!id(workerId) || actingWorker !== '' && !id(actingWorker) || !displayName(expectedName) || !displayName(name) || !mutationKey(key)) throw new ApiError('invalid_request', 'Enter a worker name of up to 200 UTF-8 bytes.');
+    return this.browserMutation(this.projectRoute(`workers/${encodeURIComponent(workerId)}/rename`), 'POST', actingWorker, key, { expected_name: expectedName, name }, 200,
+      (value): value is Pick<Worker, 'id' | 'name'> => record(value) && keys(value, ['id', 'name']) && value.id === workerId && value.name === name, signal, true);
+  }
   async workerRetirement(workerId: string, signal?: AbortSignal): Promise<WorkerRetirement> {
     if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
     const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}/retirement`), signal, undefined, 16384, assessmentJSON);

@@ -55,7 +55,7 @@ func browserMutationAllowed(r *http.Request, project string) bool {
 		pull, err := strconv.ParseInt(parts[2], 10, 32)
 		return err == nil && pull > 0 && strconv.FormatInt(pull, 10) == parts[2]
 	}
-	if strings.HasPrefix(r.URL.Path, base) && len(parts) == 3 && parts[0] == "workers" && browserSessionIdentity.MatchString(parts[1]) && parts[2] == "retire" {
+	if strings.HasPrefix(r.URL.Path, base) && len(parts) == 3 && parts[0] == "workers" && browserSessionIdentity.MatchString(parts[1]) && (parts[2] == "retire" || parts[2] == "rename") {
 		return true
 	}
 	return strings.HasPrefix(r.URL.Path, base) && len(parts) == 3 && parts[0] == "messages" && browserSessionIdentity.MatchString(parts[1]) && (parts[2] == "seen" || parts[2] == "ack")

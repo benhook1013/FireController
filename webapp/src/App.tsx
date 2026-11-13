@@ -562,8 +562,8 @@ export function Inbox() {
 function InboxHeading() {
   const presentation = usePresentation();
   const label = useProjectHeading('inbox');
-  const { session } = useWorkspace();
-  return <div className="page-heading tab-heading"><h2>{session.worker ? presentation?.headings.inbox ? `${session.worker.name} · ${label}` : `${session.worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>;
+  const worker = useSelectedInboxWorker();
+  return <div className="page-heading tab-heading"><h2>{worker ? presentation?.headings.inbox ? `${worker.name} · ${label}` : `${worker.name} inbox` : label}</h2><p>Read incoming messages without changing their seen or acknowledged state.</p></div>;
 }
 function SelectedInbox() {
   const { session } = useWorkspace();
@@ -573,17 +573,24 @@ export function cachedWorkerLabelsQuery(key: readonly string[]) {
   // Observe the sidebar's existing first page without fetching workers here.
   return queryOptions<Page<Worker>>({ queryKey: [...key, 'workers', ''], enabled: false });
 }
+function useSelectedInboxWorker() {
+  const { session, key } = useWorkspace();
+  const worker = session.worker;
+  const query = useQuery({ queryKey: [...key, 'worker', worker?.id], queryFn: ({ signal }) => session.api.worker(worker!.id, signalFor(session, signal)), enabled: Boolean(worker), staleTime: Infinity });
+  return query.data ?? worker;
+}
 function useMessageWorkerLabels() {
   const { session, key } = useWorkspace();
+  const selected = useSelectedInboxWorker();
   const { data } = useQuery(cachedWorkerLabelsQuery(key));
   return useMemo(() => {
     const labels = new Map<string, string>();
     for (const worker of data?.items ?? []) {
       if (worker.project_id === session.project.id) labels.set(worker.id, worker.name);
     }
-    if (session.worker?.project_id === session.project.id) labels.set(session.worker.id, session.worker.name);
+    if (selected?.project_id === session.project.id) labels.set(selected.id, selected.name);
     return labels;
-  }, [data, session.project.id, session.worker]);
+  }, [data, session.project.id, selected]);
 }
 function MessageWorkerLabel({ id, labels }: { id: string; labels: ReadonlyMap<string, string> }) {
   const name = labels.get(id);
@@ -604,7 +611,8 @@ function InboxRow({ item, home, labels }: { item: InboxItem; home: string; label
 function Conversation() {
   const { session, home } = useWorkspace();
   const { conversationId = '' } = useParams();
-  return <><Link className="back-link" to={`${home}/inbox`}>← Worker inbox</Link><div className="page-heading"><p className="eyebrow">{session.worker?.name ?? 'Worker inbox'}</p><h2>Conversation</h2><p>Reading leaves message state unchanged.</p></div>{session.worker ? <ConversationMessages key={conversationId} id={conversationId} /> : <ChooseWorker />}</>;
+  const worker = useSelectedInboxWorker();
+  return <><Link className="back-link" to={`${home}/inbox`}>← Worker inbox</Link><div className="page-heading"><p className="eyebrow">{worker?.name ?? 'Worker inbox'}</p><h2>Conversation</h2><p>Reading leaves message state unchanged.</p></div>{session.worker ? <ConversationMessages key={conversationId} id={conversationId} /> : <ChooseWorker />}</>;
 }
 export function ConversationMessages({ id }: { id: string }) {
   const { session, key } = useWorkspace();

@@ -9,6 +9,7 @@ import { ContextualNotes } from './contextual-notes';
 import { EditorialMarkdown } from './editorial-markdown';
 import './coordination.css';
 import { WorkerRetirementPanel } from './worker-retirement';
+import { WorkerNameEditor } from './worker-name-editor';
 
 const pageSize = 20;
 const date = (value: string) => new Date(value).toLocaleString();
@@ -39,7 +40,7 @@ function WorkerDetails({ workerId }: { workerId: string }) {
   const worker = useQuery({ queryKey: [...key, 'worker', workerId], queryFn: ({ signal }) => session.api.worker(workerId, signalFor(session, signal)), staleTime: Infinity });
   const pause = useQuery({ queryKey: [...key, 'worker-pause', workerId], queryFn: ({ signal }) => session.api.workerPause(workerId, signalFor(session, signal)), staleTime: Infinity });
   const primary = useQuery({ queryKey: [...key, 'worker-primary', workerId], queryFn: ({ signal }) => session.api.workerPrimary(workerId, signalFor(session, signal)), staleTime: Infinity });
-  return <div className="coordination"><section className="panel"><ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <><p className="eyebrow">Worker details</p><h2>{worker.data.name}</h2>{worker.data.retired && <p className="badge">Retired</p>}<p className="item-meta">{worker.data.id}</p></>}</ReadState></section>
+  return <div className="coordination"><section className="panel"><ReadState error={worker.error} loading={worker.isPending} empty={false}>{worker.data && <><p className="eyebrow">Worker details</p><h2>{worker.data.name}</h2>{worker.data.retired && <p className="badge">Retired</p>}<p className="item-meta">{worker.data.id}</p>{session.api.browserCapabilities.can_edit_presentation && <WorkerNameEditor worker={worker.data} />}</>}</ReadState></section>
     {worker.data && <WorkerRetirementPanel worker={worker.data} />}
     <ContextualNotes workerId={workerId} />
     <section className="panel"><ReadState error={pause.error} loading={pause.isPending} empty={false}>{pause.data && <PauseContent value={pause.data} />}</ReadState><button type="button" aria-expanded={pauseHistory} onClick={() => setPauseHistory(value => !value)}>{pauseHistory ? 'Hide pause history' : 'Show pause history'}</button>{pauseHistory && <PauseHistory workerId={workerId} />}</section>

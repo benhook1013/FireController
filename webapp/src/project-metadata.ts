@@ -48,6 +48,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('delivery'); add('job-updates');
     } else if (type === 'job.checklist_replaced') {
       add('delivery'); add('job', id); add('checklist-current', id); add('checklist-history', id);
+    } else if (type === 'workers.renamed') {
+      add('delivery'); add('workers'); add('worker', id);
     } else if (type === 'workers.created' || type === 'workers.retired') {
       add('delivery'); add('workers'); add('worker', id); add('worker-retirement', id);
     } else if (type === 'worker.pause_changed') {

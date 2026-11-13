@@ -77,7 +77,7 @@ The private project feed has an explicit allowlist of committed changes:
 
 - Appearance and map: `project.presentation_changed`, `map.entry_created`, `map.entry_updated`, `job.workstream_changed`.
 - Job progress: `job.created`, `job.updated`, `job.checkpointed`, `job.update_appended`, `job.checklist_replaced`.
-- Workers and notes: `workers.created`, `worker.pause_changed`, `worker.primary_job_changed`, `note.created`, `note.updated`.
+- Workers and notes: `workers.created`, `workers.renamed`, `worker.pause_changed`, `worker.primary_job_changed`, `note.created`, `note.updated`.
 - Visible review state: `review.observed`, `reviews.policy_configured`, `review.evidence.adjudicated`, `review.evidence.finalized`, `review.evidence.fix_recorded`, `review.evidence.routed`, `review.route.routed`, `review.route.superseded`, `review.route.adjudicated`, `review.route.fix_recorded`.
 
 Internal preflight, allowance queries, source refresh/publication worker chatter, messages and unknown future event kinds are excluded. Evidence changes remain relevant even when an administrator replaced the workspace and retained native evidence is absent from its current projection. Both caller mutations and background worker writes publish notifications only after successful commit; rollback and failed commit produce no hints. There is no new polling loop.
