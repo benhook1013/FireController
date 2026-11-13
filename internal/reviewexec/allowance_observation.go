@@ -168,12 +168,16 @@ func storedAllowanceUnavailable(err error) bool {
 func validateCooldownReference(ctx context.Context, q EvidenceQuery, a Attempt, o Operation, query HostedAllowanceQuery, in HostedAllowanceInput) error {
 	var id, project, attempt, operation, checksum string
 	var body sql.NullString
-	var position, size int64
-	err := q.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=24576 THEN body_json END FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, a.ID, in.CaptureSHA256).Scan(&id, &project, &attempt, &operation, &position, &checksum, &size, &body)
+	var storedPosition, storedSize any
+	err := q.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=24576 THEN body_json END FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, a.ID, in.CaptureSHA256).Scan(&id, &project, &attempt, &operation, &storedPosition, &checksum, &storedSize, &body)
 	if err != nil {
 		return allowanceDependencyError(err)
 	}
-	if !body.Valid {
+	// Non-STRICT storage can retain fractional or nonnumeric values here.
+	// Treat those as damaged evidence, not a database Scan failure.
+	position, positionOK := storedPosition.(int64)
+	size, sizeOK := storedSize.(int64)
+	if !body.Valid || !positionOK || !sizeOK {
 		return allowanceUnavailable()
 	}
 	observation, err := decodeHostedObservation(body.String, id, project, attempt, operation, position, checksum, size, a, o)
