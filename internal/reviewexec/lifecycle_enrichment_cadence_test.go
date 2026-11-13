@@ -188,7 +188,18 @@ func TestLifecycleHostedInventorySkipsUnchangedHealthyPolls(t *testing.T) {
 	pull.HeadSHA = strings.Repeat("c", 40)
 	lifecycleTick(t, f, s, r)
 	if r.archiveCalls != 3 || r.ciCalls.Load() != 3 {
-		t.Fatalf("new comparison was delayed: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+		t.Fatalf("new head was delayed: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+	}
+	clock.Add(time.Minute)
+	pull.BaseSHA = strings.Repeat("d", 40)
+	lifecycleTick(t, f, s, r)
+	if r.archiveCalls != 3 || r.ciCalls.Load() != 4 {
+		t.Fatalf("base movement must refresh CI without rereading Hosted history: Hosted %d, CI %d", r.archiveCalls, r.ciCalls.Load())
+	}
+	clock.Add(4 * time.Minute)
+	lifecycleTick(t, f, s, r)
+	if r.archiveCalls != 4 {
+		t.Fatalf("base movement displaced the original Hosted deadline: %d", r.archiveCalls)
 	}
 }
 

@@ -71,7 +71,7 @@ type lifecycleDue struct {
 	hints                                                [2]lifecycleHint
 	checkedAt, successAt, ciCheckedAt, hostedCheckedAt   time.Time
 	ciError, hostedError                                 string
-	hostedComparison                                     lifecycleComparison
+	hostedHead, hostedState                              string
 	baseSHA, baseRef                                     string
 	lastErrorCode                                        string
 	next, ci, enrichmentNext                             time.Time
@@ -549,7 +549,7 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 		}
 		if published && !target.ciOnly && !target.due.hostedCheckedAt.IsZero() {
 			due.hostedCheckedAt, due.hostedError = target.due.hostedCheckedAt, target.due.hostedError
-			due.hostedComparison = target.due.hostedComparison
+			due.hostedHead, due.hostedState = target.due.hostedHead, target.due.hostedState
 		}
 		if published && !target.ciOnly && state == "open" && providerErr == nil && !due.hostedCheckedAt.IsZero() && due.hostedError == "" {
 			// An unchanged, healthy comparison has no enrichment work until

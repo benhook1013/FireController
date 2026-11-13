@@ -153,10 +153,11 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	var external []reviewprovider.ExternalHostedRun
 	var hostedCollected bool
 	var externalErr error
-	// Keep catching up incomplete inventory and check a new comparison
-	// immediately. Only repeat a healthy scan on the slower fallback cadence.
-	observedComparison := lifecycleComparison{head, pull.BaseSHA, pull.BaseRef, state}
-	hostedDue := observedComparison != target.due.hostedComparison || target.due.hostedError != "" || !s.options.Now().Before(target.due.hostedCheckedAt.Add(healthyHostedInterval))
+	// Hosted history is collected by PR and attributed to each review's own
+	// retained head. A moving base can invalidate CI, but does not invalidate
+	// an otherwise current inventory of the same head and lifecycle state.
+	hostedDue := head != target.due.hostedHead || state != target.due.hostedState || target.due.hostedError != "" ||
+		!s.options.Now().Before(target.due.hostedCheckedAt.Add(healthyHostedInterval))
 	if !target.ciOnly && hostedDue {
 		external, hostedCollected, externalErr = collectExternalHosted(ctx, target, repo.FullName, providerErr)
 	}
@@ -225,7 +226,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 		if hostedCollected {
 			target.due.hostedCheckedAt = s.options.Now()
-			target.due.hostedComparison = observedComparison
+			target.due.hostedHead, target.due.hostedState = head, state
 			target.due.hostedError = lifecycleErrorCode(externalErr)
 			if externalErr == nil && externalDeferred {
 				target.due.hostedError = lifecycleErrorCode(externalHostedUnproven())
