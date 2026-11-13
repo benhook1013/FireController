@@ -225,11 +225,22 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 	}
 	// Resolve source with the retained configuration, but require every actual
 	// ancestor to remain enrolled in this final action's current snapshot.
-	configuration, _, err := readConfiguration(ctx, tx, project)
+	configuration, revision, err := readConfiguration(ctx, tx, project)
 	if err != nil {
 		return err
 	}
 	if !slices.Contains(configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
+		return invalid()
+	}
+	parents := []int64{target.ParentPullNumber}
+	for _, plan := range predecessors {
+		parents = append(parents, plan.Pull.Number)
+	}
+	compatible, err := compatibleQueuedConfiguration(ctx, tx, current.Operation, configuration, revision, parents...)
+	if err != nil {
+		return err
+	}
+	if !compatible {
 		return invalid()
 	}
 	number, head, branch := target.ParentPullNumber, target.ParentSHA, target.BaseRef
