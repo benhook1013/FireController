@@ -1238,7 +1238,7 @@ func schedulerQueuedCopy(t *testing.T, f *attemptFixture, seed, id string) {
 	}
 }
 
-func TestSupervisorCancellationDuringCooldownPersistenceSettlesPreparation(t *testing.T) {
+func TestSupervisorCancellationDuringCooldownPersistenceRetainsPreparation(t *testing.T) {
 	f := supervisorFixture(t)
 	receipt := f.enqueue(t, attemptProject, "cancel-during-cooldown", "cli", 2, 1)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1261,13 +1261,23 @@ func TestSupervisorCancellationDuringCooldownPersistenceSettlesPreparation(t *te
 		persistStarted.Store(true)
 		return Preparation{}, sourceHold("allowance_exhausted")
 	}}
-	if err := f.e.processNext(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
-		t.Fatal("orderly cancellation during cooldown persistence stopped the supervisor", err)
+	err := f.e.processNext(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	var recovery *PreparationRecoveryError
+	if !errors.As(err, &recovery) {
+		t.Fatal("cancelled cooldown must retain a recovery requirement", err)
 	}
 	var state, operationState, reason string
 	var revision int64
-	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,o.state,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &operationState, &reason); err != nil || state != "cancelled" || revision != 2 || operationState != "cancelled" || reason != "supervisor_stopping" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
-		t.Fatal("cancelled cooldown retained preparation or reservation", state, revision, operationState, reason, err)
+	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,o.state,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &operationState, &reason); err != nil || state != "preparing" || revision != 1 || operationState != "preparing" || reason != "" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
+		t.Fatal("cancelled cooldown lost preparation or reservation", state, revision, operationState, reason, err)
+	}
+	f.e.schedulingNow = nil
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	operation := cliWaitRead(t, f, receipt.ID)
+	if due := cliWaitDue(t, operation); !due.After(time.Now()) {
+		t.Fatal("recovery lost account backoff", due)
 	}
 }
 
