@@ -12,6 +12,8 @@ Each observed candidate has `local_state` and `local_reason`. `locally_ready` me
 
 A `predecessor_unfinished` row identifies `blocking_pull_number` and the concrete source-identity `blocking_reason`, such as a missing, moved, cyclic or unavailable parent. Ancestor findings, review rounds and PR pauses do not hold a child's review. The diagnostic shares the ordinary selector's source-chain checks and target-local obligation checks; it does not grant dispatch or merge permission. A local hold on the candidate itself remains its primary reason.
 
+Hosted diagnostics optionally include `pending_selection`: the current queued or selecting journal identity (`id`, `state`, `created_at`, `updated_at`), read in the same local transaction. These are retained selection timestamps, not provider-review start or completion times. The field is omitted when no pre-child selection exists, including after child creation; it never infers a PR, head or operation before selection succeeds. CLI diagnostics omit it. This projection performs no source refresh, polling, dispatch or journal mutation.
+
 For a lane audit, combine this diagnostic with current operation/scheduling/round reads and current published source observations. Do not use `locally_ready` to force a review or declare a lane healthy. A stale or incomplete frame means eligibility remains unestablished and calls for an authorized ordinary source/selection workflow, not a new review merely to obtain diagnostics.
 
 ## Validation boundary

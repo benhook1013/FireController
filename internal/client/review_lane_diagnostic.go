@@ -3,9 +3,18 @@ package client
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
+type ReviewLanePendingSelection struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type ReviewLaneDiagnostic struct {
+	PendingSelection            *ReviewLanePendingSelection     `json:"pending_selection,omitempty"`
 	ProjectID                   string                          `json:"project_id"`
 	Channel                     string                          `json:"channel"`
 	ConfigurationRevision       int64                           `json:"configuration_revision"`
@@ -47,6 +56,13 @@ func (c *Client) ReviewLaneDiagnostic(ctx context.Context, channel string) (Revi
 		}
 	} else if !controlTime(out.SourceCheckedAt) || out.SourceComplete && (out.SourceConfigurationRevision != out.ConfigurationRevision || out.SourceReason != "") {
 		return ReviewLaneDiagnostic{}, invalidResponse()
+	}
+	if pending := out.PendingSelection; pending != nil {
+		created, _ := time.Parse(time.RFC3339Nano, pending.CreatedAt)
+		updated, _ := time.Parse(time.RFC3339Nano, pending.UpdatedAt)
+		if channel != "hosted" || ValidateReviewRunSelectionID(pending.ID) != nil || !oneReviewOf(pending.State, "queued", "selecting") || !controlTime(pending.CreatedAt) || !controlTime(pending.UpdatedAt) || updated.Before(created) {
+			return ReviewLaneDiagnostic{}, invalidResponse()
+		}
 	}
 	usableSource := out.SourceConfigurationRevision > 0 && out.SourceConfigurationRevision == out.ConfigurationRevision && out.SourceReason != "repository_changed" && out.SourceReason != "configuration_changed"
 	seen := map[int64]bool{}

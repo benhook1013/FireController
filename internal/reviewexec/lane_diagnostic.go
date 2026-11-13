@@ -3,15 +3,25 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+// LanePendingSelection exposes retained pre-child selection facts, not a review run.
+type LanePendingSelection struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 // LaneDiagnostic reports local policy against explicitly retained source facts.
 // It is not an admission preview: source freshness, automatic-intent ownership,
 // provider capacity and dispatch authorization still require normal selection.
 type LaneDiagnostic struct {
+	PendingSelection            *LanePendingSelection     `json:"pending_selection,omitempty"`
 	ProjectID                   string                    `json:"project_id"`
 	Channel                     string                    `json:"channel"`
 	ConfigurationRevision       int64                     `json:"configuration_revision"`
@@ -47,6 +57,20 @@ func (e *Engine) ReadLaneDiagnostic(ctx context.Context, scope core.Scope, chann
 			return err
 		}
 		out.ConfigurationRevision, out.EvaluatedAt = revision, stamp()
+		if channel == "hosted" {
+			var id string
+			err := tx.QueryRowContext(ctx, `SELECT id FROM review_selections WHERE project_id=? AND channel=? AND state IN ('queued','selecting')`, scope.ProjectID, channel).Scan(&id)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				selection, err := readRun(ctx, tx, scope.ProjectID, id)
+				if err != nil {
+					return err
+				}
+				out.PendingSelection = &LanePendingSelection{ID: selection.ID, State: selection.State, CreatedAt: selection.CreatedAt, UpdatedAt: selection.UpdatedAt}
+			}
+		}
 		if c.Paused {
 			out.LaneReason = "reviews_paused"
 		} else if !slices.Contains(c.Channels, channel) {
