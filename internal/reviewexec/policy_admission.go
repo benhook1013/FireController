@@ -46,6 +46,12 @@ func policyAdmissionConflict() error {
 }
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
+	return e.executionContext(ctx, tx, operation, false)
+}
+
+// A cooldown is retained negative evidence, not admission. Project pause may
+// delay its retry without discarding it; all other authority checks still apply.
+func (e *Engine) executionContext(ctx context.Context, tx *sql.Tx, operation Operation, retainCooldown bool) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
 	if err := requirePullScheduling(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
 		return ExecutionContext{}, err
@@ -59,6 +65,11 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	configuration, revision, err := readConfiguration(ctx, tx, operation.ProjectID)
 	if err != nil {
 		return ExecutionContext{}, err
+	}
+	if retainCooldown {
+		// Only ignore the current pause bit. The history validator still checks
+		// every revision and rejects source or capability changes across pauses.
+		configuration.Paused = false
 	}
 	compatible, err := compatibleQueuedConfiguration(ctx, tx, operation, configuration, revision)
 	if err != nil {

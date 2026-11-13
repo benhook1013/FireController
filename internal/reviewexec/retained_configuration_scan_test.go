@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -152,5 +153,68 @@ func TestPausedQueuedStatusDirectsControlWithoutMutatingWait(t *testing.T) {
 		if err != nil || status.NextAction != "wait" {
 			t.Fatal(status, err)
 		}
+	}
+}
+
+func TestPendingScanDoesNotSkipReturnedBatch(t *testing.T) {
+	for _, probe := range []bool{false, true} {
+		t.Run(fmt.Sprint(probe), func(t *testing.T) {
+			f := supervisorFixture(t)
+			seed := f.enqueue(t, attemptProject, "batch-seed", "cli", 2, 1)
+			for i := range 260 {
+				admissionSQL(t, f, `INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, fmt.Sprintf("batch-%03d", i), seed.ID)
+			}
+			first, err := f.e.pendingForWorker(t.Context(), probe)
+			if err != nil || len(first) != 256 {
+				t.Fatal(len(first), err)
+			}
+			var seen []string
+			driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+				seen = append(seen, o.ID)
+				return Preparation{}, core.Fail("review_evidence_pending", "fixture hold", 409)
+			}}
+			for range 2 {
+				if err := f.e.processNextForWorker(t.Context(), map[string]Driver{"test-capability": driver}, probe); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(seen) != 2 || seen[0] != first[0].ID || seen[1] != first[1].ID {
+				t.Fatal("processing skipped unprocessed batch", seen)
+			}
+			if driver.calls.Load() != 0 {
+				t.Fatal("fixture unexpectedly dispatched provider work")
+			}
+
+		})
+	}
+}
+
+func TestPendingScanPartialDeadlineRetainsReturnedCandidate(t *testing.T) {
+	for _, probe := range []bool{false, true} {
+		t.Run(fmt.Sprint(probe), func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			ready := f.enqueue(t, attemptProject, "first-ready", "cli", 2, 1)
+			bad := f.enqueue(t, otherAttemptProject, "slow-after-ready", "cli", 2, 1)
+			admissionSQL(t, f, `UPDATE review_operations SET created_at='2020-01-01T00:00:00Z' WHERE id=?`, ready.ID)
+			admissionSQL(t, f, `UPDATE review_execution_config SET body_json='broken' WHERE project_id=?`, otherAttemptProject)
+			calls := 0
+			f.e.schedulingNow = func() time.Time {
+				calls++
+				if calls == 2 && !probe || calls == 3 && probe {
+					time.Sleep(2100 * time.Millisecond)
+				}
+				return time.Now().UTC()
+			}
+			first, err := f.e.pendingForWorker(t.Context(), probe)
+			if err != nil || len(first) != 1 || first[0].ID != ready.ID {
+				t.Fatal("partial deadline", first, err)
+			}
+			f.e.schedulingNow = nil
+			next, err := f.e.pendingForWorker(t.Context(), probe)
+			if err != nil || len(next) != 1 || next[0].ID != ready.ID {
+				t.Fatal("skipped returned ready candidate", next, err, bad.ID)
+			}
+		})
 	}
 }

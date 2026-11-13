@@ -27,7 +27,11 @@ func validateReviewOrderPhysicalSchema(ctx context.Context, db sqlReader, versio
 	if strings.Contains(definition.String, "/*") || strings.Contains(definition.String, "--") {
 		return invalid()
 	}
-	normalized := strings.Join(strings.Fields(definition.String), " ")
+	structural, ok := reviewOrderSQLStructure(definition.String)
+	if !ok {
+		return invalid()
+	}
+	normalized := strings.Join(strings.Fields(structural), " ")
 	clause := ", " + reviewOrderDDL + ",FOREIGN KEY(project_id,configuration_revision)"
 	if version >= 8 {
 		clause = ", " + reviewOrderDDL + ", " + reviewFileLimitDDL + ",FOREIGN KEY(project_id,configuration_revision)"
@@ -52,4 +56,38 @@ func validateReviewOrderRows(ctx context.Context, db sqlReader, version int) err
 		}
 	}
 	return nil
+}
+
+// Quoted SQL tokens are data or identifiers, never executable constraint
+// syntax. Preserve a separator so stripping cannot join surrounding tokens.
+func reviewOrderSQLStructure(definition string) (string, bool) {
+	var out strings.Builder
+	for i := 0; i < len(definition); i++ {
+		delimiter := definition[i]
+		if delimiter != '\'' && delimiter != '"' && delimiter != '`' && delimiter != '[' {
+			out.WriteByte(delimiter)
+			continue
+		}
+		end := delimiter
+		if delimiter == '[' {
+			end = ']'
+		}
+		closed := false
+		for i++; i < len(definition); i++ {
+			if definition[i] != end {
+				continue
+			}
+			if delimiter != '[' && i+1 < len(definition) && definition[i+1] == end {
+				i++
+				continue
+			}
+			closed = true
+			break
+		}
+		if !closed {
+			return "", false
+		}
+		out.WriteByte(' ')
+	}
+	return out.String(), true
 }
