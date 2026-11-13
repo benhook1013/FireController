@@ -1,4 +1,4 @@
-import { reviewAttemptCause, reviewAttemptStatus, type ReviewAttemptStatus } from './review-attempt-status';
+import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
 import { ReviewAttemptBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
 import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
@@ -392,9 +392,6 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
 }
-export function ReviewAttemptExplanation({ status }: { status: ReviewAttemptStatus }) {
-  return status.cause ? <p className="review-attempt-explanation">{status.cause}</p> : null;
-}
 function RunningReviewPill({ evidence, channel }: { evidence: ReviewActivityEvidence; channel: ReviewChannel }) {
   const timing = evidence.kind === 'cli_process_spawned'
     ? `CLI started ${time(evidence.process_started_at)}`
@@ -415,7 +412,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const returned = attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
     (run.outcome === 'completed' || partialCLIResult(run))) : undefined;
-  const statusAttempt = returned && partialCLIResult(returned) && attempt?.reason === 'coverage_incomplete'
+  const statusAttempt = returned && partialCLIResult(returned) && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
     ? { ...attempt, reason: 'cli_partial_settled' }
     : attempt;
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);
@@ -440,7 +437,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
     metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">
-    {badge && <ReviewAttemptExplanation status={badge} />}<ReviewProgressView value={progress} />
+    <ReviewProgressView value={progress} />
     {visiblePills.length > 0 || running ? <div className="review-round-pills review-recent-rounds">
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
       {running && <RunningReviewPill key={running.attempt_id} evidence={running} channel={channel} />}

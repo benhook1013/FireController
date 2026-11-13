@@ -944,7 +944,8 @@ try {
   const cliSourceLane = sourceRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
   await expect(hostedSourceLane.getByText('Queued',{exact:true})).toBeVisible();
   await expect(hostedSourceLane).not.toContainText('GitHub rate limit');
-  await expect(cliSourceLane.getByText('GitHub rate limit. The review did not start.',{exact:true})).toBeVisible();
+  await expect(cliSourceLane.getByText('Needs agent attention',{exact:true})).toHaveAttribute('title', /GitHub rate limit. The review did not start./u);
+  await expect(cliSourceLane).not.toContainText('GitHub rate limit');
   await page.unroute(sourceProgressPattern, sourceProgress);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   const fallbackHero = page.getByRole('region', {name:'Review queue head', exact:true});
@@ -1058,12 +1059,12 @@ try {
   const partialFinding = (id, disposition) => ({source_finding_id:id,title:'Partial finding '+id,detail:'Retained evidence',severity:'low',disposition,decision_reason:'',actor:'',decided_at:'',fix_sha:'',proof_note:'',resolved_at:''});
   const partial = {...run,source_run_id:'live-cli-partial',channel:'cli',outcome:'failed',attributable:false,complete:false,finalized:false,found:3,accepted:1,started_at:activityStart,
     findings:[partialFinding('accepted','accepted'),partialFinding('rejected','rejected'),partialFinding('undecided','unadjudicated')]};
-  const cliReturned = {...activityAttempt('cli'),state:'failed',finished_at:finished,source_run_id:partial.source_run_id,reason:'cli_partial_settled'};
+  const cliReturned = {...activityAttempt('cli'),state:'failed',finished_at:finished,source_run_id:partial.source_run_id,reason:'capture_retained'};
   const hostedReturned = {...activityAttempt('hosted'),state:'completed',finished_at:finished,source_run_id:run.source_run_id};
   const reasonCode = 'hosted_finished_inventory_unproven';
   const uncertainAt = new Date(Date.parse(finished) + 1000).toISOString();
   const reasonText = 'Finished response could not be verified';
-  const reasonPillText = `The provider outcome is unconfirmed. Reconcile it before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
+  const reasonPillText = `The finished review could not be verified. The provider outcome is unconfirmed. Reconcile it before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
   const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:uncertainAt,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
   checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(3, [merged, {...open, title:'Live review updated', runs:[run,partial],attempts:[hostedReturned,cliReturned,uncertainAttempt]}]), 201);
@@ -1077,7 +1078,7 @@ try {
   const resultCLI = activityRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
   await expect(activityRow.locator('.review-pill-running')).toHaveCount(0);
   await expect(resultCLI.locator('.review-lane-heading')).toContainText('0 runs');
-  await expect(resultCLI).not.toContainText('Previous attempt');
+  await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained|Needs agent attention/u);
   const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
   await expect(partialLink).toHaveCount(1);
   const partialURL = await partialLink.getAttribute('href');
@@ -1118,11 +1119,7 @@ try {
   }
   checkpoint = 'attempt-visible-reason';
   for (const lane of [queueHosted, heroHosted]) {
-    const reason = lane.locator('p.review-attempt-explanation');
-    await expect(reason).toBeVisible();
-    await expect(reason).toHaveText('The finished review could not be verified');
-    await expect(lane.locator('.review-attempt-explanation details, .review-attempt-explanation summary, .review-attempt-explanation button')).toHaveCount(0);
-    need(await reason.evaluate(element => element.tabIndex === -1 && !element.closest('details,summary,button,[role="button"]')));
+    await expect(lane).not.toContainText('The finished review could not be verified');
   }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
@@ -1193,12 +1190,6 @@ try {
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
         return matching && style.textTransform === 'uppercase' && style.borderTopLeftRadius === '20px' && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
       }));
-    }
-    for (const lane of [queueHosted, heroHosted]) {
-      const reason=lane.locator('p.review-attempt-explanation');
-      await expect(reason).toBeVisible();
-      await expect(reason).toHaveText('The finished review could not be verified');
-      need(await reason.evaluate(element => { const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect(); return element.tabIndex===-1 && !element.closest('details,summary,button,[role="button"]') && box.left>=lane.left-1 && box.right<=lane.right+1 && element.scrollWidth<=element.clientWidth+1; }));
     }
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
@@ -1288,7 +1279,7 @@ try {
   await expect(attemptsPanel.getByText('Reason',{exact:true})).toHaveCount(2);
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toBeVisible();
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toHaveText(reasonText);
-  await expect(attemptsPanel.getByTitle('cli_partial_settled',{exact:true})).toHaveText('The CLI review ended without full coverage');
+  await expect(attemptsPanel.getByTitle('capture_retained',{exact:true})).toHaveText('Review output is available in history');
   await expect(attemptsPanel.getByText('Uncertain',{exact:true})).toBeVisible();
   need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   checkpoint = 'attempt-reason-reads';

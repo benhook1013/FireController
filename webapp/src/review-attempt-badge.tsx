@@ -3,7 +3,11 @@ import type { ReviewAttemptStatus } from './review-attempt-status';
 
 export function ReviewAttemptBadge({ channel, status }: { channel: string; status: ReviewAttemptStatus }) {
   const className = status.kind ? `badge review-channel-position review-attempt-state review-attempt-${status.kind}` : 'badge review-channel-position';
-  if (!status.activity) return <span className={className} title={status.description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${status.description ?? ''}` : undefined}>{status.text}</span>;
+  if (!status.activity) {
+    const cause = status.cause && !/[.!?]$/u.test(status.cause) ? `${status.cause}.` : status.cause;
+    const description = [cause, status.description].filter(Boolean).join(' ') || undefined;
+    return <span className={className} title={description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${description ?? ''}` : undefined}>{status.text}</span>;
+  }
   return <ActivityBadge key={JSON.stringify([channel, status.text, status.activity])} channel={channel} status={status} />;
 }
 

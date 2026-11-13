@@ -77,7 +77,7 @@ describe('visible attempt reasons', () => {
   it('makes absent reasons explicit and keeps a past failure separate from pending recovery', () => {
     expect(reviewAttemptStatus({ ...attempt, reason: undefined }, progress)?.cause).toBe('No reason was recorded');
     expect(reviewAttemptStatus({ ...attempt, state: 'uncertain', reason: undefined }, progress)?.cause).toBe('The provider outcome is unconfirmed');
-    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })?.cause).toBe('Previous attempt: Review eligibility changed before start');
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })?.cause).toBeUndefined();
     expect(reviewAttemptStatus({ ...attempt, state: 'completed', reason: undefined }, progress)?.cause).toBeUndefined();
   });
 });

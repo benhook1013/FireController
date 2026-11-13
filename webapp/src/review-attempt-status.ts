@@ -37,8 +37,7 @@ function isGitHubPreparationHold(reason?: string): boolean {
   return reason === 'preparation_source_resolution_provider_rate_limited' || reason === 'preparation_source_refresh_provider_rate_limited';
 }
 
-// Keep the reason readable without requiring a mouse hover. Raw codes remain
-// in the existing Attempts details, including unknown future reason codes.
+// Use human-readable reasons in tooltips and Attempts.
 export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
   const causes: Record<string, string> = {
     predecessor_unfinished: 'Waiting for earlier PR work',
@@ -58,6 +57,7 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     cli_partial_settled: 'The CLI review ended without full coverage',
     source_rate_limit_wait: 'GitHub rate limit delayed preparation',
     cli_partial_comparison_already_reviewed: 'Automatic CLI is waiting for the comparison to change',
+    capture_retained: 'Review output is available in history',
     capture_retention_failed: 'The review result could not be retained',
     source_obligations_pending: 'Carried review work is still pending',
     routed_findings_pending: 'Incoming findings still need handling',
@@ -95,7 +95,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   if ((githubHold || priorSourceWait) && (progress?.pending_execution ?? 0) > 0) return { text: 'Queued' };
   if ((progress?.pending_execution ?? 0) > 0) return {
     text: stopped && !settled ? 'Retry pending' : 'Pending',
-    cause: stopped && !settled ? `Previous attempt: ${reviewAttemptCause(attempt)}` : undefined,
+    cause: undefined,
     description: stopped && !settled ? `A review request is pending after the stopped attempt. This does not establish that a provider review has started. ${diagnostic}` : undefined,
   };
   if ((progress?.pending_adjudication ?? 0) > 0) return { text: 'Needs adjudication' };
