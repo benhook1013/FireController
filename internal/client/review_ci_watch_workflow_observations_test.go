@@ -113,6 +113,7 @@ func TestCIWatchWorkflowObservationsClientRejectsUnboundFacts(t *testing.T) {
 		},
 		"unrequested details": func(p *client.CIWatchTarget, _ *client.CIWatchResult) { p.FailureWorkflowIDs = nil },
 		"same execution both historical and latest": func(_ *client.CIWatchTarget, v *client.CIWatchResult) {
+			v.State, v.TimedOut = "attention", false
 			item := &v.Targets[0]
 			row := item.WorkflowObservations[0]
 			item.WorkflowFailures = []client.CIWorkflowFailure{{WorkflowID: row.WorkflowID, RunID: row.RunID, RunAttempt: row.RunAttempt, JobID: 4001, CheckRunID: 4002, Name: "build", Conclusion: "failure", Basis: "historical_same_head_failure_supersession_unproven"}}

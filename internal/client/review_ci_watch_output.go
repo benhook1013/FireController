@@ -65,7 +65,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 			}
 			action := "Inspect the supplied historical workflow/run/attempt/job IDs for the actual failure; verify or fix it without treating metadata-only success as repair. Reuse observation_key as after_observation_key to wait quietly for changed evidence. Do not rerun CI or change required gates solely to clear this historical signal."
 			if item.Reason == "ci_merge_base_mismatch" {
-				action += " Reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."
+				action += " First allow GitHub to regenerate the current test merge after a retarget or base update; collect a later source refresh. If the mismatch persists with a stable live base, reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."
 			}
 			return phase, &ReviewOperationDiagnostic{explanation, action}
 		}
@@ -74,7 +74,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 			if item.WaitingForChange {
 				phase = "waiting_for_change"
 			}
-			return phase, &ReviewOperationDiagnostic{"A failed job was observed on this same pinned PR head. The workflow run's base/merge comparison is unknown; current required CI remains unproven because its test-merge base does not match the live branch. This is repair attention, not a current-comparison failure or CI credit.", "Inspect the supplied workflow/run/attempt/job IDs for the failure. Keep the source pins and required-CI refusal; do not treat a metadata-only green run as proof of repair. Reuse observation_key as after_observation_key to await changed attention quietly. Reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."}
+			return phase, &ReviewOperationDiagnostic{"A failed job was observed on this same pinned PR head. The workflow run's base/merge comparison is unknown; current required CI remains unproven because its test-merge base does not match the live branch. This is repair attention, not a current-comparison failure or CI credit.", "Inspect the supplied workflow/run/attempt/job IDs for the failure. Keep the source pins and required-CI refusal; do not treat a metadata-only green run as proof of repair. Reuse observation_key as after_observation_key to await changed attention quietly. First allow GitHub to regenerate the current test merge after a retarget or base update; collect a later source refresh. If the mismatch persists with a stable live base, reconcile the actual PR/base comparison through the repository's normal authorized workflow before expecting current required CI."}
 		}
 		if item.WaitingForChange {
 			return "waiting_for_change", &ReviewOperationDiagnostic{"An explicitly selected workflow still has the failed job identified by after_observation_key. The required gate remains pending; no changed facts were observed before this response.", "Retain the original source comparison and workflow selection when rearming. No CI rerun or required-check change was requested."}
@@ -109,7 +109,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 		phase, explanation = "checks_unproven", "The latest observation is missing required-check evidence or could not verify it as of observed_at. Inspect the listed check contexts and reasons; this is not a CI pass."
 	case item.ObservedAt != "" && item.Pending > 0:
 		if diagnostic := pendingCommitStatusDiagnostic(item.Checks); diagnostic != nil {
-			return "checks_pending", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction}
+			return "checks_pending", &ReviewOperationDiagnostic{diagnostic.Explanation, diagnostic.NextAction + " This bounded wait has ended. Start another bounded CI wait for the remaining targets when you need a newer result."}
 		}
 		phase, explanation = "checks_pending", "The latest observation reports required GitHub checks still pending as of observed_at. Inspect the listed check contexts and statuses."
 	}

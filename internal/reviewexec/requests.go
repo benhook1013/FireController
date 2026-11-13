@@ -10,6 +10,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 func validateConfigurationShape(c Configuration) error {
@@ -150,18 +151,19 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 }
 
 func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configuration, int64, error) {
-	var body string
-	var revision int64
+	var rawRevision, rawBody any
 	var c Configuration
-	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&revision, &body)
+	err := tx.QueryRowContext(ctx, `SELECT revision,body_json FROM review_execution_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&rawRevision, &rawBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, 0, core.Fail("reviews_unconfigured", "Review execution is not configured for this project.", 409)
 	}
 	if err != nil {
 		return c, 0, err
 	}
-	if json.Unmarshal([]byte(body), &c) != nil {
-		return c, 0, automaticProjectStateFailure("storage_unavailable", "Stored review configuration is unavailable.", 500)
+	revision, revisionOK := rawRevision.(int64)
+	body, bodyOK := rawBody.(string)
+	if !revisionOK || revision < 1 || !bodyOK || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+		return c, 0, &automaticProjectStateError{newStoredUnavailable(storedConfigurationHistory, "Stored review configuration is unavailable.")}
 	}
 	return c, revision, nil
 }
@@ -278,6 +280,21 @@ func (e *retainedOperationDecodeError) Unwrap() error { return e.error }
 type operationValueScanner[T string | int64 | bool] struct{ destination *T }
 
 func (s operationValueScanner[T]) Scan(value any) error {
+	// SQLite returns TEXT as string and INTEGER as int64. Conversion here
+	// would hide corrupt BLOB/text fields before candidate-local isolation.
+	var native bool
+	switch any(*s.destination).(type) {
+	case string:
+		_, native = value.(string)
+	case int64:
+		_, native = value.(int64)
+	case bool:
+		n, ok := value.(int64)
+		native = ok && (n == 0 || n == 1)
+	}
+	if !native {
+		return &retainedOperationDecodeError{core.Fail("storage_unavailable", "Stored review operation is unavailable.", 500)}
+	}
 	var decoded sql.Null[T]
 	if err := decoded.Scan(value); err != nil || !decoded.Valid {
 		return &retainedOperationDecodeError{core.Fail("storage_unavailable", "Stored review operation is unavailable.", 500)}
