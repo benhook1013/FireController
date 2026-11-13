@@ -193,6 +193,15 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 			configurations[o.ProjectID] = configuration
 		}
 		c, revision := configuration.configuration, configuration.revision
+		// Filter damaged retained history before returning this candidate. Otherwise
+		// a partial scan can rewind to an intent that final admission always skips.
+		// Ordinary incompatibility still reaches StartAttempt's hold handling.
+		if _, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision); err != nil {
+			if e.skipUnavailableConfiguration(ctx, o, err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
 		if o.Channel == "cli" {
 			if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
 				key := accountKey{capability.Provider, capability.Account}
