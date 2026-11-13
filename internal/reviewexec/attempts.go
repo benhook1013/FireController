@@ -539,7 +539,11 @@ func interruptedAllowanceUnavailable(err error) bool {
 // marker; confirmed Hosted work hands off to its observer without changing
 // provider state. Interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
-	return e.recoverInterrupted(ctx, nil)
+	skipped, err := e.reconcilePreparingDrivers(ctx, nil)
+	if err != nil {
+		return core.NormalizeStorageError(err)
+	}
+	return e.recoverInterrupted(ctx, skipped)
 }
 
 // Startup exclusions preserve preparations whose original replay driver is absent.

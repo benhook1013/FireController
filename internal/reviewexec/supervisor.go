@@ -81,14 +81,14 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	return done, nil
 }
 
-// supervise owns the same two finite work slots; provider waits never hold a
-// database transaction. Start has already completed startup recovery.
+// supervise owns two finite work slots. Either idle worker can probe a Draft
+// wait, with a shared permit limiting that probe to one worker at a time.
 func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
-	for worker := range 2 {
+	for range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -102,7 +102,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 				if workCtx.Err() != nil {
 					return
 				}
-				if err := e.processNextForWorker(workCtx, owned, worker == 0); err != nil {
+				if err := e.processNext(workCtx, owned); err != nil {
 					select {
 					case failures <- err:
 					default:
@@ -367,14 +367,18 @@ func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
-	return e.processNextForWorker(ctx, drivers, true)
-}
-
-func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
 	if !e.beginDispatchWork() {
 		return nil
 	}
 	defer e.endDispatchWork()
+	probeDrafts := e.draftProbePermit.CompareAndSwap(false, true)
+	releaseProbe := func() {
+		if probeDrafts {
+			e.draftProbePermit.Store(false)
+			probeDrafts = false
+		}
+	}
+	defer releaseProbe()
 	candidates, err := e.pendingSchedulingCandidates(ctx, probeDrafts)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
@@ -399,6 +403,9 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 			waits = append(waits, Operation{ID: candidate.operation, Channel: candidate.channel, Reason: candidate.reason})
 		}
 		probeID = e.nextDraftProbe(waits)
+		if probeID == "" {
+			releaseProbe()
+		}
 	}
 	for _, candidate := range candidates {
 		if candidate.channel == "cli" && candidate.reason == cliDraftWait && candidate.operation != probeID {
@@ -406,6 +413,9 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 		}
 		if ctx.Err() != nil {
 			return nil
+		}
+		if candidate.operation != probeID {
+			releaseProbe()
 		}
 		o, eligible, err := e.pendingCandidate(ctx, candidate.pendingCandidateID)
 		if err != nil {
@@ -425,6 +435,8 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 			continue
 		}
 		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		// A completed readiness probe must not hold the permit during dispatch.
+		releaseProbe()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil

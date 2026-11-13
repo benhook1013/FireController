@@ -124,6 +124,7 @@ type Engine struct {
 	hostedRetainedDecoder      HostedRetainedDecoder
 	sourceReadGroups           map[string]string
 	draftProbeCursor           string
+	draftProbePermit           atomic.Bool
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	automaticCursor            string

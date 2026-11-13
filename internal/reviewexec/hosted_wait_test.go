@@ -526,10 +526,18 @@ func TestCooldownRecoveryPreservesOnlyProvenFuturePreparingWait(t *testing.T) {
 				if o.State != "queued" || o.AttemptID != "" || o.Wait == nil {
 					t.Fatal("preparation crash lost known timer", o)
 				}
+			} else if scenario == "unknown" {
+				if o.Wait != nil || o.State != "preparing" || o.AttemptID != a.ID {
+					t.Fatal("missing driver discarded replayable preparation", o)
+				}
 			} else if o.Wait != nil || o.State != "cancelled" && scenario != "old held" || scenario == "old held" && o.State != "held" {
-				t.Fatal("unproven/elapsed/terminal work reopened", o)
+				t.Fatal("elapsed/terminal work reopened", o)
 			}
-			if before != hostedAllowanceOnlyAttemptOptional(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+			reservations := 0
+			if scenario == "unknown" {
+				reservations = 1
+			}
+			if before != hostedAllowanceOnlyAttemptOptional(t, f, a) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != reservations {
 				t.Fatal("recovery changed retained query/source or reserved capacity")
 			}
 			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
