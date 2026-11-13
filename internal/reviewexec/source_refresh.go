@@ -296,7 +296,7 @@ func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revisi
 		return c, err
 	}
 	if len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
-		return c, refreshStorageError()
+		return c, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 	}
 	return c, nil
 }
