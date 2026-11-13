@@ -172,7 +172,7 @@ func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID s
 		if query.ID != owned.QueryID || query.Comment == nil || query.Comment.ID != observation.QueryCommentID || !query.Comment.CreatedAt.Equal(observation.QueryCreatedAt) || !hostedAllowanceSameSource(query.Anchor, owned.Anchor) {
 			return conflict()
 		}
-		current, err := e.currentExecutionContext(ctx, tx, operation)
+		current, err := e.executionContext(ctx, tx, operation, observation.State == "cooldown_observed")
 		if err != nil {
 			return err
 		}

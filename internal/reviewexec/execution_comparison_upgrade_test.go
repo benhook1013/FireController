@@ -48,3 +48,40 @@ func TestExecutionEightUpgradePreservesCurrentComparisonTriggers(t *testing.T) {
 	}
 	assertTriggers()
 }
+
+func TestExecutionCurrentSchemaSkipsMigrationForeignKeyCheck(t *testing.T) {
+	f := newAttemptFixture(t)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, statement := range []string{
+		`PRAGMA foreign_keys=OFF`,
+		`CREATE TABLE unrelated_parent(id TEXT PRIMARY KEY)`,
+		`CREATE TABLE unrelated_child(parent_id TEXT REFERENCES unrelated_parent(id))`,
+		`INSERT INTO unrelated_child VALUES('missing')`,
+		`PRAGMA foreign_keys=ON`,
+	} {
+		if _, err := conn.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// At an actual migration boundary, clearing deferred bookkeeping must not
+	// approve genuine retained reference damage anywhere in the database.
+	attemptCode(t, validateExecutionForeignKeys(t.Context(), conn), "schema_invalid")
+	var enabled int
+	if err := conn.QueryRowContext(t.Context(), `PRAGMA foreign_keys`).Scan(&enabled); err != nil || enabled != 1 {
+		t.Fatal("enforcement changed", enabled, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTable(t, f, "metadata")
+	if err := EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal("current schema ran migration-only integrity check", err)
+	}
+	if snapshotTable(t, f, "metadata") != before || attemptCount(t, f.store, `SELECT count(*) FROM unrelated_child`) != 1 {
+		t.Fatal("no-op startup rewrote unrelated history or markers")
+	}
+}

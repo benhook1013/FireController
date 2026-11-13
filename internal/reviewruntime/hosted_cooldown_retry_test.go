@@ -380,7 +380,7 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 }
 
 func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
-	for _, damage := range []string{"none", "clock-boundary", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "operational-query", "observation"} {
+	for _, damage := range []string{"none", "clock-boundary", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "operational-query", "project-pause", "project-pause-source-changed", "observation"} {
 		t.Run(damage, func(t *testing.T) {
 			f, _ := newHostedCooldownRetryFixture(t)
 			operation, attempt, config := f.startHosted(t)
@@ -504,6 +504,16 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 				f.hosted.manager = original
 				damage = "none"
 			}
+			if damage == "project-pause" || damage == "project-pause-source-changed" {
+				one := int64(1)
+				config.ExpectedRevision, config.Paused = &one, true
+				if damage == "project-pause-source-changed" {
+					config.Queue = []int64{3, 2}
+				}
+				if _, err := f.engine.Configure(t.Context(), f.scope(t, f.admin, true), "recovery-project-pause", config); err != nil {
+					t.Fatal(err)
+				}
+			}
 			before := []int{f.provider.queries, f.provider.reviews, f.provider.histories, f.reader.repositoryCalls}
 			for pass := 0; pass < 2; pass++ {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -520,7 +530,7 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 				if err != nil || got.ID != operation.ID {
 					t.Fatal("request identity changed", got, err)
 				}
-				if damage == "none" || damage == "clock-boundary" {
+				if damage == "none" || damage == "clock-boundary" || damage == "project-pause" {
 					if got.State != "queued" || got.Wait == nil || got.Wait.BaselineAttemptID != attempt.ID || got.Wait.RetryNotBefore == "" {
 						t.Fatal("original cooldown not recovered", got)
 					}

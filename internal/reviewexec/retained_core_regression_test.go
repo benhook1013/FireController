@@ -238,3 +238,44 @@ func TestRetainedCoreHoldEmitsOneUpdatePerRevision(t *testing.T) {
 		t.Fatal("duplicate/missing hold event", got)
 	}
 }
+
+func TestRetainedCoreShortenedCLIProjectionCannotEndBackoff(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `UPDATE review_operation_waits SET retry_not_before=? WHERE operation_id=?`, now.Add(30*time.Second).Format(time.RFC3339Nano), a.OperationID)
+	due, err := cliAccountRetryDeadline(t.Context(), f.store.DB(), f.e.capabilities["test-capability"], now.Add(31*time.Second))
+	if !isWaitUnavailable(err) || !due.IsZero() {
+		t.Fatal("shortened cache ended live backoff", due, err)
+	}
+}
+
+func TestRetainedCoreRestoredCooldownSnapshots(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			if channel == "cli" {
+				var a Attempt
+				f, a, _, _ = cliWaitFixture(t)
+				if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f, _, _, _ = queuedCooldown(t)
+			}
+			restoredHeld(t, f)
+			if _, err := restoredCall(t, f, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.store.DB().BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err != nil {
+				t.Fatal("held restore invalidates retained wait", err)
+			}
+		})
+	}
+}
