@@ -463,6 +463,12 @@ func interruptedAllowanceUnavailable(err error) bool {
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
+	return e.recoverInterrupted(ctx, nil)
+}
+
+// Startup exclusions preserve only preparations whose original replay driver is
+// absent. They do not release reservations or authorize replacement work.
+func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_execution_attempts WHERE state IN ('preparing','posting','active') ORDER BY id`)
@@ -489,6 +495,9 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		}
 		now := e.sampleAttemptTime()
 		for _, x := range ids {
+			if skipped[x.id] {
+				continue
+			}
 			a, err := readAttempt(ctx, tx, x.project, x.id)
 			if err != nil {
 				return err

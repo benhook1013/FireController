@@ -182,3 +182,30 @@ func TestOperationStatusHostedEvidenceAndProjectIsolation(t *testing.T) {
 		t.Fatal("Hosted status changed evidence or accounting")
 	}
 }
+
+func TestOperationStatusPausedLegacyNegotiation(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := newAttemptFixture(t)
+			f.configure(t, attemptProject, "test-capability", 0, false)
+			receipt := f.enqueue(t, attemptProject, "pause-status", channel, 2, 1)
+			timerControl(t, f, receipt.ID, "pause", "pause-status-control")
+			for _, version := range []string{"", "unknown", "1", "2", "3"} {
+				w := statusHTTP(t, f, receipt.ID, "", "wait=0", version)
+				var status OperationStatus
+				if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &status) != nil {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				supported := version == "1" || version == "2" || version == "3"
+				if supported {
+					if status.NextAction != "resume_or_cancel" || status.Wait == nil || !status.Wait.Paused {
+						t.Fatal("negotiated pause lost", status)
+					}
+				} else if status.NextAction != "wait" || status.Wait != nil || status.Stage != "queued" {
+					// Pre-change validCompactOperationStatus accepts only queued/wait.
+					t.Fatal("legacy queued validator would refuse response", status)
+				}
+			}
+		})
+	}
+}
