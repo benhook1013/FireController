@@ -175,6 +175,9 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 		value.Observer = nil
 	}
 	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
+	if value.Wait == nil && value.NextAction == "resume_or_cancel" {
+		value.NextAction = "wait"
+	}
 	if r.Header.Get(operationWaitHeader) != "3" {
 		value.RetryNotBefore = ""
 	}

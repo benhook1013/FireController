@@ -602,3 +602,22 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 		})
 	}
 }
+
+func TestInventoryRejectsCommentOnlyReviewFlagConstraints(t *testing.T) {
+	f := newRestoreFixture(t)
+	bundle := restoreBundle(t, f)
+	clause := ", " + reviewOrderDDL + ", " + reviewFileLimitDDL + ",FOREIGN KEY(project_id,configuration_revision)"
+	mutateBundleSQL(t, bundle.Path, `PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(replace(sql,'CHECK(allow_out_of_order IN (0,1))',''),'CHECK(override_file_limit IN (0,1))','') || ? WHERE type='table' AND name='review_operations'; PRAGMA writable_schema=OFF;`, " /*"+clause+"*/")
+	before := restoreTree(t, bundle.Path)
+	_, err := Inspect(t.Context(), bundle.Path)
+	backupCode(t, err, "backup_invalid")
+	destination := filepath.Join(t.TempDir(), "must-not-restore")
+	_, err = Restore(t.Context(), bundle.Path, destination)
+	backupCode(t, err, "backup_invalid")
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatal("damaged schema reached destination writes")
+	}
+	if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
+		t.Fatal("inspection changed bundle")
+	}
+}
