@@ -529,6 +529,9 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 			}
 			var reason string
 			configuration, reason, err = e.refreshBinding(ctx, tx, r)
+			if isStoredUnavailable(err, storedConfigurationHistory) {
+				reason, err = "source_configuration_changed", nil
+			}
 			if err != nil {
 				return err
 			}

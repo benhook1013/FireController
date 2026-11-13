@@ -39,6 +39,11 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		}
 	}
 	options = append(options, reviewexec.WithNativeProjection(), reviewexec.WithSourceReadGroups(groups))
+	recoveryStore, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(dataDir, "cli-exhaustion-captures"))
+	if err != nil {
+		return nil, nil, err
+	}
+	options = append(options, reviewexec.WithCLIExhaustionRecovery(recoveryStore))
 	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
 		return nil, nil, err

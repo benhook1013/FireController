@@ -1482,3 +1482,88 @@ func TestCooldownReconciliationSurvivesCallerCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestSupervisorUnusableCLICooldownHoldsOnlyItsOperation(t *testing.T) {
+	for _, scenario := range []string{"absent", "malformed", "oversized"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			receipt := f.enqueue(t, attemptProject, "unusable-cli-cooldown", "cli", 2, 1)
+			body := "{}"
+			if scenario == "oversized" {
+				body = strings.Repeat("x", 16385)
+			}
+			driver := &controlledDriver{prepare: func(ctx context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+				if o.ProjectID != attemptProject {
+					return Preparation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber)}, nil
+				}
+				if scenario != "absent" {
+					if _, err := f.store.DB().ExecContext(ctx, `INSERT INTO review_cli_preflight(attempt_id,project_id,body_json) VALUES(?,?,?)`, a.ID, o.ProjectID, body); err != nil {
+						return Preparation{}, err
+					}
+				}
+				return Preparation{}, sourceHold("allowance_exhausted")
+			}}
+			drivers := map[string]Driver{"test-capability": driver, "other-account": driver}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal("unusable CLI evidence stopped unrelated work", err)
+			}
+			var state, reason string
+			if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason); err != nil || state != "held" || reason != "allowance_exhausted" {
+				t.Fatal("cooldown refusal did not retain local hold", state, reason, err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operation_waits WHERE baseline_attempt_id IS NOT NULL`) != 0 || driver.calls.Load() != 0 {
+				t.Fatal("unproven cooldown retained capacity, invented timer, or dispatched")
+			}
+			if scenario != "absent" {
+				var retained string
+				if err := f.store.DB().QueryRow(`SELECT body_json FROM review_cli_preflight`).Scan(&retained); err != nil || retained != body {
+					t.Fatal("local hold rewrote malformed retained evidence", err)
+				}
+			}
+			other := f.enqueue(t, otherAttemptProject, "healthy-after-cli-hold", "cli", 2, 1)
+			if err := f.e.processNext(t.Context(), drivers); err != nil || supervisorOperationState(t, f, other.ID) != "completed" || driver.calls.Load() != 1 {
+				t.Fatal("another project did not continue after local hold", err)
+			}
+		})
+	}
+}
+
+func TestCLICooldownClassificationPreservesOperationalErrors(t *testing.T) {
+	for _, err := range []error{errAllowanceObservationAbsent, allowanceUnavailable()} {
+		if !cooldownEvidenceUnavailable("cli", err) {
+			t.Fatal("optional evidence not local", err)
+		}
+	}
+	for _, err := range []error{sql.ErrNoRows, context.Canceled, context.DeadlineExceeded, errors.New("database failure"), hostedAllowanceUnavailable()} {
+		if cooldownEvidenceUnavailable("cli", err) {
+			t.Fatal("operational error became local hold", err)
+		}
+	}
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "missing-cli-attempt", "cli", 2, 1)
+	a := f.start(t, attemptProject, receipt)
+	o, err := readOperationBase(t.Context(), f.store.DB(), attemptProject, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.ID = "review_attempt_" + strings.Repeat("f", 32)
+	_, err = f.e.persistCooldown(t.Context(), o, a)
+	attemptCode(t, err, "review_persistence_failed")
+}
+
+func TestSupervisorCLICooldownDatabaseFailureRemainsFatal(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "cooldown-database-failure", "cli", 2, 1)
+	driver := &controlledDriver{prepare: func(ctx context.Context, _ Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE review_cli_preflight`); err != nil {
+			return Preparation{}, err
+		}
+		return Preparation{}, sourceHold("allowance_exhausted")
+	}}
+	err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	if supervisorOperationState(t, f, receipt.ID) != "preparing" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || driver.calls.Load() != 0 {
+		t.Fatal("database failure became a hold or lost guarded preparation")
+	}
+}

@@ -159,9 +159,9 @@ func processError(code string, unknown bool) error {
 	return &Error{Code: code, OutcomeUnknown: unknown}
 }
 
-// Usage executes exactly one agent-mode allowance query against the pinned
-// workspace and expected account/repository. Every attempt replaces any old
-// one-use permit, including failed refreshes.
+// Usage checks allowance against the pinned workspace and expected account and
+// repository. An explicit provider lookup failure gets one retry within the same
+// deadline. Every call replaces any old one-use permit, including failed checks.
 func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace, expectedRepository, expectedOrganization string) (Usage, error) {
 	r.mu.Lock()
 	r.usageGeneration++

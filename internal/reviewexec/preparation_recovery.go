@@ -22,6 +22,9 @@ type preparationRecoveryDriver interface {
 
 func (e *Engine) reconcilePreparingDrivers(ctx context.Context, drivers map[string]Driver) (map[string]bool, error) {
 	skipped := map[string]bool{}
+	if err := e.reconcileCLIExhaustions(ctx, skipped); err != nil {
+		return nil, err
+	}
 	rows, err := e.store.DB().QueryContext(ctx, `SELECT a.project_id,a.id,a.operation_id,
  EXISTS(SELECT 1 FROM review_hosted_allowance_queries q WHERE q.attempt_id=a.id)
  AND EXISTS(SELECT 1 FROM review_hosted_observations h WHERE h.attempt_id=a.id)

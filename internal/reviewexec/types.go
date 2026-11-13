@@ -127,6 +127,7 @@ type Engine struct {
 	draftProbePermit           atomic.Bool
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
+	cliExhaustionRecovery      CLIExhaustionRecoverySource
 	automaticCursor            string
 	automaticCLICursor         string
 	automaticMu                sync.Mutex

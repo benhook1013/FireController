@@ -832,3 +832,65 @@ func TestSourceRefreshParentAmbiguityRetainsSafeReasonAndStrictClientRead(t *tes
 		t.Fatal("parent ambiguity collapsed to generic source failure")
 	}
 }
+
+func TestSourceRefreshDamagedConfigurationIsCandidateLocal(t *testing.T) {
+	for _, retained := range []bool{false, true} {
+		t.Run(fmt.Sprint(retained), func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			bad := refreshEnqueue(t, f, "damaged-refresh", refreshRequest())
+			raw, err := f.e.EnqueueSourceRefresh(t.Context(), f.scope(t, otherAttemptProject, f.other, false), "healthy-refresh", refreshRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var healthy Receipt
+			if err = json.Unmarshal(raw, &healthy); err != nil {
+				t.Fatal(err)
+			}
+			if retained {
+				f.configure(t, attemptProject, "test-capability", 1, false)
+			}
+			admissionSQL(t, f, `UPDATE review_execution_config SET body_json='broken' WHERE project_id=? AND revision=1`, attemptProject)
+			schedule := newSourceRefreshSchedule()
+			for range 2 {
+				if _, err := f.e.refreshNextScheduled(t.Context(), nil, schedule); err != nil {
+					t.Fatal("one damaged project stopped source worker", err)
+				}
+			}
+			b := refreshRead(t, f, bad.ID)
+			if b.State != "held" || b.Reason != "source_configuration_changed" {
+				t.Fatal("damaged candidate not held", b)
+			}
+			var state, reason string
+			if err = f.store.DB().QueryRow(`SELECT state,reason FROM review_source_refreshes WHERE id=?`, healthy.ID).Scan(&state, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if state != "held" || reason != "source_reader_unavailable" {
+				t.Fatal("healthy project did not reach its independent reader check", state, reason)
+			}
+		})
+	}
+}
+
+func TestSourceRefreshOperationalFailuresRemainFatal(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			f := supervisorFixture(t)
+			receipt := refreshEnqueue(t, f, "operational-refresh", refreshRequest())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if cancelled {
+				cancel()
+			} else {
+				admissionSQL(t, f, `ALTER TABLE review_execution_config RENAME TO unavailable_configuration`)
+			}
+			if _, err := f.e.refreshNext(ctx, nil); err == nil {
+				t.Fatal("operational failure became local hold")
+			}
+			var state string
+			if err := f.store.DB().QueryRow(`SELECT state FROM review_source_refreshes WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "queued" {
+				t.Fatal("operational failure changed retained refresh", state, err)
+			}
+		})
+	}
+}

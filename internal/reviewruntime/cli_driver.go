@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -25,6 +26,7 @@ type CLIDriver struct {
 	capability   OperatorCapability
 	manager      *reviewworkspace.Manager
 	captures     *CaptureStore
+	exhaustions  *CLIExhaustionStore
 	reader       reviewexec.TargetReader
 	fetch        func(context.Context, int64, string, string, string, string) error
 	verify       func(context.Context, reviewworkspace.Workspace) error
@@ -79,7 +81,11 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: func(ctx context.Context, workspace reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+	exhaustions, err := NewCLIExhaustionStore(filepath.Join(filepath.Dir(captures.root), "cli-exhaustion-captures"))
+	if err != nil {
+		return nil, err
+	}
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, exhaustions: exhaustions, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: func(ctx context.Context, workspace reviewworkspace.Workspace) (reviewprocess.Capture, error) {
 		onStart, _ := ctx.Value(cliStartCallbackKey{}).(func(time.Time))
 		return runner.ReviewWithStart(ctx, workspace, onStart)
 	}, prepared: map[string]*cliPrepared{}}, nil
@@ -159,13 +165,23 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 				// A zero observation cannot authorize dispatch. Preserve an intervening
 				// local refusal before classifying this as another provider wait.
 				observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+				retentionCtx, retentionCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				retainErr := d.exhaustions.Save(retentionCtx, reviewexec.CLIExhaustionRecovery{Operation: current.Operation, Attempt: attempt, Observation: observation})
+				retentionCancel()
+				if retainErr != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: retainErr}
+				}
 				if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
 					return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
 				}); err != nil {
+					if retryableHostedRetention(err) || ctx.Err() != nil {
+						return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+					}
 					var refused *core.Error
 					if errors.As(err, &refused) && (refused.Status == 409 || refused.Status == 403) {
 						return preparation, err
 					}
+					return preparation, reviewHold("allowance_unavailable")
 				}
 				return preparation, reviewHold("allowance_exhausted")
 			}
