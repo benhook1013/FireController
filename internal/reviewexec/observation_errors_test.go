@@ -154,11 +154,19 @@ func TestLifecycleLocalValidationDoesNotCoolAccount(t *testing.T) {
 						}
 						return
 					}
-					if next == nil || next.project != otherAttemptProject {
-						t.Fatalf("unrelated project starved: %v", next)
-					}
-					if err = f.e.observeLifecycle(t.Context(), *next, s); err != nil {
-						t.Fatal(err)
+					if round > 0 && lane == lifecycleEnrichment {
+						// The healthy peer has already completed its inventory read.
+						// Retrying the invalid target must not make that peer due again.
+						if next != nil {
+							t.Fatalf("healthy peer repeated enrichment early: %v", next)
+						}
+					} else {
+						if next == nil || next.project != otherAttemptProject {
+							t.Fatalf("unrelated project starved: %v", next)
+						}
+						if err = f.e.observeLifecycle(t.Context(), *next, s); err != nil {
+							t.Fatal(err)
+						}
 					}
 					clock.Add(59 * time.Second)
 					if early, err := f.e.claimLifecycleLane(t.Context(), readers, s, lane); err != nil || early != nil {
