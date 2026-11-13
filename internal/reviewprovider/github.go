@@ -36,6 +36,7 @@ const (
 // permits one bounded recollection of the same immutable commit.
 type GitHub struct {
 	readGate   func(context.Context) error
+	quota      *GitHubQuota
 	token      string
 	baseURL    string
 	httpClient *http.Client
@@ -313,6 +314,7 @@ func (g *GitHub) requestJSON(ctx context.Context, method, path string, query url
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	response, err := g.httpClient.Do(request)
+	g.quota.observe(ctx, time.Now(), path, response, false, false)
 	if err != nil {
 		return providerTransportError(ctx, err, method == http.MethodPost)
 	}
@@ -398,6 +400,7 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 	}
 	if g.readGate != nil {
 		if err := g.readGate(ctx); err != nil {
+			g.quota.observe(ctx, time.Now(), path, nil, false, true)
 			return nil, nil, 0, err
 		}
 	}
@@ -423,6 +426,7 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 		}
 	}
 	response, err := client.Do(request)
+	g.quota.observe(ctx, time.Now(), path, response, conditional, false)
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
@@ -483,6 +487,9 @@ func statusError(response *http.Response, mutation bool) error {
 	failure := func(code, message string, status int, retry int64, unknown bool) *Error {
 		result := providerError(code, message, status, retry, unknown)
 		result.RetryTiming = retryTiming(response.Header, now)
+		if code == "provider_rate_limited" && !mutation {
+			result.RetryTiming = sourceRetryTiming(response.Header, now)
+		}
 		result.retryDirected = len(response.Header.Values("Retry-After")) > 0
 		for _, remaining := range response.Header.Values("X-RateLimit-Remaining") {
 			result.retryDirected = result.retryDirected || strings.TrimSpace(remaining) == "0"

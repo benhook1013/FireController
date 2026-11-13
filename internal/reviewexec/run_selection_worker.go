@@ -231,6 +231,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	defer func() {
 		result.sourceElapsed = sourceBudget - source.remaining
 	}()
+	ctx = reviewprovider.WithGitHubCaller(ctx, "review_selection")
 	var repository reviewprovider.Repository
 	err := source.read(ctx, func(ctx context.Context) error {
 		var err error

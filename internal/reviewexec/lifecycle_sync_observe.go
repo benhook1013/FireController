@@ -16,6 +16,11 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if target.watch != nil {
 		return e.observeCIWatch(ctx, target, s)
 	}
+	if target.lane == lifecycleMetadata {
+		ctx = reviewprovider.WithGitHubCaller(ctx, "lifecycle_metadata")
+	} else {
+		ctx = reviewprovider.WithGitHubCaller(ctx, "lifecycle_enrichment")
+	}
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false

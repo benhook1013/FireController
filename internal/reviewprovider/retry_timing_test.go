@@ -53,6 +53,25 @@ func TestRetryTimingExactFloor(t *testing.T) {
 	}
 }
 
+func TestSourceRetryWaitsBeyondGitHubPrimaryReset(t *testing.T) {
+	reset := time.Date(2026, 11, 13, 10, 59, 0, 0, time.UTC)
+	header := http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {strconv.FormatInt(reset.Unix(), 10)}}
+	for _, now := range []time.Time{reset.Add(-time.Minute), reset.Add(620 * time.Millisecond)} {
+		got := sourceRetryTiming(header, now)
+		if got.State != "proven" || !got.NotBefore.Equal(reset.Add(5*time.Second)) {
+			t.Fatal("did not retain a future wait beyond the reset", got)
+		}
+	}
+	now := reset.Add(6 * time.Second)
+	if got := sourceRetryTiming(header, now); !got.NotBefore.Equal(reset) {
+		t.Fatal("arbitrarily renewed a stale reset", got)
+	}
+	header.Set("Retry-After", "60")
+	if got := sourceRetryTiming(header, now); !got.NotBefore.Equal(now.Add(time.Minute)) {
+		t.Fatal("shortened the provider Retry-After", got)
+	}
+}
+
 func TestStatusErrorRetainsTimingWithoutChangingSafety(t *testing.T) {
 	for _, status := range []int{429, 403, 401, 500} {
 		for _, mutation := range []bool{false, true} {

@@ -51,6 +51,7 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 	if err != nil {
 		return nil, nil, core.Fail("configuration_invalid", "The private review data directory is unavailable.", 500)
 	}
+	quotas := make(map[string]*reviewprovider.GitHubQuota)
 	var captures *reviewruntime.CaptureStore
 	for _, capability := range catalog.Capabilities {
 		manager, err := reviewworkspace.New(filepath.Join(root, "review-workspaces", capability.ID), capability.GitExecutable)
@@ -62,6 +63,10 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 			return nil, nil, err
 		}
 		group := groups[capability.ID]
+		if _, ok := quotas[group]; !ok {
+			quotas[group] = reviewprovider.NewGitHubQuota()
+		}
+		provider.SetQuotaTelemetry(quotas[group])
 		provider.SetReadGate(func(ctx context.Context) error { return engine.SourceReadGate(ctx, group) })
 		var cli *reviewruntime.CLIDriver
 		var hosted *reviewruntime.HostedDriver

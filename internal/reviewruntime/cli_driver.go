@@ -104,6 +104,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if err != nil {
 		return preparation, reviewexec.PreparationFailureAt("execution_context", err)
 	}
+	ctx = reviewprovider.WithGitHubCaller(ctx, "cli_preparation")
 	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
 		return preparation, reviewHold("execution_binding_changed")
 	}

@@ -4,7 +4,7 @@
 
 The provider error carries additive `RetryTiming` evidence independently of the legacy rounded and capped `RetryAfterSeconds` hint. Evidence records the response classification timestamp in `ObservedAt`, an absolute `NotBefore` only for `proven` timing, and an explicit `unknown` or `unsupported` state otherwise. Its zero value is not proof. Consumers use the absolute floor, never restart its duration from a later observation or restore time. Valid expired floors do not prove current availability.
 
-The parser preserves fractional-second relative deadlines and exact HTTP-date deadlines. When both valid Retry-After and exhausted-quota reset headers supply floors, the later floor wins. Ambiguous or malformed headers remain unknown. Delays beyond the supported 24-hour window are unsupported, not shortened into proven timing. Evidence contains no raw header, response body, credential, or account identity. Timing never establishes authorization, a read-only request, or a known mutation outcome.
+The parser preserves fractional-second relative deadlines and exact HTTP-date deadlines. When both valid Retry-After and exhausted-quota reset headers supply floors, the later floor wins. Ambiguous or malformed headers remain unknown. Delays beyond the supported 24-hour window are unsupported, not shortened into proven timing. Evidence contains no raw header, response body, credential, or account identity. Timing never establishes authorization, a read-only request, or a known mutation outcome. For a GitHub rate-limited read with a proven exhausted primary bucket, use a five-second margin after the whole-second reset. Keep any later provider Retry-After and do not renew an already expired margin.
 
 ## Retained source waits
 

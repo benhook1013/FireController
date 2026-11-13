@@ -20,6 +20,7 @@ func GitHubHistoryReader(tokenFile string) (*reviewprovider.GitHub, string, erro
 	if err != nil {
 		return nil, "", core.Fail("configuration_invalid", "The GitHub history reader configuration is invalid.", 500)
 	}
+	reader.SetQuotaTelemetry(reviewprovider.NewGitHubQuota())
 	digest := sha256.Sum256([]byte("github-history-reader:v1\x00" + token))
 	return reader, hex.EncodeToString(digest[:]), nil
 }

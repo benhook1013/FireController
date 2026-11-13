@@ -255,6 +255,7 @@ func samePullReviewFacts(a, b PullReviewObservation) bool {
 func (g *GitHub) pullReviewPage(ctx context.Context, body []byte) ([]byte, http.Header, int, error) {
 	if g.readGate != nil {
 		if err := g.readGate(ctx); err != nil {
+			g.quota.observe(ctx, time.Now(), "/graphql", nil, false, true)
 			return nil, nil, 0, err
 		}
 	}
@@ -270,6 +271,7 @@ func (g *GitHub) pullReviewPage(ctx context.Context, body []byte) ([]byte, http.
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	response, err := g.httpClient.Do(request)
+	g.quota.observe(ctx, time.Now(), "/graphql", response, false, false)
 	if err != nil {
 		return nil, nil, 0, providerError("provider_unavailable", "The provider request failed.", 0, 0, false)
 	}

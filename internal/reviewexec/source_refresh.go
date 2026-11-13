@@ -575,7 +575,7 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 	if r.IncludeReadiness {
 		budget += 15 * time.Second
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, budget)
+	operationCtx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "source_refresh"), budget)
 	defer cancel()
 	readCtx, sourceCancel := context.WithTimeout(operationCtx, 15*time.Second)
 	plan, readErr := ResolveSourceObservation(readCtx, readers[r.capability], r.repositoryID, configuration, r.PullNumber, r.HeadSHA)

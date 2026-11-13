@@ -42,7 +42,7 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	if ctx == nil || reader == nil || captures == nil || engine == nil {
 		return RecoveredHosted{}, core.Fail("validation_failed", "Use the configured hosted recovery capability.", 400)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "hosted_recovery"), 20*time.Second)
 	defer cancel()
 	bound, err := engine.ReadHostedRecovery(ctx, project, attemptID, capabilityID)
 	if err != nil {

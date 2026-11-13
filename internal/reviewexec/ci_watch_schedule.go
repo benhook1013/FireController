@@ -352,7 +352,7 @@ func (e *Engine) claimCIWatch(ctx context.Context, readers map[string]TargetRead
 
 func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) error {
 	claim := target.watch
-	ctx = claim.ctx
+	ctx = reviewprovider.WithGitHubCaller(claim.ctx, "ci_watch")
 	item := CIWatchItem{State: "pending", Reason: "ci_watch_source_unavailable", Checks: []SourceCIContext{}}
 	var providerErr error
 	defer func() {

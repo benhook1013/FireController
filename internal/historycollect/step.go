@@ -99,6 +99,7 @@ func Step(ctx context.Context, provider Provider, repositoryID int64, selection 
 	if err := ctx.Err(); err != nil {
 		return Capture{}, err
 	}
+	ctx = reviewprovider.WithGitHubCaller(ctx, "history_import")
 	repository, err := provider.Repository(ctx, repositoryID)
 	if err != nil {
 		return Capture{}, err

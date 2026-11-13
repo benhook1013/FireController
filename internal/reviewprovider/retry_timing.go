@@ -18,6 +18,22 @@ type RetryTimingEvidence struct {
 	NotBefore  time.Time `json:"not_before,omitempty"`
 }
 
+// Give an exhausted primary bucket a small margin after its whole-second
+// reset. GitHub can still return the old window at the reset boundary.
+func sourceRetryTiming(header http.Header, now time.Time) RetryTimingEvidence {
+	timing := retryTiming(header, now)
+	if timing.State != "proven" || header.Get("X-RateLimit-Remaining") != "0" {
+		return timing
+	}
+	const margin = 5 * time.Second
+	reset := time.Unix(quotaNumber(header, "X-RateLimit-Reset"), 0)
+	afterReset := reset.Add(margin)
+	if afterReset.After(timing.NotBefore) && afterReset.After(now) && afterReset.Sub(now) <= 24*time.Hour {
+		timing.NotBefore = afterReset.UTC()
+	}
+	return timing
+}
+
 // Keep the supported scheduling window bounded without turning a longer floor
 // into an earlier one. Ambiguous headers cannot establish exact timing.
 func retryTiming(header http.Header, now time.Time) RetryTimingEvidence {

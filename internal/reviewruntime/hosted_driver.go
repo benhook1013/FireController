@@ -174,7 +174,7 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	if ctx == nil {
 		return preparation, reviewHold("execution_binding_changed")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "hosted_preparation"), 2*time.Minute)
 	defer cancel()
 	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
