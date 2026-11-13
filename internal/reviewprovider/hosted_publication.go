@@ -449,6 +449,12 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 			completeInventory = result.markedZero
 		}
 		if !completeInventory {
+			if total == 1 && len(result.EligibleReviews) == 1 && publicationCountAbsent(result) &&
+				snapshot.ReviewComments != nil && hostedReportedProcessingFailure(batches[1].Body) &&
+				publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+				result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
+				return result, nil
+			}
 			result.State, result.Reason = "ambiguous", "invalid_actionable_count"
 			return result, nil
 		}
