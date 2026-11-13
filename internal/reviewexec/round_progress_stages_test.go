@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -108,4 +109,25 @@ func TestRoundProgressStagesLegacyEpochAndStrictReadScope(t *testing.T) {
 	roundGrant(t, g, 2, "cli", 2, 0, 8, "convert-new-epoch")
 	g.enqueue(t, attemptProject, "current-epoch-stage", "cli", 2, 1)
 	assertProgressStages(t, progressStageChannel(t, g, "view=stages", 1), 1, 0)
+}
+
+func TestRoundProgressStagesOnlySkipsDamagedWait(t *testing.T) {
+	f, a, _, _ := queuedCooldown(t)
+	admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json='damaged' WHERE attempt_id=?`, a.ID)
+	for _, version := range []string{"", "unsupported", "1", "2", "3"} {
+		r := httptest.NewRequest(http.MethodGet, roundProgressPath(attemptProject)+"?pull_numbers=2&view=stages", nil)
+		r.Header.Set("Authorization", "Bearer "+f.reader)
+		r.Header.Set(operationWaitHeader, version)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if version == "1" || version == "2" || version == "3" {
+			if w.Code != http.StatusInternalServerError {
+				t.Fatal("requested damaged wait not refused", version, w.Code, w.Body.String())
+			}
+		} else {
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"wait":`) || !strings.Contains(w.Body.String(), `"pending_execution":`) {
+				t.Fatal("stage-only read inspected wait", version, w.Code, w.Body.String())
+			}
+		}
+	}
 }

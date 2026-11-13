@@ -156,7 +156,6 @@ func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Ca
 			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_execution_transitions t INDEXED BY review_transitions_exhaustion_time
         CROSS JOIN review_execution_attempts a ON a.id=t.attempt_id AND a.revision=t.revision
         CROSS JOIN review_operations o ON o.id=a.operation_id
-        CROSS JOIN review_operation_waits w ON w.operation_id=o.id
 		WHERE o.channel='cli' AND a.provider=? AND a.account=? AND a.id<>o.attempt_id
 		AND t.state='held' AND t.reason='allowance_exhausted'
 		AND rtrim(t.created_at,'Z')>rtrim(?,'Z')

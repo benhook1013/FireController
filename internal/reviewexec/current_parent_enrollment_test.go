@@ -30,6 +30,10 @@ func TestVerifyActionRetainedRequestRequiresCurrentParentEnrollment(t *testing.T
 			anchor := attemptAnchor(attemptProject, 4)
 			anchor.ParentPullNumber, anchor.ParentSHA, anchor.BaseSHA, anchor.BaseRef = 2, parent.Pull.HeadSHA, parent.Pull.HeadSHA, "parent-branch"
 			child, err = f.e.Admit(t.Context(), attemptProject, child.ID, child.Revision, anchor, "")
+			if removeParent {
+				attemptCode(t, err, "review_conflict")
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
