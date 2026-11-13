@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,5 +262,117 @@ func TestSourceRefreshOperationalFailuresRemainFatal(t *testing.T) {
 				t.Fatal("operational failure changed retained refresh", state, err)
 			}
 		})
+	}
+}
+
+func TestSettlementRecoveryPreservesQueryBeforeObservation(t *testing.T) {
+	f, a, _ := cooldownObservationFixture(t)
+	admissionSQL(t, f, `DELETE FROM review_hosted_observations WHERE attempt_id=?`, a.ID)
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	if err != nil || !skipped[a.ID] {
+		t.Fatal("query-only preparation lost", skipped, err)
+	}
+}
+
+func TestSettlementDamagedWaitDoesNotBlockOtherRecovery(t *testing.T) {
+	f, a, _ := cooldownObservationFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "healthy-recovery", "cli", 2, 1))
+	admissionSQL(t, f, `INSERT INTO review_operation_waits(operation_id,baseline_attempt_id,retry_not_before,paused) VALUES(?,?,'damaged',0)`, a.OperationID, a.ID)
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+	if err != nil || !skipped[a.ID] {
+		t.Fatal("damaged wait stopped startup", skipped, err)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
+		t.Fatal("reservation lost")
+	}
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := readAttempt(t.Context(), f.store.DB(), other.ProjectID, other.ID)
+	if err != nil || recovered.State != "cancelled" {
+		t.Fatal("unrelated recovery blocked", recovered, err)
+	}
+	retained, err := readAttempt(t.Context(), f.store.DB(), a.ProjectID, a.ID)
+	if err != nil || retained.State != "preparing" {
+		t.Fatal("damaged attempt lost", retained, err)
+	}
+}
+
+func TestSettlementNullHostedQueryIDIsTyped(t *testing.T) {
+	f, a, _, _ := queryObservationFixture(t)
+	admissionSQL(t, f, `UPDATE review_hosted_allowance_queries SET id=NULL WHERE attempt_id=?`, a.ID)
+	o, err := readOperation(t.Context(), f.store.DB(), a.ProjectID, a.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = readHostedQuery(t.Context(), f.store.DB(), a, o)
+	if !isStoredUnavailable(err, storedHostedQuery) {
+		t.Fatalf("not typed: %v", err)
+	}
+}
+
+func TestSettlementStaleOrdinarySnapshotCannotClaim(t *testing.T) {
+	f := supervisorFixture(t)
+	id := f.enqueue(t, attemptProject, "stale-snapshot", "hosted", 2, 1).ID
+	o, err := readOperation(t.Context(), f.store.DB(), attemptProject, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `UPDATE review_operations SET revision=revision+1 WHERE id=?`, id)
+	_, err = f.e.startAttempt(t.Context(), attemptProject, id, 0, o.Revision)
+	if err == nil {
+		t.Fatal("stale snapshot claimed")
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatal("attempt created")
+	}
+}
+
+func TestSettlementHistoricalQueryReplayAlreadySupported(t *testing.T) {
+	f, a, _, _ := queuedCooldown(t)
+	records, err := f.e.ReadHostedObservations(t.Context(), a.ProjectID, a.ID)
+	if err != nil || len(records) == 0 {
+		t.Fatal(records, err)
+	}
+	for _, record := range records {
+		if record.Input.Kind != "allowance_query" {
+			continue
+		}
+		got, err := f.e.RecordHostedObservation(t.Context(), a.ProjectID, a.ID, record.Input)
+		if err != nil || got.ID != record.ID {
+			t.Fatal("historical replay rejected", got, err)
+		}
+		return
+	}
+	t.Fatal("query observation absent")
+}
+
+func TestSettlementRawPendingUsesCursorIndex(t *testing.T) {
+	f := supervisorFixture(t)
+	rows, err := f.store.DB().Query(`EXPLAIN QUERY PLAN SELECT o.project_id,o.id,o.channel,o.capability_fingerprint,o.created_at,o.reason FROM review_operations o WHERE o.state='queued' AND (o.created_at,o.id)>(?,?) ORDER BY o.created_at,o.id`, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	indexed := false
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(detail, "review_operations_pending") {
+			indexed = true
+		}
+		if strings.Contains(detail, "TEMP B-TREE") {
+			t.Fatal("raw cursor requires unbounded sort", detail)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("raw cursor index unused")
 	}
 }

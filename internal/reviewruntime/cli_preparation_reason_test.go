@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,12 +61,22 @@ func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 			}
 			prepared, err := f.driver.Prepare(t.Context(), op, c, a)
 			var failure *core.Error
-			if !errors.As(err, &failure) || failure.Code != "review_held" {
+			var recovery *reviewexec.PreparationRecoveryError
+			if tc.failRetention {
+				if !errors.As(err, &recovery) || strings.Contains(err.Error(), "private") || prepared.Anchor != (reviewexec.Anchor{}) {
+					t.Fatalf("retention failure lost recoverable preparation: %T %v", err, err)
+				}
+				if _, found, loadErr := f.driver.exhaustions.LoadCLIExhaustion(t.Context(), a.ID); loadErr != nil || !found {
+					t.Fatal("retention failure lost original private source", loadErr)
+				}
+			} else if !errors.As(err, &failure) || failure.Code != "review_held" {
 				t.Fatalf("usage error lost safe hold: %T %v", err, err)
 			}
-			details, ok := failure.Details.(map[string]string)
-			if !ok || details["reason"] != tc.want || strings.Contains(failure.Error(), "private") || prepared.Anchor != (reviewexec.Anchor{}) {
-				t.Fatal("bad safe refusal", failure, prepared)
+			if !tc.failRetention {
+				details, ok := failure.Details.(map[string]string)
+				if !ok || details["reason"] != tc.want || strings.Contains(failure.Error(), "private") || prepared.Anchor != (reviewexec.Anchor{}) || errors.As(err, &recovery) {
+					t.Fatal("bad safe refusal", failure, prepared)
+				}
 			}
 			if usage.Load() != 1 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
 				t.Fatal("refused allowance retained permission/evidence")
@@ -177,5 +189,75 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				t.Fatal("usage repeated/review invoked", string(log), err)
 			}
 		})
+	}
+}
+
+func TestCLIExhaustionDirectoriesSyncsExistingAndCreatedParents(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "recovery", "exhaustions")
+	var synced []string
+	syncParent := func(path string) error { synced = append(synced, path); return syncCaptureDirectory(path) }
+	if err := prepareCLIExhaustionDirectories(root, syncParent); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) < 3 || synced[len(synced)-3] != filepath.Dir(base) || synced[len(synced)-2] != base || synced[len(synced)-1] != filepath.Join(base, "recovery") {
+		t.Fatalf("directory names were not synced in ancestor order: %v", synced)
+	}
+	first := append([]string(nil), synced...)
+	synced = nil
+	if err := prepareCLIExhaustionDirectories(root, syncParent); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(synced, first) {
+		t.Fatalf("existing directory names not reconciled: %v, want %v", synced, first)
+	}
+	if err := captureDirectories(root, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCLIExhaustionDirectoriesDoesNotHideParentSyncFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "recovery", "exhaustions")
+	failure := errors.New("parent sync unavailable")
+	calls := 0
+	err := prepareCLIExhaustionDirectories(root, func(string) error { calls++; return failure })
+	if !errors.Is(err, failure) || calls != 1 {
+		t.Fatalf("sync error lost: %v, calls %d", err, calls)
+	}
+}
+
+func TestCLIExhaustionDirectoriesRetriesUncertainDirectoryName(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "recovery", "exhaustions")
+	failure := errors.New("parent sync unavailable")
+	err := prepareCLIExhaustionDirectories(root, func(path string) error {
+		if path == base {
+			return failure
+		}
+		return syncCaptureDirectory(path)
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("sync error lost: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "recovery")); err != nil {
+		t.Fatalf("uncertain directory not created: %v", err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("continued beyond uncertain creation: %v", err)
+	}
+	reconciled := false
+	if err := prepareCLIExhaustionDirectories(root, func(path string) error {
+		if path == base {
+			reconciled = true
+		}
+		if path == filepath.Join(base, "recovery") && !reconciled {
+			t.Fatal("created child before reconciling parent")
+		}
+		return syncCaptureDirectory(path)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reconciled {
+		t.Fatal("retry skipped existing directory's parent sync")
 	}
 }

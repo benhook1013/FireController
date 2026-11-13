@@ -226,6 +226,15 @@ func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (O
 }
 
 func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
+	o, err := readOperationIdentity(ctx, tx, project, id)
+	if err == nil {
+		o.Wait, err = readOperationWait(ctx, tx, o)
+	}
+	return o, err
+}
+
+// Recovery needs the immutable replay binding even when its wait projection is damaged.
+func readOperationIdentity(ctx context.Context, tx EvidenceQuery, project, id string) (Operation, error) {
 	var o Operation
 	orderColumn, limitColumn, err := operationFlagColumns(ctx, tx)
 	if err != nil {
@@ -234,9 +243,6 @@ func readOperationBase(ctx context.Context, tx EvidenceQuery, project, id string
 	err = tx.QueryRowContext(ctx, `SELECT id,project_id,actor_id,worker_id,configuration_revision,policy_revision,capability_fingerprint,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,`+orderColumn+`,`+limitColumn+` FROM review_operations WHERE project_id=? AND id=?`, project, id).Scan(&o.ID, &o.ProjectID, &o.ActorID, &o.WorkerID, &o.ConfigurationRevision, &o.PolicyRevision, &o.CapabilityFingerprint, &o.PullNumber, &o.Channel, &o.HeadSHA, &o.State, &o.Revision, &o.Reason, &o.AttemptID, &o.CreatedAt, &o.UpdatedAt, &o.AllowOutOfOrder, &o.OverrideFileLimit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, core.Fail("not_found", "The review operation is unavailable in this project.", 404)
-	}
-	if err == nil {
-		o.Wait, err = readOperationWait(ctx, tx, o)
 	}
 	return o, err
 }
