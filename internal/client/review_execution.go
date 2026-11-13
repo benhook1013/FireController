@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 )
 
 // ReviewExecutionConfiguration contains stored project settings only. It does
@@ -50,6 +51,11 @@ func (r ReviewRequestResult) MarshalJSON() ([]byte, error) {
 }
 
 type ReviewOperation struct {
+	AllowOutOfOrder       bool `json:"allow_out_of_order,omitempty"`
+	OverrideFileLimit     bool `json:"override_file_limit,omitempty"`
+	queuedCause           string
+	Wait                  *ReviewOperationWait        `json:"wait,omitempty"`
+	Allowance             *ReviewAllowanceObservation `json:"allowance,omitempty"`
 	Observer              *ReviewHostedObserverStatus `json:"observer,omitempty"`
 	ID                    string                      `json:"id"`
 	ProjectID             string                      `json:"project_id"`
@@ -67,6 +73,40 @@ type ReviewOperation struct {
 	AttemptID             string                      `json:"attempt_id"`
 	CreatedAt             string                      `json:"created_at"`
 	UpdatedAt             string                      `json:"updated_at"`
+}
+
+// ReviewAllowanceObservation describes this held attempt's retained facts, not
+// current account availability or permission to start another review.
+type ReviewAllowanceObservation struct {
+	Kind             string `json:"kind"`
+	ObservedAt       string `json:"observed_at"`
+	Remaining        *int64 `json:"remaining,omitempty"`
+	Limit            *int64 `json:"limit,omitempty"`
+	FullCapacityInMS *int64 `json:"full_capacity_in_ms,omitempty"`
+	RollingWindowMS  *int64 `json:"rolling_window_ms,omitempty"`
+	RetryNotBefore   string `json:"retry_not_before,omitempty"`
+}
+
+func validAllowanceTime(value string) bool {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil && !parsed.IsZero() && parsed.UTC().Format(time.RFC3339Nano) == value
+}
+
+func validReviewAllowance(value ReviewOperation) bool {
+	a := value.Allowance
+	if a == nil {
+		return true
+	}
+	if value.State != "held" || value.AttemptID == "" || !validAllowanceTime(a.ObservedAt) {
+		return false
+	}
+	switch a.Kind {
+	case "cli_exhausted":
+		return value.Channel == "cli" && value.Reason == "allowance_exhausted" && a.Remaining != nil && *a.Remaining == 0 && a.Limit != nil && *a.Limit >= 1 && *a.Limit <= 10000 && a.FullCapacityInMS != nil && *a.FullCapacityInMS >= 0 && *a.FullCapacityInMS <= 86400000 && a.RollingWindowMS != nil && *a.RollingWindowMS >= 1 && *a.RollingWindowMS <= 86400000 && a.RetryNotBefore == ""
+	case "hosted_cooldown":
+		return value.Channel == "hosted" && value.Reason == "hosted_allowance_cooldown" && a.Remaining == nil && a.Limit == nil && a.FullCapacityInMS == nil && a.RollingWindowMS == nil && validAllowanceTime(a.RetryNotBefore)
+	}
+	return false
 }
 
 func validExecutionIdentifier(value string) bool {
@@ -142,7 +182,7 @@ func (c *Client) RequestReview(ctx context.Context, key string, request ReviewRe
 		result.Receipt = &ReviewRequestReceipt{}
 		return decodeReviewResponse(data, result.Receipt)
 	}
-	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status}); err != nil {
+	if err := c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "requests"), nil, true, key, body, http.StatusAccepted, true, &result, 4<<20, decode, &sourceWaitOptions{seconds: waitSeconds, status: &status, operationWait: true}); err != nil {
 		return ReviewRequestResult{}, err
 	}
 	valid := false
@@ -173,7 +213,7 @@ func (c *Client) WaitReviewOperation(ctx context.Context, id string, waitSeconds
 	var status int
 	err := resumeResultWait(ctx, waitSeconds, func(ctx context.Context, remaining int) error {
 		value = ReviewOperation{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, hostedObserver: true})
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, hostedObserver: true, operationWait: true, queuedCause: &value.queuedCause})
 	})
 	if err != nil {
 		return ReviewOperation{}, reviewWaitTargetError(err, id)
@@ -188,5 +228,5 @@ func (c *Client) validReviewOperation(value ReviewOperation) bool {
 	if !validReviewHostedObserver(value.Observer, value.Channel, value.State, value.AttemptID) {
 		return false
 	}
-	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt)
+	return ValidateReviewOperationID(value.ID) == nil && value.ProjectID == c.identity.ProjectID && validExecutionIdentifier(value.ProjectID) && validExecutionIdentifier(value.ActorID) && (value.WorkerID == "" || validExecutionIdentifier(value.WorkerID)) && value.ConfigurationRevision >= 1 && value.PolicyRevision >= 0 && (value.CapabilityFingerprint == "" || controlHex(value.CapabilityFingerprint, 64)) && validPullNumber(value.PullNumber) && oneReviewOf(value.Channel, "cli", "hosted") && controlHex(value.HeadSHA, 40) && oneReviewOf(value.State, "queued", "preparing", "posting", "active", "completed", "failed", "cancelled", "rate_limited", "uncertain", "held") && value.Revision >= 1 && (value.Reason == "" || validExecutionIdentifier(value.Reason)) && (value.AttemptID == "" || validReviewOpaqueID(value.AttemptID, "review_attempt_")) && controlTime(value.CreatedAt) && controlTime(value.UpdatedAt) && validReviewOperationWait(value.Wait, value.Channel, value.State, value.AttemptID) && validReviewAllowance(value)
 }
