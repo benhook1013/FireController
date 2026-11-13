@@ -278,15 +278,27 @@ func (e *Engine) refreshBinding(ctx context.Context, tx *sql.Tx, r sourceRefresh
 // reads. The actual parent can lie after the target or outside the queue; its
 // identity comes from provider facts, while its enrollment must remain stable.
 func sameSourceTargetConfiguration(a, b Configuration, number, parent int64) bool {
-	if a.CapabilityID != b.CapabilityID || a.Mode != b.Mode || !slices.Equal(a.Channels, b.Channels) {
+	if a.CapabilityID != b.CapabilityID || a.Mode != b.Mode || !sameChannelSet(a.Channels, b.Channels) {
 		return false
 	}
 	left, right := slices.Index(a.Queue, number), slices.Index(b.Queue, number)
 	return left >= 0 && right == left && slices.Equal(a.Queue[:left+1], b.Queue[:right+1]) && (parent == 0 || slices.Contains(a.Queue, parent) == slices.Contains(b.Queue, parent))
 }
 
+func sameChannelSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, channel := range a {
+		if !slices.Contains(b, channel) {
+			return false
+		}
+	}
+	return true
+}
+
 func sameSourceConfiguration(a, b Configuration) bool {
-	return a.CapabilityID == b.CapabilityID && a.Mode == b.Mode && slices.Equal(a.Queue, b.Queue) && slices.Equal(a.Channels, b.Channels)
+	return a.CapabilityID == b.CapabilityID && a.Mode == b.Mode && slices.Equal(a.Queue, b.Queue) && sameChannelSet(a.Channels, b.Channels)
 }
 func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revision int64) (Configuration, error) {
 	var c Configuration
@@ -295,7 +307,7 @@ func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revisi
 		return c, err
 	}
 	if len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
-		return c, refreshStorageError()
+		return c, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 	}
 	return c, nil
 }

@@ -124,10 +124,34 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
+	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		if retryableHostedRetention(err) || ctx.Err() != nil {
+			return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+		}
+		return preparation, err
+	}
+	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
+		return preparation, reviewHold("source_changed")
+	}
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
 		if errors.As(err, &failure) && failure.Code == "rate_limited" {
+			if usage.Remaining != 0 {
+				return preparation, reviewHold("allowance_unavailable")
+			}
+			// A negative observation never grants dispatch permission.
+			observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+			if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
+				return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
+			}); err != nil {
+				var held *core.Error
+				if errors.As(err, &held) && held.Code == "review_held" {
+					return preparation, err
+				}
+				return preparation, reviewHold("allowance_unavailable")
+			}
 			return preparation, reviewHold("allowance_exhausted")
 		}
 		return preparation, reviewHold("allowance_unavailable")

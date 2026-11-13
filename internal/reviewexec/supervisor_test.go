@@ -59,16 +59,32 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 
 func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 	f := supervisorFixture(t)
-	f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
-	f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
+
+	busy := f.enqueue(t, attemptProject, "reserved", "cli", 2, 1)
+	f.start(t, attemptProject, busy)
+	original := f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
 	f.configure(t, attemptProject, "other-account", 1, false)
-	f.enqueue(t, attemptProject, "reserved-target-other-account", "cli", 2, 2)
-	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 4, 2)
+	// Public admission forbids a second intent for the same target. Seed legacy
+	// pending rows directly to exercise retained-account filtering independently.
+	schedulerQueuedCopy(t, f, busy.ID, "reserved-target-other-account")
+	schedulerQueuedCopy(t, f, original.ID, "free-target-other-account")
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET configuration_revision=2,capability_fingerprint=? WHERE id IN ('reserved-target-other-account','free-target-other-account')`, f.e.capabilities["other-account"].Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	free := Receipt{ID: "free-target-other-account"}
 	hosted := f.enqueue(t, attemptProject, "independent-channel", "hosted", 2, 2)
 	if _, err := f.store.DB().Exec(`UPDATE projects SET repository='renamed/repository' WHERE id=?`, attemptProject); err != nil {
 		t.Fatal(err)
 	}
 	operations, err := f.e.pending(context.Background())
+	// The retained earlier CLI intent also preserves project queue priority.
+	if err != nil || len(operations) != 1 || operations[0].ID != hosted.ID {
+		t.Fatalf("reserved target or earlier queue intent was bypassed: %v %v", operations, err)
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET state='held',reason='synthetic_release' WHERE id='reserved-target-other-account'`); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = f.e.pending(context.Background())
 	if err != nil || len(operations) != 2 {
 		t.Fatalf("retained account/target filtering failed: %d %v", len(operations), err)
 	}
@@ -84,7 +100,7 @@ func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, err = withoutCapabilities.pending(context.Background())
-	if err != nil || len(operations) != 4 {
+	if err != nil || len(operations) != 3 {
 		t.Fatalf("unavailable capabilities were silently hidden: %d %v", len(operations), err)
 	}
 }
@@ -105,12 +121,15 @@ func TestSupervisorBusyQueueDoesNotEnterWriterAndCoordinationStaysUsable(t *test
 	if _, err := f.e.Admit(context.Background(), attemptProject, busy.ID, busy.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 31 {
-		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", 4, 1)
+
+	seed := f.enqueue(t, attemptProject, "busy-seed", "cli", 4, 1)
+	for i := range 30 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("busy-%02d", i))
 	}
 	f.configure(t, otherAttemptProject, "test-capability", 0, false)
-	for i := range 8 {
-		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", 2, 1)
+	other := f.enqueue(t, otherAttemptProject, "other-project-seed", "cli", 2, 1)
+	for i := range 7 {
+		schedulerQueuedCopy(t, f, other.ID, fmt.Sprintf("other-project-busy-%02d", i))
 	}
 	// Occupy the real writer admission slot. A read-only busy scan must finish
 	// without waiting for it; a failed StartAttempt would still wait here.
@@ -361,9 +380,15 @@ func TestSupervisorReceiptsAndCoordinationRemainFastDuringProviderWait(t *testin
 		t.Fatal("dispatch did not begin")
 	}
 	proveOrdinaryCoordination(t, f, "write-during-dispatch", receipt.ID)
-	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-dispatch", "cli", 4)
-	if supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
-		t.Fatal("new receipt waited for or bypassed occupied account during dispatch")
+	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-preparation", "cli", 4)
+	if queuedDuringDispatch.ID != queuedDuringPrepare.ID || supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
+		t.Fatal("original queued receipt was not replayed during dispatch")
+	}
+	started := time.Now()
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "duplicate-during-dispatch", Request{ExpectedConfigurationRevision: 1, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
+	if time.Since(started) > time.Second {
+		t.Fatal("duplicate refusal waited for provider dispatch")
 	}
 	_, replay = supervisorRequest(t, f, "fast-receipt", "cli", 2)
 	if !bytes.Equal(original, replay) || driver.calls.Load() != 1 {
@@ -1113,8 +1138,13 @@ func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
 		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
 	}
-	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
-		t.Fatal("configuration failure dispatched, settled or added journal effects")
+	var eventType, eventSubject, eventProject string
+	var eventRevision int64
+	if err := f.store.DB().QueryRow(`SELECT event_type,resource_id,project_id,revision FROM events ORDER BY sequence DESC LIMIT 1`).Scan(&eventType, &eventSubject, &eventProject, &eventRevision); err != nil || eventType != "review.operation_updated" || eventSubject != receipt.ID || eventProject != attemptProject || eventRevision != 2 {
+		t.Fatal("preparing claim did not retain its exact operation event", eventType, eventSubject, eventProject, eventRevision, err)
+	}
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+		t.Fatal("configuration failure dispatched, settled or changed effects beyond the preparing event")
 	}
 }
 
@@ -1196,5 +1226,182 @@ func TestSupervisorAdmissionWriterOverloadRetainsPreparation(t *testing.T) {
 	attemptCode(t, err, "review_persistence_failed")
 	if ctx.Err() != nil || f.e.running.Load() || supervisorOperationState(t, f, receipt.ID) != "preparing" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 {
 		t.Fatal("writer overload was hidden as changed admission facts or retried externally")
+	}
+}
+
+// schedulerQueuedCopy creates historical contention fixtures independently of
+// the public one-pending-intent-per-target admission boundary.
+func schedulerQueuedCopy(t *testing.T, f *attemptFixture, seed, id string) {
+	t.Helper()
+	if _, err := f.store.DB().Exec(`INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,'queued',1,'','',created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, id, seed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorCancellationDuringCooldownPersistenceSettlesPreparation(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "cancel-during-cooldown", "cli", 2, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var persistStarted atomic.Bool
+	f.e.schedulingNow = func() time.Time {
+		if persistStarted.Load() {
+			cancel()
+		}
+		return time.Now().UTC()
+	}
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+		observed := stamp()
+		anchor := attemptAnchor(o.ProjectID, o.PullNumber)
+		anchor.ObservedAt = observed
+		input := CLIAllowanceObservation{Anchor: anchor, ObservedAt: observed, Remaining: 0, Limit: 5, FullCapacityInMS: 0, RollingWindowMS: 3600000, ChangedFiles: 2}
+		if err := f.e.RecordCLIExhaustion(context.Background(), o.ProjectID, a.ID, a.Revision, input); err != nil {
+			return Preparation{}, err
+		}
+		persistStarted.Store(true)
+		return Preparation{}, sourceHold("allowance_exhausted")
+	}}
+	if err := f.e.processNext(ctx, map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal("orderly cancellation during cooldown persistence stopped the supervisor", err)
+	}
+	var state, operationState, reason string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT a.state,a.revision,o.state,o.reason FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE o.id=?`, receipt.ID).Scan(&state, &revision, &operationState, &reason); err != nil || state != "cancelled" || revision != 2 || operationState != "cancelled" || reason != "supervisor_stopping" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
+		t.Fatal("cancelled cooldown retained preparation or reservation", state, revision, operationState, reason, err)
+	}
+}
+
+func TestSupervisorUnusableHostedCooldownHoldsOnlyItsOperation(t *testing.T) {
+	for _, scenario := range []string{"absent", "malformed", "oversized"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			receipt := f.enqueue(t, attemptProject, "unusable-hosted-cooldown", "hosted", 2, 1)
+			body := "{}"
+			if scenario == "oversized" {
+				body = strings.Repeat("x", 16385)
+			}
+			driver := &controlledDriver{prepare: func(ctx context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+				if o.Channel != "hosted" {
+					return Preparation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber)}, nil
+				}
+				if scenario != "absent" {
+					if _, err := f.store.DB().ExecContext(ctx, `INSERT INTO review_hosted_preflight(attempt_id,project_id,body_json) VALUES(?,?,?)`, a.ID, o.ProjectID, body); err != nil {
+						return Preparation{}, err
+					}
+				}
+				return Preparation{}, sourceHold("hosted_allowance_cooldown")
+			}}
+			drivers := map[string]Driver{"test-capability": driver, "other-account": driver}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal("unusable Hosted evidence stopped unrelated work", err)
+			}
+			var state, reason string
+			if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, receipt.ID).Scan(&state, &reason); err != nil || state != "held" || reason != "hosted_allowance_cooldown" {
+				t.Fatal("cooldown refusal did not retain local hold", state, reason, err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_operation_waits WHERE baseline_attempt_id IS NOT NULL`) != 0 || driver.calls.Load() != 0 {
+				t.Fatal("unproven cooldown retained capacity, invented timer, or dispatched")
+			}
+			if scenario != "absent" {
+				var retained string
+				if err := f.store.DB().QueryRow(`SELECT body_json FROM review_hosted_preflight`).Scan(&retained); err != nil || retained != body {
+					t.Fatal("local hold rewrote malformed retained evidence", err)
+				}
+			}
+			other := f.enqueue(t, otherAttemptProject, "healthy-after-hosted-hold", "cli", 2, 1)
+			if err := f.e.processNext(t.Context(), drivers); err != nil || supervisorOperationState(t, f, other.ID) != "completed" || driver.calls.Load() != 1 {
+				t.Fatal("another project did not continue after local hold", err)
+			}
+		})
+	}
+}
+
+func TestSupervisorHostedCooldownDatabaseFailureRemainsFatal(t *testing.T) {
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "cooldown-database-failure", "hosted", 2, 1)
+	driver := &controlledDriver{prepare: func(ctx context.Context, _ Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE review_hosted_preflight`); err != nil {
+			return Preparation{}, err
+		}
+		return Preparation{}, sourceHold("hosted_allowance_cooldown")
+	}}
+	err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver})
+	attemptCode(t, err, "review_persistence_failed")
+	if supervisorOperationState(t, f, receipt.ID) != "preparing" || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || driver.calls.Load() != 0 {
+		t.Fatal("database failure became a hold or lost guarded preparation")
+	}
+}
+
+func TestCooldownEvidenceClassificationPreservesOperationalErrors(t *testing.T) {
+	for _, err := range []error{errAllowanceObservationAbsent, allowanceUnavailable(), hostedAllowanceUnavailable()} {
+		if !cooldownEvidenceUnavailable("hosted", fmt.Errorf("wrapped: %w", err)) {
+			t.Fatal("unusable Hosted evidence lost its local classification", err)
+		}
+	}
+	for _, err := range []error{sql.ErrNoRows, context.Canceled, context.DeadlineExceeded, errors.New("database failed"), core.Fail("storage_unavailable", "Stored hosted allowance observation is unavailable.", 500)} {
+		if cooldownEvidenceUnavailable("hosted", err) {
+			t.Fatal("operational error became an evidence hold", err)
+		}
+	}
+	f := supervisorFixture(t)
+	receipt := f.enqueue(t, attemptProject, "missing-cooldown-attempt", "hosted", 2, 1)
+	a := f.start(t, attemptProject, receipt)
+	o, err := readOperationBase(t.Context(), f.store.DB(), attemptProject, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.ID = "review_attempt_" + strings.Repeat("f", 32)
+	_, err = f.e.persistCooldown(t.Context(), o, a)
+	attemptCode(t, err, "review_persistence_failed")
+	if supervisorOperationState(t, f, receipt.ID) != "preparing" {
+		t.Fatal("missing attempt changed original preparation")
+	}
+}
+
+func TestCooldownReconciliationSurvivesCallerCancellation(t *testing.T) {
+	for _, scenario := range []string{"committed", "mismatched", "uncommitted"} {
+		t.Run(scenario, func(t *testing.T) {
+			f, a, input := cooldownObservationFixture(t)
+			original, err := readOperationBase(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// persistCooldown receives the queued operation from before its
+			// preparation transition, not the now-preparing operation revision.
+			original.Revision--
+			original.State, original.AttemptID = "queued", ""
+			if err := f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision, input); err != nil {
+				t.Fatal(err)
+			}
+			var committed Attempt
+			if scenario != "uncommitted" {
+				committed, err = f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, a.Revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "mismatched" {
+				original.HeadSHA = strings.Repeat("f", 40)
+			}
+			tables := []string{"review_operations", "review_execution_attempts", "review_execution_transitions", "review_execution_reservations", "review_operation_waits", "review_hosted_preflight", "events", "receipts"}
+			before := map[string]string{}
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			// Present the real durable outcome after caller cancellation. This
+			// exercises reconciliation without fabricating a database commit fault.
+			recovered, ok := f.e.recordedCooldown(ctx, original, a)
+			if ok != (scenario == "committed") || ok && (recovered.ID != committed.ID || recovered.Revision != committed.Revision || recovered.State != "held") {
+				t.Fatal("canceled caller lost or invented exact committed cooldown", recovered, ok)
+			}
+			for _, table := range tables {
+				if snapshotTable(t, f, table) != before[table] {
+					t.Fatal("read-only reconciliation changed durable history", table)
+				}
+			}
+		})
 	}
 }

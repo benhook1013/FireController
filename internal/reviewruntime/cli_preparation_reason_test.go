@@ -20,25 +20,43 @@ import (
 
 func TestCLIDriverUsageFailureBecomesSafePreparationHold(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		failure error
-		want    string
+		name          string
+		failure       error
+		usage         reviewprocess.Usage
+		failRetention bool
+		want          string
 	}{
-		{"rate", &reviewprocess.Error{Code: "rate_limited"}, "allowance_exhausted"},
-		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), "allowance_exhausted"},
-		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, "allowance_unavailable"},
-		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), "allowance_unavailable"},
-		{"raw text", errors.New("rate_limited private token diagnostic"), "allowance_unavailable"},
-		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), "allowance_unavailable"},
+		{"rate", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"wrapped rate", fmt.Errorf("private path or token: %w", &reviewprocess.Error{Code: "rate_limited"}), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"usage", &reviewprocess.Error{Code: "usage_unavailable"}, reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"wrapped usage", fmt.Errorf("private path: %w", &reviewprocess.Error{Code: "usage_unavailable"}), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"raw text", errors.New("rate_limited private token diagnostic"), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"foreign typed code", core.Fail("rate_limited", "private diagnostic", 409), reviewprocess.Usage{}, false, "allowance_unavailable"},
+		{"rate with nonzero remaining", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Remaining: 1, Limit: 3, RollingWindowMS: 60000}, false, "allowance_unavailable"},
+		{"exhaustion file limit", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: 3, RollingWindowMS: 60000}, false, "project_file_limit"},
+		{"exhaustion validation fails", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: -1, RollingWindowMS: 60000}, false, "allowance_unavailable"},
+		{"exhaustion retention fails", &reviewprocess.Error{Code: "rate_limited"}, reviewprocess.Usage{Limit: 3, RollingWindowMS: 60000}, true, "allowance_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCLIDriverFixture(t)
 			var usage atomic.Int64
 			f.driver.usage = func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error) {
 				usage.Add(1)
-				return reviewprocess.Usage{}, tc.failure
+				if tc.name == "exhaustion file limit" {
+					// Force the retained-policy guard after the workspace's earlier
+					// ceiling check, isolating RecordCLIExhaustion's typed refusal.
+					if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=json_set(body_json,'$.max_review_files',1)`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return tc.usage, tc.failure
 			}
 			op, a, c := f.start(t, 2, 1, "prepare-usage-refusal")
+			if tc.failRetention {
+				if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_cli_exhaustion BEFORE INSERT ON review_cli_preflight BEGIN SELECT RAISE(ABORT,'private-exhaustion-storage-failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			prepared, err := f.driver.Prepare(t.Context(), op, c, a)
 			var failure *core.Error
 			if !errors.As(err, &failure) || failure.Code != "review_held" {
@@ -126,7 +144,7 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if operation.State == "held" {
+				if operation.State == "held" || mode == "exhausted" && operation.State == "queued" && operation.Wait != nil && operation.Wait.BaselineAttemptID != "" && operation.Wait.RetryNotBefore != "" {
 					break
 				}
 				select {
@@ -136,10 +154,18 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				}
 			}
 			stop()
+			expectedPreflight := 0
+			if mode == "exhausted" {
+				expectedPreflight = 1
+				if operation.State != "queued" || operation.Wait == nil || operation.Wait.RetryNotBefore == "" {
+					t.Fatal("real runner exhaustion did not retain queued wait", operation)
+				}
+				expected = ""
+			}
 			if operation.Reason != expected || reviews.Load() != 0 || strings.Contains(operation.Reason, "private") {
 				t.Fatal("safe hold reason missing or review dispatched", operation, reviews.Load())
 			}
-			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != 0 {
+			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != expectedPreflight {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
 			}
 			log, err := os.ReadFile(f.log)

@@ -153,14 +153,14 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if err != nil {
 		return Usage{}, err
 	}
-	if usage.Remaining == 0 {
-		return Usage{}, processError("rate_limited", false)
-	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
 			return Usage{}, processError("usage_unavailable", false)
 		}
 		return Usage{}, processError("source_changed", false)
+	}
+	if usage.Remaining == 0 {
+		return usage, processError("rate_limited", false)
 	}
 	r.mu.Lock()
 	if generation != r.usageGeneration || ctx.Err() != nil {

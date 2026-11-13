@@ -2,6 +2,7 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -58,4 +59,27 @@ func RetainHostedAllowance(ctx context.Context, captures *HostedCaptureStore, en
 	}
 	return engine.RecordHostedAllowance(ctx, attempt.ProjectID, attempt.ID, attempt.Revision, reviewexec.HostedAllowanceInput{QueryID: query.ID, Anchor: anchor,
 		ObservedAt: record.Snapshot.ObservedAt.Format(time.RFC3339Nano), ChangedFiles: changedFiles, CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, Observation: observation})
+}
+
+func retryAllowanceRetention(ctx context.Context, wait func(context.Context, time.Duration) error, retain func() error) error {
+	for pass := 0; ; pass++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := retain()
+		if err == nil || pass == 2 || !retryableHostedRetention(err) {
+			return err
+		}
+		if err := wait(ctx, 200*time.Millisecond); err != nil {
+			return err
+		}
+	}
+}
+
+func retryableHostedRetention(err error) bool {
+	if reviewexec.IsInvalidHostedPreparationEvidence(err) {
+		return false
+	}
+	var failure *core.Error
+	return errors.As(err, &failure) && (failure.Code == "overloaded" || failure.Code == "storage_unavailable")
 }
