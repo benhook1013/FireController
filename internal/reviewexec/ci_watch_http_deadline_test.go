@@ -66,6 +66,8 @@ func ciDeadlinePending(t *testing.T, response *httptest.ResponseRecorder) {
 	}
 }
 
+// Positive waits retain five seconds for final authorization and five for writing.
+// Immediate reads retain the existing five-second response allowance.
 func TestCIWatchHTTPDeadlineIncludesScopeAndBody(t *testing.T) {
 	for _, test := range []struct {
 		name                string
@@ -74,14 +76,14 @@ func TestCIWatchHTTPDeadlineIncludesScopeAndBody(t *testing.T) {
 		elapsed, responseAt time.Duration
 		refusal             string
 	}{
-		{name: "quiet", seconds: 120, elapsed: 120 * time.Second, responseAt: 125 * time.Second},
-		{name: "slow_scope", seconds: 120, auth: 6 * time.Second, elapsed: 120 * time.Second, responseAt: 125 * time.Second},
-		{name: "slow_body", seconds: 120, body: 6 * time.Second, elapsed: 120 * time.Second, responseAt: 125 * time.Second},
-		{name: "scope_finishes_after_deadline", seconds: 3, auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
-		{name: "body_finishes_after_deadline", seconds: 3, body: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 8 * time.Second},
+		{name: "quiet", seconds: 120, elapsed: 120 * time.Second, responseAt: 130 * time.Second},
+		{name: "slow_scope", seconds: 120, auth: 6 * time.Second, elapsed: 120 * time.Second, responseAt: 130 * time.Second},
+		{name: "slow_body", seconds: 120, body: 6 * time.Second, elapsed: 120 * time.Second, responseAt: 130 * time.Second},
+		{name: "scope_finishes_after_deadline", seconds: 3, auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 13 * time.Second},
+		{name: "body_finishes_after_deadline", seconds: 3, body: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 13 * time.Second},
 		{name: "zero_retains_immediate_read", auth: 4 * time.Second, elapsed: 4 * time.Second, responseAt: 9 * time.Second},
 		{name: "zero_scope_exceeds_allowance", auth: 6 * time.Second, elapsed: 5 * time.Second, responseAt: 10 * time.Second, refusal: "ci_watch_scope_read"},
-		{name: "earlier_caller_during_watch", seconds: 120, auth: 6 * time.Second, caller: 10 * time.Second, elapsed: 10 * time.Second, responseAt: 125 * time.Second, refusal: "ci_watch_canceled"},
+		{name: "earlier_caller_during_watch", seconds: 120, auth: 6 * time.Second, caller: 10 * time.Second, elapsed: 10 * time.Second, responseAt: 130 * time.Second, refusal: "ci_watch_canceled"},
 		{name: "earlier_caller_during_scope", seconds: 120, auth: 6 * time.Second, caller: 2 * time.Second, elapsed: 2 * time.Second, responseAt: 130 * time.Second, refusal: "ci_watch_scope_read"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -165,7 +167,7 @@ func TestCIWatchHTTPDeadlinePreservesFinalFreshReadBudget(t *testing.T) {
 		releaseFinal()
 		<-done
 		ciDeadlinePending(t, response.ResponseRecorder)
-		if elapsed := time.Since(started); elapsed != 121750*time.Millisecond || response.deadline.Sub(started) != 125*time.Second {
+		if elapsed := time.Since(started); elapsed != 121750*time.Millisecond || response.deadline.Sub(started) != 130*time.Second {
 			t.Fatalf("elapsed=%s deadline=%s", elapsed, response.deadline.Sub(started))
 		}
 		ciWatchRegistered(t, schedule, 0)
