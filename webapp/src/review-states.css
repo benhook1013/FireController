@@ -30,4 +30,4 @@
 .review-activity-label:focus-visible{outline:2px solid currentColor;outline-offset:3px}
 .review-activity-details:not([hidden]){display:block;position:fixed;z-index:1000;box-sizing:border-box;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;margin:0;border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:5px;background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);box-shadow:0 4px 14px #0002;font-size:.75rem;font-weight:400;line-height:1.5;white-space:normal;overflow-wrap:anywhere;text-transform:none;letter-spacing:normal}
 .review-activity-details>span{display:block;margin:4px 0}
-.review-activity-details small{display:block;color:var(--fc-surface_muted,#58616d)}
+.review-activity-details>span:first-child{font-weight:600}

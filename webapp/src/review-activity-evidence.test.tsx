@@ -32,25 +32,21 @@ describe('current native activity evidence', () => {
   it('shows the actual CLI spawn separately from preparation', () => {
     const status = reviewAttemptStatus(attempt, { ...progress, activity_evidence: cli })!;
     expect(status.activity?.evidence).toEqual(cli);
-    expect(status.description).toContain(`CLI process started ${observed}`);
-    expect(status.description).not.toContain('Actual CLI process start time is not available');
     const html = renderToStaticMarkup(<ReviewAttemptBadge channel="cli" status={status} />);
-    expect(html).toContain('CLI process started:');
+    expect(html).toContain('CLI started:');
     expect(html).toContain(`dateTime="${observed}"`);
-    expect(html).toContain(`dateTime="${attempt.started_at}"`);
-    expect(html).toContain('does not establish when CodeRabbit’s remote analysis started');
+    expect(html).not.toContain(`dateTime="${attempt.started_at}"`);
+    expect(html).toContain('Waiting for the CLI result.');
   });
-  it('trusts matched Hosted processing while labeling the first observation honestly', () => {
+  it('shows one observed time for Hosted without implying an exact start', () => {
     const status = reviewAttemptStatus({ ...attempt, channel: 'hosted', trigger_id: '42' }, { ...progress, channel: 'hosted', activity_evidence: hosted })!;
     expect(status.activity?.evidence).toEqual(hosted);
-    expect(status.description).toContain(`CodeRabbit processing observed ${observed}`);
-    expect(status.description).toContain('It had started by the observation time');
-    expect(status.description).not.toContain('Actual provider start time is not available');
     const html = renderToStaticMarkup(<ReviewAttemptBadge channel="hosted" status={status} />);
-    expect(html).toContain('CodeRabbit processing observed:');
-    expect(html).toContain('Provider comment updated:');
-    expect(html).toContain('not an exact provider start time');
-    expect(html).not.toContain('Provider started:');
+    expect(html).toContain('Waiting for the Hosted result.');
+    expect(html).toContain('CodeRabbit activity seen:');
+    expect(html).toContain(`dateTime="${observed}"`);
+    expect(html).not.toContain(hosted.comment_updated_at);
+    expect(html).not.toContain(`dateTime="${attempt.started_at}"`);
   });
   it('does not attach evidence from a different attempt, channel, head, or trigger', () => {
     for (const change of [{ source_attempt_id: `review_attempt_${'c'.repeat(32)}` }, { head_sha: 'c'.repeat(40) }, { channel: 'hosted' as const }, { started_at: '2026-11-11T10:00:00Z' }]) {

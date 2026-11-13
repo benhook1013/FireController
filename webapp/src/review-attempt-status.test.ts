@@ -127,42 +127,27 @@ describe('cancelled queued waits do not become current process attention', () =>
 
 describe('activity timing describes evidence, not inferred provider start', () => {
   const active = { ...attempt, state: 'active' as const, reason: undefined, finished_at: '' };
-  it('labels known attempt time with timezone and exact source timestamp', () => {
+  it('keeps the preparation time available without implying execution', () => {
     const result = reviewAttemptStatus(active)!;
-    expect(result.description).toContain('Attempt began ');
-    expect(result.description).toContain('(2026-11-01T00:00:00Z)');
-    expect(result.description).toContain('not proof of reviewer start');
-    expect(result.description).toContain('not a live activity check');
     expect(result.activity?.startedAt).toBe(active.started_at);
+    expect(result.activity?.explanation).toBe('Waiting for confirmation that the review started.');
   });
-  it('distinguishes Hosted trigger delivery from execution and collection', () => {
+  it('distinguishes a sent Hosted request from unconfirmed delivery', () => {
     const hosted = { ...active, channel: 'hosted' as const, trigger_id: '42' };
-    const result = reviewAttemptStatus(hosted)!;
-    expect(result.text).toBe('Reviewing');
-    expect(result.description).toContain('trigger is recorded as sent');
-    expect(result.description).toContain('queued, running, or finished');
-    expect(result.description).toContain('Actual provider start time is not available');
-    expect(result.description).not.toContain('Trigger sent at');
-    const unknown = reviewAttemptStatus({ ...hosted, trigger_id: '' })!;
-    expect(unknown.description).toContain('trigger delivery is not shown');
-    expect(unknown.description).not.toContain('trigger is recorded as sent');
-  });
-  it('explains that CLI active precedes final checks and process launch', () => {
-    expect(reviewAttemptStatus(active)?.description).toContain('before final checks and process launch');
-    expect(reviewAttemptStatus(active)?.description).toContain('Actual CLI process start time is not available');
+    expect(reviewAttemptStatus(hosted)).toMatchObject({
+      text: 'Reviewing',
+      activity: { explanation: 'Review requested. Waiting for CodeRabbit to report progress.' },
+    });
+    expect(reviewAttemptStatus({ ...hosted, trigger_id: '' })?.activity?.explanation).toBe('Waiting for confirmation that the review started.');
   });
   it.each(['', 'invalid'])('does not invent unknown or invalid attempt timing: %s', started_at => {
-    const result = reviewAttemptStatus({ ...active, started_at })!;
-    expect(result.description).toContain('Attempt start time is unknown');
-    expect(result.activity?.startedAt).toBe('');
-    expect(result.description).not.toContain('Invalid Date');
+    expect(reviewAttemptStatus({ ...active, started_at })?.activity?.startedAt).toBe('');
   });
-  it('does not mistake posting or preparation for confirmed execution', () => {
+  it('distinguishes preparation and sending a request', () => {
     for (const state of ['preparing', 'prepared', 'posting'] as const) {
       const result = reviewAttemptStatus({ ...active, state, channel: 'hosted' })!;
       expect(result.text).toBe('Preparing');
-      expect(result.description).toContain('not yet confirmed');
-      expect(result.description).not.toContain('trigger is recorded as sent');
+      expect(result.activity?.explanation).toBe(state === 'posting' ? 'Sending the review request to CodeRabbit.' : 'Preparing the review.');
     }
   });
   it('does not attach current-activity details to old or finished attempts', () => {
@@ -170,4 +155,13 @@ describe('activity timing describes evidence, not inferred provider start', () =
     expect(reviewAttemptStatus({ ...active, finished_at: attempt.finished_at }, progress)?.activity).toBeUndefined();
     expect(reviewAttemptStatus(active, { ...progress, wait: { paused: true } })?.activity).toBeUndefined();
   });
+});
+
+it('keeps a settled partial CLI attempt in history and shows only the current queue status', () => {
+  const settled = { ...attempt, state: 'failed' as const, reason: 'cli_partial_settled' };
+  expect(reviewAttemptStatus(settled, progress)).toBeUndefined();
+  expect(reviewAttemptStatus(settled, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
+  expect(reviewAttemptStatus(settled, progress, undefined, true)).toBeUndefined();
+  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Retry pending', cause: undefined, description: undefined });
+  expect(reviewAttemptCause(settled)).toBe('The CLI review ended without full coverage');
 });

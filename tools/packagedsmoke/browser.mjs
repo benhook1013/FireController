@@ -987,9 +987,9 @@ try {
       await badge.hover();
       const tooltip = activityRow.locator(`[id="${await badge.getAttribute('aria-describedby')}"]`);
       await expect(tooltip).toBeVisible();
-      await expect(tooltip).toContainText('Attempt began:');
+      await expect(tooltip).toContainText('Preparation began:');
       await expect(tooltip.locator('time')).toHaveAttribute('datetime',activityStart);
-      await expect(tooltip).toContainText(channel==='hosted'?'trigger is recorded as sent':'before final checks and process launch');
+      await expect(tooltip).toContainText(channel==='hosted'?'Review requested. Waiting for CodeRabbit to report progress.':'Waiting for confirmation that the review started.');
       await tooltip.hover();
       await expect(tooltip).toBeVisible();
       need(await tooltip.evaluate(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1;}));

@@ -38,14 +38,17 @@ function ActivityBadge({ channel, status }: { channel: string; status: ReviewAtt
     return () => document.removeEventListener('pointerdown', outside);
   }, [expanded]);
   const activity = status.activity!;
-  const stamp = (value: string) => <><time dateTime={value}>{new Date(value).toLocaleString(undefined, { timeZoneName: 'short' })}</time><small>{value}</small></>;
+  const evidence = activity.evidence;
+  const timing = evidence?.kind === 'cli_process_spawned'
+    ? { label: 'CLI started', value: evidence.process_started_at }
+    : evidence?.kind === 'hosted_processing_observed'
+      ? { label: 'CodeRabbit activity seen', value: evidence.observed_at }
+      : activity.startedAt ? { label: 'Preparation began', value: activity.startedAt } : undefined;
   return <span ref={wrapper} className="review-activity" onPointerEnter={event => { cancelClose(); if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) closeTimer.current = setTimeout(() => setExpanded(false), 150); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setExpanded(false); } }}>
     <span ref={trigger} role="button" tabIndex={0} className="badge review-channel-position review-activity-label" aria-label={`${channel} execution: ${status.text}`} aria-describedby={detailsID} aria-controls={detailsID} aria-expanded={expanded} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onClick={event => { event.stopPropagation(); setExpanded(true); }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(value => !value); } }}>{status.text}</span>
     <span ref={details} id={detailsID} className="review-activity-details" style={placement} hidden={!expanded} role="tooltip">
-      {activity.evidence?.kind === 'cli_process_spawned' && <span>CLI process started: {stamp(activity.evidence.process_started_at)}</span>}
-      {activity.evidence?.kind === 'hosted_processing_observed' && <><span>CodeRabbit processing observed: {stamp(activity.evidence.observed_at)}</span><span>Provider comment updated: {stamp(activity.evidence.comment_updated_at)}</span></>}
-      <span>{activity.startedAt ? <>Attempt began: {stamp(activity.startedAt)}</> : 'Attempt start time is unknown.'}</span>
       <span>{activity.explanation}</span>
+      {timing && <span>{timing.label}: <time dateTime={timing.value}>{new Date(timing.value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time></span>}
     </span>
   </span>;
 }

@@ -17,15 +17,14 @@ describe('accessible attempt activity details', () => {
     expect(html).toContain(`aria-controls="${id}"`);
     expect(html).toContain(`id="${id}"`);
     expect(html).toContain('dateTime="2026-11-01T00:00:00Z"');
-    expect(html).toContain('Attempt began:');
-    expect(html).toContain('trigger is recorded as sent');
-    expect(html).toContain('not proof of reviewer start');
+    expect(html).toContain('Preparation began:');
+    expect(html).toContain('Review requested. Waiting for CodeRabbit to report progress.');
+    expect(html.match(/<time\b/gu)).toHaveLength(1);
   });
   it('keeps unknown timing explicit and does not invent a time element', () => {
     const html = renderToStaticMarkup(<ReviewAttemptBadge channel="cli" status={reviewAttemptStatus({ ...attempt, channel: 'cli', started_at: '' })!} />);
-    expect(html).toContain('Attempt start time is unknown');
+    expect(html).toContain('Waiting for confirmation that the review started.');
     expect(html).not.toContain('<time');
-    expect(html).toContain('Actual CLI process start time is not available');
   });
   it('leaves nonactivity labels and visible stop causes unchanged without new focus stops', () => {
     const status = reviewAttemptStatus({ ...attempt, state: 'failed', finished_at: '2026-11-01T00:01:00Z', reason: 'process_not_started' })!;
