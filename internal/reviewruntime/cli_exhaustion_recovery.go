@@ -128,7 +128,7 @@ func (s *CLIExhaustionStore) Save(ctx context.Context, r reviewexec.CLIExhaustio
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if captureDirectories(s.root, true) != nil {
+	if prepareCLIExhaustionDirectories(s.root, syncCaptureDirectory) != nil {
 		return captureError("capture_unavailable")
 	}
 	final := filepath.Join(s.root, r.Attempt.ID+".json")
@@ -182,4 +182,37 @@ func (s *CLIExhaustionStore) Save(ctx context.Context, r reviewexec.CLIExhaustio
 		return err
 	}
 	return syncCaptureDirectory(s.root)
+}
+
+// prepareCLIExhaustionDirectories durably reconciles the recovery directory chain.
+func prepareCLIExhaustionDirectories(root string, syncParent func(string) error) error {
+	if root == "" || !filepath.IsAbs(root) {
+		return errors.New("directory")
+	}
+	var chain []string
+	for path := root; ; path = filepath.Dir(path) {
+		chain = append(chain, path)
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		path := chain[i]
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			info, err = os.Lstat(path)
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || i == 0 && !captureMode(info, 0700) {
+			return errors.New("directory")
+		}
+		// Reconcile every directory name on write, including existing ones:
+		// an earlier or concurrent creator may have failed its parent sync.
+		if err = syncParent(filepath.Dir(path)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
