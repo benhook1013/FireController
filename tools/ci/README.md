@@ -6,4 +6,4 @@ The explicit workflow matrix must contain exactly the selector's shards. `make c
 
 Local `make check`, `make test`, build and smoke entry points retain their existing coverage. `GO_TEST_PACKAGES` and `GO_TEST_RUN` select an explicit race/vet slice; their defaults include all packages and tests. All available tests retain race coverage and the existing twenty-minute per-package deadline. [Development](../../docs/development.md#build-and-checks) owns commands and qualification boundaries. Selection performs no provider work and grants no publication or deployment authority.
 
-The [CI scheduling contract](scheduling.md) owns the current serialized compatibility stage, proposed future interleaving, shared twenty-job budget, native queue limits, fixed-affinity throughput tradeoff and rollout requirements. `make ci-selection-check` also verifies the expanded workflow inventory and exercises its bounded scheduling model.
+The [CI scheduling contract](scheduling.md) owns this workflow's job inventory, per-PR and per-branch supersession, twenty shared job lanes and rollout checks.
