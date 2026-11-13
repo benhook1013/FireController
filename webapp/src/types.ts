@@ -53,7 +53,7 @@ export type ReviewChannel = 'cli'|'hosted'|'manual'|'subagent';
 export type ReviewOutcome = 'completed'|'active'|'prepared'|'posting'|'failed'|'cancelled'|'rate_limited'|'uncertain'|'unknown';
 export type ReviewAttemptState = ReviewOutcome|'preparing'|'held';
 export interface ReviewAcceptedSeverity {critical: number; major: number; minor: number; trivial: number; unknown: number; complete: boolean}
-export interface ReviewRunSummary {accepted_severity?: ReviewAcceptedSeverity; source: string; id: string; pull_number: number; source_run_id: string; channel: ReviewChannel; head_sha: string; reviewer: string; scope: string; coverage_limits: string[]; outcome: ReviewOutcome; attributable: boolean; complete: boolean; started_at: string; finished_at: string; found: number; accepted: number; routed: number; finalized: boolean; fixed: number}
+export interface ReviewRunSummary {retained_undecided?: number; accepted_severity?: ReviewAcceptedSeverity; source: string; id: string; pull_number: number; source_run_id: string; channel: ReviewChannel; head_sha: string; reviewer: string; scope: string; coverage_limits: string[]; outcome: ReviewOutcome; attributable: boolean; complete: boolean; started_at: string; finished_at: string; found: number; accepted: number; routed: number; finalized: boolean; fixed: number}
 export interface ReviewAttemptSummary {reason?: string; source_attempt_id: string; channel: ReviewChannel; head_sha: string; state: ReviewAttemptState; started_at: string; finished_at: string; duration_seconds: number | null; source_run_id: string; trigger_id: string; provider_review_id: string}
 export interface ReviewPullDiff {files: number; additions: number; deletions: number}
 export type ReviewRunCounts = Record<ReviewChannel, number>;

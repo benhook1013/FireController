@@ -141,26 +141,27 @@ type FindingView struct {
 }
 
 type RunSummary struct {
-	AcceptedSeverity *AcceptedSeverity `json:"accepted_severity,omitempty"`
-	Source           string            `json:"source"`
-	ID               string            `json:"id"`
-	PullNumber       int64             `json:"pull_number"`
-	SourceRunID      string            `json:"source_run_id"`
-	Channel          string            `json:"channel"`
-	HeadSHA          string            `json:"head_sha"`
-	Reviewer         string            `json:"reviewer"`
-	Scope            string            `json:"scope"`
-	Outcome          string            `json:"outcome"`
-	Attributable     bool              `json:"attributable"`
-	Complete         bool              `json:"complete"`
-	StartedAt        string            `json:"started_at"`
-	FinishedAt       string            `json:"finished_at"`
-	Found            int64             `json:"found"`
-	Accepted         int64             `json:"accepted"`
-	Routed           int64             `json:"routed"`
-	Finalized        bool              `json:"finalized"`
-	Fixed            int64             `json:"fixed"`
-	CoverageLimits   []string          `json:"coverage_limits"`
+	RetainedUndecided *int64            `json:"retained_undecided,omitempty"`
+	AcceptedSeverity  *AcceptedSeverity `json:"accepted_severity,omitempty"`
+	Source            string            `json:"source"`
+	ID                string            `json:"id"`
+	PullNumber        int64             `json:"pull_number"`
+	SourceRunID       string            `json:"source_run_id"`
+	Channel           string            `json:"channel"`
+	HeadSHA           string            `json:"head_sha"`
+	Reviewer          string            `json:"reviewer"`
+	Scope             string            `json:"scope"`
+	Outcome           string            `json:"outcome"`
+	Attributable      bool              `json:"attributable"`
+	Complete          bool              `json:"complete"`
+	StartedAt         string            `json:"started_at"`
+	FinishedAt        string            `json:"finished_at"`
+	Found             int64             `json:"found"`
+	Accepted          int64             `json:"accepted"`
+	Routed            int64             `json:"routed"`
+	Finalized         bool              `json:"finalized"`
+	Fixed             int64             `json:"fixed"`
+	CoverageLimits    []string          `json:"coverage_limits"`
 }
 
 type PullSummary struct {

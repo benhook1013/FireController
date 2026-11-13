@@ -921,7 +921,7 @@ try {
   merged.merged_at = new Date(Date.now() - (2*60+22)*60000).toISOString();
   const open = pull(32, 'open', 'Live review before');
   open.diff = {files:55, additions:100, deletions:10};
-  const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
+  const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'native-executor', observed_at:new Date().toISOString(), queue, retired:[]});
   checkpoint = 'fallback-observation';
   // An unknown predecessor prevents the stored queue from claiming an open
   // head. Use the real observation API, not a fabricated browser response.
@@ -971,7 +971,7 @@ try {
   checkpoint = 'seed-observation';
   // Complete observations require explicit retirement of an omitted entry.
   const activityStart = new Date().toISOString();
-  const activityAttempt = channel => ({source_attempt_id:`live-${channel}-active`,channel,head_sha:open.head_sha,state:'active',started_at:activityStart,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:channel==='hosted'?'42':'',provider_review_id:''});
+  const activityAttempt = channel => ({source_attempt_id:'review_attempt_'+(channel==='hosted'?'a':'b').repeat(32),channel,head_sha:open.head_sha,state:'active',started_at:activityStart,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:channel==='hosted'?'42':'',provider_review_id:''});
   await write('POST', '/reviews/observations', {...observation(1, [merged, {...open, attempts:[activityAttempt('hosted'),activityAttempt('cli')]}]), retired:[{number:33,reason:'defunct'}]}, 201);
   checkpoint = 'initial-open-pull';
   await page.locator('#review-pr-32').getByRole('link', {name:'#32 Live review before', exact:true}).waitFor();
@@ -1008,20 +1008,60 @@ try {
     }
   }
   need(JSON.stringify(activityReadCounts)===JSON.stringify([reviewOperationReads,reviewAttemptReads]));
+  checkpoint = 'confirmed-review-start';
+  const progressPattern = config.origin + prefix + '/reviews/rounds/progress?*';
+  const startedEvidence = async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    for (const item of payload.items.filter(item => item.pull_number === 32)) {
+      for (const channel of item.channels) {
+        const attempt = activityAttempt(channel.channel);
+        const identity = {attempt_id:attempt.source_attempt_id,head_sha:open.head_sha,observed_at:activityStart};
+        channel.activity_evidence = channel.channel==='cli'
+          ? {...identity,kind:'cli_process_spawned',process_started_at:activityStart}
+          : {...identity,kind:'hosted_processing_observed',comment_updated_at:activityStart,source_comment_id:21,provider_run_id:'12345678-1234-1234-1234-123456789abc',trigger_id:attempt.trigger_id};
+      }
+    }
+    await route.fulfill({response,json:payload});
+  };
+  await page.route(progressPattern,startedEvidence);
+  // Publish a new retained revision to exercise the ordinary live invalidation.
+  await write('POST', '/reviews/observations', observation(2, [merged, {...open, attempts:[activityAttempt('hosted'),activityAttempt('cli')]}]), 201);
+  for (const channel of ['Hosted','CLI']) {
+    const lane = activityRow.getByRole('region',{name:channel+' CodeRabbit',exact:true});
+    const running = lane.getByRole('img',{name:new RegExp('^'+channel+' review running')});
+    await expect(running).toHaveText('?/?/?Running');
+    await expect(lane.locator('.review-lane-heading')).toContainText('0 runs');
+  }
   const finished = new Date().toISOString();
   const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
+  const partialFinding = (id, disposition) => ({source_finding_id:id,title:'Partial finding '+id,detail:'Retained evidence',severity:'low',disposition,decision_reason:'',actor:'',decided_at:'',fix_sha:'',proof_note:'',resolved_at:''});
+  const partial = {...run,source_run_id:'live-cli-partial',channel:'cli',outcome:'failed',attributable:false,complete:false,finalized:false,found:3,accepted:1,started_at:activityStart,
+    findings:[partialFinding('accepted','accepted'),partialFinding('rejected','rejected'),partialFinding('undecided','unadjudicated')]};
+  const cliReturned = {...activityAttempt('cli'),state:'failed',finished_at:finished,source_run_id:partial.source_run_id,reason:'cli_partial_settled'};
+  const hostedReturned = {...activityAttempt('hosted'),state:'completed',finished_at:finished,source_run_id:run.source_run_id};
   const reasonCode = 'hosted_finished_inventory_unproven';
+  const uncertainAt = new Date(Date.parse(finished) + 1000).toISOString();
   const reasonText = 'Finished response could not be verified';
   const reasonPillText = `The provider outcome is unconfirmed. Reconcile it before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
-  const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:finished,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
+  const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:uncertainAt,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
   checkpoint = 'updated-observation';
-  await write('POST', '/reviews/observations', observation(2, [merged, {...open, title:'Live review updated', runs:[run],attempts:[uncertainAttempt]}]), 201);
+  await write('POST', '/reviews/observations', observation(3, [merged, {...open, title:'Live review updated', runs:[run,partial],attempts:[hostedReturned,cliReturned,uncertainAttempt]}]), 201);
   checkpoint = 'updated-open-pull';
   await page.locator('#review-pr-32').getByRole('link', {name:'#32 Live review updated', exact:true}).waitFor();
   checkpoint = 'updated-merged-pull';
   await page.locator('#review-pr-31').getByRole('link', {name:'#31 Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'hosted-run';
   await page.locator('#review-pr-32').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
+  checkpoint = 'running-review-results';
+  const resultCLI = activityRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
+  await expect(activityRow.locator('.review-pill-running')).toHaveCount(0);
+  await expect(resultCLI.locator('.review-lane-heading')).toContainText('0 runs');
+  await expect(resultCLI).not.toContainText('Previous attempt');
+  const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
+  await expect(partialLink).toHaveCount(1);
+  const partialURL = await partialLink.getAttribute('href');
+  await page.unroute(progressPattern,startedEvidence);
   checkpoint = 'current-round-grants';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0,action:'grant',minimum:0,maximum:5}, 200);
   await write('POST', '/reviews/rounds/32/cli', {expected_revision:0,action:'grant',minimum:2,maximum:4}, 200);
@@ -1116,6 +1156,7 @@ try {
   await expect(age).toHaveText(/^(?:just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
   await expect(age).toHaveAttribute('datetime', finished);
   checkpoint = 'attempt-reason-layout';
+  const attemptReadsBeforeLayout = reviewAttemptReads;
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
       await expect(pill).toHaveText('Needs agent attention');
@@ -1152,7 +1193,7 @@ try {
     });
     need(progressColors.length===4&&progressColors.every(value=>value.text===`rgb(${configuredInk})`&&value.border===value.text&&value.textContrast>=4.5&&value.borderContrast>=3));
     for(let channel=0;channel<2;channel++)need(JSON.stringify(progressColors[channel])===JSON.stringify(progressColors[channel+2]));
-    need(reviewOperationReads === 0 && reviewAttemptReads === 0);
+    need(reviewOperationReads === 0 && reviewAttemptReads === attemptReadsBeforeLayout);
   });
   await jump.click();
   await expect.poll(() => new URL(page.url()).hash).toBe('#review-queue-head');
@@ -1216,21 +1257,31 @@ try {
     need(attemptArchive.status===200 && roundArchive.status===200);
     attemptArchive.body=JSON.parse(attemptArchive.rawBody.toString('utf8'));
     roundArchive.body=JSON.parse(roundArchive.rawBody.toString('utf8'));
-    need(roundResponse.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundResponse.url.searchParams.has('cursor') && roundArchive.body.items.length===1 && roundArchive.body.items[0].source_run_id===run.source_run_id);
+    need(roundResponse.url.searchParams.get('snapshot')===new URL(page.url()).searchParams.get('snapshot') && !roundResponse.url.searchParams.has('cursor') && roundArchive.body.items.length===2 && roundArchive.body.items.some(item=>item.source_run_id===run.source_run_id));
   }finally{await page.unroute(archivePattern,ownArchiveResponse);}
   const retainedAttempts = attemptArchive.body;
-  need(retainedAttempts.items.length === 1 && retainedAttempts.items[0].source_attempt_id === uncertainAttempt.source_attempt_id && retainedAttempts.items[0].state === 'uncertain' && retainedAttempts.items[0].reason === reasonCode);
+  need(retainedAttempts.items.length === 3 && retainedAttempts.items.some(item=>item.source_attempt_id===uncertainAttempt.source_attempt_id && item.state==='uncertain' && item.reason===reasonCode));
   checkpoint = 'attempt-reason-expanded';
   const attemptsPanel = page.getByRole('region',{name:'PR #32 attempts',exact:true});
-  await expect(attemptsPanel.locator('summary')).toHaveText('Attempts (1)');
+  await expect(attemptsPanel.locator('summary')).toHaveText('Attempts (3)');
   await attemptsPanel.locator('summary').click();
-  await expect(attemptsPanel.getByText('Reason',{exact:true})).toBeVisible();
+  await expect(attemptsPanel.getByText('Reason',{exact:true})).toHaveCount(2);
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toBeVisible();
   await expect(attemptsPanel.getByTitle(reasonCode,{exact:true})).toHaveText(reasonText);
-  await expect(attemptsPanel.locator('li strong')).toHaveText('Uncertain');
+  await expect(attemptsPanel.getByText('Uncertain',{exact:true})).toBeVisible();
   need(await page.locator('literal').count() === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   checkpoint = 'attempt-reason-reads';
   need(reviewPullReads === reasonReadBoundary.pull+1 && reviewAttemptReads === reasonReadBoundary.attempts+1 && reviewRunReads === reasonReadBoundary.runs+1 && reviewOperationReads === 0);
+  checkpoint = 'partial-history-and-findings';
+  const partialRow = page.locator('.review-history-row').filter({hasText:'Partial review'});
+  await expect(partialRow).toContainText('1 undecided');
+  await expect(partialRow).toContainText('Accepted: 1');
+  const partialDetails = partialRow.getByRole('link',{name:/run details/});
+  await expect(partialDetails).toHaveAttribute('href',partialURL);
+  await partialDetails.click();
+  await expect(page.getByRole('heading',{name:'Review findings',exact:true})).toBeVisible();
+  await expect(page.getByText('Partial finding undecided',{exact:true})).toBeVisible();
+  await expect(page.locator('.review-run-summary')).toContainText('Accepted: 1 · Routed: 0');
   checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'reviews-heading';

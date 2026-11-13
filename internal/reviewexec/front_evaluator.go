@@ -90,7 +90,7 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	if scheduling.Paused {
 		return evaluatedFront{state: "held", reason: "pull_scheduling_paused", plan: plan}, nil
 	}
-	suppressed, err := e.automaticPullSuppressed(ctx, q, r, plan.Pull.Number)
+	suppressed, err := e.automaticPullSuppressed(ctx, q, r, plan)
 	if err != nil {
 		return evaluatedFront{}, err
 	}

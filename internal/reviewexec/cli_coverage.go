@@ -65,6 +65,34 @@ func (e *Engine) Comparison(ctx context.Context, project string, current SourceP
 	return result, nil
 }
 
+// Retained partial findings are obligations even after execution releases its
+// reservation. Use existing operation/evidence indexes, independently of the
+// completed-round proof ledger and the currently published browser snapshot.
+const partialCLIResults = ` FROM review_operations o
+ CROSS JOIN review_execution_evidence e ON e.project_id=o.project_id AND e.attempt_id=o.attempt_id AND e.operation_id=o.id
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state='failed'
+ AND json_extract(e.body_json,'$.capture.review.Complete')=0
+ AND (o.reason IN('coverage_incomplete','cli_partial_settled') OR json_array_length(e.body_json,'$.capture.review.Findings')>0)`
+
+const partialCLIPending = ` AND json_array_length(e.body_json,'$.capture.review.Findings')>0
+ AND (NOT EXISTS(SELECT 1 FROM review_adjudication_state s WHERE s.project_id=e.project_id AND s.evidence_id=e.id)
+ OR EXISTS(SELECT 1 FROM review_adjudication_state s, json_each(s.body_json,'$.findings') f
+ WHERE s.project_id=e.project_id AND s.evidence_id=e.id
+ AND (json_extract(f.value,'$.disposition')='unadjudicated' OR
+ (json_extract(f.value,'$.disposition')='accepted' AND json_extract(f.value,'$.fix_sha')=''))))`
+
+// Compare the admitted Git identities. A change in scheduling or adjudication
+// alone must not spend another automatic CLI run on the same partial input.
+func partialCLIComparisonExists(ctx context.Context, q EvidenceQuery, project string, repo, number int64, head, base, ref, parent string, parentNumber int64) (bool, error) {
+	var exists bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1`+partialCLIResults+`
+ AND o.head_sha=? AND json_extract(e.body_json,'$.anchor.repository_id')=?
+ AND json_extract(e.body_json,'$.anchor.base_sha')=? AND json_extract(e.body_json,'$.anchor.base_ref')=?
+ AND json_extract(e.body_json,'$.anchor.parent_sha')=? AND json_extract(e.body_json,'$.anchor.parent_pull_number')=?)`,
+		project, number, head, repo, base, ref, parent, parentNumber).Scan(&exists)
+	return exists, err
+}
+
 const (
 	comparisonDirtyExists   = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='dirty')`
 	comparisonPendingExists = `EXISTS(SELECT 1 FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending')`
@@ -87,6 +115,11 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 	}
 	if dirty {
 		return ComparisonState{}, &automaticProjectStateError{adjudicationStorageError()}
+	}
+	if channel == "cli" && !result.Pending {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1"+partialCLIResults+partialCLIPending+")", project, number).Scan(&result.Pending); err != nil {
+			return ComparisonState{}, err
+		}
 	}
 	if channel == "hosted" {
 		ids, err := reviews.PendingExternalHosted(ctx, tx, project, repositoryID, number, 1)

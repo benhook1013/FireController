@@ -199,14 +199,14 @@ func TestPackagedBrowserSmoke(t *testing.T) {
 		MetadataStreams          int    `json:"metadata_streams"`
 		InboxStreams             int    `json:"inbox_streams"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.RepeatedFallbackHash || result.FixtureWrites != 25 || result.SessionPosts != 4 || result.SessionDeletes != 4 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ProgressAccessRefusals != 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.RepeatedFallbackHash || result.FixtureWrites != 26 || result.SessionPosts != 4 || result.SessionDeletes != 4 || result.SessionRenewals != 3 || result.MissingSessionRefusals < 1 || result.ProgressAccessRefusals != 1 || result.ActionWrites != 7 || !result.MetadataReconnect || result.InjectedMetadataFailures != 1 || result.InjectedConsoleErrors < 0 || result.InjectedConsoleErrors > 1 || result.PresentationReads != 4 || result.MetadataStreams < 3 || result.MetadataStreams > 4 || result.InboxStreams < 2 || result.InboxStreams > 3 {
 		t.Fatalf("invalid packaged browser result: fixture_writes=%d posts=%d deletes=%d renewals=%d refusals=%d actions=%d metadata=%t injected=%d console=%d reads=%d streams=%d inbox=%d", result.FixtureWrites, result.SessionPosts, result.SessionDeletes, result.SessionRenewals, result.MissingSessionRefusals, result.ActionWrites, result.MetadataReconnect, result.InjectedMetadataFailures, result.InjectedConsoleErrors, result.PresentationReads, result.MetadataStreams, result.InboxStreams)
 	}
 	daemon.stop(t)
 	if external.Load() != 0 {
 		t.Fatal("browser smoke attempted external HTTP")
 	}
-	t.Logf("packaged browser passed: total=%s viewport=390 repeated_fallback_hash=passed fixture_writes=25 session_posts=4 session_deletes=4 session_renewals=3 missing_session_control=passed progress_access_refusal=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
+	t.Logf("packaged browser passed: total=%s viewport=390 repeated_fallback_hash=passed fixture_writes=26 session_posts=4 session_deletes=4 session_renewals=3 missing_session_control=passed progress_access_refusal=passed browser_action_writes=7 metadata_reconnect=true injected_metadata_failures=1 reader_presentation_reads=4 reader_metadata_streams=%d reader_inbox_streams=%d daemon_external_http=0 page_external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.MetadataStreams, result.InboxStreams, engine.Load())
 }
 
 // The only early driver output is its owned Chromium group ID. Keep all output

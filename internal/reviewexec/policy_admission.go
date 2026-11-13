@@ -218,6 +218,23 @@ func (e *Engine) verifyAction(ctx context.Context, tx *sql.Tx, project, attemptI
 	if state.Pending {
 		return core.Fail("review_evidence_pending", "Resolve retained native evidence in the selected channel before starting another review.", 409)
 	}
+	if operation.Channel == "cli" {
+		selection, err := automaticOperationSelection(ctx, tx, operation)
+		if err != nil {
+			return err
+		}
+		if selection != "" {
+			a := attempt.Anchor
+			repeat, err := partialCLIComparisonExists(ctx, tx, project, current.RepositoryID, operation.PullNumber,
+				a.CandidateSHA, a.BaseSHA, a.BaseRef, a.ParentSHA, a.ParentPullNumber)
+			if err != nil {
+				return err
+			}
+			if repeat {
+				return sourceHold("cli_partial_comparison_already_reviewed")
+			}
+		}
+	}
 	if state.Covered && !current.RoundsConfigured {
 		return &core.Error{Code: "review_held", Message: "This PR already has a completed review in the selected channel.", Status: 409, Details: map[string]string{"reason": "target_already_covered"}}
 	}

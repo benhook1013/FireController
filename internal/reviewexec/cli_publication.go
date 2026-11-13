@@ -111,7 +111,20 @@ func publishEvidenceTx(ctx context.Context, tx *sql.Tx, project, evidenceID stri
 		}
 		return receipt, nil
 	}
-	receipt, err = reviews.PublishNative(ctx, tx, scope, reviews.NativePublication{Pull: pull, Run: &run, ExternalHostedSourceID: externalSourceID})
+	// Link the exact attempt in the same snapshot that first exposes its result.
+	// The next journal transition still owns the final execution status.
+	publication := reviews.NativePublication{Pull: pull, Run: &run, ExternalHostedSourceID: externalSourceID}
+	if operation.Reason != "hosted_retained_evidence_recovered" {
+		// Hosted recovery publishes its settled attempt through its own guarded
+		// transition in this same transaction.
+		projected, err := journalBrowserAttempt(ctx, tx, operation, attempt)
+		if err != nil {
+			return reviews.Receipt{}, err
+		}
+		projected.SourceRunID = run.SourceRunID
+		publication.Attempt = &projected
+	}
+	receipt, err = reviews.PublishNative(ctx, tx, scope, publication)
 	return receipt, err
 }
 

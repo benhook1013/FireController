@@ -81,13 +81,18 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	}
 	return err
 }
-func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Operation) error {
+func automaticOperationSelection(ctx context.Context, tx *sql.Tx, o Operation) (string, error) {
 	var selection string
 	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.operation_id=?`, o.ProjectID, o.ID).Scan(&selection)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return "", nil
 	}
-	if err != nil {
+	return selection, err
+}
+
+func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Operation) error {
+	selection, err := automaticOperationSelection(ctx, tx, o)
+	if err != nil || selection == "" {
 		return err
 	}
 	r, err := readRun(ctx, tx, o.ProjectID, selection)
@@ -377,13 +382,21 @@ func automaticHostedPendingPullChannel(ctx context.Context, tx *sql.Tx, project 
 	return pending, err
 }
 
-func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run, pull int64) (bool, error) {
+func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run, plan *SourcePlan) (bool, error) {
+	pull := plan.Pull.Number
 	var automatic bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
 		return false, err
 	}
 	if !automatic {
 		return false, nil
+	}
+	if r.Channel == "cli" {
+		exists, err := partialCLIComparisonExists(ctx, tx, r.ProjectID, plan.Repository.ID, pull,
+			plan.Pull.HeadSHA, plan.Pull.BaseSHA, plan.Pull.BaseRef, plan.ParentSHA, plan.ParentPullNumber)
+		if err != nil || exists {
+			return exists, err
+		}
 	}
 	pending, err := automaticHostedPendingPullChannel(ctx, tx, r.ProjectID, pull, r.Channel)
 	if err != nil || pending {

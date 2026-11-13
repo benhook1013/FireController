@@ -162,6 +162,6 @@ it('keeps a settled partial CLI attempt in history and shows only the current qu
   expect(reviewAttemptStatus(settled, progress)).toBeUndefined();
   expect(reviewAttemptStatus(settled, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
   expect(reviewAttemptStatus(settled, progress, undefined, true)).toBeUndefined();
-  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Retry pending', cause: undefined, description: undefined });
+  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Pending', cause: undefined, description: undefined });
   expect(reviewAttemptCause(settled)).toBe('The CLI review ended without full coverage');
 });

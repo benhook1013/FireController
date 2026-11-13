@@ -52,7 +52,13 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 		if dirty {
 			return adjudicationStorageError()
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT operation_id,evidence_id FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending' ORDER BY operation_id LIMIT 6`, op.ProjectID, op.PullNumber, op.Channel)
+		query := `SELECT operation_id,evidence_id FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel=? AND state='pending'`
+		args := []any{op.ProjectID, op.PullNumber, op.Channel}
+		if op.Channel == "cli" {
+			query += " UNION SELECT o.id,e.id" + partialCLIResults + partialCLIPending
+			args = append(args, op.ProjectID, op.PullNumber)
+		}
+		rows, err := tx.QueryContext(ctx, query+" ORDER BY operation_id LIMIT 6", args...)
 		if err != nil {
 			return err
 		}
@@ -97,7 +103,8 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 					return adjudicationStorageError()
 				}
 				before := len(result.Items)
-				if !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+				partial := op.Channel == "cli" && !evidence.Capture.Review.Complete && len(state.Findings) > 0
+				if !partial && (!evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed") {
 					item.Reason = "capture_incomplete"
 					add(item)
 				} else {
@@ -122,7 +129,7 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 							break
 						}
 					}
-					if !state.Finalized && !undecided && len(result.Items) <= pendingEvidenceLimit {
+					if !partial && !state.Finalized && !undecided && len(result.Items) <= pendingEvidenceLimit {
 						v := item
 						v.Reason = "finalization_pending"
 						add(v)

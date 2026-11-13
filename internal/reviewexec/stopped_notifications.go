@@ -20,7 +20,7 @@ func stoppedOperationNeedsNotice(state, reason string, interruptedPreparation bo
 	// Waiting is determined by the operation state, never by a reason's
 	// wording. A terminal allowance/provider refusal has no scheduled retry.
 	switch reason {
-	case cliDraftWait, "pull_draft", "target_already_covered", "review_round_closed", "review_round_complete", "review_round_capacity", "restore_reconciled", "cli_partial_settled", "target_merged", "target_closed", "target_superseded":
+	case cliDraftWait, "pull_draft", "target_already_covered", "review_round_closed", "review_round_complete", "review_round_capacity", "restore_reconciled", "cli_partial_settled", "cli_partial_comparison_already_reviewed", "target_merged", "target_closed", "target_superseded":
 		return false
 	}
 	return true

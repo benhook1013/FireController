@@ -11,6 +11,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func schedulingCLIEnable(t *testing.T, f *attemptFixture, revision int64, on bool) {
@@ -299,6 +300,69 @@ func TestSchedulingCLIPublicationAndAdjudicationRemainRequired(t *testing.T) {
 	if op := cliWaitRead(t, f, a.OperationID); op.State != "completed" {
 		t.Fatal("automation changed published provider result", op)
 	}
+}
+
+func TestSchedulingCLIPartialFindingsHoldAndChangedComparisonAdvances(t *testing.T) {
+	f, a, evidence := cliPublicationFixture(t, 2, "failed")
+	ctx := t.Context()
+	if _, err := f.e.PublishEvidence(ctx, attemptProject, evidence.ID, cliPublicationPull(2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(ctx, attemptProject, a.ID, a.Revision, "failed", "coverage_incomplete", ""); err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `INSERT INTO workers VALUES(?,'selection-worker','Selector')`, attemptProject)
+	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
+	one := int64(1)
+	_, err := f.e.Configure(ctx, f.scope(t, attemptProject, f.admin, true), "partial-single-pull", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulingCLIEnable(t, f, 0, true)
+	head := evidence.Anchor.CandidateSHA
+	reader := &refreshTestReader{pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+		return reviewprovider.Pull{Number: number, RepositoryID: evidence.Anchor.RepositoryID, State: "open", HeadSHA: head, BaseSHA: evidence.Anchor.BaseSHA, BaseRef: evidence.Anchor.BaseRef, ChangedFiles: 1}, nil
+	}}
+	check := func(reason string) {
+		t.Helper()
+		ok, err := f.e.generateAutomaticCLI(ctx, map[string]TargetReader{"test-capability": reader})
+		if err != nil || !ok {
+			t.Fatal("expected a source selection", ok, err)
+		}
+		selectionNext(t, f, reader)
+		run := schedulingLatest(t, f)
+		if reason == "" {
+			if run.State != "selected" || run.OperationID == "" || cliWaitRead(t, f, run.OperationID).HeadSHA != head {
+				t.Fatal("qualified changed comparison did not advance", run)
+			}
+		} else if run.State != "held" || run.OperationID != "" || run.Reason != reason {
+			t.Fatal("automatic selection should hold", reason, run)
+		}
+	}
+	check("review_evidence_pending")
+	adjudicationDecide(t, f, evidence.ID, "partial-accept", 0, 0, "accepted")
+	adjudicationDecide(t, f, evidence.ID, "partial-reject", 1, 1, "rejected")
+	check("review_evidence_pending")
+	coverageFix(t, f, evidence.ID, "partial-fix", 2, 0, "")
+	check("automatic_intent_retained")
+	if detail := cliPublicationDetail(t, f, 2, evidence.ID); detail.Run.Complete || detail.Run.Finalized || detail.Run.Accepted != 1 || detail.Run.Fixed != 1 {
+		t.Fatal("partial progress was lost or incorrectly credited", detail.Run)
+	}
+	head = strings.Repeat("d", 40)
+	changed := reviews.PullInput{Number: 2, Title: "Changed PR", State: "open", HeadSHA: head, BaseSHA: evidence.Anchor.BaseSHA, BaseRef: evidence.Anchor.BaseRef}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	err = f.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		pins, err := reviews.PinSourceMetadata(ctx, tx, attemptProject, []int64{2})
+		if err != nil {
+			return err
+		}
+		_, err = reviews.PublishSourceMetadata(ctx, tx, scope, evidence.Anchor.RepositoryID, pins, []reviews.PullInput{changed})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("")
 }
 
 func TestSchedulingCLIActualParentPauseDoesNotBlockChild(t *testing.T) {

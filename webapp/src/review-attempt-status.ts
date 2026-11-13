@@ -50,6 +50,7 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     process_not_started: 'The review process could not start',
     execution_interrupted: 'The review process was interrupted',
     cli_partial_settled: 'The CLI review ended without full coverage',
+    cli_partial_comparison_already_reviewed: 'Automatic CLI is waiting for the comparison to change',
     capture_retention_failed: 'The review result could not be retained',
     source_obligations_pending: 'Carried review work is still pending',
     routed_findings_pending: 'Incoming findings still need handling',
@@ -81,7 +82,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
     return activeAttemptStatus(attempt, progress);
   }
   if ((progress?.pending_execution ?? 0) > 0) return {
-    text: stopped ? 'Retry pending' : 'Pending',
+    text: stopped && !settled ? 'Retry pending' : 'Pending',
     cause: stopped && !settled ? `Previous attempt: ${reviewAttemptCause(attempt)}` : undefined,
     description: stopped && !settled ? `A review request is pending after the stopped attempt. This does not establish that a provider review has started. ${diagnostic}` : undefined,
   };

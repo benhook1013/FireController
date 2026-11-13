@@ -265,12 +265,12 @@ func actionRefusalReason(err error, fallback string) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
 		switch failure.Code {
-		case "review_round_closed", "review_round_complete", "review_round_capacity", "review_round_changed":
+		case "review_evidence_pending", "review_round_closed", "review_round_complete", "review_round_capacity", "review_round_changed":
 			return failure.Code
 		case "review_held":
 			if details, ok := failure.Details.(map[string]string); ok {
 				switch reason := details["reason"]; reason {
-				case "pull_draft", "target_already_covered", "hosted_chat_cooldown":
+				case "pull_draft", "target_already_covered", "hosted_chat_cooldown", "cli_partial_comparison_already_reviewed":
 					return reason
 				}
 				if details["reason"] == "target_changed" {

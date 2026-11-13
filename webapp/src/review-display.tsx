@@ -61,11 +61,11 @@ export function ReviewLaneDisplay({ title, label = typeof title === 'string' ? t
 }
 
 type RoundPillContent = { className: string; title: string; 'aria-label': string; children: ReactNode };
-export function reviewRoundCountText(found: number, accepted: number | '?', routed: number | '?'): string {
+export function reviewRoundCountText(found: number | '?', accepted: number | '?', routed: number | '?'): string {
   return `${found}/${accepted}/${routed}`;
 }
 export function ReviewRoundPillDisplay({ found, accepted, routed, className = '', zeroAccepted = false, title, label, wrap, children }: {
-  found: number;
+  found: number | '?';
   accepted: number | '?';
   routed: number | '?';
   className?: string;
