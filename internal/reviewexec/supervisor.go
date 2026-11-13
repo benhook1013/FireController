@@ -292,13 +292,22 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	// Apply the dispatch bound after filtering known waits and unavailable
 	// accounts. The read transaction supplies the overall scan deadline.
 	limit := len(out) + 256
+	position := cursor
+	var firstReturned *pendingScanPosition
+	resumeReturned := func() {
+		if firstReturned != nil {
+			advance(*firstReturned)
+		}
+	}
 	for len(out) < limit && rows.Next() {
 		var project, operation, channel, fingerprint, createdAt string
 		if err := rows.Scan(&project, &operation, &channel, &fingerprint, &createdAt); err != nil {
 			advance(cursor)
 			return nil, err
 		}
-		advance(pendingScanPosition{createdAt, operation})
+		before := position
+		position = pendingScanPosition{createdAt, operation}
+		advance(position)
 		if channel == "cli" {
 			if cfg, ok := configurations[project]; ok {
 				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
@@ -315,11 +324,15 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 				advance(cursor) // Never rotate past an operational storage failure.
 			}
 			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+				resumeReturned()
 				return out, nil
 			}
 			return nil, err
 		}
 		if o.ID != "" {
+			if firstReturned == nil {
+				firstReturned = &before
+			}
 			out = append(out, o)
 		}
 	}
@@ -328,12 +341,17 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 			advance(cursor)
 		}
 		if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+			resumeReturned()
 			return out, nil
 		}
 		return nil, err
 	}
 	if len(out) < limit {
 		advance(pendingScanPosition{})
+	} else {
+		// Selection processes at most one returned candidate. Do not rotate past
+		// the unprocessed remainder merely because the scan filled its batch.
+		resumeReturned()
 	} // End of snapshot: wrap to oldest next pass.
 	return out, nil
 }
