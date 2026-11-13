@@ -2,7 +2,7 @@
 
 This slice follows native CI observation and keeps an authorized review request
 alive when its provider has no available allowance. It does not discover new
-reviews, increase grants, adjudicate findings, or merge pull requests. This stage delivers retained-state migration, validated historical records, admission guards and CLI quota/draft waiting. The Hosted adapter does not yet schedule or replay retained cooldowns; that runtime integration follows in a dependent stage. The Hosted behavior below defines the target contract and the historical records accepted by this foundation. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
+reviews, increase grants, adjudicate findings, or merge pull requests. This stage integrates Hosted cooldown retention and provider-free recovery above the retained-state and CLI behavior foundation. Public progress/control endpoints and bound client, CLI and MCP controls follow in dependent stages.
 
 ## One request, multiple unused preparations
 

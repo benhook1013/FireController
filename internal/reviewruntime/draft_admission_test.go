@@ -140,6 +140,25 @@ func TestDraftNativeDirectAndFinalAdmissionRefuseBothChannels(t *testing.T) {
 	}
 }
 
+func TestDraftHostedTimerRetryHoldsOriginalWithoutFreshProviderQuery(t *testing.T) {
+	f, now := newHostedCooldownRetryFixture(t)
+	op, first, config := f.startHosted(t)
+	waiting := scheduleRuntimeCooldown(t, f, op, first, config)
+	due, err := time.Parse(time.RFC3339Nano, waiting.Wait.RetryNotBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = due.Add(time.Millisecond)
+	setRuntimeDraft(f.cliDriverFixture, true)
+	held := waitRuntimeDraftState(t, f.cliDriverFixture, f.hosted, op.ID, "hosted")
+	if held.ID != op.ID || held.AttemptID == first.ID || f.provider.queries != 1 || f.provider.reviews != 0 {
+		t.Fatal("draft retry rebound intent or repeated provider work", held, f.provider.queries, f.provider.reviews)
+	}
+	if hostedDriverJournal(t, f, first.ID) != "held" {
+		t.Fatal("Draft changed the original ended cooldown attempt")
+	}
+}
+
 func TestDraftAfterHostedTriggerDoesNotCancelOriginalReview(t *testing.T) {
 	f := newHostedDriverFixture(t)
 	op, attempt := f.prepareHosted(t)

@@ -162,9 +162,17 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			d.mu.Unlock()
 		}
 	}()
+	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		return preparation, err
+	}
 	reads := newSourceReads(d.provider)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
+		var refusal *core.Error
+		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) {
+			return preparation, reviewHold("source_unavailable")
+		}
 		return preparation, err
 	}
 	if err := d.checkIdle(ctx, plan); err != nil {
@@ -175,6 +183,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
+	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
+		return preparation, reviewHold("source_changed")
+	}
 	actor, err := d.provider.CurrentActor(ctx)
 	if err != nil {
 		return preparation, reviewHold("provider_actor_unproven")
@@ -189,6 +200,14 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			break
 		}
 		if observed.Observation.State == "cooldown_observed" {
+			if err := retryAllowanceRetention(ctx, d.wait, func() error {
+				return RetainHostedCooldown(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture)
+			}); err != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+				}
+				return preparation, reviewHold("hosted_allowance_unproven")
+			}
 			return preparation, reviewHold("hosted_allowance_cooldown")
 		}
 		if observed.Reason != "allowance_not_proven" || pass == 7 {
