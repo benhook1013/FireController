@@ -1275,7 +1275,7 @@ try {
   checkpoint = 'partial-history-and-findings';
   const partialRow = page.locator('.review-history-row').filter({hasText:'Partial review'});
   await expect(partialRow).toContainText('1 undecided');
-  await expect(partialRow).toContainText('Accepted: 1');
+  await expect(partialRow).toContainText('Accepted: 0/1/0');
   const partialDetails = partialRow.getByRole('link',{name:/run details/});
   await expect(partialDetails).toHaveAttribute('href',partialURL);
   await partialDetails.click();

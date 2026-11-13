@@ -192,12 +192,12 @@ const timelineFindingRevisionSQL = `CASE WHEN r.source='native-executor' AND r.f
  ORDER BY v.version_revision ASC LIMIT 1)
  ELSE r.version_revision END`
 
-// Fetch only this selected page's scalar finding inventory, with a byte-bounded
-// detail prefix exclusively for Hosted findings lacking scalar severity.
 func isPartialCLIResult(run RunSummary) bool {
 	return run.Source == "native-executor" && run.Channel == "cli" && run.Outcome == "failed" && !run.Complete && run.Found > 0
 }
 
+// Fetch only this selected page's scalar finding inventory, with a byte-bounded
+// detail prefix exclusively for Hosted findings lacking scalar severity.
 func enrichTimelineSeverity(ctx context.Context, tx *sql.Tx, project, snapshot string, number int64, items []RunSummary) error {
 	if len(items) == 0 {
 		return nil
@@ -271,10 +271,13 @@ func enrichTimelineSeverity(ctx context.Context, tx *sql.Tx, project, snapshot s
 		return err
 	}
 	for i := range items {
-		if isPartialCLIResult(items[i]) {
+		partial := isPartialCLIResult(items[i])
+		if partial {
 			items[i].RetainedUndecided = &undecided[i]
 		}
-		if items[i].Complete && totals[i] == items[i].Found && accepted[i] == items[i].Accepted {
+		// A partial run can reconcile all recorded accepted findings even if
+		// the provider reported additional findings that were never retained.
+		if (partial || items[i].Complete && totals[i] == items[i].Found) && accepted[i] == items[i].Accepted {
 			buckets[i].Complete = true
 			items[i].AcceptedSeverity = &buckets[i]
 		} else {

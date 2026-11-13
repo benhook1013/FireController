@@ -478,7 +478,7 @@ export function reviewDuration(run: ReviewRunSummary): string | undefined {
   return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
 export function ReviewAcceptedCounts({ run }: { run: ReviewRunSummary }) {
-  if (!run.finalized) return <span className="review-count review-count-accepted">Accepted: <strong>{visibleReviewCounts(run).accepted}</strong></span>;
+  if (!run.finalized && !partialCLIResult(run)) return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
   const counts = run.accepted_severity;
   if (!counts?.complete) return <span className="review-count review-count-accepted" title="Accepted severity breakdown unavailable for this retained record">Accepted: <strong>{run.accepted}</strong></span>;
   return <span className="review-count review-count-accepted" title={`${run.accepted} accepted findings · Major / Minor / Trivial`}>

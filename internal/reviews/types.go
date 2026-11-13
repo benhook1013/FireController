@@ -124,7 +124,8 @@ type AttemptSummary struct {
 }
 
 // AcceptedSeverity is a read-only breakdown of the authoritative accepted scalar.
-// Incomplete inventories return complete=false and zero buckets for scalar fallback.
+// Complete means the accepted severity buckets reconcile to the accepted scalar.
+// A partial review can have a complete breakdown of its recorded accepted findings.
 type AcceptedSeverity struct {
 	Critical int64 `json:"critical"`
 	Major    int64 `json:"major"`
