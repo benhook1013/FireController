@@ -149,8 +149,14 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 			}
 			// A negative observation never grants dispatch permission.
 			observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+			recovery := reviewexec.CLIExhaustionRecovery{Operation: current.Operation, Attempt: attempt, Observation: observation}
+			// Invalid provider values are not a recoverable storage failure: no
+			// private source has been retained and no dispatch is authorized.
+			if err := reviewexec.ValidateCLIExhaustionRecovery(recovery); err != nil {
+				return preparation, reviewHold("allowance_unavailable")
+			}
 			retentionCtx, retentionCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-			retainErr := d.exhaustions.Save(retentionCtx, reviewexec.CLIExhaustionRecovery{Operation: current.Operation, Attempt: attempt, Observation: observation})
+			retainErr := d.exhaustions.Save(retentionCtx, recovery)
 			retentionCancel()
 			if retainErr != nil {
 				return preparation, &reviewexec.PreparationRecoveryError{Err: retainErr}
