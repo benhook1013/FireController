@@ -42,8 +42,8 @@ func TestAgentPendingCommitStatusExplainsSameContextWithoutChangingFacts(t *test
 				t.Fatal("wrong pending-status applicability", a, w)
 			}
 			if want {
-				if a.Diagnostic.Explanation != w.Targets[0].Diagnostic.Explanation || a.Diagnostic.NextAction != w.Targets[0].Diagnostic.NextAction {
-					t.Fatal("watch and assessment duplicated/drifted guidance")
+				if a.Diagnostic.Explanation != w.Targets[0].Diagnostic.Explanation || !strings.HasPrefix(w.Targets[0].Diagnostic.NextAction, a.Diagnostic.NextAction) || !strings.Contains(w.Targets[0].Diagnostic.NextAction, "bounded wait has ended") {
+					t.Fatal("watch lost the assessment guidance or its subscription boundary")
 				}
 				text := a.Diagnostic.Explanation + " " + a.Diagnostic.NextAction
 				for _, required := range []string{`"validate / branch barrier"`, "pending, not a CI failure", "commit status 91", "do not rerun CI"} {
