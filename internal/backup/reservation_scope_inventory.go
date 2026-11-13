@@ -114,6 +114,28 @@ func validateAttemptIndexSchema(ctx context.Context, db sqlReader) error {
 	if uniqueCount != 2 {
 		return invalid()
 	}
+	// A rowid INTEGER primary key has no unique index of its own, so a
+	// leftover operation UNIQUE constraint can otherwise impersonate the
+	// expected count. Require the canonical text identity and its actual PK
+	// index, not merely two arbitrary unique indexes.
+	var identityColumns, primaryColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE name='id' AND type='TEXT' AND pk=1),count(*) FILTER (WHERE pk>0) FROM pragma_table_info('review_execution_attempts')`).Scan(&identityColumns, &primaryColumns); err != nil {
+		return readError()
+	}
+	if identityColumns != 1 || primaryColumns != 1 {
+		return invalid()
+	}
+	var primaryIndex string
+	if err := db.QueryRowContext(ctx, `SELECT name FROM pragma_index_list('review_execution_attempts') WHERE origin='pk' AND "unique"=1 AND partial=0`).Scan(&primaryIndex); err != nil {
+		return readError()
+	}
+	var keyColumns, canonicalKeys int
+	if err := db.QueryRowContext(ctx, `SELECT count(*),count(*) FILTER (WHERE name='id' AND coll='BINARY' AND cid>=0) FROM pragma_index_xinfo(?) WHERE key=1`, primaryIndex).Scan(&keyColumns, &canonicalKeys); err != nil {
+		return readError()
+	}
+	if keyColumns != 1 || canonicalKeys != 1 {
+		return invalid()
+	}
 	for _, index := range []struct {
 		name, definition string
 		unique, partial  int

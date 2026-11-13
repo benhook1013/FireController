@@ -218,7 +218,7 @@ func TestWaitDeadlineRuntimePreservesLookupErrors(t *testing.T) {
 			f, a, _ := deadlineRuntimeFixture(t, channel)
 			o := cliWaitRead(t, f, a.OperationID)
 			before := deadlineRuntimeState(t, f)
-			for _, match := range []string{"SELECT a.id FROM review_execution_attempts a", "SELECT created_at FROM review_execution_transitions"} {
+			for _, match := range []string{"FROM review_execution_attempts a", "SELECT created_at FROM review_execution_transitions"} {
 				for _, canceled := range []bool{false, true} {
 					q := cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: match, cancel: canceled}
 					wait, err := readOperationWait(t.Context(), q, o)
