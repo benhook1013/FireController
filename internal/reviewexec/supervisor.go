@@ -81,15 +81,15 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	return done, nil
 }
 
-// supervise owns the same two finite work slots. Only one probes retained Draft
-// waits, so slow source reads cannot occupy both dispatch workers. Provider
+// supervise owns two finite work slots. A shared probe permit lets either idle
+// worker probe retained Draft waits without occupying both workers. Provider
 // waits never hold a database transaction; startup recovery is already complete.
 func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
-	for worker := range 2 {
+	for range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -103,7 +103,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 				if workCtx.Err() != nil {
 					return
 				}
-				if err := e.processNextForWorker(workCtx, owned, worker == 0); err != nil {
+				if err := e.processNext(workCtx, owned); err != nil {
 					select {
 					case failures <- err:
 					default:
@@ -445,10 +445,22 @@ func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
-	return e.processNextForWorker(ctx, drivers, true)
+	probe := e.draftProbePermit.CompareAndSwap(false, true)
+	release := func() {
+		if probe {
+			e.draftProbePermit.Store(false)
+			probe = false
+		}
+	}
+	defer release()
+	return e.processNextWithProbe(ctx, drivers, probe, release)
 }
 
 func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
+	return e.processNextWithProbe(ctx, drivers, probeDrafts, func() {})
+}
+
+func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Driver, probeDrafts bool, releaseProbe func()) error {
 	operations, err := e.pendingForWorker(ctx, probeDrafts)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
@@ -461,6 +473,10 @@ func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Dr
 			return nil
 		}
 		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		// Selection includes at most one Draft intent, ahead of ordinary work.
+		// Its bounded source read is over; never retain the permit during a
+		// potentially long preparation or dispatch.
+		releaseProbe()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
