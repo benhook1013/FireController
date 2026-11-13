@@ -115,7 +115,7 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 				}
 			}
 			if mode == "retention_refused" {
-				// Refuse only the optional observation/event transaction after the
+				// Refuse the observation/event transaction after the
 				// real Runner has strictly parsed and verified a zero balance.
 				if _, err := f.store.DB().Exec(`CREATE TRIGGER refuse_exhaustion_event BEFORE INSERT ON events WHEN NEW.event_type='review.cli_preflight' BEGIN SELECT RAISE(ABORT,'synthetic private retention failure'); END`); err != nil {
 					t.Fatal(err)
@@ -139,6 +139,34 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			if err != nil {
 				cancel()
 				t.Fatal(err)
+			}
+			if mode == "retention_refused" {
+				defer cancel()
+				select {
+				case err := <-done:
+					var recovery *reviewexec.PreparationRecoveryError
+					if !errors.As(err, &recovery) {
+						t.Fatal("failed retention did not request recovery", err)
+					}
+				case <-time.After(8 * time.Second):
+					t.Fatal("supervisor did not return the retention failure")
+				}
+				operation, err := f.engine.ReadOperation(t.Context(), f.scope(t, f.writer, false), receipt.ID)
+				if err != nil || operation.State != "preparing" || operation.AttemptID == "" || reviews.Load() != 0 {
+					t.Fatal("failed retention did not preserve the original unused preparation", operation, err)
+				}
+				if _, found, err := f.driver.exhaustions.LoadCLIExhaustion(t.Context(), operation.AttemptID); err != nil || !found {
+					t.Fatal("failed retention lost the pre-SQL observation", found, err)
+				}
+				if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 ||
+					cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 ||
+					cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.cli_preflight'`) != 0 {
+					t.Fatal("failed retention did not leave exactly one reserved, undispatched preparation")
+				}
+				if log, err := os.ReadFile(f.log); err != nil || string(log) != "usage --agent\n" {
+					t.Fatal("failed retention triggered another provider call", err)
+				}
+				return
 			}
 			var once sync.Once
 			stop := func() {
@@ -196,9 +224,6 @@ func TestCLIDriverRealUsageHoldSettlesSupervisorWithoutReview(t *testing.T) {
 			}
 			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`) != wantRows {
 				t.Fatal("preparation hold retained permission/reservation/evidence")
-			}
-			if mode == "retention_refused" && cliCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.cli_preflight'`) != 0 {
-				t.Fatal("failed negative retention left an observation event")
 			}
 			var heldReason string
 			attemptID := operation.AttemptID
