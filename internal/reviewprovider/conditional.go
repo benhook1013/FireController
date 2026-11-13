@@ -19,6 +19,23 @@ type conditionalEntry struct {
 	used    uint64
 }
 
+// A cached Link without rel=next describes an apparent end. On a full
+// page that conclusion can become stale while the ETag remains unchanged.
+func paginationContinues(headers []string) bool {
+	for _, value := range headers {
+		links, err := parseLinkHeader(value)
+		if err != nil {
+			return false
+		}
+		for _, link := range links {
+			if link.next {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Cache scope is one authenticated adapter. It never substitutes for a server
 // read: only a matching 304 permits reuse, including the original page links.
 func (g *GitHub) conditionalRequest(request *http.Request) (conditionalEntry, bool) {

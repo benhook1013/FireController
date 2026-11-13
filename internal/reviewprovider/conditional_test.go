@@ -2,13 +2,16 @@ package reviewprovider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestConditionalGETRevalidatesAuthenticatedBodiesAndPageLinks(t *testing.T) {
@@ -45,6 +48,70 @@ func TestConditionalGETRevalidatesAuthenticatedBodiesAndPageLinks(t *testing.T) 
 	}
 	if len(g.cache) != 2 {
 		t.Fatal("page cache", len(g.cache))
+	}
+}
+
+func TestHostedObservationFindsAllowanceAfterFullCachedTerminalPage(t *testing.T) {
+	allowance, intent, posting, provider, earliest := allowanceFixture(t)
+	query, reply := allowance.IssueComments[0], allowance.IssueComments[1]
+	reply.Body = hostedAllowanceGeneratedEnvelope + hostedAllowanceAvailableBasePlan
+	var appended atomic.Bool
+	var oldPageValidated, newPageRead atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := "/repos/owner/repo/issues/1/comments"
+		if r.URL.Path != path {
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		etag := fmt.Sprintf("\"page-%d\"", page)
+		if r.Header.Get("If-None-Match") == etag {
+			if page == 1 && appended.Load() {
+				oldPageValidated.Store(true)
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		link := func(n int, rel string) string {
+			return fmt.Sprintf("<%s%s?page=%d&per_page=100>; rel=%s", serverURL(r), path, n, rel)
+		}
+		var rows []githubIssueComment
+		switch page {
+		case 1, 2:
+			if page == 1 || appended.Load() {
+				w.Header().Add("Link", link(page+1, "next"))
+			}
+			if page == 2 {
+				w.Header().Add("Link", link(1, "prev"))
+			}
+			for i := 0; i < 100; i++ {
+				rows = append(rows, githubIssueComment{ID: int64(1000 + (page-1)*100 + i), Body: "Earlier discussion", User: githubActor{ID: posting.ID, Login: posting.Login, Type: posting.Kind}, CreatedAt: earliest.Add(-time.Minute).Format(time.RFC3339), UpdatedAt: earliest.Add(-time.Minute).Format(time.RFC3339)})
+			}
+		case 3:
+			newPageRead.Store(true)
+			for _, comment := range []IssueComment{query, reply} {
+				rows = append(rows, githubIssueComment{ID: comment.ID, Body: comment.Body, User: githubActor{ID: comment.Author.ID, Login: comment.Author.Login, Type: comment.Author.Kind}, CreatedAt: comment.CreatedAt.Format(time.RFC3339), UpdatedAt: comment.UpdatedAt.Format(time.RFC3339)})
+			}
+		default:
+			t.Errorf("unexpected page %d", page)
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	defer server.Close()
+	g := testGitHub(server, "secret")
+	warm, err := g.ObserveHosted(t.Context(), "owner/repo", 1)
+	if err != nil || !warm.Complete || len(warm.IssueComments) != 200 {
+		t.Fatalf("warm history has %d comments: %v", len(warm.IssueComments), err)
+	}
+	appended.Store(true)
+	next, err := g.ObserveHosted(t.Context(), "owner/repo", 1)
+	if err != nil || !next.Complete || len(next.IssueComments) != 202 || !oldPageValidated.Load() || !newPageRead.Load() {
+		t.Fatalf("grown history has %d comments, preceding page revalidated=%t, new page read=%t: %v", len(next.IssueComments), oldPageValidated.Load(), newPageRead.Load(), err)
+	}
+	got, err := ResolveHostedAllowance(HostedAllowanceSnapshot{IssueComments: next.IssueComments, Complete: next.Complete, ObservedAt: next.ObservedAt}, intent, posting, provider, earliest)
+	if err != nil || got.State != "available_observed" || got.QueryCommentID != query.ID || got.ResponseCommentID != reply.ID {
+		t.Fatalf("could not attribute original allowance reply: %+v %v", got, err)
 	}
 }
 

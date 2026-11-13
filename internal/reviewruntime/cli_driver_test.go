@@ -765,7 +765,7 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	op, a := f.prepareAdmit(t, 2, 1, "changed-comparison")
 	before, _ := os.ReadFile(f.log)
 	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
-	if err != nil || result.State != "failed" || result.Reason != "source_admission_changed" {
+	if err != nil || result.State != "failed" || result.Reason != "review_evidence_pending" {
 		t.Fatal("late pending evidence did not refuse action", result, err)
 	}
 	after, _ := os.ReadFile(f.log)

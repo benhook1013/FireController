@@ -413,6 +413,15 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 		request.Header.Set("Authorization", "Bearer "+g.token)
 	}
 	cached, conditional := g.conditionalRequest(request)
+	if conditional && query.Has("page") && query.Get("per_page") == strconv.Itoa(githubPageSize) {
+		// An unchanged body cannot prove the list still ends here. A new
+		// page can appear after a full terminal page without changing its ETag.
+		var rows []json.RawMessage
+		if json.Unmarshal(cached.body, &rows) == nil && len(rows) == githubPageSize && !paginationContinues(cached.headers.Values("Link")) {
+			request.Header.Del("If-None-Match")
+			conditional = false
+		}
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
