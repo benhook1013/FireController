@@ -37,12 +37,12 @@ describe('per-PR inline retained review history', () => {
     expect(html).toContain('Resolved: <time');
   });
 
-  it('shows typed compact summaries, finish age and pinned secondary links without exposing cached findings before expansion', () => {
+  it('shows typed compact summaries, start age and pinned secondary links without exposing cached findings before expansion', () => {
     const value = run('second');
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />, { value: detail(value) });
     expect(html).toContain('>CodeRabbit CLI</span>'); expect(html).toContain('Found: <strong>2</strong>');
     expect(html).toContain('Accepted: <strong>1</strong>'); expect(html).toContain('Routed: <strong>1</strong>');
-    expect(html).toContain('dateTime="2026-10-18T00:01:00Z"'); expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('dateTime="2026-10-18T00:00:00Z"'); expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('snapshot=snapshot-one'); expect(html).toContain('Run details ↗');
     expect(html).not.toContain('Private'); expect(html).not.toContain('review-history-findings"><');
     expect(html).not.toMatch(/Ready to merge|Round 1/u);
@@ -131,10 +131,10 @@ describe('per-PR inline retained review history', () => {
   it('keeps evidence qualification without treating later Git changes as lost progress', () => {
     const value = { ...run('pending'), outcome: 'failed' as const, complete: false, attributable: false, finalized: false, finished_at: '' };
     const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="other-head" />);
-    for (const text of ['Incomplete record', 'Attribution unconfirmed', 'Started']) expect(html).toContain(text);
+    for (const text of ['Incomplete record', 'Attribution unconfirmed', `dateTime="${value.started_at}"`]) expect(html).toContain(text);
     expect(html).not.toContain('Different observed head');
     const missing = markup(<ReviewHistoryRow number={27} run={{ ...value, started_at: '', head_sha: '' }} snapshot={snapshot} head="head" />);
-    expect(missing).toContain('Date unknown'); expect(missing).toContain('Head association unknown');
+    expect(missing).toContain('Start unknown'); expect(missing).toContain('Head association unknown');
   });
   it('keeps partial and failed histories distinct from confirmed empty history', () => {
     const props = { number: 27, runs: [], snapshot, head: 'head', loading: false, failed: false, channelTotals: {hosted: 0, cli: 0, manual: 0, subagent: 0} };

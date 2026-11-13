@@ -380,7 +380,7 @@ export function ReviewPullView() {
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
-  const date = run.finished_at || run.started_at;
+  const date = run.started_at;
   const partial = partialCLIResult(run);
   const { accepted, routed } = visibleReviewCounts(run);
   const highlight = useSemanticHighlight(runDisplayFingerprint(run, head), highlights, JSON.stringify([run.source, run.source_run_id]));
@@ -389,16 +389,16 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
     !partial && !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
-  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${date ? `${run.finished_at ? 'Finished' : 'Started'} ${time(date)} (${date})` : 'Date unknown'}.${warnings ? ` ${warnings}.` : ''}`;
-  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Date unknown</span>}</ReviewRoundPillDisplay>;
+  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${date ? `Started ${time(date)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''}`;
+  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{date ? <RelativeTime value={date} /> : <span className="review-pill-age">Start unknown</span>}</ReviewRoundPillDisplay>;
 }
 function RunningReviewPill({ evidence, channel }: { evidence: ReviewActivityEvidence; channel: ReviewChannel }) {
-  const timing = evidence.kind === 'cli_process_spawned'
-    ? `CLI started ${time(evidence.process_started_at)}`
-    : `CodeRabbit activity seen ${time(evidence.observed_at)}`;
+  const cli = evidence.kind === 'cli_process_spawned';
+  const date = cli ? evidence.process_started_at : evidence.observed_at;
+  const timing = cli ? `CLI started ${time(date)}` : `CodeRabbit activity seen ${time(date)}`;
   const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} review running. Counts pending. ${timing}.`;
   return <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-running" title={description} label={description} wrap={content => <span {...content} role="img" />}>
-    <span className="review-pill-state">Running</span>
+    <span className="review-pill-state">Running</span><RelativeTime value={date} />
   </ReviewRoundPillDisplay>;
 }
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal }: {
@@ -511,7 +511,7 @@ export function ReviewHistoryRow({ number, run, snapshot, head, ordinal }: { num
     <div className="review-history-row-heading"><button className="review-history-toggle" type="button" aria-expanded={open} aria-controls={findingsID} aria-label={`${open ? 'Hide' : 'Show'} findings for ${round}`} onClick={() => setOpen(value => !value)}>
       <span className="review-history-disclosure" aria-hidden="true">{open ? '▾' : '▸'}</span>
       <span className={`review-history-kind review-history-kind-${run.channel}`}>{round}</span>
-      <span className="review-history-age">{run.finished_at ? <RelativeTime value={run.finished_at} /> : run.started_at ? <>Started <RelativeTime value={run.started_at} /></> : 'Date unknown'}{duration && <span className="review-history-duration"> · {duration}</span>}</span>
+      <span className="review-history-age">{run.started_at ? <RelativeTime value={run.started_at} /> : 'Start unknown'}{duration && <span className="review-history-duration"> · {duration}</span>}</span>
       <span className="review-history-counts"><span className="review-count review-count-found">Found: <strong>{run.found}</strong></span><ReviewAcceptedCounts run={run} /><span className="review-count review-count-routed">Routed: <strong>{visibleReviewCounts(run).routed}</strong></span></span>
     </button><Link className="review-history-details-link" to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${round} run details`}>Run details ↗</Link></div>
     <div className="review-history-flags">{partial ? <span className="review-warning">Partial review{partialPendingText(run.retained_undecided)}</span> : <>{run.outcome !== 'completed' && <span>{reviewLabel(run.outcome)}</span>}{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</>}{!head || !run.head_sha ? <span className="review-warning">Head association unknown</span> : null}</div>

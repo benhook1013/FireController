@@ -1051,11 +1051,12 @@ try {
   for (const channel of ['Hosted','CLI']) {
     const lane = activityRow.getByRole('region',{name:channel+' CodeRabbit',exact:true});
     const running = lane.getByRole('img',{name:new RegExp('^'+channel+' review running')});
-    await expect(running).toHaveText('?/?/?Running');
+    await expect(running).toContainText('?/?/?Running');
+    await expect(running.locator('time')).toHaveAttribute('datetime',activityStart);
     await expect(lane.locator('.review-lane-heading')).toContainText('0 runs');
   }
   const finished = new Date().toISOString();
-  const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:finished, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
+  const run = {source_run_id:'live-hosted-round', channel:'hosted', head_sha:open.head_sha, reviewer:'Synthetic reviewer', scope:'Synthetic comparison', outcome:'completed', attributable:true, complete:true, started_at:activityStart, finished_at:finished, found:0, accepted:0, routed:0, finalized:true, coverage_limits:[], findings:[]};
   const partialFinding = (id, disposition) => ({source_finding_id:id,title:'Partial finding '+id,detail:'Retained evidence',severity:'low',disposition,decision_reason:'',actor:'',decided_at:'',fix_sha:'',proof_note:'',resolved_at:''});
   const partial = {...run,source_run_id:'live-cli-partial',channel:'cli',outcome:'failed',attributable:false,complete:false,finalized:false,found:3,accepted:1,started_at:activityStart,
     findings:[partialFinding('accepted','accepted'),partialFinding('rejected','rejected'),partialFinding('undecided','unadjudicated')]};
@@ -1081,6 +1082,7 @@ try {
   await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained|Needs agent attention/u);
   const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
   await expect(partialLink).toHaveCount(1);
+  await expect(partialLink.locator('time')).toHaveAttribute('datetime',activityStart);
   const partialURL = await partialLink.getAttribute('href');
   await page.unroute(progressPattern,startedEvidence);
   checkpoint = 'current-round-grants';
@@ -1106,6 +1108,7 @@ try {
   const queueHistory = deliveryQueue.getByRole('region', {name:'PR #32 recent review rounds', exact:true});
   const queueHosted = queueHistory.getByRole('region', {name:'Hosted CodeRabbit', exact:true});
   await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/})).toBeVisible();
+  await expect(queueHosted.getByRole('link', {name:/^Open hosted run live-hosted-round:/}).locator('time')).toHaveAttribute('datetime',activityStart);
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const hero = page.getByRole('region', {name:'Review queue head', exact:true});
   checkpoint = 'attempt-reason-compact';
@@ -1165,13 +1168,13 @@ try {
     checkpoint=`current-round-close-${surface}-open`;
     await limits.locator('summary').click();
     checkpoint=`current-round-close-${surface}-reason`;
-    await expect(limits.locator('details')).toContainText('Manually closed');
+    await expect(limits.getByText('Manually closed',{exact:true})).toBeVisible();
     await limits.locator('summary').click();
   }
   await expect(queueHosted.locator('.review-lane-heading')).toContainText('1 run');
   const age = queueHosted.locator('.review-round-pill time');
   await expect(age).toHaveText(/^(?:just now|Future date|\d+m ago|\d+h \d+m ago|\d+d \d+h ago)$/u);
-  await expect(age).toHaveAttribute('datetime', finished);
+  await expect(age).toHaveAttribute('datetime', activityStart);
   checkpoint = 'attempt-reason-layout';
   const attemptReadsBeforeLayout = reviewAttemptReads;
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
