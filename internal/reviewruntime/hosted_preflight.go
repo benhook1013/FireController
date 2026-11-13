@@ -151,11 +151,9 @@ func (d *HostedDriver) RecoverPreparation(ctx context.Context, operation reviewe
 		}
 		return nil
 	}
-	earliest, err := time.Parse(time.RFC3339Nano, query.EarliestPosting)
-	if err != nil {
-		return nil
-	}
-	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, record.Intent, record.PostingActor, record.ProviderActor, earliest)
+	// Replay the exact capture boundary used by normal observation. The query
+	// keeps nanoseconds while provider comment timestamps use whole seconds.
+	observation, err := reviewprovider.ResolveHostedAllowance(reviewprovider.HostedAllowanceSnapshot{IssueComments: record.Snapshot.IssueComments, Complete: record.Snapshot.Complete, ObservedAt: record.Snapshot.ObservedAt}, record.Intent, record.PostingActor, record.ProviderActor, record.EarliestPosting)
 	if err != nil || observation.State != "cooldown_observed" {
 		return nil
 	}

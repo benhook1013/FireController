@@ -282,7 +282,7 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err != nil {
 			return err
 		}
-		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision, anchor.ParentPullNumber)
 		if err != nil {
 			return err
 		}

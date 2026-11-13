@@ -40,7 +40,7 @@ func TestCIWatchFiniteRefusalStagesSurviveClientWithoutAutomaticRetry(t *testing
 				t.Fatal("safe refusal lost its stage or retried", err, posts.Load())
 			}
 			details, ok := failure.Details.(map[string]any)
-			if !ok || len(details) != 2 || details["reason"] != reason || !reflect.DeepEqual(details["targets"], pins) || strings.Contains(failure.Message+failure.Action, "PRIVATE") || strings.Contains(failure.Message, "shutdown") {
+			if !ok || len(details) != 2 || details["reason"] != reason || !reflect.DeepEqual(details["targets"], pins) || strings.Contains(failure.Message+failure.Action, "PRIVATE") || (strings.Contains(failure.Message, "shutdown") || strings.Contains(failure.Message, "private")) {
 				t.Fatal("refusal leaked raw details or invented deployment cause", failure)
 			}
 			if !strings.Contains(failure.Action, "bounded") || !strings.Contains(failure.Action, "PR/head/base pins") || reason == "ci_watch_capacity" && !strings.Contains(failure.Action, "avoid repeatedly rearming") {
@@ -64,7 +64,7 @@ func TestCIWatchUnknownRefusalReasonCannotAcquireShutdownRecovery(t *testing.T) 
 	defer server.Close()
 	_, err := newClient(t, server).WatchCI(t.Context(), ciWatchPins(), 3)
 	var failure *client.Error
-	if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Details != nil || posts.Load() != 1 || strings.Contains(failure.Message, "shutdown") {
+	if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.Details != nil || posts.Load() != 1 || (strings.Contains(failure.Message, "shutdown") || strings.Contains(failure.Message, "private")) {
 		t.Fatal("unknown refusal was trusted or retried", err, posts.Load())
 	}
 }

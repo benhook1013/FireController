@@ -50,7 +50,10 @@ func TestHostedCooldownRetryComparisonPreservesStableSource(t *testing.T) {
 
 // Every query and reply has a distinct provider identity; previous comments are
 // still returned so the actual allowance resolver must attribute each attempt.
-type cooldownRetryProvider struct{ *driverHostedProvider }
+type cooldownRetryProvider struct {
+	*driverHostedProvider
+	postedAt func() time.Time
+}
 
 func (p *cooldownRetryProvider) PostIssueComment(ctx context.Context, repo string, number int64, body string) (reviewprovider.IssueComment, error) {
 	comment, err := p.driverHostedProvider.PostIssueComment(ctx, repo, number, body)
@@ -61,6 +64,10 @@ func (p *cooldownRetryProvider) PostIssueComment(ctx context.Context, repo strin
 			// already historical when synthetic time advances without a
 			// real cooldown sleep. Original retained timestamps never change.
 			comment.CreatedAt = comment.CreatedAt.Add(-2 * time.Second)
+			comment.UpdatedAt = comment.CreatedAt
+		}
+		if p.postedAt != nil {
+			comment.CreatedAt = p.postedAt()
 			comment.UpdatedAt = comment.CreatedAt
 		}
 		p.comments[len(p.comments)-1] = comment
@@ -92,7 +99,7 @@ func newHostedCooldownRetryFixture(t *testing.T) (*hostedDriverFixture, *time.Ti
 		t.Fatal(err)
 	}
 	f.engine, f.hosted.engine = engine, engine
-	f.hosted.provider = &cooldownRetryProvider{f.provider}
+	f.hosted.provider = &cooldownRetryProvider{driverHostedProvider: f.provider}
 	f.provider.reply = strings.Replace(runtimeAllowanceAvailable, "Reviews are available now.", "More reviews will be available in 1 minute.", 1)
 	return f, &now
 }
@@ -373,10 +380,23 @@ func TestHostedCooldownRetentionRetriesOnlyStorageFailures(t *testing.T) {
 }
 
 func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.T) {
-	for _, damage := range []string{"none", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "observation"} {
+	for _, damage := range []string{"none", "clock-boundary", "missing-capture", "malformed-capture", "workspace", "operational-workspace", "observation"} {
 		t.Run(damage, func(t *testing.T) {
 			f, _ := newHostedCooldownRetryFixture(t)
 			operation, attempt, config := f.startHosted(t)
+			if damage == "clock-boundary" {
+				f.hosted.provider.(*cooldownRetryProvider).postedAt = func() time.Time {
+					query, err := f.engine.ReadHostedAllowanceQuery(t.Context(), f.project, attempt.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					earliest, err := time.Parse(time.RFC3339Nano, query.EarliestPosting)
+					if err != nil || earliest.Nanosecond() == 0 {
+						t.Fatal("fixture must exercise fractional query boundary", err)
+					}
+					return earliest.Truncate(time.Second).Add(-reviewprovider.HostedProviderClockSkew)
+				}
+			}
 			if _, err := f.store.DB().Exec(`CREATE TRIGGER fail_cooldown_retention BEFORE INSERT ON review_hosted_preflight BEGIN SELECT RAISE(ABORT,'retention outage'); END`); err != nil {
 				t.Fatal(err)
 			}
@@ -474,7 +494,7 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 				if err != nil || got.ID != operation.ID {
 					t.Fatal("request identity changed", got, err)
 				}
-				if damage == "none" {
+				if damage == "none" || damage == "clock-boundary" {
 					if got.State != "queued" || got.Wait == nil || got.Wait.BaselineAttemptID != attempt.ID || got.Wait.RetryNotBefore == "" {
 						t.Fatal("original cooldown not recovered", got)
 					}
