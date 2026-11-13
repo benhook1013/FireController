@@ -55,6 +55,44 @@ func frontClose(t *testing.T, f *attemptFixture, n int64, channel, key string) {
 		t.Fatal(err)
 	}
 }
+func TestFrontsQueuedPrioritySkipsDraftsAndAdvancesAfterBothChannelsClose(t *testing.T) {
+	f := frontFixture(t)
+	pull := projectionPull(2)
+	pull.IsDraft = new(bool)
+	*pull.IsDraft = true
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, attemptProject).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	update := func(key string) {
+		t.Helper()
+		request := reviews.ObservationRequest{ExpectedRevision: &revision, RepositoryID: 801, Source: "draft-display", ObservedAt: stamp(), Queue: []reviews.PullInput{frontMergedPull(), pull, projectionPull(4)}}
+		w := f.request("POST", "/api/v1/projects/"+attemptProject+"/reviews/observations", f.admin, key, encoded(request))
+		if w.Code != 201 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		revision++
+	}
+	assertPriorities := func(cli, hosted int64) {
+		t.Helper()
+		current := frontRead(t, f)
+		for channel, want := range map[string]int64{"cli": cli, "hosted": hosted} {
+			if got := frontChannel(t, current, channel).QueuedPriority; got == nil || got.PullNumber != want {
+				t.Fatalf("%s priority = %+v, want PR %d", channel, got, want)
+			}
+		}
+	}
+	update("front-first-draft")
+	assertPriorities(4, 4)
+	*pull.IsDraft = false
+	update("front-first-ready")
+	assertPriorities(2, 2)
+	frontClose(t, f, 2, "cli", "front-first-cli-closed")
+	assertPriorities(4, 2)
+	frontClose(t, f, 2, "hosted", "front-first-hosted-closed")
+	assertPriorities(4, 4)
+}
+
 func TestFrontsSelectionPrefixCurrentPolicyAndIndependentChannels(t *testing.T) {
 	f := frontFixture(t)
 	reader := &refreshTestReader{}

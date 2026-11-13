@@ -33,6 +33,9 @@ type ParsedReview struct {
 	CoverageLimits   []string `json:"coverage_limits,omitempty"`
 }
 
+// CLIUnreviewedFilesLimit is the retained marker for a CodeRabbit warning terminal.
+const CLIUnreviewedFilesLimit = "CodeRabbit reported unreviewed files."
+
 const (
 	cliCaptureMax       = 16 << 20
 	cliLineMax          = 256 << 10
@@ -154,7 +157,7 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedRe
 					return invalid()
 				}
 				result.ReportedFindings, result.ReviewedFiles = numbers["findings"], files
-				result.CoverageLimits = []string{"CodeRabbit reported unreviewed files."}
+				result.CoverageLimits = []string{CLIUnreviewedFilesLimit}
 			}
 			if terminal == "completed" {
 				_, countPresent := fields["findings"]

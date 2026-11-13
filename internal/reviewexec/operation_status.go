@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
@@ -102,6 +103,9 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		}
 		stage, next := operationStatusStage(o, facts.ID, facts.Complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: facts.ID, ReviewFinishedAt: facts.ReviewFinishedAt, EvidenceRecordedAt: facts.EvidenceRecordedAt, UpdatedAt: o.UpdatedAt, NextAction: next}
+		if o.Channel == "cli" && o.State == "failed" && o.Reason == "capture_retained" && facts.ProviderReportedUnreviewedFiles {
+			result.Reason = "cli_provider_reported_unreviewed_files"
+		}
 		result.SettlementTarget = facts.SettlementTarget
 		result.Wait = currentOperationWait(o)
 		result.Observer = e.observerStatus(o)
@@ -124,12 +128,13 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 }
 
 type operationEvidenceFacts struct {
-	Repository         string
-	SettlementTarget   *SettlementTarget
-	ID                 string
-	Complete           bool
-	ReviewFinishedAt   string
-	EvidenceRecordedAt string
+	Repository                      string
+	SettlementTarget                *SettlementTarget
+	ID                              string
+	Complete                        bool
+	ProviderReportedUnreviewedFiles bool
+	ReviewFinishedAt                string
+	EvidenceRecordedAt              string
 }
 
 func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (operationEvidenceFacts, error) {
@@ -140,7 +145,7 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 	var attemptRevision int64
 	var externalID sql.NullString
 	var id, project, operation, attempt, bodyID, bodyProject, bodyOperation, bodyAttempt, anchor, expected, fingerprint, outcome, finished, recorded sql.NullString
-	var complete, hosted sql.NullInt64
+	var complete, hosted, unreviewed sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT a.operation_id,a.project_id,a.revision,
  CASE WHEN length(CAST(a.external_id AS BLOB))<=128 THEN a.external_id END,
  CASE WHEN length(CAST(a.anchor_json AS BLOB))<=2048 THEN a.anchor_json ELSE '' END,
@@ -151,8 +156,9 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
  json_extract(e.body_json,'$.capability_fingerprint'),json_extract(e.body_json,'$.capture.review.Outcome'),CASE json_type(e.body_json,'$.capture.review.Complete') WHEN 'true' THEN 1 WHEN 'false' THEN 0 END,
  CASE WHEN json_type(e.body_json,'$.capture.finished_at')='text' AND length(CAST(json_extract(e.body_json,'$.capture.finished_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.capture.finished_at') END,
  CASE WHEN json_type(e.body_json,'$.recorded_at')='text' AND length(CAST(json_extract(e.body_json,'$.recorded_at') AS BLOB))<=64 THEN json_extract(e.body_json,'$.recorded_at') END,
- CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END
- FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptRevision, &externalID, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted)
+ CASE WHEN e.id IS NULL THEN NULL WHEN json_type(e.body_json,'$.capture.hosted')='object' THEN 1 WHEN json_type(e.body_json,'$.capture.hosted') IS NULL OR json_type(e.body_json,'$.capture.hosted')='null' THEN 0 ELSE -1 END,
+ CASE WHEN ? AND json_extract(e.body_json,'$.capture.review.coverage_limits[0]')=? THEN 1 ELSE 0 END
+ FROM review_execution_attempts a LEFT JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE a.project_id=? AND a.id=?`, o.Channel == "cli" && o.State == "failed" && o.Reason == "capture_retained", reviewprovider.CLIUnreviewedFilesLimit, o.ProjectID, o.AttemptID).Scan(&attemptOperation, &attemptProject, &attemptRevision, &externalID, &attemptAnchor, &id, &project, &operation, &attempt, &bodyID, &bodyProject, &bodyOperation, &bodyAttempt, &anchor, &expected, &fingerprint, &outcome, &complete, &finished, &recorded, &hosted, &unreviewed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
@@ -180,6 +186,7 @@ func operationStatusEvidence(ctx context.Context, tx *sql.Tx, o Operation) (oper
 		return operationEvidenceFacts{}, adjudicationStorageError()
 	}
 	facts.ID, facts.Complete = id.String, complete.Int64 == 1 && outcome.String == "completed"
+	facts.ProviderReportedUnreviewedFiles = complete.Int64 == 0 && outcome.String == "failed" && unreviewed.Int64 == 1
 	_, finishOK := hostedObservationTime(finished.String)
 	_, recordedOK := hostedObservationTime(recorded.String)
 	if finishOK && recordedOK {

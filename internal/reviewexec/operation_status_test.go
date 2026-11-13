@@ -112,6 +112,30 @@ func TestOperationStatusMissingAndIncompleteEvidenceDoNotInventCoverage(t *testi
 		})
 	}
 }
+
+func TestOperationStatusExplainsRetainedCLIUnreviewedFiles(t *testing.T) {
+	for _, warning := range []bool{false, true} {
+		f, a, in := evidenceFixture(t, "cli", true)
+		in.Review = reviewprovider.ParsedReview{Outcome: "failed", ReviewedFiles: []string{}, Findings: []reviewprovider.ParsedFinding{}}
+		want := "capture_retained"
+		if warning {
+			in.Review.CoverageLimits = []string{reviewprovider.CLIUnreviewedFilesLimit}
+			want = "cli_provider_reported_unreviewed_files"
+		}
+		receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "failed", "capture_retained", ""); err != nil {
+			t.Fatal(err)
+		}
+		before := evidenceState(t, f, a)
+		status, err := f.e.ReadOperationStatus(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), a.OperationID)
+		if err != nil || status.Reason != want || status.State != "failed" || status.EvidenceID != receipt.ID || status.NextAction != "read_diagnostics" || evidenceState(t, f, a) != before {
+			t.Fatal(status, err)
+		}
+	}
+}
 func TestOperationStatusStageOnlyUsesDurableFacts(t *testing.T) {
 	cases := []struct{ state, channel, reason, stage, next string }{{"queued", "hosted", "", "queued", "wait"}, {"preparing", "cli", "", "preparing", "wait"}, {"active", "hosted", "trigger_posted", "provider_wait", "wait"}, {"uncertain", "hosted", "hosted_finished_inventory_unproven", "capture_blocked", "contact_controller_owner"}, {"uncertain", "cli", "hosted_finished_inventory_unproven", "uncertain", "contact_controller_owner"}, {"held", "cli", "paused", "held", "read_diagnostics"}, {"failed", "cli", "failure", "failed", "read_diagnostics"}, {"cancelled", "hosted", "cancelled", "cancelled", "none"}}
 	for _, c := range cases {

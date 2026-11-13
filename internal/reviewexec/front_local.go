@@ -11,6 +11,7 @@ import (
 // a known merged predecessor into an unknown gap.
 type localFrontPull struct {
 	state, head, base, ref string
+	draft                  bool
 }
 
 func localFrontFallback(value FrontChannel) bool {
@@ -32,7 +33,7 @@ func readLocalFrontPulls(ctx context.Context, tx *sql.Tx, project, snapshot stri
 	for _, number := range queue {
 		args = append(args, number)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT p.number,p.state,p.head_sha,p.base_sha,p.base_ref FROM review_pulls p
+	rows, err := tx.QueryContext(ctx, `SELECT p.number,p.state,p.head_sha,p.base_sha,p.base_ref,json_type(p.metadata_json,'$.is_draft') IS 'true' FROM review_pulls p
  WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.number IN (`+strings.TrimSuffix(strings.Repeat("?,", len(queue)), ",")+`)
  AND EXISTS(SELECT 1 FROM review_snapshots s JOIN projects project ON project.id=s.project_id WHERE s.project_id=p.project_id AND s.snapshot_id=p.snapshot_id AND s.repository_id=project.github_repository_id)
  AND NOT EXISTS(SELECT 1 FROM review_current_retired r WHERE r.project_id=p.project_id AND r.number=p.number)`, args...)
@@ -44,7 +45,7 @@ func readLocalFrontPulls(ctx context.Context, tx *sql.Tx, project, snapshot stri
 	for rows.Next() {
 		var number int64
 		var p localFrontPull
-		if err := rows.Scan(&number, &p.state, &p.head, &p.base, &p.ref); err != nil {
+		if err := rows.Scan(&number, &p.state, &p.head, &p.base, &p.ref, &p.draft); err != nil {
 			return nil, err
 		}
 		pulls[number] = p
@@ -58,7 +59,7 @@ func localChannelFront(ctx context.Context, tx *sql.Tx, project string, queue []
 		if !found || p.state == "unknown" {
 			break
 		}
-		if p.state == "merged" || p.state == "closed" {
+		if p.state == "merged" || p.state == "closed" || p.draft {
 			continue
 		}
 		if p.state != "open" || !sha.MatchString(p.head) || !sha.MatchString(p.base) || !safeText(p.ref, 256) || p.ref == "" {
