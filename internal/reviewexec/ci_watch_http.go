@@ -95,14 +95,12 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, invalid())
 		return
 	}
-	responseStarted := started
 	if wait == 0 {
 		// Immediate reads retain their ordinary response-write allowance.
-		responseStarted = time.Now()
-	}
-	if err = operationResponseDeadlineAt(w, responseStarted.Add(time.Duration(wait+5)*time.Second)); err != nil {
-		core.WriteError(w, err)
-		return
+		if err = operationResponseDeadlineAt(w, time.Now().Add(5*time.Second)); err != nil {
+			core.WriteError(w, err)
+			return
+		}
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
 	project := func(result CIWatchResult) CIWatchResult {
