@@ -104,6 +104,8 @@ smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedWorkflowAuditRepairs$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedExecutionQueueEnrollmentSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedRunSelectionSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -tags=packaged_smoke -run '^TestPackaged(OperationReadsSmoke|CarriedAdoptionSmoke)$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	FC_SMOKE_BIN_DIR="$(CURDIR)/bin" $(GO) test -tags=packaged_smoke -run '^TestPackagedHostedSubmittedSourceRetention$$' -count=1 -timeout=60s ./internal/backup
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedExplicitOrderSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedHeldAllowanceSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 
