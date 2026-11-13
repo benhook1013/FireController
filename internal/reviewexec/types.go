@@ -116,6 +116,7 @@ type Engine struct {
 	schedulingNow              func() time.Time
 	configurationFailureMu     sync.Mutex
 	configurationFailureNext   map[string]time.Time
+	draftProbePermit           atomic.Bool
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	draftProbeCursor           string
