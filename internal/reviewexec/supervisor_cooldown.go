@@ -12,7 +12,7 @@ import (
 // turn unrelated database/context errors or a missing attempt into that claim.
 func cooldownEvidenceUnavailable(channel string, err error) bool {
 	if channel == "cli" {
-		return errors.Is(err, sql.ErrNoRows)
+		return errors.Is(err, errAllowanceObservationAbsent) || storedAllowanceUnavailable(err)
 	}
 	return channel == "hosted" && (errors.Is(err, errAllowanceObservationAbsent) || storedAllowanceUnavailable(err) || isStoredUnavailable(err, storedHostedObservation))
 }
