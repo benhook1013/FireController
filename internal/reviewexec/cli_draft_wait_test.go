@@ -811,3 +811,53 @@ func TestHistoricalCLIDraftSeparatesLookupFailureFromInvalidHistory(t *testing.T
 		})
 	}
 }
+
+func TestCLIDraftRawPageAdvancesPastIneligiblePrefix(t *testing.T) {
+	f := supervisorFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	seed := f.enqueue(t, attemptProject, "draft-page-blocked", "cli", 2, 1)
+	ready := f.enqueue(t, otherAttemptProject, "draft-page-ready", "cli", 2, 1)
+	for i := range cliDraftProbeCapacity + 1 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_paging%03d", i))
+	}
+	const target = "review_operation_paging999"
+	schedulerQueuedCopy(t, f, ready.ID, target)
+	admissionSQL(t, f, `UPDATE review_operations SET reason=?`, cliDraftWait)
+	admissionSQL(t, f, `UPDATE review_execution_config SET body_json=json_set(body_json,'$.paused',1) WHERE project_id=?`, attemptProject)
+	f.e.draftProbeCursor = "review_operation_paging"
+	operations, err := f.e.pending(t.Context())
+	if err != nil || len(operations) != 0 {
+		t.Fatal("ineligible raw page escaped its bound", operations, err)
+	}
+	if got := f.e.draftProbeCursor; got != "review_operation_paging256" {
+		t.Fatal("empty eligible page did not advance raw cursor", got)
+	}
+	operations, err = f.e.pending(t.Context())
+	if err != nil || len(operations) != 1 || operations[0].ID != target {
+		t.Fatal("next raw page did not reach ready Draft", operations, err)
+	}
+	if len(f.e.draftProbeNext) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatal("raw paging acquired provider capacity")
+	}
+	// The bounded seek uses the partial Draft index, not a whole-queue sort.
+	rows, err := f.store.DB().QueryContext(t.Context(), `EXPLAIN QUERY PLAN SELECT project_id,id FROM review_operations INDEXED BY review_operations_draft_probe WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait' AND id>? ORDER BY id LIMIT ?`, "review_operation_paging", cliDraftProbeCapacity+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "SEARCH review_operations USING INDEX review_operations_draft_probe (id>?)") || strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatal("Draft seek is not bounded by the raw index", plan)
+	}
+}
