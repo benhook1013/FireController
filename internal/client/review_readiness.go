@@ -24,6 +24,7 @@ type ReviewSourceReviewStateSummary struct {
 // ReviewSourceReadinessAssessment describes retained observations and local
 // policy as of their timestamps. It is never an authorization to merge.
 type ReviewSourceReadinessAssessment struct {
+	UnassignedRoutesPending  int64                           `json:"unassigned_routes_pending,omitempty"`
 	SourceObligationsPending int64                           `json:"source_obligations_pending,omitempty"`
 	ProjectID                string                          `json:"project_id"`
 	RefreshID                string                          `json:"refresh_id"`
@@ -64,7 +65,7 @@ func (c *Client) ReviewSourceReadiness(ctx context.Context, number int64) (Revie
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "source", strconv.FormatInt(number, 10), "readiness"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse); err != nil {
 		return ReviewSourceReadinessAssessment{}, err
 	}
-	if value.SourceObligationsPending < 0 || value.SourceObligationsPending > maxIncomingRoutePending || value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.PolicyRevision < 0 || value.SourceObservedAt != value.Target.ObservedAt || !validSourceObservation(value.Target) || value.Target.PullNumber != number || !controlTime(value.EvaluatedAt) || !oneReviewOf(value.State, "ready_as_observed", "held", "unconfigured") || value.Reasons == nil || len(value.Reasons) > 16 || value.Channels == nil || len(value.Channels) > 2 || !validCISummary(value.CI, true) || value.CI.Selection == "head" && value.CI.SelectedCommitSHA != value.Target.HeadSHA || !validSourceReviewState(value.ReviewState) || value.IncomingRoutesPending < 0 || value.IncomingRoutesPending > maxIncomingRoutePending || value.IncomingRoutesCapacity && value.IncomingRoutesPending != 0 {
+	if value.UnassignedRoutesPending < 0 || value.UnassignedRoutesPending > maxIncomingRoutePending || value.SourceObligationsPending < 0 || value.SourceObligationsPending > maxIncomingRoutePending || value.ProjectID != c.identity.ProjectID || ValidateReviewSourceRefreshID(value.RefreshID) != nil || value.Source != "observed_comparison" || value.ConfigurationRevision < 0 || value.PolicyRevision < 0 || value.SourceObservedAt != value.Target.ObservedAt || !validSourceObservation(value.Target) || value.Target.PullNumber != number || !controlTime(value.EvaluatedAt) || !oneReviewOf(value.State, "ready_as_observed", "held", "unconfigured") || value.Reasons == nil || len(value.Reasons) > 16 || value.Channels == nil || len(value.Channels) > 2 || !validCISummary(value.CI, true) || value.CI.Selection == "head" && value.CI.SelectedCommitSHA != value.Target.HeadSHA || !validSourceReviewState(value.ReviewState) || value.IncomingRoutesPending < 0 || value.IncomingRoutesPending > maxIncomingRoutePending || value.IncomingRoutesCapacity && value.IncomingRoutesPending != 0 {
 		return ReviewSourceReadinessAssessment{}, invalidResponse()
 	}
 	// Retained observations are as-of facts; independent wall timestamps do

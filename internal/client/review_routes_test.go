@@ -401,3 +401,46 @@ func TestReviewRoutesCoherentFutureHistoryKeepsChronologyValidation(t *testing.T
 		})
 	}
 }
+
+func TestUnassignedRouteDetailAndExplicitRequest(t *testing.T) {
+	request := client.ReviewRouteRequest{ExpectedRevision: 0, Finding: 0, TargetPullNumber: 0, Reason: "Unresolved work awaiting an owner"}
+	if err := client.ValidateReviewRouteRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(request)
+	if !strings.Contains(string(raw), `"target_pull_number":0`) {
+		t.Fatal("explicit zero omitted")
+	}
+	for _, target := range []int64{-1, 2147483648} {
+		request.TargetPullNumber = target
+		if client.ValidateReviewRouteRequest(request) == nil {
+			t.Fatal("invalid target accepted")
+		}
+	}
+	for _, mode := range []string{"zero", "missing", "null"} {
+		t.Run(mode, func(t *testing.T) {
+			detail := sampleRouteDetail()
+			detail.Route.TargetPullNumber = 0
+			raw, _ := json.Marshal(detail)
+			if mode == "missing" {
+				raw = []byte(strings.Replace(string(raw), `"target_pull_number":0,`, "", 1))
+			}
+			if mode == "null" {
+				raw = []byte(strings.Replace(string(raw), `"target_pull_number":0`, `"target_pull_number":null`, 1))
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(raw)
+			}))
+			defer server.Close()
+			_, err := newClient(t, server).ReviewFindingRoute(t.Context(), routeClientID)
+			if (err == nil) != (mode == "zero") {
+				t.Fatalf("%s: %v", mode, err)
+			}
+		})
+	}
+}

@@ -119,6 +119,19 @@ func TestReviewRoutesMCPDiscoveryAndInvalidBeforeCredentials(t *testing.T) {
 		if !ok {
 			continue
 		}
+
+		if tool.Name == "review_finding_route" {
+			data, _ := json.Marshal(tool.InputSchema)
+			var schema map[string]any
+			if err := json.Unmarshal(data, &schema); err != nil {
+				t.Fatal(err)
+			}
+			props := schema["properties"].(map[string]any)
+			target := props["target_pull_number"].(map[string]any)
+			if target["minimum"] != float64(0) {
+				t.Fatal("explicit unassigned target missing")
+			}
+		}
 		delete(want, tool.Name)
 		var schema struct {
 			Properties map[string]any `json:"properties"`

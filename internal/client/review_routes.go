@@ -108,7 +108,7 @@ func ValidateReviewRouteID(id string) error {
 	return nil
 }
 func ValidateReviewRouteRequest(r ReviewRouteRequest) error {
-	if !validControlRevision(r.ExpectedRevision) || !validControlRevision(r.ExpectedRouteRevision) || r.Finding < 0 || r.Finding >= 100 || !validPullNumber(r.TargetPullNumber) || !controlText(r.Reason, 2048, true) {
+	if !validControlRevision(r.ExpectedRevision) || !validControlRevision(r.ExpectedRouteRevision) || r.Finding < 0 || r.Finding >= 100 || !(r.TargetPullNumber == 0 || validPullNumber(r.TargetPullNumber)) || !controlText(r.Reason, 2048, true) {
 		return mutationValidation()
 	}
 	return nil
@@ -175,7 +175,7 @@ func validRouteSourceFinding(f ReviewEvidenceFinding) bool {
 	return controlText(f.Title, 500, true) && controlText(f.Detail, 16<<10, false) && oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") && (f.Path == "" || controlPath(f.Path)) && f.StartLine >= 0 && f.EndLine >= 0 && (f.StartLine == 0 || f.EndLine == 0 || f.EndLine >= f.StartLine)
 }
 func validFindingRoute(r ReviewFindingRoute) bool {
-	if ValidateReviewRouteID(r.ID) != nil || !validPullNumber(r.TargetPullNumber) || r.Revision < 1 || !oneReviewOf(r.State, "active", "superseded") || !oneReviewOf(r.Disposition, "unadjudicated", "accepted", "rejected") || !controlText(r.Reason, 2048, false) || !controlText(r.ProofNote, 2048, false) {
+	if ValidateReviewRouteID(r.ID) != nil || !(r.TargetPullNumber == 0 || validPullNumber(r.TargetPullNumber)) || r.Revision < 1 || !oneReviewOf(r.State, "active", "superseded") || !oneReviewOf(r.Disposition, "unadjudicated", "accepted", "rejected") || !controlText(r.Reason, 2048, false) || !controlText(r.ProofNote, 2048, false) {
 		return false
 	}
 	if r.Disposition == "unadjudicated" {

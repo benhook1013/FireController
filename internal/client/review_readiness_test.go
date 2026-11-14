@@ -274,3 +274,20 @@ func TestReadinessIncomingCountsRemainExactBeyondOneHundred(t *testing.T) {
 		})
 	}
 }
+
+func TestReadinessUnassignedCountIsWarningNotGate(t *testing.T) {
+	value := sampleReadiness()
+	value.UnassignedRoutesPending = 2
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		write(w, 200, value)
+	}))
+	defer service.Close()
+	got, err := newClient(t, service).ReviewSourceReadiness(t.Context(), 2)
+	if err != nil || got.State != "ready_as_observed" || got.UnassignedRoutesPending != 2 {
+		t.Fatal(got, err)
+	}
+}

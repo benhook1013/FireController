@@ -338,7 +338,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 			allowed[flag] = true
 		}
 	case "route-create":
-		for _, flag := range []string{"--finding", "--target-pr", "--reason", "--expect-route-revision"} {
+		for _, flag := range []string{"--finding", "--target-pr", "--unassigned", "--reason", "--expect-route-revision"} {
 			allowed[flag] = true
 		}
 	case "route-decide":
@@ -363,6 +363,13 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		if _, exists := values[flag]; exists {
 			return nil, false
 		}
+		if operation == "route-create" && flag == "--unassigned" {
+			if assigned {
+				return nil, false
+			}
+			values[flag] = "true"
+			continue
+		}
 		if !assigned {
 			i++
 			if i >= len(args) || strings.HasPrefix(args[i], "--") {
@@ -385,7 +392,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	// Presence is independent of value: index zero and an empty prior SHA are
 	// legitimate explicit assertions, never implicit defaults.
 	for flag := range allowed {
-		if flag == "--expect-route-revision" {
+		if flag == "--expect-route-revision" || operation == "route-create" && (flag == "--target-pr" || flag == "--unassigned") {
 			continue
 		}
 		if _, present := values[flag]; !present {
@@ -424,9 +431,17 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 			return call, false
 		}
 	case "route-create":
-		target, err := strconv.ParseInt(values["--target-pr"], 10, 64)
-		if err != nil || strconv.FormatInt(target, 10) != values["--target-pr"] {
+		_, unassigned := values["--unassigned"]
+		_, hasTarget := values["--target-pr"]
+		if unassigned == hasTarget {
 			return nil, false
+		}
+		var target int64
+		if hasTarget {
+			target, err = strconv.ParseInt(values["--target-pr"], 10, 64)
+			if err != nil || target <= 0 || strconv.FormatInt(target, 10) != values["--target-pr"] {
+				return nil, false
+			}
 		}
 		call.reviewRoute = client.ReviewRouteRequest{ExpectedRevision: revision, ExpectedRouteRevision: routeRevision, Finding: finding, TargetPullNumber: target, Reason: values["--reason"]}
 		if client.ValidateReviewRouteRequest(call.reviewRoute) != nil {

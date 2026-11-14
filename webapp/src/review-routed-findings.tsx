@@ -82,7 +82,7 @@ export function ReviewRoutedFindingDetails({ item }: { item: ReviewRoutedFinding
         return { kind: 'carried' as const, value };
       }
       const value = await session.api.reviewRoute(item.id, signalFor(session, signal));
-      if (value.route.id !== item.id || value.route.project_id !== session.project.id || value.route.revision < item.revision || value.route.target_pull_number !== item.target_pull_number || !item.source_pull_numbers.includes(value.route.source_pull_number) || item.source_evidence_id && value.route.source_evidence_id !== item.source_evidence_id) throw new ApiError('invalid_response', 'The route detail did not match the selected record.');
+      if (value.route.id !== item.id || value.route.project_id !== session.project.id || value.route.revision < item.revision || value.route.target_pull_number !== (item.target_pull_number ?? 0) || !item.source_pull_numbers.includes(value.route.source_pull_number) || item.source_evidence_id && value.route.source_evidence_id !== item.source_evidence_id) throw new ApiError('invalid_response', 'The route detail did not match the selected record.');
       return { kind: 'native' as const, value };
     },
     staleTime: Infinity, gcTime: 5 * 60 * 1000, retry: false,
@@ -101,7 +101,7 @@ function RoutedFindingRow({ item, number }: { item: ReviewRoutedFindingItem; num
   const states = { open: 'Open', fixed: 'Fixed', rejected: 'Rejected', resolved: 'Resolved' };
   const issue = item.target_state === 'closed' ? 'Receiving PR is closed; this route remains open.'
     : item.target_state === 'merged' ? 'Receiving PR is merged; this route remains open.'
-      : item.target_state === 'unassigned' ? 'No receiving PR is assigned.'
+      : item.target_state === 'unassigned' ? 'Unassigned work remains unresolved and trackable. It does not block source reviews; merging still requires manual approval.'
         : item.target_state === 'unknown' ? 'Receiving PR status is unknown.' : '';
   return <li className={`review-routed-item review-routed-${item.state}`}>
     <div className="review-routed-row" onClick={event => { if (!(event.target as HTMLElement).closest('a,button')) setOpen(value => !value); }}>

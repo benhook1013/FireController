@@ -117,3 +117,17 @@ describe('routed findings API boundary', () => {
     }
   });
 });
+
+it('preserves explicit unassigned native detail and summary without manufacturing a target PR', async () => {
+  const api = await connected(); const value = detail(); value.route.target_pull_number = 0;
+  vi.stubGlobal('fetch', vi.fn(async () => json(value)));
+  expect(await api.reviewRoute(routeID)).toEqual(value);
+  const listing = page(); delete listing.items[0].target_pull_number; listing.items[0].target_state = 'unassigned';
+  vi.stubGlobal('fetch', vi.fn(async () => json(listing)));
+  expect(await api.reviewRoutedFindings({pullNumber:27})).toEqual(listing);
+  for (const target of [undefined,null,-1]) {
+    const invalid = {...value, route:{...value.route,target_pull_number:target}};
+    vi.stubGlobal('fetch', vi.fn(async () => json(invalid)));
+    await expect(api.reviewRoute(routeID)).rejects.toMatchObject({code:'invalid_response'});
+  }
+});
