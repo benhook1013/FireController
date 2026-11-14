@@ -458,6 +458,25 @@ func TestSchedulingAutomaticIndependentProgressAcrossRetainedEvidence(t *testing
 				t.Fatal("Hosted selected an incorrect target or bypass intent", op, err)
 			}
 			schedulingGenerate(t, f, false)
+			driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+				anchor := attemptAnchor(o.ProjectID, o.PullNumber)
+				anchor.CandidateSHA = o.HeadSHA
+				if dependent {
+					anchor.ParentPullNumber = 2
+					anchor.ParentSHA = strings.Repeat("a", 40)
+					anchor.BaseSHA = anchor.ParentSHA
+				}
+				return Preparation{Anchor: anchor, Intent: "synthetic-later-intent"}, nil
+			}}
+			if err = f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
+				t.Fatal(err)
+			}
+			if driver.calls.Load() != 1 {
+				t.Fatal("eligible later PR did not actually dispatch", driver.calls.Load())
+			}
+			if later := cliWaitRead(t, f, op.ID); later.State != "uncertain" || later.Reason != "adapter_result_incomplete" {
+				t.Fatal("synthetic Hosted dispatch must retain uncertainty without provider evidence", later)
+			}
 		})
 	}
 }

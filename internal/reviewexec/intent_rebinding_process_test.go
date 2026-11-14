@@ -42,7 +42,27 @@ func TestIntentRebindProcessHelper(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	for tries := 0; tries < 50; tries++ {
-		_, err = engine.rebindQueuedIntent(t.Context(), old, freshIntentSource(old))
+		if os.Getenv("FC_INTENT_TEST_ACTION") == "claim" {
+			a, claimErr := engine.StartAttempt(t.Context(), attemptProject, old.ID)
+			err = claimErr
+			if err == nil {
+				if a.ID == "" {
+					os.Exit(3)
+				}
+				anchor := attemptAnchor(attemptProject, old.PullNumber)
+				anchor.CandidateSHA = old.HeadSHA
+				a, err = engine.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = engine.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "fixture_capture", ""); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		} else {
+			_, err = engine.rebindQueuedIntent(t.Context(), old, freshIntentSource(old))
+		}
 		if err == nil {
 			return
 		}
@@ -59,6 +79,12 @@ func TestIntentRebindProcessHelper(t *testing.T) {
 }
 
 func TestQueuedIntentRebindCrossProcessSingleWinnerAndRestart(t *testing.T) {
+	exerciseIntentProcessRace(t, "rebind")
+}
+func TestQueuedIntentRebindCrossProcessDispatchClaimFence(t *testing.T) {
+	exerciseIntentProcessRace(t, "claim")
+}
+func exerciseIntentProcessRace(t *testing.T, secondAction string) {
 	f := supervisorFixture(t)
 	r := f.enqueue(t, attemptProject, "cross-process-intent", "cli", 2, 1)
 	var seq int
@@ -74,6 +100,9 @@ func TestQueuedIntentRebindCrossProcessSingleWinnerAndRestart(t *testing.T) {
 		ready := filepath.Join(barrier, string(rune('a'+i)))
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestIntentRebindProcessHelper$", "-test.count=1")
 		cmd.Env = append(os.Environ(), "FC_INTENT_TEST_HELPER=1", "FC_INTENT_TEST_STORE="+filepath.Dir(dbpath), "FC_INTENT_TEST_OPERATION="+r.ID, "FC_INTENT_TEST_READY="+ready, "FC_INTENT_TEST_GO="+goFile)
+		if i == 1 {
+			cmd.Env = append(cmd.Env, "FC_INTENT_TEST_ACTION="+secondAction)
+		}
 		cmd.Stdout = &outputs[i]
 		cmd.Stderr = &outputs[i]
 		commands[i] = cmd
@@ -124,6 +153,13 @@ func TestQueuedIntentRebindCrossProcessSingleWinnerAndRestart(t *testing.T) {
 	}
 	if won != 1 || lost != 1 {
 		t.Fatal(won, lost)
+	}
+	old := cliWaitRead(t, f, r.ID)
+	if old.State == "completed" {
+		if secondAction != "claim" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_intent_rebindings`) != 0 || roundRead(t, f, 2, "cli").Used != 0 {
+			t.Fatal("dispatch winner was rebound or unfinalized synthetic run was billed", old)
+		}
+		return
 	}
 	var next string
 	if err := f.store.DB().QueryRow(`SELECT successor_operation_id FROM review_intent_rebindings WHERE predecessor_operation_id=?`, r.ID).Scan(&next); err != nil {

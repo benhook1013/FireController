@@ -80,7 +80,7 @@ func readIntentLineage(ctx context.Context, q EvidenceQuery, project, successor 
 	if !marked || marker.String != v.PredecessorID {
 		return nil, waitUnavailable()
 	}
-	if json.Unmarshal([]byte(body), &v.Source) != nil || !validSourceObservation(v.Source) || v.Depth < 1 || v.Depth > 1000 || v.CLIExhaustions < 0 || v.CLIExhaustions > 3 || v.SourceRetries < 0 || v.SourceRetries > sourceRetryLimit {
+	if json.Unmarshal([]byte(body), &v.Source) != nil || body != encoded(v.Source) || !validSourceObservation(v.Source) || v.Depth < 1 || v.Depth > 1000 || v.CLIExhaustions < 0 || v.CLIExhaustions > 3 || v.SourceRetries < 0 || v.SourceRetries > sourceRetryLimit {
 		return nil, waitUnavailable()
 	}
 	created, ok := attemptRecordedTime(v.IntentCreatedAt)
@@ -94,13 +94,13 @@ func readIntentLineage(ctx context.Context, q EvidenceQuery, project, successor 
 			return nil, waitUnavailable()
 		}
 	}
-	var oldProject, newProject, rootProject, oldHead, newHead, rootCreated, oldState, oldActor, newActor, oldWorker, newWorker, oldChannel, newChannel string
+	var oldProject, newProject, rootProject, oldHead, newHead, rootCreated, oldState, oldReason, oldActor, newActor, oldWorker, newWorker, oldChannel, newChannel string
 	var oldPull, newPull int64
-	err = q.QueryRowContext(ctx, `SELECT o.project_id,n.project_id,r.project_id,o.head_sha,n.head_sha,r.created_at,o.state,o.actor_id,n.actor_id,o.worker_id,n.worker_id,o.channel,n.channel,o.pull_number,n.pull_number FROM review_operations o JOIN review_operations n ON n.id=? JOIN review_operations r ON r.id=? WHERE o.id=?`, v.SuccessorID, v.RootOperationID, v.PredecessorID).Scan(&oldProject, &newProject, &rootProject, &oldHead, &newHead, &rootCreated, &oldState, &oldActor, &newActor, &oldWorker, &newWorker, &oldChannel, &newChannel, &oldPull, &newPull)
+	err = q.QueryRowContext(ctx, `SELECT o.project_id,n.project_id,r.project_id,o.head_sha,n.head_sha,r.created_at,o.state,o.reason,o.actor_id,n.actor_id,o.worker_id,n.worker_id,o.channel,n.channel,o.pull_number,n.pull_number FROM review_operations o JOIN review_operations n ON n.id=? JOIN review_operations r ON r.id=? WHERE o.id=?`, v.SuccessorID, v.RootOperationID, v.PredecessorID).Scan(&oldProject, &newProject, &rootProject, &oldHead, &newHead, &rootCreated, &oldState, &oldReason, &oldActor, &newActor, &oldWorker, &newWorker, &oldChannel, &newChannel, &oldPull, &newPull)
 	if err != nil {
 		return nil, err
 	}
-	if oldProject != project || newProject != project || rootProject != project || rootCreated != v.IntentCreatedAt || oldState != "cancelled" || oldActor != newActor || oldWorker != newWorker || oldChannel != newChannel || oldPull != newPull || v.Source.PullNumber != newPull || v.Source.HeadSHA != newHead || !sha.MatchString(oldHead) {
+	if oldProject != project || newProject != project || rootProject != project || rootCreated != v.IntentCreatedAt || oldState != "cancelled" || oldReason != "source_superseded" || oldActor != newActor || oldWorker != newWorker || oldChannel != newChannel || oldPull != newPull || v.Source.PullNumber != newPull || v.Source.HeadSHA != newHead || !sha.MatchString(oldHead) {
 		return nil, waitUnavailable()
 	}
 	var parentRoot string
@@ -311,6 +311,11 @@ func (e *Engine) rebindQueuedIntentTx(ctx context.Context, tx *sql.Tx, expected 
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleExecutionTime())
 		if err != nil {
 			return err
+		}
+		observed, valid := attemptRecordedTime(source.ObservedAt)
+		recorded, recordedValid := attemptRecordedTime(at)
+		if !valid || !recordedValid || observed.After(recorded) || recorded.Sub(observed) > time.Minute {
+			return sourceHold("observation_incomplete")
 		}
 		v.ReboundAt = at
 		_, revision, err := readConfiguration(ctx, tx, o.ProjectID)

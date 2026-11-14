@@ -141,19 +141,32 @@ func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string)
 // preparation. A moved comparison is handed back before any allowance query or
 // provider write, never during Dispatch where exact run anchors remain strict.
 func resolvePreparingIntentSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
-	repo, err := reads.Repository(ctx, repositoryID)
-	if err != nil {
-		return reviewexec.SourcePlan{}, nil, err
-	}
-	pull, err := reads.Pull(ctx, repo.FullName, operation.PullNumber)
-	if err != nil {
-		return reviewexec.SourcePlan{}, nil, err
-	}
 	request := operationRequest(operation)
-	request.HeadSHA = pull.HeadSHA
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
 	if err != nil {
-		return plan, nil, err
+		var refusal *core.Error
+		if !errors.As(err, &refusal) || refusal.Code != "review_held" {
+			return plan, nil, err
+		}
+		details, ok := refusal.Details.(map[string]string)
+		if !ok || details["reason"] != "target_changed" || details["stop_reason"] != "target_superseded" {
+			return plan, nil, err
+		}
+		// The original resolver has validated repository/PR identity. Reuse its
+		// cached reads; never follow an unvalidated repository name to another API.
+		repo, readErr := reads.Repository(ctx, repositoryID)
+		if readErr != nil {
+			return plan, nil, readErr
+		}
+		pull, readErr := reads.Pull(ctx, repo.FullName, operation.PullNumber)
+		if readErr != nil {
+			return plan, nil, readErr
+		}
+		request.HeadSHA = pull.HeadSHA
+		plan, err = reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
+		if err != nil {
+			return plan, nil, err
+		}
 	}
 	changed := plan.Pull.HeadSHA != operation.HeadSHA
 	if !changed {
