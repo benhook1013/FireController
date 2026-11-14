@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The observed markerless additional-only submission has one counted category,
@@ -97,6 +98,12 @@ func hasSubmittedActionableClaim(text string) bool {
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")),
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, " ")),
 	} {
+		visible = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return ' '
+			}
+			return r
+		}, visible)
 		if submittedActionableClaim.MatchString(visible) || submittedActionableClaim.MatchString(
 			strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(visible)) {
 			return true
