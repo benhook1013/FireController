@@ -291,6 +291,28 @@ func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 	}
 }
 
+func TestCooldownWaitProgressAndWireOptIn(t *testing.T) {
+	f, a, _, _ := queuedCooldown(t)
+	progress, err := f.e.ReadRoundProgressStages(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), []int64{2})
+	if err != nil || progress.Items[0].Channels[0].Wait == nil || progress.Items[0].Channels[1].Wait != nil {
+		t.Fatal("current channel wait", progress, err)
+	}
+	for _, path := range []string{"/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID, "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID + "/status", roundProgressPath(attemptProject) + "?pull_numbers=2&view=stages"} {
+		for _, opt := range []bool{false, true} {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.Header.Set("Authorization", "Bearer "+f.reader)
+			if opt {
+				r.Header.Set(operationWaitHeader, "1")
+			}
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			if w.Code != 200 || strings.Contains(w.Body.String(), `"wait":`) != opt {
+				t.Fatal("wire opt-in", path, opt, w.Code, w.Body.String())
+			}
+		}
+	}
+}
+
 func TestOperationHTTPPreservesReservedFlagsWithoutExposingThem(t *testing.T) {
 	f := supervisorFixture(t)
 	receipt := f.enqueue(t, attemptProject, "reserved-operation-flags", "cli", 2, 1)
@@ -607,6 +629,54 @@ func retainTimerCooldown(t *testing.T, f *attemptFixture, a Attempt, minutes tim
 	return in
 }
 
+func TestCooldownMultipleWaitsPreserveOneRoundOccupancyAndReleaseReservations(t *testing.T) {
+	f := roundFixture(t)
+	roundGrant(t, f, 2, "hosted", 0, 0, 2, "grant")
+	receipt := f.enqueue(t, attemptProject, "one-intent", "hosted", 2, 1)
+	first := f.start(t, attemptProject, receipt)
+	in := retainTimerCooldown(t, f, first, 3*time.Minute)
+	if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, first.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	firstHistory := hostedAllowanceOnlyAttempt(t, f, first)
+	now := in.Observation.RetryNotBefore
+	f.e.schedulingNow = func() time.Time { return now }
+	second := f.start(t, attemptProject, receipt)
+	next := retainTimerCooldown(t, f, second, 6*time.Minute)
+	if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, second.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	o := bindingOperation(t, f, f.scope(t, attemptProject, f.writer, false), receipt.ID)
+	if o.Wait == nil || o.Wait.BaselineAttemptID != first.ID || o.Wait.RetryNotBefore != next.Observation.RetryNotBefore.Format(time.RFC3339Nano) {
+		t.Fatal("repeated timer lost first comparison/latest deadline", o)
+	}
+	progress, err := f.e.ReadRoundProgressStages(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), []int64{2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := progress.Items[0].Channels[0]
+	if c.Pending != 1 || c.PendingExecution == nil || *c.PendingExecution != 1 || c.Used != 0 || c.Dry != 0 || c.Wait == nil {
+		t.Fatal("cooldown changed round accounting", c)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_evidence`) != 0 {
+		t.Fatal("timer reserved capacity/credited review")
+	}
+	if hostedAllowanceOnlyAttempt(t, f, first) != firstHistory {
+		t.Fatal("second timer rewrote initial retained observation")
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	timerControl(t, f, receipt.ID, "cancel", "cancel")
+	if c := readProgress(t, f, 2).Items[0].Channels[0]; c.Pending != 0 || c.Used != 0 {
+		t.Fatal("cancel did not release pending round", c)
+	}
+}
 func hostedAllowanceOnlyAttempt(t *testing.T, f *attemptFixture, a Attempt) string {
 	t.Helper()
 	var preflight, query string

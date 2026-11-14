@@ -40,9 +40,17 @@ func operationStatusArguments(raw json.RawMessage) (*operationStatusInput, error
 }
 func executeOperationStatus(ctx context.Context, service *client.Client, in *operationStatusInput) (any, error) {
 	if in.Diagnostics {
-		return service.WaitReviewOperation(ctx, in.ID, in.WaitSeconds)
+		operation, err := service.WaitReviewOperation(ctx, in.ID, in.WaitSeconds)
+		if out := client.AgentReviewOperation(operation); out.Diagnostic != nil {
+			return out, err
+		}
+		return operation, err
 	}
-	return service.WaitReviewOperationStatus(ctx, in.ID, in.WaitSeconds)
+	status, err := service.WaitReviewOperationStatus(ctx, in.ID, in.WaitSeconds)
+	if out := client.AgentReviewOperationStatus(status); out.Diagnostic != nil {
+		return out, err
+	}
+	return status, err
 }
 func operationStatusDefinition() definition {
 	return definition{"review_operation_read", "Read compact retained operation state, cause and next action; optionally wait without provider polling. A posted trigger is not proof of provider execution or completion. Set diagnostics=true for the original full retained operation.", map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{

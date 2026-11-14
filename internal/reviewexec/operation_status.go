@@ -13,23 +13,28 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	Observer   *HostedObserverStatus `json:"observer,omitempty"`
-	ID         string                `json:"id"`
-	PullNumber int64                 `json:"pull_number"`
-	Channel    string                `json:"channel"`
-	State      string                `json:"state"`
-	Revision   int64                 `json:"revision"`
-	Stage      string                `json:"stage"`
-	Reason     string                `json:"reason"`
-	AttemptID  string                `json:"attempt_id"`
-	EvidenceID string                `json:"evidence_id,omitempty"`
-	UpdatedAt  string                `json:"updated_at"`
-	NextAction string                `json:"next_action"`
+	Wait           *OperationWait        `json:"wait,omitempty"`
+	RetryNotBefore string                `json:"retry_not_before,omitempty"`
+	Observer       *HostedObserverStatus `json:"observer,omitempty"`
+	ID             string                `json:"id"`
+	PullNumber     int64                 `json:"pull_number"`
+	Channel        string                `json:"channel"`
+	State          string                `json:"state"`
+	Revision       int64                 `json:"revision"`
+	Stage          string                `json:"stage"`
+	Reason         string                `json:"reason"`
+	AttemptID      string                `json:"attempt_id"`
+	EvidenceID     string                `json:"evidence_id,omitempty"`
+	UpdatedAt      string                `json:"updated_at"`
+	NextAction     string                `json:"next_action"`
 }
 
 func operationStatusStage(o Operation, evidence string, complete bool) (string, string) {
 	switch o.State {
 	case "queued":
+		if o.Wait != nil && o.Wait.Paused {
+			return "queued", "resume_or_cancel"
+		}
 		return "queued", "wait"
 	case "preparing":
 		return "preparing", "wait"
@@ -80,6 +85,10 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 		}
 		stage, next := operationStatusStage(o, evidence, complete)
 		result = OperationStatus{ID: o.ID, PullNumber: o.PullNumber, Channel: o.Channel, State: o.State, Revision: o.Revision, Stage: stage, Reason: o.Reason, AttemptID: o.AttemptID, EvidenceID: evidence, UpdatedAt: o.UpdatedAt, NextAction: next}
+		result.Wait = currentOperationWait(o)
+		if o.Channel == "hosted" && o.State == "held" && o.Reason == "hosted_allowance_cooldown" && o.Allowance != nil {
+			result.RetryNotBefore = o.Allowance.RetryNotBefore
+		}
 		result.Observer = e.observerStatus(o)
 		return nil
 	})
@@ -130,6 +139,7 @@ func (e *Engine) WaitOperationStatus(ctx context.Context, scope core.Scope, id s
 	return e.ReadOperationStatus(ctx, scope, id)
 }
 func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-Hosted-Observer")
 	scope, err := e.store.Scope(r, "read")
@@ -163,6 +173,16 @@ func (e *Engine) readOperationStatusHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	if r.Header.Get("X-FC-Hosted-Observer") != "1" {
 		value.Observer = nil
+	}
+	value.Wait = operationWaitForResponse(value.Wait, value.Channel, r.Header.Get(operationWaitHeader))
+	if value.Wait == nil && value.NextAction == "resume_or_cancel" {
+		value.NextAction = "wait"
+	}
+	if r.Header.Get(operationWaitHeader) != "3" {
+		value.RetryNotBefore = ""
+	}
+	if value.Channel == "cli" && value.State == "queued" && e.sharedCLIQuotaWait(r.Context(), scope, value.ID) {
+		w.Header().Set("X-FC-Review-Queued", "cli_quota_wait")
 	}
 	core.WriteJSON(w, http.StatusOK, value)
 }

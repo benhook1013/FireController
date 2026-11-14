@@ -11,6 +11,11 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "operation-control" {
+		var ok bool
+		call.reviewOperationControl, ok = parseReviewOperationControl(args)
+		return call, ok
+	}
 	if call.subcommand == "ci-wait" {
 		var ok bool
 		call.ciWatch, ok = parseCIWatch(args)
@@ -158,6 +163,9 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 		return client.AgentCIWatch(value), err
 	}
 	switch call.subcommand {
+	case "operation-control":
+		in := call.reviewOperationControl
+		return service.ControlReviewOperation(ctx, in.key, in.id, in.control)
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])
 	case "route":
