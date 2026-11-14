@@ -288,7 +288,15 @@ func TestRoundProgressReadDoesNotWaitForWriterAdmission(t *testing.T) {
 	go func() {
 		done <- f.store.BackgroundWrite(t.Context(), func(context.Context, *sql.Tx) error { close(entered); <-release; return nil })
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case err := <-done:
+		close(release)
+		t.Fatalf("writer admission failed: %v", err)
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("writer admission timed out")
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	result, err := f.e.ReadRoundProgress(ctx, scope, []int64{2})
 	cancel()
