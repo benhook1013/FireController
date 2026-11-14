@@ -232,7 +232,7 @@ func removeManagedBundle(ctx context.Context, path string, manifest Manifest) er
 			return unavailable()
 		}
 	}
-	for _, dir := range []string{"review-captures", "hosted-review-captures"} {
+	for _, dir := range []string{"review-captures", "hosted-review-captures", "cli-exhaustion-captures"} {
 		if checkContext(ctx) != nil {
 			return unavailable()
 		}
