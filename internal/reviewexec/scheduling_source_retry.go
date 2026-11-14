@@ -117,6 +117,13 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 			return "", err
 		}
 		if !initial {
+			complete, err := automaticSourceRetryHistory(ctx, tx, r)
+			if err != nil {
+				return "", err
+			}
+			if !complete {
+				return "automation_authorization_changed", nil
+			}
 			settings, err := readScheduling(ctx, tx, r.ProjectID)
 			if err != nil {
 				return "", err
@@ -160,6 +167,25 @@ func automaticSourceInitialRead(ctx context.Context, tx *sql.Tx, r Run) (bool, e
 		return false, err
 	}
 	return count == r.Revision-1 && distinct == count && first == 2 && last == r.Revision && invalid == 0, nil
+}
+
+// A retained source retry may cross unrelated channel changes only with complete,
+// well-formed transition history. An arbitrary held event is not retry authority.
+func automaticSourceRetryHistory(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
+	if r.Revision < 4 || r.Revision > 8 {
+		return false, nil
+	}
+	var count, distinct, first, last, invalid, holds int64
+	err := tx.QueryRowContext(ctx, `SELECT count(*),count(DISTINCT revision),COALESCE(min(revision),0),COALESCE(max(revision),0),COALESCE(sum(
+ CASE WHEN typeof(revision)='integer' AND json_valid(payload_json) THEN
+  CASE WHEN json_extract(payload_json,'$.state') IN ('queued','selecting') AND json_extract(payload_json,'$.reason')='' THEN 0
+   WHEN revision IN (3,6) AND json_extract(payload_json,'$.state')='held' AND json_extract(payload_json,'$.reason') IN ('source_budget_exhausted','source_fetch_timeout','source_provider_unavailable') THEN 0 ELSE 1 END
+ ELSE 1 END),0),COALESCE(sum(CASE WHEN json_valid(payload_json) THEN CASE WHEN json_extract(payload_json,'$.state')='held' THEN 1 ELSE 0 END ELSE 0 END),0)
+ FROM events WHERE project_id=? AND resource_id=? AND event_type='review.selection_updated' AND revision BETWEEN 2 AND ?`, r.ProjectID, r.ID, r.Revision).Scan(&count, &distinct, &first, &last, &invalid, &holds)
+	if err != nil {
+		return false, err
+	}
+	return count == r.Revision-1 && distinct == count && first == 2 && last == r.Revision && invalid == 0 && holds >= 1, nil
 }
 
 func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
