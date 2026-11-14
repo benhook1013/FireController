@@ -181,3 +181,49 @@ func TestEmptyQuarantineReadbackDistinguishesCommitFromRollback(t *testing.T) {
 		})
 	}
 }
+
+func TestOfflineQuarantineOperatorPreservesManagedConfiguration(t *testing.T) {
+	m, _, request := emptyQuarantineFixture(t)
+	var before string
+	if err := m.store.DB().QueryRow("SELECT body_json FROM managed_backup_state WHERE singleton=1").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := m.dataDir
+	if err := m.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := ReconcileEmptyQuarantineFromDirectory(t.Context(), dataDir, "inactive:"+request.ExpectedInstanceID, request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.State != "settled_managed_namespace_quarantine_preserved" {
+		t.Fatal(receipt)
+	}
+	outcome, err := ReconcileEmptyQuarantineFromDirectory(t.Context(), dataDir, "inactive:"+request.ExpectedInstanceID, request, true)
+	if err != nil || outcome != receipt {
+		t.Fatal(outcome, err)
+	}
+	db, err := openDatabase(t.Context(), filepath.Join(dataDir, "firecontroller.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var after string
+	if err := db.QueryRow("SELECT body_json FROM managed_backup_state WHERE singleton=1").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("operator changed managed schedule/history")
+	}
+}
+
+func TestOfflineQuarantineOperatorRequiresExplicitCustodyBeforeOpeningSource(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-created")
+	request := EmptyQuarantineRequest{ExpectedInstanceID: "instance_00000000000000000000000000000000"}
+	if _, err := ReconcileEmptyQuarantineFromDirectory(t.Context(), missing, "", request, false); err == nil {
+		t.Fatal("missing custody accepted")
+	}
+	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
+		t.Fatal("source bootstrapped")
+	}
+}

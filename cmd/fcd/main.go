@@ -48,7 +48,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	if len(args) > 0 && args[0] == "restore-resume-providers" {
 		return runProviderResumptionCommand(ctx, args[1:], stdout, stderr)
 	}
-	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore" || args[0] == "restore-activate") {
+	if len(args) > 0 && (args[0] == "backup-reconcile-empty-quarantine" || args[0] == "backup-reconcile-readback" || args[0] == "backup" || args[0] == "backup-inspect" || args[0] == "backup-status" || args[0] == "restore" || args[0] == "restore-activate") {
 		return runBackupCommand(ctx, args[0], args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("fcd", flag.ContinueOnError)

@@ -19,7 +19,17 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	flags := flag.NewFlagSet("fcd "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard) // Parser errors can reflect private argument values.
 	var dataDir, destination, bundle, expectedInstance, predecessor, adminTokenFile string
+	var quarantine backup.EmptyQuarantineRequest
+	var inactiveAttestation string
 	switch command {
+	case "backup-reconcile-empty-quarantine", "backup-reconcile-readback":
+		flags.StringVar(&dataDir, "data-dir", "", "existing inactive private source directory")
+		flags.StringVar(&quarantine.BackupID, "backup-id", "", "exact cleanup-failed backup")
+		flags.StringVar(&quarantine.ExpectedInstanceID, "expect-instance", "", "exact source instance")
+		flags.StringVar(&quarantine.ExpectedManifestSHA256, "expect-manifest-sha256", "", "exact registered manifest digest")
+		flags.StringVar(&quarantine.QuarantinePath, "quarantine", "", "already quarantined empty directory")
+		flags.StringVar(&quarantine.ReceiptPath, "receipt", "", "exclusive private audit receipt path")
+		flags.StringVar(&inactiveAttestation, "inactive-custody", "", "operator attestation inactive:<instance>; not a lock")
 	case "restore-activate":
 		flags.StringVar(&dataDir, "data-dir", "", "existing inactive restore directory")
 		flags.StringVar(&expectedInstance, "expect-instance", "", "exact restored instance identity")
@@ -78,6 +88,8 @@ func runBackupCommand(ctx context.Context, command string, args []string, stdout
 	defer cancel()
 	var summary any
 	switch command {
+	case "backup-reconcile-empty-quarantine", "backup-reconcile-readback":
+		summary, err = backup.ReconcileEmptyQuarantineFromDirectory(operation, dataDir, inactiveAttestation, quarantine, command == "backup-reconcile-readback")
 	case "restore-activate":
 		summary, err = backup.Activate(operation, dataDir, backup.ActivationRequest{ExpectedInstanceID: expectedInstance, FencedPredecessorID: predecessor, AdminTokenFile: adminTokenFile})
 	case "backup":
