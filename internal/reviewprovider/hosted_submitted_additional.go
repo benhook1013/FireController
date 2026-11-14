@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // The observed markerless additional-only submission has one counted category,
@@ -42,21 +43,23 @@ var submittedActionableClaim = regexp.MustCompile(`(?i)actionable comments poste
 // decode in full, and every additional finding must name a selected file. These
 // are unverified additional findings, never a fabricated clean/zero result.
 func submittedAdditionalInventory(review HostedReview, selected map[string]bool) bool {
-	// Remove complete comments as a stream for count refusal only. Physical
-	// newlines inside a comment must not split a visible count declaration.
-	// Structural parsing below still uses the untouched original body.
-	comment := false
-	visible := findingCommentVisible(review.Body, &comment)
-	lines, sound := findingLines(visible)
-	if !sound || comment {
+	// The shared scanner excludes comments only outside code examples. Join
+	// physical boundaries hidden by comments for count refusal, without changing
+	// source offsets or promoting mixed comment lines to structural metadata.
+	lines, sound := findingLines(review.Body)
+	if !sound {
 		return false
 	}
-	// Category bodies are HTML blockquotes, not quoted examples. Do not let
-	// their visible count claims disappear behind publication metadata scopes.
+	var count strings.Builder
 	for _, line := range lines {
-		if submittedActionableClaim.MatchString(line.countText) {
+		count.WriteString(line.countText)
+		if line.countContinues {
+			continue
+		}
+		if submittedActionableClaim.MatchString(count.String()) {
 			return false
 		}
+		count.Reset()
 	}
 	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
 	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}

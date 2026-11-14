@@ -39,8 +39,9 @@ describe('operation wait presentation', () => {
     expect(html).toContain('aria-controls=');
     expect(html).toContain('Cooldown ·');
     expect(html).toContain('aria-describedby=');
-    expect(html).toContain('role="tooltip"');
+    expect(html).toContain('role="region"');
     expect(html).toContain('Earliest retry');
+    expect(html).toMatch(/tabindex="0" role="region" aria-label="Review wait details"/u);
     expect(html).toContain(retry);
   });
 

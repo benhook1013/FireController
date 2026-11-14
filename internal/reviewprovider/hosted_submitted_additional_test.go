@@ -249,6 +249,19 @@ func TestHostedSubmittedAdditionalOnlyPreservesPositiveInventory(t *testing.T) {
 	}
 }
 
+func TestHostedSubmittedAdditionalOnlyPreservesCommentExamples(t *testing.T) {
+	for _, example := range []string{"```html\n<!--\n```", "~~~html\n<!--\n~~~", "<pre>\n<!--\n</pre>", "    <!--"} {
+		t.Run(example, func(t *testing.T) {
+			f := submittedAdditionalFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", example+"\n_Source: Linters/SAST tools_", 1)
+			got := f.extract(t)
+			if !got.Complete || len(got.Findings) != 1 {
+				t.Fatalf("code example lost positive inventory: %+v", got)
+			}
+		})
+	}
+}
+
 func TestHostedSubmittedAdditionalOnlyRejectsUnprovenBody(t *testing.T) {
 	replace := func(old, next string) func(string) string {
 		return func(body string) string { return strings.Replace(body, old, next, 1) }

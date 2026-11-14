@@ -53,6 +53,7 @@ type findingLine struct {
 	start, end, next, quote int
 	text                    string
 	countText               string // Visible comment-excluded text for contradictory count checks only.
+	countContinues          bool   // A comment hides this physical line boundary.
 	hidden                  bool
 }
 
@@ -128,6 +129,7 @@ func findingLines(body string) ([]findingLine, bool) {
 		if !l.hidden {
 			l.countText = l.text
 		}
+		l.countContinues = comment
 		lines = append(lines, l)
 		offset = next
 	}
