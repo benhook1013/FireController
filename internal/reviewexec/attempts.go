@@ -534,6 +534,14 @@ func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, select
 				return err
 			}
 			if a.State == "preparing" && o.Channel == "hosted" {
+				requeued, err := e.recoverUnqueriedHostedRetry(ctx, tx, o, a)
+				if err != nil {
+					return err
+				}
+				if requeued {
+					changed = append(changed, o.ID)
+					continue
+				}
 				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
 				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
 					return readErr
