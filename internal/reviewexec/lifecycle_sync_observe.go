@@ -19,7 +19,13 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if target.lane == lifecycleMetadata {
 		ctx = reviewprovider.WithGitHubCaller(ctx, "lifecycle_metadata")
 	} else {
-		ctx = reviewprovider.WithGitHubCaller(ctx, "lifecycle_enrichment")
+		caller := "lifecycle_enrichment_periodic"
+		if target.forceCI {
+			caller = "lifecycle_enrichment_hint"
+		} else if target.due.head != target.due.enrichmentHead || target.due.baseSHA != target.due.enrichmentBaseSHA || target.due.baseRef != target.due.enrichmentBaseRef {
+			caller = "lifecycle_enrichment_comparison"
+		}
+		ctx = reviewprovider.WithGitHubCaller(ctx, caller)
 	}
 	state, head := "", ""
 	var providerErr error

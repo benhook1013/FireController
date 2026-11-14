@@ -16,7 +16,7 @@ type githubCallerKey struct{}
 
 func WithGitHubCaller(ctx context.Context, caller string) context.Context {
 	switch caller {
-	case "review_selection", "cli_preparation", "hosted_preparation", "hosted_recovery", "lifecycle_metadata", "lifecycle_enrichment", "ci_watch", "source_refresh", "history_import":
+	case "review_selection", "cli_preparation", "hosted_preparation", "hosted_recovery", "lifecycle_metadata", "lifecycle_enrichment", "lifecycle_enrichment_hint", "lifecycle_enrichment_comparison", "lifecycle_enrichment_periodic", "ci_watch", "source_refresh", "history_import":
 		return context.WithValue(ctx, githubCallerKey{}, caller)
 	default:
 		return ctx
@@ -33,10 +33,11 @@ type githubQuotaCount struct {
 // GitHubQuota aggregates requests for one configured credential. Bucket IDs
 // are random for this process, so logs carry no credential-derived material.
 type GitHubQuota struct {
-	mu     sync.Mutex
-	bucket string
-	next   time.Time
-	rows   map[githubQuotaKey]githubQuotaCount
+	mu        sync.Mutex
+	bucket    string
+	next      time.Time
+	rows      map[githubQuotaKey]githubQuotaCount
+	coreFloor RetryTimingEvidence
 }
 
 func NewGitHubQuota() *GitHubQuota {
@@ -48,6 +49,23 @@ func NewGitHubQuota() *GitHubQuota {
 }
 
 func (g *GitHub) SetQuotaTelemetry(quota *GitHubQuota) { g.quota = quota }
+
+// primaryReadGate is a negative, process-local floor shared by adapters using
+// the same credential. It neither proves availability nor changes admission.
+// GraphQL and other quota resources keep their independent existing behavior.
+func (q *GitHubQuota) primaryReadGate(now time.Time, method, path string) error {
+	if q == nil || method != http.MethodGet || !(path == "/user" || strings.HasPrefix(path, "/repositories/") || strings.HasPrefix(path, "/repos/")) {
+		return nil
+	}
+	q.mu.Lock()
+	floor := q.coreFloor
+	q.mu.Unlock()
+	if floor.State != "proven" || !now.Before(floor.NotBefore) {
+		return nil
+	}
+	seconds := int64((floor.NotBefore.Sub(now) + time.Second - 1) / time.Second)
+	return &Error{Code: "provider_rate_limited", Message: "GitHub core reads are waiting for an observed primary reset; availability is not established.", Status: http.StatusTooManyRequests, RetryAfterSeconds: seconds, RetryTiming: floor, retryDirected: true}
+}
 
 func githubEndpoint(path string) string {
 	if path == "/graphql" {
@@ -120,6 +138,14 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 	}
 	var previous map[githubQuotaKey]githubQuotaCount
 	q.mu.Lock()
+	// Only an unambiguous primary-core refusal establishes this floor. A
+	// successful concurrent request must not erase an unexpired refusal.
+	if (status == http.StatusForbidden || status == http.StatusTooManyRequests) && remaining == 0 && len(header.Values("X-RateLimit-Resource")) == 1 && header.Get("X-RateLimit-Resource") == "core" {
+		timing := sourceRetryTiming(header, now)
+		if timing.State == "proven" && timing.NotBefore.After(now) && timing.NotBefore.After(q.coreFloor.NotBefore) {
+			q.coreFloor = timing
+		}
+	}
 	previousEnd := q.next
 	if q.next.IsZero() || !now.Before(q.next) {
 		previous, q.rows = q.rows, make(map[githubQuotaKey]githubQuotaCount)

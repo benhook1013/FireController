@@ -418,6 +418,10 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 			return nil, nil, 0, err
 		}
 	}
+	if err := g.quota.primaryReadGate(time.Now(), method, path); err != nil {
+		g.quota.observe(ctx, time.Now(), path, nil, false, true)
+		return nil, nil, 0, err
+	}
 	requestURL := strings.TrimRight(g.baseURL, "/") + path + "?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
 	if err != nil {
