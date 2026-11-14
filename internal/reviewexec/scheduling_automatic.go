@@ -653,6 +653,34 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		traceReason(ctx, "configuration_unavailable")
 		return nil, nil
 	}
+	// Discovery must not spend source reads while a proven shared negative
+	// floor or an actually occupied provider lane prevents any start. A PR's
+	// own Hosted cooldown is not evidence that unrelated PRs must wait.
+	if ready, err := e.sourceCandidateDue(ctx, tx, Operation{}, c); err != nil {
+		return nil, err
+	} else if !ready {
+		traceReason(ctx, "source_credential_wait")
+		return nil, nil
+	}
+	capability := e.capabilities[c.CapabilityID]
+	if channel == "cli" {
+		due, err := cliAccountRetryDeadline(ctx, tx, capability, e.sampleExecutionTime())
+		if err != nil {
+			return nil, err
+		}
+		if e.sampleExecutionTime().Before(due) {
+			traceReason(ctx, "provider_account_wait")
+			return nil, nil
+		}
+	}
+	var providerBusy bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations r JOIN projects p ON p.id=? WHERE r.provider=? AND r.account=? AND r.action_class=? AND (?='cli' OR r.repository_id=p.github_repository_id))`, project, capability.Provider, capability.Account, channel, channel).Scan(&providerBusy); err != nil {
+		return nil, err
+	}
+	if providerBusy {
+		traceReason(ctx, "provider_lane_busy")
+		return nil, nil
+	}
 	c.Queue, err = reviews.OrderedExecutionQueue(ctx, tx, project, c.Queue)
 	if err != nil {
 		return nil, err
