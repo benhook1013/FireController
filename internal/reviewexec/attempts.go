@@ -527,7 +527,7 @@ func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, select
 			if err != nil {
 				// Corrupt authority stays reserved; it cannot prevent unrelated
 				// projects from recovering or authorize a replacement attempt.
-				if isStoredUnavailable(err, storedOperationIdentity) || isWaitUnavailable(err) {
+				if isStoredUnavailable(err, storedOperationIdentity) || isRetainedOperationDecodeError(err) || isWaitUnavailable(err) {
 					slog.WarnContext(ctx, "Interrupted operation authority unavailable", "operation_id", a.OperationID, "attempt_id", a.ID)
 					continue
 				}
