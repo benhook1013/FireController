@@ -1,6 +1,7 @@
 package reviewprovider
 
 import (
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -57,7 +58,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 		if line.countContinues {
 			continue
 		}
-		if submittedActionableClaim.MatchString(count.String()) {
+		if hasSubmittedActionableClaim(count.String()) {
 			return false
 		}
 		count.Reset()
@@ -65,7 +66,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	}
 	// Ordinary Markdown soft breaks are whitespace, not declaration boundaries.
 	// Keep the per-line refusal above for bare labels as well.
-	if submittedActionableClaim.MatchString(visibleText.String()) {
+	if hasSubmittedActionableClaim(visibleText.String()) {
 		return false
 	}
 	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
@@ -80,4 +81,16 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 		}
 	}
 	return true
+}
+
+// Attribute quotes can contain > without closing the tag. This is only a
+// conservative count-refusal projection, not a general HTML inventory parser.
+var submittedCountDecoration = regexp.MustCompile(`(?s)</?[A-Za-z](?:[^<>"']|"[^"]*"|'[^']*')*>`)
+
+// Decoration removal is a refusal-only view: it cannot supply structural markers,
+// inventory or source offsets. Keep the raw check as well so decorated examples
+// cannot erase an already visible contradictory declaration.
+func hasSubmittedActionableClaim(text string) bool {
+	return submittedActionableClaim.MatchString(text) || submittedActionableClaim.MatchString(
+		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")))
 }

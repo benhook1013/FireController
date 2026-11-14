@@ -465,6 +465,8 @@ func TestHostedSubmittedAdditionalOnlyCountsEveryItem(t *testing.T) {
 func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 	for _, prose := range []string{
 		"Preserve the actionable comments posted label.",
+		"Preserve the actionable comments <span>posted</span> label.",
+		"<!-- **Actionable comments <span>posted</span>: 99** -->",
 		"Preserve the actionable comments posted\nlabel.",
 		"Actionable comments posted by the reviewer remain unverified.",
 		"Actionable comments\nposted by the reviewer remain unverified.",
@@ -491,6 +493,27 @@ func TestHostedSubmittedAdditionalOnlyRejectsSoftWrappedActionable(t *testing.T)
 			got := f.extract(t)
 			if got.Complete {
 				t.Fatal("soft-wrapped actionable declaration supplied complete additional-only inventory")
+			}
+		})
+	}
+}
+
+func TestHostedSubmittedAdditionalOnlyRejectsInlineHTMLActionableClaim(t *testing.T) {
+	for _, claim := range []string{
+		"**Actionable comments <span>posted</span>: 1**",
+		`**Actionable comments <span title="a > b">posted</span>: 1**`,
+		`**Actionable comments <span title='a > b'>posted</span>: 1**`,
+		"**<span>Actionable</span> comments <em>posted</em>: 1**",
+		"**Actionable comments <span class=\"label\">posted</span>: 1**",
+		"**Actionable comments <span>posted</span>&colon; 1**",
+		"**Actionable comments <span>posted</span>\n: 1**",
+	} {
+		t.Run(claim, func(t *testing.T) {
+			f := submittedAdditionalFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", claim+"\n_Source: Linters/SAST tools_", 1)
+			got := f.extract(t)
+			if got.Complete || got.Publication.State == "attributed" || len(got.Findings) != 0 {
+				t.Fatal("inline-decorated actionable declaration supplied complete additional-only inventory")
 			}
 		})
 	}
