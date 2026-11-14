@@ -24,7 +24,7 @@ func requireSourceObligationsClear(ctx context.Context, tx *sql.Tx, project stri
 
 func sourceObligationCount(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
 	facts, err := adoptionholds.ReadFacts(ctx, tx, project, pull)
-	return facts.Open, sourceObligationReadError(err)
+	return facts.Open - facts.Unassigned, sourceObligationReadError(err)
 }
 
 func sourceObligationReadError(err error) error {
@@ -36,4 +36,9 @@ func sourceObligationReadError(err error) error {
 		return &automaticProjectStateError{err}
 	}
 	return err
+}
+
+func unassignedCarriedRouteCount(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
+	facts, err := adoptionholds.ReadFacts(ctx, tx, project, pull)
+	return facts.Unassigned, sourceObligationReadError(err)
 }

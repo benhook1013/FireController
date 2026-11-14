@@ -589,7 +589,7 @@ var findingRouteID = regexp.MustCompile(`^review_route_[0-9a-f]{32}$`)
 var findingRouteActor = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 func validFindingRoute(route *FindingRoute, sourcePull int64, native bool) bool {
-	if route == nil || !findingRouteID.MatchString(route.ID) || route.TargetPullNumber < 1 || route.TargetPullNumber > 2147483647 || sourcePull > 0 && route.TargetPullNumber == sourcePull || route.Revision < 1 || !oneOf(route.State, "active", "superseded") || native && route.State != "active" || !oneOf(route.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(route.Reason, 2048, false) || !nativeAdjudicationText(route.Actor, 128, false) || !nativeAdjudicationText(route.ProofNote, 2048, false) {
+	if route == nil || !findingRouteID.MatchString(route.ID) || route.TargetPullNumber < 0 || route.TargetPullNumber > 2147483647 || sourcePull > 0 && route.TargetPullNumber == sourcePull || route.Revision < 1 || !oneOf(route.State, "active", "superseded") || native && route.State != "active" || !oneOf(route.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(route.Reason, 2048, false) || !nativeAdjudicationText(route.Actor, 128, false) || !nativeAdjudicationText(route.ProofNote, 2048, false) {
 		return false
 	}
 	if route.Disposition == "unadjudicated" {

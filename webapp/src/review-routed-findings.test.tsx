@@ -73,7 +73,9 @@ describe('current routed findings', () => {
     expect(html).toContain('Source: PR unknown');
     expect(html).toContain('Receiving: Unknown receiving PR');
     expect(html).toContain('Receiving: Unassigned');
-    expect(html).toContain('No receiving PR is assigned.');
+    expect(html).toContain('Unassigned work remains unresolved and trackable.');
+    expect(html).toContain('merging still requires manual approval.');
+    expect(html).not.toContain('/pull/0');
     expect(html).not.toMatch(/No routes|Resolved after cutover|automatic|ready to merge/i);
   });
 

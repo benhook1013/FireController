@@ -5,6 +5,7 @@ import { githubRepositoryURL } from './github-links';
 // Only the retained comparison and bounded thread facts are consumed here.
 // The assessment's CI/policy verdict is not a browser merge authorization.
 export interface ReviewSourceReadiness {
+  unassigned_routes_pending?: number;
   project_id: string;
   refresh_id: string;
   source: 'observed_comparison';
