@@ -668,7 +668,7 @@ func backupCLIExhaustionArtifact(t *testing.T, f *restoreFixture) (string, []byt
 		Attempt:     reviewexec.Attempt{ID: attempt, OperationID: operation, ProjectID: f.project, Provider: "coderabbit", Account: "fixture-account", State: "preparing", Revision: 1},
 		Observation: reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: at, Remaining: 0, Limit: 5, FullCapacityInMS: 12000, RollingWindowMS: 3600000, ChangedFiles: 2},
 	}
-	store, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"))
+	store, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"), f.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -826,7 +826,7 @@ func TestInventoryCLIExhaustionRestoredPreparingAttemptReplaysWithoutDriver(t *t
 	at := time.Now().UTC().Format(time.RFC3339Nano)
 	anchor := reviewexec.Anchor{RepositoryID: 991, Repository: "synthetic/restore", PullNumber: 2, BaseRef: "main", CandidateSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("c", 64), ObservedAt: at}
 	record := reviewexec.CLIExhaustionRecovery{Operation: execution.Operation, Attempt: attempt, Observation: reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: at, Remaining: 0, Limit: 5, FullCapacityInMS: 12000, RollingWindowMS: 3600000, ChangedFiles: 2}}
-	source, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"))
+	source, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(f.dir, "cli-exhaustion-captures"), f.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +863,7 @@ func TestInventoryCLIExhaustionRestoredPreparingAttemptReplaysWithoutDriver(t *t
 	if err := StartupGuard(t.Context(), store); err != nil {
 		t.Fatal(err)
 	}
-	recovery, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(destination, "cli-exhaustion-captures"))
+	recovery, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(destination, "cli-exhaustion-captures"), destination)
 	if err != nil {
 		t.Fatal(err)
 	}

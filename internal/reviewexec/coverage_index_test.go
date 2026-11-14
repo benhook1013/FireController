@@ -49,7 +49,7 @@ func TestCoverageIndexRemovalRetainsJournalAndReplayAcrossRestart(t *testing.T) 
 // reconstructs a schema predating the retry indexes.
 func restorePreRetryIndexSchema(t *testing.T, f *attemptFixture) {
 	t.Helper()
-	for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt"} {
+	for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt", "review_operations_draft_probe"} {
 		admissionSQL(t, f, "DROP INDEX "+index)
 	}
 	admissionSQL(t, f, `UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`)
@@ -57,13 +57,13 @@ func restorePreRetryIndexSchema(t *testing.T, f *attemptFixture) {
 
 func assertRetryIndexesRestored(t *testing.T, f *attemptFixture) {
 	t.Helper()
-	for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt"} {
+	for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt", "review_operations_draft_probe"} {
 		if got := attemptCount(t, f.store, `SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?`, index); got != 1 {
 			t.Fatalf("retry index %s was not restored", index)
 		}
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "3" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "4" {
 		t.Fatal("retry index migration missing", version, err)
 	}
 }
