@@ -656,7 +656,10 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
 				// Only proven retained project corruption is local. No intent
 				// was admitted; retain the queued identity for a repaired read.
-				return e.finishPreparation(a, "held", "automatic_scheduling_unavailable")
+				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+					return err
+				}
+				continue
 			}
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {

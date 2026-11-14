@@ -638,6 +638,37 @@ func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(
 					if driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 						t.Fatal("corrupt retained source reached dispatch or leaked reservation")
 					}
+					// Detached corruption holds must remain covered by restore validation.
+					tx, txErr := f.store.DB().BeginTx(t.Context(), nil)
+					if txErr != nil {
+						t.Fatal(txErr)
+					}
+					if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err != nil {
+						t.Fatal("valid detached hold", err)
+					}
+					tx.Rollback()
+					if _, err := f.store.DB().Exec(`UPDATE review_execution_attempts SET external_id='unexpected-provider-effect' WHERE id=?`, preparing.ID); err != nil {
+						t.Fatal(err)
+					}
+					tx, txErr = f.store.DB().BeginTx(t.Context(), nil)
+					if txErr != nil {
+						t.Fatal(txErr)
+					}
+					if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err == nil {
+						t.Fatal("restore skipped corrupt detached scheduling hold")
+					}
+					tx.Rollback()
+					if _, err := f.store.DB().Exec(`UPDATE review_execution_attempts SET external_id='' WHERE id=?`, preparing.ID); err != nil {
+						t.Fatal(err)
+					}
+					f.configure(t, otherAttemptProject, "test-capability", 0, false)
+					f.enqueue(t, otherAttemptProject, "other-after-corrupt-source", channel, 2, 1)
+					other := &controlledDriver{dispatch: func(_ context.Context, _ Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+						return Result{State: "failed", Reason: "synthetic_no_post"}, nil
+					}}
+					if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": other}); err != nil || other.calls.Load() != 1 {
+						t.Fatal("corrupt source starved healthy project", err, other.calls.Load())
+					}
 					return
 				}
 				if err != nil {
