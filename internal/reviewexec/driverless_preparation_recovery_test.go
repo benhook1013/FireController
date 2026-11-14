@@ -16,11 +16,19 @@ func TestDriverlessInterruptedRecoveryPreservesHostedReplayEvidence(t *testing.T
 		t.Fatal(err)
 	}
 	before := attemptState(t, f, a)
+	queriesBefore := snapshotTable(t, f, "review_hosted_allowance_queries")
+	observationsBefore := snapshotTable(t, f, "review_hosted_observations")
+	if queriesBefore == "[]" || observationsBefore == "[]" {
+		t.Fatal("fixture must retain actual Hosted query and observation rows")
+	}
 	if err := engine.RecoverInterrupted(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if before != attemptState(t, f, a) {
 		t.Fatal("driverless recovery changed retained Hosted attempt/evidence/reservation")
+	}
+	if queriesBefore != snapshotTable(t, f, "review_hosted_allowance_queries") || observationsBefore != snapshotTable(t, f, "review_hosted_observations") {
+		t.Fatal("driverless recovery changed retained Hosted query or observation contents")
 	}
 	got, err := readAttempt(t.Context(), f.store.DB(), otherAttemptProject, other.ID)
 	if err != nil || got.State != "cancelled" {
