@@ -290,3 +290,55 @@ func TestCLIExhaustionArtifactMissingInvalidAndAgedSource(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIExhaustionSaveRetriesBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		failures, want int
+		refusal        bool
+	}{
+		{"transient", 1, 2, false}, {"exhausted", 5, 3, false}, {"conflict", 5, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			err := retryCLIExhaustionSave(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error {
+				calls++
+				if calls <= tc.failures {
+					if tc.refusal {
+						return captureError("capture_conflict")
+					}
+					return captureError("capture_unavailable")
+				}
+				return nil
+			})
+			if calls != tc.want || (err == nil) != (tc.failures < tc.want) {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestCLIExhaustionSaveRetryReconcilesPublishedArtifact(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	op, a, _ := f.start(t, 2, 1, "save-replay")
+	anchor := reviewexec.Anchor{RepositoryID: 901, Repository: "owner/repo", PullNumber: 2, CandidateSHA: op.HeadSHA, BaseSHA: f.baseSHA, ParentSHA: f.baseSHA, BaseRef: "main", MergeBaseSHA: f.baseSHA, PatchSHA256: strings.Repeat("a", 64), ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	record := reviewexec.CLIExhaustionRecovery{Operation: op, Attempt: a, Observation: reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: anchor.ObservedAt, Remaining: 0, Limit: 3, RollingWindowMS: 3600000, ChangedFiles: 1}}
+	calls := 0
+	err := retryCLIExhaustionSave(t.Context(), func(context.Context, time.Duration) error { return nil }, func() error {
+		calls++
+		if err := f.driver.exhaustions.Save(t.Context(), record); err != nil {
+			return err
+		}
+		if calls == 1 {
+			return captureError("capture_unavailable")
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatal("failed to reconcile identical published record", calls, err)
+	}
+	got, found, err := f.driver.exhaustions.LoadCLIExhaustion(t.Context(), a.ID)
+	if err != nil || !found || got.Attempt.ID != a.ID {
+		t.Fatal(got, found, err)
+	}
+}

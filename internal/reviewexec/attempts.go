@@ -478,6 +478,10 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 // Startup exclusions preserve only preparations whose original replay driver is
 // absent. They do not release reservations or authorize replacement work.
 func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool) error {
+	return e.recoverInterruptedSelected(ctx, skipped, nil)
+}
+
+func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, selected map[string]bool) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_execution_attempts WHERE state IN ('preparing','posting','active') ORDER BY id`)
@@ -504,12 +508,15 @@ func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool
 		}
 		now := e.sampleAttemptTime()
 		for _, x := range ids {
-			if skipped[x.id] {
+			if skipped[x.id] || selected != nil && !selected[x.id] {
 				continue
 			}
 			a, err := readAttempt(ctx, tx, x.project, x.id)
 			if err != nil {
 				return err
+			}
+			if selected != nil && a.State != "preparing" {
+				continue
 			}
 			o, err := readOperation(ctx, tx, x.project, a.OperationID)
 			if err != nil {
