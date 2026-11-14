@@ -177,9 +177,16 @@ func TestHostedContinuationCoordinatorRaceAndLateManualCancellation(t *testing.T
 	*now = now.Add(hostedContinuationDelay)
 	results := make(chan bool, 6)
 	errs := make(chan error, 6)
-	for i := 0; i < 6; i++ {
+	// Each engine normally serializes its coordinator. Race independent
+	// coordinators sharing the durable state, including the final writer guard.
+	for range 6 {
+		engine, err := New(f.store, attemptCapabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine.schedulingNow = f.e.schedulingNow
 		go func() {
-			worked, err := f.e.generateAutomaticHosted(context.Background(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+			worked, err := engine.generateAutomaticHosted(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
 			results <- worked
 			errs <- err
 		}()
