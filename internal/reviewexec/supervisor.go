@@ -172,7 +172,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	readCandidate := func(project, operation string) (Operation, error) {
 		o, err := readOperation(ctx, tx, project, operation)
 		if err != nil {
-			if automaticProjectRefused(err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
@@ -244,38 +244,60 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		e.draftProbeMu.Lock()
 		cursor := e.draftProbeCursor
 		e.draftProbeMu.Unlock()
-		draftArgs := append(append([]any(nil), args...), cursor, cliDraftProbeCapacity+1)
-		rows, err := tx.QueryContext(ctx, query+` AND o.channel='cli' AND o.reason='cli_draft_wait' ORDER BY o.id<=?,o.id LIMIT ?`, draftArgs...)
-		if err != nil {
-			return nil, err
-		}
-		drafts := make([]Operation, 0, cliDraftProbeCapacity+1)
-		for rows.Next() {
-			o := Operation{Channel: "cli", Reason: cliDraftWait}
-			if err := rows.Scan(&o.ProjectID, &o.ID, &o.Channel, &o.CapabilityFingerprint, &o.CreatedAt); err != nil {
-				rows.Close()
+		// Seek the raw Draft index before evaluating joins and eligibility.
+		// A bounded page must make progress even if every row is ineligible.
+		readPage := func(after string) ([]Operation, error) {
+			rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_operations INDEXED BY review_operations_draft_probe WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait' AND id>? ORDER BY id LIMIT ?`, after, cliDraftProbeCapacity+1)
+			if err != nil {
 				return nil, err
 			}
-			drafts = append(drafts, o)
+			defer rows.Close()
+			var drafts []Operation
+			for rows.Next() {
+				o := Operation{Channel: "cli", Reason: cliDraftWait}
+				if err := rows.Scan(&o.ProjectID, &o.ID); err != nil {
+					return nil, err
+				}
+				drafts = append(drafts, o)
+			}
+			return drafts, rows.Err()
 		}
-		err = rows.Err()
-		rows.Close()
+		drafts, err := readPage(cursor)
 		if err != nil {
 			return nil, err
 		}
-		if selected := e.nextDraftProbe(drafts); selected != "" {
-			for _, draft := range drafts {
-				if draft.ID == selected {
-					o, err := readCandidate(draft.ProjectID, draft.ID)
-					if err != nil {
-						return nil, err
-					}
-					if o.ID != "" {
-						out = append(out, o)
-					}
-					break
-				}
+		if len(drafts) == 0 && cursor != "" {
+			drafts, err = readPage("")
+			if err != nil {
+				return nil, err
 			}
+		}
+		for _, draft := range drafts {
+			// Advance before any eligibility work that can exhaust the budget.
+			// This is only a scan cursor, never admission or a provider claim.
+			e.draftProbeMu.Lock()
+			e.draftProbeCursor = draft.ID
+			e.draftProbeMu.Unlock()
+			var eligible string
+			filterArgs := append(append([]any(nil), args...), draft.ID)
+			err := tx.QueryRowContext(ctx, `SELECT id FROM (`+query+` AND o.id=?)`, filterArgs...).Scan(&eligible)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if e.nextDraftProbe([]Operation{draft}) == "" {
+				continue
+			}
+			o, err := readCandidate(draft.ProjectID, draft.ID)
+			if err != nil {
+				return nil, err
+			}
+			if o.ID != "" {
+				out = append(out, o)
+			}
+			break
 		}
 	}
 	// Each supervisor worker retains only a scan position, never eligibility.
@@ -432,6 +454,35 @@ func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, 
 	}
 	e.configurationFailureNext[o.ID] = now.Add(30 * time.Second)
 	slog.WarnContext(ctx, "Review candidate configuration history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "configuration_history_unavailable")
+	return true
+}
+
+// Invalid retained identity flags refuse only their operation. Storage and
+// context errors must still fail the scan rather than masquerade as corruption.
+func (e *Engine) skipUnavailableOperation(ctx context.Context, o Operation, err error) bool {
+	if !isStoredUnavailable(err, storedOperationIdentity) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	key := "operation:" + o.ID
+	if e.configurationFailureNext[key].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[key] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate operation identity unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "operation_identity_unavailable")
 	return true
 }
 

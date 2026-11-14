@@ -42,8 +42,13 @@ var submittedActionableClaim = regexp.MustCompile(`(?i)actionable comments poste
 // decode in full, and every additional finding must name a selected file. These
 // are unverified additional findings, never a fabricated clean/zero result.
 func submittedAdditionalInventory(review HostedReview, selected map[string]bool) bool {
-	lines, sound := findingLines(review.Body)
-	if !sound {
+	// Remove complete comments as a stream for count refusal only. Physical
+	// newlines inside a comment must not split a visible count declaration.
+	// Structural parsing below still uses the untouched original body.
+	comment := false
+	visible := findingCommentVisible(review.Body, &comment)
+	lines, sound := findingLines(visible)
+	if !sound || comment {
 		return false
 	}
 	// Category bodies are HTML blockquotes, not quoted examples. Do not let

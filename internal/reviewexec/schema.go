@@ -61,7 +61,7 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`CREATE INDEX review_waits_live_retry ON review_operation_waits(rtrim(retry_not_before,'Z') DESC,operation_id,baseline_attempt_id) WHERE retry_not_before<>''`,
 		`CREATE INDEX review_transitions_exhaustion_time ON review_execution_transitions(rtrim(created_at,'Z') DESC,attempt_id,revision) WHERE state='held' AND reason='allowance_exhausted'`,
 		`CREATE INDEX review_transitions_exhaustion_attempt ON review_execution_transitions(attempt_id,rtrim(created_at,'Z')) WHERE state='held' AND reason='allowance_exhausted'`,
-	}); err != nil {
+	}, []string{`CREATE INDEX review_operations_draft_probe ON review_operations(id) WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait'`}); err != nil {
 		return err
 	}
 	if err := EnsureEvidenceSchema(ctx, store); err != nil {
