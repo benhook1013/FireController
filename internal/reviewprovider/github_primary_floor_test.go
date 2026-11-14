@@ -124,3 +124,21 @@ func TestPrimaryFloorRefusesAmbiguousOrNonPrimaryEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestPrimaryFloorLocalObservationPreservesOriginalProviderProvenance(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	q := NewGitHubQuota()
+	q.observe(t.Context(), now, "/user", &http.Response{StatusCode: 403, Header: primaryHeaders(now)}, false, false)
+	later := now.Add(20 * time.Second)
+	err := q.primaryReadGate(later, http.MethodGet, "/user")
+	var failure *Error
+	if !errors.As(err, &failure) || !failure.RetryTiming.ObservedAt.Equal(later) || !failure.RetryTiming.NotBefore.Equal(now.Add(65*time.Second)) {
+		t.Fatal("local observation changed absolute floor or retained stale attempt timestamp", err)
+	}
+	q.mu.Lock()
+	original := q.coreFloor
+	q.mu.Unlock()
+	if !original.ObservedAt.Equal(now) || !original.NotBefore.Equal(failure.RetryTiming.NotBefore) {
+		t.Fatal("provider provenance was rewritten")
+	}
+}

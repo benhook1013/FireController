@@ -63,8 +63,14 @@ func (q *GitHubQuota) primaryReadGate(now time.Time, method, path string) error 
 	if floor.State != "proven" || !now.Before(floor.NotBefore) {
 		return nil
 	}
+	// This is a new local observation of the same negative floor, not a new
+	// provider response. Keep the original provenance in q.coreFloor and never
+	// move its absolute deadline. Later attempts can retain this local refusal
+	// through the normal source-retry timestamp guards.
+	local := floor
+	local.ObservedAt = now.UTC()
 	seconds := int64((floor.NotBefore.Sub(now) + time.Second - 1) / time.Second)
-	return &Error{Code: "provider_rate_limited", Message: "GitHub core reads are waiting for an observed primary reset; availability is not established.", Status: http.StatusTooManyRequests, RetryAfterSeconds: seconds, RetryTiming: floor, retryDirected: true}
+	return &Error{Code: "provider_rate_limited", Message: "Local observation of a retained GitHub primary-core reset floor; no provider request or availability is established.", Status: http.StatusTooManyRequests, RetryAfterSeconds: seconds, RetryTiming: local, retryDirected: true}
 }
 
 func githubEndpoint(path string) string {

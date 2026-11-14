@@ -111,3 +111,5 @@ A proven GitHub primary-core exhaustion response establishes a process-local neg
 Enrichment telemetry separates webhook-triggered, changed-comparison and periodic collections using fixed caller labels. It retains no PR identifiers, URLs or source text and does not change collection cadence. These totals distinguish event-driven fanout from fallback polling before optimizing either path.
 
 The separately configured history-import reader has its own quota object and is not included in this cross-capability floor. Its existing source, authorization and retry behavior remain unchanged. Requests already in flight when exhaustion is first observed may finish; the floor stops later guarded attempts rather than claiming to cancel network work.
+
+A locally blocked later attempt records the time it observed the retained negative floor, with the original absolute reset deadline unchanged. The quota object keeps the original provider observation separately; this local refusal is not a new provider response or proof of availability. Ordinary source-retry temporal checks remain intact.
