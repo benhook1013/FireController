@@ -144,9 +144,8 @@ func TestCooldownWaitDueRestartAndOriginalHistory(t *testing.T) {
 	}
 	*now = in.Observation.RetryNotBefore
 	pending, err = f.e.pending(t.Context())
-	// The foundation retains the elapsed wait but does not yet drive retries.
-	if err != nil || len(pending) != 0 {
-		t.Fatal("foundation dispatched waiting request", pending, err)
+	if err != nil || len(pending) != 1 {
+		t.Fatal("due scheduler", pending, err)
 	}
 	next := f.start(t, attemptProject, Receipt{ID: o.ID})
 	if next.ID == a.ID || next.OperationID != a.OperationID {
