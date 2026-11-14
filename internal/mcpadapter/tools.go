@@ -30,6 +30,7 @@ type arguments struct {
 	reviewActiveQueue          bool
 	summary                    client.SetJobSummaryRequest
 	reviewRun                  client.ReviewRunRequest
+	decisionBefore             int64
 	roundChannel               string
 	roundControl               client.ConfigureReviewRoundControlRequest
 	notes                      *noteToolCall
@@ -241,6 +242,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value = client.AgentReviewCI(assessment)
 				case "review_activity_read":
 					value, err = service.ReviewActivity(ctx, args.reviewActivity)
+				case "review_selection_decision_history":
+					value, err = service.ReviewSelectionDecisionHistory(ctx, args.roundChannel, args.decisionBefore, args.limit)
 				case "review_lane_diagnostic":
 					value, err = service.ReviewLaneDiagnostic(ctx, args.roundChannel)
 				case "review_scheduling_read":

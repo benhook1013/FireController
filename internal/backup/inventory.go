@@ -232,7 +232,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -250,6 +250,7 @@ var tables = map[string]tableVersion{
 	"review_adoption_targets":           {"review_adoption_obligations", 1, "obligation_id project_id pull_number"},
 	"review_adoption_resolutions":       {"review_adoption_obligations", 1, "obligation_id revision reason evidence_json actor_id worker_id resolved_at"},
 	"review_adoption_retargets":         {"review_adoption_obligations", 2, "obligation_id revision target_pull_number targets_json reason actor_id worker_id changed_at"},
+	"review_selection_decision_history": {"review_selection_decision_history", 1, "sequence project_id channel phase fingerprint body first_seen_at last_seen_at occurrences"},
 	"review_front_frames":               {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
 	"review_selections":                 {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_round_adoptions":            {"review_round_adoption", 1, "project_id pull_number channel grant_revision epoch source source_key source_sha256 prepared_json"},
@@ -1262,6 +1263,23 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_selection_decision_history"] > 0 {
+		objects := map[string]physicalSchemaObject{}
+		for _, statement := range reviewexec.DecisionHistorySchemaStatements() {
+			fields := strings.Fields(statement)
+			name := fields[2]
+			if i := strings.IndexByte(name, '('); i >= 0 {
+				name = name[:i]
+			}
+			objects[name] = physicalSchemaObject{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+		}
+		if err = validatePhysicalSchemaObjects(ctx, tx, objects, []string{"review_selection_decision_history", "review_selection_decision_lane"}); err != nil {
+			return invalid()
+		}
+		if err = reviewexec.ValidateDecisionHistorySnapshot(ctx, tx); err != nil {
+			return invalid()
+		}
+	}
 	if versions["review_fronts"] > 0 {
 		if err = reviewexec.ValidateFrontSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1656,6 +1674,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_adoption_resolutions":       {canonicalFK("review_adoption_obligations", "obligation_id", "id", "NO ACTION")},
 	"review_adoption_retargets":         {canonicalFK("review_adoption_obligations", "obligation_id", "id", "NO ACTION")},
 	"review_front_frames":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
+	"review_selection_decision_history": {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_selections":                 {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_round_adoptions":            {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},
 	"review_round_controls":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_round_changes", "project_id,pull_number,channel,grant_revision,epoch", "project_id,pull_number,channel,revision,epoch", "NO ACTION")},

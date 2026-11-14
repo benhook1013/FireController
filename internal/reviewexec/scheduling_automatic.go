@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -348,6 +349,14 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 	if err != nil {
 		return "", false, err
 	}
+	// Head identities are explicitly retained-source facts in this planning phase.
+	// This does not perform source IO or claim admission freshness.
+	heads := map[int64]string{}
+	if frame, found, readErr := readFrontFrame(ctx, tx, project, channel); readErr == nil && found {
+		for _, p := range frame.plans() {
+			heads[p.Pull.Number] = p.Pull.HeadSHA
+		}
+	}
 	values := make([]any, 0, len(c.Queue))
 	remaining := []int64{}
 	for position, pull := range c.Queue {
@@ -356,7 +365,9 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 			return "", false, err
 		}
 		values = append(values, []any{pull, basis})
+		traceDecision(ctx, pull, heads[pull], "candidate", "source_selection_required", 0)
 		if position >= limit {
+			traceDecision(ctx, pull, heads[pull], "held", "queued_prefix", 0)
 			continue
 		}
 		p, err := readPullScheduling(ctx, tx, project, pull)
@@ -364,6 +375,7 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 			return "", false, err
 		}
 		if p.Paused {
+			traceDecision(ctx, pull, heads[pull], "held", "pull_scheduling_paused", 0)
 			continue
 		}
 		pending, err := automaticHostedPendingPullChannel(ctx, tx, project, pull, channel)
@@ -371,6 +383,7 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 			return "", false, err
 		}
 		if pending {
+			traceDecision(ctx, pull, heads[pull], "held", "operation_pending", 0)
 			continue
 		}
 		var seen bool
@@ -379,6 +392,8 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 		}
 		if !seen {
 			remaining = append(remaining, pull)
+		} else {
+			traceDecision(ctx, pull, heads[pull], "held", "automatic_intent_retained", 0)
 		}
 	}
 	sum := sha256.Sum256([]byte(encoded([]any{values, remaining})))
@@ -596,9 +611,13 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		return nil, err
 	}
 	if restored {
+		traceReason(ctx, "provider_restore_hold")
 		return nil, nil
 	}
 	s, err := readScheduling(ctx, tx, project)
+	if !automaticChannelEnabled(s, channel) {
+		traceReason(ctx, "automation_disabled")
+	}
 	if err != nil || !automaticChannelEnabled(s, channel) {
 		return nil, err
 	}
@@ -606,6 +625,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Status >= 400 && failure.Status < 500 {
+			traceReason(ctx, "automation_authorization_unavailable")
 			return nil, nil
 		}
 		return nil, err
@@ -614,11 +634,13 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+			traceReason(ctx, "reviews_unconfigured")
 			return nil, nil
 		}
 		return nil, err
 	}
 	if c.Paused || !slices.Contains(c.Channels, channel) || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
+		traceReason(ctx, "configuration_unavailable")
 		return nil, nil
 	}
 	c.Queue, err = reviews.OrderedExecutionQueue(ctx, tx, project, c.Queue)
@@ -634,17 +656,20 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		unpaused = unpaused || !p.Paused
 	}
 	if !unpaused {
+		traceReason(ctx, "all_prs_paused")
 		return nil, nil
 	}
 	policy, err := readPolicy(ctx, tx, project)
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "reviews_policy_unconfigured" {
+			traceReason(ctx, "reviews_policy_unconfigured")
 			return nil, nil
 		}
 		return nil, err
 	}
 	if policy.Revision < 1 {
+		traceReason(ctx, "reviews_policy_unconfigured")
 		return nil, nil
 	}
 	var busy bool
@@ -652,6 +677,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		return nil, err
 	}
 	if busy {
+		traceReason(ctx, "lane_busy")
 		return nil, nil
 	}
 	if channel == "cli" {
@@ -729,7 +755,34 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	return plan, nil
 }
 
-func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (bool, error) {
+func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (worked bool, resultErr error) {
+	trace := &decisionTrace{}
+	ctx = context.WithValue(ctx, decisionTraceKey{}, trace)
+	defer func() {
+		if ctx.Err() != nil {
+			return
+		}
+		outcome, reason := "no_new_intent", trace.reason
+		if worked {
+			outcome = "scheduler_action_committed"
+		}
+		if resultErr != nil {
+			outcome = "error"
+			reason = runReason(resultErr)
+		}
+		// A busy writer must not turn an idle scheduler pass into a work-stopping wait.
+		telemetryCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+		defer cancel()
+		// Observation failure never authorizes or cancels scheduler work.
+		err := e.store.BackgroundWrite(telemetryCtx, func(ctx context.Context, tx *sql.Tx) error {
+			return writeSelectionDecision(ctx, tx, project, channel, SelectionDecision{Phase: "automatic_plan", Outcome: outcome, Reason: reason, Candidates: trace.candidates}, time.Now())
+		})
+		if err != nil {
+			e.decisionOmissions.add(project, channel)
+			slog.WarnContext(ctx, "scheduler decision history unavailable", "project_id", project, "channel", channel)
+		}
+	}()
+
 	var candidate *automaticProjectPlan
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error

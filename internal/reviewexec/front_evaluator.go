@@ -155,6 +155,9 @@ func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64
 	for i := range prefix {
 		plan := &prefix[i]
 		result, err := e.evaluateCandidatePlan(ctx, q, r, repo, plan, byNumber)
+		if err == nil {
+			traceDecision(ctx, plan.Pull.Number, plan.Pull.HeadSHA, result.state, result.reason, result.blockingPull)
+		}
 		if err != nil {
 			return evaluatedFront{}, err
 		}

@@ -166,6 +166,7 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
+	decisions     []SelectionCandidateDecision
 	orderedQueue  []int64
 	state, reason string
 	sourceReason  string
@@ -224,6 +225,9 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
+	trace := &decisionTrace{}
+	ctx = context.WithValue(ctx, decisionTraceKey{}, trace)
+	defer func() { result.decisions = trace.candidates }()
 	if len(c.Queue) == 0 {
 		return runChoice{state: "empty", reason: "queue_complete"}, nil
 	}
@@ -248,6 +252,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	choice := runChoice{state: "empty", reason: "queue_complete"}
 	sourceFailure := func(reason string) runChoice {
 		choice.state, choice.reason, choice.sourceReason = "held", reason, reason
+		if len(trace.candidates) > 0 {
+			i := len(trace.candidates) - 1
+			trace.candidates[i].Outcome = "unknown"
+			trace.candidates[i].Reason = reason
+		}
 		return choice
 	}
 	var queue []int64
@@ -272,6 +281,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	}
 	windows := map[int64]runPullResult{}
 	for i, n := range queue {
+		traceDecision(ctx, n, "", "unknown", "source_pending", 0)
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
 		}
@@ -729,6 +739,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					}
 					resultErr = updateRun(ctx, tx, current, "held", "automatic_scheduling_unavailable", "")
 				}
+
 				if resultErr == nil {
 					_, resultErr = tx.ExecContext(ctx, `RELEASE review_selection_finish`)
 				}
@@ -866,6 +877,22 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 		})
 	})
 	if err == nil {
+		// The scheduler result is already committed. Diagnostic storage failure
+		// cannot roll back admission, source settlement, or the child operation.
+		telemetryCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+		historyErr := e.store.BackgroundWrite(telemetryCtx, func(ctx context.Context, tx *sql.Tx) error {
+			var state, reason string
+			var selected int64
+			if err := tx.QueryRowContext(ctx, `SELECT s.state,s.reason,COALESCE(o.pull_number,0) FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&state, &reason, &selected); err != nil {
+				return err
+			}
+			return writeSelectionDecision(ctx, tx, r.ProjectID, r.Channel, SelectionDecision{Phase: "selection", SelectionID: r.ID, Outcome: state, Reason: reason, SelectedPullNumber: selected, Candidates: choice.decisions}, time.Now())
+		})
+		cancel()
+		if historyErr != nil {
+			e.decisionOmissions.add(r.ProjectID, r.Channel)
+			slog.WarnContext(ctx, "scheduler decision history unavailable", "project_id", r.ProjectID, "channel", r.Channel)
+		}
 		e.notifyOperation(r.ID)
 		select {
 		case e.wake <- struct{}{}:

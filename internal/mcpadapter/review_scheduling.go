@@ -14,7 +14,7 @@ func reviewSchedulingWrite(name string) bool {
 }
 
 func reviewSchedulingTool(name string) bool {
-	return name == "review_lane_diagnostic" || reviewSchedulingWrite(name) || name == "review_scheduling_read" || name == "review_pull_scheduling_read"
+	return name == "review_selection_decision_history" || name == "review_lane_diagnostic" || reviewSchedulingWrite(name) || name == "review_scheduling_read" || name == "review_pull_scheduling_read"
 }
 
 func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, error) {
@@ -25,6 +25,31 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 	trimmed := bytes.TrimSpace(raw)
 	if len(raw) > 4096 || len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
 		return args, invalidArguments()
+	}
+	if name == "review_selection_decision_history" {
+		var wire struct {
+			Channel string `json:"channel"`
+			Before  *int64 `json:"before,omitempty"`
+			Limit   *int   `json:"limit,omitempty"`
+		}
+		if strictjson.Decode(raw, &wire) != nil || (wire.Channel != "cli" && wire.Channel != "hosted") {
+			return args, invalidArguments()
+		}
+		args.roundChannel = wire.Channel
+		args.limit = 50
+		if wire.Before != nil {
+			if *wire.Before < 1 {
+				return args, invalidArguments()
+			}
+			args.decisionBefore = *wire.Before
+		}
+		if wire.Limit != nil {
+			if *wire.Limit < 1 || *wire.Limit > 100 {
+				return args, invalidArguments()
+			}
+			args.limit = *wire.Limit
+		}
+		return args, nil
 	}
 	if name == "review_lane_diagnostic" {
 		var wire struct {
@@ -110,6 +135,7 @@ func reviewSchedulingDefinitions() []definition {
 	pull := map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
 	key := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Explicit original idempotency key; retain with the exact request after unknown outcome."}
 	return []definition{
+		{"review_selection_decision_history", "Read bounded actual scheduler decisions for this project/channel, including candidate heads/outcomes/reasons and selected PR, with condensed repeat counts. Last50 retained entries;7days/256 per lane. Missing history is not proof no decisions occurred. Provider-free read; does not affect live diagnostics or admission.", object(map[string]any{"channel": map[string]any{"type": "string", "enum": []string{"cli", "hosted"}}, "before": map[string]any{"type": "integer", "minimum": 1}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "channel")},
 		{"review_lane_diagnostic", "Read every configured PR in one channel against retained source facts and current local evidence/dependency policy. Includes source time/completeness and exact blocking parent. Provider-free and read-only; locally_ready is NOT fresh admission, automatic eligibility or a promise of dispatch. No new selection, retry, provider call, cap or control change.", object(map[string]any{"channel": map[string]any{"type": "string", "enum": []string{"cli", "hosted"}}}, "channel")},
 		{"review_scheduling_read", "Read this project's automatic Hosted and CLI settings and current queued PR pauses in one provider-free call. No settings, review or allowance changes. See docs/review-scheduling.md.", object(map[string]any{})},
 		{"review_scheduling_configure", "Project manager: explicitly enable or disable automatic future Hosted or CLI requests under existing source, obligation, round and provider guards. Both default off. Optional automatic_cli preserves the current CLI setting when omitted. Existing grants and taper apply; no automatic adjudication or grant increase. Enabling retains this connection's current credential and active bound worker; withdrawn authority stops new automatic actions. This setting can authorize asynchronous provider work. Current revision and explicit key required; no automatic mutation retry. See docs/review-scheduling.md.", object(map[string]any{"expected_revision": revision, "automatic_hosted": map[string]any{"type": "boolean"}, "automatic_cli": map[string]any{"type": "boolean", "description": "Optional CLI opt-in; omission preserves the current setting."}, "idempotency_key": key}, "expected_revision", "automatic_hosted", "idempotency_key")},

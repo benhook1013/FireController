@@ -120,6 +120,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	decisionOmissions          decisionOmissionBuffer
 	runSourceBudget            time.Duration
 	hostedRetainedDecoder      HostedRetainedDecoder
 	sourceReadGroups           map[string]string

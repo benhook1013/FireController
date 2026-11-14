@@ -9,6 +9,8 @@ import (
 )
 
 type reviewSchedulingInvocation struct {
+	before  int64
+	limit   int
 	action  string
 	channel string
 	pull    int64
@@ -18,13 +20,15 @@ type reviewSchedulingInvocation struct {
 }
 
 func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
-	in := &reviewSchedulingInvocation{action: "read"}
+	in := &reviewSchedulingInvocation{action: "read", limit: 50}
 	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
 		in.action, args = args[0], args[1:]
 	}
 	allowed := map[string]bool{"--pr": true}
 	switch in.action {
 	case "read":
+	case "history":
+		allowed = map[string]bool{"--channel": true, "--before": true, "--limit": true}
 	case "diagnostics":
 		allowed = map[string]bool{"--channel": true}
 	case "configure":
@@ -65,6 +69,24 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 		}
 		in.pull = n
 	}
+	if in.action == "history" {
+		in.channel = values["--channel"]
+		if raw, ok := values["--before"]; ok {
+			v, e := strconv.ParseInt(raw, 10, 64)
+			if e != nil || v < 1 || strconv.FormatInt(v, 10) != raw {
+				return nil, false
+			}
+			in.before = v
+		}
+		if raw, ok := values["--limit"]; ok {
+			v, e := strconv.Atoi(raw)
+			if e != nil || v < 1 || v > 100 || strconv.Itoa(v) != raw {
+				return nil, false
+			}
+			in.limit = v
+		}
+		return in, in.channel == "cli" || in.channel == "hosted"
+	}
 	if in.action == "diagnostics" {
 		in.channel = values["--channel"]
 		return in, in.channel == "cli" || in.channel == "hosted"
@@ -101,6 +123,8 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 
 func executeReviewScheduling(ctx context.Context, service *client.Client, in *reviewSchedulingInvocation) (any, error) {
 	switch in.action {
+	case "history":
+		return service.ReviewSelectionDecisionHistory(ctx, in.channel, in.before, in.limit)
 	case "diagnostics":
 		return service.ReviewLaneDiagnostic(ctx, in.channel)
 	case "configure":

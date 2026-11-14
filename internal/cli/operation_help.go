@@ -352,8 +352,15 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews scheduling":
 		out.Usage = "<bound launcher> reviews scheduling [--pr N] | configure --automatic-hosted true|false [--automatic-cli true|false] --expect-revision N --key KEY | pause --pr N --expect-revision N --key KEY [--reason TEXT] | resume --pr N --expect-revision N --key KEY"
 		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)", "configure --automatic-hosted true|false (project manager; authorizes future automatic Hosted requests)", "pause|resume --pr N (writer; holds new/undispatched reviews without changing rounds)", "--reason TEXT (optional with pause, at most 256 UTF-8 bytes)"}
-		out.Optional = append(out.Optional, "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
+		out.Optional = append(out.Optional, "reviews scheduling history --help", "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
 		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI automation is separately opt-in via --automatic-cli; omission preserves its current value. Existing grants and taper remain unchanged.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted or CLI selection under all existing comparison, obligation, round and provider guards."}
+		out.Documentation = "docs/review-scheduling.md"
+	case "reviews scheduling history":
+		out.Usage = "<bound launcher> reviews scheduling history --channel cli|hosted [--before N] [--limit N]"
+		out.Required = []string{"--channel cli|hosted"}
+		out.Optional = []string{"--before N (exclusive sequence cursor)", "--limit N (1–100; default50)"}
+		out.Semantics = []string{"Read bounded actual scheduler decision history, not current eligibility. Adjacent identical passes are condensed with first/last times and occurrence count. Seven-day,256-entry per-lane retention; gaps before enablement or after pruning are not evidence of no decisions. No provider calls or mutations."}
+		out.Example = "<bound launcher> reviews scheduling history --channel hosted --limit 20"
 		out.Documentation = "docs/review-scheduling.md"
 	case "reviews scheduling diagnostics":
 		out.Usage = "<bound launcher> reviews scheduling diagnostics --channel cli|hosted"
