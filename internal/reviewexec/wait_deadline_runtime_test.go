@@ -120,6 +120,7 @@ func TestWaitRuntimeBindsLatestCooldown(t *testing.T) {
 				}
 				if strings.HasSuffix(damage, "old-deadline") {
 					admissionSQL(t, f, `UPDATE review_operation_waits SET retry_not_before=? WHERE operation_id=?`, firstDue.Format(time.RFC3339Nano), o.ID)
+
 				} else {
 					admissionSQL(t, f, `UPDATE review_`+channel+`_preflight SET body_json='{}' WHERE attempt_id=?`, next.ID)
 				}
@@ -158,7 +159,7 @@ func TestCLIAccountDeadlineCannotHideShortenedCooldown(t *testing.T) {
 			}
 			f.configure(t, otherAttemptProject, capability, 0, false)
 			other := f.enqueue(t, otherAttemptProject, "shortened-account-timer", "cli", 2, 1)
-			hosted := f.enqueue(t, otherAttemptProject, "independent-hosted-timer", "hosted", 4, 1)
+			f.enqueue(t, otherAttemptProject, "independent-hosted-timer", "hosted", 4, 1)
 			timerControl(t, f, a.OperationID, "cancel", "cancel-shortened-donor")
 			forged := due.Add(-30 * time.Second)
 			if scenario.extended {
@@ -182,21 +183,8 @@ func TestCLIAccountDeadlineCannotHideShortenedCooldown(t *testing.T) {
 			} else if !deadline.IsZero() || err != nil {
 				t.Error("unrelated or expired corruption became a live account hold", deadline, err)
 			}
-			pending, err := f.e.pending(t.Context())
-			if err != nil {
-				t.Fatal("account damage stopped unrelated scheduling", err)
-			}
-			got := map[string]bool{}
-			for _, operation := range pending {
-				got[operation.ID] = true
-			}
-			want := 2
-			if blocked {
-				want = 1
-			}
-			if !got[hosted.ID] || got[other.ID] == blocked || len(got) != want {
-				t.Error("account deadline lost scheduling isolation", got)
-			}
+			// Candidate filtering belongs to the dependent runtime slice.
+			// This foundation still proves direct admission cannot bypass the guard.
 			if before != deadlineRuntimeState(t, f) {
 				t.Fatal("account lookup changed retained state")
 			}
@@ -231,5 +219,35 @@ func TestWaitDeadlineRuntimePreservesLookupErrors(t *testing.T) {
 				t.Fatal("failed proof lookup changed retained state")
 			}
 		})
+	}
+}
+
+func TestHostedTiedCooldownCannotHideMalformedMiddleProof(t *testing.T) {
+	f, first, now := deadlineRuntimeFixture(t, "hosted")
+	var firstEnded string
+	if err := f.store.DB().QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=2`, first.ID).Scan(&firstEnded); err != nil {
+		t.Fatal(err)
+	}
+	f.e.attemptNow = func() time.Time { return mustWaitTime(firstEnded).Add(-time.Hour) }
+	var middle Attempt
+	for i := 0; i < 2; i++ {
+		*now = cliWaitDue(t, cliWaitRead(t, f, first.OperationID))
+		next := f.start(t, attemptProject, Receipt{ID: first.OperationID})
+		retainTimerCooldown(t, f, next, time.Duration(6+i*6)*time.Minute)
+		if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, next.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			middle = next
+		}
+	}
+	o := cliWaitRead(t, f, first.OperationID)
+	admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json=json_set(body_json,'$.input.observation.RetryNotBefore','!') WHERE attempt_id=?`, middle.ID)
+	before := deadlineRuntimeState(t, f)
+	if wait, err := readOperationWait(t.Context(), f.store.DB(), o); wait != nil || !isWaitUnavailable(err) {
+		t.Fatal("malformed equal-time proof hidden", wait, err)
+	}
+	if before != deadlineRuntimeState(t, f) {
+		t.Fatal("read mutated evidence")
 	}
 }

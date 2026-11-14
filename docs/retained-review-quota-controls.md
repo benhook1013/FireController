@@ -1,8 +1,8 @@
 # Retained review quota waits
 
-This slice follows native CI observation and keeps an authorized review request
-alive when its provider has no available allowance. It does not discover new
-reviews, increase grants, adjudicate findings, or merge pull requests. This stage delivers retained-state migration, validated historical records, admission guards and CLI quota/draft waiting. The Hosted adapter does not yet schedule or replay retained cooldowns; that runtime integration follows in a dependent stage. The Hosted behavior below defines the target contract and the historical records accepted by this foundation. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
+This foundation follows native CI observation and defines the durable model for keeping an authorized review request alive when its provider has no available allowance. It delivers schema migrations, retained record validation, comparison and configuration authority, scoped reservations, backup compatibility and guarded state-transition primitives. It does not yet activate automatic quota retry or Draft probing in the supervisor, or collect new private CLI exhaustion captures from the provider adapter. Those behaviors follow together in the dependent runtime slice. Existing private CLI capture formats remain readable and included in backups, and configured startup recovery preserves their evidence.
+
+The runtime contracts below describe the completed dependent behavior. In this foundation, the supervisor deliberately excludes retained waiting requests, even when their timer expires, rather than dispatch through an adapter without retry-comparison fencing. The guarded transition primitives remain directly testable; an elapsed timer is not a promise of automatic progress at this intermediate stage. Ordinary fresh requests continue through their existing admission and provider path. This stage does not discover reviews, increase grants, adjudicate findings or merge pull requests. Hosted adapter replay and public progress/control endpoints follow above the runtime slice.
 
 ## One request, multiple unused preparations
 

@@ -153,6 +153,9 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if err != nil {
 		return Usage{}, err
 	}
+	if usage.Remaining == 0 {
+		return Usage{}, processError("rate_limited", false)
+	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
 			return Usage{}, processError("usage_unavailable", false)
@@ -163,12 +166,6 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if generation != r.usageGeneration || ctx.Err() != nil {
 		r.mu.Unlock()
 		return Usage{}, processError("usage_unavailable", false)
-	}
-	// Negative allowance is retained by callers too, so it must share the
-	// same latest-query fence as a positive one-use permit.
-	if usage.Remaining == 0 {
-		r.mu.Unlock()
-		return usage, processError("rate_limited", false)
 	}
 	r.permit = &usagePermit{workspace: keyFor(workspace), issued: r.now()}
 	r.mu.Unlock()

@@ -112,17 +112,13 @@ type Attempt struct {
 }
 
 type Engine struct {
+	configurationFailureMu     sync.Mutex
+	configurationFailureNext   map[string]time.Time
+	pendingScanMu              sync.Mutex
+	pendingScanCursor          [2]pendingScanPosition
 	cliExhaustionRecovery      CLIExhaustionRecoverySource
 	runSourceBudget            time.Duration
 	schedulingNow              func() time.Time
-	configurationFailureMu     sync.Mutex
-	configurationFailureNext   map[string]time.Time
-	draftProbePermit           atomic.Bool
-	draftProbeMu               sync.Mutex
-	draftProbeNext             map[string]time.Time
-	draftProbeCursor           string
-	pendingScanMu              sync.Mutex
-	pendingScanCursor          [2]pendingScanPosition
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
 	hostedObserverMu           sync.Mutex
