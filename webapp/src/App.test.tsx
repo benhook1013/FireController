@@ -45,6 +45,22 @@ describe('carried captured assessment presentation', () => {
 
 function ReviewProgressProbe() { useReviewProgress([17, 4, 17]); return null; }
 describe('review progress App query wiring', () => {
+  it('does not enable progress reads before the first review observation', () => {
+    progressHookContext.calls = [];
+    progressHookContext.workspace = { session: { project: { repository: 'example/repository' } }, key: ['projects', 'project_one'], home: '/projects/project_one', fail: vi.fn() };
+    progressHookContext.query = () => ({ data: { configured: false }, isPending: false });
+    try {
+      const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/projects/project_one/reviews']}><ReviewQueueView /></MemoryRouter>);
+      expect(html).toContain('Review workspace unconfigured');
+      const queries = progressHookContext.calls.filter(value => (value as { queryKey?: unknown[] }).queryKey?.includes('round-progress')) as { enabled: boolean; queryKey: unknown[] }[];
+      expect(queries).toHaveLength(1);
+      expect(queries[0].enabled).toBe(false);
+      expect(queries[0].queryKey.at(-1)).toBe('');
+    } finally {
+      progressHookContext.query = null;
+      progressHookContext.workspace = null;
+    }
+  });
   it('creates one current batched query and calls the scoped API once for the visible pull set', async () => {
     const read = vi.fn().mockResolvedValue({ items: [] });
     progressHookContext.calls = [];

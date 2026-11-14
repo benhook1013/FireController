@@ -171,8 +171,10 @@ func automaticSourceInitialRead(ctx context.Context, tx *sql.Tx, r Run) (bool, e
 
 // A retained source retry may cross unrelated channel changes only with complete,
 // well-formed transition history. An arbitrary held event is not retry authority.
+// The completed-hold retry budget is enforced when requeuing that hold, not
+// while resuming its already-authorized read after further interruptions.
 func automaticSourceRetryHistory(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
-	if r.Revision < 4 || r.Revision > 8 {
+	if r.Revision < 4 {
 		return false, nil
 	}
 	var count, distinct, first, last, invalid, holds int64
