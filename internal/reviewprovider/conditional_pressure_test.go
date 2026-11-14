@@ -56,8 +56,8 @@ func conditionalPressureCITrace(t *testing.T) []string {
 		t.Fatal("CI trace did not prove its selected gate", value.State, err)
 	}
 	paths, _ := f.snapshot()
-	if len(paths) != 28 {
-		t.Fatalf("one-workflow green CI reads = %d, want 28; review pressure assumptions", len(paths))
+	if len(paths) != 27 {
+		t.Fatalf("one-workflow green CI reads = %d, want 27; review pressure assumptions", len(paths))
 	}
 	return paths
 }
@@ -134,14 +134,14 @@ func TestConditionalGETRetainsEnrolledSweepWorkingSet(t *testing.T) {
 			}
 			full, same := transport.counts()
 			t.Logf("keys=%d, retained=%d, warmed five-sweep full responses=%d, conditional 304=%d", len(seen), len(g.cache), full-warmFull, same-warmSame)
-			if len(seen) != 4+12*number {
-				t.Fatalf("distinct cache keys = %d, want %d; review pressure assumptions", len(seen), 4+12*number)
+			if len(seen) != 4+11*number {
+				t.Fatalf("distinct cache keys = %d, want %d; review pressure assumptions", len(seen), 4+11*number)
 			}
 			if len(g.cache) != len(seen) {
 				t.Fatalf("small-body working set did not fit: retained=%d, keys=%d", len(g.cache), len(seen))
 			}
-			if full != warmFull || same-warmSame != 64*number {
-				t.Fatalf("stable warm sweep: full responses=%d, conditional 304=%d, want 0/%d; keys=%d", full-warmFull, same-warmSame, 64*number, len(seen))
+			if full != warmFull || same-warmSame != 63*number {
+				t.Fatalf("stable warm sweep: full responses=%d, conditional 304=%d, want 0/%d; keys=%d", full-warmFull, same-warmSame, 63*number, len(seen))
 			}
 			t.Logf("keys=%d, warmed five-sweep reads=%d, full responses=0; every read revalidated", len(seen), same-warmSame)
 		})

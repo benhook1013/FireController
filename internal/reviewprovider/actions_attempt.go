@@ -148,7 +148,13 @@ func validActionsRun(r githubActionsRun, repository, head string, suite int64) b
 // GitHub documents the two run selectors and the attempt-specific jobs path:
 // https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
 // https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt
-func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head string, suiteID int64) (result ActionsAttempt, err error) {
+func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head string, suiteID int64) (ActionsAttempt, error) {
+	return g.currentActionsAttempt(ctx, repository, head, suiteID, nil)
+}
+
+// A same-observation complete head inventory can supply discovery identity only.
+// Direct current-run, exact-attempt jobs and final-run reads remain mandatory.
+func (g *GitHub) currentActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun) (result ActionsAttempt, err error) {
 	if ctx == nil || !validRepositorySelector(repository) || !validSHA(head) || strings.ToLower(head) != head || suiteID <= 0 {
 		return ActionsAttempt{}, invalidSelector()
 	}
@@ -161,18 +167,27 @@ func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head str
 	defer func() { result.ObservedAt = time.Now().UTC() }()
 	budget := &actionsBudget{}
 	path := "/repos/" + repository + "/actions/runs"
-	rows, err := g.actionsRuns(ctx, path, repository, head, suiteID, budget)
-	if err != nil {
-		return result, err
-	}
-	if len(rows) != 1 {
-		result.Reason = "ci_attempt_missing"
-		if len(rows) > 1 {
-			result.Reason = "ci_attempt_ambiguous"
+	var selected githubActionsRun
+	if discovered == nil {
+		rows, readErr := g.actionsRuns(ctx, path, repository, head, suiteID, budget)
+		if readErr != nil {
+			return result, readErr
 		}
-		return result, nil
+		if len(rows) != 1 {
+			result.Reason = "ci_attempt_missing"
+			if len(rows) > 1 {
+				result.Reason = "ci_attempt_ambiguous"
+			}
+			return result, nil
+		}
+		selected = rows[0]
+	} else {
+		selected.ID, selected.WorkflowID, selected.RunNumber = discovered.ID, discovered.WorkflowID, discovered.RunNumber
+		selected.Repository.ID = discovered.RepositoryID
+		if discovered.HeadSHA != head || discovered.CheckSuiteID != suiteID || !strings.EqualFold(discovered.Repository, repository) || selected.ID <= 0 || selected.WorkflowID <= 0 || selected.RunNumber <= 0 || selected.Repository.ID <= 0 {
+			return result, invalidSelector()
+		}
 	}
-	selected := rows[0]
 	currentPath := path + "/" + strconv.FormatInt(selected.ID, 10)
 	var current githubActionsRun
 	if _, err = g.actionsRead(ctx, currentPath, nil, budget, &current); err != nil {
