@@ -470,7 +470,7 @@ func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, 
 // Invalid retained identity flags refuse only their operation. Storage and
 // context errors must still fail the scan rather than masquerade as corruption.
 func (e *Engine) skipUnavailableOperation(ctx context.Context, o Operation, err error) bool {
-	if !isStoredUnavailable(err, storedOperationIdentity) {
+	if !isStoredUnavailable(err, storedOperationIdentity) && !isRetainedOperationDecodeError(err) {
 		return false
 	}
 	now := e.sampleExecutionTime()
