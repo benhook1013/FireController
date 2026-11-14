@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,6 +96,87 @@ func TestEmptyQuarantineReconciliationRejectsUnprovenOrActiveState(t *testing.T)
 			}
 			if state := retentionBundleState(t, m, b); state != "cleanup_failed" {
 				t.Fatal("custody cleared", state)
+			}
+		})
+	}
+}
+
+func TestEmptyQuarantineRejectsAliasesAndEmptyKeeperSet(t *testing.T) {
+	for _, name := range []string{"ancestor_alias", "child_alias", "no_keeper", "deleting_keeper"} {
+		t.Run(name, func(t *testing.T) {
+			m, b, r := emptyQuarantineFixture(t)
+			switch name {
+			case "ancestor_alias":
+				alias := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(filepath.Dir(r.QuarantinePath), alias); err != nil {
+					t.Fatal(err)
+				}
+				r.QuarantinePath = filepath.Join(alias, b.id)
+			case "child_alias":
+				child := filepath.Join(r.QuarantinePath, "cli-exhaustion-captures")
+				if err := os.Remove(child); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(t.TempDir(), child); err != nil {
+					t.Fatal(err)
+				}
+			case "no_keeper":
+				if _, err := m.store.DB().Exec("UPDATE managed_backup_bundles SET state='deleted' WHERE state='retained'"); err != nil {
+					t.Fatal(err)
+				}
+			case "deleting_keeper":
+				if _, err := m.store.DB().Exec("UPDATE managed_backup_bundles SET state='deleting' WHERE state='retained'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := m.reconcileEmptyQuarantine(t.Context(), r); err == nil {
+				t.Fatal("unsafe reconciliation accepted")
+			}
+			if retentionBundleState(t, m, b) != "cleanup_failed" {
+				t.Fatal("target custody mutated")
+			}
+			if _, err := os.Lstat(r.ReceiptPath); !os.IsNotExist(err) {
+				t.Fatal("receipt created before proof")
+			}
+		})
+	}
+}
+
+func TestEmptyQuarantineReadbackDistinguishesCommitFromRollback(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprint(rollback), func(t *testing.T) {
+			m, b, r := emptyQuarantineFixture(t)
+			if rollback {
+				_, err := m.store.DB().Exec("CREATE TRIGGER fail_quarantine_settlement BEFORE UPDATE OF state ON managed_backup_bundles WHEN NEW.state='deleted' BEGIN SELECT RAISE(ABORT,'injected rollback after receipt'); END")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := m.reconcileEmptyQuarantine(t.Context(), r)
+			if (err != nil) != rollback {
+				t.Fatal("unexpected transaction outcome", err)
+			}
+			outcome, err := m.readEmptyQuarantineOutcome(t.Context(), r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := "settled_managed_namespace_quarantine_preserved"
+			if rollback {
+				expected = "prepared_not_committed_cleanup_still_held"
+			}
+			if outcome.State != expected {
+				t.Fatal(outcome)
+			}
+			// Readback is repeatable and never converts the uncertain/prepared state.
+			again, err := m.readEmptyQuarantineOutcome(t.Context(), r)
+			if err != nil || again != outcome {
+				t.Fatal("unstable readback", again, err)
+			}
+			if rollback && retentionBundleState(t, m, b) != "cleanup_failed" {
+				t.Fatal("readback mutated custody")
+			}
+			if _, err := m.reconcileEmptyQuarantine(t.Context(), r); err == nil {
+				t.Fatal("blind retry accepted")
 			}
 		})
 	}

@@ -39,19 +39,36 @@ func (m *Manager) reconcileEmptyQuarantine(ctx context.Context, request EmptyQua
 	if err != nil {
 		return receipt, err
 	}
-	keep, _, err := m.retentionCount(ctx)
-	if err != nil || keep < 1 {
-		return receipt, invalid()
-	}
-	if err = m.verifyKeepersCount(ctx, keep); err != nil {
+	// Pin the scheduler generation and exact nonempty keeper set before hashing.
+	// Never hold the bounded writer transaction while reading backup bytes.
+	var pinnedRecord string
+	var pinnedKeepers []ownedBundle
+	err = m.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var e error
+		pinnedRecord, pinnedKeepers, e = m.quarantineKeeperSnapshot(ctx, tx)
+		return e
+	})
+	if err != nil {
 		return receipt, err
 	}
+	for _, keeper := range pinnedKeepers {
+		if _, _, err := m.verifyOwnedBundle(ctx, keeper); err != nil {
+			return receipt, err
+		}
+	}
+
 	receipt = EmptyQuarantineReceipt{1, request.BackupID, request.ExpectedInstanceID, request.ExpectedManifestSHA256, request.QuarantinePath, "prepared", 0}
 	err = m.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		record, err := loadManaged(ctx, tx)
-		if err != nil || record.Status.State == "running" {
+		currentRecord, currentKeepers, err := m.quarantineKeeperSnapshot(ctx, tx)
+		if err != nil || currentRecord != pinnedRecord || len(currentKeepers) != len(pinnedKeepers) {
 			return invalid()
 		}
+		for i := range pinnedKeepers {
+			if currentKeepers[i] != pinnedKeepers[i] {
+				return invalid()
+			}
+		}
+
 		var instance, manifest, state, destination string
 		if err := tx.QueryRowContext(ctx, `SELECT source_instance_id,manifest_sha256,state,destination FROM managed_backup_bundles WHERE id=?`, request.BackupID).Scan(&instance, &manifest, &state, &destination); err != nil {
 			return invalid()
@@ -109,12 +126,16 @@ func emptyKnownQuarantine(path string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, invalid()
 	}
-	f, err := os.Open(path)
+	f, err := openQuarantineDirectory(path)
 	if err != nil {
 		return nil, invalid()
 	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(root, opened) {
+		return nil, invalid()
+	}
 	entries, err := f.ReadDir(4)
-	f.Close()
 	if err == io.EOF {
 		err = nil
 	}
@@ -125,12 +146,12 @@ func emptyKnownQuarantine(path string) (os.FileInfo, error) {
 		if !strings.Contains("|review-captures|hosted-review-captures|cli-exhaustion-captures|", "|"+entry.Name()+"|") || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return nil, invalid()
 		}
-		f, err := os.Open(filepath.Join(path, entry.Name()))
+		child, err := openQuarantineChild(f, entry.Name())
 		if err != nil {
 			return nil, invalid()
 		}
-		children, err := f.ReadDir(1)
-		f.Close()
+		children, err := child.ReadDir(1)
+		child.Close()
 		if err == io.EOF {
 			err = nil
 		}
@@ -139,4 +160,97 @@ func emptyKnownQuarantine(path string) (os.FileInfo, error) {
 		}
 	}
 	return root, nil
+}
+
+// quarantineKeeperSnapshot pins all configured keepers, not an independently
+// re-queried count which could become empty between verification and settlement.
+// The full scheduler record detects intervening completed attempts as well as
+// active attempts. Retention row changes are checked independently.
+func (m *Manager) quarantineKeeperSnapshot(ctx context.Context, tx *sql.Tx) (string, []ownedBundle, error) {
+	record, err := loadManaged(ctx, tx)
+	if err != nil || record == nil || record.Status.State == "running" {
+		return "", nil, invalid()
+	}
+	var deleting int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM managed_backup_bundles WHERE state='deleting'").Scan(&deleting); err != nil || deleting != 0 {
+		return "", nil, invalid()
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return "", nil, invalid()
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT ?`, m.config.Destination, m.store.InstanceID(), m.config.Keep)
+	if err != nil {
+		return "", nil, unavailable()
+	}
+	defer rows.Close()
+	var keepers []ownedBundle
+	for rows.Next() {
+		var b ownedBundle
+		if rows.Scan(&b.id, &b.destination, &b.instance, &b.hash, &b.state) != nil {
+			return "", nil, invalid()
+		}
+		keepers = append(keepers, b)
+	}
+	if rows.Err() != nil || len(keepers) == 0 {
+		return "", nil, invalid()
+	}
+	return string(raw), keepers, nil
+}
+
+// readEmptyQuarantineOutcome resolves a lost response without repeating a write.
+// A prepared receipt alone never proves settlement. A rolled-back attempt remains
+// held for explicit operator resolution; this function cannot retry or clear it.
+func (m *Manager) readEmptyQuarantineOutcome(ctx context.Context, request EmptyQuarantineRequest) (EmptyQuarantineReceipt, error) {
+	var receipt EmptyQuarantineReceipt
+	info, err := privateFile(request.ReceiptPath)
+	if err != nil || info.Size() > 4096 {
+		return receipt, invalid()
+	}
+	f, err := os.Open(request.ReceiptPath)
+	if err != nil {
+		return receipt, invalid()
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return receipt, invalid()
+	}
+	decoder := json.NewDecoder(io.LimitReader(f, 4097))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&receipt) != nil {
+		return receipt, invalid()
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return receipt, invalid()
+	}
+	if receipt.Version != 1 || receipt.State != "prepared" || receipt.BackupBytesRemoved != 0 ||
+		receipt.BackupID != request.BackupID || receipt.InstanceID != request.ExpectedInstanceID ||
+		receipt.InstanceID != m.store.InstanceID() || receipt.ManifestSHA256 != request.ExpectedManifestSHA256 ||
+		receipt.QuarantinePath != request.QuarantinePath {
+		return receipt, invalid()
+	}
+	if _, err := os.Lstat(filepath.Join(m.config.Destination, request.BackupID)); !os.IsNotExist(err) {
+		return receipt, invalid()
+	}
+	if _, err := emptyKnownQuarantine(request.QuarantinePath); err != nil {
+		return receipt, err
+	}
+	var instance, manifest, state, destination string
+	if err := m.store.DB().QueryRowContext(ctx, "SELECT source_instance_id,manifest_sha256,state,destination FROM managed_backup_bundles WHERE id=?", request.BackupID).Scan(&instance, &manifest, &state, &destination); err != nil {
+		return receipt, invalid()
+	}
+	if instance != receipt.InstanceID || manifest != receipt.ManifestSHA256 || destination != m.config.Destination {
+		return receipt, invalid()
+	}
+	switch state {
+	case "deleted":
+		receipt.State = "settled_managed_namespace_quarantine_preserved"
+	case "cleanup_failed":
+		receipt.State = "prepared_not_committed_cleanup_still_held"
+	default:
+		return receipt, invalid()
+	}
+	return receipt, nil
 }
