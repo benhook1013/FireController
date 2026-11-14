@@ -55,7 +55,7 @@ jobs:
       fail-fast: false
       # Job-level slots, not a per-run limit, enforce the shared twenty-job cap.
       matrix:
-        shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7]
+        shard: [backup-0, reviewexec-0, reviews-0, reviewruntime-0, rest-0, backup-1, reviewexec-1, reviews-1, reviewruntime-1, rest-1, backup-2, reviewexec-2, reviews-2, backup-3, reviewexec-3, reviews-3, backup-4, reviewexec-4, backup-5, reviewexec-5, backup-6, backup-7, reviewexec-6, reviewexec-7, reviewexec-8, reviewexec-9, reviewexec-10, reviewexec-11]
         include:
           - shard: backup-0
             slot: 0
@@ -101,6 +101,18 @@ jobs:
             slot: 0
           - shard: backup-7
             slot: 1
+          - shard: reviewexec-6
+            slot: 1
+          - shard: reviewexec-7
+            slot: 6
+          - shard: reviewexec-8
+            slot: 11
+          - shard: reviewexec-9
+            slot: 14
+          - shard: reviewexec-10
+            slot: 17
+          - shard: reviewexec-11
+            slot: 19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

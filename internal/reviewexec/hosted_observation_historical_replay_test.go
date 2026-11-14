@@ -3,12 +3,21 @@ package reviewexec
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHostedObservationExactReplayAfterCooldownDetachmentAndRetry(t *testing.T) {
 	for _, retry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "detached", true: "retry started"}[retry], func(t *testing.T) {
-			f, a, cooldown, now := queuedCooldown(t)
+			f := supervisorFixture(t)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "query-replay", "hosted", 2, 1))
+			cooldown := retainTimerCooldown(t, f, a, 6*time.Minute)
+			clock := time.Now().UTC()
+			now := &clock
+			f.e.schedulingNow = func() time.Time { return *now }
+			if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, a.ID, 1); err != nil {
+				t.Fatal(err)
+			}
 			records, err := f.e.ReadHostedObservations(t.Context(), attemptProject, a.ID)
 			if err != nil || len(records) != 1 {
 				t.Fatal("original observation", records, err)

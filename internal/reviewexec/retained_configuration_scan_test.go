@@ -404,7 +404,11 @@ func TestSettlementRawPendingUsesCursorIndex(t *testing.T) {
 func TestSourceRefreshCompletionConfigurationCorruptionIsLocal(t *testing.T) {
 	f := supervisorFixture(t)
 	r := refreshEnqueue(t, f, "completion-corruption", refreshRequest())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	entered, release := make(chan struct{}), make(chan struct{})
+	releaseReader := sync.OnceFunc(func() { close(release) })
+	defer releaseReader()
 	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 		close(entered)
 		select {
@@ -416,14 +420,25 @@ func TestSourceRefreshCompletionConfigurationCorruptionIsLocal(t *testing.T) {
 	}}
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.e.refreshNextScheduled(t.Context(), map[string]TargetReader{"test-capability": reader}, newSourceRefreshSchedule())
+		_, err := f.e.refreshNextScheduled(ctx, map[string]TargetReader{"test-capability": reader}, newSourceRefreshSchedule())
 		done <- err
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatal("refresh worker ended before entering repository read", err)
+	case <-ctx.Done():
+		t.Fatal("refresh worker did not enter repository read", ctx.Err())
+	}
 	admissionSQL(t, f, `UPDATE review_execution_config SET body_json='broken' WHERE project_id=?`, attemptProject)
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal("completion stopped shared worker", err)
+	releaseReader()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("completion stopped shared worker", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("refresh worker did not finish after release", ctx.Err())
 	}
 	got := refreshRead(t, f, r.ID)
 	if got.State != "held" || got.Reason != "source_configuration_changed" {
@@ -431,30 +446,38 @@ func TestSourceRefreshCompletionConfigurationCorruptionIsLocal(t *testing.T) {
 	}
 }
 func TestPreparationRecoveryBadFlagsRemainCandidateLocal(t *testing.T) {
-	f := supervisorFixture(t)
-	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "bad-flags", "hosted", 2, 1))
-	f.configure(t, otherAttemptProject, "other-account", 0, false)
-	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "other-flags", "cli", 2, 1))
-	admissionSQL(t, f, `PRAGMA ignore_check_constraints=ON`)
-	admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=2 WHERE id=?`, a.OperationID)
-	admissionSQL(t, f, `PRAGMA ignore_check_constraints=OFF`)
-	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
-	if err != nil || !skipped[a.ID] {
-		t.Fatal(skipped, err)
-	}
-	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := readAttempt(t.Context(), f.store.DB(), other.ProjectID, other.ID)
-	if err != nil || got.State != "cancelled" {
-		t.Fatal(got, err)
-	}
-	got, err = readAttempt(t.Context(), f.store.DB(), a.ProjectID, a.ID)
-	if err != nil || got.State != "preparing" {
-		t.Fatal(got, err)
-	}
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
-		t.Fatal("damaged reservation lost")
+	for _, retained := range []bool{false, true} {
+		t.Run(fmt.Sprint(retained), func(t *testing.T) {
+			f := supervisorFixture(t)
+			a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "bad-flags", "hosted", 2, 1))
+			if retained {
+				retainTimerCooldown(t, f, a, 6*time.Minute)
+			}
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "other-flags", "cli", 2, 1))
+			admissionSQL(t, f, `PRAGMA ignore_check_constraints=ON`)
+			admissionSQL(t, f, `UPDATE review_operations SET allow_out_of_order=2 WHERE id=?`, a.OperationID)
+			admissionSQL(t, f, `PRAGMA ignore_check_constraints=OFF`)
+			skipped, err := f.e.reconcilePreparingDrivers(t.Context(), nil)
+			if err != nil || skipped[a.ID] == retained {
+				t.Fatal("preflight replay selection", skipped, err)
+			}
+			if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			got, err := readAttempt(t.Context(), f.store.DB(), other.ProjectID, other.ID)
+			if err != nil || got.State != "cancelled" {
+				t.Fatal(got, err)
+			}
+			got, err = readAttempt(t.Context(), f.store.DB(), a.ProjectID, a.ID)
+			if err != nil || got.State != "preparing" {
+				t.Fatal(got, err)
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
+				t.Fatal("damaged reservation lost")
+			}
+
+		})
 	}
 }
 

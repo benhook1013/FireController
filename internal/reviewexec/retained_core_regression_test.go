@@ -279,3 +279,39 @@ func TestRetainedCoreRestoredCooldownSnapshots(t *testing.T) {
 		})
 	}
 }
+
+func TestFoundationOrphanRecoverySourceIsNotEnumerated(t *testing.T) {
+	f := supervisorFixture(t)
+	called := false
+	f.e.cliExhaustionRecovery = exhaustionRecoverySourceFunc(func(context.Context, string) (CLIExhaustionRecovery, bool, error) {
+		called = true
+		return CLIExhaustionRecovery{}, false, fmt.Errorf("orphan source must not be read")
+	})
+	before := snapshotTable(t, f, "review_operations")
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if called || before != snapshotTable(t, f, "review_operations") {
+		t.Fatal("SQL-absent artifact enumerated or SQL changed")
+	}
+}
+
+func TestFoundationMalformedHostedQueryIsCandidateLocal(t *testing.T) {
+	f, a, _, _ := queuedCooldown(t)
+	admissionSQL(t, f, `UPDATE review_hosted_allowance_queries SET body_json='damaged' WHERE attempt_id=?`, a.ID)
+	o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+	if !isWaitUnavailable(err) || !f.e.skipUnavailableWait(t.Context(), o, err) {
+		t.Fatal("malformed query escaped candidate-local normalization", err)
+	}
+}
+
+func TestFoundationHostedOffsetDeadlineIsInvalid(t *testing.T) {
+	_, _, in := cooldownObservationFixture(t)
+	if !validHostedAllowanceObservation(in) {
+		t.Fatal("fixture invalid")
+	}
+	in.Observation.RetryNotBefore = in.Observation.RetryNotBefore.In(time.FixedZone("offset", 3600))
+	if validHostedAllowanceObservation(in) {
+		t.Fatal("non-UTC deadline accepted")
+	}
+}
