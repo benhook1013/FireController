@@ -198,7 +198,7 @@ const timelineFindingRevisionSQL = `CASE WHEN r.source='native-executor' AND r.f
  ELSE r.version_revision END`
 
 func isPartialCLIResult(run RunSummary) bool {
-	return run.Source == "native-executor" && run.Channel == "cli" && run.Outcome == "failed" && !run.Complete && run.Found > 0
+	return run.Source == "native-executor" && run.Channel == "cli" && (run.Outcome == "failed" || run.Outcome == "cancelled" || run.Outcome == "rate_limited") && !run.Complete && run.Found > 0
 }
 
 // Fetch only this selected page's scalar finding inventory, with a byte-bounded

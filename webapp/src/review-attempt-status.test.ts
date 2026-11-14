@@ -184,3 +184,12 @@ it('shows the PR’s own fixes when the channel front advances', () => {
   expect(reviewAttemptStatus(completed, progress)).toBeUndefined();
   expect(reviewAttemptStatus(completed, { ...progress, fixes_pending: true }, undefined, true)).toBeUndefined();
 });
+
+it('shows retained partial decisions independently of completed-round occupancy', () => {
+  const partial = {...progress, used:0, pending:0, retained_adjudication_pending:true};
+  for (const state of ['failed','cancelled','rate_limited'] as const) {
+    expect(reviewAttemptStatus({...attempt,state}, partial)?.text).toBe('Needs adjudication');
+  }
+  expect(reviewAttemptStatus(attempt,{...partial,retained_adjudication_pending:false,fixes_pending:true})?.text).toBe('Fixes pending');
+  expect(partial.pending).toBe(0); expect(partial.used).toBe(0);
+});

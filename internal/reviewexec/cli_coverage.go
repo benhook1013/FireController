@@ -74,6 +74,13 @@ const partialCLIResults = ` FROM review_operations o
  WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state='failed'
  AND json_extract(e.body_json,'$.capture.review.Complete')=0`
 
+// Findings survive every known terminal CLI process outcome. Keep the narrower
+// failed-only comparison suppression separate from these durable obligations.
+const retainedCLIResults = ` FROM review_operations o
+ CROSS JOIN review_execution_evidence e ON e.project_id=o.project_id AND e.attempt_id=o.attempt_id AND e.operation_id=o.id
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state IN ('failed','cancelled','rate_limited')
+ AND json_extract(e.body_json,'$.capture.review.Complete')=0`
+
 const partialCLIPending = ` AND json_array_length(e.body_json,'$.capture.review.Findings')>0
  AND (NOT EXISTS(SELECT 1 FROM review_adjudication_state s WHERE s.project_id=e.project_id AND s.evidence_id=e.id)
  OR EXISTS(SELECT 1 FROM review_adjudication_state s, json_each(s.body_json,'$.findings') f
@@ -120,7 +127,7 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 		return ComparisonState{}, &automaticProjectStateError{adjudicationStorageError()}
 	}
 	if channel == "cli" && !result.Pending {
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1"+partialCLIResults+partialCLIPending+")", project, number).Scan(&result.Pending); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1"+retainedCLIResults+partialCLIPending+")", project, number).Scan(&result.Pending); err != nil {
 			return ComparisonState{}, err
 		}
 	}

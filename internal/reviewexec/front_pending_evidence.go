@@ -20,3 +20,16 @@ func pendingReviewFixes(ctx context.Context, q EvidenceQuery, project string, pu
 	err := q.QueryRowContext(ctx, frontPendingFixesSQL, project, pull, channel).Scan(&fixesPending)
 	return fixesPending, err
 }
+
+// This source-only projection is independent of round reservation/credit. A
+// failed or cancelled partial capture can have work without occupying a round.
+func retainedCLIObligations(ctx context.Context, q EvidenceQuery, project string, pull int64) (undecided, fixes bool, err error) {
+	const decisions = ` AND json_array_length(e.body_json,'$.capture.review.Findings')>0 AND (
+ NOT EXISTS(SELECT 1 FROM review_adjudication_state s WHERE s.project_id=e.project_id AND s.evidence_id=e.id)
+ OR EXISTS(SELECT 1 FROM review_adjudication_state s, json_each(s.body_json,'$.findings') f
+ WHERE s.project_id=e.project_id AND s.evidence_id=e.id AND json_extract(f.value,'$.disposition')='unadjudicated'))`
+	const accepted = ` AND EXISTS(SELECT 1 FROM review_adjudication_state s, json_each(s.body_json,'$.findings') f
+ WHERE s.project_id=e.project_id AND s.evidence_id=e.id AND json_extract(f.value,'$.disposition')='accepted' AND json_extract(f.value,'$.fix_sha')='')`
+	err = q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1"+retainedCLIResults+decisions+"), EXISTS(SELECT 1"+retainedCLIResults+accepted+")", project, pull, project, pull).Scan(&undecided, &fixes)
+	return
+}

@@ -168,4 +168,13 @@ describe('per-PR inline retained review history', () => {
     const failed = markup(node, { value: detail(value), error: new ApiError('connection_failed', 'Offline') });
     expect(failed).toContain('Retry findings'); expect(failed).not.toContain('Private');
   });
+  it.each(['failed','cancelled','rate_limited'] as const)('retains partial %s findings without inventing final coverage', outcome => {
+    const value: ReviewRunSummary = {...run('retained'), source:'native-executor', outcome, complete:false, attributable:false, finalized:false, found:3, accepted:0, routed:0, retained_undecided:3};
+    const html=markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />);
+    expect(html).toContain('Found: <strong>3</strong>');
+    expect(html).toContain('Partial review · 3 undecided · Needs adjudication');
+    const unknown=markup(<ReviewHistoryRow number={27} run={{...value,retained_undecided:undefined}} snapshot={snapshot} head="head" />);
+    expect(unknown).toContain('Adjudication status unknown');
+  });
+
 });

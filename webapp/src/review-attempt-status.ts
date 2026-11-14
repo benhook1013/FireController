@@ -85,6 +85,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   // An unconfirmed provider outcome must be reconciled, even when another
   // request or a closed grant exists. Do not present it as safe to retry.
   if (attempt?.state === 'uncertain') return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
+  if (progress?.retained_adjudication_pending && !(attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state))) return { text: 'Needs adjudication', description: 'Retained partial findings need decisions. No completed review round is claimed.' };
   if (progress?.wait && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
   if (attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state)) {
     return activeAttemptStatus(attempt, progress);

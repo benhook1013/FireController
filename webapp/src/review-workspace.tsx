@@ -123,14 +123,14 @@ export function findingDisplayFingerprint(finding: ReviewFinding): string {
     route?.fix_sha ?? finding.fix_sha, route?.proof_note ?? finding.proof_note, route?.fixed_at ?? finding.resolved_at]);
 }
 function partialCLIResult(run: ReviewRunSummary): boolean {
-  return run.source === 'native-executor' && run.channel === 'cli' && run.outcome === 'failed' && !run.complete && run.found > 0;
+  return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && run.found > 0;
 }
 function visibleReviewCounts(run: ReviewRunSummary) {
   const show = run.finalized || partialCLIResult(run);
   return { accepted: show ? run.accepted : '?' as const, routed: show ? run.routed : '?' as const };
 }
 function partialPendingText(count?: number): string {
-  return count ? ' · ' + count + ' undecided' : '';
+  return count === undefined ? ' · Adjudication status unknown' : count > 0 ? ' · ' + count + ' undecided · Needs adjudication' : '';
 }
 function RunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: string; head: string }) {
   const { home } = useWorkspace();
@@ -422,7 +422,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const returned = attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
     (run.outcome === 'completed' || partialCLIResult(run))) : undefined;
-  const statusAttempt = returned && partialCLIResult(returned) && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
+  const statusAttempt = returned && partialCLIResult(returned) && returned.retained_undecided === 0 && returned.fixed >= returned.accepted && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
     ? { ...attempt, reason: 'cli_partial_settled' }
     : attempt;
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);

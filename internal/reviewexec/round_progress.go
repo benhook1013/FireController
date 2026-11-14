@@ -12,26 +12,27 @@ import (
 // private activity diagnostics. Pending counts operations bound to this epoch,
 // not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	ActivityEvidence    *ActivityEvidence `json:"activity_evidence,omitempty"`
-	CancelledWait       *CancelledWait    `json:"cancelled_wait,omitempty"`
-	Wait                *OperationWait    `json:"wait,omitempty"`
-	SourceRetry         *SourceRetry      `json:"source_retry,omitempty"`
-	Channel             string            `json:"channel"`
-	Configured          bool              `json:"configured"`
-	Revision            int64             `json:"revision"`
-	Epoch               int64             `json:"epoch"`
-	Closed              bool              `json:"closed"`
-	Minimum             int64             `json:"minimum"`
-	Maximum             int64             `json:"maximum"`
-	MaximumUnbounded    bool              `json:"maximum_unbounded,omitempty"`
-	Taper               int64             `json:"taper"`
-	Used                int64             `json:"used"`
-	Dry                 int64             `json:"dry"`
-	Tapered             bool              `json:"tapered"`
-	Pending             int64             `json:"pending"`
-	PendingExecution    *int64            `json:"pending_execution,omitempty"`
-	FixesPending        bool              `json:"fixes_pending,omitempty"`
-	PendingAdjudication *int64            `json:"pending_adjudication,omitempty"`
+	ActivityEvidence            *ActivityEvidence `json:"activity_evidence,omitempty"`
+	CancelledWait               *CancelledWait    `json:"cancelled_wait,omitempty"`
+	Wait                        *OperationWait    `json:"wait,omitempty"`
+	SourceRetry                 *SourceRetry      `json:"source_retry,omitempty"`
+	Channel                     string            `json:"channel"`
+	Configured                  bool              `json:"configured"`
+	Revision                    int64             `json:"revision"`
+	Epoch                       int64             `json:"epoch"`
+	Closed                      bool              `json:"closed"`
+	Minimum                     int64             `json:"minimum"`
+	Maximum                     int64             `json:"maximum"`
+	MaximumUnbounded            bool              `json:"maximum_unbounded,omitempty"`
+	Taper                       int64             `json:"taper"`
+	Used                        int64             `json:"used"`
+	Dry                         int64             `json:"dry"`
+	Tapered                     bool              `json:"tapered"`
+	Pending                     int64             `json:"pending"`
+	PendingExecution            *int64            `json:"pending_execution,omitempty"`
+	RetainedAdjudicationPending bool              `json:"retained_adjudication_pending,omitempty"`
+	FixesPending                bool              `json:"fixes_pending,omitempty"`
+	PendingAdjudication         *int64            `json:"pending_adjudication,omitempty"`
 }
 
 // CancelledWait identifies the unused baseline of an explicitly cancelled queued request.
@@ -138,6 +139,14 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 					progress.FixesPending, err = pendingReviewFixes(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err
+					}
+					if channel == "cli" {
+						var retainedFixes bool
+						progress.RetainedAdjudicationPending, retainedFixes, err = retainedCLIObligations(ctx, tx, scope.ProjectID, number)
+						if err != nil {
+							return err
+						}
+						progress.FixesPending = progress.FixesPending || retainedFixes
 					}
 				}
 				item.Channels = append(item.Channels, progress)
