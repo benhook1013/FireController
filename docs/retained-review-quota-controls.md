@@ -2,7 +2,7 @@
 
 This slice follows native CI observation and keeps an authorized review request
 alive when its provider has no available allowance. It does not discover new
-reviews, increase grants, adjudicate findings, or merge pull requests.
+reviews, increase grants, adjudicate findings, or merge pull requests. This Hosted runtime stage implements normal-preparation cooldown scheduling and private allowance-capture replay. Separately, engine startup recovery schedules a validated, future, advancing cooldown from retained SQL allowance facts. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
 
 ## One request, multiple unused preparations
 
@@ -77,7 +77,7 @@ does not delete checkouts.
 
 ### Retention failure recovery
 
-This Hosted runtime stage implements the retained-source recovery procedure below; the earlier foundation stage alone does not provide that replay.
+This Hosted runtime stage implements the private-capture reconciliation procedure below; the earlier foundation stage alone does not provide that driver replay. This is separate from engine startup recovery of cooldown facts already retained in SQL.
 
 A Hosted cooldown retention storage failure leaves the original attempt preparing after bounded local retries. Before interrupted-attempt recovery, the configured Hosted adapter reconciles the retained allowance-query capture against the same operation, query, attempt and pinned workspace, with no provider call. Successful replay writes the same idempotent cooldown facts and normal recovery restores a future queued wait. An ongoing storage failure blocks startup without changing the attempt. Missing, malformed or non-cooldown private source, or a changed workspace, grants no cooldown and follows normal interrupted preparation cancellation. This replay never obtains fresh allowance or dispatches a review.
 
