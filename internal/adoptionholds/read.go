@@ -18,6 +18,23 @@ type Facts struct {
 	Open int64 `json:"open"`
 }
 
+// projectStateError marks validated corruption in retained project records.
+// Shared schema failures and operational database errors must remain unmarked.
+type projectStateError struct{ error }
+
+func (e *projectStateError) Unwrap() error { return e.error }
+
+// IsProjectStateError reports a validated project-local retained-data failure.
+// Public status codes alone do not distinguish it from shared storage failures.
+func IsProjectStateError(err error) bool {
+	var local *projectStateError
+	return errors.As(err, &local)
+}
+
+func projectStateUnavailable() error {
+	return &projectStateError{unavailable()}
+}
+
 func validTime(s string) bool {
 	v, e := time.Parse(time.RFC3339Nano, s)
 	return e == nil && !v.IsZero() && len(s) <= 64
@@ -65,14 +82,14 @@ func readSourceWithVersion(ctx context.Context, q Query, project, namespace stri
 		return out, err
 	}
 	if !retainedInteger(repositoryValue, &out.Source.RepositoryID) || !retainedText(snapshotValue, &out.Source.SnapshotSHA256) || !retainedInteger(revisionValue, &out.Revision) || !validSource(out.Source) || out.Revision < 1 {
-		return out, unavailable()
+		return out, projectStateUnavailable()
 	}
 	var repository int64
 	if err = q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryValue); err != nil {
 		return out, err
 	}
 	if !retainedInteger(repositoryValue, &repository) || repository < 1 {
-		return out, unavailable()
+		return out, projectStateUnavailable()
 	}
 	if repository != out.Source.RepositoryID {
 		return out, core.Fail("repository_changed", "The retained source belongs to a different repository.", 409)
@@ -109,15 +126,15 @@ func VerifyRetainedSource(ctx context.Context, q Query, project string, source m
 		return retainedSourceReadError(err)
 	}
 	if !retainedText(bodyValue, &body) || !retainedText(shaValue, &sha) {
-		return unavailable()
+		return projectStateUnavailable()
 	}
 	var batch m.Batch
 	if digest([]byte(body)) != sha || strictjson.Decode([]byte(body), &batch) != nil {
-		return unavailable()
+		return projectStateUnavailable()
 	}
 	normalized, canonical, err := NormalizeBatch(batch)
 	if err != nil || string(canonical) != body || normalized.Source != source || *normalized.ExpectedRevision != revision-1 {
-		return unavailable()
+		return projectStateUnavailable()
 	}
 	return nil
 }
@@ -149,14 +166,14 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 		return d, err
 	}
 	if !retainedText(idValue, &d.ID) || !retainedText(projectValue, &d.ProjectID) || !retainedText(namespaceValue, &namespace) || !retainedInteger(sourceRevisionValue, &d.SourceRevision) || !retainedText(bodyValue, &body) || !retainedText(shaValue, &sha) || !retainedText(statusValue, &d.Status) || !retainedInteger(revisionValue, &d.Revision) || !retainedText(actorValue, &d.ActorID) || !retainedText(workerValue, &d.WorkerID) || !retainedText(createdValue, &d.CreatedAt) {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	if !identifier.MatchString(d.ID) || d.ProjectID != project || !sourceKey(namespace) || !identifier.MatchString(d.ActorID) || !identifier.MatchString(d.WorkerID) || !validTime(d.CreatedAt) || digest([]byte(body)) != sha || strictjson.Decode([]byte(body), &d.Original) != nil {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	normalized, err := NormalizeObligation(d.Original)
 	if err != nil || string(encode(normalized)) != body {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	state, found := sources[namespace]
 	if !found {
@@ -171,7 +188,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	}
 	d.Source = state.Source
 	if d.SourceRevision < 1 || d.SourceRevision > state.Revision {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	var key string
 	var keyValue any
@@ -179,7 +196,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 		return d, retainedSourceReadError(err)
 	}
 	if !retainedText(keyValue, &key) || key != d.Original.SourceKey {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	rows, err := q.QueryContext(ctx, `SELECT project_id,pull_number FROM review_adoption_targets WHERE obligation_id=? ORDER BY pull_number LIMIT 102`, id)
 	if err != nil {
@@ -196,7 +213,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 		}
 		if !retainedText(ownerValue, &owner) || !retainedInteger(numberValue, &n) || owner != project || !pull(n) || len(numbers) >= 101 {
 			rows.Close()
-			return d, unavailable()
+			return d, projectStateUnavailable()
 		}
 		numbers = append(numbers, n)
 	}
@@ -216,7 +233,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	err = q.QueryRowContext(ctx, `SELECT revision,reason,evidence_json,actor_id,worker_id,resolved_at FROM review_adoption_resolutions WHERE obligation_id=?`, id).Scan(&revisionValue, &reasonValue, &refsValue, &actorValue, &workerValue, &resolvedValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		if d.Status != "open" || d.Revision != latestRevision {
-			return d, unavailable()
+			return d, projectStateUnavailable()
 		}
 		return d, nil
 	}
@@ -224,14 +241,14 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 		return d, err
 	}
 	if !retainedInteger(revisionValue, &resolution.Revision) || !retainedText(reasonValue, &resolution.Reason) || !retainedText(refsValue, &refs) || !retainedText(actorValue, &resolution.ActorID) || !retainedText(workerValue, &resolution.WorkerID) || !retainedText(resolvedValue, &resolution.ResolvedAt) {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	if d.Status != "resolved" || d.Revision != latestRevision+1 || resolution.Revision != d.Revision || !text(resolution.Reason, 4096) || !identifier.MatchString(resolution.ActorID) || !identifier.MatchString(resolution.WorkerID) || !validTime(resolution.ResolvedAt) || strictjson.Decode([]byte(refs), &resolution.Evidence) != nil || !m.ValidResolutionEvidence(resolution.Evidence) || string(encode(resolution.Evidence)) != refs {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	previous := resolution.Revision - 1
 	if _, err := m.NormalizeResolution(m.ResolveRequest{ExpectedRevision: &previous, Reason: resolution.Reason, Evidence: resolution.Evidence}); err != nil {
-		return d, unavailable()
+		return d, projectStateUnavailable()
 	}
 	d.Resolution = &resolution
 	return d, nil
@@ -259,7 +276,7 @@ func readFacts(ctx context.Context, q Query, project string, number int64, stopA
 				break
 			}
 			if !retainedText(idValue, &id) || !identifier.MatchString(id) {
-				err = unavailable()
+				err = projectStateUnavailable()
 				break
 			}
 			ids = append(ids, id)
@@ -282,7 +299,7 @@ func readFacts(ctx context.Context, q Query, project string, number int64, stopA
 					return facts, nil
 				}
 				if facts.Open > 1<<53-1 {
-					return facts, unavailable()
+					return facts, projectStateUnavailable()
 				}
 			}
 			after = id
@@ -321,7 +338,7 @@ func readFactsIfPresent(ctx context.Context, q Query, project string, number int
 func retainedSourceReadError(err error) error {
 	var failure *core.Error
 	if errors.Is(err, sql.ErrNoRows) || errors.As(err, &failure) && failure.Code == "not_found" {
-		return unavailable()
+		return projectStateUnavailable()
 	}
 	return err
 }

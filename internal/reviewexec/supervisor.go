@@ -165,6 +165,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
+	AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)
 	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
@@ -181,7 +182,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	readCandidate := func(project, operation string) (Operation, error) {
 		o, err := readOperation(ctx, tx, project, operation)
 		if err != nil {
-			if e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
@@ -193,7 +194,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		if !ok {
 			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 			if err != nil {
-				if e.skipUnavailableConfiguration(ctx, o, err) {
+				if e.skipUnavailableConfiguration(ctx, o, err) || automaticProjectRefused(err) {
 					return Operation{}, nil
 				}
 				return Operation{}, err
@@ -236,7 +237,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 		if err != nil {
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
@@ -422,7 +423,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed" {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
@@ -469,7 +470,7 @@ func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, 
 // Invalid retained identity flags refuse only their operation. Storage and
 // context errors must still fail the scan rather than masquerade as corruption.
 func (e *Engine) skipUnavailableOperation(ctx context.Context, o Operation, err error) bool {
-	if !isStoredUnavailable(err, storedOperationIdentity) {
+	if !isStoredUnavailable(err, storedOperationIdentity) && !isRetainedOperationDecodeError(err) {
 		return false
 	}
 	now := e.sampleExecutionTime()
@@ -561,7 +562,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
@@ -582,7 +583,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
 				continue
 			}
 			var failure *core.Error
@@ -652,7 +653,20 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+				// Only proven retained project corruption is local. No intent
+				// was admitted; retain the queued identity for a repaired read.
+				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+					return err
+				}
+				continue
+			}
 			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {
+				// Admit recorded no intent. Release only this unused attempt and
+				// retain the queued operation's original identity and wait state.
+				return e.finishPreparation(a, "held", refusal.Code)
+			}
 			if errors.As(err, &refusal) && refusal.Code == "review_held" {
 				reason := preparationReason(err)
 				if reason == "source_obligations_pending" || reason == "repository_changed" {

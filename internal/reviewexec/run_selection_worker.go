@@ -7,6 +7,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"math"
 	"reflect"
 	"slices"
 	"sync"
@@ -179,7 +180,7 @@ func retryRunSelectionLocal(ctx context.Context, local func() error) error {
 		}
 		err := local()
 		var failure *core.Error
-		if !errors.As(err, &failure) || failure.Code != "overloaded" {
+		if automaticProjectRefused(err) || !errors.As(err, &failure) || failure.Code != "overloaded" {
 			return err
 		}
 		timer := time.NewTimer(delay)
@@ -244,6 +245,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	}
 	var window []runPullResult
 	windowStart := 0
+	windowSize := 4
 	for i, n := range queue {
 		if err := ctx.Err(); err != nil {
 			return runChoice{}, err
@@ -251,7 +253,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		if i >= windowStart+len(window) {
 			windowStart = i
 			err = source.read(ctx, func(ctx context.Context) error {
-				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+4, len(queue))])
+				window = reads.pullWindow(ctx, repository.FullName, repository.ID, queue[i:min(i+windowSize, len(queue))])
 				return nil
 			})
 			if err != nil {
@@ -264,6 +266,13 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if !sameTarget(pull, repo, n) || pull.State != "open" && pull.State != "closed" || pull.Merged && pull.State != "closed" {
 			return sourceFailure("source_response_invalid"), nil
+		}
+		// Fresh lifecycle guides only speculative width, never eligibility or
+		// coverage. Live tails otherwise repeatedly cancel and refetch three
+		// successors per candidate. Resume batching when merged history resumes.
+		windowSize = 1
+		if pull.Merged {
+			windowSize = 4
 		}
 		plan := SourcePlan{Repository: repository, Pull: pull, ParentSHA: pull.BaseSHA, ObservedAt: stamp()}
 		if !pull.Merged && pull.State == "open" {
@@ -398,7 +407,12 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 					if workerCtx.Err() != nil {
 						return
 					}
-					worked, err := e.runNext(workerCtx, owned)
+					generated, err := e.coordinateAutomaticHosted(workerCtx, owned)
+					var worked bool
+					if err == nil {
+						worked, err = e.runNext(workerCtx, owned)
+					}
+					worked = worked || generated
 					if err != nil {
 						if workerCtx.Err() != nil {
 							return
@@ -443,11 +457,11 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
 			// both selection workers or repeatedly reacquire provider facts.
-			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,s.revision FROM review_selections s
+			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM review_selections s
  WHERE s.state='queued'
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
+ ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -464,6 +478,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			r, err := readRun(ctx, tx, project, id)
 			if err != nil {
 				return err
+			}
+			if r.State == "queued" && expected == 0 {
+				return runUnavailable()
 			}
 			if r.State != "queued" || r.Revision != expected {
 				return nil
@@ -495,6 +512,9 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			return nil
 		})
 	})
+	if automaticProjectRefused(err) {
+		return e.holdRunLocalRefusal(ctx, Run{ProjectID: project, ID: id, Revision: expected, State: "queued"})
+	}
 	if err == nil && changed != "" {
 		e.notifyOperation(changed)
 	}
@@ -506,16 +526,67 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if ctx.Err() != nil {
 		return true, nil
 	}
+	if automaticProjectRefused(readErr) {
+		return e.holdRunLocalRefusal(ctx, r)
+	}
 	if readErr != nil {
 		return true, readErr
 	}
-	return e.finishRunChoice(ctx, r, repo, metadataPins, choice)
+	worked, err := e.finishRunChoice(ctx, r, repo, metadataPins, choice)
+	if automaticProjectRefused(err) {
+		return e.holdRunLocalRefusal(ctx, r)
+	}
+	return worked, err
+}
+
+// A validated retained-data refusal belongs to this selection, not the worker
+// pool. Persist only the hold after the failed claim/finish transaction rolled
+// back. Explicit requests retain local-read attribution, never automatic intent.
+func (e *Engine) holdRunLocalRefusal(ctx context.Context, expected Run) (bool, error) {
+	changed := false
+	err := retryRunSelectionLocal(ctx, func() error {
+		changed = false
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readRun(ctx, tx, expected.ProjectID, expected.ID)
+			if automaticProjectRefused(err) || err == nil && current.Revision == math.MaxInt64 {
+				claim := expected
+				if claim.Revision < 1 || claim.Revision == math.MaxInt64 {
+					claim.Revision = 0
+				}
+				changed, err = quarantineSelection(ctx, tx, claim)
+				return err
+			}
+			if err != nil {
+				return err
+			}
+			if current.State != expected.State || current.Revision != expected.Revision {
+				return nil
+			}
+			var automatic bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, current.ProjectID, current.ID).Scan(&automatic); err != nil {
+				return err
+			}
+			reason := "local_read_unavailable"
+			if automatic {
+				reason = "automatic_scheduling_unavailable"
+			}
+			if err = updateRun(ctx, tx, current, "held", reason, ""); err != nil {
+				return err
+			}
+			changed = true
+			return nil
+		})
+	})
+	if err == nil && changed {
+		e.notifyOperation(expected.ID)
+	}
+	return changed, err
 }
 
 // finishRunChoice validates and records a source selection in one local write.
 func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadataPins map[int64]reviews.SourceMetadataPin, choice runChoice) (bool, error) {
 	err := retryRunSelectionLocal(ctx, func() error {
-		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) (resultErr error) {
 			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
 			if err != nil {
 				return err
@@ -523,6 +594,44 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if current.State != r.State || current.Revision != r.Revision {
 				return conflict()
 			}
+			if _, err = tx.ExecContext(ctx, `SAVEPOINT review_selection_finish`); err != nil {
+				return err
+			}
+			bindingValidated := false
+			defer func() {
+				if resultErr == nil && bindingValidated {
+					var pull int64
+					var reason string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &reason); err != nil {
+						resultErr = err
+						return
+					}
+					if reason != "selection_changed" {
+						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
+					}
+				}
+				if automaticProjectRefused(resultErr) {
+					var automatic bool
+					if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+						resultErr = err
+						return
+					}
+					if !automatic {
+						return // Explicit selections retain their original error and rollback.
+					}
+					// Settlement is part of atomic selection. Discard any source,
+					// child and event writes before retaining a local hold. The
+					// accepted basis stays intact for tick/restart suppression.
+					if _, err := tx.ExecContext(ctx, `ROLLBACK TO review_selection_finish`); err != nil {
+						resultErr = err
+						return
+					}
+					resultErr = updateRun(ctx, tx, current, "held", "automatic_scheduling_unavailable", "")
+				}
+				if resultErr == nil {
+					_, resultErr = tx.ExecContext(ctx, `RELEASE review_selection_finish`)
+				}
+			}()
 			c, nowRepo, reason, err := e.runBinding(ctx, tx, current)
 			if err != nil {
 				return err
@@ -533,7 +642,11 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if reason != "" {
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
+			bindingValidated = true
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
+				return err
+			}
+			if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
 				return err
 			}
 			if choice.state == "held" {

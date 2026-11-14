@@ -64,7 +64,7 @@ func (e *Engine) reconcilePreparingDrivers(ctx context.Context, drivers map[stri
 		}
 		o, err := readOperationIdentity(ctx, e.store.DB(), id.project, id.operation)
 		if err != nil {
-			if isStoredUnavailable(err, storedOperationIdentity) {
+			if isStoredUnavailable(err, storedOperationIdentity) || isRetainedOperationDecodeError(err) {
 				skipped[id.attempt] = true
 				slog.WarnContext(ctx, "Hosted preparation identity is unavailable", "operation_id", id.operation, "attempt_id", id.attempt)
 				continue

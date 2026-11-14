@@ -229,8 +229,12 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"project_management": 1, "worker_retirements": 1, "review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_scheduling": 2, "review_fronts": 1, "project_management": 1, "worker_retirements": 1, "review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_scheduling":                {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
+	"review_pull_scheduling":           {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
+	"review_automatic_selections":      {"review_scheduling", 1, "selection_id project_id scheduling_revision basis_sha256 settled_basis_sha256 pull_number pull_basis_sha256 actor_id worker_id credential_id"},
+	"review_front_frames":              {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
 	"review_operation_waits":           {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
 	"worker_retirements":               {"worker_retirements", 1, "project_id worker_id retired_at actor_id"},
 	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
@@ -613,6 +617,17 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, invalid()
 		}
 	}
+	if versions["review_scheduling"] > 0 {
+		if versions["review_selection"] == 0 || versions["review_execution"] == 0 {
+			return nil, invalid()
+		}
+		if err = validateSchedulingPhysicalSchema(ctx, db, versions["review_scheduling"]); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, err
+		}
+	}
 	if versions["worker_retirements"] > 0 {
 		if err := validatePhysicalSchemaObjects(ctx, db, map[string]physicalSchemaObject{"worker_retirements": {"table", `CREATE TABLE worker_retirements(project_id TEXT NOT NULL REFERENCES projects(id),worker_id TEXT NOT NULL,retired_at TEXT NOT NULL,actor_id TEXT NOT NULL,PRIMARY KEY(project_id,worker_id),FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id))`}}, []string{"worker_retirements"}); err != nil {
 			if contextErr := checkContext(ctx); contextErr != nil {
@@ -674,6 +689,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_scheduling" && versions["review_scheduling"] >= 2 {
+			columns += " automatic_cli"
+		}
 		if name == "grants" && versions["project_management"] > 0 {
 			columns += " can_manage"
 		}
@@ -1057,6 +1075,33 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_scheduling"] == 0 {
+		// An optional predecessor domain may be absent only before it has
+		// produced durable controls. Dropping tables cannot erase that history.
+		var used bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE event_type IN ('review.scheduling_updated','review.pull_scheduling_updated'))`).Scan(&used); err != nil {
+			return err
+		}
+		if used {
+			return invalid()
+		}
+	}
+	if versions["review_scheduling"] > 0 {
+		if err = reviewexec.ValidateSchedulingSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["review_fronts"] > 0 {
+		if err = reviewexec.ValidateFrontSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	if versions["review_selection"] > 0 {
 		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1255,6 +1300,10 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_scheduling":             {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_pull_scheduling":        {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_automatic_selections":   {canonicalFK("review_selections", "selection_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_front_frames":           {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_operation_waits":        {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "baseline_attempt_id", "id", "NO ACTION")},
 	"review_selections":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_hosted_discovery_state": {canonicalFK("projects", "project_id", "id", "CASCADE")},
@@ -1630,6 +1679,23 @@ func validateExternalHostedEvidenceIndexes(ctx context.Context, db sqlReader, ve
 		return invalid()
 	}
 	return nil
+}
+
+func validateSchedulingPhysicalSchema(ctx context.Context, db sqlReader, version int) error {
+	expected := map[string]physicalSchemaObject{}
+	statements := reviewexec.SchedulingSchemaSQL()
+	if version >= 2 {
+		statements = reviewexec.SchedulingSchemaV2SQL()
+	}
+	for _, statement := range statements {
+		fields := strings.Fields(statement)
+		if len(fields) < 4 || fields[0] != "CREATE" || fields[1] != "TABLE" && fields[1] != "INDEX" {
+			return invalid()
+		}
+		name, _, _ := strings.Cut(fields[2], "(")
+		expected[name] = physicalSchemaObject{strings.ToLower(fields[1]), historyDefinitionSQL(statement)}
+	}
+	return validatePhysicalSchemaObjects(ctx, db, expected, []string{"review_scheduling", "review_pull_scheduling", "review_automatic_selections"})
 }
 
 func validateAdministrationContent(ctx context.Context, db sqlReader, versions map[string]int) error {

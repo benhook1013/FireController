@@ -96,8 +96,8 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				if stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
 				}
-				if stages && (waitVersion == "1" || waitVersion == "2" || waitVersion == "3") {
-					progress.Wait, err = readChannelWait(ctx, tx, scope.ProjectID, number, channel)
+				if stages && (waitVersion == "1" || waitVersion == "2" || waitVersion == "3" || waitVersion == "5") {
+					progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, waitVersion == "5")
 					if err != nil {
 						return err
 					}
@@ -116,7 +116,7 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 }
 
 // Project only a current queued intent, never infer a timer from a held run.
-func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*OperationWait, error) {
+func (e *Engine) readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int64, channel string, queuePriority bool) (*OperationWait, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, `SELECT o.id FROM review_operations o JOIN review_operation_waits w ON w.operation_id=o.id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='queued' AND o.attempt_id='' ORDER BY o.created_at,o.id LIMIT 1`, project, number, channel).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -129,5 +129,24 @@ func readChannelWait(ctx context.Context, tx *sql.Tx, project string, number int
 	if err != nil {
 		return nil, err
 	}
-	return currentOperationWait(o), nil
+	wait := currentOperationWait(o)
+	if !queuePriority || channel != "hosted" || wait == nil || wait.Paused {
+		return wait, nil
+	}
+	// Reuse actual accepted-intent admission priority, not the first PR with
+	// remaining rounds. The latter may be skipped legitimately by lookahead.
+	// These are bounded local reads in this same authorized snapshot; no source
+	// refresh or provider request is performed. An unavailable hint leaves the
+	// original retained timer intact rather than fabricating a queue blocker.
+	configuration, revision, err := readConfiguration(ctx, tx, project)
+	if err != nil {
+		return wait, nil
+	}
+	earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, configuration, revision)
+	if err == nil && earlier != nil {
+		copy := *wait
+		copy.QueueAheadPullNumber = earlier.PullNumber
+		wait = &copy
+	}
+	return wait, nil
 }

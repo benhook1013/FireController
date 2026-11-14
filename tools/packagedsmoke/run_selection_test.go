@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -335,8 +336,15 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	daemon.stop(t)
 	firstObserver.awaitCancelled(t, ctx)
 	beforeRestart := readUpgradeState(t, ctx, data)
+	assertRunSelectionFrontFrame(t, ctx, data, project)
+	if initial.counts["review_front_frames"] != 0 || beforeRestart.counts["review_front_frames"] != 1 {
+		t.Fatal("selection did not retain exactly its one channel source frame")
+	}
 	seedRunSelectionConfiguration(t, ctx, data, catalogPath, project, worker, strings.TrimSpace(string(admin)), 1, []int64{3, 2}, false)
 	afterConfig := readUpgradeState(t, ctx, data)
+	if afterConfig.tables["review_front_frames"] != beforeRestart.tables["review_front_frames"] {
+		t.Fatal("configuration changed retained source frame")
+	}
 	secondObserver := provider.holdNextObserver(t)
 	restarted := startSelectionDaemon(t, ctx, binaries["fcd"], data, env, "--review-catalog", catalogPath)
 	secondObserver.awaitStarted(t, ctx)
@@ -366,7 +374,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	if !reflect.DeepEqual(final, afterConfig) {
 		t.Fatal("restart/recovery/read altered retained tables")
 	}
-	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "events": true, "receipts": true, "sqlite_sequence": true}
+	changed := map[string]bool{"review_selections": true, "review_operations": true, "review_execution_attempts": true, "review_execution_transitions": true, "review_execution_reservations": true, "review_round_operation_bindings": true, "review_front_frames": true, "events": true, "receipts": true, "sqlite_sequence": true}
 	for _, name := range []string{"review_snapshots", "review_workspace", "review_current_pulls", "review_pull_versions", "review_pull_memberships", "review_current_attempts", "review_attempt_versions", "review_attempt_memberships", "review_current_totals", "review_current_attempt_order"} {
 		changed[name] = true
 	}
@@ -397,6 +405,46 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 		t.Fatal("fixture observed unexpected method/route/origin")
 	}
 	t.Logf("packaged one-call selection passed: total=%s enqueue=%s cli_calls=%d mcp_calls=%d application_http=%d loopback_github_gets=%d selection_source_gets=%d lookahead_gets=%d held_observer_gets=4 git_stub_calls=1 cli_review_calls=0 native_operations=1 owned_processes=0", time.Since(started).Round(time.Millisecond), enqueueDuration.Round(time.Millisecond), calls, mcpCalls, appHTTP.Load(), 11+lookaheadGETs, 7+lookaheadGETs, lookaheadGETs)
+}
+
+// Explicit selection retains only its bounded acquired prefix for provider-free
+// front evaluation. The last selection expected PR2, so it must replace the
+// previous full frame with PR2 alone, never invent PR3 or claim a complete scan.
+func assertRunSelectionFrontFrame(t *testing.T, ctx context.Context, data, project string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, stepTimeout)
+	defer cancel()
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(data, "firecontroller.sqlite")), RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal("selection source frame snapshot unavailable")
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err = reviewexec.ValidateFrontSnapshot(ctx, db); err != nil {
+		t.Fatal("selection retained an invalid source frame")
+	}
+	var retainedProject, channel, checked, observed, reason, body string
+	var repository, configuration, complete int64
+	if err = db.QueryRowContext(ctx, `SELECT project_id,channel,repository_id,configuration_revision,checked_at,source_observed_at,complete,source_reason,prefix_json FROM review_front_frames`).Scan(&retainedProject, &channel, &repository, &configuration, &checked, &observed, &complete, &reason, &body); err != nil {
+		t.Fatal("selection source frame unreadable")
+	}
+	if retainedProject != project || channel != "cli" || repository != 991 || configuration != 1 || complete != 0 || reason != "" {
+		t.Fatal("selection source frame changed scope or completeness")
+	}
+	checkedAt, checkedErr := time.Parse(time.RFC3339Nano, checked)
+	observedAt, observedErr := time.Parse(time.RFC3339Nano, observed)
+	if checkedErr != nil || observedErr != nil || checkedAt.Before(observedAt) {
+		t.Fatal("selection source frame has invalid source timing")
+	}
+	var prefix []map[string]any
+	if err = json.Unmarshal([]byte(body), &prefix); err != nil {
+		t.Fatal("selection source frame prefix invalid")
+	}
+	want := []map[string]any{{"number": float64(2), "visible_at_acquisition": true, "state": "open", "merged": false, "head_sha": strings.Repeat("a", 40), "base_sha": strings.Repeat("b", 40), "base_ref": "main", "parent_pull_number": float64(0), "parent_sha": strings.Repeat("b", 40), "observed_at": observed}}
+	if !reflect.DeepEqual(prefix, want) {
+		t.Fatal("selection source frame differs from its bounded acquired prefix")
+	}
 }
 
 func runSelectionShellQuote(value string) string {
