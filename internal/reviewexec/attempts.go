@@ -481,7 +481,11 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
 		}
-		if e.publishQueue != nil && operationState == state {
+		partialNotice, err := e.publishPartialFindingsNotice(ctx, tx, o, a.Provider, state)
+		if err != nil {
+			return err
+		}
+		if e.publishQueue != nil && operationState == state && !partialNotice {
 			if err = publishStoppedOperationNotice(ctx, tx, o, state, reason, false); err != nil {
 				return err
 			}

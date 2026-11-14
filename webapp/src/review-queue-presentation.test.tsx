@@ -28,6 +28,19 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main', queued_priority: {pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'} }] });
 
 describe('truthful stored review presentation', () => {
+  it('shows actual branch targets for stack heads and preserves explicit parent PR links', () => {
+    for (const branch of ['develop', 'main', 'release/next']) {
+      const html = markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: branch }} />);
+      expect(html).toContain(`Based on ${branch}`);
+      expect(html).toContain(`href="https://github.com/example/project/tree/${encodeURIComponent(branch)}"`);
+    }
+    const stacked = markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: 'feature/parent', parent_pull_number: 1 }} />);
+    expect(stacked).toContain('Based on #1');
+    expect(stacked).toContain('href="https://github.com/example/project/pull/1"');
+    expect(stacked).not.toContain('Based on feature/parent');
+    expect(markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: '' }} />)).not.toContain('Based on');
+  });
+
   it('shows newest merged card immediately above the review head, leaving history order unchanged', () => {
     const items = [
       {...pull(88, 'merged'), merged_at: '2026-11-14T05:36:48Z'},
