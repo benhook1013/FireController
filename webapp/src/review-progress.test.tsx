@@ -3,7 +3,7 @@ import { refreshProjectMetadata } from './project-metadata';
 import { validMetadataPage } from './presentation';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ReviewOperationWaitBadge, operationWaitLabel, reviewWaitExpandedForKey, validOperationWait } from './review-operation-wait';
+import { ReviewOperationWaitBadge, operationWaitLabel, validOperationWait } from './review-operation-wait';
 import { ReviewProgressView } from './review-progress-view';
 import { validReviewProgress, validRoundProgress, type ReviewRoundProgress } from './review-progress';
 
@@ -34,7 +34,7 @@ describe('operation wait presentation', () => {
 
   it('makes a front Hosted cooldown deadline available on focus and touch', () => {
     const html = renderToStaticMarkup(<ReviewOperationWaitBadge wait={cooldown} />);
-    expect(html).toContain('role="button"');
+    expect(html).toContain('<button type="button"');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-controls=');
     expect(html).toContain('Cooldown ·');
@@ -51,14 +51,7 @@ describe('operation wait presentation', () => {
     expect(validOperationWait({ paused: false, retry_not_before: retry }, 'hosted')).toBe(false);
   });
 
-  it('keeps the wait details keyboard state on Enter, Space and Escape', () => {
-    for (const key of ['Enter', ' ']) {
-      expect(reviewWaitExpandedForKey(key, false)).toBe(true);
-      expect(reviewWaitExpandedForKey(key, true)).toBe(false);
-    }
-    expect(reviewWaitExpandedForKey('Escape', true)).toBe(false);
-    expect(reviewWaitExpandedForKey('ArrowDown', false)).toBeUndefined();
-  });
+
 });
 
 describe('current progress decoder and presentation', () => {
