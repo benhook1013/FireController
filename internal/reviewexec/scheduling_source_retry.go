@@ -50,8 +50,20 @@ func (e *Engine) automaticSourceRetryCandidate(ctx context.Context, tx *sql.Tx, 
 	if !validChannel(channel) {
 		return nil, schedulingUnavailable()
 	}
+	current, err := readScheduling(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	hostedBasis, cliBasis, err := schedulingBasisRevisions(ctx, tx, current)
+	if err != nil {
+		return nil, err
+	}
+	channelBasis := hostedBasis
+	if channel == "cli" {
+		channelBasis = cliBasis
+	}
 	var id string
-	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel=? AND s.state='held' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision=? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, channel, schedulingRevision, basis, basis).Scan(&id)
+	err = tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel=? AND s.state='held' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision BETWEEN ? AND ? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, channel, channelBasis, current.Revision, basis, basis).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -85,7 +97,7 @@ func (e *Engine) automaticSourceRetryCandidate(ctx context.Context, tx *sql.Tx, 
 
 // Recheck recovery fences during every admission snapshot, including after
 // source I/O. Interrupted initial reads retain ordinary authorization continuity.
-// Completed source holds require the exact accepted scheduling revision even
+// Completed source holds require the accepted channel basis to remain unchanged even
 // after further interrupted reads; incomplete transition evidence is conservative.
 func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (string, error) {
 	if !validChannel(r.Channel) || r.Revision < 4 {
@@ -105,7 +117,21 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 			return "", err
 		}
 		if !initial {
-			return "automation_authorization_changed", nil
+			settings, err := readScheduling(ctx, tx, r.ProjectID)
+			if err != nil {
+				return "", err
+			}
+			hostedBasis, cliBasis, err := schedulingBasisRevisions(ctx, tx, settings)
+			if err != nil {
+				return "", err
+			}
+			channelBasis := hostedBasis
+			if r.Channel == "cli" {
+				channelBasis = cliBasis
+			}
+			if accepted < channelBasis || accepted > current {
+				return "automation_authorization_changed", nil
+			}
 		}
 	}
 	superseded, err := automaticSourceSuperseded(ctx, tx, r)
@@ -120,8 +146,8 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 
 // A revision alone cannot distinguish restart recovery from a completed hold.
 // Prove every retained transition was an unfinished read before relaxing the
-// exact-revision fence. A held event (whatever its reason), missing/duplicate
-// revision or malformed payload keeps that fence. Aggregate in SQL rather than
+// initial-read exception. A held event (whatever its reason), missing/duplicate
+// revision or malformed payload requires the channel-basis fence. Aggregate in SQL rather than
 // copying an unbounded event history into each admission snapshot.
 func automaticSourceInitialRead(ctx context.Context, tx *sql.Tx, r Run) (bool, error) {
 	var count, distinct, first, last, invalid int64
