@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -61,7 +62,12 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	if !e.running.CompareAndSwap(false, true) {
 		return nil, conflict()
 	}
-	if err := e.RecoverInterrupted(ctx); err != nil {
+	skipped, err := e.reconcilePreparingDrivers(ctx, owned)
+	if err != nil {
+		e.running.Store(false)
+		return nil, err
+	}
+	if err := e.recoverInterrupted(ctx, skipped); err != nil {
 		e.running.Store(false)
 		return nil, err
 	}
@@ -118,6 +124,12 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 }
 
 func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
+	return e.pendingForWorker(ctx, false)
+}
+
+type pendingScanPosition struct{ createdAt, id string }
+
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Snapshot candidates and reservations together, without entering writer
@@ -127,50 +139,208 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
+	now := e.sampleExecutionTime()
 	args := make([]any, 0, 4*len(e.capabilities))
 	for _, capability := range e.capabilities {
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint)
 	}
+	args = append(args, now.UTC().Format(time.RFC3339Nano))
+
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint) AS (VALUES (NULL,NULL,NULL,NULL)` + strings.Repeat(`,(?,?,?,?)`, len(e.capabilities)) + `)
-	SELECT o.project_id,o.id FROM review_operations o
+	SELECT o.project_id,o.id,o.channel,o.capability_fingerprint,o.created_at FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel)
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
-	ORDER BY o.created_at,o.id LIMIT 256`
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
+	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
+	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)`
+	type configurationSnapshot struct {
+		configuration Configuration
+		revision      int64
 	}
-	type id struct{ project, operation string }
-	var ids []id
-	for rows.Next() {
-		var i id
-		if err = rows.Scan(&i.project, &i.operation); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		ids = append(ids, i)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Operation, 0, len(ids))
-	for _, i := range ids {
-		o, err := readOperation(ctx, tx, i.project, i.operation)
+	configurations := map[string]configurationSnapshot{}
+	type accountKey struct{ provider, account string }
+	cliRetryDeadlines := map[accountKey]time.Time{}
+	cliUnavailable := map[accountKey]bool{}
+	emptyPredecessors := map[queuePriorityKey]bool{}
+	readCandidate := func(project, operation string) (Operation, error) {
+		o, err := readOperation(ctx, tx, project, operation)
 		if err != nil {
+			if e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
+		if o.State != "queued" || o.Wait != nil && o.Wait.BaselineAttemptID != "" {
+			return Operation{}, nil
+		}
+		configuration, ok := configurations[o.ProjectID]
+		if !ok {
+			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
+			if err != nil {
+				if e.skipUnavailableConfiguration(ctx, o, err) {
+					return Operation{}, nil
+				}
+				return Operation{}, err
+			}
+			configuration = configurationSnapshot{c, revision}
+			configurations[o.ProjectID] = configuration
+		}
+		c, revision := configuration.configuration, configuration.revision
+		// Filter damaged retained history before returning this candidate. Otherwise
+		// a partial scan can rewind to an intent that final admission always skips.
+		// Ordinary incompatibility still reaches StartAttempt's hold handling.
+		if _, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision); err != nil {
+			if e.skipUnavailableConfiguration(ctx, o, err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
+		if o.Channel == "cli" {
+			if capability, ok := e.capabilities[c.CapabilityID]; ok && capability.Fingerprint == o.CapabilityFingerprint {
+				key := accountKey{capability.Provider, capability.Account}
+				if cliUnavailable[key] {
+					return Operation{}, nil
+				}
+				due, cached := cliRetryDeadlines[key]
+				if !cached {
+					due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
+					if err != nil {
+						if e.skipUnavailableWait(ctx, o, err) {
+							cliUnavailable[key] = true
+							return Operation{}, nil
+						}
+						return Operation{}, err
+					}
+					cliRetryDeadlines[key] = due
+				}
+				if now.Before(due) {
+					return Operation{}, nil
+				}
+			}
+		}
+		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
+		if err != nil {
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
+		if earlier != nil {
+			return Operation{}, nil
+		}
+		return o, nil
+	}
+	// Draft probes use their own window so a full ordinary queue cannot
+	// conceal a ready Draft, and Drafts cannot fill the dispatch window.
+	var out []Operation
+
+	worker := 0
+	if probeDrafts {
+		worker = 1
+	}
+	e.pendingScanMu.Lock()
+	cursor := e.pendingScanCursor[worker]
+	e.pendingScanMu.Unlock()
+	advance := func(position pendingScanPosition) {
+		e.pendingScanMu.Lock()
+		e.pendingScanCursor[worker] = position
+		e.pendingScanMu.Unlock()
+	}
+	// Read raw ordered candidates first: SQL-side eligibility filters must not
+	// consume the entire snapshot before we can advance the scan cursor.
+	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id,o.channel,o.capability_fingerprint,o.created_at,o.reason FROM review_operations o WHERE o.state='queued' AND (o.created_at,o.id)>(?,?) ORDER BY o.created_at,o.id`, cursor.createdAt, cursor.id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// Apply the dispatch bound after filtering known waits and unavailable
+	// accounts. The read transaction supplies the overall scan deadline.
+	limit := len(out) + 256
+	position := cursor
+	var firstReturned *pendingScanPosition
+	resumeReturned := func() {
+		if firstReturned != nil {
+			advance(*firstReturned)
+		}
+	}
+	for len(out) < limit && rows.Next() {
+		var project, operation, channel, fingerprint, createdAt, reason string
+		if err := rows.Scan(&project, &operation, &channel, &fingerprint, &createdAt, &reason); err != nil {
+			advance(cursor)
 			return nil, err
 		}
-		if o.State == "queued" {
+		before := position
+		position = pendingScanPosition{createdAt, operation}
+		advance(position)
+		if channel == "cli" && reason == cliDraftWait {
+			continue
+		}
+		var eligible string
+		filterArgs := append(append([]any(nil), args...), operation)
+		filterErr := tx.QueryRowContext(ctx, `SELECT id FROM (`+query+` AND o.id=?)`, filterArgs...).Scan(&eligible)
+		if errors.Is(filterErr, sql.ErrNoRows) {
+			continue
+		}
+		if filterErr != nil {
+			if !errors.Is(filterErr, context.DeadlineExceeded) {
+				advance(cursor)
+			}
+			if len(out) != 0 && errors.Is(filterErr, context.DeadlineExceeded) {
+				resumeReturned()
+				return out, nil
+			}
+			return nil, filterErr
+		}
+		if channel == "cli" {
+			if cfg, ok := configurations[project]; ok {
+				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
+					key := accountKey{capability.Provider, capability.Account}
+					if cliUnavailable[key] || now.Before(cliRetryDeadlines[key]) {
+						continue
+					}
+				}
+			}
+		}
+		o, err := readCandidate(project, operation)
+		if err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				advance(cursor) // Never rotate past an operational storage failure.
+			}
+			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+				resumeReturned()
+				return out, nil
+			}
+			return nil, err
+		}
+		if o.ID != "" {
+			if firstReturned == nil {
+				firstReturned = &before
+			}
 			out = append(out, o)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			advance(cursor)
+		}
+		if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
+			resumeReturned()
+			return out, nil
+		}
+		return nil, err
+	}
+	if len(out) < limit {
+		advance(pendingScanPosition{})
+	} else {
+		// Selection processes at most one returned candidate. Do not rotate past
+		// the unprocessed remainder merely because the scan filled its batch.
+		resumeReturned()
+	} // End of snapshot: wrap to oldest next pass.
 	return out, nil
 }
 
@@ -192,10 +362,97 @@ func preparationReason(err error) string {
 	return "preparation_failed"
 }
 
+// A malformed retained configuration affects this candidate's authority, not
+// the database or other projects. Preserve the request and its queue turn. The
+// bounded process-local throttle limits diagnostics, never admission or retries.
+func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, err error) bool {
+	if !isStoredUnavailable(err, storedConfigurationHistory) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	if e.configurationFailureNext[o.ID].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[o.ID] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate configuration history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "configuration_history_unavailable")
+	return true
+}
+
+// Invalid retained identity flags refuse only their operation. Storage and
+// context errors must still fail the scan rather than masquerade as corruption.
+func (e *Engine) skipUnavailableOperation(ctx context.Context, o Operation, err error) bool {
+	if !isStoredUnavailable(err, storedOperationIdentity) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	key := "operation:" + o.ID
+	if e.configurationFailureNext[key].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[key] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate operation identity unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "reason", "operation_identity_unavailable")
+	return true
+}
+
+// Typed wait validation failures refuse only this candidate and its guarded scope. Real
+// database and context failures retain their normal supervisor behavior.
+func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error) bool {
+	if !validChannel(o.Channel) || !isWaitUnavailable(err) {
+		return false
+	}
+	now := e.sampleExecutionTime()
+	e.configurationFailureMu.Lock()
+	defer e.configurationFailureMu.Unlock()
+	key := o.Channel + "-wait:" + o.ID
+	if e.configurationFailureNext[key].After(now) {
+		return true
+	}
+	for id, next := range e.configurationFailureNext {
+		if !next.After(now) {
+			delete(e.configurationFailureNext, id)
+		}
+	}
+	if len(e.configurationFailureNext) >= 256 {
+		return true
+	}
+	if e.configurationFailureNext == nil {
+		e.configurationFailureNext = make(map[string]time.Time)
+	}
+	e.configurationFailureNext[key] = now.Add(30 * time.Second)
+	slog.WarnContext(ctx, "Review candidate wait history unavailable", "project_id", o.ProjectID, "operation_id", o.ID, "channel", o.Channel, "reason", o.Channel+"_wait_history_unavailable")
+	return true
+}
+
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
 	operations, err := e.pending(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
 		return persistenceFailure()
@@ -204,10 +461,13 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if ctx.Err() != nil {
 			return nil
 		}
-		a, err := e.StartAttempt(ctx, o.ProjectID, o.ID)
+		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, 0, o.Revision)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				continue
 			}
 			var failure *core.Error
 			if errors.As(err, &failure) {

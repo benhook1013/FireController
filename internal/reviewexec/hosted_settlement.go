@@ -184,6 +184,9 @@ func (e *Engine) settleHostedHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := e.transitionRow(ctx, tx, a, reason, at); err != nil {
 			return nil, err
 		}
+		if err := core.AppendEvent(ctx, tx, scope, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+			return nil, err
+		}
 		if err := core.AppendEvent(ctx, tx, scope, "review.hosted_settled", a.ID, a.Revision, audit); err != nil {
 			return nil, err
 		}

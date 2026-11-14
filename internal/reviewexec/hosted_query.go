@@ -32,7 +32,7 @@ type HostedAllowanceQuery struct {
 }
 
 func hostedQueryUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored hosted allowance query is unavailable.", 500)
+	return newStoredUnavailable(storedHostedQuery, "Stored hosted allowance query is unavailable.")
 }
 func hostedQueryIntent(a Attempt, o Operation) (reviewprovider.HostedTriggerIntent, string, error) {
 	intent := reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA}
@@ -55,17 +55,29 @@ func validHostedQueryComment(query HostedAllowanceQuery, comment reviewprovider.
 // readHostedQuery validates indexed facts against canonical owned JSON and the
 // original operation. Later review admission may have a separately refreshed
 // anchor; it cannot rewrite this earlier query's source observation.
-func readHostedQuery(ctx context.Context, tx *sql.Tx, a Attempt, o Operation) (HostedAllowanceQuery, error) {
+func readHostedQuery(ctx context.Context, tx EvidenceQuery, a Attempt, o Operation) (HostedAllowanceQuery, error) {
+	if o.AttemptID != a.ID {
+		var err error
+		o, err = historicalCooldownOperation(ctx, tx, o, a)
+		if err != nil {
+			return HostedAllowanceQuery{}, err
+		}
+	}
 	var record HostedAllowanceQuery
-	var id, project, attempt, operation, fingerprint, body string
+	var storedID sql.NullString
+	var project, attempt, operation, fingerprint, body string
 	var revision int64
-	err := tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,capability_fingerprint,revision,body_json FROM review_hosted_allowance_queries WHERE attempt_id=?`, a.ID).Scan(&id, &project, &attempt, &operation, &fingerprint, &revision, &body)
+	err := tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,capability_fingerprint,revision,body_json FROM review_hosted_allowance_queries WHERE attempt_id=?`, a.ID).Scan(&storedID, &project, &attempt, &operation, &fingerprint, &revision, &body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, core.Fail("not_found", "The hosted allowance query is unavailable in this project.", 404)
 	}
 	if err != nil {
 		return record, err
 	}
+	if !storedID.Valid {
+		return HostedAllowanceQuery{}, hostedQueryUnavailable()
+	}
+	id := storedID.String
 	if len(body) > hostedQueryLimit || strictjson.Validate([]byte(body)) != nil || json.Unmarshal([]byte(body), &record) != nil || encoded(record) != body {
 		return HostedAllowanceQuery{}, hostedQueryUnavailable()
 	}

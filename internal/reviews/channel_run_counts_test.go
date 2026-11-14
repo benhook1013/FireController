@@ -122,41 +122,49 @@ func TestChannelRunCountsCorruptionAndPublicationRollback(t *testing.T) {
 }
 
 func TestChannelRunCountsSchemaEightMigrationAndRestart(t *testing.T) {
-	f, snapshots, _, _ := historyMigrationLegacyFixture(t)
-	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL())
-	if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", migrations, backfillCurrentReviewIndexes); err != nil {
-		t.Fatal(err)
-	}
-	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
-		t.Fatal("genuine populated v8 required", version, err)
-	}
-	// A schema-only upgrade reuses valid caches. Damage a derived total so this
-	// fixture exercises backfill failure and rollback rather than a valid no-op.
-	if _, err := f.store.DB().Exec(`UPDATE review_current_totals SET run_count=run_count+1; CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	before := historyMigrationDatabaseDigest(t, f)
-	if err := EnsureSchema(t.Context(), f.store); err == nil || before != historyMigrationDatabaseDigest(t, f) {
-		t.Fatal("failed upgrade did not roll back metadata, DDL, cache and history", err)
-	}
-	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_counts_backfill`); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	var p PullResponse
-	nativeRead(t, f, "/pulls/7?snapshot="+snapshots[0], &p)
-	if !p.Pull.RunCounts.Valid(p.Pull.RunCount) || p.Pull.RunCounts.CLI != p.Pull.RunCount {
-		t.Fatal("v8 historical facts lost", p)
-	}
-	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
-	}
-	before = historyMigrationDatabaseDigest(t, f)
-	if err := EnsureSchema(t.Context(), f.store); err != nil || before != historyMigrationDatabaseDigest(t, f) {
-		t.Fatal("current startup repeated backfill", err)
+	// Preserve both rollback boundaries: the bridge forces a real cache rebuild,
+	// while this successor also checks the channel-count migration UPDATE.
+	for _, scenario := range []struct{ name, failureSQL string }{
+		{"cache rebuild", `UPDATE review_current_totals SET run_count=run_count+1; CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`},
+		{"channel-count migration", `CREATE TRIGGER reject_counts_backfill BEFORE UPDATE ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+
+			f, snapshots, _, _ := historyMigrationLegacyFixture(t)
+			migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL())
+			if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", migrations, backfillCurrentReviewIndexes); err != nil {
+				t.Fatal(err)
+			}
+			var version string
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
+				t.Fatal("genuine populated v8 required", version, err)
+			}
+			if _, err := f.store.DB().Exec(scenario.failureSQL); err != nil {
+				t.Fatal(err)
+			}
+			before := historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err == nil || before != historyMigrationDatabaseDigest(t, f) {
+				t.Fatal("failed upgrade did not roll back metadata, DDL, cache and history", err)
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER reject_counts_backfill`); err != nil {
+				t.Fatal(err)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			var p PullResponse
+			nativeRead(t, f, "/pulls/7?snapshot="+snapshots[0], &p)
+			if !p.Pull.RunCounts.Valid(p.Pull.RunCount) || p.Pull.RunCounts.CLI != p.Pull.RunCount {
+				t.Fatal("v8 historical facts lost", p)
+			}
+			if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+				t.Fatal(err)
+			}
+			before = historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err != nil || before != historyMigrationDatabaseDigest(t, f) {
+				t.Fatal("current startup repeated backfill", err)
+			}
+		})
 	}
 }
 

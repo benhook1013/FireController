@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -72,14 +73,27 @@ func attemptRecordingStamp(ctx context.Context, tx *sql.Tx, o Operation, a *Atte
 // StartAttempt reserves both the external target and the provider account.
 // It does no provider work; preparing has not authorized an external action.
 func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt, error) {
+	return e.startAttempt(ctx, project, id, 0, 0)
+}
+
+func (e *Engine) startAttempt(ctx context.Context, project, id string, draftReadyRevision int64, expectedRevision int64) (Attempt, error) {
 	var result Attempt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		o, err := readOperation(ctx, tx, project, id)
 		if err != nil {
 			return err
 		}
-		if o.State != "queued" {
+		if o.State != "queued" || expectedRevision > 0 && o.Revision != expectedRevision {
 			return conflict()
+		}
+		if err := rejectMissingRetryWait(ctx, tx, o); err != nil {
+			return err
+		}
+		now := e.sampleExecutionTime()
+		// A retained quota timer is scheduling state, not permission to create
+		// another provider attempt before its recorded retry floor.
+		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
+			return nil
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
@@ -89,7 +103,14 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if err != nil {
 			return err
 		}
-		if c.Paused || revision != o.ConfigurationRevision {
+		if c.Paused {
+			return nil
+		}
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision)
+		if err != nil {
+			return err
+		}
+		if !compatible {
 			return holdOperation(ctx, tx, o, "configuration_changed", at)
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
@@ -98,6 +119,15 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		}
 		if o.CapabilityFingerprint != capability.Fingerprint {
 			return holdOperation(ctx, tx, o, "capability_changed", at)
+		}
+		if o.Channel == "cli" {
+			due, err := cliAccountRetryDeadline(ctx, tx, capability, now)
+			if err != nil {
+				return err
+			}
+			if now.Before(due) {
+				return nil
+			}
 		}
 		allowed, err := actorAllowed(ctx, tx, project, o.ActorID, o.WorkerID)
 		if err != nil {
@@ -121,16 +151,24 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 			return err
 		}
 		var repositoryID int64
+		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
+			return err
+		} else if earlier != nil {
+			return nil
+		}
+		if o.Reason == cliDraftWait && o.Revision != draftReadyRevision {
+			return nil
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
 		if e.publishAttempt != nil {
-			if err := probeAttemptProjection(ctx, tx, o); err != nil {
+			if err := validateAttemptProjection(ctx, tx, o); err != nil {
 				return err
 			}
 		}
 		var busy int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND (account=? OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, o.PullNumber).Scan(&busy); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND (action_class='cli' OR repository_id=?)) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
 			return err
 		}
 		if busy != 0 {
@@ -144,10 +182,13 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_execution_reservations(provider,repository_id,pull_number,action_class,account,attempt_id) VALUES(?,?,?,?,?,?)`, result.Provider, repositoryID, o.PullNumber, o.Channel, result.Account, result.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='preparing',reason='',attempt_id=?,revision=revision+1,updated_at=? WHERE id=?`, result.ID, at, o.ID); err != nil {
 			return err
 		}
-		return e.transitionRow(ctx, tx, result, "preparing", at)
+		if err = e.transitionRow(ctx, tx, result, "preparing", at); err != nil {
+			return err
+		}
+		return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 	})
 	if err == nil {
 		e.notifyOperation(id)
@@ -157,7 +198,10 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 
 func holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='held',reason=?,revision=revision+1,updated_at=? WHERE id=?`, reason, at, o.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{})
 }
 
 func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Attempt, error) {
@@ -168,7 +212,7 @@ func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Att
 		return a, core.Fail("not_found", "The review attempt is unavailable in this project.", 404)
 	}
 	if err == nil && json.Unmarshal([]byte(anchor), &a.Anchor) != nil {
-		return a, core.Fail("storage_unavailable", "Stored review admission is unavailable.", 500)
+		return a, newStoredUnavailable(storedReviewAdmission, "Stored review admission is unavailable.")
 	}
 	return a, err
 }
@@ -214,7 +258,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if err != nil {
 			return err
 		}
-		if !allowed || c.Paused || revision != o.ConfigurationRevision {
+		compatible, err := compatibleQueuedConfiguration(ctx, tx, o, c, revision, anchor.ParentPullNumber)
+		if err != nil {
+			return err
+		}
+		if !allowed || !compatible {
 			return conflict()
 		}
 		capability, ok := e.capabilities[c.CapabilityID]
@@ -255,6 +303,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 			return err
 		}
 		if err = e.transitionRow(ctx, tx, a, "admitted", at); err != nil {
+			return err
+		}
+		if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
 			return err
 		}
 		result = a
@@ -323,7 +374,11 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,external_id=? WHERE id=?`, state, a.Revision, a.ExternalID, a.ID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, a.OperationID); err != nil {
+		operationState, operationAttempt := state, o.AttemptID
+		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+			operationState, operationAttempt = "queued", ""
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
 			return err
 		}
 		if state != "posting" && state != "active" && state != "uncertain" {
@@ -332,6 +387,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 			}
 		}
 		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
+			return err
+		}
+		if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
 			return err
 		}
 		if state == "completed" {
@@ -365,10 +423,36 @@ func allowedTransition(from, to string) bool {
 	return false
 }
 
+// Optional allowance evidence can preserve a proven unused wait, but corrupt
+// evidence must not prevent safe cancellation of undispatched preparation.
+// Actual database and context failures still abort the recovery transaction.
+func interruptedAllowanceUnavailable(err error) bool {
+	if errors.Is(err, sql.ErrNoRows) || storedAllowanceUnavailable(err) {
+		return true
+	}
+	return isStoredUnavailable(err, storedHostedObservation)
+}
+
 // RecoverInterrupted runs once before a new supervisor accepts work. It never
 // restarts a possibly dispatched action. Hosted recovery uses its retained
 // marker; interrupted CLI work remains uncertain until evidence settles it.
 func (e *Engine) RecoverInterrupted(ctx context.Context) error {
+	// The daemon also reaches this entry point when no drivers are configured.
+	// Preserve replayable Hosted preparation just as the supervisor startup does.
+	skipped, err := e.reconcilePreparingDrivers(ctx, nil)
+	if err != nil {
+		return core.NormalizeStorageError(err)
+	}
+	return e.recoverInterrupted(ctx, skipped)
+}
+
+// Startup exclusions preserve only preparations whose original replay driver is
+// absent. They do not release reservations or authorize replacement work.
+func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool) error {
+	return e.recoverInterruptedSelected(ctx, skipped, nil)
+}
+
+func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, selected map[string]bool) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_execution_attempts WHERE state IN ('preparing','posting','active') ORDER BY id`)
@@ -395,13 +479,59 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		}
 		now := e.sampleAttemptTime()
 		for _, x := range ids {
+			if skipped[x.id] || selected != nil && !selected[x.id] {
+				continue
+			}
 			a, err := readAttempt(ctx, tx, x.project, x.id)
 			if err != nil {
+				if isStoredUnavailable(err, storedReviewAdmission) {
+					slog.WarnContext(ctx, "Interrupted attempt authority unavailable", "attempt_id", x.id, "project_id", x.project)
+					continue
+				}
 				return err
+			}
+			if selected != nil && a.State != "preparing" {
+				continue
 			}
 			o, err := readOperation(ctx, tx, x.project, a.OperationID)
 			if err != nil {
+				// Corrupt authority stays reserved; it cannot prevent unrelated
+				// projects from recovering or authorize a replacement attempt.
+				if isStoredUnavailable(err, storedOperationIdentity) || isWaitUnavailable(err) {
+					slog.WarnContext(ctx, "Interrupted operation authority unavailable", "operation_id", a.OperationID, "attempt_id", a.ID)
+					continue
+				}
 				return err
+			}
+			if a.State == "preparing" && o.Channel == "hosted" {
+				record, readErr := readHostedAllowanceRecord(ctx, tx, o, a)
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
+					return readErr
+				}
+				if readErr == nil && record.Input.Observation.State == "cooldown_observed" && record.Input.Observation.RetryNotBefore.After(e.sampleExecutionTime()) {
+					_, scheduleErr := e.scheduleHostedCooldown(ctx, tx, x.project, x.id, a.Revision)
+					if scheduleErr == nil {
+						changed = append(changed, a.OperationID)
+						continue
+					}
+					var refusal *core.Error
+					if !errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed" {
+						return scheduleErr
+					}
+				}
+			}
+			if a.State == "preparing" && o.Channel == "cli" {
+				record, readErr := readCLIAllowanceRecord(ctx, tx, o, a)
+				if readErr != nil && !interruptedAllowanceUnavailable(readErr) {
+					return readErr
+				}
+				if readErr == nil && record.Observation.Remaining == 0 {
+					if _, err := e.scheduleCLICooldown(ctx, tx, x.project, x.id, a.Revision); err != nil {
+						return err
+					}
+					changed = append(changed, a.OperationID)
+					continue
+				}
 			}
 			at, err := attemptRecordingStamp(ctx, tx, o, &a, now)
 			if err != nil {
@@ -427,6 +557,9 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 			if err = e.transitionRow(ctx, tx, a, "supervisor_interrupted", at); err != nil {
 				return err
 			}
+			if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+				return err
+			}
 			changed = append(changed, a.OperationID)
 		}
 		return nil
@@ -437,4 +570,8 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+func (e *Engine) holdOperation(ctx context.Context, tx *sql.Tx, o Operation, reason, at string) error {
+	return holdOperation(ctx, tx, o, reason, at)
 }

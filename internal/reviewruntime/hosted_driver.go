@@ -77,10 +77,10 @@ func NewHostedDriver(store *core.Store, engine *reviewexec.Engine, capability Op
 	capability.Channels = slices.Clone(capability.Channels)
 	settings := *capability.Hosted
 	capability.Hosted = &settings
-	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitHosted, prepared: map[string]*hostedPrepared{}}, nil
+	return &HostedDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, provider: provider, fetch: manager.Fetch, verify: manager.Verify, wait: waitPreparation, prepared: map[string]*hostedPrepared{}}, nil
 }
 
-func waitHosted(ctx context.Context, duration time.Duration) error {
+func waitPreparation(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -198,7 +198,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			return preparation, err
 		}
 	}
-	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
+	if err := retryAllowanceRetention(ctx, d.wait, func() error {
+		return core.NormalizeStorageError(RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture))
+	}); err != nil {
 		return preparation, reviewHold("hosted_allowance_unproven")
 	}
 	if _, err := retainHostedBaseline(ctx, d.provider, d.captures, d.engine, attempt, anchor, actor, d.providerActor()); err != nil {

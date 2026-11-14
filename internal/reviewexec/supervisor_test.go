@@ -52,23 +52,54 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 		t.Fatal(err)
 	}
 	operations, err = f.e.pending(context.Background())
-	if err != nil || len(operations) != 256 {
+	// The scan may return a partial batch when its snapshot deadline expires,
+	// especially under the race detector. The contract is bounded eligible
+	// work after release, not filling the batch within a wall-clock budget.
+	if err != nil || len(operations) == 0 || len(operations) > 256 {
 		t.Fatalf("released reservation did not make bounded queued work eligible: %d %v", len(operations), err)
+	}
+	releasedWork := false
+	for _, o := range operations {
+		if o.State != "queued" || o.ID == busy.ID {
+			t.Fatalf("pending selected non-queued or cancelled work: %+v", o)
+		}
+		if o.ID == seed.ID || strings.HasPrefix(o.ID, "busy-") {
+			releasedWork = true
+		}
+	}
+	if !releasedWork {
+		t.Fatal("released reservation's queued work remained hidden")
 	}
 }
 
 func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 	f := supervisorFixture(t)
-	f.start(t, attemptProject, f.enqueue(t, attemptProject, "reserved", "cli", 2, 1))
-	f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
+
+	busy := f.enqueue(t, attemptProject, "reserved", "cli", 2, 1)
+	f.start(t, attemptProject, busy)
+	original := f.enqueue(t, attemptProject, "original-account", "cli", 4, 1)
 	f.configure(t, attemptProject, "other-account", 1, false)
-	f.enqueue(t, attemptProject, "reserved-target-other-account", "cli", 2, 2)
-	free := f.enqueue(t, attemptProject, "free-target-other-account", "cli", 4, 2)
+	// Public admission forbids a second intent for the same target. Seed legacy
+	// pending rows directly to exercise retained-account filtering independently.
+	schedulerQueuedCopy(t, f, busy.ID, "reserved-target-other-account")
+	schedulerQueuedCopy(t, f, original.ID, "free-target-other-account")
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET configuration_revision=2,capability_fingerprint=? WHERE id IN ('reserved-target-other-account','free-target-other-account')`, f.e.capabilities["other-account"].Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	free := Receipt{ID: "free-target-other-account"}
 	hosted := f.enqueue(t, attemptProject, "independent-channel", "hosted", 2, 2)
 	if _, err := f.store.DB().Exec(`UPDATE projects SET repository='renamed/repository' WHERE id=?`, attemptProject); err != nil {
 		t.Fatal(err)
 	}
 	operations, err := f.e.pending(context.Background())
+	// The retained earlier CLI intent also preserves project queue priority.
+	if err != nil || len(operations) != 1 || operations[0].ID != hosted.ID {
+		t.Fatalf("reserved target or earlier queue intent was bypassed: %v %v", operations, err)
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_operations SET state='held',reason='synthetic_release' WHERE id='reserved-target-other-account'`); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = f.e.pending(context.Background())
 	if err != nil || len(operations) != 2 {
 		t.Fatalf("retained account/target filtering failed: %d %v", len(operations), err)
 	}
@@ -84,7 +115,7 @@ func TestSupervisorPendingUsesRetainedAccountAndStableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, err = withoutCapabilities.pending(context.Background())
-	if err != nil || len(operations) != 4 {
+	if err != nil || len(operations) != 3 {
 		t.Fatalf("unavailable capabilities were silently hidden: %d %v", len(operations), err)
 	}
 }
@@ -105,12 +136,15 @@ func TestSupervisorBusyQueueDoesNotEnterWriterAndCoordinationStaysUsable(t *test
 	if _, err := f.e.Admit(context.Background(), attemptProject, busy.ID, busy.Revision, attemptAnchor(attemptProject, 2), ""); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 31 {
-		f.enqueue(t, attemptProject, fmt.Sprintf("busy-%02d", i), "cli", 4, 1)
+
+	seed := f.enqueue(t, attemptProject, "busy-seed", "cli", 4, 1)
+	for i := range 30 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("busy-%02d", i))
 	}
 	f.configure(t, otherAttemptProject, "test-capability", 0, false)
-	for i := range 8 {
-		f.enqueue(t, otherAttemptProject, fmt.Sprintf("other-project-busy-%02d", i), "cli", 2, 1)
+	other := f.enqueue(t, otherAttemptProject, "other-project-seed", "cli", 2, 1)
+	for i := range 7 {
+		schedulerQueuedCopy(t, f, other.ID, fmt.Sprintf("other-project-busy-%02d", i))
 	}
 	// Occupy the real writer admission slot. A read-only busy scan must finish
 	// without waiting for it; a failed StartAttempt would still wait here.
@@ -361,9 +395,15 @@ func TestSupervisorReceiptsAndCoordinationRemainFastDuringProviderWait(t *testin
 		t.Fatal("dispatch did not begin")
 	}
 	proveOrdinaryCoordination(t, f, "write-during-dispatch", receipt.ID)
-	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-dispatch", "cli", 4)
-	if supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
-		t.Fatal("new receipt waited for or bypassed occupied account during dispatch")
+	queuedDuringDispatch, _ := supervisorRequest(t, f, "new-during-preparation", "cli", 4)
+	if queuedDuringDispatch.ID != queuedDuringPrepare.ID || supervisorOperationState(t, f, queuedDuringDispatch.ID) != "queued" {
+		t.Fatal("original queued receipt was not replayed during dispatch")
+	}
+	started := time.Now()
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "duplicate-during-dispatch", Request{ExpectedConfigurationRevision: 1, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	attemptCode(t, err, "review_inflight")
+	if time.Since(started) > time.Second {
+		t.Fatal("duplicate refusal waited for provider dispatch")
 	}
 	_, replay = supervisorRequest(t, f, "fast-receipt", "cli", 2)
 	if !bytes.Equal(original, replay) || driver.calls.Load() != 1 {
@@ -1113,8 +1153,13 @@ func TestSupervisorRetainedConfigurationFailureRetainsPreparingAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT revision,state,reason FROM review_execution_transitions WHERE attempt_id=?`, attemptID).Scan(&transitionRevision, &transitionState, &transitionReason); err != nil || transitionRevision != 1 || transitionState != "preparing" || transitionReason != "preparing" {
 		t.Fatal("configuration read failure rewrote original transition", transitionRevision, transitionState, transitionReason, err)
 	}
-	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
-		t.Fatal("configuration failure dispatched, settled or added journal effects")
+	var eventType, eventSubject, eventProject string
+	var eventRevision int64
+	if err := f.store.DB().QueryRow(`SELECT event_type,resource_id,project_id,revision FROM events ORDER BY sequence DESC LIMIT 1`).Scan(&eventType, &eventSubject, &eventProject, &eventRevision); err != nil || eventType != "review.operation_updated" || eventSubject != receipt.ID || eventProject != attemptProject || eventRevision != 2 {
+		t.Fatal("preparing claim did not retain its exact operation event", eventType, eventSubject, eventProject, eventRevision, err)
+	}
+	if driver.prepares.Load() != 0 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts {
+		t.Fatal("configuration failure dispatched, settled or changed effects beyond the preparing event")
 	}
 }
 
@@ -1196,5 +1241,45 @@ func TestSupervisorAdmissionWriterOverloadRetainsPreparation(t *testing.T) {
 	attemptCode(t, err, "review_persistence_failed")
 	if ctx.Err() != nil || f.e.running.Load() || supervisorOperationState(t, f, receipt.ID) != "preparing" || driver.prepares.Load() != 1 || driver.calls.Load() != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_transitions`) != 1 {
 		t.Fatal("writer overload was hidden as changed admission facts or retried externally")
+	}
+}
+
+// schedulerQueuedCopy creates historical contention fixtures independently of
+// the public one-pending-intent-per-target admission boundary.
+func schedulerQueuedCopy(t *testing.T, f *attemptFixture, seed, id string) {
+	t.Helper()
+	if _, err := f.store.DB().Exec(`INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,'queued',1,'','',created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, id, seed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A bounded snapshot timeout is not a failed attempt write or a lost outcome.
+func TestFoundationBoundedPendingTimeoutDoesNotStopSupervisor(t *testing.T) {
+	f := supervisorFixture(t)
+	request := f.enqueue(t, attemptProject, "foundation-bounded-scan", "cli", 2, 1)
+	driver := &controlledDriver{}
+	drivers := map[string]Driver{"test-capability": driver}
+	f.store.DB().SetMaxOpenConns(1)
+	occupied, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := f.e.processNext(ctx, drivers); err != nil {
+		t.Fatal("bounded pending timeout became fatal", err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatal("test only exercised parent cancellation", err)
+	}
+	if err := occupied.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.processNext(ctx, drivers); err != nil {
+		t.Fatal("next scan could not recover", err)
+	}
+	if driver.calls.Load() != 1 || supervisorOperationState(t, f, request.ID) != "completed" {
+		t.Fatal("healthy request did not progress after bounded timeout", driver.calls.Load())
 	}
 }

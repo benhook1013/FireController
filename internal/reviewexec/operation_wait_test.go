@@ -101,7 +101,7 @@ func TestOperationWaitPreAttemptHoldAndRecovery(t *testing.T) {
 			if recovery {
 				f.start(t, attemptProject, r)
 			} else {
-				f.configure(t, attemptProject, "test-capability", 1, true)
+				f.configure(t, attemptProject, "other-account", 1, false)
 			}
 			done, _ := startOperationWait(t, f, operationReadScope(t, f), r.ID, 900)
 			operationWaitRegistered(t, f.e, 1)
@@ -246,7 +246,7 @@ func TestOperationHTTPWaitImmediateReplayAndHeaderAdmission(t *testing.T) {
 	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &receipt) != nil || receipt.State != "queued" || receipt.Revision != 1 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	f.configure(t, attemptProject, "test-capability", 1, true)
+	f.configure(t, attemptProject, "other-account", 1, false)
 	if _, err := f.e.StartAttempt(t.Context(), attemptProject, receipt.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestOperationHTTPDefaultWaitAndRetainedGETWake(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT id FROM review_operations`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	f.configure(t, attemptProject, "test-capability", 1, true)
+	f.configure(t, attemptProject, "other-account", 1, false)
 	if _, err := f.e.StartAttempt(t.Context(), attemptProject, id); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
-func probeAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
+func validateAttemptProjection(ctx context.Context, tx *sql.Tx, operation Operation) error {
 	_, err := currentReviewPull(ctx, tx, operation.ProjectID, operation.PullNumber)
 	if err != nil && !missingCurrentPull(err) {
 		return err
@@ -61,9 +61,56 @@ func (e *Engine) PublishAttempt(ctx context.Context, project, attemptID string, 
 }
 
 func publishJournalAttempt(ctx context.Context, tx *sql.Tx, attempt Attempt, metadata *reviews.PullInput, allowMissing bool) (reviews.Receipt, error) {
-	operation, err := readOperation(ctx, tx, attempt.ProjectID, attempt.OperationID)
+	// Publication needs journal ownership, not optional allowance presentation.
+	// Damaged allowance evidence must not roll back a safe local hold.
+	operation, err := readOperationBase(ctx, tx, attempt.ProjectID, attempt.OperationID)
 	if err != nil {
 		return reviews.Receipt{}, err
+	}
+	if operation.AttemptID != attempt.ID {
+		// History may retain an unused preparation that detached before dispatch.
+		original, draft, err := historicalCLIDraftOperation(ctx, tx, operation, attempt)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) || isWaitUnavailable(err) {
+				return reviews.Receipt{}, publicationConflict()
+			}
+			return reviews.Receipt{}, err
+		}
+		if !draft {
+			original, err = historicalCooldownOperation(ctx, tx, operation, attempt)
+			if err != nil {
+				// The helper returns this error only for a missing or mismatched
+				// historical cooldown. Its storage lookup failures pass through.
+				if isWaitUnavailable(err) {
+					return reviews.Receipt{}, publicationConflict()
+				}
+				return reviews.Receipt{}, err
+			}
+			if operation.Channel == "cli" {
+				record, err := readCLIAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Observation.Remaining != 0 {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			} else {
+				record, err := readHostedAllowanceRecord(ctx, tx, original, attempt)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return reviews.Receipt{}, publicationConflict()
+					}
+					return reviews.Receipt{}, err
+				}
+				if record.Input.Observation.State != "cooldown_observed" {
+					return reviews.Receipt{}, publicationConflict()
+				}
+			}
+		}
+		operation = original
 	}
 	if operation.AttemptID != attempt.ID || operation.State != attempt.State || !validChannel(operation.Channel) || !sha.MatchString(operation.HeadSHA) {
 		return reviews.Receipt{}, publicationConflict()
@@ -160,4 +207,53 @@ func attemptProjectionReplay(ctx context.Context, tx *sql.Tx, project string, nu
 	}
 	receipt.Outcome = "observed"
 	return receipt, true, nil
+}
+
+// Retained Draft attribution is readable before the dependent probe runtime.
+const cliDraftWait = "cli_draft_wait"
+
+// historicalCLIDraftOperation identifies an unused preparation detached when
+// GitHub returned the PR to Draft. It supplies attribution for history only.
+func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (Operation, bool, error) {
+	var reason string
+	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
+		return Operation{}, false, err
+	}
+	if reason != cliDraftWait {
+		return Operation{}, false, nil
+	}
+	if o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+		return Operation{}, false, waitUnavailable()
+	}
+	var startedAt, heldAt string
+	var occupied bool
+	err := q.QueryRowContext(ctx, `SELECT first.created_at, last.created_at,
+		EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=first.attempt_id AND revision NOT IN (1,2))
+		OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=first.attempt_id)
+		OR EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=first.attempt_id)
+		FROM review_execution_transitions first
+		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
+		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
+		AND last.state='held' AND first.external_id='' AND last.external_id=''`, a.ID).Scan(&startedAt, &heldAt, &occupied)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	started, validStart := attemptRecordedTime(startedAt)
+	held, validHold := attemptRecordedTime(heldAt)
+	if occupied || !validStart || !validHold || held.Before(started) {
+		return Operation{}, false, waitUnavailable()
+	}
+	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", cliDraftWait, nil
+	// A fresh draft observation can detach an unused positive permit. Validate
+	// its original attribution without granting it authority to dispatch. Corrupt
+	// optional allowance cannot prevent history-only projection of this proven
+	// unused attempt; operational lookup failures still abort the transaction.
+	record, err := readCLIAllowanceRecord(ctx, q, o, a)
+	if err != nil && !errors.Is(err, errAllowanceObservationAbsent) && !storedAllowanceUnavailable(err) {
+		return Operation{}, false, err
+	}
+	if err == nil && record.Observation.Remaining <= 0 {
+		return Operation{}, false, waitUnavailable()
+	}
+	return o, true, nil
 }
