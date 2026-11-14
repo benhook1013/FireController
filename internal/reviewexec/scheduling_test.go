@@ -235,7 +235,7 @@ func TestSchedulingAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) {
 		t.Fatal("withdrawn manager claimed attempt", a, err)
 	}
 }
-func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
+func TestSchedulingPausedFrontSkipsIndependentAndStackedReviews(t *testing.T) {
 	f := schedulingFixture(t)
 	schedulingPause(t, f, 2, 0, true)
 	r, _ := selectionEnqueue(t, f, "independent-paused", "hosted", nil)
@@ -248,7 +248,7 @@ func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
 	if err != nil || op.PullNumber != 4 {
 		t.Fatal(op, err)
 	}
-	// The same evaluator cannot turn a paused parent into earned completion.
+	// The parent pause stays local; selecting the child grants no parent completion.
 	err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		base := strings.Repeat("b", 40)
 		head := strings.Repeat("a", 40)
@@ -261,8 +261,8 @@ func TestSchedulingPausedFrontSkipsIndependentButNotDependency(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if front != 0 || reason != "pull_scheduling_paused" {
-			t.Fatalf("dependent PR passed paused parent: %d %s", front, reason)
+		if front != 4 || reason != "" {
+			t.Fatalf("ancestor pause blocked child review: %d %s", front, reason)
 		}
 		return nil
 	})
@@ -452,18 +452,12 @@ func TestSchedulingAutomaticIndependentProgressAcrossRetainedEvidence(t *testing
 			}
 			selectionNext(t, f, reader)
 			r := schedulingLatest(t, f)
-			if dependent {
-				if r.State != "held" || r.OperationID != "" {
-					t.Fatal("dependency bypassed", r)
-				}
-			} else {
-				if r.State != "selected" {
-					t.Fatal(r)
-				}
-				op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), r.OperationID)
-				if err != nil || op.PullNumber != 4 {
-					t.Fatal(op, err)
-				}
+			if r.State != "selected" {
+				t.Fatal("ancestor evidence blocked a distinct review target", r)
+			}
+			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), r.OperationID)
+			if err != nil || op.PullNumber != 4 {
+				t.Fatal(op, err)
 			}
 			schedulingGenerate(t, f, false)
 		})
@@ -676,7 +670,7 @@ func schedulingStackReader() *refreshTestReader {
 	r.parents = map[string]reviewprovider.Pull{"branch-two": func() reviewprovider.Pull { p := schedulingPull(2); p.HeadRef = "branch-two"; return p }()}
 	return r
 }
-func TestSchedulingDependentHeldChildReleasesAfterParentTapersAtSameHead(t *testing.T) {
+func TestSchedulingAncestorRoundChangesKeepOriginalChild(t *testing.T) {
 	f := schedulingFixture(t)
 	schedulingCleanHosted(t, f, 1, 81)
 	one := int64(1)
@@ -717,38 +711,97 @@ func TestSchedulingDependentHeldChildReleasesAfterParentTapersAtSameHead(t *test
 		}
 		return verifyPredecessors(ctx, tx, attemptProject, current, anchor, []SourcePlan{parent})
 	})
-	attemptCode(t, err, "review_held")
-	var failure *core.Error
-	if !errors.As(err, &failure) {
-		t.Fatal(err)
+	if err != nil {
+		t.Fatal("ancestor round work stopped final child source verification", err)
 	}
-	details, ok := failure.Details.(map[string]string)
-	if !ok || details["reason"] != "predecessor_unfinished" {
-		t.Fatal("not the genuine dependency hold", failure)
-	}
-	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "predecessor_unfinished", ""); err != nil {
-		t.Fatal(err)
-	}
-	schedulingCleanHosted(t, f, 2, 82)
+	// Change parent progress after the child has an admitted operation/attempt.
 	control := roundRead(t, f, 2, "hosted")
-	if !control.Tapered || control.Used != 1 {
-		t.Fatal("parent did not actually taper", control)
+	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-parent-during-child", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
+		t.Fatal(err)
 	}
-	schedulingGenerate(t, f, true)
-	selectionNext(t, f, reader)
-	next := schedulingLatest(t, f)
-	if next.State != "selected" || next.OperationID == child.ID {
-		t.Fatal("dependent child remained suppressed after genuine parent completion", next)
+	schedulingGenerate(t, f, false)
+	var children int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations WHERE project_id=? AND pull_number=4 AND channel='hosted'`, attemptProject).Scan(&children); err != nil || children != 1 {
+		t.Fatal("ancestor progress created another child request", children, err)
 	}
-	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), next.OperationID)
-	if err != nil || op.PullNumber != 4 || op.HeadSHA != child.HeadSHA || op.ConfigurationRevision != child.ConfigurationRevision {
-		t.Fatal(op, err)
+	current, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), child.ID)
+	if err != nil || current.ID != child.ID || current.AttemptID != a.ID {
+		t.Fatal("ancestor progress replaced the child operation", current, err)
 	}
-	old, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), child.ID)
-	if err != nil || old.State != "held" || old.Reason != "predecessor_unfinished" {
-		t.Fatal("old dependency hold was rewritten", old, err)
-	}
+}
 
+func TestSchedulingCancelledChildIgnoresAncestorRoundProgress(t *testing.T) {
+	for _, change := range []string{"close", "grant-and-taper", "completed-review"} {
+		t.Run(change, func(t *testing.T) {
+			f := schedulingFixture(t)
+			schedulingCleanHosted(t, f, 1, 81)
+			one := int64(1)
+			_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "stack-for-cancelled-child", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			schedulingEnable(t, f, 0, true)
+			schedulingGenerate(t, f, true)
+			selectionNext(t, f, schedulingStackReader())
+			first := schedulingLatest(t, f)
+			scope := selectionScope(t, f, attemptProject, f.writer, "write")
+			child, err := f.e.ReadOperation(t.Context(), scope, first.OperationID)
+			if err != nil || child.PullNumber != 4 {
+				t.Fatal("dependent child not selected", child, err)
+			}
+			if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-dependent-child", child.ID, OperationControl{ExpectedRevision: child.Revision, Action: "cancel"}); err != nil {
+				t.Fatal(err)
+			}
+			// Cancellation removes busy suppression; a changed ancestor digest
+			// would now create a replacement selection for this same child.
+			childBasis := func() string {
+				var basis string
+				if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+					var err error
+					basis, err = automaticPullBasisChannel(ctx, tx, attemptProject, 4, "hosted")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return basis
+			}
+			before := childBasis()
+			switch change {
+			case "close":
+				control := roundRead(t, f, 2, "hosted")
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-parent-after-child", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+			case "grant-and-taper":
+				roundGrant(t, f, 2, "hosted", 0, 1, 2, "parent-reopened-after-child")
+				retainHistoricalRoundTaper(t, f, 2, "hosted")
+			case "completed-review":
+				roundGrant(t, f, 2, "hosted", 0, 1, 2, "parent-reopened-after-child")
+				schedulingCleanHosted(t, f, 2, 82)
+				control := roundRead(t, f, 2, "hosted")
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-completed-parent", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if after := childBasis(); after != before {
+				t.Fatal("ancestor progress changed terminal child's basis", before, after)
+			}
+			// The parent's own changed basis may justify a planning pass. Its
+			// source read must not recreate the cancelled child.
+			schedulingGenerate(t, f, true)
+			selectionNext(t, f, schedulingStackReader())
+			if count := attemptCount(t, f.store, `SELECT count(*) FROM review_operations WHERE pull_number=4 AND channel='hosted'`); count != 1 {
+				t.Fatal("ancestor progress recreated terminal child operation", count)
+			}
+			for range 3 {
+				schedulingGenerate(t, f, false)
+			}
+			current, err := f.e.ReadOperation(t.Context(), scope, child.ID)
+			if err != nil || current.State != "cancelled" {
+				t.Fatal("cancelled child identity changed", current, err)
+			}
+		})
+	}
 }
 
 func TestSchedulingPrepareControlRaceFinalVerificationKeepsSupervisorHealthy(t *testing.T) {

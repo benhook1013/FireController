@@ -7,7 +7,8 @@
   },
   "scripts": {
     "check": "tsc --noEmit && vitest run",
-    "build": "vite build"
+    "build": "vite build",
+    "test:review-wait": "node --test tools/review-wait-activation.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "5.107.1",

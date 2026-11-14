@@ -74,10 +74,10 @@ func TestRecovery0030InterruptedInitialReadKeepsChannelContinuity(t *testing.T) 
 	}
 }
 
-func TestRecovery0030CompletedSourceHoldRetainsExactRevisionFence(t *testing.T) {
+func TestRecovery0030CompletedSourceHoldRetainsUnchangedChannelBasis(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, interrupted := range []bool{false, true} {
-			t.Run(channel+"/"+map[bool]string{false: "queued", true: "interrupted"}[interrupted], func(t *testing.T) {
+		for _, interruptions := range []int{0, 1, 2, 4} {
+			t.Run(channel+"/"+string(rune('0'+interruptions)), func(t *testing.T) {
 				var f *attemptFixture
 				var original Run
 				if channel == "hosted" {
@@ -91,7 +91,7 @@ func TestRecovery0030CompletedSourceHoldRetainsExactRevisionFence(t *testing.T) 
 				} else {
 					schedulingCLIGenerate(t, f, true)
 				}
-				if interrupted {
+				for range interruptions {
 					recovery0030Claim(t, f, original.ID)
 					if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
 						t.Fatal(err)
@@ -101,8 +101,8 @@ func TestRecovery0030CompletedSourceHoldRetainsExactRevisionFence(t *testing.T) 
 				reader := &refreshTestReader{}
 				selectionNext(t, f, reader)
 				got := selectionRead(t, f, original.ID)
-				if got.State != "held" || got.Reason != "automation_authorization_changed" || got.OperationID != "" || reader.calls.Load() != 0 {
-					t.Fatal("completed hold lost exact revision fence", got)
+				if got.State != "selected" || got.OperationID == "" || got.ID != original.ID || reader.calls.Load() == 0 {
+					t.Fatal("completed hold lost unchanged channel continuity", got)
 				}
 			})
 		}

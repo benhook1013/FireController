@@ -7,9 +7,15 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews scheduling":
 		out.Usage = "<bound launcher> reviews scheduling [--pr N] | configure --automatic-hosted true|false [--automatic-cli true|false] --expect-revision N --key KEY | pause --pr N --expect-revision N --key KEY [--reason TEXT] | resume --pr N --expect-revision N --key KEY"
 		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)", "configure --automatic-hosted true|false (project manager; authorizes future automatic Hosted requests)", "pause|resume --pr N (writer; holds new/undispatched reviews without changing rounds)", "--reason TEXT (optional with pause, at most 256 UTF-8 bytes)"}
-		out.Optional = append(out.Optional, "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
+		out.Optional = append(out.Optional, "reviews scheduling diagnostics --help", "reviews scheduling read --help", "reviews scheduling configure --help", "reviews scheduling pause --help", "reviews scheduling resume --help")
 		out.Semantics = []string{"Automation defaults off. Enabling requires this connection's active bound worker and current project-management authority; CLI automation is separately opt-in via --automatic-cli; omission preserves its current value. Existing grants and taper remain unchanged.", "Pause can precede any intent. Existing provider review collection continues, and separate operation pauses remain in effect. Read the current revision; mutations require an explicit key and preserve original-key recovery.", "No live provider request is needed to read or change a PR pause. Enabling project automation authorizes later Hosted or CLI selection under all existing comparison, obligation, round and provider guards."}
 		out.Documentation = "docs/review-scheduling.md"
+	case "reviews scheduling diagnostics":
+		out.Usage = "<bound launcher> reviews scheduling diagnostics --channel cli|hosted"
+		out.Required = []string{"--channel cli|hosted"}
+		out.Semantics = []string{"Read retained source time/completeness and current local evidence/dependency state for every configured PR. locally_ready is not fresh admission, automatic eligibility or a dispatch promise. No source/provider refresh, review request or mutation."}
+		out.Example = "<bound launcher> reviews scheduling diagnostics --channel cli"
+		out.Documentation = "docs/review-lane-diagnostics.md"
 	case "reviews scheduling read":
 		out.Usage = "<bound launcher> reviews scheduling read [--pr N]"
 		out.Optional = []string{"--pr N (read one PR pause; omission reads project settings and queued paused PRs)"}

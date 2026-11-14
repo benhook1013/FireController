@@ -150,13 +150,13 @@ func hostedAdmissionStack(t *testing.T, f *attemptFixture, open SourcePlan) (Att
 	return child, []SourcePlan{open}
 }
 
-func TestHostedAdmissionStackRequiresHostedPredecessor(t *testing.T) {
+func TestHostedAdmissionStackDoesNotRequireAncestorReviewCoverage(t *testing.T) {
 	hostedAdmissionNoHTTP(t)
 	f, prior, id, open := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, prior, id, 0)
 	child, plans := hostedAdmissionStack(t, f, open)
-	// A complete native CLI predecessor cannot advance the hosted cycle.
-	hostedAdmissionVerify(t, f, child, "review_held", "predecessor_unfinished", plans...)
+	// The ancestor needs no Hosted completion to review the child's exact diff.
+	hostedAdmissionVerify(t, f, child, "", "", plans...)
 }
 
 func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.T) {
@@ -191,7 +191,7 @@ func TestHostedAdmissionStackChecksAllFreshPlansAndLateFixCorrection(t *testing.
 	moved[0].Pull.HeadSHA = strings.Repeat("9", 40)
 	hostedAdmissionVerify(t, f, child, "validation_failed", "", moved...)
 	adjudicationDecide(t, f, id, "hosted-stack-correct", 4, 0, "accepted")
-	hostedAdmissionVerify(t, f, child, "review_held", "predecessor_unfinished", plans...)
+	hostedAdmissionVerify(t, f, child, "", "", plans...)
 	coverageFix(t, f, id, "hosted-stack-fix", 5, 0, "")
 	hostedAdmissionVerify(t, f, child, "", "", plans...)
 	admissionPolicy(t, f, 1, "hosted")

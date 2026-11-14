@@ -86,6 +86,49 @@ describe('stored review CI states', () => {
   });
 });
 
+describe('bounded current review progress', () => {
+  const progressChannel = (channel: 'hosted' | 'cli') => ({ channel, configured: false, revision: 0, epoch: 0, closed: false, minimum: 0, maximum: 0, taper: 0, used: 0, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 });
+  const progressFor = (numbers: number[]) => ({ project_id: 'project_one', evaluated_at: '2026-10-15T12:00:00Z', items: numbers.map(pull_number => ({ pull_number, channels: [progressChannel('hosted'), progressChannel('cli')] })) });
+
+  it('uses one bounded batched stages read and requests Hosted priority version 5 only on that endpoint', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init! });
+      return String(input).includes('/reviews/rounds/progress') ? json(progressFor([7, 4])) : json({ ...reviewQueue, items: [] });
+    }));
+
+    const result = await client.reviewProgress([7, 4]);
+    await client.reviewQueue();
+
+    expect(result.items.map(item => item.pull_number)).toEqual([7, 4]);
+    expect(requests).toHaveLength(2);
+    const progressURL = new URL(requests[0].url);
+    expect(progressURL.pathname).toBe('/api/v1/projects/project_one/reviews/rounds/progress');
+    expect(progressURL.searchParams.get('pull_numbers')).toBe('7,4');
+    expect(progressURL.searchParams.get('view')).toBe('stages');
+    expect(new Headers(requests[0].init.headers).get('X-FC-Operation-Wait')).toBe('5');
+    expect(new Headers(requests[1].init.headers).has('X-FC-Operation-Wait')).toBe(false);
+    client.close();
+  });
+
+  it('rejects invalid batches before HTTP and mismatched progress responses', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const fetchMock = vi.fn().mockResolvedValue(json(progressFor([7])));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(client.reviewProgress([7, 7])).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(json({ ...progressFor([7]), project_id: 'project_two' }));
+    await expect(client.reviewProgress([7])).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.close();
+  });
+});
+
 describe('read-only browser cookie session transport', () => {
   it('exchanges verified bearer once, then uses only the selector cookie mode for finite reads and logout', async () => {
     setupLocation();

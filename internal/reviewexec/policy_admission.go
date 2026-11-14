@@ -265,16 +265,9 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		if err != nil || observed.IsZero() || plan.Repository.ID != current.RepositoryID || !repository.MatchString(plan.Repository.FullName) || plan.Repository.DefaultBranch == "" || !safeText(plan.Repository.DefaultBranch, 256) || !sameTarget(plan.Pull, current.RepositoryID, number) || !validCoverageSource(plan) || plan.Pull.Merged {
 			return invalid()
 		}
-		if err := requireSourceObligationsClear(ctx, tx, project, number); err != nil {
-			return err
-		}
-		state, err := channelProgress(ctx, tx, project, current.RepositoryID, number, current.Operation.Channel)
-		if err != nil {
-			return err
-		}
-		if state.Pending || state.RoundsConfigured && !state.RoundsComplete || !state.RoundsConfigured && !state.Covered {
-			return sourceHold("predecessor_unfinished")
-		}
+		// Ancestor findings, imported obligations and unfinished rounds do not
+		// invalidate this child's exact source comparison. Target-local obligations
+		// are rechecked separately in this same admission snapshot.
 		number, head, branch = plan.ParentPullNumber, plan.ParentSHA, plan.Pull.BaseRef
 	}
 	if number != 0 {

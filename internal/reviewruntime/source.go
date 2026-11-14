@@ -174,13 +174,8 @@ func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *
 			}
 			return plan, nil, err
 		}
-		covered, err := engine.DiscoveryComplete(ctx, operation.ProjectID, preceding, operation.Channel)
-		if err != nil {
-			return plan, nil, err
-		}
-		if !covered {
-			return plan, nil, reviewPredecessorHold(number, "discovery_incomplete")
-		}
+		// Source identity must be proved through the chain, but each PR owns its
+		// review/finding obligations. Reviewing this child is not merging it.
 		predecessors = append(predecessors, preceding)
 		number = preceding.ParentPullNumber
 	}
@@ -233,5 +228,5 @@ func publishPreparedAttempt(ctx context.Context, engine *reviewexec.Engine, proj
 }
 
 func reviewPredecessorHold(number int64, cause string) error {
-	return &core.Error{Code: "review_held", Message: "An ancestor has not completed discovery in the selected channel.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
+	return &core.Error{Code: "review_held", Message: "An ancestor does not establish the selected source comparison.", Status: 409, Details: map[string]string{"reason": "predecessor_unfinished", "pull_number": strconv.FormatInt(number, 10), "cause": cause}}
 }
