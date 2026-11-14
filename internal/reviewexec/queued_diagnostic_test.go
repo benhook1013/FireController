@@ -109,7 +109,7 @@ func TestQueuedReservationSameProjectVerifiedBindingAndUnchangedBody(t *testing.
 	}
 	initial := read("same_project", "preparing")
 	if err := f.e.RecordHostedAllowance(t.Context(), attemptProject, holder.ID, holder.Revision, allowance); err != nil {
-		t.Fatal(err)
+		t.Fatalf("allowance recording failed: %v; input_valid=%v observed=%s anchor=%s query=%s response=%s now=%s revision=%d", err, validHostedAllowanceInput(allowance), allowance.ObservedAt, allowance.Anchor.ObservedAt, allowance.Observation.QueryCreatedAt, allowance.Observation.ResponseCreatedAt, stamp(), holder.Revision)
 	}
 	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: holder.OperationID, AttemptID: holder.ID, HeadSHA: allowance.Anchor.CandidateSHA})
 	if err != nil {
