@@ -31,7 +31,7 @@ func TestIntentRebindProcessHelper(t *testing.T) {
 	if err = os.WriteFile(os.Getenv("FC_INTENT_TEST_READY"), []byte("ready"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if _, err = os.Stat(os.Getenv("FC_INTENT_TEST_GO")); err == nil {
 			break
@@ -79,6 +79,18 @@ func TestQueuedIntentRebindCrossProcessSingleWinnerAndRestart(t *testing.T) {
 		commands[i] = cmd
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
+		}
+		// Schema initialization is not the race under test. Bring each independent
+		// process to the barrier before releasing simultaneous replacement writes.
+		readyDeadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			if time.Now().After(readyDeadline) {
+				t.Fatal("child did not initialize before bounded barrier")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	deadline := time.Now().Add(20 * time.Second)

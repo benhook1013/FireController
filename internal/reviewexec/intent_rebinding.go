@@ -308,7 +308,7 @@ func (e *Engine) rebindQueuedIntentTx(ctx context.Context, tx *sql.Tx, expected 
 		if v.SourceRetries > sourceRetryLimit {
 			return waitUnavailable()
 		}
-		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
+		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleExecutionTime())
 		if err != nil {
 			return err
 		}
@@ -391,7 +391,7 @@ func (e *Engine) replacePreparingIntentOnce(ctx context.Context, operation Opera
 		if queried {
 			return core.Fail("review_operation_started", "Preparation has external history and cannot be rebound.", 409)
 		}
-		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
+		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleExecutionTime())
 		if err != nil {
 			return err
 		}
