@@ -2,7 +2,7 @@
 
 This slice follows native CI observation and keeps an authorized review request
 alive when its provider has no available allowance. It does not discover new
-reviews, increase grants, adjudicate findings, or merge pull requests. This stage delivers retained-state migration, validated historical records, admission guards and CLI quota/draft waiting. The Hosted adapter does not yet schedule or replay retained cooldowns; that runtime integration follows in a dependent stage. The Hosted behavior below defines the target contract and the historical records accepted by this foundation. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
+reviews, increase grants, adjudicate findings, or merge pull requests. This stage delivers retained-state migration, validated historical records, admission guards and CLI quota/draft waiting. The HostedDriver does not yet schedule normal-preparation cooldowns or replay private allowance captures; that driver integration follows in a dependent stage. Engine startup recovery already schedules a validated, future, advancing cooldown from retained SQL allowance facts. The Hosted behavior below distinguishes that implemented engine recovery from the dependent driver replay contract. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
 
 ## One request, multiple unused preparations
 
@@ -48,7 +48,7 @@ does not delete checkouts.
 
 ### Retention failure recovery
 
-The following Hosted recovery procedure is future behavior for this foundation slice and requires the dependent Hosted runtime stage; restarting this slice alone does not provide that replay.
+The following private-capture reconciliation procedure requires the dependent HostedDriver runtime stage; restarting this slice alone does not provide that driver replay. This is separate from engine startup recovery of cooldown facts already retained in SQL, described above.
 
 A Hosted cooldown retention storage failure leaves the original attempt preparing after bounded local retries. Before interrupted-attempt recovery, the configured Hosted adapter reconciles the retained allowance-query capture against the same operation, query, attempt and pinned workspace, with no provider call. Successful replay writes the same idempotent cooldown facts and normal recovery restores a future queued wait. An ongoing storage failure blocks startup without changing the attempt. Missing, malformed or non-cooldown private source, or a changed workspace, grants no cooldown and follows normal interrupted preparation cancellation. This replay never obtains fresh allowance or dispatches a review.
 
