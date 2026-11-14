@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"github.com/benhook1013/FireController/internal/core"
 	"io/fs"
 	"math"
 	"path/filepath"
@@ -79,4 +80,29 @@ func bundleDiskBytes(ctx context.Context, path string) (int64, error) {
 		return nil
 	})
 	return total, err
+}
+
+// Refuse more staging when unresolved deletion custody already prevents retention
+// and the retained-byte safety budget is exhausted. Never clear or retry a
+// possibly partial deletion here; existing copies and their ledger remain intact.
+func (m *Manager) admitSnapshotGrowth(ctx context.Context) error {
+	var held int
+	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state IN ('deleting','cleanup_failed'))`, m.config.Destination, m.store.InstanceID()).Scan(&held); err != nil {
+		return unavailable()
+	}
+	if held == 0 {
+		return nil
+	}
+	keep, oversized, err := m.retentionCount(ctx)
+	if err != nil {
+		return err
+	}
+	var excess int
+	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT 1 OFFSET ?)`, m.config.Destination, m.store.InstanceID(), keep).Scan(&excess); err != nil {
+		return unavailable()
+	}
+	if oversized || excess != 0 {
+		return core.Fail("backup_retention_failed", "Snapshot deferred: unresolved retention custody and exhausted backup budget; existing backups are preserved.", 503)
+	}
+	return nil
 }

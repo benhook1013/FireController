@@ -347,7 +347,11 @@ func (m *Manager) attempt(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	result, err := m.create(ctx, m.store, m.dataDir, m.config.Destination)
+	var result createdBundle
+	err = m.admitSnapshotGrowth(ctx)
+	if err == nil {
+		result, err = m.create(ctx, m.store, m.dataDir, m.config.Destination)
+	}
 	if err == nil {
 		// Creation already verified these exact bytes. Settlement must not use
 		// an expired snapshot context or rescan a potentially large bundle.
