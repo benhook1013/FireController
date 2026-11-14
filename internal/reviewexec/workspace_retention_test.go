@@ -131,3 +131,23 @@ func TestWorkspaceRetentionRejectsParseableCorruptChronology(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkspaceRetentionCollectsDetachedDraftAttempt(t *testing.T) {
+	f, a, in := cliAllowanceFixture(t)
+	if err := f.e.RecordCLIAllowance(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", cliDraftWait, ""); err != nil {
+		t.Fatal(err)
+	}
+	if disposable, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, time.Now()); err != nil || disposable {
+		t.Fatal("recent detached Draft workspace", disposable, err)
+	}
+	if disposable, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, time.Now().Add(time.Hour)); err != nil || !disposable {
+		t.Fatal("old detached Draft workspace leaked", disposable, err)
+	}
+	admissionSQL(t, f, `UPDATE review_execution_attempts SET intent='dispatch-intent' WHERE id=?`, a.ID)
+	if disposable, err := f.e.WorkspaceDisposable(t.Context(), "test-capability", a.ID, time.Now().Add(time.Hour)); err != nil || disposable {
+		t.Fatal("detached dispatch intent was disposable", disposable, err)
+	}
+}
