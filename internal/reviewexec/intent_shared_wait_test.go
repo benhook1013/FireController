@@ -65,3 +65,24 @@ func TestAutomaticIntentSharedWaitAvoidsDiscoveryAndExpires(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticIntentHostedPRCooldownDoesNotBlockLaterDiscovery(t *testing.T) {
+	f := schedulingFixture(t)
+	r := f.enqueue(t, attemptProject, "front-local-cooldown", "hosted", 2, 1)
+	priorityCooldown(t, f, r, 2, time.Hour)
+	schedulingEnable(t, f, 0, true)
+	reader := &refreshTestReader{}
+	readers := map[string]TargetReader{"test-capability": reader}
+	worked, err := f.e.generateAutomaticHosted(t.Context(), readers)
+	if err != nil || !worked {
+		t.Fatal("PR-local wait blocked discovery", worked, err)
+	}
+	worked, err = f.e.runNext(t.Context(), readers)
+	if err != nil || !worked || reader.calls.Load() == 0 {
+		t.Fatal("later source not inspected", worked, err)
+	}
+	selected := schedulingLatest(t, f)
+	if selected.State != "selected" || cliWaitRead(t, f, selected.OperationID).PullNumber != 4 {
+		t.Fatal("later eligible PR not selected", selected)
+	}
+}
