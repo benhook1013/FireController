@@ -1,11 +1,13 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -432,5 +434,104 @@ func TestPreparationRecoveryBadFlagsRemainCandidateLocal(t *testing.T) {
 	}
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
 		t.Fatal("damaged reservation lost")
+	}
+}
+
+func TestPreparationRecoveryMalformedAnchorRemainsCandidateLocal(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "bad-anchor", "hosted", 2, 1))
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	other := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "other-anchor", "cli", 2, 1))
+	admissionSQL(t, f, `UPDATE review_execution_attempts SET anchor_json='private-broken' WHERE id=?`, a.ID)
+	for range 2 {
+		if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := readAttempt(t.Context(), f.store.DB(), other.ProjectID, other.ID)
+	if err != nil || got.State != "cancelled" {
+		t.Fatal("unrelated preparation was not recovered", got, err)
+	}
+	var state, anchor string
+	if err := f.store.DB().QueryRow(`SELECT state,anchor_json FROM review_execution_attempts WHERE id=?`, a.ID).Scan(&state, &anchor); err != nil {
+		t.Fatal(err)
+	}
+	if state != "preparing" || anchor != "private-broken" {
+		t.Fatal("damaged attempt changed", state, anchor)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id='`+a.ID+`'`) != 1 {
+		t.Fatal("damaged reservation lost")
+	}
+}
+
+func TestPendingScanInvalidOperationFlagsRemainCandidateLocal(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		for _, flag := range []string{"allow_out_of_order", "override_file_limit"} {
+			t.Run(channel+"/"+flag, func(t *testing.T) {
+				f := supervisorFixture(t)
+				f.configure(t, otherAttemptProject, "other-account", 0, false)
+				bad := f.enqueue(t, attemptProject, "bad-flag", channel, 2, 1)
+				healthy := f.enqueue(t, otherAttemptProject, "healthy-flag", channel, 2, 1)
+				admissionSQL(t, f, `PRAGMA ignore_check_constraints=ON`)
+				admissionSQL(t, f, `UPDATE review_operations SET `+flag+`=2,created_at='2020-01-01T00:00:00Z' WHERE id=?`, bad.ID)
+				admissionSQL(t, f, `PRAGMA ignore_check_constraints=OFF`)
+				seen := map[string]int{}
+				driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+					seen[o.ID]++
+					return Preparation{}, core.Fail("review_evidence_pending", "synthetic hold", 409)
+				}}
+				for range 3 {
+					if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var state, attempt string
+				var rawFlag int
+				if err := f.store.DB().QueryRow(`SELECT state,attempt_id,`+flag+` FROM review_operations WHERE id=?`, bad.ID).Scan(&state, &attempt, &rawFlag); err != nil {
+					t.Fatal(err)
+				}
+				if state != "queued" || attempt != "" || rawFlag != 2 || seen[bad.ID] != 0 || seen[healthy.ID] != 1 || driver.calls.Load() != 0 {
+					t.Fatal("corrupt operation affected independent work or was admitted", state, attempt, rawFlag, seen)
+				}
+			})
+		}
+	}
+}
+
+func TestUnavailableOperationSkipDoesNotHideStorageErrors(t *testing.T) {
+	f := supervisorFixture(t)
+	for _, err := range []error{sql.ErrNoRows, context.Canceled, context.DeadlineExceeded, errors.New("private storage error"), newStoredUnavailable(storedReviewAdmission, "private anchor error")} {
+		if f.e.skipUnavailableOperation(t.Context(), Operation{ID: "operation"}, err) {
+			t.Fatal("non-identity error skipped", err)
+		}
+	}
+}
+
+func TestOperationIdentityIsolationIsTypedAndBounded(t *testing.T) {
+	now := time.Now()
+	e := &Engine{schedulingNow: func() time.Time { return now }}
+	op := Operation{ID: "review_operation_candidate", ProjectID: "project"}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, errors.New("database failure"), core.Fail("storage_unavailable", "Stored source refresh is unavailable.", 500)} {
+		if e.skipUnavailableOperation(t.Context(), op, err) || e.skipUnavailableOperation(t.Context(), op, fmt.Errorf("wrapped: %w", err)) {
+			t.Fatal("real storage error isolated", err)
+		}
+	}
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	unavailable := fmt.Errorf("private wrapper: %w", newStoredUnavailable(storedOperationIdentity, "private retained history"))
+	for i := range 300 {
+		op.ID = fmt.Sprintf("review_operation_%d", i)
+		if !e.skipUnavailableOperation(t.Context(), op, unavailable) {
+			t.Fatal("typed history not isolated")
+		}
+	}
+	if len(e.configurationFailureNext) != 256 || strings.Count(output.String(), "\n") != 256 || strings.Contains(output.String(), "private") {
+		t.Fatal("unbounded or unsafe diagnostics", len(e.configurationFailureNext))
+	}
+	now = now.Add(30 * time.Second)
+	if !e.skipUnavailableOperation(t.Context(), op, unavailable) || len(e.configurationFailureNext) != 1 || strings.Count(output.String(), "\n") != 257 {
+		t.Fatal("diagnostic throttle did not expire")
 	}
 }
