@@ -54,7 +54,7 @@ candidates:
 	for _, id := range ids {
 		earlier, err := readOperation(ctx, tx, id.project, id.operation)
 		if err != nil {
-			if isRetainedOperationDecodeError(err) || automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+			if isRetainedOperationDecodeError(err) || isWaitUnavailable(err) || automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
 				continue candidates
 			}
 			return false, err

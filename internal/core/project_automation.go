@@ -41,7 +41,7 @@ func (s *Store) ProjectAutomationScope(ctx context.Context, tx *sql.Tx, project,
 	if err != nil {
 		return Scope{}, storageError(err)
 	}
-	scope := Scope{ProjectID: project, PrincipalID: principal, WorkerID: worker, tokenHash: hash, instanceID: s.instanceID, admin: true}
+	scope := Scope{ProjectID: project, PrincipalID: principal, WorkerID: worker, tokenHash: hash, instanceID: s.instanceID, admin: true, activeWorkerRequired: true}
 	if err := s.authorize(ctx, tx, scope, "admin"); err != nil {
 		return Scope{}, err
 	}

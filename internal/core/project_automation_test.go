@@ -182,6 +182,7 @@ func TestProjectAutomationScopeReauthorizesAtNormalStoreBoundaries(t *testing.T)
 		t.Fatal("current background management scope was unusable", err)
 	}
 	for _, tc := range []struct{ query, reset, code string }{
+		{`INSERT INTO worker_retirements VALUES('project','worker','2026-11-01T00:00:00Z','synthetic-actor')`, `DELETE FROM worker_retirements`, "worker_retired"},
 		{`UPDATE grants SET can_manage=0 WHERE credential_id='credential'`, `UPDATE grants SET can_manage=1 WHERE credential_id='credential'`, "forbidden"},
 		{`UPDATE credentials SET revoked=1 WHERE id='credential'`, `UPDATE credentials SET revoked=0 WHERE id='credential'`, "unauthorized"},
 	} {
@@ -192,6 +193,10 @@ func TestProjectAutomationScopeReauthorizesAtNormalStoreBoundaries(t *testing.T)
 		err := s.Read(t.Context(), background, func(context.Context, *sql.Tx) error { called = true; return nil })
 		browserCoreCode(t, err, tc.code)
 		_, err = s.Mutate(t.Context(), background, mutation, func(context.Context, *sql.Tx) (any, error) { called = true; return nil, nil })
+		browserCoreCode(t, err, tc.code)
+		fresh := mutation
+		fresh.Key = "new-automation-key"
+		_, err = s.Mutate(t.Context(), background, fresh, func(context.Context, *sql.Tx) (any, error) { called = true; return nil, nil })
 		browserCoreCode(t, err, tc.code)
 		_, _, err = s.Replay(t.Context(), background, mutation)
 		browserCoreCode(t, err, tc.code)

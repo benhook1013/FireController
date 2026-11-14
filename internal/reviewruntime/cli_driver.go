@@ -74,7 +74,7 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	exhaustions, err := NewCLIExhaustionStore(filepath.Join(filepath.Dir(captures.root), "cli-exhaustion-captures"))
+	exhaustions, err := NewCLIExhaustionStore(filepath.Join(filepath.Dir(captures.root), "cli-exhaustion-captures"), filepath.Dir(captures.root))
 	if err != nil {
 		return nil, err
 	}

@@ -11,17 +11,18 @@ import (
 )
 
 type Scope struct {
-	PrincipalID    string
-	ProjectID      string
-	WorkerID       string
-	tokenHash      string
-	instanceID     string
-	admin          bool
-	instanceAdmin  bool
-	readOnly       bool
-	expiresAt      time.Time
-	sessionManage  bool
-	sessionProject string
+	PrincipalID          string
+	ProjectID            string
+	WorkerID             string
+	tokenHash            string
+	instanceID           string
+	admin                bool
+	activeWorkerRequired bool
+	instanceAdmin        bool
+	readOnly             bool
+	expiresAt            time.Time
+	sessionManage        bool
+	sessionProject       string
 }
 
 type Mutation struct {

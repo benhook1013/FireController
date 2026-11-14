@@ -220,7 +220,7 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		return Operation{}, false, err
 	}
 	draft := reason == cliDraftWait
-	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
+	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed" || reason == "automatic_scheduling_unavailable")) {
 		return Operation{}, false, nil
 	}
 	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {

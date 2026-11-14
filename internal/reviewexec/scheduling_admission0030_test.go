@@ -11,6 +11,7 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management", "malformed-state"} {
 			t.Run(channel+"/"+change, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
+				f.e.publishAttempt = publishAttemptTransition
 				automatic := change != "explicit-pause"
 				var id string
 				if automatic {

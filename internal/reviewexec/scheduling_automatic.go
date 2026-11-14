@@ -406,6 +406,7 @@ func automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql.Tx, project
 	}
 	var limit int
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='`+channel+`' AND o.state='queued'
+AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')
 AND NOT EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
 AND NOT EXISTS(SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)`, len(c.Queue), string(queue), project).Scan(&limit)
 	return limit, err

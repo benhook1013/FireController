@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -18,21 +19,51 @@ const MaxCLIExhaustionArtifactBytes = 32 << 10
 
 // CLIExhaustionStore is independent of executables, credentials and worktrees.
 // The root is opened lazily: absence is ordinary missing recovery source.
-type CLIExhaustionStore struct{ root string }
+type CLIExhaustionStore struct{ root, boundary string }
 
-func NewCLIExhaustionStore(root string) (*CLIExhaustionStore, error) {
-	if root == "" {
+func NewCLIExhaustionStore(root, managedRoot string) (*CLIExhaustionStore, error) {
+	if root == "" || managedRoot == "" {
 		return nil, configurationError()
 	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
-	if err == nil {
-		absolute = filepath.Join(parent, filepath.Base(absolute))
+	// Resolve the longest existing parent, retaining lazy creation of the rest.
+	// Resolving only the immediate parent misses symlinks above missing dirs.
+	parent := filepath.Dir(absolute)
+	missing := []string{filepath.Base(absolute)}
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(parent)
+		if resolveErr == nil {
+			absolute = resolved
+			for i := len(missing) - 1; i >= 0; i-- {
+				absolute = filepath.Join(absolute, missing[i])
+			}
+			break
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) || filepath.Dir(parent) == parent {
+			return nil, resolveErr
+		}
+		missing = append(missing, filepath.Base(parent))
+		parent = filepath.Dir(parent)
 	}
-	return &CLIExhaustionStore{root: absolute}, nil
+	// The configured data directory is the stable custody boundary. Its own
+	// provisioning/durability belongs to the caller, not this artifact store.
+	boundary, err := filepath.EvalSymlinks(managedRoot)
+	if err != nil {
+		return nil, err
+	}
+	boundary, err = filepath.Abs(boundary)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(boundary)
+	relative, relErr := filepath.Rel(boundary, absolute)
+	if err != nil || !info.IsDir() || relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, configurationError()
+	}
+	return &CLIExhaustionStore{root: absolute, boundary: boundary}, nil
 }
 
 type cliExhaustionEnvelope struct {
@@ -128,7 +159,7 @@ func (s *CLIExhaustionStore) Save(ctx context.Context, r reviewexec.CLIExhaustio
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if prepareCLIExhaustionDirectories(s.root, syncCaptureDirectory) != nil {
+	if prepareCLIExhaustionDirectories(s.root, s.boundary, syncCaptureDirectory) != nil {
 		return captureError("capture_unavailable")
 	}
 	final := filepath.Join(s.root, r.Attempt.ID+".json")
@@ -185,16 +216,21 @@ func (s *CLIExhaustionStore) Save(ctx context.Context, r reviewexec.CLIExhaustio
 }
 
 // prepareCLIExhaustionDirectories durably reconciles the recovery directory chain.
-func prepareCLIExhaustionDirectories(root string, syncParent func(string) error) error {
-	if root == "" || !filepath.IsAbs(root) {
+func prepareCLIExhaustionDirectories(root, boundary string, syncParent func(string) error) error {
+	if root == "" || !filepath.IsAbs(root) || boundary == "" || !filepath.IsAbs(boundary) {
+		return errors.New("directory")
+	}
+	relative, err := filepath.Rel(boundary, root)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("directory")
+	}
+	info, err := os.Lstat(boundary)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("directory")
 	}
 	var chain []string
-	for path := root; ; path = filepath.Dir(path) {
+	for path := root; path != boundary; path = filepath.Dir(path) {
 		chain = append(chain, path)
-		if filepath.Dir(path) == path {
-			break
-		}
 	}
 	for i := len(chain) - 1; i >= 0; i-- {
 		path := chain[i]
