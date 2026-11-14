@@ -27,6 +27,7 @@ func latestCooldownAttempt(ctx context.Context, q EvidenceQuery, o Operation) (A
 		deadline := `CASE WHEN typeof(p.body_json)='text' AND length(CAST(p.body_json AS BLOB))<=16384 THEN
 			CASE WHEN json_valid(p.body_json) THEN
 				CASE WHEN json_type(p.body_json,'$.input.observation.RetryNotBefore')='text'
+				AND julianday(json_extract(p.body_json,'$.input.observation.RetryNotBefore')) IS NOT NULL
 				THEN NULLIF(json_extract(p.body_json,'$.input.observation.RetryNotBefore'),'') END
 			END END`
 		// Narrow by recorded transition time before touching preflight bodies.

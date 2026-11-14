@@ -120,6 +120,7 @@ func TestWaitRuntimeBindsLatestCooldown(t *testing.T) {
 				}
 				if strings.HasSuffix(damage, "old-deadline") {
 					admissionSQL(t, f, `UPDATE review_operation_waits SET retry_not_before=? WHERE operation_id=?`, firstDue.Format(time.RFC3339Nano), o.ID)
+
 				} else {
 					admissionSQL(t, f, `UPDATE review_`+channel+`_preflight SET body_json='{}' WHERE attempt_id=?`, next.ID)
 				}
@@ -231,5 +232,35 @@ func TestWaitDeadlineRuntimePreservesLookupErrors(t *testing.T) {
 				t.Fatal("failed proof lookup changed retained state")
 			}
 		})
+	}
+}
+
+func TestHostedTiedCooldownCannotHideMalformedMiddleProof(t *testing.T) {
+	f, first, now := deadlineRuntimeFixture(t, "hosted")
+	var firstEnded string
+	if err := f.store.DB().QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=2`, first.ID).Scan(&firstEnded); err != nil {
+		t.Fatal(err)
+	}
+	f.e.attemptNow = func() time.Time { return mustWaitTime(firstEnded).Add(-time.Hour) }
+	var middle Attempt
+	for i := 0; i < 2; i++ {
+		*now = cliWaitDue(t, cliWaitRead(t, f, first.OperationID))
+		next := f.start(t, attemptProject, Receipt{ID: first.OperationID})
+		retainTimerCooldown(t, f, next, time.Duration(6+i*6)*time.Minute)
+		if _, err := f.e.ScheduleHostedCooldown(t.Context(), attemptProject, next.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			middle = next
+		}
+	}
+	o := cliWaitRead(t, f, first.OperationID)
+	admissionSQL(t, f, `UPDATE review_hosted_preflight SET body_json=json_set(body_json,'$.input.observation.RetryNotBefore','!') WHERE attempt_id=?`, middle.ID)
+	before := deadlineRuntimeState(t, f)
+	if wait, err := readOperationWait(t.Context(), f.store.DB(), o); wait != nil || !isWaitUnavailable(err) {
+		t.Fatal("malformed equal-time proof hidden", wait, err)
+	}
+	if before != deadlineRuntimeState(t, f) {
+		t.Fatal("read mutated evidence")
 	}
 }

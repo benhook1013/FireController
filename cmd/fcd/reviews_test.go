@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -189,5 +190,38 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	entries, err := os.ReadDir(filepath.Join(dir, "review-captures"))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("idle startup created a provider capture", err)
+	}
+}
+
+func TestCoordinationAndHostedIgnoreUnavailableCLIArtifactRoot(t *testing.T) {
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprint(hosted), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "private")
+			store, err := core.Open(t.Context(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := reviewruntime.LoadCatalog("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hosted {
+				_, catalog = privateTestCatalog(t, []string{"hosted"})
+			}
+			if err := os.WriteFile(filepath.Join(dir, "cli-exhaustion-captures"), []byte("not a readable artifact directory"), 0000); err != nil {
+				t.Fatal(err)
+			}
+			engine, _, err := buildReviewExecution(store, dir, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := engine.RecoverInterrupted(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

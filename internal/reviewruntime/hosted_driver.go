@@ -164,6 +164,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	}()
 	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
 	if err != nil {
+		if retryableHostedRetention(err) || ctx.Err() != nil {
+			return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+		}
 		return preparation, err
 	}
 	reads := newSourceReads(d.provider)

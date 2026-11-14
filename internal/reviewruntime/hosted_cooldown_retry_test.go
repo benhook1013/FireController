@@ -548,3 +548,28 @@ func TestHostedCooldownRetentionOutageRecoversOriginalAttemptOffline(t *testing.
 		})
 	}
 }
+
+func TestHostedBaselineStorageFailureRetainsPreparation(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, attempt, config := f.startHosted(t)
+	if _, err := f.store.DB().Exec(`ALTER TABLE review_execution_transitions RENAME TO unavailable_transitions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.engine.ExecutionContext(t.Context(), op.ProjectID, op.ID); err != nil {
+		t.Fatal("fixture failed before baseline", err)
+	}
+	_, err := f.hosted.Prepare(t.Context(), op, config, attempt)
+	var recovery *reviewexec.PreparationRecoveryError
+	if !errors.As(err, &recovery) {
+		t.Fatalf("baseline storage failure became terminal: %T %v", err, err)
+	}
+	if f.provider.queries != 0 || f.provider.reviews != 0 {
+		t.Fatal("baseline outage issued provider work")
+	}
+	f.hosted.mu.Lock()
+	_, exists := f.hosted.prepared[attempt.ID]
+	f.hosted.mu.Unlock()
+	if exists {
+		t.Fatal("failed baseline left prepared dispatch entry")
+	}
+}

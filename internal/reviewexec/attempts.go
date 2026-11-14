@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -483,6 +484,10 @@ func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, select
 			}
 			a, err := readAttempt(ctx, tx, x.project, x.id)
 			if err != nil {
+				if isStoredUnavailable(err, storedReviewAdmission) {
+					slog.WarnContext(ctx, "Interrupted attempt authority unavailable", "attempt_id", x.id, "project_id", x.project)
+					continue
+				}
 				return err
 			}
 			if selected != nil && a.State != "preparing" {
@@ -490,6 +495,12 @@ func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, select
 			}
 			o, err := readOperation(ctx, tx, x.project, a.OperationID)
 			if err != nil {
+				// Corrupt authority stays reserved; it cannot prevent unrelated
+				// projects from recovering or authorize a replacement attempt.
+				if isStoredUnavailable(err, storedOperationIdentity) || isWaitUnavailable(err) {
+					slog.WarnContext(ctx, "Interrupted operation authority unavailable", "operation_id", a.OperationID, "attempt_id", a.ID)
+					continue
+				}
 				return err
 			}
 			if a.State == "preparing" && o.Channel == "hosted" {
