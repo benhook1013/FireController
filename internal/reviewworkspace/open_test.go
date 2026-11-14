@@ -228,7 +228,7 @@ func TestReopenAndChangedFilesDistinguishOperationalFailure(t *testing.T) {
 	f := newFixture(t)
 	w := boundOpenFixture(t, f, "operational")
 	wrapper := filepath.Join(t.TempDir(), "git-fault")
-	for _, command := range []string{"rev-parse", "--name-only", "symbolic-ref"} {
+	for _, command := range []string{"rev-parse", "--name-only", "symbolic-ref", "get-url"} {
 		t.Run(command, func(t *testing.T) {
 			script := "#!/bin/sh\nfor arg do if [ \"$arg\" = '" + command + "' ]; then exit 75; fi; done\nexec '" + f.git + "' \"$@\"\n"
 			if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
@@ -270,6 +270,20 @@ func TestOpenMissingComparisonRefIsInvalidNotOperational(t *testing.T) {
 	_, err := openPrepared(f.manager, t.Context(), w)
 	if err == nil || reviewworkspace.IsOperationalError(err) {
 		t.Fatalf("missing ref not identified as invalid workspace: %v", err)
+	}
+	if !reflect.DeepEqual(before, openFilesystemState(t, w.Directory)) {
+		t.Fatal("verification modified damaged workspace")
+	}
+}
+
+func TestOpenMissingOriginIsInvalidNotOperational(t *testing.T) {
+	f := newFixture(t)
+	w := boundOpenFixture(t, f, "missing_origin")
+	git(t, f.git, w.Directory, "remote", "remove", "origin")
+	before := openFilesystemState(t, w.Directory)
+	_, err := openPrepared(f.manager, t.Context(), w)
+	if err == nil || reviewworkspace.IsOperationalError(err) {
+		t.Fatalf("missing origin not identified as invalid workspace: %v", err)
 	}
 	if !reflect.DeepEqual(before, openFilesystemState(t, w.Directory)) {
 		t.Fatal("verification modified damaged workspace")
