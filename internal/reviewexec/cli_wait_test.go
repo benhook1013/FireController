@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1194,4 +1195,84 @@ func TestMissingExpiredWaitDoesNotStopOtherCandidates(t *testing.T) {
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE operation_id='`+a.OperationID+`'`) != 1 {
 		t.Fatal("missing baseline created another attempt")
 	}
+}
+
+func TestSkippedCLIRecoveryRetriesWithoutRecoveringLiveWork(t *testing.T) {
+	f := supervisorFixture(t)
+	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "retry-interrupted", "cli", 2, 1))
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	live := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "live-preparation", "cli", 2, 1))
+	unavailable := true
+	f.e.cliExhaustionRecovery = exhaustionRecoverySourceFunc(func(context.Context, string) (CLIExhaustionRecovery, bool, error) {
+		if unavailable {
+			return CLIExhaustionRecovery{}, false, errors.New("temporary outage")
+		}
+		return CLIExhaustionRecovery{}, false, nil
+	})
+	pending := map[string]bool{first.ID: true}
+	if err := f.e.retryCLIPreparations(t.Context(), pending); err != nil {
+		t.Fatal(err)
+	}
+	if !pending[first.ID] {
+		t.Fatal("forgot unavailable recovery")
+	}
+	unavailable = false
+	if err := f.e.retryCLIPreparations(t.Context(), pending); err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatal("recovery still pending")
+	}
+	a, err := readAttempt(t.Context(), f.store.DB(), attemptProject, first.ID)
+	if err != nil || a.State != "cancelled" {
+		t.Fatal(a, err)
+	}
+	a, err = readAttempt(t.Context(), f.store.DB(), otherAttemptProject, live.ID)
+	if err != nil || a.State != "preparing" {
+		t.Fatal("live work interrupted", a, err)
+	}
+}
+
+func TestSupervisorRetriesStartupCLIExhaustionWithoutRestart(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "startup-retry", "cli", 2, 1))
+	o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := CLIExhaustionRecovery{Operation: o, Attempt: a, Observation: CLIAllowanceObservation{Anchor: attemptAnchor(attemptProject, 2), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}}
+	var calls atomic.Int32
+	f.e.cliExhaustionRecovery = exhaustionRecoverySourceFunc(func(context.Context, string) (CLIExhaustionRecovery, bool, error) {
+		if calls.Add(1) == 1 {
+			return CLIExhaustionRecovery{}, false, errors.New("temporary outage")
+		}
+		return record, true, nil
+	})
+	driver := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+		return Preparation{}, errors.New("unexpected dispatch")
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := readOperation(t.Context(), f.store.DB(), attemptProject, o.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == "queued" && current.Wait != nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("startup outage did not recover without restart", calls.Load())
 }

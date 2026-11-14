@@ -73,7 +73,7 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	}
 	done := make(chan error, 1)
 	go func() {
-		err := e.supervise(ctx, owned)
+		err := e.supervise(ctx, owned, skipped)
 		e.running.Store(false)
 		done <- err
 		close(done)
@@ -83,12 +83,22 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 
 // supervise owns two finite work slots. A shared probe permit lets either idle
 // worker probe retained Draft waits without occupying both workers. Provider
-// waits never hold a database transaction; startup recovery is already complete.
-func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
+// waits never hold a database transaction. Unreadable startup CLI recovery
+// sources have a separate serialized retry owner, not a provider work slot.
+func (e *Engine) supervise(ctx context.Context, owned map[string]Driver, skipped map[string]bool) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
+	workers.Go(func() {
+		if err := e.retrySkippedCLIPreparations(workCtx, skipped); err != nil && workCtx.Err() == nil {
+			select {
+			case failures <- err:
+			default:
+			}
+			cancelWork()
+		}
+	})
 	for range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
@@ -227,7 +237,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 		if err != nil {
-			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
