@@ -228,7 +228,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 3, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_operation_waits":           {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
 	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
@@ -600,6 +600,16 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if versions["review_route_policy"] > 0 {
 		if err = validateRoutePolicyPhysicalSchema(ctx, db); err != nil {
 			return nil, err
+		}
+	}
+	if versions["review_execution_indexes"] >= 4 {
+		var definition string
+		const canonical = `CREATE INDEX review_operations_draft_probe ON review_operations(id) WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait'`
+		if err := db.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='index' AND name='review_operations_draft_probe' AND tbl_name='review_operations'`).Scan(&definition); err != nil || historyDefinitionSQL(definition) != canonical {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, invalid()
 		}
 	}
 	if versions["review_execution_indexes"] >= 3 && versions["review_execution"] < 9 {
