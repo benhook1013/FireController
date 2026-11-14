@@ -199,6 +199,12 @@ func (m *Manager) verify(ctx context.Context, w Workspace) error {
 		}
 		origin, err := m.output(ctx, w.Directory, "remote", "get-url", "origin")
 		if err != nil {
+			// Git remote get-url uses exit 2 for a missing named remote.
+			// Other execution failures remain operational, not invalid source.
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 2 {
+				return errVerification
+			}
 			return err
 		}
 		if origin != "https://github.com/"+w.RepositoryCanonical+".git" {
