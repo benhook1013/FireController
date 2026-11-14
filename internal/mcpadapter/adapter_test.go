@@ -158,6 +158,38 @@ func allDiscoveredTools(t *testing.T, session *mcp.ClientSession) (*mcp.ListTool
 	return nil, nil
 }
 
+func TestAdministrationDiscoveryDescribesAuthority(t *testing.T) {
+	path := profiles(t, map[string]profile.Context{"alpha": localContext()}, "missing-private-token")
+	for _, version := range mcp.SupportedProtocolVersions() {
+		t.Run(version, func(t *testing.T) {
+			cs := connect(t, adapter(t, path, "alpha"), version)
+			tools, err := allDiscoveredTools(t, cs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contracts := map[string][]string{
+				"inbox_list":                     {"bound worker", "worker_id", "project read permission", "acting identity unchanged", "never mark seen or acknowledged"},
+				"inbox_ack":                      {"bound recipient", "worker_id", "another recipient requires project management", "acting identity unchanged", "also establishing seen", "supplied key"},
+				"publication_configuration_read": {"Requires instance administration"},
+				"publication_preview":            {"Requires instance administration"},
+				"publication_apply":              {"Requires instance administration"},
+				"publication_unpublish":          {"Requires instance administration"},
+			}
+			for _, tool := range tools.Tools {
+				for _, fragment := range contracts[tool.Name] {
+					if !strings.Contains(tool.Description, fragment) {
+						t.Errorf("%s discovery omits %q: %s", tool.Name, fragment, tool.Description)
+					}
+				}
+				delete(contracts, tool.Name)
+			}
+			if len(contracts) != 0 {
+				t.Fatal("authority-described tools missing from discovery", contracts)
+			}
+		})
+	}
+}
+
 func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 	c := localContext()
 	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing-private-token")
@@ -222,6 +254,9 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["review_source_ci_assess"], expected["review_source_readiness"] = true, true
 			expected["review_source_refresh"], expected["review_source_refresh_read"], expected["review_source_policy_assess"] = true, true, true
 			expected["review_checkpoint_publish"], expected["review_checkpoint_read"], expected["review_checkpoint_recover"] = true, true, true
+			for _, name := range []string{"review_policy_read", "review_policy_configure", "review_execution_configure", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_update", "project_credential_revoke", "presentation_replace", "presentation_history", "presentation_revision_read", "publication_configuration_read", "publication_preview", "publication_apply", "publication_unpublish", "review_import_preview", "review_import_apply", "review_transfer_preview", "review_transfer_apply"} {
+				expected[name] = true
+			}
 			if len(first.Tools) != len(expected) {
 				t.Fatalf("first discovery page has %d tools, expected complete inventory of %d", len(first.Tools), len(expected))
 			}
@@ -242,13 +277,16 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			writes["review_finding_decide"], writes["review_finding_fix"], writes["review_source_finalize"] = true, true, true
 			writes["review_finding_route"], writes["review_route_decide"], writes["review_route_fix"] = true, true, true
 			writes["review_checkpoint_publish"], writes["review_checkpoint_recover"] = true, true
+			for _, name := range []string{"review_policy_configure", "review_execution_configure", "worker_create", "worker_retire", "project_credential_grant", "project_credential_update", "project_credential_revoke", "presentation_replace", "publication_apply", "publication_unpublish", "review_import_apply", "review_transfer_apply"} {
+				writes[name] = true
+			}
 			for _, tool := range tools.Tools {
 				if !expected[tool.Name] {
 					t.Fatalf("unexpected tool %q", tool.Name)
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_operation_control" || tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_operation_control" || tool.Name == "review_policy_configure" || tool.Name == "review_execution_configure" || tool.Name == "worker_retire" || tool.Name == "project_credential_update" || tool.Name == "project_credential_revoke" || tool.Name == "presentation_replace" || tool.Name == "publication_apply" || tool.Name == "publication_unpublish" || tool.Name == "review_import_apply" || tool.Name == "review_transfer_apply" || tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)

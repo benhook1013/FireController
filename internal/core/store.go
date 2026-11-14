@@ -120,6 +120,18 @@ func Open(ctx context.Context, dataDir string, options ...OpenOption) (*Store, e
 		_ = s.Close()
 		return nil, storageError(err)
 	}
+	if err = s.checkAdministrationVersions(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err = s.ensureProjectManagement(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err = s.ensureWorkerRetirements(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

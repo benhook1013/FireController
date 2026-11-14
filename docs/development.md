@@ -75,7 +75,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | Command | Returned scope |
 | --- | --- |
 | `fc doctor` | Verified instance/project/worker binding, without credentials or a PR scan. |
-| `fc workers list` | One compact worker page in the bound project. |
+| `fc workers list` | One compact active-worker page in the bound project; `--include-retired` also includes retired workers. |
 | `fc jobs context JOB_ID [--limit N]` | Complete current brief/checkpoint/checklist plus bound-worker focus/pause and pending previews, explicit omissions, continuation cursors and incoming-event watermark. |
 | `fc notes read NOTE_ID` | One full current note. |
 | `fc notes list` | One compact pending page for the bound worker and its currently assigned jobs; explicit scope/filter flags narrow or broaden selection. |
@@ -104,7 +104,7 @@ Supply `FC_PROFILE` through the agent host's process environment or select `--pr
 | `fc inbox list` | Bound worker's compact message previews; optional unread/unacknowledged filters. |
 | `fc inbox thread ID` | Explicit bounded conversation page with full bodies. |
 
-Administrator setup also supports [prepared review import](review-import.md) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. These commands require deliberately selected administrator access rather than an ordinary worker credential.
+Project management also supports [prepared review import](review-import.md#selected-sources-and-destination) through `fc reviews import-preview --file ABSOLUTE_PATH` and `fc reviews import-apply --file ABSOLUTE_PATH --preview SHA256 --key KEY`. Preview is provider-free and read-only; apply uses the existing guarded observation receipt. Select a profile with the owning contract's project-management or instance-administration authority; ordinary project read/write permission is insufficient.
 
 Review queue/run lists accept `--limit` and `--cursor`; omitted limits select five entries. Review selectors validate before credentials or HTTP, and reads perform no provider refresh or review execution. Source timestamps and completeness remain observations, not readiness.
 
@@ -137,7 +137,7 @@ Quick local mutations use the same private profile and a five-second operation b
 | `fc jobs checklist-set ID --key KEY --expect-revision N --expect-checklist-revision C` | Exactly one of `--items JSON` or `--items-file PATH`; guarded ordered replacement, with unchanged content reported explicitly. |
 | `fc inbox send --key KEY --to WORKER_ID --body TEXT` | Optional `--reply-to MESSAGE_ID`; the bound worker is the sender. |
 | `fc inbox seen MESSAGE_ID --key KEY` | Only the bound actual recipient can change seen state. |
-| `fc inbox ack MESSAGE_ID --key KEY` | Only the bound actual recipient can acknowledge; acknowledgment also establishes seen state. |
+| `fc inbox ack MESSAGE_ID --key KEY [--worker WORKER_ID]` | Acknowledgment also establishes seen state; selecting another recipient requires project management. |
 
 The parser rejects incomplete, repeated, oversized and malformed arguments before opening profiles or credentials or contacting the service. Brief and body text remain exact UTF-8; selected title/assignment normalization follows the API. Omitted edit fields stay unchanged. Guarded edits return the current revision on conflict. A retained key replays the original receipt after current authorization; it never overwrites a newer revision.
 
@@ -184,3 +184,9 @@ Use `reviews operations` to discover one page of retained operations and `review
 ## Explicit channel-front selection
 
 Use `fc reviews start --channel cli --key KEY` for one durable selection and at most one native child, or `--channel hosted` for the independent Hosted channel. Optional `--expect-pr NUMBER` and `--expected-configuration-revision REVISION` assert the selected target and accepted configuration. `fc reviews run-read --selection-id ID --wait-seconds SECONDS` observes the same selection and original child; it never starts another request. `start` defaults to a two-second wait and `run-read` to no wait; use `--wait-seconds 0` for an immediate receipt. Keep the original key when stdout is lost. A terminal hold requires a fresh authorized request after its cause is resolved. The [selection contract](review-round-controls.md#one-explicit-channel-front-run) owns bounds, recovery and the deferred automatic-scheduling boundary.
+
+## Native administration
+
+Use `reviews policy`, `reviews policy-configure --file /absolute/private.json --key KEY`, `reviews execution-configure --file /absolute/private.json --key KEY`, `workers create --name NAME --key KEY`, and `credentials grant|update|revoke`. Operation `--help` is local and runs before profiles or private files are read. Credential grant accepts either `--token-sha256` or an owner-private `--credential-file`; only the digest is transmitted. Permission replacement uses a private JSON file with complete expected and desired permission sets. Retain the original key and arguments after uncertain output; mutations are never automatically reposted.
+
+Use `workers retirement WORKER_ID` before `workers retire WORKER_ID --key KEY`. `workers list --include-retired` explicitly includes historical identities. `inbox list --worker WORKER_ID` selects a recipient without changing the acting worker; `inbox ack MESSAGE_ID --worker WORKER_ID --key KEY` requires current project management when acknowledging for another recipient. See [retirement](worker-retirement.md) for blockers and race semantics.

@@ -8,6 +8,9 @@ The [Hosted source foundation](delivery.md#hosted-source-foundation) records the
 
 ## Documents
 
+- [Project management](local-api.md#project-management-and-guarded-retirement): explicit scoped grants, permission-set CAS and native administration.
+- [Worker retirement](worker-retirement.md): blocker cleanup, active/archive reads and retained historical identities.
+
 - [Carried review obligations](adoption-obligations.md): original source-bound holds, minimum-only rules, guarded resolution and retargeting.
 
 - [Retained review history](review-history-growth.md): immutable versions, compact summaries, bounded archives and backup integrity.
