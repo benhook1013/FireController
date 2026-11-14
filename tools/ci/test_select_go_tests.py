@@ -18,6 +18,19 @@ class SelectionTests(unittest.TestCase):
             SELECT.PREFIX + name for name in ["cmd/fc", "cmd/fcd", "internal/new_package", "tools/new_tool"]
         ]
 
+    def test_reviewexec_halves_preserve_each_former_shard_exactly(self):
+        names = [f"TestCase{i:04}" for i in range(1097)]
+        package = SELECT.PREFIX + "internal/reviewexec"
+        inventory = "\n".join(names)
+        for old_index in range(6):
+            expressions = [re.compile(SELECT.select_tests(f"reviewexec-{index}", package, inventory))
+                           for index in (old_index, old_index + 6)]
+            halves = [{name for name in names if expression.fullmatch(name)}
+                      for expression in expressions]
+            self.assertFalse(halves[0] & halves[1])
+            self.assertEqual(halves[0] | halves[1], set(names[old_index::6]))
+            self.assertLessEqual(abs(len(halves[0]) - len(halves[1])), 1)
+
     def test_new_packages_and_every_existing_package_have_an_owner(self):
         inventory = "\n".join(reversed(self.inventory())) + "\n"
         isolated = {SELECT.PREFIX + "internal/" + family for family in SELECT.FAMILIES}
@@ -72,7 +85,7 @@ class SelectionTests(unittest.TestCase):
         for inventory in ["", "bad/package", "\n".join(self.inventory() * 2), self.inventory()[0] + "\n\n"]:
             with self.subTest(inventory=inventory), self.assertRaises(ValueError):
                 SELECT.select_packages("rest-0", inventory)
-        for shard in ["rest-2", "backup-8", "reviewexec-6", "unknown-0"]:
+        for shard in ["rest-2", "backup-8", "reviewexec-12", "unknown-0"]:
             with self.subTest(shard=shard), self.assertRaises(ValueError):
                 SELECT.select_packages(shard, "\n".join(self.inventory()))
         with self.assertRaises(ValueError):

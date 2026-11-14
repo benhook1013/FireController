@@ -34,7 +34,8 @@ func (e *Engine) WorkspaceDisposable(ctx context.Context, capabilityID, attemptI
  AND a.state IN ('completed','held','failed','cancelled','rate_limited')
  AND ((o.attempt_id=a.id AND o.state=a.state)
  OR (((o.channel='hosted' AND t.reason='hosted_allowance_cooldown') OR (o.channel='cli' AND t.reason='allowance_exhausted')) AND a.state='held' AND a.anchor_json='null' AND a.intent='' AND a.external_id=''
- AND EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.baseline_attempt_id IS NOT NULL)))
+ AND EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.baseline_attempt_id IS NOT NULL))
+ OR (o.channel='cli' AND t.reason='cli_draft_wait' AND a.state='held' AND a.anchor_json='null' AND a.intent='' AND a.external_id=''))
  AND NOT EXISTS(SELECT 1 FROM review_execution_reservations r WHERE r.attempt_id=a.id)
  AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=?`, attemptID, capability.Provider, capability.Account, capabilityID).Scan(&stamp, &created, &updated, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
