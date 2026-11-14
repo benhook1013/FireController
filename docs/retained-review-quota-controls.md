@@ -1,8 +1,8 @@
 # Retained review quota waits
 
-This foundation follows native CI observation and defines the durable model for keeping an authorized review request alive when its provider has no available allowance. It delivers schema migrations, retained record validation, comparison and configuration authority, scoped reservations, backup compatibility and guarded state-transition primitives. It does not yet activate automatic quota retry or Draft probing in the supervisor, or collect new private CLI exhaustion captures from the provider adapter. Those behaviors follow together in the dependent runtime slice. Existing private CLI capture formats remain readable and included in backups, and configured startup recovery preserves their evidence.
-
-The runtime contracts below describe the completed dependent behavior. In this foundation, the supervisor deliberately excludes retained waiting requests, even when their timer expires, rather than dispatch through an adapter without retry-comparison fencing. The guarded transition primitives remain directly testable; an elapsed timer is not a promise of automatic progress at this intermediate stage. Ordinary fresh requests continue through their existing admission and provider path. This stage does not discover reviews, increase grants, adjudicate findings or merge pull requests. Hosted adapter replay and public progress/control endpoints follow above the runtime slice.
+This slice follows native CI observation and keeps an authorized review request
+alive when its provider has no available allowance. It does not discover new
+reviews, increase grants, adjudicate findings, or merge pull requests. This stage delivers retained-state migration, validated historical records, admission guards and CLI quota/draft waiting. The HostedDriver does not yet schedule normal-preparation cooldowns or replay private allowance captures; that driver integration follows in a dependent stage. Engine startup recovery already schedules a validated, future, advancing cooldown from retained SQL allowance facts. The Hosted behavior below distinguishes that implemented engine recovery from the dependent driver replay contract. Public progress/control endpoints and bound client, CLI and MCP controls follow above both channel behaviors.
 
 ## One request, multiple unused preparations
 
@@ -48,7 +48,7 @@ does not delete checkouts.
 
 ### Retention failure recovery
 
-The following Hosted recovery procedure is future behavior for this foundation slice and requires the dependent Hosted runtime stage; restarting this slice alone does not provide that replay.
+The following private-capture reconciliation procedure requires the dependent HostedDriver runtime stage; restarting this slice alone does not provide that driver replay. This is separate from engine startup recovery of cooldown facts already retained in SQL, described above.
 
 A Hosted cooldown retention storage failure leaves the original attempt preparing after bounded local retries. Before interrupted-attempt recovery, the configured Hosted adapter reconciles the retained allowance-query capture against the same operation, query, attempt and pinned workspace, with no provider call. Successful replay writes the same idempotent cooldown facts and normal recovery restores a future queued wait. An ongoing storage failure blocks startup without changing the attempt. Missing, malformed or non-cooldown private source, or a changed workspace, grants no cooldown and follows normal interrupted preparation cancellation. This replay never obtains fresh allowance or dispatches a review.
 

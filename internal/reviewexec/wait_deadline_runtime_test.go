@@ -159,7 +159,7 @@ func TestCLIAccountDeadlineCannotHideShortenedCooldown(t *testing.T) {
 			}
 			f.configure(t, otherAttemptProject, capability, 0, false)
 			other := f.enqueue(t, otherAttemptProject, "shortened-account-timer", "cli", 2, 1)
-			f.enqueue(t, otherAttemptProject, "independent-hosted-timer", "hosted", 4, 1)
+			hosted := f.enqueue(t, otherAttemptProject, "independent-hosted-timer", "hosted", 4, 1)
 			timerControl(t, f, a.OperationID, "cancel", "cancel-shortened-donor")
 			forged := due.Add(-30 * time.Second)
 			if scenario.extended {
@@ -183,8 +183,21 @@ func TestCLIAccountDeadlineCannotHideShortenedCooldown(t *testing.T) {
 			} else if !deadline.IsZero() || err != nil {
 				t.Error("unrelated or expired corruption became a live account hold", deadline, err)
 			}
-			// Candidate filtering belongs to the dependent runtime slice.
-			// This foundation still proves direct admission cannot bypass the guard.
+			pending, err := f.e.pending(t.Context())
+			if err != nil {
+				t.Fatal("account damage stopped unrelated scheduling", err)
+			}
+			got := map[string]bool{}
+			for _, operation := range pending {
+				got[operation.ID] = true
+			}
+			want := 2
+			if blocked {
+				want = 1
+			}
+			if !got[hosted.ID] || got[other.ID] == blocked || len(got) != want {
+				t.Error("account deadline lost scheduling isolation", got)
+			}
 			if before != deadlineRuntimeState(t, f) {
 				t.Fatal("account lookup changed retained state")
 			}

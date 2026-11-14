@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -17,18 +18,19 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
-	store      *core.Store
-	engine     *reviewexec.Engine
-	capability OperatorCapability
-	manager    *reviewworkspace.Manager
-	captures   *CaptureStore
-	reader     reviewexec.TargetReader
-	fetch      func(context.Context, int64, string, string, string, string) error
-	verify     func(context.Context, reviewworkspace.Workspace) error
-	usage      func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
-	review     func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
-	mu         sync.Mutex
-	prepared   map[string]*cliPrepared
+	store       *core.Store
+	engine      *reviewexec.Engine
+	capability  OperatorCapability
+	manager     *reviewworkspace.Manager
+	captures    *CaptureStore
+	exhaustions *CLIExhaustionStore
+	reader      reviewexec.TargetReader
+	fetch       func(context.Context, int64, string, string, string, string) error
+	verify      func(context.Context, reviewworkspace.Workspace) error
+	usage       func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
+	review      func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
+	mu          sync.Mutex
+	prepared    map[string]*cliPrepared
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
@@ -72,7 +74,11 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil || capability.Fingerprint != fingerprint {
 		return nil, configurationError()
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
+	exhaustions, err := NewCLIExhaustionStore(filepath.Join(filepath.Dir(captures.root), "cli-exhaustion-captures"), filepath.Dir(captures.root))
+	if err != nil {
+		return nil, err
+	}
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, exhaustions: exhaustions, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
 }
 
 // A successful preflight can be held by admission before Dispatch. Expire only
@@ -124,10 +130,49 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		return preparation, err
 	}
 	anchor := reviewexec.Anchor{RepositoryID: current.RepositoryID, Repository: plan.Repository.FullName, PullNumber: plan.Pull.Number, CandidateSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, ParentSHA: plan.ParentSHA, ParentPullNumber: plan.ParentPullNumber, BaseRef: plan.Pull.BaseRef, MergeBaseSHA: workspace.MergeBaseSHA, PatchSHA256: workspace.PatchSHA256, ObservedAt: plan.ObservedAt}
+	baseline, err := d.engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		if retryableHostedRetention(err) || ctx.Err() != nil {
+			return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+		}
+		return preparation, err
+	}
+	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
+		return preparation, reviewHold("source_changed")
+	}
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
 		if errors.As(err, &failure) && failure.Code == "rate_limited" {
+			if usage.Remaining != 0 {
+				return preparation, reviewHold("allowance_unavailable")
+			}
+			// A negative observation never grants dispatch permission.
+			observation := reviewexec.CLIAllowanceObservation{Anchor: anchor, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Remaining: usage.Remaining, Limit: usage.Limit, FullCapacityInMS: usage.FullCapacityInMS, RollingWindowMS: usage.RollingWindowMS, ChangedFiles: changedFiles}
+			recovery := reviewexec.CLIExhaustionRecovery{Operation: current.Operation, Attempt: attempt, Observation: observation}
+			// Invalid provider values are not a recoverable storage failure: no
+			// private source has been retained and no dispatch is authorized.
+			if err := reviewexec.ValidateCLIExhaustionRecovery(recovery); err != nil {
+				return preparation, reviewHold("allowance_unavailable")
+			}
+			retentionCtx, retentionCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			retainErr := retryCLIExhaustionSave(retentionCtx, waitPreparation, func() error { return d.exhaustions.Save(retentionCtx, recovery) })
+			retentionCancel()
+			if retainErr != nil {
+				return preparation, &reviewexec.PreparationRecoveryError{Err: retainErr}
+			}
+			if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
+				return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
+			}); err != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil {
+					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+				}
+				var held *core.Error
+				if errors.As(err, &held) && held.Code == "review_held" {
+					return preparation, err
+				}
+				return preparation, reviewHold("allowance_unavailable")
+			}
 			return preparation, reviewHold("allowance_exhausted")
 		}
 		return preparation, reviewHold("allowance_unavailable")
@@ -220,4 +265,23 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		return reviewexec.Result{State: retained.Outcome, Reason: "capture_retained"}, nil
 	}
 	return reviewexec.Result{State: "uncertain", Reason: retained.Reason}, nil
+}
+
+// Save uses immutable no-replace publication and reconciles byte-identical
+// existing records, including a prior failed directory sync. Retrying the same
+// record is safe; conflicts and validation refusals must not be retried.
+func retryCLIExhaustionSave(ctx context.Context, wait func(context.Context, time.Duration) error, save func() error) error {
+	var original error
+	err := retryAllowanceRetention(ctx, wait, func() error {
+		original = save()
+		var failure *core.Error
+		if errors.As(original, &failure) && failure.Code == "capture_unavailable" {
+			return core.Fail("storage_unavailable", "Private exhaustion retention is unavailable.", 503)
+		}
+		return core.NormalizeStorageError(original)
+	})
+	if err != nil && original != nil {
+		return original
+	}
+	return err
 }

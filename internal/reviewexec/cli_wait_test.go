@@ -1,15 +1,18 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-
+	"fmt"
+	"github.com/benhook1013/FireController/internal/core"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
-
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -107,7 +110,7 @@ func TestCLIWaitRetainsIntentThroughRestartAndOriginalEvidence(t *testing.T) {
 		t.Fatal("detached exhaustion invalidates backup validation", err)
 	}
 	*now = due
-	priorityPending(t, f)
+	priorityPending(t, f, o.ID)
 	next := f.start(t, attemptProject, Receipt{ID: o.ID})
 	if next.ID == a.ID || next.OperationID != a.OperationID {
 		t.Fatal("retry did not retain operation identity", next)
@@ -200,7 +203,7 @@ func TestCLIWaitPauseResumeCancelNeverDispatchesOrReopensHistory(t *testing.T) {
 				if resumed.Wait == nil || resumed.Wait.RetryNotBefore != o.Wait.RetryNotBefore || resumed.Wait.BaselineAttemptID != a.ID {
 					t.Fatal("resume changed retained timer/pin", resumed)
 				}
-				priorityPending(t, f)
+				priorityPending(t, f, o.ID)
 			}
 			assertCLIWaitNoCredit(t, f)
 			assertCLIWaitSnapshot(t, f)
@@ -629,6 +632,117 @@ func TestCLIAccountRetryDeadlineRejectsNoncanonicalFuture(t *testing.T) {
 	}
 }
 
+func TestCLIWaitHistoryIsolatesAccountAndChannel(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			f, a, _, now := cliWaitFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+				t.Fatal(err)
+			}
+			due := cliWaitDue(t, cliWaitRead(t, f, a.OperationID))
+			if cancelled {
+				timerControl(t, f, a.OperationID, "cancel", "isolation-cancel")
+			}
+			bad := f.enqueue(t, attemptProject, "same-account", "cli", 4, 1)
+			hosted := f.enqueue(t, attemptProject, "same-account-hosted", "hosted", 2, 1)
+			healthy := f.enqueue(t, otherAttemptProject, "other-account-cli", "cli", 2, 1)
+			admissionSQL(t, f, `UPDATE review_cli_preflight SET body_json='{}' WHERE attempt_id=?`, a.ID)
+			*now = due.Add(-time.Second)
+			tables := []string{"review_operations", "review_execution_attempts", "review_operation_waits", "review_cli_preflight", "review_execution_reservations", "events"}
+			before := map[string]string{}
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			for range 2 {
+				pending, err := f.e.pending(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]bool{}
+				for _, o := range pending {
+					got[o.ID] = true
+				}
+				if got[bad.ID] || got[a.OperationID] || !got[hosted.ID] || !got[healthy.ID] || len(got) != 2 {
+					t.Fatal("account/channel isolation failed", got)
+				}
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("pending mutated history", table)
+				}
+			}
+			if got, err := f.e.StartAttempt(t.Context(), attemptProject, bad.ID); got.ID != "" || !isWaitUnavailable(err) {
+				t.Fatal("corrupt account admitted", got, err)
+			}
+			f.start(t, attemptProject, hosted)
+			f.start(t, otherAttemptProject, healthy)
+			*now = due
+			pending, err := f.e.pending(t.Context())
+			if err != nil || cancelled && (len(pending) != 1 || pending[0].ID != bad.ID) || !cancelled && len(pending) != 0 {
+				t.Fatal("expiry did not preserve account and predecessor boundaries", pending, err)
+			}
+			assertCLIWaitNoCredit(t, f)
+		})
+	}
+}
+
+func TestSupervisorCooldownPrefixLeavesOtherAccountEligible(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID)).Add(-time.Second)
+	seed := f.enqueue(t, attemptProject, "blocked-candidate-prefix", "cli", 4, 1)
+	healthy := f.enqueue(t, otherAttemptProject, "ready-after-cooldown-prefix", "cli", 2, 1)
+	for i := range 299 {
+		schedulerQueuedCopy(t, f, seed.ID, fmt.Sprintf("review_operation_blocked%03d", i))
+	}
+	operations, err := f.e.pendingForWorker(t.Context(), false)
+	if err != nil || len(operations) != 1 || operations[0].ID != healthy.ID {
+		t.Fatalf("cooldown prefix hid the independent account: %d candidates, %v", len(operations), err)
+	}
+}
+
+func TestWaitIsolationIsTypedAndBounded(t *testing.T) {
+	now := time.Now()
+	e := &Engine{schedulingNow: func() time.Time { return now }}
+	o := Operation{ProjectID: "project", Channel: "cli"}
+	for _, channel := range []string{"cli", "hosted"} {
+		o.Channel = channel
+		for _, err := range []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, errors.New("database failure"), core.Fail("storage_unavailable", "Stored review waiting intent is unavailable.", 500)} {
+			if e.skipUnavailableWait(t.Context(), o, err) {
+				t.Fatal("operational error suppressed", err)
+			}
+		}
+	}
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	for i := range 300 {
+		o.Channel = []string{"cli", "hosted"}[i%2]
+		o.ID = fmt.Sprintf("review_operation_%d", i)
+		for range 2 {
+			if !e.skipUnavailableWait(t.Context(), o, fmt.Errorf("private data: %w", waitUnavailable())) {
+				t.Fatal("typed refusal escaped")
+			}
+		}
+	}
+	if len(e.configurationFailureNext) != 256 || strings.Count(output.String(), "\n") != 256 || strings.Contains(output.String(), "private data") {
+		t.Fatal("unbounded diagnostic")
+	}
+	now = now.Add(30 * time.Second)
+	if !e.skipUnavailableWait(t.Context(), o, waitUnavailable()) || len(e.configurationFailureNext) != 1 {
+		t.Fatal("diagnostic did not expire")
+	}
+	o.Channel = "invalid"
+	if e.skipUnavailableWait(t.Context(), o, waitUnavailable()) {
+		t.Fatal("invalid channel suppressed")
+	}
+}
+
 type cliRetryPlanQuery struct {
 	EvidenceQuery
 	t       *testing.T
@@ -740,6 +854,31 @@ func TestCrossProjectBaselineCannotPoisonOtherAccountCooldown(t *testing.T) {
 	}
 }
 
+func TestMissingExpiredWaitDoesNotStopOtherCandidates(t *testing.T) {
+	f, a, _, now := cliWaitFixture(t)
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	*now = cliWaitDue(t, cliWaitRead(t, f, a.OperationID)).Add(time.Minute)
+	admissionSQL(t, f, `DELETE FROM review_operation_waits WHERE operation_id=?`, a.OperationID)
+	f.configure(t, otherAttemptProject, "other-account", 0, false)
+	healthy := f.enqueue(t, otherAttemptProject, "missing-wait-independent", "cli", 2, 1)
+	seen := []string{}
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, _ Attempt) (Preparation, error) {
+		seen = append(seen, o.ID)
+		return Preparation{}, sourceHold("review_evidence_pending")
+	}}
+	if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver, "other-account": driver}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || seen[0] != healthy.ID {
+		t.Fatal("independent candidate blocked", seen)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE operation_id='`+a.OperationID+`'`) != 1 {
+		t.Fatal("missing baseline created another attempt")
+	}
+}
+
 func TestSkippedCLIRecoveryRetriesWithoutRecoveringLiveWork(t *testing.T) {
 	f := supervisorFixture(t)
 	first := f.start(t, attemptProject, f.enqueue(t, attemptProject, "retry-interrupted", "cli", 2, 1))
@@ -774,4 +913,48 @@ func TestSkippedCLIRecoveryRetriesWithoutRecoveringLiveWork(t *testing.T) {
 	if err != nil || a.State != "preparing" {
 		t.Fatal("live work interrupted", a, err)
 	}
+}
+
+func TestSupervisorRetriesStartupCLIExhaustionWithoutRestart(t *testing.T) {
+	f := supervisorFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "startup-retry", "cli", 2, 1))
+	o, err := readOperation(t.Context(), f.store.DB(), attemptProject, a.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := CLIExhaustionRecovery{Operation: o, Attempt: a, Observation: CLIAllowanceObservation{Anchor: attemptAnchor(attemptProject, 2), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}}
+	var calls atomic.Int32
+	f.e.cliExhaustionRecovery = exhaustionRecoverySourceFunc(func(context.Context, string) (CLIExhaustionRecovery, bool, error) {
+		if calls.Add(1) == 1 {
+			return CLIExhaustionRecovery{}, false, errors.New("temporary outage")
+		}
+		return record, true, nil
+	})
+	driver := &controlledDriver{prepare: func(context.Context, Operation, Configuration, Attempt) (Preparation, error) {
+		return Preparation{}, errors.New("unexpected dispatch")
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done, err := f.e.Start(ctx, map[string]Driver{"test-capability": driver, "other-account": driver})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := readOperation(t.Context(), f.store.DB(), attemptProject, o.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == "queued" && current.Wait != nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("startup outage did not recover without restart", calls.Load())
 }

@@ -73,7 +73,7 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	}
 	done := make(chan error, 1)
 	go func() {
-		err := e.supervise(ctx, owned)
+		err := e.supervise(ctx, owned, skipped)
 		e.running.Store(false)
 		done <- err
 		close(done)
@@ -81,13 +81,24 @@ func (e *Engine) Start(ctx context.Context, drivers map[string]Driver) (<-chan e
 	return done, nil
 }
 
-// supervise owns the same two finite work slots; provider waits never hold a
-// database transaction. Start has already completed startup recovery.
-func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
+// supervise owns two finite work slots. A shared probe permit lets either idle
+// worker probe retained Draft waits without occupying both workers. Provider
+// waits never hold a database transaction. Unreadable startup CLI recovery
+// sources have a separate serialized retry owner, not a provider work slot.
+func (e *Engine) supervise(ctx context.Context, owned map[string]Driver, skipped map[string]bool) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
+	workers.Go(func() {
+		if err := e.retrySkippedCLIPreparations(workCtx, skipped); err != nil && workCtx.Err() == nil {
+			select {
+			case failures <- err:
+			default:
+			}
+			cancelWork()
+		}
+	})
 	for range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
@@ -124,7 +135,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 }
 
 func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
-	return e.pendingForWorker(ctx, false)
+	return e.pendingForWorker(ctx, true)
 }
 
 type pendingScanPosition struct{ createdAt, id string }
@@ -175,7 +186,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 			}
 			return Operation{}, err
 		}
-		if o.State != "queued" || o.Wait != nil && o.Wait.BaselineAttemptID != "" {
+		if o.State != "queued" {
 			return Operation{}, nil
 		}
 		configuration, ok := configurations[o.ProjectID]
@@ -238,7 +249,69 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 	// Draft probes use their own window so a full ordinary queue cannot
 	// conceal a ready Draft, and Drafts cannot fill the dispatch window.
 	var out []Operation
-
+	if probeDrafts {
+		e.draftProbeMu.Lock()
+		cursor := e.draftProbeCursor
+		e.draftProbeMu.Unlock()
+		// Seek the raw Draft index before evaluating joins and eligibility.
+		// A bounded page must make progress even if every row is ineligible.
+		readPage := func(after string) ([]Operation, error) {
+			rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_operations INDEXED BY review_operations_draft_probe WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait' AND id>? ORDER BY id LIMIT ?`, after, cliDraftProbeCapacity+1)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var drafts []Operation
+			for rows.Next() {
+				o := Operation{Channel: "cli", Reason: cliDraftWait}
+				if err := rows.Scan(&o.ProjectID, &o.ID); err != nil {
+					return nil, err
+				}
+				drafts = append(drafts, o)
+			}
+			return drafts, rows.Err()
+		}
+		drafts, err := readPage(cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(drafts) == 0 && cursor != "" {
+			drafts, err = readPage("")
+			if err != nil {
+				return nil, err
+			}
+		}
+		for _, draft := range drafts {
+			// Advance before any eligibility work that can exhaust the budget.
+			// This is only a scan cursor, never admission or a provider claim.
+			e.draftProbeMu.Lock()
+			e.draftProbeCursor = draft.ID
+			e.draftProbeMu.Unlock()
+			var eligible string
+			filterArgs := append(append([]any(nil), args...), draft.ID)
+			err := tx.QueryRowContext(ctx, `SELECT id FROM (`+query+` AND o.id=?)`, filterArgs...).Scan(&eligible)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if e.nextDraftProbe([]Operation{draft}) == "" {
+				continue
+			}
+			o, err := readCandidate(draft.ProjectID, draft.ID)
+			if err != nil {
+				return nil, err
+			}
+			if o.ID != "" {
+				out = append(out, o)
+			}
+			break
+		}
+	}
+	// Each supervisor worker retains only a scan position, never eligibility.
+	// Advance before validating a row so a single expensive blocked candidate
+	// cannot restart the same prefix after every bounded-snapshot timeout.
 	worker := 0
 	if probeDrafts {
 		worker = 1
@@ -354,6 +427,8 @@ func preparationReason(err error) string {
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
+			case "pull_draft", "source_changed":
+				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
 			}
@@ -450,7 +525,23 @@ func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
-	operations, err := e.pending(ctx)
+	probe := e.draftProbePermit.CompareAndSwap(false, true)
+	release := func() {
+		if probe {
+			e.draftProbePermit.Store(false)
+			probe = false
+		}
+	}
+	defer release()
+	return e.processNextWithProbe(ctx, drivers, probe, release)
+}
+
+func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
+	return e.processNextWithProbe(ctx, drivers, probeDrafts, func() {})
+}
+
+func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Driver, probeDrafts bool, releaseProbe func()) error {
+	operations, err := e.pendingForWorker(ctx, probeDrafts)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return nil
@@ -461,7 +552,32 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		if ctx.Err() != nil {
 			return nil
 		}
-		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, 0, o.Revision)
+		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		// Selection includes at most one Draft intent, ahead of ordinary work.
+		// Its bounded source read is over; never retain the permit during a
+		// potentially long preparation or dispatch.
+		releaseProbe()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+				continue
+			}
+			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
+				continue
+			}
+			return persistenceFailure()
+		}
+		if !proceed {
+			continue
+		}
+		var draftReadyRevision int64
+		if draftReady {
+			draftReadyRevision = o.Revision
+		}
+		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision, o.Revision)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -498,8 +614,33 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			var recoverable *PreparationRecoveryError
+			if errors.As(err, &recoverable) {
+				return err
+			}
 			state := "held"
 			reason := preparationReason(err)
+			if explicitCLI && reason == "pull_draft" {
+				reason = cliDraftWait
+			}
+			if o.Channel == "hosted" && reason == "hosted_allowance_cooldown" || o.Channel == "cli" && reason == "allowance_exhausted" {
+				// Shutdown cannot discard already-retained quota proof. Keep the
+				// unused preparation reserved for startup's evidence-based recovery.
+				if ctx.Err() != nil {
+					return &PreparationRecoveryError{Err: ctx.Err()}
+				}
+				_, scheduleErr := e.persistCooldown(ctx, o, a)
+				if scheduleErr == nil {
+					return nil
+				}
+				if ctx.Err() != nil {
+					return &PreparationRecoveryError{Err: scheduleErr}
+				}
+				var refusal *core.Error
+				if !cooldownEvidenceUnavailable(o.Channel, scheduleErr) && (!errors.As(scheduleErr, &refusal) || refusal.Code != "review_cooldown_elapsed") {
+					return scheduleErr
+				}
+			}
 			if ctx.Err() != nil {
 				state = "cancelled"
 				reason = "supervisor_stopping"

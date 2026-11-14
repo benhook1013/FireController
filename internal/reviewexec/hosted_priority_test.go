@@ -3,7 +3,8 @@ package reviewexec
 import (
 	"bytes"
 	"context"
-
+	"database/sql"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -86,11 +87,11 @@ func TestHostedPriorityCooldownAndAtomicClaims(t *testing.T) {
 	now = headDue
 	// Another repository's Hosted reservation does not consume this repo's
 	// slot; the nearer queued intent still excludes the lower request.
-	priorityPending(t, f)
+	priorityPending(t, f, head.ID)
 	if _, err := f.e.Advance(t.Context(), otherAttemptProject, busy.ID, 1, "cancelled", "synthetic_release", ""); err != nil {
 		t.Fatal(err)
 	}
-	priorityPending(t, f)
+	priorityPending(t, f, head.ID)
 	// Race two independently constructed workers through the real serialized
 	// claim. Lower is refused whether it runs before or after the head claim.
 	other, err := New(f.store, attemptCapabilities)
@@ -263,5 +264,34 @@ func TestPriorityConfigurationHistoryIsolation(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestConfigurationHistoryIsolationIsTypedAndBounded(t *testing.T) {
+	now := time.Now()
+	e := &Engine{schedulingNow: func() time.Time { return now }}
+	op := Operation{ID: "review_operation_candidate", ProjectID: "project"}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, errors.New("database failure"), core.Fail("storage_unavailable", "Stored source refresh is unavailable.", 500)} {
+		if e.skipUnavailableConfiguration(t.Context(), op, err) || e.skipUnavailableConfiguration(t.Context(), op, fmt.Errorf("wrapped: %w", err)) {
+			t.Fatal("real storage error isolated", err)
+		}
+	}
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	unavailable := fmt.Errorf("private wrapper: %w", newStoredUnavailable(storedConfigurationHistory, "private retained history"))
+	for i := range 300 {
+		op.ID = fmt.Sprintf("review_operation_%d", i)
+		if !e.skipUnavailableConfiguration(t.Context(), op, unavailable) {
+			t.Fatal("typed history not isolated")
+		}
+	}
+	if len(e.configurationFailureNext) != 256 || strings.Count(output.String(), "\n") != 256 || strings.Contains(output.String(), "private") {
+		t.Fatal("unbounded or unsafe diagnostics", len(e.configurationFailureNext))
+	}
+	now = now.Add(30 * time.Second)
+	if !e.skipUnavailableConfiguration(t.Context(), op, unavailable) || len(e.configurationFailureNext) != 1 || strings.Count(output.String(), "\n") != 257 {
+		t.Fatal("diagnostic throttle did not expire")
 	}
 }
