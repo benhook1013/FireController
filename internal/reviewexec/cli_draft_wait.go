@@ -222,7 +222,11 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 	if !draft && !transient && !stopped && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
 		return Operation{}, false, nil
 	}
-	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" && !(stopped && a.State == "cancelled") || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+	expectedState := "held"
+	if stopped {
+		expectedState = "cancelled"
+	}
+	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != expectedState || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, false, waitUnavailable()
 	}
 	if transient || stopped {
