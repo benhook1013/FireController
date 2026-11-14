@@ -1,3 +1,4 @@
+import { recentMergedDisplayOrder } from './review-merged-order';
 import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
 import { ReviewAttemptBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
@@ -278,8 +279,9 @@ function ReviewQueueWindow({ embedded, history, jumpToHead }: { embedded: boolea
   const progress = useReviewProgress(history ? [] : page?.items.map(pull => pull.number) ?? []);
   const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, frame?.fronts) : undefined;
   const channels = !history && frame?.fronts?.configured ? frame.fronts.channels.map(channel=>channel.channel) : undefined;
-  const distances = page ? reviewQueueDistances(page.items, paging.number === 1, page.head_position) : [];
-  const sections = page ? groupReviewQueue(page.items, groups) : [];
+  const displayItems = page ? (history ? page.items : recentMergedDisplayOrder(page.items)) : [];
+  const distances = page ? reviewQueueDistances(displayItems, paging.number === 1, page.head_position) : [];
+  const sections = page ? groupReviewQueue(displayItems, groups) : [];
   // A cached or retained frame can still name yesterday's head. Explicit
   // head navigation waits for its fresh read and matching displayed frame.
   const jumpPage = jumpToHead && (query.isFetching || query.error || page?.snapshot_id !== query.data?.snapshot_id) ? undefined : page;

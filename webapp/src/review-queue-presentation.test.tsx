@@ -28,6 +28,22 @@ const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: f
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main', queued_priority: {pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'} }] });
 
 describe('truthful stored review presentation', () => {
+  it('shows newest merged card immediately above the review head, leaving history order unchanged', () => {
+    const items = [
+      {...pull(88, 'merged'), merged_at: '2026-11-14T05:36:48Z'},
+      {...pull(77, 'merged'), merged_at: '2026-11-13T05:00:00Z'},
+      {...pull(89, 'merged'), merged_at: '2026-11-12T05:00:00Z'},
+      pull(78),
+    ];
+    const html = markup(<ReviewQueueView />, queue(items));
+    expect(html.indexOf('Change 89')).toBeLessThan(html.indexOf('Change 77'));
+    expect(html.indexOf('Change 77')).toBeLessThan(html.indexOf('Change 88'));
+    expect(html.indexOf('Change 88')).toBeLessThan(html.indexOf('Change 78'));
+    const history = markup(<ReviewQueueView history />, queue(items), undefined, { history: true });
+    expect(history.indexOf('Change 88')).toBeLessThan(history.indexOf('Change 77'));
+  });
+
+
   it('uses the standard channel badge for process attention and keeps quota reasons noninteractive', () => {
     const attempt = { channel: 'cli', state: 'failed', reason: 'allowance_exhausted', finished_at: '2026-10-22T00:00:20Z' } as ReviewAttemptSummary;
     const html = markup(<ReviewRunsView number={2} snapshot="snapshot" head={pull(2).head_sha} attempts={[attempt]} expected={0} channelTotals={pull(2).run_counts} />);
