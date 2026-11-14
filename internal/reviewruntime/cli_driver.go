@@ -156,7 +156,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 				return preparation, reviewHold("allowance_unavailable")
 			}
 			retentionCtx, retentionCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-			retainErr := d.exhaustions.Save(retentionCtx, recovery)
+			retainErr := retryCLIExhaustionSave(retentionCtx, waitPreparation, func() error { return d.exhaustions.Save(retentionCtx, recovery) })
 			retentionCancel()
 			if retainErr != nil {
 				return preparation, &reviewexec.PreparationRecoveryError{Err: retainErr}
@@ -265,4 +265,23 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 		return reviewexec.Result{State: retained.Outcome, Reason: "capture_retained"}, nil
 	}
 	return reviewexec.Result{State: "uncertain", Reason: retained.Reason}, nil
+}
+
+// Save uses immutable no-replace publication and reconciles byte-identical
+// existing records, including a prior failed directory sync. Retrying the same
+// record is safe; conflicts and validation refusals must not be retried.
+func retryCLIExhaustionSave(ctx context.Context, wait func(context.Context, time.Duration) error, save func() error) error {
+	var original error
+	err := retryAllowanceRetention(ctx, wait, func() error {
+		original = save()
+		var failure *core.Error
+		if errors.As(original, &failure) && failure.Code == "capture_unavailable" {
+			return core.Fail("storage_unavailable", "Private exhaustion retention is unavailable.", 503)
+		}
+		return core.NormalizeStorageError(original)
+	})
+	if err != nil && original != nil {
+		return original
+	}
+	return err
 }

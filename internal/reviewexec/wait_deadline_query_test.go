@@ -133,6 +133,7 @@ func TestLatestHostedCooldownQueryTieSemantics(t *testing.T) {
 		{"missing proof wins", "absent", proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"oversized wins", strings.Repeat("x", 16385), proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"missing scalar wins", `{}`, proof("2026-01-02T00:00:02Z"), "a-tied"},
+		{"empty scalar wins", proof(""), proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"nontext scalar wins", `{"input":{"observation":{"RetryNotBefore":2}}}`, proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"tied unreadable uses ID", `{`, `{`, "z-tied"},
 	} {

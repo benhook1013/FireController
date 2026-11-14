@@ -326,3 +326,57 @@ func ValidateCLIExhaustionRecovery(r CLIExhaustionRecovery) error {
 	}
 	return nil
 }
+
+// Only startup's interrupted CLI preparations belong to this retry owner.
+// Never scan/recover preparations or active attempts created by live workers.
+// A single supervisor goroutine serializes retries, with bounded source calls.
+func (e *Engine) retrySkippedCLIPreparations(ctx context.Context, skipped map[string]bool) error {
+	pending := make(map[string]bool)
+	for id := range skipped {
+		var channel string
+		if err := e.store.DB().QueryRowContext(ctx, `SELECT o.channel FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id WHERE a.id=?`, id).Scan(&channel); err != nil {
+			return err
+		}
+		if channel == "cli" {
+			pending[id] = true
+		}
+	}
+	timer := time.NewTicker(5 * time.Second)
+	defer timer.Stop()
+	for len(pending) > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if err := e.retryCLIPreparations(ctx, pending); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) retryCLIPreparations(ctx context.Context, pending map[string]bool) error {
+	for id := range pending {
+		local, cancel := context.WithTimeout(ctx, 3*time.Second)
+		record, found, err := e.cliExhaustionRecovery.LoadCLIExhaustion(local, id)
+		if err == nil && found {
+			err = e.ReplayCLIExhaustion(local, record)
+		}
+		cancel()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var refusal *core.Error
+		if err != nil && !(errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500) {
+			continue
+		}
+		// Missing/invalid evidence follows the original interrupted-preparation
+		// cancellation policy. Successful replay retains the original quota wait.
+		if err := e.recoverInterruptedSelected(ctx, nil, map[string]bool{id: true}); err != nil {
+			return err
+		}
+		delete(pending, id)
+	}
+	return nil
+}

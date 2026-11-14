@@ -170,7 +170,10 @@ func TestPendingScanDoesNotSkipReturnedBatch(t *testing.T) {
 				admissionSQL(t, f, `INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, fmt.Sprintf("batch-%03d", i), seed.ID)
 			}
 			first, err := f.e.pendingForWorker(t.Context(), probe)
-			if err != nil || len(first) != 256 {
+			// A deadline may produce a partial batch. This regression needs two
+			// candidates to prove processing preserves the unprocessed remainder,
+			// not a full batch whose size depends on runner throughput.
+			if err != nil || len(first) < 2 || len(first) > 256 {
 				t.Fatal(len(first), err)
 			}
 			var seen []string
@@ -489,6 +492,7 @@ func TestPendingScanInvalidOperationFlagsRemainCandidateLocal(t *testing.T) {
 				f := supervisorFixture(t)
 				f.configure(t, otherAttemptProject, "other-account", 0, false)
 				bad := f.enqueue(t, attemptProject, "bad-flag", channel, 2, 1)
+				successor := f.enqueue(t, attemptProject, "blocked-successor", channel, 4, 1)
 				healthy := f.enqueue(t, otherAttemptProject, "healthy-flag", channel, 2, 1)
 				admissionSQL(t, f, `PRAGMA ignore_check_constraints=ON`)
 				admissionSQL(t, f, `UPDATE review_operations SET `+flag+`=2,created_at='2020-01-01T00:00:00Z' WHERE id=?`, bad.ID)
@@ -508,8 +512,12 @@ func TestPendingScanInvalidOperationFlagsRemainCandidateLocal(t *testing.T) {
 				if err := f.store.DB().QueryRow(`SELECT state,attempt_id,`+flag+` FROM review_operations WHERE id=?`, bad.ID).Scan(&state, &attempt, &rawFlag); err != nil {
 					t.Fatal(err)
 				}
-				if state != "queued" || attempt != "" || rawFlag != 2 || seen[bad.ID] != 0 || seen[healthy.ID] != 1 || driver.calls.Load() != 0 {
+				if state != "queued" || attempt != "" || rawFlag != 2 || seen[bad.ID] != 0 || seen[successor.ID] != 0 || seen[healthy.ID] != 1 || driver.calls.Load() != 0 {
 					t.Fatal("corrupt operation affected independent work or was admitted", state, attempt, rawFlag, seen)
+				}
+				got, err := readOperation(t.Context(), f.store.DB(), attemptProject, successor.ID)
+				if err != nil || got.State != "queued" || got.AttemptID != "" {
+					t.Fatal("damaged predecessor was bypassed", got, err)
 				}
 			})
 		}
