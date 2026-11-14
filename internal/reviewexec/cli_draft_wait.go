@@ -216,19 +216,20 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
 		return Operation{}, false, err
 	}
+	stopped := scheduling && reason == "supervisor_stopping"
 	draft := reason == cliDraftWait
 	transient := scheduling && transientCLISourceReason(reason) && o.Channel == "cli"
-	if !draft && !transient && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
+	if !draft && !transient && !stopped && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed")) {
 		return Operation{}, false, nil
 	}
-	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+	if draft && o.Channel != "cli" || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" && !(stopped && a.State == "cancelled") || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
 		return Operation{}, false, waitUnavailable()
 	}
-	if transient {
+	if transient || stopped {
 		var automatic bool
 		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections s
 			JOIN review_automatic_selections r ON r.selection_id=s.id AND r.project_id=s.project_id
-			WHERE s.operation_id=? AND s.project_id=? AND s.channel='cli' AND s.state='selected')`, o.ID, o.ProjectID).Scan(&automatic); err != nil {
+			WHERE s.operation_id=? AND s.project_id=? AND s.channel=? AND s.state='selected')`, o.ID, o.ProjectID, o.Channel).Scan(&automatic); err != nil {
 			return Operation{}, false, err
 		}
 		if !automatic {
@@ -241,11 +242,14 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 		EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=first.attempt_id AND revision NOT IN (1,2))
 		OR EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=first.attempt_id)
 		OR EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=first.attempt_id)
-		OR (? AND EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id))
+		OR (? AND (EXISTS(SELECT 1 FROM review_cli_preflight WHERE attempt_id=first.attempt_id)
+        OR EXISTS(SELECT 1 FROM review_hosted_preflight WHERE attempt_id=first.attempt_id)
+        OR EXISTS(SELECT 1 FROM review_hosted_allowance_queries WHERE attempt_id=first.attempt_id)
+        OR EXISTS(SELECT 1 FROM review_hosted_observations WHERE attempt_id=first.attempt_id)))
 		FROM review_execution_transitions first
 		JOIN review_execution_transitions last ON last.attempt_id=first.attempt_id AND last.revision=2
 		WHERE first.attempt_id=? AND first.revision=1 AND first.state='preparing' AND first.reason='preparing'
-		AND last.state='held' AND first.external_id='' AND last.external_id=''`, transient, a.ID).Scan(&startedAt, &heldAt, &occupied)
+		AND last.state=? AND first.external_id='' AND last.external_id=''`, transient || stopped, a.ID, a.State).Scan(&startedAt, &heldAt, &occupied)
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -254,7 +258,7 @@ func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, 
 	if occupied || !validStart || !validHold || held.Before(started) {
 		return Operation{}, false, waitUnavailable()
 	}
-	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, "held", reason, nil
+	o.AttemptID, o.State, o.Reason, o.Wait = a.ID, a.State, reason, nil
 	if draft {
 		// A fresh draft observation can detach an unused positive permit.
 		// Damaged optional allowance does not prevent historical attribution.

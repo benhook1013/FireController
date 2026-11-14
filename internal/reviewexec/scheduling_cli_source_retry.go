@@ -21,10 +21,11 @@ func transientCLISourceReason(reason string) bool {
 	return reason == transientCLISourceHold || reason == legacyCLISourceHold
 }
 
-// A terminal preparation can be reconsidered once, under the original
+// A proven unused transient CLI preparation or supervisor-stopped preparation
+// can be reconsidered once, under the original
 // selection. The retained front nominates work. The driver must still read
 // fresh source and pass normal admission and dispatch guards.
-func (e *Engine) automaticTransientCLIRetry(ctx context.Context, tx *sql.Tx, project string, c Configuration) (*Operation, error) {
+func (e *Engine) automaticUnusedPreparationRetry(ctx context.Context, tx *sql.Tx, project string, c Configuration, channel string) (*Operation, error) {
 	queue, err := json.Marshal(c.Queue)
 	if err != nil {
 		return nil, err
@@ -32,22 +33,25 @@ func (e *Engine) automaticTransientCLIRetry(ctx context.Context, tx *sql.Tx, pro
 	now := e.sampleExecutionTime()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT o.id,s.id,a.pull_basis_sha256 FROM json_each(?) q
-		CROSS JOIN review_operations o ON o.project_id=? AND o.pull_number=q.value AND o.channel='cli'
+		CROSS JOIN review_operations o ON o.project_id=? AND o.pull_number=q.value AND o.channel=?
 		JOIN review_execution_attempts current ON current.id=o.attempt_id AND current.operation_id=o.id
 		JOIN review_automatic_selections a ON a.project_id=o.project_id AND a.pull_number=o.pull_number
 		JOIN review_selections s ON s.id=a.selection_id AND s.project_id=o.project_id AND s.operation_id=o.id
-		WHERE o.state='held' AND o.reason IN (?,?)
-		AND current.state='held' AND current.revision=2 AND current.anchor_json='null'
+		WHERE ((o.channel='cli' AND o.state='held' AND o.reason IN (?,?)) OR (o.state='cancelled' AND o.reason='supervisor_stopping'))
+		AND current.state=o.state AND current.revision=2 AND current.anchor_json='null'
 		AND current.intent='' AND current.external_id=''
 		AND NOT EXISTS(SELECT 1 FROM review_cli_preflight p WHERE p.attempt_id=current.id)
+        AND NOT EXISTS(SELECT 1 FROM review_hosted_preflight p WHERE p.attempt_id=current.id)
+        AND NOT EXISTS(SELECT 1 FROM review_hosted_allowance_queries p WHERE p.attempt_id=current.id)
+        AND NOT EXISTS(SELECT 1 FROM review_hosted_observations p WHERE p.attempt_id=current.id)
 		AND julianday(o.updated_at)<=julianday(?)
 		AND NOT EXISTS(SELECT 1 FROM review_operations newer WHERE newer.project_id=o.project_id
 			AND newer.pull_number=o.pull_number AND newer.channel=o.channel AND newer.id<>o.id
 			AND julianday(newer.created_at)>=julianday(o.created_at))
 		AND NOT EXISTS(SELECT 1 FROM review_execution_attempts old
 			JOIN review_execution_transitions t ON t.attempt_id=old.id AND t.revision=2
-			WHERE old.operation_id=o.id AND old.id<>o.attempt_id AND t.reason IN (?,?))
-		ORDER BY q.key`, string(queue), project, transientCLISourceHold, legacyCLISourceHold,
+			WHERE old.operation_id=o.id AND old.id<>o.attempt_id AND t.reason IN (?,?,'supervisor_stopping'))
+		ORDER BY q.key`, string(queue), project, channel, transientCLISourceHold, legacyCLISourceHold,
 		now.Add(-transientSourceDelay).UTC().Format(time.RFC3339Nano), transientCLISourceHold, legacyCLISourceHold)
 	if err != nil {
 		return nil, err
@@ -69,7 +73,7 @@ func (e *Engine) automaticTransientCLIRetry(ctx context.Context, tx *sql.Tx, pro
 		return nil, err
 	}
 
-	frame, found, err := readFrontFrame(ctx, tx, project, "cli")
+	frame, found, err := readFrontFrame(ctx, tx, project, channel)
 	if err != nil || !found || frame.configuration != *c.ExpectedRevision+1 {
 		return nil, err
 	}
@@ -167,7 +171,7 @@ func legacyCLISourceRecovered(ctx context.Context, tx *sql.Tx, o Operation, f fr
 		source.BaseRef == plan.Pull.BaseRef && source.ParentPullNumber == plan.ParentPullNumber && source.ParentSHA == plan.ParentSHA, nil
 }
 
-func (e *Engine) requeueTransientCLISource(ctx context.Context, tx *sql.Tx, o Operation) error {
+func (e *Engine) requeueUnusedPreparation(ctx context.Context, tx *sql.Tx, o Operation) error {
 	at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleExecutionTime())
 	if err != nil {
 		return err
@@ -175,7 +179,11 @@ func (e *Engine) requeueTransientCLISource(ctx context.Context, tx *sql.Tx, o Op
 	if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state='queued',reason='',attempt_id='',revision=revision+1,updated_at=? WHERE id=?`, at, o.ID); err != nil {
 		return err
 	}
+	action := "retry_transient_source"
+	if o.Reason == "supervisor_stopping" {
+		action = "retry_stopped_preparation"
+	}
 	scope := core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}
 	return core.AppendEvent(ctx, tx, scope, "review.operation_updated", o.ID, o.Revision+1,
-		map[string]string{"action": "retry_transient_source", "attempt_id": o.AttemptID})
+		map[string]string{"action": action, "attempt_id": o.AttemptID})
 }

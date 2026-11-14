@@ -718,8 +718,8 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		traceReason(ctx, "lane_busy")
 		return nil, nil
 	}
-	if channel == "cli" {
-		retry, err := e.automaticTransientCLIRetry(ctx, tx, project, c)
+	{
+		retry, err := e.automaticUnusedPreparationRetry(ctx, tx, project, c, channel)
 		if err != nil {
 			return nil, err
 		}
@@ -874,7 +874,7 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			if current.operationRetry.ID != candidate.operationRetry.ID || current.operationRetry.Revision != candidate.operationRetry.Revision {
 				return nil
 			}
-			err = e.requeueTransientCLISource(ctx, tx, *current.operationRetry)
+			err = e.requeueUnusedPreparation(ctx, tx, *current.operationRetry)
 			requeued = current.operationRetry.ID
 		} else if current.retry != nil {
 			if current.retry.ID != candidate.retry.ID || current.retry.Revision != candidate.retry.Revision {
