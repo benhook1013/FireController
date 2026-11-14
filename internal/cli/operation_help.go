@@ -5,6 +5,12 @@ import "io"
 func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
 	usage := "<bound launcher> reviews operations [--pr NUMBER] [--channel cli|hosted] [--all] [--limit N] [--cursor CURSOR]"
 	semantics := "Read one compact newest-first page of retained project operations. Default five pending; --all includes held and terminal history. Reuse the same filters with a cursor. No provider reads, automatic pagination, execution or retry."
+	documentation := "docs/review-operations.md"
+	if operation == "ci-wait" {
+		documentation = "docs/ci-wait.md"
+		usage = "<bound launcher> reviews ci-wait --target PR:HEAD[:BASE] [--after-observation PR:KEY] [--failure-workflow PR:ID] [--wait-seconds 0-900 (default 300)]"
+		semantics = "Read-only CI for the actual PR comparison, using required contexts from the default merge branch. The outer state reports the wake condition; all_targets_passed requires every target. With --after-observation, an unchanged passed or failed verdict stays quiet. Without that baseline, any terminal result returns immediately. Pending checks alone do not wake this terminal wait. No enrollment or review request."
+	}
 	if operation == "operation" {
 		usage = "<bound launcher> reviews operation OPERATION_ID [--wait-seconds N] [--diagnostics]"
 		semantics = "Read compact retained state and original Hosted observer diagnostics; --diagnostics selects the full retained operation. Wait 0-900 seconds, default zero. A posted trigger or successful observer check proves neither provider activity nor completion. Detaching never cancels or retries the review."
@@ -21,5 +27,5 @@ func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
 		Usage         string `json:"usage"`
 		Semantics     string `json:"semantics"`
 		Documentation string `json:"documentation"`
-	}{usage, semantics, "docs/review-operations.md"})
+	}{usage, semantics, documentation})
 }

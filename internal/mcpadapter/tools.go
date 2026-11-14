@@ -19,6 +19,7 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	ciWatchTargets             []client.CIWatchTarget
 	reviewRun                  client.ReviewRunRequest
 	reviewOperations           client.ReviewOperationsOptions
 	operationStatus            *operationStatusInput
@@ -76,17 +77,20 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, noteDefinitions()...)
 	definitions = append(definitions, projectMapDefinitions()...)
 	definitions = append(definitions, jobContextDefinition(), messageWaitDefinition())
+	definitions = append(definitions, ciWatchDefinition())
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
 		write := adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		openWorld := tool.name == "review_start" || checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		openWorld := tool.name == "wait_for_ci" || tool.name == "review_start" || checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		destructive := adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if adoptionTool(tool.name) {
+			if tool.name == "wait_for_ci" {
+				args, err = ciWatchArguments(request.Params.Arguments)
+			} else if adoptionTool(tool.name) {
 				args.adoption, err = parseAdoptionArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "review_rounds_read" || tool.name == "review_rounds_configure" {
 				args, err = roundControlArguments(tool.name, request.Params.Arguments)
@@ -110,6 +114,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return result(binding.Context, false), nil
 			}
 			timeout := 5 * time.Second
+			if tool.name == "wait_for_ci" {
+				timeout = toolCallBudget(tool.name, args)
+			}
 			if tool.name == "wait_for_messages" {
 				timeout = client.MessageWaitBudget(args.messageWaitSeconds)
 			}
@@ -128,6 +135,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				return resultFailure(err), nil
 			}
 			defer service.Close()
+			if tool.name == "wait_for_ci" {
+				args = fitReviewWait(ctx, tool.name, args)
+			}
 			options := client.PageOptions{Limit: args.limit, Cursor: args.cursor}
 			var value any
 			switch tool.name {
@@ -168,6 +178,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				value, err = service.ReviewExecution(ctx)
 			case "review_operations_list":
 				value, err = service.ReviewOperations(ctx, args.reviewOperations)
+			case "wait_for_ci":
+				var watch client.CIWatchResult
+				watch, err = service.WatchCI(ctx, args.ciWatchTargets, args.reviewSourceWait)
+				value = client.AgentCIWatch(watch)
 			case "review_operation_read":
 				value, err = executeOperationStatus(ctx, service, args.operationStatus)
 			case "review_request":

@@ -30,7 +30,7 @@ The [Hosted source foundation](delivery.md#hosted-source-foundation) records the
 - [Public review checkpoints](review-publication.md): explicit historical source summaries, durable posting intent and recovery without blind reposting.
 - [Observed review readiness](review-readiness.md): explicit thread/merge-state collection and provider-free combined assessment.
 - [Required CI observations](review-ci.md): explicit collection, current workflow identity and compact stored assessment.
-- [Waiting for CI](ci-wait.md): bounded pinned-comparison observation through the service API; client surfaces follow separately.
+- [Waiting for CI](ci-wait.md): bounded pinned-comparison observation through the client, CLI and MCP.
 - [Automatic GitHub observation](github-observation.md): service-owned lifecycle/CI reads, external Hosted history and runtime health.
 - [Provider observations](provider-observations.md): bounded raw reads, parent/history lookup and Hosted format decoding, separate from native persistence.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
