@@ -209,13 +209,19 @@ func (m *Manager) verify(ctx context.Context, w Workspace) error {
 		args []string
 		want string
 	}{
-		{[]string{"rev-parse", "--verify", "HEAD"}, w.CandidateSHA},
-		{[]string{"rev-parse", "--verify", w.ComparisonRef}, w.BaseSHA},
+		{[]string{"rev-parse", "--verify", "--quiet", "HEAD^{commit}"}, w.CandidateSHA},
+		{[]string{"rev-parse", "--verify", "--quiet", w.ComparisonRef + "^{commit}"}, w.BaseSHA},
 		{[]string{"merge-base", w.BaseSHA, w.CandidateSHA}, w.MergeBaseSHA},
 		{[]string{"status", "--porcelain=v1", "--untracked-files=all", "--ignored", "-z"}, ""},
 	} {
 		value, err := m.output(ctx, w.Directory, check.args...)
 		if err != nil {
+			// Quiet verification has a documented missing/invalid-name exit.
+			// Other command exits, I/O errors and cancellation remain operational.
+			var exit *exec.ExitError
+			if check.args[0] == "rev-parse" && errors.As(err, &exit) && exit.ExitCode() == 1 {
+				return errVerification
+			}
 			return err
 		}
 		if value != check.want {

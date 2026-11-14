@@ -85,6 +85,9 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.State != "queued" || expectedRevision > 0 && o.Revision != expectedRevision {
 			return conflict()
 		}
+		if err := rejectMissingRetryWait(ctx, tx, o); err != nil {
+			return err
+		}
 		now := e.sampleExecutionTime()
 		// A retained quota timer is scheduling state, not permission to create
 		// another provider attempt before its recorded retry floor.

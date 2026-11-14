@@ -2,7 +2,6 @@ package reviewruntime
 
 import (
 	"context"
-	"errors"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprocess"
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
@@ -72,23 +71,8 @@ func TestExpiredCLIWaitDeletionCannotPrepareChangedComparison(t *testing.T) {
 	pull.BaseSHA = nextBase
 	f.reader.pulls[2] = pull
 	next, err := f.engine.StartAttempt(t.Context(), f.project, op.ID)
-	if err != nil || next.ID == "" {
-		t.Fatal("expected expired request to reach preparation fence", next, err)
-	}
-	current, err := f.engine.ExecutionContext(t.Context(), f.project, op.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.driver.Prepare(t.Context(), current.Operation, current.Configuration, next)
-	var recovery *reviewexec.PreparationRecoveryError
-	if !errors.As(err, &recovery) || usageCalls != 1 {
-		t.Fatal("missing baseline reached fresh provider allowance", err, usageCalls)
-	}
-	f.driver.mu.Lock()
-	prepared := f.driver.prepared[next.ID]
-	f.driver.mu.Unlock()
-	if prepared != nil {
-		t.Fatal("damaged baseline created dispatch state")
+	if err == nil || next.ID != "" || usageCalls != 1 {
+		t.Fatal("missing baseline was not fenced before preparation", next, err, usageCalls)
 	}
 	var after string
 	if err = f.store.DB().QueryRow(`SELECT body_json FROM review_cli_preflight WHERE attempt_id=?`, a.ID).Scan(&after); err != nil || after != retained {
