@@ -79,6 +79,7 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
+	Intent                *IntentProgress        `json:"intent,omitempty"`
 	Observer              *HostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *HostedQueryDiagnostic `json:"hosted_query,omitempty"`
 	Wait                  *OperationWait         `json:"wait,omitempty"`

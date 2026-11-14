@@ -311,7 +311,15 @@ func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID str
 		if previous != nil {
 			sequence = previous.Sequence + 1
 		}
-		if sequence > sourceRetryLimit {
+		lineage, err := readIntentLineage(ctx, tx, o.ProjectID, o.ID)
+		if err != nil {
+			return err
+		}
+		inheritedRetries := 0
+		if lineage != nil {
+			inheritedRetries = lineage.SourceRetries
+		}
+		if sequence+inheritedRetries > sourceRetryLimit {
 			return nil
 		}
 		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())

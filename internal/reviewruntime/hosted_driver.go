@@ -205,8 +205,12 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		}
 	}()
 	reads := newSourceReads(d.provider)
-	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
+	plan, _, err := resolvePreparingIntentSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
+		var changed *reviewexec.IntentSourceChanged
+		if errors.As(err, &changed) {
+			return preparation, changed
+		}
 		var refusal *core.Error
 		var providerError *reviewprovider.Error
 		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) && !(errors.As(err, &providerError) && providerError.Code == "provider_rate_limited") {

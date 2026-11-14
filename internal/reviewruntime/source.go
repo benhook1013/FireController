@@ -137,6 +137,41 @@ func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string)
 	return value, err
 }
 
+// resolvePreparingIntentSource uses the same memoized source phase as normal
+// preparation. A moved comparison is handed back before any allowance query or
+// provider write, never during Dispatch where exact run anchors remain strict.
+func resolvePreparingIntentSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
+	repo, err := reads.Repository(ctx, repositoryID)
+	if err != nil {
+		return reviewexec.SourcePlan{}, nil, err
+	}
+	pull, err := reads.Pull(ctx, repo.FullName, operation.PullNumber)
+	if err != nil {
+		return reviewexec.SourcePlan{}, nil, err
+	}
+	request := operationRequest(operation)
+	request.HeadSHA = pull.HeadSHA
+	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
+	if err != nil {
+		return plan, nil, err
+	}
+	changed := plan.Pull.HeadSHA != operation.HeadSHA
+	if !changed {
+		baseline, err := engine.RetryBaseline(ctx, operation.ProjectID, operation.ID)
+		if err != nil {
+			if retryableHostedRetention(err) || ctx.Err() != nil {
+				return plan, nil, &reviewexec.PreparationRecoveryError{Err: err}
+			}
+			return plan, nil, err
+		}
+		changed = baseline != nil && (baseline.RepositoryID != plan.Repository.ID || baseline.CandidateSHA != plan.Pull.HeadSHA || baseline.BaseSHA != plan.Pull.BaseSHA || baseline.BaseRef != plan.Pull.BaseRef || baseline.ParentSHA != plan.ParentSHA || baseline.ParentPullNumber != plan.ParentPullNumber)
+	}
+	if changed {
+		return plan, nil, &reviewexec.IntentSourceChanged{Source: reviewexec.SourceObservation{RepositoryID: plan.Repository.ID, RepositoryName: plan.Repository.FullName, PullNumber: plan.Pull.Number, HeadSHA: plan.Pull.HeadSHA, BaseSHA: plan.Pull.BaseSHA, BaseRef: plan.Pull.BaseRef, ParentPullNumber: plan.ParentPullNumber, ParentSHA: plan.ParentSHA, ObservedAt: plan.ObservedAt}}
+	}
+	return resolveReviewSource(ctx, engine, reads, repositoryID, configuration, operation)
+}
+
 func resolveReviewSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, operationRequest(operation))
 	if err != nil {

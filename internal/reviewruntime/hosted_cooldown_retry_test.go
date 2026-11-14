@@ -279,8 +279,8 @@ func TestHostedCooldownRetryChangedOrUnusableSourceStopsBeforeFreshQuery(t *test
 				t.Fatal("unusable retry source reached fresh allowance/provider action", err, f.provider.queries)
 			}
 			if mode == "base branch" {
-				var refusal *core.Error
-				if !errors.As(err, &refusal) || refusal.Details.(map[string]string)["reason"] != "source_changed" {
+				var changed *reviewexec.IntentSourceChanged
+				if !errors.As(err, &changed) || changed.Source.BaseRef != pull.BaseRef {
 					t.Fatal("valid new comparison escaped original retry baseline", err)
 				}
 			}

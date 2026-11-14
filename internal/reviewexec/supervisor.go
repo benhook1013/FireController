@@ -170,7 +170,7 @@ func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bo
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint, e.sourceReadGroups[capability.ID], held)
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
-	args = append(args, stamp, stamp, stamp)
+	args = append(args, stamp, stamp, stamp, stamp)
 	// Only matching retained bindings can be skipped as busy. Missing/changed
 	// capabilities remain candidates for StartAttempt's normal hold handling.
 	query := `WITH installed(id,provider,account,fingerprint,source_group,cli_quota_held) AS (VALUES (NULL,NULL,NULL,NULL,NULL,0)` + strings.Repeat(`,(?,?,?,?,?,?)`, len(e.capabilities)) + `),
@@ -178,6 +178,7 @@ func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bo
 	SELECT o.project_id,o.id,o.channel,o.reason FROM review_operations o
 	JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 	JOIN projects p ON p.id=o.project_id
+	LEFT JOIN review_intent_rebindings li ON li.successor_operation_id=o.id AND li.project_id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
 AND NOT (o.channel='cli' AND COALESCE(i.cli_quota_held,0)=1)
@@ -185,6 +186,7 @@ AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.proj
 AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
 AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.id AND julianday(sr.retry_not_before)>julianday(?))
+AND (li.not_before IS NULL OR li.not_before='' OR julianday(li.not_before) IS NULL OR julianday(li.not_before)<=julianday(?))
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
@@ -215,7 +217,7 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 		}
 	}
 	if err := read(` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')
-		ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,o.created_at,o.id LIMIT 256`, args); err != nil {
+		ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,COALESCE(li.intent_created_at,o.created_at),o.id LIMIT 256`, args); err != nil {
 		return nil, err
 	}
 	return ids, nil
@@ -236,6 +238,11 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		return o, false, err
 	}
 	if o.State != "queued" {
+		return Operation{}, false, nil
+	}
+	if ready, err := intentWaitElapsed(ctx, tx, o, e.sampleExecutionTime()); err != nil {
+		return o, false, err
+	} else if !ready {
 		return Operation{}, false, nil
 	}
 	if validChannel(o.Channel) {
@@ -301,7 +308,7 @@ func preparationReason(err error) string {
 				return reason
 			case "target_merged", "target_closed", "target_superseded", "pull_draft", "provider_activity_rate_limited", "provider_activity_unauthorized", "provider_activity_not_found", "provider_activity_response_invalid", "provider_activity_unavailable", "provider_activity_ambiguous", "provider_activity_state_unknown", "provider_activity_observation_invalid":
 				return reason
-			case "routed_findings_pending", "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "allowance_command_not_started", "allowance_timeout", "allowance_command_failed", "allowance_response_unproven", "allowance_provider_lookup_failed", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "predecessor_parent_moved", "execution_binding_changed", "preparation_duplicate", "source_changed", "target_changed", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "source_unavailable", "source_fetch_timeout", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_chat_cooldown", "hosted_allowance_reply_pending", "hosted_allowance_cooldown", "standing_baseline_unproven":
+			case "routed_findings_pending", "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "allowance_command_not_started", "allowance_timeout", "allowance_command_failed", "allowance_response_unproven", "allowance_provider_lookup_failed", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "predecessor_parent_moved", "execution_binding_changed", "preparation_duplicate", "source_changed", "hosted_continuation_changed", "target_changed", "parent_moved", "parent_unavailable", "parent_identity_changed", "default_base_changed", "source_unavailable", "source_fetch_timeout", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_chat_cooldown", "hosted_allowance_reply_pending", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
 			}
 		}
@@ -502,6 +509,18 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			var changed *IntentSourceChanged
+			if errors.As(err, &changed) {
+				_, replaceErr := e.replacePreparingIntent(ctx, o, a, changed.Source)
+				if replaceErr == nil {
+					return nil
+				}
+				var refusal *core.Error
+				if errors.As(replaceErr, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+					return e.finishPreparation(a, "held", preparationReason(replaceErr))
+				}
+				return persistenceFailureAt("intent_rebind", replaceErr, o.ID, a.ID)
+			}
 			var recoverable *PreparationRecoveryError
 			if errors.As(err, &recoverable) {
 				return err

@@ -122,6 +122,13 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return err
 		}
 		now := e.sampleExecutionTime()
+		ready, err := intentWaitElapsed(ctx, tx, o, now)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return nil
+		}
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
