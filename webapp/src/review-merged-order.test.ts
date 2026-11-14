@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recentMergedDisplayOrder } from './review-merged-order';
+import { recentMergedDisplayOrder, recentMergedDisplayDistances } from './review-merged-order';
 import type { ReviewPullSummary } from './types';
 const pull = (number: number, state = 'merged', merged_at?: string) => ({ number, state, merged_at, queue_position: number }) as ReviewPullSummary;
 describe('recent merged display order', () => {
@@ -15,4 +15,13 @@ describe('recent merged display order', () => {
     const items = [pull(1), pull(2, 'merged', 'bad'), pull(3, 'merged', '2026-11-14T18:00:00+13:00'), pull(4, 'merged', '2026-11-14T05:00:00Z'), pull(5, 'open'), pull(6, 'closed'), pull(7, 'unknown'), pull(8, 'open')];
     expect(recentMergedDisplayOrder(items).map(p => p.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
+});
+
+it('orders only known negative merged slots and preserves gaps and active rails', () => {
+  const items = [pull(1), pull(2), pull(3), pull(4, 'open'), pull(5, 'closed')];
+  const distances = [-1, -8, -3, 1, 5];
+  expect(recentMergedDisplayDistances(items, distances)).toEqual([-8, -3, -1, 1, 5]);
+  expect(distances).toEqual([-1, -8, -3, 1, 5]);
+  expect(recentMergedDisplayDistances(items, [undefined, -3, -1, 1, 5])).toEqual([undefined, -3, -1, 1, 5]);
+  expect(recentMergedDisplayDistances(items, [3, 2, 1, 4, 5])).toEqual([3, 2, 1, 4, 5]);
 });

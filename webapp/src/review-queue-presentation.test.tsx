@@ -44,6 +44,19 @@ describe('truthful stored review presentation', () => {
   });
 
 
+  it('keeps chronological merged rails increasing toward the head with stored positions', () => {
+    const items = [
+      {...pull(88, 'merged'), queue_position: 1, merged_at: '2026-11-14T05:36:48Z'},
+      {...pull(77, 'merged'), queue_position: 2, merged_at: '2026-11-13T05:00:00Z'},
+      {...pull(89, 'merged'), queue_position: 3, merged_at: '2026-11-12T05:00:00Z'},
+      {...pull(78), queue_position: 4},
+    ];
+    const html = markup(<ReviewQueueView />, {...queue(items), head_position: 4});
+    const rows = html.split('class="review-queue-position"').slice(1).map(row => row.match(/aria-label="([^"]+)"/u)?.[1]);
+    expect(rows).toEqual(['Queue distance −03', 'Queue distance −02', 'Queue distance −01', 'Queue distance +01: first open PR']);
+    expect(html.indexOf('Change 89')).toBeLessThan(html.indexOf('Change 88'));
+  });
+
   it('uses the standard channel badge for process attention and keeps quota reasons noninteractive', () => {
     const attempt = { channel: 'cli', state: 'failed', reason: 'allowance_exhausted', finished_at: '2026-10-22T00:00:20Z' } as ReviewAttemptSummary;
     const html = markup(<ReviewRunsView number={2} snapshot="snapshot" head={pull(2).head_sha} attempts={[attempt]} expected={0} channelTotals={pull(2).run_counts} />);

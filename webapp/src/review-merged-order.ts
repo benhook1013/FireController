@@ -20,3 +20,20 @@ export function recentMergedDisplayOrder(items: ReviewPullSummary[]): ReviewPull
   }
   return result;
 }
+
+// Merged cards move between presentation slots, not between retained queue
+// positions. Keep the known negative rail slots ordered toward the head.
+export function recentMergedDisplayDistances(items: ReviewPullSummary[], distances: (number | undefined)[]): (number | undefined)[] {
+  const result = [...distances];
+  for (let start = 0; start < items.length;) {
+    if (items[start].state !== 'merged') { start++; continue; }
+    let end = start;
+    while (end < items.length && items[end].state === 'merged') end++;
+    const slots = result.slice(start, end);
+    if (slots.every((value): value is number => value !== undefined && value < 0)) {
+      result.splice(start, slots.length, ...slots.sort((a, b) => a - b));
+    }
+    start = end;
+  }
+  return result;
+}
