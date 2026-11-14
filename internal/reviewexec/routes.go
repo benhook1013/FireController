@@ -17,6 +17,8 @@ import (
 )
 
 type FindingRouteRequest struct {
+	// Unassigned proves deliberate zero at the typed boundary; HTTP derives it from a required target field.
+	Unassigned            bool   `json:"-"`
 	ExpectedRevision      *int64 `json:"expected_revision"`
 	Finding               int64  `json:"finding"`
 	TargetPullNumber      int64  `json:"target_pull_number"`
@@ -104,6 +106,7 @@ func routeStampAtLeast(at, minimum string) string {
 }
 
 func validFindingRouteID(id string) bool { return hostedObservationID(id, "review_route_") }
+func validRouteTarget(n int64) bool      { return n >= 0 && n <= 2147483647 }
 func validRoutePull(n int64) bool        { return n > 0 && n <= 2147483647 }
 func routeStorageError() error {
 	return core.Fail("storage_unavailable", "Stored finding route is unavailable.", 500)
@@ -115,7 +118,7 @@ func routeTimestamp(s string) (time.Time, bool) {
 func validReviewRoute(r ReviewRoute) bool {
 	created, createdOK := routeTimestamp(r.CreatedAt)
 	updated, updatedOK := routeTimestamp(r.UpdatedAt)
-	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
+	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRouteTarget(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
 		return false
 	}
 	if r.State != "active" && r.State != "superseded" {
@@ -295,7 +298,7 @@ func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, ev
 }
 
 func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingRouteRequest) (json.RawMessage, error) {
-	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(evidenceID, "review_evidence_") || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || !validRoutePull(request.TargetPullNumber) || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 {
+	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(evidenceID, "review_evidence_") || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || !validRouteTarget(request.TargetPullNumber) || (request.TargetPullNumber == 0) != request.Unassigned || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 {
 		return nil, invalid()
 	}
 	expected := *request.ExpectedRevision
@@ -321,7 +324,7 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if validateConfigurationShape(c) != nil {
 			return nil, routeStorageError()
 		}
-		if request.TargetPullNumber == evidence.Anchor.PullNumber || !slices.Contains(c.Queue, request.TargetPullNumber) {
+		if request.TargetPullNumber == evidence.Anchor.PullNumber || request.TargetPullNumber != 0 && !slices.Contains(c.Queue, request.TargetPullNumber) {
 			return nil, invalid()
 		}
 		f := &state.Findings[request.Finding]

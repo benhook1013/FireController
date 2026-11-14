@@ -15,7 +15,8 @@ type Query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 type Facts struct {
-	Open int64 `json:"open"`
+	Unassigned int64 `json:"unassigned,omitempty"`
+	Open       int64 `json:"open"`
 }
 
 // projectStateError marks validated corruption in retained project records.
@@ -294,8 +295,21 @@ func readFacts(ctx context.Context, q Query, project string, number int64, stopA
 				return facts, retainedSourceReadError(err)
 			}
 			if d.Status == "open" {
+				// Retain raw unresolved facts separately from review blockers.
+				unassigned := false
+				if d.Original.Kind == "route" {
+					target := m.OriginalRouteTarget(d.Original)
+					if d.Retarget != nil {
+						target = d.Retarget.TargetPullNumber
+					}
+					unassigned = target == 0
+				}
+				if unassigned {
+					facts.Unassigned++
+				}
+
 				facts.Open++
-				if stopAtFirstOpen {
+				if stopAtFirstOpen && !unassigned {
 					return facts, nil
 				}
 				if facts.Open > 1<<53-1 {
@@ -347,7 +361,7 @@ func retainedSourceReadError(err error) error {
 // none remain requires validating the entire targeted history.
 func HasOpen(ctx context.Context, q Query, project string, number int64) (bool, error) {
 	facts, err := readFactsIfPresent(ctx, q, project, number, true)
-	return facts.Open > 0, err
+	return facts.Open > facts.Unassigned, err
 }
 func (s *Service) Detail(ctx context.Context, scope core.Scope, id string) (m.Detail, error) {
 	var out m.Detail

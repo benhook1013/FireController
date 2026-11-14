@@ -341,7 +341,7 @@ func TestNativeInventoryVersionOneSchemaDefinitionsPinned(t *testing.T) {
 		digest     string
 	}{
 		{"review_comparison", reviewexec.ComparisonSchemaSQL(), map[string]int{"TABLE": 1, "INDEX": 2, "TRIGGER": 20}, "584a984a5981c377eda89cafdfb48f4893eb969cd5e006af52651f29f422d69f"},
-		{"review_route_policy", reviewexec.RoutePolicySchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
+		{"review_route_policy", reviewexec.RoutePolicyV1SchemaSQL(), map[string]int{"TABLE": 2, "INDEX": 2, "TRIGGER": 7}, "529de94322105c8d76dde3159a47700a21baaa00eb4daae14bc59d7d3ea75889"},
 	} {
 		t.Run(tc.domain, func(t *testing.T) {
 			counts := map[string]int{}

@@ -27,3 +27,18 @@ func incomingRoutePolicyFacts(ctx context.Context, tx *sql.Tx, project string, p
 	pending, err := pendingIncomingRoutes(ctx, tx, project, pull)
 	return pending, false, err
 }
+
+// An unassigned route is not a review-admission hold, but must never disappear
+// from combined readiness or imply owner approval to merge.
+func pendingUnassignedSourceRoutes(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
+	var dirty bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM review_route_policy_invalidations WHERE project_id=? AND target_pull_number=0)", project).Scan(&dirty); err != nil {
+		return 0, err
+	}
+	if dirty {
+		return 0, routeStorageError()
+	}
+	var count int64
+	err := tx.QueryRowContext(ctx, "SELECT count(*) FROM review_route_policy_facts f JOIN review_finding_routes r ON r.id=f.route_id AND r.project_id=f.project_id WHERE f.project_id=? AND r.source_pull_number=? AND f.target_pull_number=0 AND f.active=1 AND f.pending=1", project, pull).Scan(&count)
+	return count, err
+}

@@ -26,7 +26,7 @@ func routeFixture(t *testing.T, n int) (*attemptFixture, Attempt, string) {
 	return f, a, id
 }
 func routeRequest(revision, finding, target int64) FindingRouteRequest {
-	return FindingRouteRequest{ExpectedRevision: adjudicationRevision(revision), Finding: finding, TargetPullNumber: target, Reason: "Route exact source <script>literal</script>"}
+	return FindingRouteRequest{Unassigned: target == 0, ExpectedRevision: adjudicationRevision(revision), Finding: finding, TargetPullNumber: target, Reason: "Route exact source <script>literal</script>"}
 }
 func routeCreate(t *testing.T, f *attemptFixture, evidence, key string, request FindingRouteRequest) findingRouteReceipt {
 	t.Helper()

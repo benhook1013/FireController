@@ -36,7 +36,7 @@ func (e *Engine) createFindingRouteHTTP(w http.ResponseWriter, r *http.Request) 
 		core.WriteError(w, err)
 		return
 	}
-	value, err := e.CreateFindingRoute(r.Context(), scope, key, id, FindingRouteRequest{ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, TargetPullNumber: *wire.TargetPullNumber, Reason: *wire.Reason, ExpectedRouteRevision: *wire.ExpectedRouteRevision})
+	value, err := e.CreateFindingRoute(r.Context(), scope, key, id, FindingRouteRequest{Unassigned: *wire.TargetPullNumber == 0, ExpectedRevision: wire.ExpectedRevision, Finding: *wire.Finding, TargetPullNumber: *wire.TargetPullNumber, Reason: *wire.Reason, ExpectedRouteRevision: *wire.ExpectedRouteRevision})
 	if err != nil {
 		core.WriteError(w, err)
 		return

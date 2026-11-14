@@ -33,7 +33,7 @@ func routePolicyInventoryScope(t *testing.T, f *restoreFixture) core.Scope {
 // Routes have native capture authority but need not wait for operation
 // completion. This exercises receiving policy independently of comparison
 // proofs and imported dashboard rows, using actual guarded route mutations.
-func routePolicyInventoryFixture(t *testing.T, resolved bool) (*restoreFixture, reviewexec.ReviewRoute) {
+func routePolicyInventoryFixture(t *testing.T, resolved bool, unassigned ...bool) (*restoreFixture, reviewexec.ReviewRoute) {
 	t.Helper()
 	f := newRestoreFixture(t)
 	e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}, {ID: "route-cli", Provider: "coderabbit", Account: "route-account", Channels: []string{"cli"}}})
@@ -76,7 +76,12 @@ func routePolicyInventoryFixture(t *testing.T, resolved bool) (*restoreFixture, 
 		t.Fatal("route fixture evidence", err)
 	}
 	zero := int64(0)
-	raw, err = e.CreateFindingRoute(t.Context(), scope, "route-inventory-create", evidence.ID, reviewexec.FindingRouteRequest{ExpectedRevision: &zero, Finding: 0, TargetPullNumber: 8, Reason: "Owned receiving work"})
+	target := int64(8)
+	backlog := len(unassigned) > 0 && unassigned[0]
+	if backlog {
+		target = 0
+	}
+	raw, err = e.CreateFindingRoute(t.Context(), scope, "route-inventory-create", evidence.ID, reviewexec.FindingRouteRequest{ExpectedRevision: &zero, Finding: 0, TargetPullNumber: target, Unassigned: backlog, Reason: "Owned receiving work"})
 	if err != nil {
 		t.Fatal("route fixture create", err)
 	}
@@ -103,9 +108,13 @@ func routePolicyInventoryFixture(t *testing.T, resolved bool) (*restoreFixture, 
 }
 
 func TestRoutePolicyInventoryRealRouteRoundTripIsReadOnly(t *testing.T) {
-	for _, resolved := range []bool{false, true} {
-		t.Run(map[bool]string{false: "pending", true: "resolved"}[resolved], func(t *testing.T) {
-			f, route := routePolicyInventoryFixture(t, resolved)
+	for _, tc := range []struct {
+		name                 string
+		resolved, unassigned bool
+	}{{"pending", false, false}, {"resolved", true, false}, {"unassigned", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved := tc.resolved
+			f, route := routePolicyInventoryFixture(t, resolved, tc.unassigned)
 			if err := reviewexec.ValidateRoutePolicyFacts(t.Context(), f.store.DB()); err != nil {
 				t.Fatal("genuine route facts invalid", err)
 			}
@@ -196,7 +205,7 @@ func TestRoutePolicyInventoryCanonicalSchemaAndTriggersRequired(t *testing.T) {
 		{"changed-trigger", `DROP TRIGGER review_route_policy_dirty_review_finding_routes_update; CREATE TRIGGER review_route_policy_dirty_review_finding_routes_update AFTER UPDATE ON review_finding_routes BEGIN SELECT 1; END`},
 		{"extra-trigger", `CREATE TRIGGER unexpected_route_policy BEFORE INSERT ON review_route_policy_facts BEGIN SELECT 1; END`},
 		{"extra-column", `ALTER TABLE review_route_policy_facts ADD COLUMN invented_authority INTEGER`},
-		{"wrong-domain-version", `UPDATE metadata SET value='2' WHERE key='schema:review_route_policy'`},
+		{"wrong-domain-version", `UPDATE metadata SET value='3' WHERE key='schema:review_route_policy'`},
 	}
 	var table, retain, index string
 	for _, statement := range reviewexec.RoutePolicySchemaSQL() {
