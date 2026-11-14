@@ -267,6 +267,9 @@ func readOperation(ctx context.Context, tx EvidenceQuery, project, id string) (O
 	if err == nil {
 		o.Allowance, err = readHeldAllowance(ctx, tx, o)
 	}
+	if err == nil {
+		o.Intent, err = readIntentProgress(ctx, tx, o)
+	}
 	return o, err
 }
 

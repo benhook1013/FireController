@@ -91,6 +91,13 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	return e.validateHostedContinuation(ctx, tx, c)
 }
 func automaticOperationSelection(ctx context.Context, tx *sql.Tx, o Operation) (string, error) {
+	lineage, lineageErr := readIntentLineage(ctx, tx, o.ProjectID, o.ID)
+	if lineageErr != nil {
+		return "", lineageErr
+	}
+	if lineage != nil {
+		o.ID = lineage.RootOperationID
+	}
 	var selection string
 	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.operation_id=?`, o.ProjectID, o.ID).Scan(&selection)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -108,7 +115,15 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 	if err != nil {
 		return err
 	}
-	if r.OperationID != o.ID || r.ActorID != o.ActorID || r.WorkerID != o.WorkerID || r.Channel != o.Channel {
+	originalID := o.ID
+	lineage, lineageErr := readIntentLineage(ctx, tx, o.ProjectID, o.ID)
+	if lineageErr != nil {
+		return lineageErr
+	}
+	if lineage != nil {
+		originalID = lineage.RootOperationID
+	}
+	if r.OperationID != originalID || r.ActorID != o.ActorID || r.WorkerID != o.WorkerID || r.Channel != o.Channel {
 		return &automaticProjectStateError{schedulingUnavailable()}
 	}
 	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
@@ -400,23 +415,18 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 	return hex.EncodeToString(sum[:]), len(remaining) > 0, nil
 }
 
-// A waiting request keeps its identity and deadline. Automatic selection may
-// reconsider only earlier PRs, rather than duplicate that request or prefetch
-// farther successors merely because the request is not executing yet.
+// Undispatched intents do not reserve the rest of a channel's queue. Discovery
+// skips each PR's existing intent and still applies current source, dependency,
+// findings, cap and authorization gates to later candidates. Actual attempt
+// claims retain priority and shared provider/source cooldown serialization.
 func automaticHostedQueuedPrefix(ctx context.Context, tx *sql.Tx, project string, c Configuration) (int, error) {
 	return automaticHostedQueuedPrefixChannel(ctx, tx, project, c, "hosted")
 }
-
-func automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql.Tx, project string, c Configuration, channel string) (int, error) {
-	queue, err := json.Marshal(c.Queue)
-	if err != nil {
-		return 0, err
+func automaticHostedQueuedPrefixChannel(_ context.Context, _ *sql.Tx, _ string, c Configuration, channel string) (int, error) {
+	if !validChannel(channel) {
+		return 0, invalid()
 	}
-	var limit int
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(q.key),?) FROM review_operations o JOIN json_each(?) q ON q.value=o.pull_number WHERE o.project_id=? AND o.channel='`+channel+`' AND o.state='queued'
-AND NOT EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
-AND NOT EXISTS(SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)`, len(c.Queue), string(queue), project).Scan(&limit)
-	return limit, err
+	return len(c.Queue), nil
 }
 
 func automaticHostedPendingPull(ctx context.Context, tx *sql.Tx, project string, pull int64) (bool, error) {
@@ -643,6 +653,34 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		traceReason(ctx, "configuration_unavailable")
 		return nil, nil
 	}
+	// Discovery must not spend source reads while a proven shared negative
+	// floor or an actually occupied provider lane prevents any start. A PR's
+	// own Hosted cooldown is not evidence that unrelated PRs must wait.
+	if ready, err := e.sourceCandidateDue(ctx, tx, Operation{}, c); err != nil {
+		return nil, err
+	} else if !ready {
+		traceReason(ctx, "source_credential_wait")
+		return nil, nil
+	}
+	capability := e.capabilities[c.CapabilityID]
+	if channel == "cli" {
+		due, err := cliAccountRetryDeadline(ctx, tx, capability, e.sampleExecutionTime())
+		if err != nil {
+			return nil, err
+		}
+		if e.sampleExecutionTime().Before(due) {
+			traceReason(ctx, "provider_account_wait")
+			return nil, nil
+		}
+	}
+	var providerBusy bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations r JOIN projects p ON p.id=? WHERE r.provider=? AND r.account=? AND r.action_class=? AND (?='cli' OR r.repository_id=p.github_repository_id))`, project, capability.Provider, capability.Account, channel, channel).Scan(&providerBusy); err != nil {
+		return nil, err
+	}
+	if providerBusy {
+		traceReason(ctx, "provider_lane_busy")
+		return nil, nil
+	}
 	c.Queue, err = reviews.OrderedExecutionQueue(ctx, tx, project, c.Queue)
 	if err != nil {
 		return nil, err
@@ -738,9 +776,31 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if !candidates {
 		return continuationPlan()
 	}
+	// A successful selection consumes only its chosen PR. Its post-selection
+	// digest must not suppress unattempted peers now that queued intents do not
+	// truncate planning. An unproductive pass still deduplicates its whole basis.
 	var seen bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
 		return nil, err
+	}
+	// A selected pass examined only through its chosen PR. Preserve dedupe for
+	// its held prefix, but allow unattempted candidates beyond that frontier.
+	if seen {
+		var selected int64
+		if err = tx.QueryRowContext(ctx, `SELECT pull_number FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?) ORDER BY rowid DESC LIMIT 1`, project, basis, basis).Scan(&selected); err != nil {
+			return nil, err
+		}
+		if position := slices.Index(c.Queue, selected); selected > 0 && position >= 0 && position+1 < len(c.Queue) {
+			tail := c
+			tail.Queue = c.Queue[position+1:]
+			_, unseen, err := automaticPlanningBasisChannel(ctx, tx, project, tail, "", channel)
+			if err != nil {
+				return nil, err
+			}
+			if unseen {
+				seen = false
+			}
+		}
 	}
 	plan := &automaticProjectPlan{scheduling: s, scope: scope, basis: basis}
 	if seen {

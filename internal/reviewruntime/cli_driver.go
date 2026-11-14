@@ -133,7 +133,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	}()
 	reads := newSourceReads(d.reader)
 	plan, err := retryCLIPreparationSource(ctx, operation.ID, "source_resolution", func() (reviewexec.SourcePlan, error) {
-		plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
+		plan, _, err := resolvePreparingIntentSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 		return plan, err
 	})
 	if err != nil {

@@ -600,3 +600,38 @@ For Hosted, the existing observation path parses a root-level CodeRabbit “Curr
 For CLI, the process runner reports a timestamp immediately after successful OS process creation, before waiting for completion. The runtime retains it as `process_started_at`; a failed spawn records no start. This confirms the local CLI process launch, not remote analysis or continued execution. Diagnostic persistence failure does not retry or cancel an already launched process.
 
 Review-evidence schema five adds a bounded, canonical diagnostic row keyed to the original attempt and project. First-insert-only retention is idempotent and emits an empty-payload `review.activity_observed` event; the browser refreshes only current round progress. Attempt/head/channel/trigger bindings are checked on write, read and restore. Older supported backups remain readable and upgrade without fabricated activity. This diagnostic does not change immutable attempt history or the public showcase projection.
+
+
+### PR intent generations and late-bound preparation
+
+An undispatched review request retains its PR, channel, original authorizer and
+configured limits. The exact comparison is requalified at preparation using the
+existing memoized provider source reads, not an additional polling loop. If the
+head or a retained retry comparison moved, preparation returns a typed handoff
+before a new allowance query or review command. One transaction retires that
+proven-unused attempt and operation, creates its current-comparison successor,
+and links both generations to the original logical intent. Actual admitted and
+dispatched attempts keep immutable head/base/parent/patch anchors.
+
+The predecessor reports `source_superseded`; operation `intent` metadata exposes
+the root, immediate predecessor/successor, original creation time, generation and
+retained negative wait floor. Rebinding does not consume a review round, grant a
+positive allowance, reset retry budgets, authorize new external effects, or make
+a retained finding fixed. Automatic successors retain their original selection
+and authorizer; disabling automatic execution still prevents them from running.
+An exact-source Hosted continuation cannot be broadened to a new comparison.
+Unknown posting/query outcomes and active attempts are never rebound.
+
+Queued intents no longer truncate discovery of later PRs. Discovery still skips
+existing requests and already examined unchanged candidates. A successful pass
+consumes only the prefix it examined through its selected PR, so an unattempted
+later candidate can progress without repeatedly probing a held prefix. Actual
+attempt claims enforce queue priority, dependency/finding gates and shared
+provider/account/source cooldowns. The original intent age orders replacement
+generations; checking or rebinding does not make an old wait appear new.
+
+The optional `review_intent_rebindings` storage domain retains lineage and an
+operation-side predecessor reference. Missing lineage cannot turn an automatic
+successor into an explicit request. Backup inspection validates this linkage,
+negative budgets, physical schema and foreign keys; restore preserves historical
+generations rather than inventing fresh approval or repeating provider actions.

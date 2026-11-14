@@ -64,6 +64,13 @@ func cliExhaustionDeadline(ctx context.Context, q EvidenceQuery, a Attempt) (tim
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM review_execution_transitions t JOIN review_execution_attempts a ON a.id=t.attempt_id WHERE a.operation_id=? AND t.state='held' AND t.reason='allowance_exhausted' AND rtrim(t.created_at,'Z')<rtrim(?,'Z') LIMIT 3)`, a.OperationID, at).Scan(&previous); err != nil {
 		return time.Time{}, err
 	}
+	lineage, err := readIntentLineage(ctx, q, a.ProjectID, a.OperationID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if lineage != nil {
+		previous += int64(lineage.CLIExhaustions)
+	}
 	return ended.Add(cliRetryDelay(previous)), nil
 }
 

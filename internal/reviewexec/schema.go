@@ -109,6 +109,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := EnsureSchedulingSchema(ctx, store); err != nil {
 		return err
 	}
+	if err := ensureIntentRebindingSchema(ctx, store); err != nil {
+		return err
+	}
 	return hostedContinuationSchema(ctx, store)
 }
 

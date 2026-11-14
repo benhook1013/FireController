@@ -39,6 +39,17 @@ func validateReviewOrderPhysicalSchema(ctx context.Context, db sqlReader, versio
 			return invalid()
 		}
 	}
+	var lateIntent bool
+	if db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE key='schema:review_intent_rebindings')`).Scan(&lateIntent) != nil {
+		return invalid()
+	}
+	if lateIntent {
+		const marker = "intent_predecessor_id TEXT REFERENCES review_operations(id)"
+		if strings.Count(normalized, marker) != 1 {
+			return invalid()
+		}
+		clause = strings.Replace(clause, ",FOREIGN KEY", ", "+marker+",FOREIGN KEY", 1)
+	}
 	if strings.Count(normalized, reviewOrderDDL) != 1 || !strings.Contains(normalized, clause) {
 		return invalid()
 	}

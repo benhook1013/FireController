@@ -88,12 +88,9 @@ func TestCLIQuotaRetryRequalifiesOriginalComparisonBeforeAnotherUsageCheck(t *te
 			}
 			prepared, err := f.driver.Prepare(t.Context(), current.Operation, current.Configuration, next)
 			if changed {
-				if !errors.As(err, &failure) || failure.Code != "review_held" {
-					t.Fatal("changed comparison was allowed", err)
-				}
-				reason, _ := failure.Details.(map[string]string)
-				if reason["reason"] != "source_changed" || calls != 1 {
-					t.Fatal("moved base reached quota query", reason, calls)
+				var moved *reviewexec.IntentSourceChanged
+				if !errors.As(err, &moved) || moved.Source.HeadSHA != current.Operation.HeadSHA || moved.Source.BaseSHA == f.baseSHA || calls != 1 {
+					t.Fatal("moved comparison did not hand off before another quota query", moved, err, calls)
 				}
 				return
 			}
