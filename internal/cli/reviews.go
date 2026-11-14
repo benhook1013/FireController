@@ -443,7 +443,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 				return nil, false
 			}
 		}
-		call.reviewRoute = client.ReviewRouteRequest{ExpectedRevision: revision, ExpectedRouteRevision: routeRevision, Finding: finding, TargetPullNumber: target, Reason: values["--reason"]}
+		call.reviewRoute = client.ReviewRouteRequest{Unassigned: unassigned, ExpectedRevision: revision, ExpectedRouteRevision: routeRevision, Finding: finding, TargetPullNumber: target, Reason: values["--reason"]}
 		if client.ValidateReviewRouteRequest(call.reviewRoute) != nil {
 			return nil, false
 		}

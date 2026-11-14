@@ -403,9 +403,14 @@ func TestReviewRoutesCoherentFutureHistoryKeepsChronologyValidation(t *testing.T
 }
 
 func TestUnassignedRouteDetailAndExplicitRequest(t *testing.T) {
-	request := client.ReviewRouteRequest{ExpectedRevision: 0, Finding: 0, TargetPullNumber: 0, Reason: "Unresolved work awaiting an owner"}
+	request := client.ReviewRouteRequest{Unassigned: true, ExpectedRevision: 0, Finding: 0, TargetPullNumber: 0, Reason: "Unresolved work awaiting an owner"}
 	if err := client.ValidateReviewRouteRequest(request); err != nil {
 		t.Fatal(err)
+	}
+	implicit := request
+	implicit.Unassigned = false
+	if client.ValidateReviewRouteRequest(implicit) == nil {
+		t.Fatal("implicit zero accepted")
 	}
 	raw, _ := json.Marshal(request)
 	if !strings.Contains(string(raw), `"target_pull_number":0`) {

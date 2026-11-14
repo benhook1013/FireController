@@ -74,6 +74,7 @@ type ReviewRoutePage struct {
 }
 
 type ReviewRouteRequest struct {
+	Unassigned            bool   `json:"-"`
 	ExpectedRevision      int64  `json:"expected_revision"`
 	Finding               int64  `json:"finding"`
 	TargetPullNumber      int64  `json:"target_pull_number"`
@@ -108,7 +109,7 @@ func ValidateReviewRouteID(id string) error {
 	return nil
 }
 func ValidateReviewRouteRequest(r ReviewRouteRequest) error {
-	if !validControlRevision(r.ExpectedRevision) || !validControlRevision(r.ExpectedRouteRevision) || r.Finding < 0 || r.Finding >= 100 || !(r.TargetPullNumber == 0 || validPullNumber(r.TargetPullNumber)) || !controlText(r.Reason, 2048, true) {
+	if (r.TargetPullNumber == 0) != r.Unassigned || !validControlRevision(r.ExpectedRevision) || !validControlRevision(r.ExpectedRouteRevision) || r.Finding < 0 || r.Finding >= 100 || !(r.TargetPullNumber == 0 || validPullNumber(r.TargetPullNumber)) || !controlText(r.Reason, 2048, true) {
 		return mutationValidation()
 	}
 	return nil

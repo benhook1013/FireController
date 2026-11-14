@@ -83,7 +83,7 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 			return args, invalidArguments()
 		}
 		args.id, args.key = in.ID, in.Key
-		args.reviewRoute = client.ReviewRouteRequest{ExpectedRevision: *in.Revision, Finding: *in.Finding, TargetPullNumber: *in.Target, Reason: in.Reason}
+		args.reviewRoute = client.ReviewRouteRequest{Unassigned: *in.Target == 0, ExpectedRevision: *in.Revision, Finding: *in.Finding, TargetPullNumber: *in.Target, Reason: in.Reason}
 		if in.RouteRevision != nil {
 			args.reviewRoute.ExpectedRouteRevision = *in.RouteRevision
 		}
