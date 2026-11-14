@@ -243,3 +243,19 @@ func TestCIWatchWorkflowMismatchAllowsRegenerationBeforeReconciliation(t *testin
 		}
 	}
 }
+
+func TestCIWatchCollectionRacesKeepCanonicalGuidance(t *testing.T) {
+	for _, reason := range []string{"ci_provider_observation_changed_assessment", "ci_provider_observation_changed_head_results", "ci_provider_observation_changed_merge_results", "ci_provider_observation_changed_results_recheck", "ci_provider_observation_changed_merge_results_recheck"} {
+		t.Run(reason, func(t *testing.T) {
+			for _, unproven := range []int64{0, 1} {
+				item := client.CIWatchTargetResult{State: "pending", Reason: reason, ObservedAt: "2026-11-01T00:00:00Z", Required: 2, Pending: 1, Unproven: unproven}
+				out := client.AgentCIWatch(client.CIWatchResult{Targets: []client.CIWatchTargetResult{item}})
+				want := client.AgentReviewCI(client.ReviewSourceCIAssessment{State: "unproven", Reason: reason}).Diagnostic
+				got := out.Targets[0].Diagnostic
+				if want == nil || got == nil || got.Explanation != want.Explanation || got.NextAction != want.NextAction || out.Targets[0].Phase != "observation_unproven" || !reflect.DeepEqual(out.Targets[0].CIWatchTargetResult, item) {
+					t.Fatal("collection race became pending checks or lost canonical guidance/wire facts", out, want)
+				}
+			}
+		})
+	}
+}

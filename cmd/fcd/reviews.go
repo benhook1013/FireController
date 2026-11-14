@@ -20,7 +20,7 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 	for _, capability := range catalog.Capabilities {
 		capabilities = append(capabilities, reviewexec.Capability{ID: capability.ID, Provider: "coderabbit", Account: capability.Account, Channels: capability.Channels, Fingerprint: capability.Fingerprint})
 	}
-	recoveryStore, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(dataDir, "cli-exhaustion-captures"))
+	recoveryStore, err := reviewruntime.NewCLIExhaustionStore(filepath.Join(dataDir, "cli-exhaustion-captures"), dataDir)
 	if err != nil {
 		return nil, nil, err
 	}

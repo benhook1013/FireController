@@ -26,6 +26,7 @@ const (
 	storedHostedObservation
 	storedReviewAdmission
 	storedConfigurationHistory
+	storedOperationIdentity
 )
 
 type storedUnavailableError struct {
