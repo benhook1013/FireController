@@ -44,3 +44,22 @@ func TestPartialTerminalFindingsRemainObligations(t *testing.T) {
 		})
 	}
 }
+
+func TestEmptyPartialTerminalDoesNotInventObligations(t *testing.T) {
+	for _, terminal := range []string{"failed", "cancelled", "rate_limited"} {
+		t.Run(terminal, func(t *testing.T) {
+			f, a, _, plan := coverageFixture(t, 0, true)
+			if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, terminal, "capture_retained", ""); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.e.Comparison(t.Context(), attemptProject, plan, "cli")
+			if err != nil || got.Pending || got.Covered {
+				t.Fatal(got, err)
+			}
+			undecided, fixes, err := retainedCLIObligations(t.Context(), f.store.DB(), attemptProject, 2)
+			if err != nil || undecided || fixes {
+				t.Fatal(undecided, fixes, err)
+			}
+		})
+	}
+}
