@@ -50,9 +50,10 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	if !sound {
 		return false
 	}
-	var count strings.Builder
+	var count, visibleText strings.Builder
 	for _, line := range lines {
 		count.WriteString(line.countText)
+		visibleText.WriteString(line.countText)
 		if line.countContinues {
 			continue
 		}
@@ -60,6 +61,12 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 			return false
 		}
 		count.Reset()
+		visibleText.WriteByte(' ')
+	}
+	// Ordinary Markdown soft breaks are whitespace, not declaration boundaries.
+	// Keep the per-line refusal above for bare labels as well.
+	if submittedActionableClaim.MatchString(visibleText.String()) {
+		return false
 	}
 	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
 	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}

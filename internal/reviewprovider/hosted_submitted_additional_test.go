@@ -466,6 +466,7 @@ func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 	for _, prose := range []string{
 		"Preserve the actionable comments posted label.",
 		"Actionable comments posted by the reviewer remain unverified.",
+		"Actionable comments\nposted by the reviewer remain unverified.",
 		"Preserve the actionable <!-- ordinary comment -->comments posted label.",
 		"<!-- Actionable comments posted: 99 -->",
 		"<!-- hidden\nActionable comments posted: 99\n-->",
@@ -476,6 +477,19 @@ func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 			got := f.extract(t)
 			if !got.Complete || len(got.Findings) != 1 || !strings.Contains(got.Findings[0].Detail, prose) {
 				t.Fatalf("ordinary prose or hidden example lost positive source inventory: %+v", got)
+			}
+		})
+	}
+}
+
+func TestHostedSubmittedAdditionalOnlyRejectsSoftWrappedActionable(t *testing.T) {
+	for _, claim := range []string{"**Actionable comments\nposted: 1**", "**Actionable\ncomments posted: 1**", "**Actionable comments posted\n: 1**", "**Actionable\ncomments\nposted: 1**", "**Actionable comments\r\nposted: 1**"} {
+		t.Run(claim, func(t *testing.T) {
+			f := submittedAdditionalFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", claim+"\n_Source: Linters/SAST tools_", 1)
+			got := f.extract(t)
+			if got.Complete {
+				t.Fatal("soft-wrapped actionable declaration supplied complete additional-only inventory")
 			}
 		})
 	}
