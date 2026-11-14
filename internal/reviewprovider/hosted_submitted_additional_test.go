@@ -465,6 +465,7 @@ func TestHostedSubmittedAdditionalOnlyCountsEveryItem(t *testing.T) {
 func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 	for _, prose := range []string{
 		"Preserve the actionable comments posted label.",
+		"Preserve the actionable comments posted\nlabel.",
 		"Actionable comments posted by the reviewer remain unverified.",
 		"Actionable comments\nposted by the reviewer remain unverified.",
 		"Preserve the actionable <!-- ordinary comment -->comments posted label.",
@@ -483,7 +484,7 @@ func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 }
 
 func TestHostedSubmittedAdditionalOnlyRejectsSoftWrappedActionable(t *testing.T) {
-	for _, claim := range []string{"**Actionable comments\nposted: 1**", "**Actionable\ncomments posted: 1**", "**Actionable comments posted\n: 1**", "**Actionable\ncomments\nposted: 1**", "**Actionable comments\r\nposted: 1**"} {
+	for _, claim := range []string{"**Actionable comments <!-- note --> posted: 1**", "**Actionable comments\nposted: 1**", "**Actionable\ncomments posted: 1**", "**Actionable comments posted\n: 1**", "**Actionable\ncomments\nposted: 1**", "**Actionable comments\r\nposted: 1**"} {
 		t.Run(claim, func(t *testing.T) {
 			f := submittedAdditionalFixture(t)
 			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", claim+"\n_Source: Linters/SAST tools_", 1)

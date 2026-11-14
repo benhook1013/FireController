@@ -36,7 +36,7 @@ func (p *submittedReviewParser) additionalOnly() bool {
 // A count declaration has a label separator (including malformed values), a
 // numeric value without its separator, or a bare formatted label. Mentioning
 // the phrase in ordinary finding prose is not a declaration.
-var submittedActionableClaim = regexp.MustCompile(`(?i)actionable comments posted(?:[ \t]*:|[ \t]+[0-9]+\b|[ \t]*(?:\*\*|$))`)
+var submittedActionableClaim = regexp.MustCompile(`(?i)actionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b|[ \t]*\*\*)`)
 
 // Complete provider collections independently prove the absence of attached or
 // in-window orphan roots before this check. The positive counted category must
