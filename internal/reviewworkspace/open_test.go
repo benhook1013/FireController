@@ -261,3 +261,17 @@ func TestReopenAndChangedFilesDistinguishOperationalFailure(t *testing.T) {
 		t.Fatal("verified dirty source must be permanent", err)
 	}
 }
+
+func TestOpenMissingComparisonRefIsInvalidNotOperational(t *testing.T) {
+	f := newFixture(t)
+	w := boundOpenFixture(t, f, "missing_ref")
+	git(t, f.git, w.Directory, "update-ref", "-d", w.ComparisonRef)
+	before := openFilesystemState(t, w.Directory)
+	_, err := openPrepared(f.manager, t.Context(), w)
+	if err == nil || reviewworkspace.IsOperationalError(err) {
+		t.Fatalf("missing ref not identified as invalid workspace: %v", err)
+	}
+	if !reflect.DeepEqual(before, openFilesystemState(t, w.Directory)) {
+		t.Fatal("verification modified damaged workspace")
+	}
+}

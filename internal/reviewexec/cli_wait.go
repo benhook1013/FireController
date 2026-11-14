@@ -148,7 +148,7 @@ func cliAccountRetryDeadline(ctx context.Context, q EvidenceQuery, capability Ca
 		if previous < 0 {
 			err = q.QueryRowContext(ctx, `SELECT o.project_id,o.id FROM review_operation_waits w INDEXED BY review_waits_live_retry
 			CROSS JOIN review_operations o ON o.id=w.operation_id
-			CROSS JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id
+			CROSS JOIN review_execution_attempts a ON a.id=w.baseline_attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id
 			WHERE o.channel='cli' AND a.provider=? AND a.account=? AND w.retry_not_before<>''
 			AND rtrim(w.retry_not_before,'Z')>rtrim(?,'Z')
 			ORDER BY rtrim(w.retry_not_before,'Z') DESC LIMIT 1`, capability.Provider, capability.Account, now.UTC().Format(time.RFC3339Nano)).Scan(&project, &id)

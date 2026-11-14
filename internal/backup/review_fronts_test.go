@@ -86,3 +86,11 @@ func TestFrontInventoryRejectsResealedCorruptionAndSupportsPredecessor(t *testin
 		assertCurrentSummaryInventoryRefused(t, bundle, false)
 	})
 }
+
+func TestFrontInventoryRejectsEmptyTableWithoutPrimaryKey(t *testing.T) {
+	f := newRestoreFixture(t)
+	bundle := restoreBundle(t, f)
+	ddl := strings.Replace(reviewexec.FrontSchemaSQL()[0], "PRIMARY KEY(project_id,channel),", "", 1)
+	mutateBundleSQL(t, bundle.Path, `DROP TABLE review_front_frames;`+ddl)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,5 +206,41 @@ func TestRunHTTPWaitSharesBudgetAcrossSelectionAndExecution(t *testing.T) {
 	var n int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&n); err != nil || n != 1 {
 		t.Fatal("wait/replay created another action", n, err)
+	}
+}
+
+// Exercise a real socket deadline: an optional hint must not turn a valid
+// retained response into EOF when the read pool is occupied.
+func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T) {
+	f := selectionFixture(t)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Model the remaining budget after required selection and operation reads.
+		if err := operationResponseDeadlineAt(w, time.Now().Add(750*time.Millisecond)); err != nil {
+			t.Error(err)
+			return
+		}
+		e := f.e
+		e.queuedRunResponseHeader(w, r, scope, RunState{Operation: &Operation{ID: "review_operation_test", State: "queued", Channel: "cli", Revision: 1}})
+		w.Write([]byte("retained response"))
+	}))
+	defer server.Close()
+	response, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatal("optional diagnostic lost response", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "retained response" {
+		t.Fatal(string(body), err)
+	}
+	if response.Header.Get(queuedDiagnosticHeader) != "" {
+		t.Fatal("unavailable diagnostic must be omitted")
 	}
 }

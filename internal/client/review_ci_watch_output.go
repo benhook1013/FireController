@@ -97,6 +97,7 @@ func ciWatchDiagnostic(item CIWatchTargetResult) (string, *ReviewOperationDiagno
 	case item.Reason == "ci_watch_refresh_pending":
 		phase, explanation = "refreshing", "A newer controller check has been requested but has not completed. Any earlier counts and checks are informational until that refresh completes."
 	case oneReviewOf(item.Reason, "ci_merge_base_mismatch", "ci_merge_identity_unproven", "ci_merge_pending",
+		"ci_provider_observation_changed_assessment", "ci_provider_observation_changed_head_results", "ci_provider_observation_changed_merge_results", "ci_provider_observation_changed_results_recheck", "ci_provider_observation_changed_merge_results_recheck",
 		"ci_provider_inventory_incomplete", "ci_provider_inventory_incomplete_head_results", "ci_provider_inventory_incomplete_merge_results", "ci_provider_inventory_incomplete_results_recheck", "ci_provider_inventory_incomplete_merge_results_recheck",
 		"ci_provider_invalid_response_head_results", "ci_provider_invalid_response_merge_results", "ci_provider_invalid_response_results_recheck", "ci_provider_invalid_response_merge_results_recheck", "ci_provider_invalid_response_assessment",
 		"ci_provider_invalid_response_check_run_time_order", "ci_provider_invalid_response_head_results_check_run_time_order", "ci_provider_invalid_response_merge_results_check_run_time_order", "ci_provider_invalid_response_results_recheck_check_run_time_order", "ci_provider_invalid_response_merge_results_recheck_check_run_time_order"):

@@ -233,17 +233,7 @@ func (e *Engine) RetryBaseline(ctx context.Context, project, operationID string)
 		if o.Wait == nil || o.Wait.BaselineAttemptID == "" {
 			// A missing projection is not proof that this is a fresh request.
 			// Detached cooldown history still binds the original comparison.
-			var detached bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_attempts a
- JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision
- WHERE a.operation_id=? AND a.id<>? AND a.state='held' AND t.state='held'
- AND ((?='cli' AND t.reason='allowance_exhausted') OR (?='hosted' AND t.reason='hosted_allowance_cooldown')))`, o.ID, o.AttemptID, o.Channel, o.Channel).Scan(&detached); err != nil {
-				return err
-			}
-			if detached {
-				return waitUnavailable()
-			}
-			return nil
+			return rejectMissingRetryWait(ctx, tx, o)
 		}
 		a, err := readAttempt(ctx, tx, project, o.Wait.BaselineAttemptID)
 		if err != nil {
@@ -445,4 +435,23 @@ func (e *Engine) controlOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	core.WriteJSON(w, http.StatusOK, value)
+}
+
+// Missing cooldown attribution must hold its candidate before reserving a fresh
+// preparation; it must never escalate into a shared provider-worker failure.
+func rejectMissingRetryWait(ctx context.Context, tx *sql.Tx, o Operation) error {
+	if o.Wait != nil && o.Wait.BaselineAttemptID != "" {
+		return nil
+	}
+	var detached bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_attempts a
+ JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision
+ WHERE a.operation_id=? AND a.id<>? AND a.state='held' AND t.state='held'
+ AND ((?='cli' AND t.reason='allowance_exhausted') OR (?='hosted' AND t.reason='hosted_allowance_cooldown')))`, o.ID, o.AttemptID, o.Channel, o.Channel).Scan(&detached); err != nil {
+		return err
+	}
+	if detached {
+		return waitUnavailable()
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -29,7 +30,12 @@ func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, sc
 	if state != "queued" {
 		return
 	}
-	cause, reservation := e.queuedDiagnosticDetails(r.Context(), scope, id, revision)
+	// Optional diagnostics must not consume another two-second Store read
+	// after the two required selection/operation reads in the five-second
+	// response budget. Leave headroom for encoding and network writes.
+	ctx, cancel := context.WithTimeout(r.Context(), 250*time.Millisecond)
+	defer cancel()
+	cause, reservation := e.queuedDiagnosticDetails(ctx, scope, id, revision)
 	if cause == "queue_order" && channel == "cli" && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" && r.Header.Get(operationWaitHeader) != "5" {
 		cause = "awaiting_scheduler"
 	}
