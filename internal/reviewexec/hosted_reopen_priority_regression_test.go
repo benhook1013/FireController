@@ -61,14 +61,26 @@ func TestHostedAutomaticReopenedEarlierPRPrecedesRetainedLaterCooldown(t *testin
 }
 
 func TestHostedAutomaticReconsiderationPreservesExplicitAndActiveWork(t *testing.T) {
-	t.Run("queued-front-does-not-prefetch", func(t *testing.T) {
+	t.Run("queued-front-preserves-priority-without-reserving-discovery", func(t *testing.T) {
 		f := schedulingFixture(t)
-		f.enqueue(t, attemptProject, "explicit-front", "hosted", 2, 1)
+		front := f.enqueue(t, attemptProject, "explicit-front", "hosted", 2, 1)
 		schedulingEnable(t, f, 0, true)
-		before := selectionCounts(t, f)
+		schedulingGenerate(t, f, true)
+		selectionNext(t, f, &refreshTestReader{})
+		later := cliWaitRead(t, f, schedulingLatest(t, f).OperationID)
+		if later.PullNumber != 4 || later.State != "queued" || cliWaitRead(t, f, front.ID).State != "queued" {
+			t.Fatal("discovery duplicated or replaced front", later)
+		}
+		if a, err := f.e.StartAttempt(t.Context(), attemptProject, later.ID); err != nil || a.ID != "" {
+			t.Fatal("later intent bypassed eligible front", a, err)
+		}
 		schedulingGenerate(t, f, false)
-		if after := selectionCounts(t, f); after != before {
-			t.Fatal("waiting front caused extra automatic work", before, after)
+		schedulingPause(t, f, 2, 0, true)
+		if a, err := f.e.StartAttempt(t.Context(), attemptProject, later.ID); err != nil || a.ID == "" {
+			t.Fatal("held front still reserved later eligible work", a, err)
+		}
+		if count := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`); count != 2 {
+			t.Fatal("duplicate request", count)
 		}
 	})
 	t.Run("active-work-not-interrupted", func(t *testing.T) {
