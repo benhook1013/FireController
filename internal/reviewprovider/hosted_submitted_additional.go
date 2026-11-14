@@ -88,9 +88,19 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 var submittedCountDecoration = regexp.MustCompile(`(?s)</?[A-Za-z](?:[^<>"']|"[^"]*"|'[^']*')*>`)
 
 // Decoration removal is a refusal-only view: it cannot supply structural markers,
-// inventory or source offsets. Keep the raw check as well so decorated examples
+// inventory or source offsets. Both joining and separating tags are conservative
+// refusal views: inline tags can split words, while br/block tags separate them.
+// Keep the raw check as well so decorated examples
 // cannot erase an already visible contradictory declaration.
 func hasSubmittedActionableClaim(text string) bool {
-	return submittedActionableClaim.MatchString(text) || submittedActionableClaim.MatchString(
-		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")))
+	for _, visible := range []string{text,
+		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")),
+		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, " ")),
+	} {
+		if submittedActionableClaim.MatchString(visible) || submittedActionableClaim.MatchString(
+			strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(visible)) {
+			return true
+		}
+	}
+	return false
 }

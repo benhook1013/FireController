@@ -501,6 +501,13 @@ func TestHostedSubmittedAdditionalOnlyRejectsSoftWrappedActionable(t *testing.T)
 func TestHostedSubmittedAdditionalOnlyRejectsInlineHTMLActionableClaim(t *testing.T) {
 	for _, claim := range []string{
 		"**Actionable comments <span>posted</span>: 1**",
+		"**Actionable comments<br>posted: 1**",
+		"**Actionable** comments posted: 1",
+		"Actionable **comments** posted: 1",
+		"*Actionable* comments posted: 1",
+		"Actionable comments __posted__: 1",
+		"**Actionable comments</div><div>posted: 1**",
+		"**Actionable com<span>ments</span> posted: 1**",
 		`**Actionable comments <span title="a > b">posted</span>: 1**`,
 		`**Actionable comments <span title='a > b'>posted</span>: 1**`,
 		"**<span>Actionable</span> comments <em>posted</em>: 1**",
