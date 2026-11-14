@@ -220,7 +220,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 			return preparation, err
 		}
 	}
-	if err := RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture); err != nil {
+	if err := retryAllowanceRetention(ctx, d.wait, func() error {
+		return core.NormalizeStorageError(RetainHostedAllowance(ctx, d.captures, d.engine, attempt, anchor, fileCount, observed.Capture))
+	}); err != nil {
 		return preparation, reviewHold("hosted_allowance_unproven")
 	}
 	if _, err := retainHostedBaseline(ctx, d.provider, d.captures, d.engine, attempt, anchor, actor, d.providerActor()); err != nil {
