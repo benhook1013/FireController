@@ -15,7 +15,7 @@ func TestOperationListIndexFreshAndExistingDatabase(t *testing.T) {
 			f, a, _ := cliAllowanceFixture(t)
 			if upgrade {
 				admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_listing`)
-				for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt"} {
+				for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt", "review_operations_draft_probe"} {
 					admissionSQL(t, f, "DROP INDEX "+index)
 				}
 				admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_execution_indexes'`)
@@ -57,7 +57,7 @@ func TestOperationListIndexFreshAndExistingDatabase(t *testing.T) {
 				}
 			}
 			var version string
-			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "3" {
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "4" {
 				t.Fatal("index migration missing", version, err)
 			}
 			if err := EnsureSchema(t.Context(), f.store); err != nil {
