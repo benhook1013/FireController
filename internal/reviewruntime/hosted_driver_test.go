@@ -586,3 +586,16 @@ func TestHostedDriverFinalGuardPreservesHarmlessQueueSuffixChange(t *testing.T) 
 		t.Fatal("harmless queue suffix edit changed original dispatch", result, err, f.provider.reviews, f.provider.queries)
 	}
 }
+
+func TestFoundationRetryComparisonRetainsRepositoryID(t *testing.T) {
+	baseline := reviewexec.Anchor{RepositoryID: 901, Repository: "owner/repo"}
+	current := baseline
+	current.Repository = "renamed/repo"
+	if !sameHostedRetryComparison(baseline, current) {
+		t.Fatal("stable repository rename rejected")
+	}
+	current.RepositoryID++
+	if sameHostedRetryComparison(baseline, current) {
+		t.Fatal("different repository identity accepted")
+	}
+}
