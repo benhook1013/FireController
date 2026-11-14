@@ -210,7 +210,7 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil || count != 0 {
 			t.Fatal("predecessor domain not empty", err)
 		}
-		if _, err := f.store.DB().Exec(`DROP TABLE review_automatic_selections;DROP TABLE review_pull_scheduling;DROP TABLE review_scheduling;DELETE FROM metadata WHERE key='schema:review_scheduling';DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
+		if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_continuations;DELETE FROM metadata WHERE key='schema:review_hosted_continuations';DROP TABLE review_automatic_selections;DROP TABLE review_pull_scheduling;DROP TABLE review_scheduling;DELETE FROM metadata WHERE key='schema:review_scheduling';DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
 			t.Fatal(err)
 		}
 		bundle := restoreBundle(t, f)

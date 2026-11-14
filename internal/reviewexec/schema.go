@@ -103,7 +103,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := sourceRetrySchema(ctx, store); err != nil {
 		return err
 	}
-	return EnsureSchedulingSchema(ctx, store)
+	if err := EnsureSchedulingSchema(ctx, store); err != nil {
+		return err
+	}
+	return hostedContinuationSchema(ctx, store)
 }
 
 // Execution migration nine rebuilds attempts independently of the comparison

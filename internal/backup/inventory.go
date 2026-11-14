@@ -232,7 +232,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_source_retries": 1, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 1, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -318,10 +318,11 @@ var tables = map[string]tableVersion{
 	"review_current_run_order":     {"reviews", 6, "project_id id pull_number channel outcome finalized run_order"},
 	"review_policy_config":         {"review_policy", 1, "project_id revision body_json actor_id created_at"},
 	"review_execution_config":      {"review_execution", 1, "project_id revision body_json"}, "review_operations": {"review_execution", 1, "id project_id actor_id worker_id configuration_revision pull_number channel head_sha state revision reason attempt_id created_at updated_at"}, "review_execution_attempts": {"review_execution", 1, "id operation_id project_id provider account state revision anchor_json intent external_id"}, "review_execution_reservations": {"review_execution", 1, "provider repository_id pull_number action_class account attempt_id"}, "review_execution_transitions": {"review_execution", 1, "attempt_id revision state reason external_id created_at"}, "review_cli_preflight": {"review_execution", 4, "attempt_id project_id body_json"}, "review_hosted_preflight": {"review_execution", 6, "attempt_id project_id body_json"}, "review_hosted_allowance_queries": {"review_execution", 6, "id project_id attempt_id operation_id capability_fingerprint revision body_json"},
-	"review_source_retries":     {"review_source_retries", 1, "attempt_id operation_id source_group observed_at retry_not_before sequence"},
-	"review_operation_waits":    {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
-	"review_activity_evidence":  {"review_evidence", 5, "attempt_id project_id body_json"},
-	"review_execution_evidence": {"review_evidence", 1, "id project_id attempt_id operation_id body_json fingerprint"}, "review_hosted_observations": {"review_evidence", 3, "id project_id attempt_id operation_id position capture_sha256 capture_bytes body_json"},
+	"review_hosted_continuations": {"review_hosted_continuations", 1, "root_attempt project_id root_operation release_revision capture_sha256 anchor_json scheduling_revision configuration_revision policy_revision accepted_sequence not_before child_selection child_operation"},
+	"review_source_retries":       {"review_source_retries", 1, "attempt_id operation_id source_group observed_at retry_not_before sequence"},
+	"review_operation_waits":      {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
+	"review_activity_evidence":    {"review_evidence", 5, "attempt_id project_id body_json"},
+	"review_execution_evidence":   {"review_evidence", 1, "id project_id attempt_id operation_id body_json fingerprint"}, "review_hosted_observations": {"review_evidence", 3, "id project_id attempt_id operation_id position capture_sha256 capture_bytes body_json"},
 	"review_adjudication_state": {"review_adjudication", 1, "evidence_id project_id revision body_json"}, "review_adjudication_changes": {"review_adjudication", 1, "evidence_id revision project_id actor_id kind finding_index input_json created_at"}, "review_finding_routes": {"review_adjudication", 2, "id project_id repository_id source_evidence_id finding_index source_pull_number source_head_sha target_pull_number state revision disposition has_fix created_at body_json"}, "review_finding_route_revisions": {"review_adjudication", 2, "route_id project_id revision actor_id kind created_at body_json"},
 	"review_source_refreshes":        {"review_source_refresh", 1, "id project_id repository_id actor_id worker_id configuration_revision capability_id capability_fingerprint pull_number head_sha state revision reason created_at updated_at observation_json"},
 	"review_checkpoint_publications": {"review_checkpoint_publication", 1, "id project_id evidence_id state revision created_at body_json"}, "review_checkpoint_revisions": {"review_checkpoint_publication", 1, "publication_id revision actor_id created_at body_json"}, "review_checkpoint_intents": {"review_checkpoint_publication", 1, "publication_id revision body_json"},
@@ -751,6 +752,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			continue
 		}
 		columns := spec.columns
+		if name == "review_source_retries" && versions["review_source_retries"] >= 2 {
+			columns += " timing_state"
+		}
 		if name == "review_scheduling" && versions["review_scheduling"] >= 2 {
 			columns += " automatic_cli"
 		}
@@ -1177,6 +1181,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
+			return invalid()
+		}
+	}
+	if versions["review_hosted_continuations"] > 0 {
+		if versions["review_execution"] < 10 || versions["review_scheduling"] < 1 {
+			return invalid()
+		}
+		if err := reviewexec.ValidateHostedContinuationsSnapshot(ctx, tx); err != nil {
 			return invalid()
 		}
 	}
@@ -1722,6 +1734,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_execution_config":         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_operations":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_execution_attempts":       {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"review_hosted_continuations":     {canonicalFK("review_execution_attempts", "root_attempt", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "root_operation", "id", "NO ACTION"), canonicalFK("review_selections", "child_selection", "id", "NO ACTION"), canonicalFK("review_operations", "child_operation", "id", "NO ACTION")},
 	"review_source_retries":           {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION")},
 	"review_operation_waits":          {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "baseline_attempt_id", "id", "NO ACTION")},
 	"review_execution_reservations":   {canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},

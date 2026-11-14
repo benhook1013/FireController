@@ -88,6 +88,7 @@ func TestSourceRetryExportInspectInactiveRestoreAndCorruption(t *testing.T) {
 		`UPDATE review_source_retries SET retry_not_before='2099-01-01T00:00:00Z'`,
 		`UPDATE review_source_retries SET source_group='private token'`,
 		`UPDATE review_source_retries SET sequence=2`,
+		`UPDATE review_source_retries SET timing_state='conservative'`,
 		`DELETE FROM review_source_retries`,
 		`UPDATE review_execution_transitions SET reason='allowance_exhausted' WHERE attempt_id='` + a.ID + `' AND revision=2`,
 		`UPDATE review_operations SET attempt_id='` + a.ID + `' WHERE id='` + request.ID + `'`,
@@ -106,6 +107,12 @@ func TestSourceRetryExportInspectInactiveRestoreAndCorruption(t *testing.T) {
 	supportedDomains["review_source_retries"] = version
 	if oldErr == nil {
 		t.Fatal("old helper catalog accepted unknown domain")
+	}
+	supportedDomains["review_source_retries"] = 1
+	_, v1Err := Inspect(t.Context(), bundle.Path)
+	supportedDomains["review_source_retries"] = version
+	if v1Err == nil {
+		t.Fatal("v1 helper accepted v2 timing provenance")
 	}
 	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 		t.Fatal("matching helper failed after compatibility proof", err)
@@ -133,5 +140,20 @@ func TestSourceRetryNewHelperAcceptsPriorSnapshotWithoutMigrating(t *testing.T) 
 	}
 	if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
 		t.Fatal("inspection migrated prior snapshot")
+	}
+}
+
+func TestSourceRetryVersionOneSnapshotRemainsReadable(t *testing.T) {
+	f := newRestoreFixture(t)
+	if _, err := f.store.DB().Exec(`ALTER TABLE review_source_retries DROP COLUMN timing_state; UPDATE metadata SET value='1' WHERE key='schema:review_source_retries'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	before := restoreTree(t, bundle.Path)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, restoreTree(t, bundle.Path)) {
+		t.Fatal("old snapshot migrated during inspection")
 	}
 }

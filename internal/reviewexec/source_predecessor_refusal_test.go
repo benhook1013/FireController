@@ -181,7 +181,8 @@ func TestPredecessorFinalGuardKeepsAncestorRoutesLocal(t *testing.T) {
 	// child source verification proceeds without inventing route resolution.
 	created := routeCreate(t, f, id, "route-to-predecessor", routeRequest(0, 0, 4))
 	parent := SourcePlan{Repository: reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 4, State: "open", HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, ParentSHA: strings.Repeat("b", 40), ObservedAt: stamp()}
-	current := ExecutionContext{Operation: Operation{PullNumber: 6, Channel: "cli"}, Configuration: Configuration{Mode: "stacked", Queue: []int64{2, 4, 6}}, RepositoryID: 801}
+	// Supply the retained operation attribution required by the final history guard.
+	current := ExecutionContext{Operation: Operation{ProjectID: attemptProject, ConfigurationRevision: 2, PullNumber: 6, Channel: "cli"}, Configuration: Configuration{Mode: "stacked", Queue: []int64{2, 4, 6}}, RepositoryID: 801}
 	target := Anchor{ParentPullNumber: 4, ParentSHA: parent.Pull.HeadSHA}
 	before := routeState(t, f, source)
 	check := func() error {

@@ -21,9 +21,9 @@ func TestSourceRetryClientRejectsUnboundOrMalformedTiming(t *testing.T) {
 			t.Fatal("invalid source wait accepted", bad)
 		}
 	}
-	for _, scope := range [][3]string{{"hosted", "queued", ""}, {"cli", "held", ""}, {"cli", "active", good.AttemptID}} {
+	for _, scope := range [][3]string{{"other", "queued", ""}, {"cli", "held", ""}, {"cli", "active", good.AttemptID}} {
 		if validReviewOperationWait(&ReviewOperationWait{SourceRetry: &good}, scope[0], scope[1], scope[2]) {
-			t.Fatal("source wait escaped queued CLI scope", scope)
+			t.Fatal("source wait escaped queued supported channel scope", scope)
 		}
 	}
 }

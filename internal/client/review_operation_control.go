@@ -44,7 +44,7 @@ func validReviewOperationWait(w *ReviewOperationWait, channel, state, attempt st
 	if r := w.SourceRetry; r != nil {
 		observed, _ := time.Parse(time.RFC3339Nano, r.ObservedAt)
 		due, _ := time.Parse(time.RFC3339Nano, r.RetryNotBefore)
-		if channel != "cli" || !validReviewOpaqueID(r.AttemptID, "review_attempt_") || !validAllowanceTime(r.ObservedAt) || !validAllowanceTime(r.RetryNotBefore) || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > 3 {
+		if !oneReviewOf(channel, "cli", "hosted") || !validReviewOpaqueID(r.AttemptID, "review_attempt_") || !validAllowanceTime(r.ObservedAt) || !validAllowanceTime(r.RetryNotBefore) || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > 3 {
 			return false
 		}
 	}

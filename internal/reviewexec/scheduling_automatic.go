@@ -80,7 +80,14 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	if errors.As(err, &failure) && failure.Status >= 400 && failure.Status < 500 {
 		return automaticDenied()
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	c, err := continuationForSelection(ctx, tx, r.ProjectID, r.ID)
+	if err != nil || c == nil {
+		return err
+	}
+	return e.validateHostedContinuation(ctx, tx, c)
 }
 func automaticOperationSelection(ctx context.Context, tx *sql.Tx, o Operation) (string, error) {
 	var selection string
@@ -103,7 +110,26 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 	if r.OperationID != o.ID || r.ActorID != o.ActorID || r.WorkerID != o.WorkerID || r.Channel != o.Channel {
 		return &automaticProjectStateError{schedulingUnavailable()}
 	}
-	return e.requireAutomaticRun(ctx, tx, r)
+	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
+		return err
+	}
+	c, err := continuationForSelection(ctx, tx, r.ProjectID, r.ID)
+	if err != nil || c == nil {
+		return err
+	}
+	if c.Child != o.ID {
+		return sourceHold("hosted_continuation_changed")
+	}
+	if o.AttemptID != "" {
+		a, err := readAttempt(ctx, tx, o.ProjectID, o.AttemptID)
+		if err != nil {
+			return err
+		}
+		if a.Anchor != nil && !hostedAllowanceSameSource(c.Anchor, *a.Anchor) {
+			return sourceHold("source_changed")
+		}
+	}
+	return nil
 }
 
 const automaticCurrentRunsBasisQuery = `SELECT v.id,v.channel,v.head_sha,v.complete,v.finalized,v.found,v.accepted,v.routed,v.fixed FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? AND v.channel='hosted' AND v.outcome='completed' ORDER BY v.id LIMIT 10001`
@@ -427,6 +453,22 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	if err != nil {
 		return false, err
 	}
+	cRetry, retryErr := continuationForSelection(ctx, tx, r.ProjectID, r.ID)
+	if retryErr != nil {
+		return false, retryErr
+	}
+	if cRetry != nil && plan.Pull.Number == cRetry.Anchor.PullNumber {
+		if err := e.validateHostedContinuation(ctx, tx, cRetry); err != nil {
+			return false, err
+		}
+		return !continuationMatches(cRetry, plan), nil
+	}
+	if r.Channel == "hosted" && cRetry == nil {
+		reserved, err := e.continuationOwnsPull(ctx, tx, r.ProjectID, pull)
+		if err != nil || reserved {
+			return reserved, err
+		}
+	}
 	var seen bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, r.ProjectID, r.ID, pull, basis).Scan(&seen)
 	return seen, err
@@ -438,6 +480,12 @@ func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pu
 	}
 	if !automatic {
 		return nil
+	}
+	if pull == 0 {
+		continuation, err := continuationForSelection(ctx, tx, r.ProjectID, r.ID)
+		if err != nil || continuation != nil {
+			return err
+		}
 	}
 	c, _, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
@@ -539,6 +587,7 @@ type automaticProjectPlan struct {
 	basis          string
 	retry          *Run
 	operationRetry *Operation
+	continuation   *hostedContinuation
 }
 
 func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, channel string, readers map[string]TargetReader) (*automaticProjectPlan, error) {
@@ -571,6 +620,10 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	}
 	if c.Paused || !slices.Contains(c.Channels, channel) || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
 		return nil, nil
+	}
+	c.Queue, err = reviews.OrderedExecutionQueue(ctx, tx, project, c.Queue)
+	if err != nil {
+		return nil, err
 	}
 	unpaused := false
 	for _, pull := range c.Queue {
@@ -610,9 +663,54 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 			return &automaticProjectPlan{scheduling: s, scope: scope, operationRetry: retry}, nil
 		}
 	}
-	basis, candidates, err := automaticPlanningBasisChannel(ctx, tx, project, c, "", channel)
-	if err != nil || !candidates {
+	// Ordinary eligible work keeps priority. A receipt that meets a transient
+	// earlier front retains its same selection for a delayed guarded recheck.
+	continuationPlan := func() (*automaticProjectPlan, error) {
+		if channel != "hosted" {
+			return nil, nil
+		}
+		cRetry, err := e.pendingHostedContinuation(ctx, tx, project, c)
+		if err != nil || cRetry == nil {
+			return nil, err
+		}
+		p := &automaticProjectPlan{scheduling: s, scope: scope, basis: continuationBasis(cRetry), continuation: cRetry}
+		if cRetry.Selection != "" {
+			r, err := readRun(ctx, tx, project, cRetry.Selection)
+			if err != nil {
+				return nil, err
+			}
+			p.retry = &r
+		}
+		return p, nil
+	}
+	continuation, err := continuationPlan()
+	if err != nil {
 		return nil, err
+	}
+	if continuation != nil && continuation.retry == nil {
+		return continuation, nil
+	}
+	if continuation != nil && continuation.retry != nil {
+		prefix := c
+		position := slices.Index(c.Queue, continuation.continuation.Anchor.PullNumber)
+		if position < 0 {
+			return nil, nil
+		}
+		prefix.Queue = c.Queue[:position]
+		_, earlier, err := automaticPlanningBasisChannel(ctx, tx, project, prefix, "", channel)
+		if err != nil {
+			return nil, err
+		}
+		if !earlier {
+			return continuation, nil
+		}
+	}
+	basis, candidates, err := automaticPlanningBasisChannel(ctx, tx, project, c, "", channel)
+	if err != nil {
+		return nil, err
+	}
+	if !candidates {
+		return continuationPlan()
 	}
 	var seen bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
@@ -621,8 +719,11 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	plan := &automaticProjectPlan{scheduling: s, scope: scope, basis: basis}
 	if seen {
 		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
-		if err != nil || plan.retry == nil {
+		if err != nil {
 			return nil, err
+		}
+		if plan.retry == nil {
+			return continuationPlan()
 		}
 	}
 	return plan, nil
@@ -653,7 +754,7 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			return err
 		}
 		if current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) ||
-			(current.operationRetry == nil) != (candidate.operationRetry == nil) {
+			(current.operationRetry == nil) != (candidate.operationRetry == nil) || (current.continuation == nil) != (candidate.continuation == nil) {
 			return nil
 		}
 		if current.operationRetry != nil {
@@ -669,7 +770,11 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
 		} else {
 			// Same ordinary acceptance path, fully reauthorized in this snapshot.
-			receipt, enqueueErr := e.enqueueRunTx(ctx, tx, current.scope, RunRequest{Channel: channel})
+			request := RunRequest{Channel: channel}
+			if current.continuation != nil {
+				request.ExpectedPullNumber = &current.continuation.Anchor.PullNumber
+			}
+			receipt, enqueueErr := e.enqueueRunTx(ctx, tx, current.scope, request)
 			if enqueueErr != nil {
 				var failure *core.Error
 				if errors.As(enqueueErr, &failure) && (failure.Status == 409 || failure.Code == "overloaded") {
@@ -679,6 +784,17 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			}
 			s := current.scheduling
 			_, err = tx.ExecContext(ctx, `INSERT INTO review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,actor_id,worker_id,credential_id) VALUES(?,?,?,?,?,?,?)`, receipt.ID, project, s.Revision, current.basis, s.actor, s.AuthorizingWorkerID, s.credential)
+			if err == nil && current.continuation != nil {
+				var result sql.Result
+				result, err = tx.ExecContext(ctx, `UPDATE review_hosted_continuations SET child_selection=? WHERE root_attempt=? AND child_selection IS NULL`, receipt.ID, current.continuation.Root)
+				if err == nil {
+					var n int64
+					n, err = result.RowsAffected()
+					if err == nil && n != 1 {
+						return conflict()
+					}
+				}
+			}
 		}
 		worked = err == nil
 		return err

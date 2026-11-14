@@ -248,7 +248,7 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 	// A genuine predecessor may omit the entire optional domain. Startup adds
 	// empty controls only, never inferring enabled automation from old history.
 	old := schedulingBundleCopy(t, bundle.Path)
-	mutateBundleSQL(t, old, `DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DELETE FROM metadata WHERE key='schema:review_scheduling'`)
+	mutateBundleSQL(t, old, `DROP TABLE review_hosted_continuations;DELETE FROM metadata WHERE key='schema:review_hosted_continuations';DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DELETE FROM metadata WHERE key='schema:review_scheduling'`)
 	if _, err := Inspect(t.Context(), old); err != nil {
 		t.Fatal("optional absent domain refused", err)
 	}

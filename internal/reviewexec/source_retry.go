@@ -45,7 +45,7 @@ func sourceRetrySchema(ctx context.Context, store *core.Store) error {
 		`CREATE TABLE review_source_retries(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),operation_id TEXT NOT NULL REFERENCES review_operations(id),source_group TEXT NOT NULL,observed_at TEXT NOT NULL,retry_not_before TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),UNIQUE(operation_id,sequence))`,
 		`CREATE INDEX review_source_retries_group ON review_source_retries(source_group,` + sourceRetryOrder + `)`,
 		`CREATE INDEX review_source_retries_due ON review_source_retries(julianday(retry_not_before))`,
-	})
+	}, []string{`ALTER TABLE review_source_retries ADD COLUMN timing_state TEXT NOT NULL DEFAULT 'proven' CHECK(timing_state IN ('proven','conservative'))`})
 }
 
 func sourceRetriesPresent(ctx context.Context, q EvidenceQuery) (bool, error) {
@@ -57,10 +57,26 @@ func sourceRetriesPresent(ctx context.Context, q EvidenceQuery) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if version != "1" {
+	if version != "1" && version != "2" {
 		return false, waitUnavailable()
 	}
 	return true, nil
+}
+
+func sourceRetryTimingState(ctx context.Context, q EvidenceQuery, attempt string) (string, error) {
+	var version string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_source_retries'`).Scan(&version); err != nil {
+		return "", err
+	}
+	if version == "1" {
+		return "proven", nil
+	}
+	var state string
+	err := q.QueryRowContext(ctx, `SELECT timing_state FROM review_source_retries WHERE attempt_id=?`, attempt).Scan(&state)
+	if err == nil && state != "proven" && state != "conservative" {
+		return "", waitUnavailable()
+	}
+	return state, err
 }
 
 func readSourceRetry(ctx context.Context, q EvidenceQuery, o Operation) (*SourceRetry, error) {
@@ -107,6 +123,13 @@ func readSourceRetry(ctx context.Context, q EvidenceQuery, o Operation) (*Source
 }
 
 func validateSourceRetry(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, r SourceRetry) error {
+	state, stateErr := sourceRetryTimingState(ctx, q, r.AttemptID)
+	if stateErr != nil {
+		return stateErr
+	}
+	if state == "conservative" && mustWaitTime(r.RetryNotBefore).Sub(mustWaitTime(r.ObservedAt)) != 15*time.Minute {
+		return waitUnavailable()
+	}
 	observed, validObserved := attemptRecordedTime(r.ObservedAt)
 	due, validDue := attemptRecordedTime(r.RetryNotBefore)
 	if !validChannel(o.Channel) || a.ID != r.AttemptID || a.OperationID != o.ID || a.ProjectID != o.ProjectID || a.ID == o.AttemptID || a.State != "held" || a.Revision != 2 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || !validObserved || !validDue || !due.After(observed) || due.Sub(observed) > 24*time.Hour || r.Sequence < 1 || r.Sequence > sourceRetryLimit {
@@ -159,16 +182,24 @@ func (e *Engine) SourceReadGate(ctx context.Context, group string) error {
 		return invalid()
 	}
 	var retry *SourceRetry
+	var timingState string
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		retry, err = sourceGroupRetry(ctx, tx, group)
+		if err == nil && retry != nil {
+			timingState, err = sourceRetryTimingState(ctx, tx, retry.AttemptID)
+		}
 		return err
 	})
 	if err != nil {
 		return err
 	}
 	if retry != nil && e.sampleExecutionTime().Before(mustWaitTime(retry.RetryNotBefore)) {
-		return &reviewprovider.Error{Code: "provider_rate_limited", Message: "Source reads are waiting for a retained provider deadline.", Status: http.StatusTooManyRequests, RetryTiming: reviewprovider.RetryTimingEvidence{State: "proven", ObservedAt: mustWaitTime(retry.ObservedAt), NotBefore: mustWaitTime(retry.RetryNotBefore)}}
+		timing := reviewprovider.RetryTimingEvidence{State: "proven", ObservedAt: mustWaitTime(retry.ObservedAt), NotBefore: mustWaitTime(retry.RetryNotBefore)}
+		if timingState == "conservative" {
+			timing.State, timing.NotBefore = "unknown", time.Time{}
+		}
+		return &reviewprovider.Error{Code: "provider_rate_limited", Message: "Source reads are waiting for a retained retry deadline; availability is not established.", Status: http.StatusTooManyRequests, RetryTiming: timing}
 	}
 	return nil
 }
@@ -208,17 +239,24 @@ func (e *Engine) sourceCandidateDue(ctx context.Context, q EvidenceQuery, o Oper
 	return retry == nil || !e.sampleExecutionTime().Before(mustWaitTime(retry.RetryNotBefore)), nil
 }
 
-// ScheduleSourceRetry atomically retains an unused CLI preparation or Hosted
-// cooldown continuation after a rate-limited GitHub source read.
+// ScheduleSourceRetry atomically retains an unused CLI or Hosted preparation after a rate-limited GitHub source read.
 // False means ineligible or exhausted: the supervisor must settle normally.
 // This API accepts only the typed runtime preparation failure, never wire input.
 func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID string, revision int64, failure error) (bool, error) {
 	var stage *preparationFailure
 	var provider *reviewprovider.Error
-	if !errors.As(failure, &stage) || (stage.stage != "source_resolution" && stage.stage != "source_refresh") || !errors.As(stage.err, &provider) || provider.Code != "provider_rate_limited" || (provider.Status != 429 && provider.Status != 403) || provider.OutcomeUnknown || provider.RetryTiming.State != "proven" {
+	if !errors.As(failure, &stage) || (stage.stage != "source_resolution" && stage.stage != "source_refresh") || !errors.As(stage.err, &provider) || provider.Code != "provider_rate_limited" || (provider.Status != 429 && provider.Status != 403) || provider.OutcomeUnknown || (provider.RetryTiming.State != "proven" && provider.RetryTiming.State != "unknown") {
 		return false, nil
 	}
 	timing := provider.RetryTiming
+	conservative := timing.State == "unknown"
+	// A qualified refusal without timing uses an explicit local retry policy, not a fabricated provider reset.
+	if conservative {
+		if !timing.NotBefore.IsZero() {
+			return false, nil
+		}
+		timing.NotBefore = timing.ObservedAt.Add(15 * time.Minute)
+	}
 	if timing.ObservedAt.IsZero() || !timing.NotBefore.After(timing.ObservedAt) || timing.NotBefore.Sub(timing.ObservedAt) > 24*time.Hour {
 		return false, nil
 	}
@@ -236,9 +274,9 @@ func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID str
 		operationID = o.ID
 		// Exact replay after a committed local settlement never creates another row.
 		if a.Revision == revision+1 && a.State == "held" {
-			var observed, due string
-			err := tx.QueryRowContext(ctx, `SELECT observed_at,retry_not_before FROM review_source_retries WHERE attempt_id=? AND operation_id=?`, a.ID, o.ID).Scan(&observed, &due)
-			if err == nil && observed == timing.ObservedAt.UTC().Format(time.RFC3339Nano) && due == timing.NotBefore.UTC().Format(time.RFC3339Nano) {
+			var observed, due, state string
+			err := tx.QueryRowContext(ctx, `SELECT observed_at,retry_not_before,timing_state FROM review_source_retries WHERE attempt_id=? AND operation_id=?`, a.ID, o.ID).Scan(&observed, &due, &state)
+			if err == nil && (state == "conservative") == conservative && observed == timing.ObservedAt.UTC().Format(time.RFC3339Nano) && due == timing.NotBefore.UTC().Format(time.RFC3339Nano) {
 				scheduled = true
 				return nil
 			}
@@ -249,7 +287,7 @@ func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID str
 			return nil
 		}
 		cliSourceRead := o.Channel == "cli" && stage.stage == "source_resolution"
-		hostedRefresh := o.Channel == "hosted" && stage.stage == "source_refresh" && o.Wait != nil && o.Wait.BaselineAttemptID != ""
+		hostedRefresh := o.Channel == "hosted" && (stage.stage == "source_resolution" || stage.stage == "source_refresh")
 		if (!cliSourceRead && !hostedRefresh) || a.Revision != revision || a.Revision != 1 || a.State != "preparing" || o.State != "preparing" || o.AttemptID != a.ID || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || o.Revision == math.MaxInt64 {
 			return nil
 		}
@@ -311,7 +349,12 @@ func (e *Engine) ScheduleSourceRetry(ctx context.Context, project, attemptID str
 		if _, err := tx.ExecContext(ctx, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_source_retries(attempt_id,operation_id,source_group,observed_at,retry_not_before,sequence) VALUES(?,?,?,?,?,?)`, a.ID, o.ID, group, timing.ObservedAt.UTC().Format(time.RFC3339Nano), timing.NotBefore.UTC().Format(time.RFC3339Nano), sequence); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_source_retries(attempt_id,operation_id,source_group,observed_at,retry_not_before,sequence,timing_state) VALUES(?,?,?,?,?,?,?)`, a.ID, o.ID, group, timing.ObservedAt.UTC().Format(time.RFC3339Nano), timing.NotBefore.UTC().Format(time.RFC3339Nano), sequence, func() string {
+			if conservative {
+				return "conservative"
+			}
+			return "proven"
+		}()); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET state='queued',reason=?,attempt_id='' WHERE id=?`, sourceRetryReason, o.ID); err != nil {

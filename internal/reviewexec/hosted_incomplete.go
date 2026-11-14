@@ -89,6 +89,9 @@ func (e *Engine) ReleaseFinishedHosted(ctx context.Context, project, attemptID s
 		if provider != a.Provider || account != a.Account || class != "hosted" || repository != a.Anchor.RepositoryID || pull != a.Anchor.PullNumber {
 			return conflict()
 		}
+		if err := e.qualifyHostedContinuation(ctx, tx, a, o, source, now); err != nil {
+			return err
+		}
 		// This event, the ordinary failed transition and exact reservation release
 		// share one transaction. No findings, comparisons or round counts change.
 		return core.AppendEvent(ctx, tx, core.Scope{ProjectID: project, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.hosted_incomplete_released", a.ID, a.Revision+1, struct {

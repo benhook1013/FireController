@@ -96,6 +96,18 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return nil
 		}
 		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			// A consumed continuation is never returned to the pool. Permanent
+			// invalidation after selection must settle its queued child instead
+			// of turning every supervisor pass into the same refusal.
+			if reason := continuationRefusalReason(err); reason != "" {
+				var linked bool
+				if lookupErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_hosted_continuations WHERE project_id=? AND child_operation=?)`, project, o.ID).Scan(&linked); lookupErr != nil {
+					return lookupErr
+				}
+				if linked {
+					return e.holdOperation(ctx, tx, o, reason, stamp())
+				}
+			}
 			var failure *core.Error
 			if errors.As(err, &failure) && failure.Status == 403 {
 				return nil
@@ -283,6 +295,9 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 			return err
 		}
 		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			return err
+		}
+		if err := e.requireHostedContinuationAnchor(ctx, tx, o, anchor); err != nil {
 			return err
 		}
 		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {

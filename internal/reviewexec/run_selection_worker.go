@@ -833,6 +833,23 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				}
 				return updateRun(ctx, tx, current, "held", failure.Code, "")
 			}
+			continuation, err := continuationForSelection(ctx, tx, current.ProjectID, current.ID)
+			if err != nil {
+				return err
+			}
+			if continuation != nil {
+				result, err := tx.ExecContext(ctx, `UPDATE review_hosted_continuations SET child_operation=? WHERE project_id=? AND child_selection=? AND child_operation IS NULL`, receipt.ID, current.ProjectID, current.ID)
+				if err != nil {
+					return err
+				}
+				n, err := result.RowsAffected()
+				if err != nil {
+					return err
+				}
+				if n != 1 {
+					return conflict()
+				}
+			}
 			if _, err = tx.ExecContext(ctx, `RELEASE review_selection_child`); err != nil {
 				return err
 			}

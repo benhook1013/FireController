@@ -20,28 +20,32 @@ const operationWaitHeader = "X-FC-Operation-Wait"
 // Version 4 extends version 2 with source-retry evidence; it omits quota estimates.
 // Version 5 extends version 3 with accepted Hosted queue priority, not source retry.
 // Version 6 combines version 3 allowance estimates and version 4 source retry;
-// it does not include version 5 queue priority. Earlier versions stay unchanged.
+// it does not include version 5 queue priority. Version 7 additionally exposes
+// Hosted source retry evidence without inventing an allowance baseline.
+// Earlier versions stay unchanged.
 func operationWaitForResponse(wait *OperationWait, channel, version string) *OperationWait {
-	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" {
+	if wait == nil || version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" && version != "7" {
 		return nil
 	}
 	copy := *wait
 	if version != "5" {
 		copy.QueueAheadPullNumber = 0
 	}
-	if channel == "hosted" && copy.SourceRetry != nil {
+	if channel == "hosted" && copy.SourceRetry != nil && version != "7" {
 		// Existing Hosted clients understand a queued recheck deadline. Keep the
 		// original CodeRabbit clock and GitHub evidence separate in storage.
-		copy.RetryNotBefore = copy.hostedRetryNotBefore()
+		if copy.BaselineAttemptID != "" {
+			copy.RetryNotBefore = copy.hostedRetryNotBefore()
+		}
 		copy.SourceRetry = nil
-	} else if version != "4" && version != "6" {
+	} else if version != "4" && version != "6" && version != "7" {
 		copy.SourceRetry = nil
 	}
 	wait = &copy
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
-	if version != "3" && version != "5" && version != "6" {
+	if version != "3" && version != "5" && version != "6" && version != "7" {
 		copy := *wait
 		copy.CLIAllowance = nil
 		return &copy
@@ -105,9 +109,6 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		if sourceErr != nil || source == nil {
 			return nil, sourceErr
 		}
-		if o.Channel == "hosted" {
-			return nil, waitUnavailable()
-		}
 		return &OperationWait{SourceRetry: source}, nil
 	}
 	if err != nil {
@@ -169,9 +170,6 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	result.SourceRetry, err = readSourceRetry(ctx, q, o)
 	if err != nil {
 		return nil, err
-	}
-	if o.Channel == "hosted" && result.SourceRetry != nil && !baseline.Valid {
-		return nil, waitUnavailable()
 	}
 	return &result, nil
 }

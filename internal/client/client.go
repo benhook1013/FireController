@@ -463,7 +463,7 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 			r.Header.Set("X-FC-Source-Refusal", "v4")
 		}
 		if wait.operationWait {
-			r.Header.Set("X-FC-Operation-Wait", "6")
+			r.Header.Set("X-FC-Operation-Wait", "7")
 		}
 		if wait.hostedQuery {
 			r.Header.Set("X-FC-Hosted-Query", "2")

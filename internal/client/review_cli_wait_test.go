@@ -195,7 +195,7 @@ func TestCLIQueuedGuidanceAfterResumePreservesWaitPrecedence(t *testing.T) {
 						handshake(w)
 						return
 					}
-					if r.Header.Get("X-FC-Operation-Wait") != "6" {
+					if r.Header.Get("X-FC-Operation-Wait") != "7" {
 						t.Error("source wait protocol changed")
 					}
 					w.Header().Set("Content-Type", "application/json")

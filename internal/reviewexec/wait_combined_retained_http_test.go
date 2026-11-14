@@ -61,7 +61,7 @@ func assertCombinedRetainedWaitHTTP(t *testing.T, f *attemptFixture, retained Op
 			return
 		}
 		calls.Add(1)
-		if r.Header.Get(operationWaitHeader) != "6" {
+		if r.Header.Get(operationWaitHeader) != "7" {
 			t.Error("client did not request combined projection")
 		}
 		f.handler.ServeHTTP(w, r)

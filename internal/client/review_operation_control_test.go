@@ -34,7 +34,7 @@ func TestReviewOperationWaitNegotiatedFullCompactAndLegacy(t *testing.T) {
 							return
 						}
 						w.Header().Set("Content-Type", "application/json")
-						if r.Header.Get("X-FC-Operation-Wait") != "6" {
+						if r.Header.Get("X-FC-Operation-Wait") != "7" {
 							t.Error("wait extension not negotiated")
 						}
 						if compact {
@@ -360,7 +360,7 @@ func TestOperationWaitV6AllowanceWireAndLegacyReads(t *testing.T) {
 				}
 				requests.Add(1)
 				version := r.Header.Get("X-FC-Operation-Wait")
-				if version != "6" {
+				if version != "7" {
 					t.Error("current client did not negotiate allowance version6", version)
 				}
 				var encoded []byte
@@ -380,11 +380,11 @@ func TestOperationWaitV6AllowanceWireAndLegacyReads(t *testing.T) {
 				}
 				if !held {
 					wait := map[string]any{"baseline_attempt_id": "review_attempt_" + strings.Repeat("b", 32), "retry_not_before": "2026-01-01T00:10:00Z", "paused": false}
-					if version == "6" && !legacy {
+					if version == "7" && !legacy {
 						wait["cli_allowance"] = allowance
 					}
 					wire["wait"] = wait
-				} else if version == "6" {
+				} else if version == "7" {
 					if compact {
 						wire["retry_not_before"] = allowance["retry_not_before"]
 					} else {

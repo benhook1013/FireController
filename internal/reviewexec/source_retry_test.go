@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
@@ -247,7 +248,7 @@ func reviewHoldForSourceTest() error {
 }
 
 func TestSourceRetryRefusesUnprovenAndSideEffectFailures(t *testing.T) {
-	for _, name := range []string{"unknown", "unsupported", "expired", "future observation", "old observation", "too long", "authorization", "forbidden", "uncertain", "wrong stage", "wrong channel", "missing group", "preflight"} {
+	for _, name := range []string{"unknown", "unsupported", "expired", "future observation", "old observation", "too long", "authorization", "forbidden", "uncertain", "wrong stage", "missing group", "preflight"} {
 		t.Run(name, func(t *testing.T) {
 			f, r, now := sourceFixture(t)
 			a := f.start(t, attemptProject, r)
@@ -274,10 +275,6 @@ func TestSourceRetryRefusesUnprovenAndSideEffectFailures(t *testing.T) {
 				p.OutcomeUnknown = true
 			case "wrong stage":
 				stage = "source_refresh"
-			case "wrong channel":
-				if _, err := f.store.DB().Exec(`UPDATE review_operations SET channel='hosted' WHERE id=?`, r.ID); err != nil {
-					t.Fatal(err)
-				}
 			case "missing group":
 				f.e.sourceReadGroups = nil
 			case "preflight":
@@ -580,5 +577,127 @@ func TestSourceRetryPreservesIndependentQuotaBaseline(t *testing.T) {
 	}
 	if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostedInitialSourceRetryPreservesUnusedRequest(t *testing.T) {
+	for _, stage := range []string{"source_resolution", "source_refresh"} {
+		t.Run(stage, func(t *testing.T) {
+			f, r := stoppedQueuedFixture(t, "hosted")
+			now := time.Now().UTC().Add(time.Second)
+			f.e.schedulingNow = func() time.Time { return now }
+			f.e.attemptNow = func() time.Time { return now }
+			f.e.sourceReadGroups = map[string]string{"test-capability": strings.Repeat("a", 64)}
+			for sequence := 1; sequence <= 3; sequence++ {
+				a := f.start(t, attemptProject, r)
+				failure := PreparationFailureAt(stage, &reviewprovider.Error{Code: "provider_rate_limited", Status: 429, RetryTiming: reviewprovider.RetryTimingEvidence{State: "proven", ObservedAt: now, NotBefore: now.Add(time.Minute)}})
+				if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, failure); err != nil || !ok {
+					t.Fatal(ok, err)
+				}
+				o := cliWaitRead(t, f, r.ID)
+				if o.State != "queued" || o.AttemptID != "" || o.Wait == nil || o.Wait.SourceRetry == nil || o.Wait.SourceRetry.Sequence != sequence || o.Wait.BaselineAttemptID != "" {
+					t.Fatal(o)
+				}
+				if baseline, err := f.e.RetryBaseline(t.Context(), attemptProject, r.ID); err != nil || baseline != nil {
+					t.Fatal("invented comparison", baseline, err)
+				}
+				if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, failure); err != nil || !ok {
+					t.Fatal("replay", ok, err)
+				}
+				if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if a, err := f.e.StartAttempt(t.Context(), attemptProject, r.ID); err != nil || a.ID != "" {
+					t.Fatal("early dispatch", a, err)
+				}
+				for _, version := range []string{"1", "2", "3", "4", "5", "6"} {
+					w := operationWaitForResponse(o.Wait, "hosted", version)
+					if w.RetryNotBefore != "" || w.SourceRetry != nil || w.BaselineAttemptID != "" {
+						t.Fatal(version, w)
+					}
+				}
+				tx, err := f.store.DB().BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = ValidateSourceRetriesSnapshot(t.Context(), tx)
+				tx.Rollback()
+				if err != nil {
+					t.Fatal("backup", err)
+				}
+				now = now.Add(time.Minute)
+			}
+			a := f.start(t, attemptProject, r)
+			if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, sourceFailure(now)); err != nil || ok {
+				t.Fatal("unbounded", ok, err)
+			}
+		})
+	}
+}
+
+func TestSourceRetryUnknownTimingIsConservativeNotProviderReset(t *testing.T) {
+	f, r, now := sourceFixture(t)
+	a := f.start(t, attemptProject, r)
+	failure := PreparationFailureAt("source_resolution", &reviewprovider.Error{Code: "provider_rate_limited", Status: 429, RetryTiming: reviewprovider.RetryTimingEvidence{State: "unknown", ObservedAt: *now}})
+	if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, failure); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	o := cliWaitRead(t, f, r.ID)
+	if o.Wait.SourceRetry.RetryNotBefore != now.Add(15*time.Minute).Format(time.RFC3339Nano) {
+		t.Fatal(o)
+	}
+	gate := f.e.SourceReadGate(t.Context(), strings.Repeat("a", 64))
+	var provider *reviewprovider.Error
+	if !errors.As(gate, &provider) || provider.RetryTiming.State != "unknown" || !provider.RetryTiming.NotBefore.IsZero() {
+		t.Fatal("fabricated reset", gate)
+	}
+	if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, failure); err != nil || !ok {
+		t.Fatal("replay", ok, err)
+	}
+	if err := f.e.RecoverInterrupted(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliWaitRead(t, f, r.ID); got.Wait.SourceRetry.RetryNotBefore != o.Wait.SourceRetry.RetryNotBefore {
+		t.Fatal("restart changed backoff", got)
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateSourceRetriesSnapshot(t.Context(), tx)
+	tx.Rollback()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostedSourceRetryRechecksAuthorityAndConfiguration(t *testing.T) {
+	for _, change := range []string{"revoked", "configuration"} {
+		t.Run(change, func(t *testing.T) {
+			f, r := stoppedQueuedFixture(t, "hosted")
+			nowValue := time.Now().UTC().Add(time.Second)
+			now := &nowValue
+			f.e.schedulingNow = func() time.Time { return *now }
+			f.e.attemptNow = func() time.Time { return *now }
+			f.e.sourceReadGroups = map[string]string{"test-capability": strings.Repeat("a", 64)}
+			scheduleSourceFixture(t, f, r, *now)
+			*now = now.Add(time.Minute)
+			want := "authorization_changed"
+			if change == "revoked" {
+				if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.configure(t, attemptProject, "other-account", 1, false)
+				want = "configuration_changed"
+			}
+			a, err := f.e.StartAttempt(t.Context(), attemptProject, r.ID)
+			if err != nil || a.ID != "" {
+				t.Fatal(a, err)
+			}
+			if o := cliWaitRead(t, f, r.ID); o.State != "held" || o.Reason != want {
+				t.Fatal(o)
+			}
+		})
 	}
 }

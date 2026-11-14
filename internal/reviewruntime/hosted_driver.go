@@ -208,7 +208,8 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
 		var refusal *core.Error
-		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) {
+		var providerError *reviewprovider.Error
+		if baseline != nil && ctx.Err() == nil && !errors.As(err, &refusal) && !(errors.As(err, &providerError) && providerError.Code == "provider_rate_limited") {
 			return preparation, reviewHold("source_unavailable")
 		}
 		return preparation, reviewexec.PreparationFailureAt("source_resolution", err)

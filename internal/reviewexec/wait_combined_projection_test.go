@@ -12,10 +12,10 @@ func TestCombinedWaitProjectionKeepsEveryLegacyBoundary(t *testing.T) {
 	original := &OperationWait{BaselineAttemptID: "review_attempt_" + strings.Repeat("b", 32), RetryNotBefore: "2026-01-01T00:10:00Z", Paused: true, QueueAheadPullNumber: 9, CLIAllowance: &AllowanceObservation{Kind: "cli_exhausted", ObservedAt: "2026-01-01T00:00:00Z", Remaining: &zero, Limit: &limit, FullCapacityInMS: &zero, RollingWindowMS: &window}, SourceRetry: &SourceRetry{AttemptID: "review_attempt_" + strings.Repeat("c", 32), ObservedAt: "2026-01-01T00:00:00Z", RetryNotBefore: "2026-01-01T00:01:00Z", Sequence: 1}}
 	before, _ := json.Marshal(original)
 	for _, channel := range []string{"cli", "hosted"} {
-		for _, version := range []string{"", "1", "2", "3", "4", "5", "6", "7", "unknown"} {
+		for _, version := range []string{"", "1", "2", "3", "4", "5", "6", "7", "8", "unknown"} {
 			t.Run(channel+"/"+version, func(t *testing.T) {
 				got := operationWaitForResponse(original, channel, version)
-				if version == "" || version == "7" || version == "unknown" {
+				if version == "" || version == "8" || version == "unknown" {
 					if got != nil {
 						t.Fatal("unnegotiated facts leaked")
 					}
@@ -25,10 +25,10 @@ func TestCombinedWaitProjectionKeepsEveryLegacyBoundary(t *testing.T) {
 				if version != "5" {
 					expected.QueueAheadPullNumber = 0
 				}
-				if channel == "hosted" || version != "4" && version != "6" {
+				if channel == "hosted" && version != "7" || version != "4" && version != "6" && version != "7" {
 					expected.SourceRetry = nil
 				}
-				if version != "3" && version != "5" && version != "6" {
+				if version != "3" && version != "5" && version != "6" && version != "7" {
 					expected.CLIAllowance = nil
 				}
 				if version == "1" && channel == "cli" {

@@ -81,7 +81,7 @@ func TestReviewOrderInventoryRoundTripRetainsExplicitChoice(t *testing.T) {
 
 func TestReviewOrderInventoryAuthenticV6RemainsSupported(t *testing.T) {
 	f := reviewOrderFixture(t, false)
-	if _, err := f.store.DB().Exec(`DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; DROP INDEX review_transitions_exhaustion_time; DROP INDEX review_transitions_exhaustion_attempt; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'; ALTER TABLE review_operations DROP COLUMN override_file_limit; ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_continuations; DELETE FROM metadata WHERE key='schema:review_hosted_continuations'; DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; DROP INDEX review_transitions_exhaustion_time; DROP INDEX review_transitions_exhaustion_attempt; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'; ALTER TABLE review_operations DROP COLUMN override_file_limit; ALTER TABLE review_operations DROP COLUMN allow_out_of_order; UPDATE metadata SET value='6' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	before := backupRows(t, f.store.DB())
@@ -215,7 +215,7 @@ func TestReviewFileLimitOverrideBackupRoundTripAndInvalidFlags(t *testing.T) {
 }
 func TestReviewFileLimitOverrideAuthenticV7Backup(t *testing.T) {
 	f := reviewOrderFixture(t, true)
-	if _, err := f.store.DB().Exec(`DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; DROP INDEX review_transitions_exhaustion_time; DROP INDEX review_transitions_exhaustion_attempt; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'; ALTER TABLE review_operations DROP COLUMN override_file_limit; UPDATE metadata SET value='7' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_hosted_continuations; DELETE FROM metadata WHERE key='schema:review_hosted_continuations'; DROP TABLE review_source_retries; DELETE FROM metadata WHERE key='schema:review_source_retries'; DROP TABLE review_operation_waits; DROP INDEX review_transitions_exhaustion_time; DROP INDEX review_transitions_exhaustion_attempt; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'; ALTER TABLE review_operations DROP COLUMN override_file_limit; UPDATE metadata SET value='7' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	bundle := restoreBundle(t, f)

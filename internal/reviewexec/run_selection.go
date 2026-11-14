@@ -201,10 +201,27 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		if errors.As(err, &failure) && failure.Status == 403 {
 			return Configuration{}, 0, "automation_authorization_changed", nil
 		}
+		if errors.As(err, &failure) && failure.Code == "review_held" {
+			if details, ok := failure.Details.(map[string]string); ok {
+				switch details["reason"] {
+				case "hosted_continuation_changed", "hosted_continuation_superseded", "configuration_changed", "policy_changed":
+					return Configuration{}, 0, details["reason"], nil
+				}
+			}
+		}
 		return Configuration{}, 0, "", err
 	}
-	if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
-		return Configuration{}, 0, reason, err
+	continuation, err := continuationForSelection(ctx, tx, r.ProjectID, r.ID)
+	if err != nil {
+		return Configuration{}, 0, "", err
+	}
+	// requireAutomaticRun above validates the continuation's exact-PR event
+	// lineage. Generic source-retry recovery is project-wide and would wrongly
+	// treat permitted earlier-PR progress as cancellation of this receipt.
+	if continuation == nil {
+		if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
+			return Configuration{}, 0, reason, err
+		}
 	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {

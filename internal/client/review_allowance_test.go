@@ -58,7 +58,7 @@ func TestReviewAllowanceHTTPAllResultSurfaces(t *testing.T) {
 						return
 					}
 					calls.Add(1)
-					if r.Header.Get("X-FC-Operation-Wait") != "6" {
+					if r.Header.Get("X-FC-Operation-Wait") != "7" {
 						t.Error("result surface did not negotiate current wait metadata")
 					}
 					if r.Header.Get("X-FC-Worker") != "worker-one" || r.Header.Get("X-FC-Instance") != "instance-one" || r.URL.RawQuery != "" {
