@@ -74,10 +74,10 @@ func TestRunSelectionKnownMergedPrefixAndInterleavedPausedDonorsUseNoCalls(t *te
 				}
 				mu.Lock()
 				defer mu.Unlock()
-				// Successful lookahead is reused. A lookahead canceled by
-				// ordered consumption may need to be read again.
+				// Known-live metadata is read exactly once per ordered phase;
+				// cancelled speculative suffix reads must not amplify pressure.
 				for n := int64(50); n <= 57; n++ {
-					maximum := min(int(n-49), 4)
+					maximum := 1
 					if count := identities[n]; count < 1 || count > maximum {
 						t.Errorf("PR%d metadata reads = %d, want 1 to %d", n, count, maximum)
 					}
@@ -394,5 +394,37 @@ func TestRunSelectionPausedFrameCannotEraseMergedObservation(t *testing.T) {
 	selectionNext(t, f, reader)
 	if selectionRead(t, f, next.ID).State != "selected" || reader.calls.Load() != 2 {
 		t.Fatal(selectionRead(t, f, next.ID), reader.calls.Load())
+	}
+}
+
+func TestRunSelectionKnownLiveHintNeverReusesStaleSource(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			f := selectionHistoryFixture(t, []int64{1, 2, 3, 4}, 0)
+			receipt, _ := selectionEnqueue(t, f, "known-live-fresh", channel, nil)
+			var mu sync.Mutex
+			seen := map[int64]int{}
+			reader := &refreshTestReader{pull: func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
+				mu.Lock()
+				seen[n]++
+				mu.Unlock()
+				p, err := selectionSnapshotReader{merged: n == 1}.Pull(ctx, repo, n)
+				if n == 2 {
+					p.HeadSHA = strings.Repeat("d", 40)
+				}
+				return p, err
+			}}
+			selectionNext(t, f, reader)
+			got := selectionRead(t, f, receipt.ID)
+			op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
+			if err != nil || got.State != "selected" || op.PullNumber != 2 || op.HeadSHA != strings.Repeat("d", 40) {
+				t.Fatal("performance hint replaced fresh source", got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(seen) != 2 || seen[1] != 1 || seen[2] != 1 {
+				t.Fatal("known-live suffix fetched speculatively", seen)
+			}
+		})
 	}
 }

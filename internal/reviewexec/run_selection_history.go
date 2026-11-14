@@ -16,6 +16,12 @@ import (
 // a cached ready front. Local obligations are still evaluated on every pass.
 // Closed-unmerged and open PRs never acquire this exemption.
 func readRunHistory(ctx context.Context, tx *sql.Tx, project string, repo int64, queue []int64) (map[int64]SourcePlan, error) {
+	return readRunHistoryHints(ctx, tx, project, repo, queue, nil)
+}
+
+// knownLive only narrows speculative concurrency. It never supplies source identity,
+// eligibility, or coverage: every ordered live member still gets a fresh read.
+func readRunHistoryHints(ctx context.Context, tx *sql.Tx, project string, repo int64, queue []int64, knownLive map[int64]bool) (map[int64]SourcePlan, error) {
 	out := map[int64]SourcePlan{}
 	var hasProjection bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_current_pulls')`).Scan(&hasProjection); err != nil {
@@ -44,6 +50,9 @@ func readRunHistory(ctx context.Context, tx *sql.Tx, project string, repo int64,
 				break
 			}
 			visible[n] = true
+			if knownLive != nil && state == "open" {
+				knownLive[n] = true
+			}
 			if state != "merged" || retired || !sha.MatchString(head) || !sha.MatchString(base) || ref == "" || !safeText(ref, 256) || !roundTime(observed) {
 				continue
 			}

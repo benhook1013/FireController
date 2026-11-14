@@ -261,6 +261,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	}
 	var queue []int64
 	var history map[int64]SourcePlan
+	var knownLive map[int64]bool
 	err = retryRunSelectionRead(ctx, func() error {
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
@@ -272,7 +273,8 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			if index := slices.Index(queue, r.ExpectedPullNumber); index >= 0 {
 				queue = queue[:index+1]
 			}
-			history, err = readRunHistory(ctx, tx, r.ProjectID, repo, queue)
+			knownLive = map[int64]bool{}
+			history, err = readRunHistoryHints(ctx, tx, r.ProjectID, repo, queue, knownLive)
 			return err
 		})
 	})
@@ -314,7 +316,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					// lookahead; the ordered member retains its normal checks.
 					numbers := []int64{n}
 					window := min(i+4, len(queue))
-					if len(queue) <= 2 {
+					// A retained open state is only a conservative performance hint.
+					// Do not launch suffix reads that the ordered live result will
+					// immediately cancel and potentially fetch again. A stale hint
+					// merely loses parallelism; it cannot skip a fresh source read.
+					if len(queue) <= 2 || knownLive[n] {
 						window = i + 1
 					}
 					for j := i + 1; j < window; j++ {
