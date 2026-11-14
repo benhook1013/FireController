@@ -222,10 +222,10 @@ func (m *Manager) verify(ctx context.Context, w Workspace) error {
 	} {
 		value, err := m.output(ctx, w.Directory, check.args...)
 		if err != nil {
-			// Quiet verification has a documented missing/invalid-name exit.
+			// Quiet name verification and disconnected merge-base histories use exit 1.
 			// Other command exits, I/O errors and cancellation remain operational.
 			var exit *exec.ExitError
-			if check.args[0] == "rev-parse" && errors.As(err, &exit) && exit.ExitCode() == 1 {
+			if (check.args[0] == "rev-parse" || check.args[0] == "merge-base") && errors.As(err, &exit) && exit.ExitCode() == 1 {
 				return errVerification
 			}
 			return err
