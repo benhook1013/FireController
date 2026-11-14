@@ -27,6 +27,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 		ctx = reviewprovider.WithGitHubCaller(ctx, caller)
 	}
+	ctx = reviewprovider.WithGitHubTarget(ctx, target.repository, target.number)
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false

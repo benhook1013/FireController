@@ -38,6 +38,7 @@ type GitHubQuota struct {
 	next      time.Time
 	rows      map[githubQuotaKey]githubQuotaCount
 	coreFloor RetryTimingEvidence
+	targets   githubTargetWindow
 }
 
 func NewGitHubQuota() *GitHubQuota {
@@ -143,6 +144,7 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 		}
 	}
 	var previous map[githubQuotaKey]githubQuotaCount
+	var previousTargets githubTargetWindow
 	q.mu.Lock()
 	// Only an unambiguous primary-core refusal establishes this floor. A
 	// successful concurrent request must not erase an unexpired refusal.
@@ -155,6 +157,7 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 	previousEnd := q.next
 	if q.next.IsZero() || !now.Before(q.next) {
 		previous, q.rows = q.rows, make(map[githubQuotaKey]githubQuotaCount)
+		previousTargets, q.targets = q.targets, githubTargetWindow{}
 		q.next = now.Add(time.Minute)
 	}
 	row, found := q.rows[key]
@@ -191,7 +194,9 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 		}
 	}
 	q.rows[key] = row
+	q.targets.observe(ctx, caller, conditional, gated, status)
 	q.mu.Unlock()
+	previousTargets.report(ctx, q.bucket, previousEnd)
 	if firstLimit {
 		slog.WarnContext(ctx, "GitHub request rate limited", "bucket", q.bucket, "caller", key.caller, "endpoint", key.endpoint,
 			"resource", key.resource, "http_status", status, "primary_exhausted", remaining == 0,
