@@ -349,7 +349,11 @@ func Push(ctx context.Context, configPath string) (Result, error) {
 	return result, publicFailure(err)
 }
 
-func push(ctx context.Context, c Config, t transport) (result Result, err error) {
+func push(ctx context.Context, c Config, t transport) (Result, error) {
+	return pushPrepared(ctx, c, t, nil)
+}
+
+func pushPrepared(ctx context.Context, c Config, t transport, shared *batchPreparation) (result Result, err error) {
 	if ctx == nil || ctx.Err() != nil {
 		return result, failure("offsite_cancelled")
 	}
@@ -419,7 +423,13 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 				}
 			}
 		}
-		selected, e := newest(ctx, c)
+		var selected backup.Summary
+		var e error
+		if shared == nil {
+			selected, e = newest(ctx, c)
+		} else {
+			selected, e = shared.selectSource(ctx, c)
+		}
 		if e != nil {
 			return result, e
 		}
@@ -451,23 +461,30 @@ func push(ctx context.Context, c Config, t transport) (result Result, err error)
 				return result, failure("offsite_storage_unavailable")
 			}
 		}
-		r, e := packVerified(ctx, selected, prepared, c)
+		var r Receipt
+		if shared == nil {
+			r, e = packVerified(ctx, selected, prepared, c)
+		} else {
+			r, e = shared.linkArchive(ctx, selected, prepared, c)
+		}
 		if e != nil {
 			return result, e
 		}
 		// Inspect the captured archive, not the source again: local retention
 		// can remove the original after it was selected.
-		check, e := os.MkdirTemp(s.work, "prepared-")
-		if e != nil {
-			return result, failure("offsite_storage_unavailable")
-		}
-		_, e = unpack(ctx, prepared, check, r, c)
-		cleanupErr := os.RemoveAll(check)
-		if e != nil {
-			return result, e
-		}
-		if cleanupErr != nil {
-			return result, failure("offsite_storage_unavailable")
+		if shared == nil {
+			check, e := os.MkdirTemp(s.work, "prepared-")
+			if e != nil {
+				return result, failure("offsite_storage_unavailable")
+			}
+			_, e = unpack(ctx, prepared, check, r, c)
+			cleanupErr := os.RemoveAll(check)
+			if e != nil {
+				return result, e
+			}
+			if cleanupErr != nil {
+				return result, failure("offsite_storage_unavailable")
+			}
 		}
 		// Persist the intent before moving the complete spool. Recovery can
 		// finish either side of that rename without needing the source bundle.
