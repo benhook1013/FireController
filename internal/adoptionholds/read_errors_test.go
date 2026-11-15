@@ -39,7 +39,7 @@ func (q obligationQueryFailure) QueryRowContext(ctx context.Context, query strin
 func TestReadFactsMissingRetainedRowsRemainProtective(t *testing.T) {
 	f := fresh(t)
 	f.apply(batch(), "missing-retained-rows")
-	for _, stage := range []string{"SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT source_key"} {
+	for _, stage := range []string{"SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id"} {
 		q := obligationQueryFailure{Query: f.store.DB(), match: stage, row: true, missing: true}
 		_, err := h.ReadFacts(t.Context(), q, "project_one", 3251)
 		var failure *core.Error
@@ -65,7 +65,7 @@ func TestReadFactsPreservesOperationalErrors(t *testing.T) {
 			}
 		}
 	}
-	for _, stage := range []string{"schema:review_adoption_obligations", "SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT source_key", "SELECT revision,reason"} {
+	for _, stage := range []string{"schema:review_adoption_obligations", "SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT revision,reason"} {
 		t.Run(stage, func(t *testing.T) {
 			q := obligationQueryFailure{Query: f.store.DB(), match: stage, row: true}
 			_, err := h.ReadFacts(t.Context(), q, "project_one", 3251)
@@ -122,6 +122,8 @@ func TestReadFactsStoredValueCorruptionRemainsProtective(t *testing.T) {
 		name, statement string
 		args            []any
 	}{
+		{"mismatched-source-key", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET source_key=source_key||'wrong'`, nil},
+		{"blob-source-key", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET source_key=CAST(source_key AS BLOB)`, nil},
 		{"oversized-original", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET original_json=?`, []any{strings.Repeat("x", 65537)}},
 		{"nonnumeric-source-epoch", `UPDATE review_adoption_sources SET revision='broken'`, nil},
 		{"nonnumeric-domain-version", `UPDATE metadata SET value='broken' WHERE key='schema:review_adoption_obligations'`, nil},

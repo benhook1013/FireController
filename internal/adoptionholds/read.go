@@ -157,9 +157,9 @@ type cachedSourceState struct {
 
 func readDetailWithSources(ctx context.Context, q Query, project, id string, sources map[string]cachedSourceState) (m.Detail, error) {
 	var d m.Detail
-	var namespace, body, sha string
-	var idValue, projectValue, namespaceValue, sourceRevisionValue, bodyValue, shaValue, statusValue, revisionValue, actorValue, workerValue, createdValue any
-	err := q.QueryRowContext(ctx, `SELECT id,project_id,namespace,source_revision,CASE WHEN length(CAST(original_json AS BLOB))<=65536 THEN original_json END,original_sha256,status,revision,actor_id,worker_id,created_at FROM review_adoption_obligations WHERE project_id=? AND id=?`, project, id).Scan(&idValue, &projectValue, &namespaceValue, &sourceRevisionValue, &bodyValue, &shaValue, &statusValue, &revisionValue, &actorValue, &workerValue, &createdValue)
+	var namespace, body, sha, key string
+	var idValue, projectValue, namespaceValue, sourceRevisionValue, bodyValue, shaValue, statusValue, revisionValue, actorValue, workerValue, createdValue, keyValue any
+	err := q.QueryRowContext(ctx, `SELECT id,project_id,namespace,source_revision,CASE WHEN length(CAST(original_json AS BLOB))<=65536 THEN original_json END,original_sha256,status,revision,actor_id,worker_id,created_at,source_key FROM review_adoption_obligations WHERE project_id=? AND id=?`, project, id).Scan(&idValue, &projectValue, &namespaceValue, &sourceRevisionValue, &bodyValue, &shaValue, &statusValue, &revisionValue, &actorValue, &workerValue, &createdValue, &keyValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, core.Fail("not_found", "The obligation is unavailable in this project.", 404)
 	}
@@ -190,11 +190,6 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 	d.Source = state.Source
 	if d.SourceRevision < 1 || d.SourceRevision > state.Revision {
 		return d, projectStateUnavailable()
-	}
-	var key string
-	var keyValue any
-	if err = q.QueryRowContext(ctx, `SELECT source_key FROM review_adoption_obligations WHERE id=?`, id).Scan(&keyValue); err != nil {
-		return d, retainedSourceReadError(err)
 	}
 	if !retainedText(keyValue, &key) || key != d.Original.SourceKey {
 		return d, projectStateUnavailable()
@@ -257,7 +252,7 @@ func readDetailWithSources(ctx context.Context, q Query, project, id string, sou
 
 // readFacts reads only the selected project/PR using its target index. Original
 // records are validated in bounded pages; no captured credit is consulted.
-func readFacts(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool) (Facts, error) {
+func readFacts(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool, stats *readCost) (Facts, error) {
 	var facts Facts
 	if !identifier.MatchString(project) || !pull(number) {
 		return facts, invalid()
@@ -290,6 +285,7 @@ func readFacts(ctx context.Context, q Query, project string, number int64, stopA
 			return facts, err
 		}
 		for _, id := range ids {
+			stats.Records++
 			d, err := readDetailWithSources(ctx, q, project, id, sources)
 			if err != nil {
 				return facts, retainedSourceReadError(err)
@@ -329,7 +325,10 @@ func ReadFacts(ctx context.Context, q Query, project string, number int64) (Fact
 	return readFactsIfPresent(ctx, q, project, number, false)
 }
 
-func readFactsIfPresent(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool) (Facts, error) {
+func readFactsIfPresent(ctx context.Context, q Query, project string, number int64, stopAtFirstOpen bool) (result Facts, resultErr error) {
+	started := time.Now()
+	stats := readCost{}
+	defer func() { observeReadCost(started, stats, resultErr) }()
 	if !identifier.MatchString(project) || !pull(number) {
 		return Facts{}, invalid()
 	}
@@ -340,7 +339,7 @@ func readFactsIfPresent(ctx context.Context, q Query, project string, number int
 	if !present {
 		return Facts{}, nil
 	}
-	facts, err := readFacts(ctx, q, project, number, stopAtFirstOpen)
+	facts, err := readFacts(ctx, q, project, number, stopAtFirstOpen, &stats)
 	if err != nil {
 		return Facts{}, retainedSourceReadError(err)
 	}
