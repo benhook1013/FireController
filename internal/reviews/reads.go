@@ -225,6 +225,11 @@ func pull(store *core.Store) http.HandlerFunc {
 			}
 			response.Pull.Diff, response.Pull.IsDraft, response.Pull.MergedAt, response.Pull.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
 			response.Pull.Complete = complete != 0
+			nodes, repository, err := readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
+			if err != nil {
+				return err
+			}
+			response.Pull.ParentPullNumber = displayParents(nodes, repository)[number]
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &response.Pull); err != nil {
 				return err
 			}

@@ -153,6 +153,41 @@ func mergedQueueNodes(nodes []queueNode) []queueNode {
 	return merged
 }
 
+// displayParents resolves each observed branch independently of whole-queue
+// ordering readiness. An unrelated missing identity must not erase a known
+// parent label. This is display-only and does not authorize execution.
+func displayParents(nodes []queueNode, repository int64) map[int64]int64 {
+	byBranch := map[string]int64{}
+	deliveryRefs := map[string]bool{}
+	for _, n := range nodes {
+		b := n.metadata.Branches
+		if b != nil {
+			deliveryRefs[b.DeliveryRef] = true
+		}
+		if n.state != "open" || b == nil || b.HeadRepositoryID != repository {
+			continue
+		}
+		if _, exists := byBranch[b.HeadRef]; exists {
+			byBranch[b.HeadRef] = 0
+		} else {
+			byBranch[b.HeadRef] = n.number
+		}
+	}
+	parents := map[int64]int64{}
+	for _, n := range nodes {
+		if n.state != "open" {
+			continue
+		}
+		if deliveryRefs[n.base] {
+			continue
+		}
+		if parent := byBranch[n.base]; parent != 0 && parent != n.number {
+			parents[n.number] = parent
+		}
+	}
+	return parents
+}
+
 func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) ([]queueNode, map[int64]int64) {
 	var open, other []queueNode
 	unknown := false
@@ -174,7 +209,8 @@ func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) (
 			recent = append(recent, n)
 		}
 	}
-	open, parents, complete := topologyOrders(open, repository)
+	open, _, complete := topologyOrders(open, repository)
+	parents := displayParents(nodes, repository)
 	if !complete || unknown {
 		// Preserve relative stored order, including unresolved lifecycle rows.
 		open = nil

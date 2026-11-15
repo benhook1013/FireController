@@ -79,6 +79,14 @@ func TestQueueTopologyBeforePaging(t *testing.T) {
 	if want := []int64{3433, 3430, 3417, 3427, 3408, 3410, 3424, 3425, 3435, 3438}; !slices.Equal(all, want) {
 		t.Fatalf("ordered %v want %v", all, want)
 	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/pulls/3410", nil)
+	r.Header.Set("Authorization", "Bearer "+f.readToken)
+	w := httptest.NewRecorder()
+	f.mux.ServeHTTP(w, r)
+	var detail PullResponse
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Pull.ParentPullNumber != 3408 {
+		t.Fatalf("detail lost parent: %d %s", w.Code, w.Body.String())
+	}
 	if parents[3410] != 3408 || parents[3424] != 3427 || parents[3435] != 3408 || parents[3438] != 0 || parents[3417] != 0 {
 		t.Fatal("invalid parent display", parents)
 	}
@@ -103,5 +111,57 @@ func TestQueueTopologyKeepsUnknownAndForksConservative(t *testing.T) {
 	missing.metadata.Branches = nil
 	if _, _, ok = topologyOrders([]queueNode{missing, child, fork}, 7); ok {
 		t.Fatal("missing facts promoted a standalone")
+	}
+}
+
+func TestParentDisplaySurvivesUnrelatedIncompleteTopology(t *testing.T) {
+	draft := false
+	nodes := []queueNode{
+		{number: 3427, state: "open", base: "develop", metadata: PullDisplayMetadata{IsDraft: &draft, Branches: &PullBranches{HeadRepositoryID: 701, HeadRef: "codex/gameplay-region-owner-handoff-20261114", DeliveryRef: "develop"}}},
+		{number: 3408, state: "open", base: "codex/gameplay-region-owner-handoff-20261114", metadata: PullDisplayMetadata{IsDraft: &draft}},
+		{number: 9999, state: "unknown", base: "unknown"},
+	}
+	ordered, parents := orderedRecentNodes(nodes, 701, time.Now())
+	if parents[3408] != 3427 {
+		t.Fatalf("lost proven parent: %v", parents)
+	}
+	if ordered[0].number != 3427 || ordered[1].number != 3408 || ordered[2].number != 9999 {
+		t.Fatal("changed fallback order", ordered)
+	}
+	nodes = append(nodes, queueNode{number: 123, state: "open", metadata: nodes[0].metadata})
+	if p := displayParents(nodes, 701); p[3408] != 0 {
+		t.Fatal("ambiguous parent", p)
+	}
+	if p := displayParents(nodes[:2], 702); p[3408] != 0 {
+		t.Fatal("cross repository parent", p)
+	}
+}
+
+func TestParentDisplayFallbackBoundaries(t *testing.T) {
+	parent := queueNode{number: 1, state: "open", base: "develop", metadata: PullDisplayMetadata{Branches: &PullBranches{HeadRepositoryID: 7, HeadRef: "feature", DeliveryRef: "develop"}}}
+	child := queueNode{number: 2, state: "open", base: "feature"}
+	for _, state := range []string{"closed", "merged", "unknown"} {
+		p := parent
+		p.state = state
+		if got := displayParents([]queueNode{p, child}, 7); got[2] != 0 {
+			t.Fatal(state, got)
+		}
+	}
+	self := parent
+	self.base = "feature"
+	if got := displayParents([]queueNode{self}, 7); got[1] != 0 {
+		t.Fatal("self", got)
+	}
+	duplicate := parent
+	duplicate.number = 3
+	third := parent
+	third.number = 4
+	if got := displayParents([]queueNode{parent, duplicate, third, child}, 7); got[2] != 0 {
+		t.Fatal("third duplicate", got)
+	}
+	parent.metadata.Branches.HeadRef = "develop"
+	child.base = "develop"
+	if got := displayParents([]queueNode{parent, child}, 7); got[2] != 0 {
+		t.Fatal("delivery base with missing child identity", got)
 	}
 }
