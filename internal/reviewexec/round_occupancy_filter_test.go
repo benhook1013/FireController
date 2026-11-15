@@ -186,7 +186,20 @@ func TestRoundOccupancyFilterPagesCompleteResults(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 100, "first")
 	for i := 0; i < 65; i++ {
-		roundCapture(t, f, i, false)
+		if !t.Run(fmt.Sprintf("capture_%02d", i), func(t *testing.T) {
+			phase := "setup"
+			phaseStarted := time.Now()
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("native fixture capture=%d phase=%s phase_elapsed=%s", i, phase, time.Since(phaseStarted))
+				}
+			})
+			roundCaptureWithProgress(t, f, i, false, func(next string) {
+				phase, phaseStarted = next, time.Now()
+			})
+		}) {
+			return
+		}
 	}
 	if got := roundPendingCount(t, f, 2, "cli"); got != 65 {
 		t.Fatalf("paged occupancy=%d want 65", got)

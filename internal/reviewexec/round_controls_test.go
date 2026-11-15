@@ -111,12 +111,23 @@ func roundCompleteHook(t *testing.T, f *attemptFixture, id string) {
 // SQL fixture inserts completion, frozen counts or derived ready-cache rows.
 func roundCapture(t *testing.T, f *attemptFixture, n int, accepted bool) (Attempt, string) {
 	t.Helper()
+	return roundCaptureWithProgress(t, f, n, accepted, func(string) {})
+}
+
+// The optional test callback observes setup phases only; native APIs, authority,
+// budgets and captured evidence remain identical to the ordinary fixture.
+func roundCaptureWithProgress(t *testing.T, f *attemptFixture, n int, accepted bool, phase func(string)) (Attempt, string) {
+	t.Helper()
+	phase("enqueue")
 	receipt := f.enqueue(t, attemptProject, fmt.Sprintf("round-operation-%d", n), "cli", 2, 1)
+	phase("bind")
 	roundBind(t, f, receipt.ID)
+	phase("start")
 	a := f.start(t, attemptProject, receipt)
 	anchor := attemptAnchor(attemptProject, 2)
 	anchor.ParentSHA = anchor.BaseSHA
 	var err error
+	phase("admit")
 	a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, "")
 	if err != nil {
 		t.Fatal(err)
@@ -127,10 +138,12 @@ func roundCapture(t *testing.T, f *attemptFixture, n int, accepted bool) (Attemp
 		input.Review.Findings = []reviewprovider.ParsedFinding{{Title: "Retained correction", Detail: "Source fact", Severity: "high", Path: "source.go", StartLine: 1, EndLine: 1}}
 		input.Review.ReportedFindings = 1
 	}
+	phase("capture")
 	captured, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
+	phase("complete")
 	if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "captured_native_result", ""); err != nil {
 		t.Fatal(err)
 	}
