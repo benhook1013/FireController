@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
 	"os"
@@ -51,11 +52,15 @@ func TestIntentRebindProcessHelper(t *testing.T) {
 				}
 				anchor := attemptAnchor(attemptProject, old.PullNumber)
 				anchor.CandidateSHA = old.HeadSHA
-				a, err = engine.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, "")
+				a, err = retryIntentProcessAttempt(t.Context(), a, func(current Attempt) (Attempt, error) {
+					return engine.Admit(t.Context(), attemptProject, current.ID, current.Revision, anchor, "")
+				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = engine.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "fixture_capture", ""); err != nil {
+				if _, err = retryIntentProcessAttempt(t.Context(), a, func(current Attempt) (Attempt, error) {
+					return engine.Advance(t.Context(), attemptProject, current.ID, current.Revision, "completed", "fixture_capture", "")
+				}); err != nil {
 					t.Fatal(err)
 				}
 				return
@@ -180,5 +185,74 @@ func exerciseIntentProcessRace(t *testing.T, secondAction string) {
 	}
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 2 || roundRead(t, f, 2, "cli").Used != 0 {
 		t.Fatal("restart duplicated or charged intent")
+	}
+}
+
+// Winning the claim does not mean the losing process has released SQLite yet.
+// Retry only local admission pressure, without restarting the claim or replacing
+// its attempt/revision with the zero result returned by an unsuccessful write.
+func retryIntentProcessAttempt(ctx context.Context, original Attempt, mutate func(Attempt) (Attempt, error)) (Attempt, error) {
+	var err error
+	for tries := 0; tries < 50; tries++ {
+		if err = ctx.Err(); err != nil {
+			return Attempt{}, err
+		}
+		var result Attempt
+		result, err = mutate(original)
+		if err == nil {
+			return result, nil
+		}
+		var refusal *core.Error
+		if !errors.As(err, &refusal) || refusal.Code != "overloaded" {
+			return Attempt{}, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Attempt{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return Attempt{}, err
+}
+
+func TestIntentProcessAttemptRetryPreservesClaim(t *testing.T) {
+	original := Attempt{ID: "claimed-attempt", Revision: 7}
+	calls := 0
+	result, err := retryIntentProcessAttempt(t.Context(), original, func(got Attempt) (Attempt, error) {
+		calls++
+		if got.ID != original.ID || got.Revision != original.Revision {
+			t.Fatal("claim changed during retry", got)
+		}
+		if calls < 3 {
+			return Attempt{}, core.Fail("overloaded", "Storage is busy.", 503)
+		}
+		got.Revision++
+		return got, nil
+	})
+	if err != nil || calls != 3 || result.Revision != 8 {
+		t.Fatal(result, calls, err)
+	}
+}
+
+func TestIntentProcessAttemptRetryRefusesConflictAndCancellation(t *testing.T) {
+	for _, code := range []string{"review_conflict", "storage_unavailable"} {
+		calls := 0
+		expected := core.Fail(code, "fixture", 409)
+		_, err := retryIntentProcessAttempt(t.Context(), Attempt{}, func(Attempt) (Attempt, error) { calls++; return Attempt{}, expected })
+		if err != expected || calls != 1 {
+			t.Fatal(code, calls, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls := 0
+	_, err := retryIntentProcessAttempt(ctx, Attempt{}, func(Attempt) (Attempt, error) {
+		calls++
+		cancel()
+		return Attempt{}, core.Fail("overloaded", "busy", 503)
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatal(calls, err)
 	}
 }
