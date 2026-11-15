@@ -24,7 +24,7 @@ func TestOffsiteDownloadPermissionFailureIsPrivateStorageError(t *testing.T) {
 			switch kind {
 			case "success":
 				// Deliberately create a nonprivate download so get must fix it.
-				script += "while [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = copyto ]; then\n    [ \"$#\" -eq 4 ] && [ \"$4\" = --ignore-times ] || exit 7\n    umask 022\n    printf 'synthetic archive' > \"$3\"\n    exit 0\n  fi\n  shift\ndone\nexit 7\n"
+				script += "while [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = copyto ]; then\n    [ \"$#\" -eq 5 ] && [ \"$4\" = --ignore-times ] && [ \"$5\" = --local-no-preallocate ] || exit 7\n    umask 022\n    printf 'synthetic archive' > \"$3\"\n    exit 0\n  fi\n  shift\ndone\nexit 7\n"
 			case "not_found_3", "not_found_4":
 				code := 3
 				if kind == "not_found_4" {

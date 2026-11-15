@@ -28,6 +28,7 @@ type session struct {
 	transport transport
 	lockFile  *os.File
 	work      string
+	batch     *batchPreparation
 }
 
 func openSession(c Config, t transport) (*session, error) {
@@ -217,15 +218,27 @@ func (s *session) verifyRemote(ctx context.Context, r Receipt) error {
 		return err
 	}
 	download := filepath.Join(s.work, "verify.tar.gz")
-	if err := s.transport.get(ctx, s.object(r, "archive.tar.gz"), download); err != nil {
+	if err := s.downloadArchive(ctx, r, download); err != nil {
 		return err
 	}
 	defer os.Remove(download)
+	if s.batch != nil {
+		h, n, e := fileHash(ctx, download, r.ArchiveBytes)
+		if e != nil || h != r.ArchiveSHA256 || n != r.ArchiveBytes {
+			return cancelOrFailure(ctx, "offsite_archive_invalid")
+		}
+		if s.batch.verified[r] {
+			return nil
+		}
+	}
 	stage, err := os.MkdirTemp(s.work, "verify-")
 	if err != nil {
 		return failure("offsite_storage_unavailable")
 	}
 	defer os.RemoveAll(stage)
+	if s.batch != nil {
+		return s.batch.validateArchive(ctx, download, stage, r, s.c)
+	}
 	_, err = unpack(ctx, download, stage, r, s.c)
 	return err
 }
@@ -365,6 +378,7 @@ func pushPrepared(ctx context.Context, c Config, t transport, shared *batchPrepa
 		return result, err
 	}
 	defer s.close()
+	s.batch = shared
 	s.state.LastAttempt = &Attempt{State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err = s.save(); err != nil {
 		return result, err
@@ -639,7 +653,7 @@ func (s *session) prune(ctx context.Context, newestVerified bool) (err error) {
 			return err
 		}
 		archive := filepath.Join(s.work, "prune.tar.gz")
-		e = s.transport.get(ctx, s.object(r, "archive.tar.gz"), archive)
+		e = s.downloadArchive(ctx, r, archive)
 		if e != nil && !errors.Is(e, notFound) {
 			return e
 		}
@@ -747,7 +761,7 @@ func (s *session) fetch(ctx context.Context, id, destination string) (result bac
 		}
 	}()
 	archive := filepath.Join(s.work, "fetch.tar.gz")
-	if err = s.transport.get(ctx, s.object(r, "archive.tar.gz"), archive); err != nil {
+	if err = s.downloadArchive(ctx, r, archive); err != nil {
 		return result, err
 	}
 	if result, err = unpack(ctx, archive, destination, r, s.c); err != nil {
@@ -770,4 +784,13 @@ func publicFailure(err error) error {
 		return failure("offsite_backup_not_found")
 	}
 	return err
+}
+
+func (s *session) downloadArchive(ctx context.Context, r Receipt, path string) error {
+	if s.batch != nil {
+		if err := s.batch.admit(filepath.Dir(path), r.ArchiveBytes); err != nil {
+			return err
+		}
+	}
+	return s.transport.get(ctx, s.object(r, "archive.tar.gz"), path, r.ArchiveBytes)
 }

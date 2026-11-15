@@ -63,12 +63,15 @@ func (m *memoryTransport) put(ctx context.Context, source, name string) error {
 	}
 	return nil
 }
-func (m *memoryTransport) get(_ context.Context, name, dest string) error {
+func (m *memoryTransport) get(_ context.Context, name, dest string, limits ...int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v, ok := m.files[name]
 	if !ok {
 		return notFound
+	}
+	if len(limits) > 0 && int64(len(v)) > limits[0] {
+		return failure("offsite_size_limit")
 	}
 	v = bytes.Clone(v)
 	if m.corruptDownload && len(v) > 0 {

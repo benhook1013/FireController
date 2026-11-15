@@ -41,10 +41,10 @@ func (m *preparedCheckingTransport) put(ctx context.Context, source, name string
 	return m.memoryTransport.put(ctx, source, name)
 }
 
-func (m *preparedCheckingTransport) get(ctx context.Context, name, destination string) error {
+func (m *preparedCheckingTransport) get(ctx context.Context, name, destination string, limits ...int64) error {
 	m.checkWorkspace()
 	m.gets++
-	return m.memoryTransport.get(ctx, name, destination)
+	return m.memoryTransport.get(ctx, name, destination, limits...)
 }
 
 func TestOffsitePreparedCopyRemovedBeforeUploadAndRecovery(t *testing.T) {

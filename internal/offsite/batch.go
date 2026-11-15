@@ -38,6 +38,8 @@ type batchPreparation struct {
 	work     string
 	selected *backup.Summary
 	receipt  *Receipt
+	floor    int64
+	verified map[Receipt]bool
 }
 
 func (p *batchPreparation) selectSource(ctx context.Context, c Config) (backup.Summary, error) {
@@ -54,6 +56,9 @@ func (p *batchPreparation) selectSource(ctx context.Context, c Config) (backup.S
 func (p *batchPreparation) linkArchive(ctx context.Context, s backup.Summary, target string, c Config) (Receipt, error) {
 	archive := filepath.Join(p.work, "shared.tar.gz")
 	if p.receipt == nil {
+		if err := p.admit(p.work, c.MaxBundleBytes); err != nil {
+			return Receipt{}, err
+		}
 		r, err := packVerified(ctx, s, archive, c)
 		if err != nil {
 			return r, err
@@ -62,7 +67,7 @@ func (p *batchPreparation) linkArchive(ctx context.Context, s backup.Summary, ta
 		if err != nil {
 			return Receipt{}, failure("offsite_storage_unavailable")
 		}
-		_, err = unpack(ctx, archive, stage, r, c)
+		err = p.validateArchive(ctx, archive, stage, r, c)
 		cleanup := os.RemoveAll(stage)
 		if err != nil {
 			os.Remove(archive)
@@ -175,7 +180,7 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 	encoded, _ := json.Marshal(b.Configs)
 	sum := sha256.Sum256(encoded)
 	marker.Remote = "batch:" + hex.EncodeToString(sum[:])
-	if err := batchHeadroom(b.StateDir, b.MinFreeBytes, configs[0].MaxBundleBytes); err != nil {
+	if err := batchHeadroom(b.StateDir, b.MinFreeBytes, 0); err != nil {
 		return result, err
 	}
 	work, err := prepareWork(marker)
@@ -183,7 +188,7 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 		return result, err
 	}
 	defer os.RemoveAll(work)
-	shared := &batchPreparation{work: work}
+	shared := &batchPreparation{work: work, floor: b.MinFreeBytes}
 	ctx, cancel := context.WithTimeout(ctx, 24*time.Hour)
 	defer cancel()
 	failed := false
@@ -196,9 +201,9 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 			tr = transports[i]
 		}
 		r := Result{}
-		e := batchHeadroom(b.StateDir, b.MinFreeBytes, c.MaxBundleBytes)
+		e := batchHeadroom(b.StateDir, b.MinFreeBytes, 0)
 		if e == nil {
-			e = batchHeadroom(existingParent(c.StateDir), b.MinFreeBytes, c.MaxBundleBytes)
+			e = batchHeadroom(existingParent(c.StateDir), b.MinFreeBytes, 0)
 		}
 		if e == nil {
 			r, e = pushPrepared(ctx, c, tr, shared)
@@ -220,16 +225,14 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 	return result, nil
 }
 
-// This is prospective admission, not an atomic reservation against unrelated
-// filesystem writers. Three bounded payloads cover shared archive, downloaded
-// archive and expanded verification workspace. Existing pending bytes are
-// already reflected in available space.
+// Prospective phase admission, not an atomic reservation against unrelated
+// writers. Already allocated shared and pending archives are in available space.
 func batchHeadroom(path string, floor, bound int64) error {
 	available, err := availableBytes(path)
 	if err != nil {
 		return failure("offsite_storage_unavailable")
 	}
-	if bound <= 0 || bound > maxBundleBytes || available < uint64(floor)+3*uint64(bound) {
+	if bound < 0 || bound > 2*maxBundleBytes || available < uint64(floor)+uint64(bound) {
 		return failure("offsite_storage_headroom")
 	}
 	return nil
