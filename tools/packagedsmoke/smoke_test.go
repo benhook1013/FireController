@@ -747,14 +747,16 @@ func (o *listeningOutput) Write(p []byte) (int, error) {
 }
 
 type daemonProcess struct {
-	command  *exec.Cmd
-	output   *listeningOutput
-	stderr   *boundedOutput
-	done     chan struct{}
-	err      error
-	instance string
-	address  string
-	once     sync.Once
+	command *exec.Cmd
+	output  *listeningOutput
+	stderr  *boundedOutput
+	// A fixture may require one exact synthetic diagnostic; all other output fails.
+	acceptStderr func([]byte) bool
+	done         chan struct{}
+	err          error
+	instance     string
+	address      string
+	once         sync.Once
 }
 
 func startDaemon(t *testing.T, ctx context.Context, binary, data string, env []string, extra ...string) *daemonProcess {
@@ -825,8 +827,13 @@ func (d *daemonProcess) stop(t *testing.T) {
 			var exit *exec.ExitError
 			validExit = errors.As(d.err, &exit) && exit.ExitCode() == 1
 		}
-		if !validExit || invalid || d.stderr.len() != 0 {
-			t.Error("packaged daemon shutdown failed or emitted non-listening output")
+		stderrValid := d.stderr.len() == 0
+		if d.acceptStderr != nil {
+			stderrValid = d.acceptStderr(d.stderr.bytes())
+		}
+		if !validExit || invalid || !stderrValid {
+			diagnostic := d.stderr.bytes()
+			t.Errorf("packaged daemon shutdown failed or emitted non-listening output (valid_exit=%t invalid_stdout=%t stderr_bytes=%d stderr_sha256=%x)", validExit, invalid, len(diagnostic), sha256.Sum256(diagnostic))
 		}
 	})
 }

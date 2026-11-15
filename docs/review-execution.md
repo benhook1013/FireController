@@ -601,7 +601,6 @@ For CLI, the process runner reports a timestamp immediately after successful OS 
 
 Review-evidence schema five adds a bounded, canonical diagnostic row keyed to the original attempt and project. First-insert-only retention is idempotent and emits an empty-payload `review.activity_observed` event; the browser refreshes only current round progress. Attempt/head/channel/trigger bindings are checked on write, read and restore. Older supported backups remain readable and upgrade without fabricated activity. This diagnostic does not change immutable attempt history or the public showcase projection.
 
-
 ### PR intent generations and late-bound preparation
 
 An undispatched review request retains its PR, channel, original authorizer and

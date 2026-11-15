@@ -54,6 +54,11 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := newRunSelectionHTTPSFixture(t, private, token)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("synthetic provider inventory: %v", provider.totalInventory())
+		}
+	})
 	stub := filepath.Join(private, "never-run")
 	stubLog := filepath.Join(private, "unexpected-command")
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf 'unexpected\\n' >> "+runSelectionShellQuote(stubLog)+"\nexit 2\n"), 0700); err != nil {

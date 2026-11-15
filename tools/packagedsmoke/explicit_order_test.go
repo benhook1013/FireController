@@ -338,8 +338,8 @@ func testPackagedExplicitRequestFlag(t *testing.T, cliFlag, wireFlag string) {
 	if body, err := os.ReadFile(gitLog); err != nil || !bytes.Equal(body, gitBefore) {
 		t.Fatal("replay/read/restart launched Git again")
 	}
-	// Four held observer requests add repository reads only.
-	expectedTotal := map[string]int{"GET /repositories/991": 6, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
+	// Four held observer requests add current pull metadata reads only.
+	expectedTotal := map[string]int{"GET /repositories/991": 2, "GET /repos/synthetic/packaged-smoke/pulls/2": 4, "GET /repos/synthetic/packaged-smoke/pulls/3": 2}
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("explicit selection and held observer total inventory differs: %v", provider.totalInventory())
 	}

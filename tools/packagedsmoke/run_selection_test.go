@@ -409,6 +409,40 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	var followerProject, followerWorker, followerMode, followerUpdated string
 	var followerPull, followerRevision int64
 	followerErr := followerDB.QueryRowContext(ctx, `SELECT project_id,pull_number,worker_id,mode,revision,updated_at FROM review_pr_followers`).Scan(&followerProject, &followerPull, &followerWorker, &followerMode, &followerRevision, &followerUpdated)
+	// The two real selection settlements may add their bounded diagnostics.
+	// Exact replay and restart below must preserve these same row images.
+	if initial.counts["review_selection_decision_history"] != 0 || beforeRestart.counts["review_selection_decision_history"] != 2 {
+		t.Fatal("selection decision telemetry missing or duplicated")
+	}
+	decisionRows, decisionErr := followerDB.QueryContext(ctx, `SELECT project_id,channel,phase,body,occurrences FROM review_selection_decision_history ORDER BY sequence`)
+	if decisionErr != nil {
+		t.Fatal("selection decision snapshot unavailable")
+	}
+	seenDecisions := map[string]bool{}
+	for decisionRows.Next() {
+		var dp, dc, phase, body string
+		var occurrences int64
+		var decision reviewexec.SelectionDecision
+		if decisionRows.Scan(&dp, &dc, &phase, &body, &occurrences) != nil || json.Unmarshal([]byte(body), &decision) != nil || dp != project || dc != "cli" || phase != "selection" || decision.Phase != "selection" || occurrences != 1 || seenDecisions[decision.SelectionID] {
+			t.Fatal("unexpected selection decision identity")
+		}
+		switch decision.SelectionID {
+		case receipt.ID:
+			if decision.Outcome != "selected" || decision.SelectedPullNumber != 3 || decision.Reason != "" {
+				t.Fatal("selected diagnostic lost its outcome")
+			}
+		case mismatch.Selection.ID:
+			if decision.Outcome != "held" || decision.Reason != "expected_pr_mismatch" || decision.SelectedPullNumber != 0 {
+				t.Fatal("held diagnostic lost its outcome")
+			}
+		default:
+			t.Fatal("extra selection decision")
+		}
+		seenDecisions[decision.SelectionID] = true
+	}
+	if decisionRows.Err() != nil || decisionRows.Close() != nil || len(seenDecisions) != 2 {
+		t.Fatal("selection decisions incomplete")
+	}
 	followerCloseErr := followerDB.Close()
 	followerAt, followerTimeErr := time.Parse(time.RFC3339Nano, followerUpdated)
 	if followerErr != nil || followerCloseErr != nil || followerProject != project || followerWorker != worker || followerPull != 3 || followerMode != "auto" || followerRevision != 1 || followerTimeErr != nil || followerAt.IsZero() {
@@ -468,6 +502,8 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 	// The exact one-row follower delta was asserted above; final deep equality
 	// still protects it through configuration changes, replay, reads and restart.
 	changed["review_pr_followers"] = true
+	// Exact two-row identities/outcomes verified above; final equality covers recovery.
+	changed["review_selection_decision_history"] = true
 	// Only the three exact one-row stopped-notice deltas proved above are
 	// allowed; their contents and event remain immutable through recovery.
 	for _, name := range []string{"inbox_conversations", "inbox_messages", "inbox_recipient_state"} {
@@ -495,7 +531,7 @@ func TestPackagedRunSelectionSmoke(t *testing.T) {
 			t.Fatal("private immutable fixture input changed")
 		}
 	}
-	expectedTotal := map[string]int{"GET /repositories/991": 7, "GET /repos/synthetic/packaged-smoke/pulls/2": 2, "GET /repos/synthetic/packaged-smoke/pulls/3": 2 + lookaheadGETs}
+	expectedTotal := map[string]int{"GET /repositories/991": 3, "GET /repos/synthetic/packaged-smoke/pulls/2": 6, "GET /repos/synthetic/packaged-smoke/pulls/3": 2 + lookaheadGETs}
 	if provider.observerRequests.Load() != 4 || !reflect.DeepEqual(provider.totalInventory(), expectedTotal) {
 		t.Fatalf("selection and held observer total inventory differs: %v", provider.totalInventory())
 	}
@@ -677,7 +713,7 @@ func (g *runSelectionObserverGate) awaitStarted(t *testing.T, ctx context.Contex
 	select {
 	case <-g.started:
 	case <-waitCtx.Done():
-		t.Fatal("automatic observer did not reach its controlled source gate")
+		t.Fatalf("automatic observer did not reach its controlled source gate (started=%d finished=%d cancelled=%d)", g.startedCount.Load(), g.finishedCount.Load(), g.cancelled.Load())
 	}
 }
 
@@ -700,7 +736,7 @@ func (f *runSelectionHTTPSFixture) inventory() map[string]int {
 	// Only explicitly armed startup requests can enter this separate inventory.
 	// The final total assertion still accounts for every provider request.
 	if observed := int(f.observerRequests.Load()); observed != 0 {
-		key := "GET /repositories/991"
+		key := "GET /repos/synthetic/packaged-smoke/pulls/2"
 		out[key] -= observed
 		if out[key] == 0 {
 			delete(out, key)
@@ -739,11 +775,12 @@ func newRunSelectionHTTPSFixture(t *testing.T, private, token string) *runSelect
 		f.mu.Lock()
 		gate := f.nextObserver
 		var started int64
-		if r.URL.Path != "/repositories/991" {
+		if r.URL.Path != "/repos/synthetic/packaged-smoke/pulls/2" {
 			gate = nil
 		} else if gate != nil {
 			// Metadata and enrichment reserve the account independently. Hold
-			// one request from each lane before permitting the explicit command.
+			// one current pull metadata request from each lane before permitting
+			// the explicit command. Repository identity is already bound locally.
 			started = gate.startedCount.Add(1)
 			if started == 2 {
 				f.nextObserver = nil

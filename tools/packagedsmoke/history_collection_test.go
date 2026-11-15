@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -92,6 +93,9 @@ func TestPackagedHistoryCollectionSmoke(t *testing.T) {
 	project, worker, other, workerFile := seedAccess(t, ctx, data, bootstrap.instance, strings.TrimSpace(string(admin)), private)
 	extra := []string{"--history-collection", "--github-token-file", tokenFile}
 	daemon := startDaemon(t, ctx, fcd, data, env, extra...)
+	// This fixture deliberately returns one 429. Require its sanitized telemetry,
+	// while every other daemon retains the default empty-stderr invariant.
+	daemon.acceptStderr = expectedHistoryRateLimitDiagnostic
 	if daemon.instance != bootstrap.instance {
 		t.Fatal("collection startup changed instance")
 	}
@@ -513,4 +517,26 @@ func historyCollectionCertificate(t *testing.T) (tls.Certificate, []byte) {
 		t.Fatal("fixture TLS pair unavailable")
 	}
 	return cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER})
+}
+
+// Match the complete default Go slog record, not a substring: neither raw
+// provider values nor additional warnings are permitted. The bucket is random,
+// process-local and unrelated to the credential; all remaining fields are fixed
+// by this synthetic 429 response (no quota headers, Retry-After: 1).
+var historyRateLimitDiagnostic = regexp.MustCompile(`\A[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} WARN GitHub request rate limited bucket=[0-9a-f]{16} caller=history_import endpoint=pull_reviews resource=unknown http_status=429 primary_exhausted=false remaining=-1 reset_epoch=-1 retry_after_seconds=1\n\z`)
+
+func expectedHistoryRateLimitDiagnostic(output []byte) bool {
+	return historyRateLimitDiagnostic.Match(output)
+}
+
+func TestHistoryRateLimitDiagnosticIsExact(t *testing.T) {
+	valid := "2026/11/15 12:21:50 WARN GitHub request rate limited bucket=0123456789abcdef caller=history_import endpoint=pull_reviews resource=unknown http_status=429 primary_exhausted=false remaining=-1 reset_epoch=-1 retry_after_seconds=1\n"
+	if !expectedHistoryRateLimitDiagnostic([]byte(valid)) {
+		t.Fatal("expected bounded synthetic warning rejected")
+	}
+	for _, invalid := range []string{"", valid + valid, "private-prefix" + valid, valid + "secret", strings.Replace(valid, "history_import", "other", 1), strings.Replace(valid, "http_status=429", "http_status=500", 1), strings.Replace(valid, "resource=unknown", "resource=private-repo", 1), strings.Replace(valid, "retry_after_seconds=1", "retry_after_seconds=60", 1), strings.Replace(valid, "0123456789abcdef", "credential-secret", 1)} {
+		if expectedHistoryRateLimitDiagnostic([]byte(invalid)) {
+			t.Fatal("unexpected diagnostic accepted")
+		}
+	}
 }
