@@ -3,8 +3,10 @@ package historycollect
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -319,6 +321,11 @@ func TestCollectionHTTPLifetimePOSTPreservesReceiptOnlyWithCurrentAuthority(t *t
 				// Receiving a body does not join the handler and its deferred read transaction.
 				// Model restart only after the old HTTP owner has finished shutting down.
 				h.server.Close()
+				closedCtx, stop := context.WithTimeout(t.Context(), time.Second)
+				defer stop()
+				if err := collectionWaitDatabaseClosed(closedCtx, h.f.store.DB()); err != nil {
+					t.Fatal("old HTTP database connections did not finish closing", err)
+				}
 				h.f.open(t)
 			}
 			if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 0 {
@@ -326,4 +333,54 @@ func TestCollectionHTTPLifetimePOSTPreservesReceiptOnlyWithCurrentAuthority(t *t
 			}
 		})
 	}
+}
+
+// A canceled transaction may already be marked done while database/sql's
+// asynchronous rollback still owns its driver connection. Joining the HTTP
+// handler is not a join of that cleanup. Wait for actual pool closure before
+// modeling a process restart; never retry or suppress a new store's errors.
+func collectionWaitDatabaseClosed(ctx context.Context, db *sql.DB) error {
+	for db.Stats().OpenConnections != 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
+}
+
+func TestCollectionRestartWaitsForClosedDatabaseConnections(t *testing.T) {
+	f := newCollectionStoreFixture(t)
+	db := f.store.DB()
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db.Stats().OpenConnections == 0 {
+		t.Fatal("fixture did not retain the old driver connection")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := collectionWaitDatabaseClosed(ctx, db); !errors.Is(err, context.Canceled) {
+		t.Fatalf("unfinished closure was not bounded by cancellation: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := collectionWaitDatabaseClosed(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f.open(t)
 }
