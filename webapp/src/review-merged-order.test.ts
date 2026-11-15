@@ -25,3 +25,10 @@ it('orders only known negative merged slots and preserves gaps and active rails'
   expect(recentMergedDisplayDistances(items, [undefined, -3, -1, 1, 5])).toEqual([undefined, -3, -1, 1, 5]);
   expect(recentMergedDisplayDistances(items, [3, 2, 1, 4, 5])).toEqual([3, 2, 1, 4, 5]);
 });
+
+
+it('shows the archive fixture unknown merge first and newest known merge beside the open head', () => {
+  const items = [pull(206, 'merged', '2026-11-14T00:00:00Z'), pull(203, 'merged', '2026-11-11T00:00:00Z'), pull(204), pull(123, 'open'), pull(205, 'unknown')];
+  expect(recentMergedDisplayOrder(items).map(p => p.number)).toEqual([204, 203, 206, 123, 205]);
+  expect(items.map(p => p.number)).toEqual([206, 203, 204, 123, 205]);
+});

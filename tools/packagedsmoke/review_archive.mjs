@@ -291,7 +291,7 @@ try {
   }).toBe(`${current.home}#review-queue`);
   const queue = current.page.locator('#review-queue');
   await expect(queue.locator('.review-queue-row')).toHaveCount(5);
-  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-206','review-pr-203','review-pr-204','review-pr-123','review-pr-205']));
+  need(JSON.stringify(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))) === JSON.stringify(['review-pr-204','review-pr-203','review-pr-206','review-pr-123','review-pr-205']));
   await expect(queue.locator('.review-count-key')).toContainText('last 48 hours and the latest two known merges');
   const provenance = queue.locator('.review-technical-details');
   need(await provenance.getAttribute('open') === null);
