@@ -210,7 +210,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 				if !cached {
 					due, err = cliAccountRetryDeadline(ctx, tx, capability, now)
 					if err != nil {
-						if e.skipUnavailableWait(ctx, o, err) {
+						if e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 							cliUnavailable[key] = true
 							return Operation{}, nil
 						}
