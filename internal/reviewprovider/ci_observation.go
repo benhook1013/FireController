@@ -157,7 +157,20 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 				continue
 			}
 			stage = "attempt"
-			attempt, readErr := g.CurrentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID)
+			// Only reuse unambiguous discovery from this freshly collected full
+			// head inventory. No body or admission result is cached across reads.
+			var discovered *ActionsHeadRun
+			matches := 0
+			for i := range actions.Runs {
+				if actions.Runs[i].CheckSuiteID == run.CheckSuiteID {
+					matches++
+					discovered = &actions.Runs[i]
+				}
+			}
+			if matches != 1 {
+				discovered = nil
+			}
+			attempt, readErr := g.currentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID, discovered)
 			if readErr != nil {
 				out.Reason = "ci_attempt_unavailable"
 				return out, readErr
