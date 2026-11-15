@@ -115,6 +115,8 @@ ORDER BY p.operation_id LIMIT 64`
 // Preserve full capture validation for terminal-but-unfinalized reservations.
 // No raw provider or review text is returned by this local read.
 func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (int64, error) {
+	q := newOccupancyQueries(tx)
+	defer q.close()
 	var count int64
 	// Separate state ranges retain index ordering without sorting retained history.
 	for _, state := range []string{"dirty", "pending"} {
@@ -143,14 +145,14 @@ func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, e
 				return 0, roundUnavailable()
 			}
 			for _, id := range ids {
-				proof, err := deriveComparisonProof(ctx, tx, c.ProjectID, id)
+				proof, err := deriveComparisonProof(ctx, q, c.ProjectID, id)
 				if err != nil {
 					return 0, err
 				}
 				if proof.evidence == "" {
 					return 0, roundUnavailable()
 				}
-				evidence, adjudication, err := loadReviewAdjudication(ctx, tx, c.ProjectID, proof.evidence)
+				evidence, adjudication, err := loadReviewAdjudication(ctx, q, c.ProjectID, proof.evidence)
 				if err != nil {
 					return 0, err
 				}
