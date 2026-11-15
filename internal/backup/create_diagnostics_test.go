@@ -29,6 +29,9 @@ func phaseRecords(t *testing.T, b *bytes.Buffer) []map[string]any {
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatal(err)
 		}
+		if r["msg"] != "Backup creation phase started" && r["msg"] != "Backup creation phase outcome" {
+			continue
+		}
 		for k := range r {
 			if !allowed[k] {
 				t.Fatal("unexpected field", k)

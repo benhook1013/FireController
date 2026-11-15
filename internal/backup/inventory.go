@@ -992,7 +992,9 @@ func validateSnapshot(ctx context.Context, dataDir string, m Manifest) error {
 
 // allowInactive is solely for Restore's post-transaction validation after its
 // own exact inactive-marker/new-identity/revocation verification.
-func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, allowInactive bool) error {
+func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, allowInactive bool) (resultErr error) {
+	diagnostics := beginValidationDiagnostics(ctx)
+	defer func() { diagnostics.finish(resultErr) }()
 	db, err := openSnapshot(ctx, filepath.Join(dataDir, "firecontroller.sqlite"))
 	if err != nil {
 		return err
@@ -1003,10 +1005,12 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		return unavailable()
 	}
 	defer tx.Rollback()
+	diagnostics.next(validationSchema)
 	versions, err := validateSchema(ctx, tx, allowInactive)
 	if err != nil {
 		return err
 	}
+	diagnostics.next(validationAdministration)
 	if versions["inbox"] > 0 {
 		if err := inbox.ValidateSnapshot(ctx, tx, versions["inbox"]); err != nil {
 			if checkContext(ctx) != nil {
@@ -1048,6 +1052,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='instance_id'`).Scan(&identity) != nil || identity != m.SourceInstanceID || !instanceID.MatchString(identity) || tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='signing_key'`).Scan(&key) != nil || !digest.MatchString(key) || tx.QueryRowContext(ctx, `SELECT coalesce(max(sequence),0) FROM events`).Scan(&sequence) != nil || sequence != m.EventSequence {
 		return invalid()
 	}
+	diagnostics.next(validationIntegrity)
 	integrity, err := tx.QueryContext(ctx, `PRAGMA integrity_check`)
 	if err != nil {
 		return invalid()
@@ -1066,6 +1071,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if err != nil || n != 1 {
 		return invalid()
 	}
+	diagnostics.next(validationForeignKeys)
 	foreign, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return invalid()
@@ -1076,6 +1082,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	if bad || err != nil {
 		return invalid()
 	}
+	diagnostics.next(validationReviewHistory)
 	for _, check := range []struct {
 		since    int
 		validate func(context.Context, reviews.HistoryQuery) error
@@ -1110,6 +1117,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			}
 		}
 	}
+	diagnostics.next(validationProjectsJobs)
 	if err = validateSharedProjectRows(ctx, tx, versions); err != nil {
 		if checkContext(ctx) != nil {
 			return unavailable()
@@ -1164,6 +1172,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationArtifactReferences)
 	refs := map[string]Artifact{}
 	for _, a := range m.Artifacts {
 		refs[a.Path] = a
@@ -1185,6 +1194,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return err
 		}
 	}
+	diagnostics.next(validationExecutionControls)
 	if versions["review_execution"] >= 4 {
 		if err := reviewexec.ValidateAllowanceSnapshot(ctx, tx, versions["review_execution"]); err != nil {
 			if checkContext(ctx) != nil {
@@ -1228,6 +1238,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationComparisonProofs)
 	if versions["review_comparison"] > 0 {
 		if err = reviewexec.ValidateComparisonProofs(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1236,6 +1247,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationApplicability)
 	if versions["review_applicability"] > 0 {
 		if err = reviewexec.ValidateReviewApplicability(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1244,6 +1256,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationRoutePolicy)
 	if versions["review_route_policy"] > 0 {
 		if err = reviewexec.ValidateRoutePolicyFacts(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1252,6 +1265,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationAdoptionObligations)
 	if versions["review_adoption_obligations"] > 0 {
 		if err = adoptionholds.ValidateSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1260,6 +1274,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationRounds)
 	if versions["review_round_adoption"] > 0 && versions["review_rounds"] < 2 {
 		return invalid()
 	}
@@ -1271,6 +1286,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationIntentRebindings)
 	if versions["review_intent_rebindings"] > 0 {
 		objects := map[string]physicalSchemaObject{}
 		for _, statement := range reviewexec.IntentRebindingSchemaStatements()[1:] {
@@ -1288,6 +1304,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationDecisionHistory)
 	if versions["review_selection_decision_history"] > 0 {
 		objects := map[string]physicalSchemaObject{}
 		for _, statement := range reviewexec.DecisionHistorySchemaStatements() {
@@ -1305,6 +1322,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationFronts)
 	if versions["review_fronts"] > 0 {
 		if err = reviewexec.ValidateFrontSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1313,6 +1331,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationSelection)
 	if versions["review_selection"] > 0 {
 		if err = reviewexec.ValidateSelectionSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1321,6 +1340,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationScheduling)
 	if versions["review_scheduling"] > 0 {
 		if err = reviewexec.ValidateSchedulingSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
@@ -1329,6 +1349,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationReviewOrder)
 	if versions["review_execution"] >= 7 {
 		if err = validateReviewOrderRows(ctx, tx, versions["review_execution"]); err != nil {
 			if checkContext(ctx) != nil {
@@ -1337,6 +1358,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	diagnostics.next(validationActivityEvidence)
 	if versions["review_evidence"] >= 5 {
 		if err := reviewexec.ValidateActivityEvidenceSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
