@@ -3,6 +3,7 @@
 import argparse
 import uuid
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -21,6 +22,24 @@ class OperatorUnavailable(RuntimeError):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
         return None
+
+
+
+def artifact_lease_options():
+    """Preserve an optional local managed-runner lease; never infer remote custody."""
+    raw = os.environ.get("FC_ARTIFACT_LEASE_FD")
+    if raw is None:
+        return {}
+    if os.name != "posix" or not re.fullmatch(r"[0-9]{1,10}", raw):
+        raise ValueError("invalid inherited artifact lease")
+    fd = int(raw)
+    if fd < 3:
+        raise ValueError("invalid inherited artifact lease")
+    try:
+        os.fstat(fd)
+    except (OSError, OverflowError):
+        raise ValueError("unavailable inherited artifact lease") from None
+    return {"pass_fds": (fd,)}
 
 
 def wait_for_drain(read_status, timeout, sleep=time.sleep, clock=time.monotonic):
@@ -55,6 +74,7 @@ def wait_for_recovery(read_status, expected_instance, timeout=30, sleep=time.sle
 
 
 def main():
+    artifact_lease_options()  # Refuse invalid enrollment before any rollout action.
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--image", required=True, help="Registry image with immutable sha256 digest")
     p.add_argument("--source-revision", required=True, help="Full source commit recorded by the publication run")
@@ -98,7 +118,7 @@ def main():
     k = args.kubectl + (["--context", args.context] if args.context else []) + ["-n", args.namespace]
 
     def command(arguments, timeout=30):
-        result = subprocess.run(k + arguments, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(k + arguments, capture_output=True, text=True, timeout=timeout, **artifact_lease_options())
         if result.returncode:
             raise RuntimeError("Kubernetes operation failed; inspect deployment status before retrying")
         return result.stdout
@@ -140,7 +160,7 @@ def main():
         },
     }
     try:
-        created = subprocess.run(k + ["create", "-f", "-"], input=json.dumps(spec), text=True, capture_output=True, timeout=30)
+        created = subprocess.run(k + ["create", "-f", "-"], input=json.dumps(spec), text=True, capture_output=True, timeout=30, **artifact_lease_options())
         if created.returncode:
             raise RuntimeError("image preflight could not start; live admission is unchanged")
         command(["wait", "--for=jsonpath={.status.phase}=Succeeded", "pod/" + name, "--timeout=95s"], timeout=100)
@@ -163,7 +183,7 @@ def main():
         annotations["firecontroller.dev/rollout-id"] = uuid.uuid4().hex
         annotations.pop("firecontroller.dev/binary-sha256", None)  # Old locally built binary provenance cannot describe this image.
         replacing = True  # A replace with a lost outcome must not resume old admission.
-        result = subprocess.run(k + ["replace", "-f", "-"], input=json.dumps(deployment), text=True, capture_output=True, timeout=30)
+        result = subprocess.run(k + ["replace", "-f", "-"], input=json.dumps(deployment), text=True, capture_output=True, timeout=30, **artifact_lease_options())
         if result.returncode:
             raise RuntimeError("replacement refused; inspect this deployment before cancelling drain or retrying")
         command(["rollout", "status", "deployment/" + args.deployment, "--timeout=120s"], timeout=130)

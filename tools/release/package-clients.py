@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -13,6 +14,24 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 
 REPOSITORY = "https://github.com/benhook1013/FireController"
+
+
+
+def artifact_lease_options():
+    """Preserve an optional local managed-runner lease; never infer remote custody."""
+    raw = os.environ.get("FC_ARTIFACT_LEASE_FD")
+    if raw is None:
+        return {}
+    if os.name != "posix" or not re.fullmatch(r"[0-9]{1,10}", raw):
+        raise ValueError("invalid inherited artifact lease")
+    fd = int(raw)
+    if fd < 3:
+        raise ValueError("invalid inherited artifact lease")
+    try:
+        os.fstat(fd)
+    except (OSError, OverflowError):
+        raise ValueError("unavailable inherited artifact lease") from None
+    return {"pass_fds": (fd,)}
 
 
 def installed_skill_guidance(files, revision):
@@ -79,23 +98,24 @@ def installed_skill_guidance(files, revision):
 
 
 def package(binary_dir, platform, destination, revision):
+    artifact_lease_options()  # Refuse invalid enrollment before packaging writes.
     root = Path(__file__).resolve().parents[2]
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("revision must be a full Git commit")
     if not re.fullmatch(r"(linux|darwin|windows)-(amd64|arm64)", platform):
         raise ValueError("unsupported platform")
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, **artifact_lease_options()).strip()
     if actual != revision:
         raise ValueError("package revision does not match this checkout")
     suffix = ".exe" if platform.startswith("windows-") else ""
     binaries = {}
     for name in ("fc", "fcd", "fcmcp"):
         path = Path(binary_dir) / (name + suffix)
-        metadata = subprocess.check_output(["go", "version", "-m", str(path)], text=True)
+        metadata = subprocess.check_output(["go", "version", "-m", str(path)], text=True, **artifact_lease_options())
         if "vcs.revision=" + revision + "\n" not in metadata or "vcs.modified=false\n" not in metadata:
             raise ValueError("binary does not identify a clean build of the selected revision: " + name)
         binaries[name + suffix] = path.read_bytes()
-    public = subprocess.check_output(["git", "archive", revision, "LICENSE", "docs", "skills"], cwd=root)
+    public = subprocess.check_output(["git", "archive", revision, "LICENSE", "docs", "skills"], cwd=root, **artifact_lease_options())
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / ("firecontroller-" + platform + ".tar.gz")

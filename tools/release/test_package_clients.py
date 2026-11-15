@@ -108,3 +108,50 @@ class InstalledGuidanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArtifactLeaseTests(unittest.TestCase):
+    def test_absent_environment_preserves_legacy_options(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(clients.artifact_lease_options(), {})
+
+    def test_invalid_or_closed_descriptor_refuses(self):
+        import os
+        from unittest.mock import patch
+        for value in ("", "0", "2", "-1", "abc", "3.0", "999999999999999"):
+            with self.subTest(value=value), patch.dict(os.environ, {"FC_ARTIFACT_LEASE_FD":value}), self.assertRaises(ValueError):
+                clients.artifact_lease_options()
+        with tempfile.TemporaryFile() as file:
+            closed = file.fileno()
+        with patch.dict(os.environ, {"FC_ARTIFACT_LEASE_FD":str(closed)}), self.assertRaises(ValueError):
+            clients.artifact_lease_options()
+
+    @unittest.skipUnless(__import__("os").name == "posix", "inherited POSIX lease")
+    def test_real_child_inherits_descriptor(self):
+        import os
+        import sys
+        from unittest.mock import patch
+        with tempfile.TemporaryFile() as file, patch.dict(os.environ, {"FC_ARTIFACT_LEASE_FD":str(file.fileno())}):
+            options = clients.artifact_lease_options()
+            self.assertEqual(options, {"pass_fds":(file.fileno(),)})
+            child = subprocess.run([sys.executable, "-c", "import os; os.fstat(int(os.environ['FC_ARTIFACT_LEASE_FD']))"], **options)
+            self.assertEqual(child.returncode,0)
+
+    def test_all_direct_subprocess_sites_preserve_lease(self):
+        import ast
+        tree=ast.parse(Path(clients.__file__).read_text())
+        calls=[node for node in ast.walk(tree) if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name) and node.func.value.id=="subprocess"]
+        self.assertEqual(len(calls),3)
+        for call in calls:
+            self.assertTrue(any(keyword.arg is None and isinstance(keyword.value,ast.Call) and isinstance(keyword.value.func,ast.Name) and keyword.value.func.id=="artifact_lease_options" for keyword in call.keywords))
+
+    def test_invalid_lease_refuses_before_any_external_action(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"FC_ARTIFACT_LEASE_FD":"invalid"}), patch.object(clients.subprocess,"run") as run, patch.object(clients.subprocess,"check_output") as output:
+            with self.assertRaises(ValueError):
+                clients.package("unused", "linux-amd64", "unused", "a" * 40)
+            run.assert_not_called()
+            output.assert_not_called()

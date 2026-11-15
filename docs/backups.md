@@ -202,3 +202,7 @@ creation history or silently bypassing custody. Changing destination never
 prunes the previous destination. The stored JSON shape and reason vocabulary
 are unchanged; rolling back restores the older scheduler's behavior, not the
 new pre-creation maintenance policy.
+
+## Redundant operator copies
+
+Deployment archives and temporary rehearsal inputs are not managed backup bundles. The [opt-in artifact retention workflow](../tools/deploy/artifact-retention.md) can qualify exact redundant local copies under a shared producer/consumer lease while preserving verified current and rollback releases. It does not collect canonical data, unique snapshots, captures, repositories, persistent service references or managed/offsite stores. Source availability does not enable cleanup: the installation owner must qualify actual enrollment, lease coverage and protected-release custody before enabling its separate timer. Keep that installation work distinct from backup performance or retention-policy changes.

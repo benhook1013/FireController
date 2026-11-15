@@ -30,6 +30,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
+- [Operator artifact retention](../tools/deploy/artifact-retention.md): opt-in bounded cleanup of verified redundant local operation copies, with producer/consumer leases; separate from backup retention and not automatically installed.
 - [Offsite backups](offsite-backups.md): optional rclone transfer, independent retention, private connection setup and verified recovery.
 - [Provider resumption](provider-resumption.md): explicit operator reconciliation, retained-work abandonment and release after restore; implementation and proof status are recorded at that owner.
 - [Build publication and deployment](releases.md): tested GHCR images, native client bundles and explicit rollout limits.
