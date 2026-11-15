@@ -157,3 +157,7 @@ The later repeated-anchor regression uses one counted synthetic observation to c
 ### Backup indicator
 
 The signed-in footer includes expandable [backup status](backups.md#website-status): the latest successful local snapshot and each configured offsite report. Failures, overdue copies and unavailable reporting are distinct from current backups. The public project view does not display installation backup information.
+
+### Review pill states
+
+Private Hosted and CLI review pills show three lines: retained counts, review age, and that review's state. Partial results retain an explicit Partial label and never claim completed coverage. A pending request, cooldown or other current channel state without a matching result has its own count-unknown pill; an older completed result cannot replace an active attempt. PR-wide facts remain outside these per-review pills. This is a display over existing persisted reads, not a new review request or scheduling decision.

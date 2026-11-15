@@ -399,6 +399,12 @@ function reviewStart(run: ReviewRunSummary): { value: string; label: string } | 
   if (!run.started_at) return undefined;
   return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Requested' : 'Started' };
 }
+export function reviewRunPillStatus(run: ReviewRunSummary): string {
+  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial · Adjudication unknown" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : run.fixed < run.accepted ? "Partial · Fixes pending" : "Partial";
+  if (!run.complete || !run.attributable) return "Incomplete";
+  if (!run.finalized) return "Needs adjudication";
+  return run.fixed < run.accepted ? "Fixes pending" : "Finished";
+}
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
   const start = reviewStart(run);
@@ -411,15 +417,15 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
   const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${start ? `${start.label} ${time(start.value)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''}`;
-  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{partial && <span className="review-pill-state">Partial</span>}{start ? <RelativeTime value={start.value} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
+  return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} status={reviewRunPillStatus(run)} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{start ? <RelativeTime value={start.value} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
 function RunningReviewPill({ evidence, channel }: { evidence: ReviewActivityEvidence; channel: ReviewChannel }) {
   const cli = evidence.kind === 'cli_process_spawned';
   const date = cli ? evidence.process_started_at : evidence.observed_at;
   const timing = cli ? `CLI started ${time(date)}` : `CodeRabbit activity seen ${time(date)}`;
   const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} review running. Counts pending. ${timing}.`;
-  return <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-running" title={description} label={description} wrap={content => <span {...content} role="img" />}>
-    <span className="review-pill-state">Running</span><RelativeTime value={date} />
+  return <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-running" status="Running" title={description} label={description} wrap={content => <span {...content} role="img" />}>
+    <RelativeTime value={date} />
   </ReviewRoundPillDisplay>;
 }
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal }: {
@@ -430,7 +436,8 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   recentRuns: ReviewRunSummary[]; recentSnapshot: string; currentTotal: number;
 }) {
   const attempt = [...attempts].reverse().find(item => item.channel === channel);
-  const returned = attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
+  const activeAttempt = attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state);
+  const returned = !activeAttempt && attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
     (run.outcome === 'completed' || partialCLIResult(run))) : undefined;
   const statusAttempt = returned && partialCLIResult(returned) && returned.retained_undecided === 0 && returned.fixed >= returned.accepted && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
@@ -451,16 +458,25 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     const finished = (run: ReviewRunSummary) => Date.parse(run.finished_at || run.started_at) || 0;
     return finished(a.run) - finished(b.run);
   });
-  const slots = capacity - Number(!!running);
+  // A current request without a captured result gets its own non-result pill.
+  // Never attach a new operation's state to an unrelated earlier completion.
+  // Aggregate pending work may belong to an older run. Keep it separate from
+  // every captured result unless that result's own retained fields establish it.
+  const currentStatus = !running && (waiting || badge)
+    ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
+  const slots = capacity - Number(!!running || !!currentStatus);
   const visiblePills = slots > 0 ? pills.slice(-slots) : [];
   const completedTotal = returned?.outcome === 'completed' ? currentTotal : total;
   return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title}
-    status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</>}
+    status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
     metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">
     <ReviewProgressView value={progress} />
-    {visiblePills.length > 0 || running ? <div className="review-round-pills review-recent-rounds">
+    {visiblePills.length > 0 || running || currentStatus ? <div className="review-round-pills review-recent-rounds">
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
+      {currentStatus && <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-current" title="Current channel state; no completed review counts are implied." label={`${channel} current review state`} status={currentStatus}>
+        {badge?.activity?.startedAt ? <RelativeTime value={badge.activity.startedAt} /> : <span className="review-pill-age" aria-hidden="true">—</span>}
+      </ReviewRoundPillDisplay>}
       {running && <RunningReviewPill key={running.attempt_id} evidence={running} channel={channel} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
     {(failed || !loading && !completed.length && returned?.outcome !== 'completed' && total > 0 && !notice) && <p className="review-lane-empty">Round history could not be loaded.</p>}

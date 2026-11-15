@@ -64,7 +64,7 @@ type RoundPillContent = { className: string; title: string; 'aria-label': string
 export function reviewRoundCountText(found: number | '?', accepted: number | '?', routed: number | '?'): string {
   return `${found}/${accepted}/${routed}`;
 }
-export function ReviewRoundPillDisplay({ found, accepted, routed, className = '', zeroAccepted = false, title, label, wrap, children }: {
+export function ReviewRoundPillDisplay({ found, accepted, routed, className = '', zeroAccepted = false, title, label, wrap, children, status }: {
   found: number | '?';
   accepted: number | '?';
   routed: number | '?';
@@ -74,11 +74,12 @@ export function ReviewRoundPillDisplay({ found, accepted, routed, className = ''
   label: string;
   wrap?: (content: RoundPillContent) => ReactNode;
   children: ReactNode;
+  status?: ReactNode;
 }) {
   const content: RoundPillContent = {
     className: ['review-round-pill', className.trim(), zeroAccepted ? 'review-pill-zero' : ''].filter(Boolean).join(' '),
     title, 'aria-label': label,
-    children: <><strong>{reviewRoundCountText(found, accepted, routed)}</strong>{children}</>,
+    children: <><strong>{reviewRoundCountText(found, accepted, routed)}</strong>{children}{status && <span className="review-pill-status">{status}</span>}</>,
   };
   return wrap ? <>{wrap(content)}</> : <span {...content} />;
 }
