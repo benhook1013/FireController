@@ -1079,15 +1079,23 @@ try {
   await page.locator('#review-pr-32').getByRole('region', {name:'Hosted CodeRabbit', exact:true}).getByRole('link', {name:/^Open hosted run live-hosted-round:/}).waitFor();
   checkpoint = 'running-review-results';
   const resultCLI = activityRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
+  checkpoint = 'result-no-running';
   await expect(activityRow.locator('.review-pill-running')).toHaveCount(0);
+  checkpoint = 'result-completed-count';
   await expect(resultCLI.locator('.review-lane-heading')).toContainText('0 runs');
+  checkpoint = 'result-no-legacy-label';
   await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained/u);
   // Process attention is separate from the captured partial result's adjudication.
+  checkpoint = 'result-process-attention';
   await expect(resultCLI.getByLabel('cli current review state', {exact:true}).locator('.review-attempt-state')).toHaveText('Needs agent attention');
   const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
+  checkpoint = 'result-partial-link';
   await expect(partialLink).toHaveCount(1);
+  checkpoint = 'result-partial-counts';
   await expect(partialLink.locator('strong')).toHaveText('3/1/0');
+  checkpoint = 'result-partial-status';
   await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial · Needs adjudication');
+  checkpoint = 'result-partial-time';
   await expect(partialLink.locator('time')).toHaveAttribute('datetime',activityStart);
   const partialURL = await partialLink.getAttribute('href');
   await page.unroute(progressPattern,startedEvidence);
