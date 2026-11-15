@@ -1208,13 +1208,14 @@ try {
         const height=Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
         standard.remove();
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return {typography,height,chrome:style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px'),bounds:box.left >= lane.left-1 && box.right <= lane.right+1,overflow:element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1};
+        return {typography,height,chrome:style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px'),bounds:box.left >= lane.left-1 && box.right <= lane.right+1,overflowX:element.scrollWidth <= element.clientWidth+1,overflowY:element.scrollHeight <= element.clientHeight+1};
       });
       checkpoint='layout-reason-typography'; need(geometry.typography);
       checkpoint='layout-reason-height'; need(geometry.height);
       checkpoint='layout-reason-chrome'; need(geometry.chrome);
       checkpoint='layout-reason-bounds'; need(geometry.bounds);
-      checkpoint='layout-reason-overflow'; need(geometry.overflow);
+      checkpoint='layout-reason-overflow-x'; need(geometry.overflowX);
+      checkpoint='layout-reason-overflow-y'; need(geometry.overflowY);
     }
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
