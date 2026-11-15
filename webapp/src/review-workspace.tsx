@@ -202,7 +202,7 @@ function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {
   const parent = pull.parent_pull_number;
   const label = parent ? `Based on PR #${parent}` : branch ? `Based on ${branch}` : "Base unknown";
   if (!label) return null;
-  const href = githubLink(session.project, parent ? `pull/${parent}` : `tree/${encodeURIComponent(branch)}`);
+  const href = parent || branch ? githubLink(session.project, parent ? `pull/${parent}` : `tree/${encodeURIComponent(branch)}`) : undefined;
   return href
     ? <a className="review-base-target" href={href} target="_blank" rel="noopener noreferrer">{label}</a>
     : <span className="review-base-target">{label}</span>;

@@ -38,7 +38,9 @@ describe('truthful stored review presentation', () => {
     expect(stacked).toContain('Based on PR #1');
     expect(stacked).toContain('href="https://github.com/example/project/pull/1"');
     expect(stacked).not.toContain('Based on feature/parent');
-    expect(markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: '' }} />)).toContain('Base unknown');
+    const unknownBase = markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: '' }} />);
+    expect(unknownBase).toContain('Base unknown');
+    expect(unknownBase).not.toContain('github.com/example/project/tree/');
   });
 
   it('keeps the base inside the always-visible size pill before counts, including history and missing size', () => {
