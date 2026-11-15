@@ -625,7 +625,7 @@ func writeRoundCompletionProgress(ctx context.Context, tx *sql.Tx, c *roundRecor
 	return err
 }
 
-func storeRoundRecord(ctx context.Context, tx *sql.Tx, c roundRecord) error {
+func storeRoundRecord(ctx context.Context, tx enrollmentExecer, c roundRecord) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO review_round_controls(`+roundColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,pull_number,channel) DO UPDATE SET revision=excluded.revision,epoch=excluded.epoch,grant_revision=excluded.grant_revision,closed=excluded.closed,minimum=excluded.minimum,maximum=excluded.maximum,taper=excluded.taper,used=excluded.used,dry=excluded.dry,tapered=excluded.tapered,actor_id=excluded.actor_id,updated_at=excluded.updated_at,initial_dry=excluded.initial_dry,initially_tapered=excluded.initially_tapered,origin_source=excluded.origin_source,origin_key=excluded.origin_key,origin_sha256=excluded.origin_sha256,maximum_unbounded=excluded.maximum_unbounded`, c.ProjectID, c.PullNumber, c.Channel, c.Revision, c.Epoch, c.grantRevision, c.Closed, c.Minimum, c.Maximum, c.Taper, c.Used, c.Dry, c.Tapered, c.ActorID, c.CreatedAt, c.UpdatedAt, c.InitialDry, c.InitiallyTapered, c.OriginSource, c.OriginKey, c.OriginSHA256, c.MaximumUnbounded)
 	return err
 }

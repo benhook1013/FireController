@@ -105,6 +105,8 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 	if err != nil {
 		return Receipt{}, err
 	}
+	queries := newEnrollmentQueries(tx)
+	defer queries.close()
 	for _, pull := range c.Queue {
 		for _, channel := range c.Channels {
 			if slices.Contains(previous.Queue, pull) && slices.Contains(previous.Channels, channel) {
@@ -113,7 +115,7 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 			// Removing and re-adding a legacy pair must not grant new rounds
 			// over retained native work that was accepted without a control.
 			var retained bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=?)`, scope.ProjectID, pull, channel).Scan(&retained); err != nil {
+			if err := queries.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND pull_number=? AND channel=?)`, scope.ProjectID, pull, channel).Scan(&retained); err != nil {
 				return Receipt{}, err
 			}
 			if retained {
@@ -123,7 +125,7 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 			if channel == "hosted" {
 				bounds = defaults.Hosted
 			}
-			if err := initializeRoundControl(ctx, tx, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
+			if err := initializeRoundControlQueries(ctx, tx, queries, scope, pull, channel, bounds.Minimum, bounds.Maximum); err != nil {
 				return Receipt{}, err
 			}
 		}

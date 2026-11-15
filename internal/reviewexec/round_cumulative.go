@@ -72,10 +72,14 @@ func decodeRoundHistory(body string) (RoundControl, bool, error) {
 // initializeRoundControl installs only an absent first rule inside the caller's
 // transaction. Existing explicit/adopted controls and accepted work are untouched.
 func initializeRoundControl(ctx context.Context, tx *sql.Tx, scope core.Scope, pull int64, channel string, minimum, maximum int64) error {
+	return initializeRoundControlQueries(ctx, tx, tx, scope, pull, channel, minimum, maximum)
+}
+
+func initializeRoundControlQueries(ctx context.Context, tx *sql.Tx, q enrollmentQuery, scope core.Scope, pull int64, channel string, minimum, maximum int64) error {
 	if !roundScope(scope.ProjectID, pull, channel) || minimum < 0 || maximum < 1 || maximum > 1000 || minimum > maximum {
 		return invalid()
 	}
-	previous, err := readRoundRecord(ctx, tx, scope.ProjectID, pull, channel)
+	previous, err := readRoundRecord(ctx, q, scope.ProjectID, pull, channel)
 	if err != nil {
 		return err
 	}
@@ -87,10 +91,10 @@ func initializeRoundControl(ctx context.Context, tx *sql.Tx, scope core.Scope, p
 	if !validRoundControl(c.RoundControl) {
 		return invalid()
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,1,1,'grant',?,?)`, scope.ProjectID, pull, channel, encodeRoundHistory(c.RoundControl, true), scope.WorkerID); err != nil {
+	if _, err = q.ExecContext(ctx, `INSERT INTO review_round_changes(project_id,pull_number,channel,revision,epoch,action,body_json,worker_id) VALUES(?,?,?,1,1,'grant',?,?)`, scope.ProjectID, pull, channel, encodeRoundHistory(c.RoundControl, true), scope.WorkerID); err != nil {
 		return err
 	}
-	if err = storeRoundRecord(ctx, tx, c); err != nil {
+	if err = storeRoundRecord(ctx, q, c); err != nil {
 		return err
 	}
 	return core.AppendEvent(ctx, tx, scope, "reviews.rounds_configured", fmt.Sprintf("%d/%s", pull, channel), 1, map[string]any{"pull_number": pull, "channel": channel, "revision": 1})
