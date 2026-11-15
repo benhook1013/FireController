@@ -335,6 +335,35 @@ func retentionSettledAfter(r *RetentionStatus, finished string) bool {
 }
 
 func (m *Manager) attempt(parent context.Context) error {
+	// An incomplete pass must be resumed before more snapshot
+	// growth. The same serial worker owns this bounded phase; no second job
+	// or unverified cache is created. Once maintenance completes, normal
+	// creation proceeds immediately with its unchanged phase budget.
+	readCtx, readDone := context.WithTimeout(parent, managedSettlementTimeout)
+	prior, readErr := loadManaged(readCtx, m.store.DB())
+	readDone()
+	if readErr != nil {
+		return readErr
+	}
+	if prior != nil && prior.SourceInstanceID == m.store.InstanceID() && prior.Status.Retention != nil && prior.Status.Retention.State != "complete" {
+		if prior.Status.LastAttempt == nil {
+			// Legacy retention-only history cannot be labelled as a running
+			// creation. With no owned files there is no maintenance to perform;
+			// otherwise preserve custody and surface the missing history.
+			check, done := context.WithTimeout(parent, managedSettlementTimeout)
+			var owned int
+			e := m.store.DB().QueryRowContext(check, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state!='deleted')`, m.config.Destination, m.store.InstanceID()).Scan(&owned)
+			done()
+			if e != nil {
+				return unavailable()
+			}
+			if owned != 0 {
+				return core.Fail("backup_retention_failed", "Managed maintenance requires retained creation history; existing owned bundles are preserved.", 503)
+			}
+		} else if err := m.maintain(parent); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, m.config.Timeout)
 	defer cancel()
 	start := managedStamp(m.now())
@@ -398,10 +427,25 @@ func (m *Manager) attempt(parent context.Context) error {
 		}
 		return safeManaged(err)
 	}
+	return m.maintain(parent)
+}
+
+func (m *Manager) maintain(parent context.Context) error {
+	// Persist activity before hashing; retain prior maintenance debt until a
+	// complete pass, including across cancellation, restart or a true error.
+	startCtx, startDone := context.WithTimeout(context.WithoutCancel(parent), managedSettlementTimeout)
+	startErr := m.update(startCtx, func(r *managedRecord, _ *sql.Tx) error {
+		r.Status.State, r.Status.NextAttemptAt = "running", ""
+		return nil
+	})
+	startDone()
+	if startErr != nil {
+		return startErr
+	}
 	// Retention has its own bounded phase budget, still owned by this worker's
 	// parent cancellation rather than detached from shutdown.
 	retentionCtx, cancelRetention := context.WithTimeout(parent, m.config.Timeout)
-	err = m.retain(retentionCtx)
+	err := m.retain(retentionCtx)
 	cancelRetention()
 	stamp := managedStamp(m.now())
 	settle, done := context.WithTimeout(context.Background(), 5*time.Second)

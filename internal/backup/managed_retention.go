@@ -28,12 +28,16 @@ type ownedBundle struct{ id, destination, instance, hash, state string }
 var errManagedVerificationInterrupted = unavailable()
 var errManagedRemovalNotStarted = unavailable()
 
+// Only read-only deadline exhaustion or a boundary after settled deletions may
+// defer maintenance. Corruption, shutdown cancellation and partial unlink stay errors.
+var errManagedRetentionDeferred = errors.New("managed retention deferred")
+
 func (m *Manager) retain(ctx context.Context) (result error) {
 	started := time.Now()
 	phase := "admission"
 	keepers, candidates, deleted := 0, 0, 0
 	defer func() {
-		slog.InfoContext(context.WithoutCancel(ctx), "Managed backup retention phase outcome", "phase", phase, "duration_ms", time.Since(started).Milliseconds(), "keepers_verified", keepers, "candidates_verified", candidates, "bundles_deleted", deleted, "failed", result != nil, "deadline_exceeded", errors.Is(ctx.Err(), context.DeadlineExceeded), "cancelled", errors.Is(ctx.Err(), context.Canceled))
+		slog.InfoContext(context.WithoutCancel(ctx), "Managed backup retention phase outcome", "phase", phase, "duration_ms", time.Since(started).Milliseconds(), "keepers_verified", keepers, "candidates_verified", candidates, "bundles_deleted", deleted, "failed", result != nil, "deferred", errors.Is(result, errManagedRetentionDeferred), "deadline_exceeded", errors.Is(ctx.Err(), context.DeadlineExceeded), "cancelled", errors.Is(ctx.Err(), context.Canceled))
 	}()
 	if checkContext(ctx) != nil {
 		return unavailable()
@@ -67,10 +71,16 @@ func (m *Manager) retain(ctx context.Context) (result error) {
 	// older copy can be removed. Ledger ownership alone is not a usable backup.
 	phase = "keepers"
 	if err := m.verifyKeepersObserved(ctx, keep, func() { keepers++ }); err != nil {
+		if errors.Is(err, errManagedVerificationInterrupted) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return errManagedRetentionDeferred
+		}
 		return err
 	}
 	for {
 		if checkContext(ctx) != nil {
+			if deleted > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return errManagedRetentionDeferred
+			}
 			return unavailable()
 		}
 		var b ownedBundle
@@ -88,6 +98,9 @@ func (m *Manager) retain(ctx context.Context) (result error) {
 		manifest, before, err := m.verifyOwnedBundle(ctx, b)
 		if err != nil {
 			if errors.Is(err, errManagedVerificationInterrupted) {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return errManagedRetentionDeferred
+				}
 				return err
 			}
 			return m.cleanupFailed(ctx, b.id)

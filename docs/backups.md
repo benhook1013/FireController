@@ -172,3 +172,33 @@ The signed-in website footer shows compact recorded backup health. Expand it to 
 The project-scoped `GET /api/v1/projects/{project_id}/backup-health` requires read access. It reads the managed scheduling singleton and at most eight small explicitly selected offsite reports, without listing bundles, hashing backup contents or contacting storage providers. The browser refreshes this status once a minute while visible. A stale or failed read cannot keep a green status indefinitely. Successful snapshot times describe the data copied, not a fresh check of remote bytes.
 
 Offsite reporting is optional and separate from transfer scheduling. See [offsite reporting](offsite-backups.md#website-reporting) for the redacted operator handoff. No reporting files means offsite status reporting is not configured; it does not assert that no external backup exists. Local and offsite failures retain their last successful snapshot times. Missing, malformed, wrong-instance or stale reports show unavailable status rather than inventing a successful backup.
+
+### Bounded incomplete maintenance
+
+A retention pass can finish and durably settle some verified deletions, then
+exhaust its phase budget while verifying another candidate. This is not a
+completed retention pass and grants no validity to the unfinished candidate.
+The bounded terminal diagnostic reports `deferred: true` only for a deadline
+in read-only verification or between fully settled candidates. Shutdown
+cancellation, corruption, I/O errors and uncertain or partial unlink remain
+ordinary failures. All subsequent verification starts from the beginning;
+there is no persisted trusted hash cache or increased timeout.
+
+Persisted status deliberately keeps the existing `failed` /
+`backup_retention_failed` representation, so older readers and rollback
+binaries continue to read it conservatively as a warning. The current worker
+resumes an incomplete same-instance maintenance pass before creating another
+snapshot. It publishes `running` during maintenance without inventing a new
+creation attempt. Only a fully completed pass clears that debt; errors,
+cancellation and restart do not. Once maintenance completes, healthy snapshot
+creation proceeds immediately with its existing phase timeout. An original
+failure that cannot make progress remains an actionable maintenance warning,
+not a claim that repeated retries guarantee recovery.
+
+Legacy retention-only history without a creation attempt can proceed normally
+when no owned bundles exist in the selected destination. If owned bundles do
+exist, the worker refuses before hashing or deleting rather than inventing
+creation history or silently bypassing custody. Changing destination never
+prunes the previous destination. The stored JSON shape and reason vocabulary
+are unchanged; rolling back restores the older scheduler's behavior, not the
+new pre-creation maintenance policy.

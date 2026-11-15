@@ -23,10 +23,10 @@ func TestRetentionDiagnosticsCancelledAdmissionIsBounded(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["phase"] != "admission" || got["failed"] != true || got["cancelled"] != true || got["deadline_exceeded"] != false || got["bundles_deleted"] != float64(0) {
+	if got["phase"] != "admission" || got["failed"] != true || got["deferred"] != false || got["cancelled"] != true || got["deadline_exceeded"] != false || got["bundles_deleted"] != float64(0) {
 		t.Fatal(got)
 	}
-	allowed := map[string]bool{"time": true, "level": true, "msg": true, "phase": true, "duration_ms": true, "keepers_verified": true, "candidates_verified": true, "bundles_deleted": true, "failed": true, "deadline_exceeded": true, "cancelled": true}
+	allowed := map[string]bool{"time": true, "level": true, "msg": true, "phase": true, "duration_ms": true, "keepers_verified": true, "candidates_verified": true, "bundles_deleted": true, "failed": true, "deferred": true, "deadline_exceeded": true, "cancelled": true}
 	for key := range got {
 		if !allowed[key] {
 			t.Fatal("unbounded diagnostic key", key)
