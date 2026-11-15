@@ -56,6 +56,17 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if err != nil || !bound {
 		return err
 	}
+	shared := e.beginLifecycleCIShare(ctx, target, s)
+	var sharedItem CIWatchItem
+	sharedValid := false
+	if shared != nil {
+		defer func() {
+			if !published || result != nil || !sharedValid {
+				shared.entry.cancel()
+			}
+			s.finishCIWatch(shared.ctx, target, shared, sharedItem, nil, false)
+		}()
+	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	pull, repo, err := readLifecyclePull(readCtx, target)
 	cancel()
@@ -151,6 +162,9 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			ciReason = observation.Reason
 			ciState = sourceCIQueueState(observation.State)
 			target.due.ciGateState = ciState
+			if shared != nil {
+				sharedItem, sharedValid = lifecycleCIWatchItem(target.project, observation)
+			}
 		}
 		ciCancel()
 	}

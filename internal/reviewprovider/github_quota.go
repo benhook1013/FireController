@@ -28,6 +28,7 @@ type githubQuotaKey struct{ caller, endpoint, resource string }
 type githubQuotaCount struct {
 	requests, conditional, notModified, gated, primary, otherLimited int
 	remaining, reset, retryAfter                                     int64
+	details                                                          map[string]githubRequestDetail
 }
 
 // GitHubQuota aggregates requests for one configured credential. Bucket IDs
@@ -193,6 +194,13 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 			row.otherLimited++
 		}
 	}
+	if row.details == nil {
+		row.details = make(map[string]githubRequestDetail)
+	}
+	detailKey := githubEndpointDetail(path)
+	detail := row.details[detailKey]
+	detail.add(status, conditional, gated, response == nil)
+	row.details[detailKey] = detail
 	q.rows[key] = row
 	q.targets.observe(ctx, caller, conditional, gated, status)
 	q.mu.Unlock()
@@ -205,6 +213,6 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 	for key, row := range previous {
 		slog.InfoContext(ctx, "GitHub request totals", "bucket", q.bucket, "window_ended", previousEnd, "caller", key.caller, "endpoint", key.endpoint, "resource", key.resource,
 			"requests", row.requests, "conditional", row.conditional, "not_modified", row.notModified, "local_gate_skips", row.gated,
-			"primary_limits", row.primary, "other_limits", row.otherLimited, "remaining", row.remaining, "reset_epoch", row.reset, "retry_after_seconds", row.retryAfter)
+			"request_details", row.details, "primary_limits", row.primary, "other_limits", row.otherLimited, "remaining", row.remaining, "reset_epoch", row.reset, "retry_after_seconds", row.retryAfter)
 	}
 }
