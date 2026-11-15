@@ -62,11 +62,18 @@ func (g *GitHub) ObserveCIGate(ctx context.Context, target CITarget, gateRef str
 	return g.observeCI(ctx, target, gateRef)
 }
 
-func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (out CIObservation, err error) {
+func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (CIObservation, error) {
+	return g.observeCIWithInitialAuthority(ctx, target, gateRef, nil, time.Time{})
+}
+
+func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITarget, gateRef string, initial *RequiredCheckAuthority, started time.Time) (out CIObservation, err error) {
 	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) || !validRequiredBranch(gateRef) {
 		return CIObservation{}, invalidSelector()
 	}
 	out = CIObservation{Target: target, State: "unproven", Reason: "ci_authority_unproven", StartedAt: time.Now().UTC()}
+	if !started.IsZero() {
+		out.StartedAt = started
+	}
 	stage := "authority"
 	defer func() {
 		out.ObservedAt = time.Now().UTC()
@@ -76,7 +83,12 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 	}()
 	ctx, cancel := context.WithTimeout(ctx, CIObservationTimeout)
 	defer cancel()
-	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
+	if initial == nil {
+		out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
+	} else {
+		out.Authority = *initial
+		out.Authority.Checks = slices.Clone(initial.Checks)
+	}
 	if err != nil || out.Authority.State != "complete" || out.Authority.Checks == nil {
 		return out, err
 	}

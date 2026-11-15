@@ -117,6 +117,9 @@ type lifecycleSchedule struct {
 	options         LifecycleSyncOptions
 }
 type lifecycleTarget struct {
+	cohortOwned        bool
+	prepared           *lifecyclePrepared
+	cohort             *reviewprovider.CIGateCohort
 	watch              *ciWatchClaim
 	hintGeneration     uint64
 	retainCIHint       bool
@@ -216,7 +219,7 @@ func (e *Engine) lifecycleLoop(ctx context.Context, readers map[string]TargetRea
 		var target *lifecycleTarget
 		err := retrySourceRefreshLocal(ctx, func() error { var err error; target, err = e.claimLifecycleLane(ctx, readers, s, lane); return err })
 		if err == nil && target != nil {
-			err = e.observeLifecycle(ctx, *target, s)
+			err = e.observeLifecycleCohort(ctx, *target, readers, s)
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -243,6 +246,10 @@ func (e *Engine) claimLifecycle(ctx context.Context, readers map[string]TargetRe
 }
 
 func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]TargetReader, s *lifecycleSchedule, lane lifecycleLane) (*lifecycleTarget, error) {
+	return e.claimLifecycleMember(ctx, readers, s, lane, nil)
+}
+
+func (e *Engine) claimLifecycleMember(ctx context.Context, readers map[string]TargetReader, s *lifecycleSchedule, lane lifecycleLane, owner *lifecycleTarget) (*lifecycleTarget, error) {
 	select {
 	case s.claim <- struct{}{}:
 		defer func() { <-s.claim }()
@@ -251,7 +258,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 	}
 	s.mu.Lock()
 	last := s.lanes[lane].lastProject
-	watchFirst := lane == lifecycleEnrichment && s.watchTurn
+	watchFirst := owner == nil && lane == lifecycleEnrichment && s.watchTurn
 	s.mu.Unlock()
 	if watchFirst {
 		if target, err := e.claimCIWatch(ctx, readers, s); target != nil || err != nil {
@@ -292,6 +299,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		return nil, err
 	}
 	for _, p := range projects {
+		if owner != nil && p.id != owner.project {
+			continue
+		}
 		s.mu.Lock()
 		s.lanes[lane].lastProject = p.id
 		s.mu.Unlock()
@@ -317,6 +327,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		a := s.accounts[account]
 		busy := s.lanes[lane].projects[p.id] || s.lanes[lane].accounts[account] || now.Before(a.until)
 		s.mu.Unlock()
+		if owner != nil {
+			busy = account != owner.account || p.config.CapabilityID != owner.configuration.CapabilityID || cap.Fingerprint != owner.fingerprint || !reflect.DeepEqual(p.config, owner.configuration) || now.Before(a.until)
+		}
 		if busy {
 			continue
 		}
@@ -359,6 +372,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		for offset := range len(numbers) {
 			n := numbers[(start+offset)%len(numbers)]
 			d := s.due[lifecycleKey{p.id, n}]
+			if owner != nil && (n == owner.number || !periodicCohortDue(d, now)) {
+				continue
+			}
 			next := d.next
 			changed := false
 			if lane == lifecycleEnrichment {
@@ -472,7 +488,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		s.mu.Unlock()
 		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, repositoryName: p.repositoryName, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
-	if lane == lifecycleEnrichment && !watchFirst {
+	if owner == nil && lane == lifecycleEnrichment && !watchFirst {
 		target, err := e.claimCIWatch(ctx, readers, s)
 		if target != nil {
 			s.mu.Lock()
@@ -577,8 +593,10 @@ func readLifecycleComparison(ctx context.Context, tx *sql.Tx, project string, nu
 func (s *lifecycleSchedule) finishAccountLocked(target lifecycleTarget, providerErr error, now time.Time) (string, time.Duration) {
 	var delay time.Duration
 	a := s.accounts[target.account]
-	delete(s.lanes[target.lane].projects, target.project)
-	delete(s.lanes[target.lane].accounts, target.account)
+	if !target.cohortOwned {
+		delete(s.lanes[target.lane].projects, target.project)
+		delete(s.lanes[target.lane].accounts, target.account)
+	}
 	errorCode := lifecycleErrorCode(providerErr)
 	if lifecycleInventoryInconclusive(providerErr) {
 		// Unsupported or malformed inventory is retried at this PR's normal cadence. It is

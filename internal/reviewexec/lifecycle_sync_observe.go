@@ -67,9 +67,18 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			s.finishCIWatch(shared.ctx, target, shared, sharedItem, nil, false)
 		}()
 	}
-	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	pull, repo, err := readLifecyclePull(readCtx, target)
-	cancel()
+	var pull reviewprovider.Pull
+	var repo reviewprovider.Repository
+	observedAt := ""
+	if target.prepared != nil {
+		pull, repo, err = target.prepared.pull, target.prepared.repo, target.prepared.err
+		observedAt = target.prepared.observedAt
+	} else {
+		readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		pull, repo, err = readLifecyclePull(readCtx, target)
+		cancel()
+		observedAt = stamp()
+	}
 	if err != nil {
 		providerErr = err
 		return nil
@@ -78,7 +87,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
 		return nil
 	}
-	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: stamp()}
+	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: observedAt}
 	display := sourceDisplayPull(plan)
 	// Reject invalid display fields before claiming a current comparison or
 	// doing enrichment. The publisher can omit invalid records in a batch,
@@ -150,7 +159,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		ciReason = "ci_reader_unavailable"
 		target.due.ciGateRef, target.due.ciGateState = "", ""
 		ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
-		observation, reason, readErr := observeLifecycleCIGate(ciCtx, target.reader, plan)
+		observation, reason, readErr := observeLifecycleCIGateWithCohort(ciCtx, target.reader, plan, target.cohort)
 		if readErr != nil {
 			providerErr = readErr
 			ciReason = sourceCIErrorReason(ciCtx, readErr)
@@ -342,6 +351,10 @@ func (e *Engine) lifecycleBinding(ctx context.Context, tx *sql.Tx, target lifecy
 // Use the final branch's required-check authority without replacing the actual
 // PR comparison. A stacked result never claims a hypothetical final merge ran.
 func observeLifecycleCIGate(ctx context.Context, reader TargetReader, plan SourcePlan) (reviewprovider.CIObservation, string, error) {
+	return observeLifecycleCIGateWithCohort(ctx, reader, plan, nil)
+}
+
+func observeLifecycleCIGateWithCohort(ctx context.Context, reader TargetReader, plan SourcePlan, cohort *reviewprovider.CIGateCohort) (reviewprovider.CIObservation, string, error) {
 	var observation reviewprovider.CIObservation
 	gate := plan.Repository.DefaultBranch
 	if gate == "" || !safeText(gate, 256) {
@@ -349,7 +362,9 @@ func observeLifecycleCIGate(ctx context.Context, reader TargetReader, plan Sourc
 	}
 	source := sourcePlanObservation(plan)
 	var err error
-	if gateReader, ok := advertisedCIGateReader(reader); ok {
+	if cohort != nil {
+		observation, err = cohort.ObserveCIGate(ctx, sourceCITarget(source), gate)
+	} else if gateReader, ok := advertisedCIGateReader(reader); ok {
 		observation, err = gateReader.ObserveCIGate(ctx, sourceCITarget(source), gate)
 	} else if baseReader, ok := reader.(sourceCIReader); ok && gate == source.BaseRef {
 		// Older adapters are safe only when selected and actual gates coincide.
