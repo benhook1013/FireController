@@ -78,3 +78,7 @@
 
 .review-round-pill.review-pill-running{border-style:dashed;color:var(--fc-surface_text,#242832)}
 .review-round-pill.review-pill-partial{border-color:currentColor;color:var(--fc-blocked_text,#82293b)}
+
+/* Keep the combined base and size fact readable on narrow screens. */
+.review-pull-facts>.review-diff{display:inline-block;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.review-base-target{color:inherit}

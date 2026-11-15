@@ -35,10 +35,22 @@ describe('truthful stored review presentation', () => {
       expect(html).toContain(`href="https://github.com/example/project/tree/${encodeURIComponent(branch)}"`);
     }
     const stacked = markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: 'feature/parent', parent_pull_number: 1 }} />);
-    expect(stacked).toContain('Based on #1');
+    expect(stacked).toContain('Based on PR #1');
     expect(stacked).toContain('href="https://github.com/example/project/pull/1"');
     expect(stacked).not.toContain('Based on feature/parent');
-    expect(markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: '' }} />)).not.toContain('Based on');
+    expect(markup(<ReviewPullFacts pull={{ ...pull(2), base_ref: '' }} />)).toContain('Base unknown');
+  });
+
+  it('keeps the base inside the always-visible size pill before counts, including history and missing size', () => {
+    for (const state of ['open', 'merged', 'closed'] as const) {
+      const html = markup(<ReviewPullFacts pull={{ ...pull(2, state), parent_pull_number: 1, diff: { files: 12, additions: 34, deletions: 5 } }} />);
+      expect(html).toMatch(/class="badge review-fact-pill review-diff"><a class="review-base-target"[^>]*>Based on PR #1<\/a> · 12 files/);
+      expect(html.match(/Based on/g)).toHaveLength(1);
+      expect(html).toContain('+34');
+    }
+    const unknownSize = markup(<ReviewPullFacts pull={pull(2)} />);
+    expect(unknownSize).toMatch(/class="badge review-fact-pill review-diff"><a class="review-base-target"[^>]*>Based on main<\/a><\/span>/);
+    expect(unknownSize).not.toContain('0 files');
   });
 
   it('shows newest merged card immediately above the review head, leaving history order unchanged', () => {
