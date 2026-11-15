@@ -329,7 +329,7 @@ func (o *browserOutput) safePhase() string {
 			if record.Phase == "live-reviews" {
 				allowed := false
 				switch record.Checkpoint {
-				case "reviews-open", "unconfigured", "fallback-observation", "fallback-first-jump", "fallback-scroll-away", "fallback-repeat-jump", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "current-round-close-hero-summary", "current-round-close-hero-open", "current-round-close-hero-reason", "current-round-close-queue-summary", "current-round-close-queue-open", "current-round-close-queue-reason", "attempt-reason-compact", "attempt-reason-layout", "attempt-reason-detail", "attempt-reason-expanded", "attempt-reason-reads", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
+				case "active-review-hover", "confirmed-review-start", "running-review-results", "attempt-visible-reason", "queue-jump-link", "queue-pull-facts", "queue-jump-desktop-context", "partial-history-and-findings", "reload-before", "reviews-open", "unconfigured", "fallback-observation", "fallback-first-jump", "fallback-scroll-away", "fallback-repeat-jump", "seed-observation", "initial-open-pull", "initial-merged-pull", "updated-observation", "updated-open-pull", "updated-merged-pull", "hosted-run", "merged-retention", "delivery-queue", "queue-heading", "queue-pull", "merge-head", "hosted-summary", "current-round-grants", "current-round-limits-shared", "current-round-close-live", "current-round-close-hero-summary", "current-round-close-hero-open", "current-round-close-hero-reason", "current-round-close-queue-summary", "current-round-close-queue-open", "current-round-close-queue-reason", "attempt-reason-compact", "attempt-reason-layout", "attempt-reason-detail", "attempt-reason-expanded", "attempt-reason-reads", "reviews-return", "reviews-heading", "selected-worker", "sanitized-literal", "reviews-url", "queue-jump-visible", "reload-head-spa":
 					allowed = true
 				}
 				valid := allowed
@@ -635,6 +635,23 @@ console.log(JSON.stringify({state:passed?'PASS':'FAIL',matcher_assertion:passed,
 	}
 	if err != nil || stderr.len() != 0 || external.Load() != 0 || output.browserPID() < 2 || len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || !result.MatcherAssertion || !result.ClosedPage || !result.ScreenshotFailure || !result.PrivateJSON {
 		t.Fatal("browser diagnostic failure-path proof failed; raw output withheld")
+	}
+}
+
+func TestBrowserReviewLifecycleCheckpointsDiagnosticsAllowlist(t *testing.T) {
+	for _, checkpoint := range []string{"active-review-hover", "confirmed-review-start", "running-review-results", "attempt-visible-reason", "queue-jump-link", "queue-pull-facts", "queue-jump-desktop-context", "partial-history-and-findings", "reload-before"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"state": "FAIL", "phase": "live-reviews", "checkpoint": checkpoint, "failure_class": "assertion", "run_fetches": 2, "error": "PRIVATE_SENTINEL", "url": "PRIVATE_SENTINEL", "cookie": "PRIVATE_SENTINEL"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := &browserOutput{}
+			_, _ = output.Write(body)
+			expected := "live-reviews/" + checkpoint + " class=assertion run_fetches=2 presentation_reads=0 metadata_streams=0 inbox_streams=0 forbidden_writes=0 action_writes=0 errors=0 external=0"
+			if got := output.safePhase(); got != expected || strings.Contains(got, "PRIVATE_SENTINEL") {
+				t.Fatalf("checkpoint diagnostics mismatch: %q", got)
+			}
+		})
 	}
 }
 
