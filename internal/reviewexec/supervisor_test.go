@@ -1040,7 +1040,16 @@ func TestSupervisorStartCancellationDuringRecoveryPreservesInterruptedAttempt(t 
 	cancel()
 	select {
 	case result := <-started:
-		attemptCode(t, result.err, "overloaded")
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatal("startup fixture did not cancel its context")
+		}
+		// Ownership precedes the preparation-recovery read. Cancellation may
+		// reach that QueryContext (context.Canceled) or the serialized writer
+		// admission (overloaded); neither path may launch a supervisor or mutate
+		// the retained attempt. Do not accept unrelated startup/storage failures.
+		if !errors.Is(result.err, context.Canceled) {
+			attemptCode(t, result.err, "overloaded")
+		}
 		if result.done != nil {
 			t.Error("cancelled synchronous startup returned a worker completion channel")
 		}
