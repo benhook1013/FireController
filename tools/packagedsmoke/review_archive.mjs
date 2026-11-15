@@ -79,7 +79,7 @@ try {
     const rounds = page.locator('.main-content').getByRole('region',{name:`PR #${number} review rounds`,exact:true});
     const attempts = page.getByRole('region',{name:`PR #${number} attempts`,exact:true});
     await rounds.waitFor(); await attempts.waitFor();
-    await expect(page.locator('.review-detail-overview .review-diff')).toHaveText('0 files · +0 / −0 lines');
+    await expect(page.locator('.review-detail-overview .review-diff')).toHaveText('Based on main · 0 files · +0 / −0 lines');
     await expect(page.locator('.review-detail-overview .review-state-draft')).toHaveText('Draft');
     await attempts.locator('summary').click();
     await expect.poll(() => rounds.locator('.review-history-row').count()).toBe(25);
@@ -261,9 +261,9 @@ try {
   await expect(originalFields.locator('pre')).toContainText('Useful **inline detail**');
   need(await currentRow.locator('.review-history-findings img').count() === 0 && await currentRow.locator('.review-history-findings a[href^="javascript:"]').count() === 0);
   need(details.length === 2 && details[1].name === 'current' && details[1].snapshot !== config.snapshot && new URL(current.page.url()).pathname === current.path);
-  await expect(current.page.locator('.review-detail-overview .review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  await expect(current.page.locator('.review-detail-overview .review-diff')).toHaveText('Based on main · 73 files · +6,160 / −136 lines');
   need(await current.page.locator('.review-detail-overview .review-state-draft').count() === 0);
-  await expect(pinned.page.locator('.review-detail-overview .review-diff')).toHaveText('0 files · +0 / −0 lines');
+  await expect(pinned.page.locator('.review-detail-overview .review-diff')).toHaveText('Based on main · 0 files · +0 / −0 lines');
   await expect(pinned.page.locator('.review-detail-overview .review-state-draft')).toHaveText('Draft');
   if (config.proof_directory) {
     await fs.mkdir(config.proof_directory, {recursive:true});
