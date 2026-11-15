@@ -27,6 +27,12 @@ describe('three-line review state pills',()=>{
   expect(reviewRunPillStatus({...completed,finalized:false})).toBe('Needs adjudication');
   expect(reviewRunPillStatus({...completed,attributable:false})).toBe('Incomplete');
  });
+ it('keeps confirmed running counts, elapsed time and status as distinct lines',()=>{
+  const evidence={attempt_id:attempt.source_attempt_id,head_sha:head,observed_at:stamp,kind:'cli_process_spawned' as const,process_started_at:stamp};
+  const html=markup([],[{...attempt,source_run_id:''}],{...progress,activity_evidence:evidence});
+  expect(html).toMatch(/<strong>\?\/\?\/\?<\/strong><time[^>]*>[\s\S]*?<\/time><span class="review-pill-status">Running<\/span>/u);
+  expect(html).not.toContain('?/?/?Running');
+ });
  it('keeps real partial-case semantics without completed credit',()=>{
   const partial={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,found:15,accepted:0,fixed:0,retained_undecided:15};
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'coverage_incomplete'}],{...progress,retained_adjudication_pending:true});

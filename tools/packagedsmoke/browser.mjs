@@ -1051,7 +1051,9 @@ try {
   for (const channel of ['Hosted','CLI']) {
     const lane = activityRow.getByRole('region',{name:channel+' CodeRabbit',exact:true});
     const running = lane.getByRole('img',{name:new RegExp('^'+channel+' review running')});
-    await expect(running).toContainText('?/?/?Running');
+    // Counts, elapsed age and status are separate lines; do not require adjacent text.
+    await expect(running.locator('strong')).toHaveText('?/?/?');
+    await expect(running.locator('.review-pill-status')).toHaveText('Running');
     await expect(running.locator('time')).toHaveAttribute('datetime',activityStart);
     await expect(lane.locator('.review-lane-heading')).toContainText('0 runs');
   }
