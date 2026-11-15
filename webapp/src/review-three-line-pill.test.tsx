@@ -47,6 +47,9 @@ describe('three-line review state pills',()=>{
   expect(html).toContain('Needs agent attention');
   expect(html).toContain('0 runs');
   expect(html).not.toContain('review-pill-running');
+  const compact=markup([{...partial,retained_undecided:undefined}],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
+  expect(compact).toContain('Partial · Adjudication unknown');
+  expect(compact).not.toContain('Partial · Needs adjudication');
  });
  it('never lets a stale completion replace an active attempt with matching source identity',()=>{
   const html=markup([completed],[attempt],{...progress,closed:true});

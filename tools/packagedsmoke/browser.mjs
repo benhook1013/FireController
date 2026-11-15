@@ -1094,7 +1094,8 @@ try {
   checkpoint = 'result-partial-counts';
   await expect(partialLink.locator('strong')).toHaveText('3/1/0');
   checkpoint = 'result-partial-status';
-  await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial · Needs adjudication');
+  // Compact summaries do not include the timeline finding inventory.
+  await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial · Adjudication unknown');
   checkpoint = 'result-partial-time';
   await expect(partialLink.locator('time')).toHaveAttribute('datetime',activityStart);
   const partialURL = await partialLink.getAttribute('href');
