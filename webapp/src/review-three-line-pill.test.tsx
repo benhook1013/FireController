@@ -39,6 +39,15 @@ describe('three-line review state pills',()=>{
   expect(html).toContain('<strong>15/0/0</strong>');expect(html).toContain('Partial · Needs adjudication');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
   expect(html).not.toContain('>Finished</span>');expect(html).not.toContain('review-pill-zero');
  });
+ it('separates an unsettled returned partial result from failed-attempt attention',()=>{
+  const partial={...completed,found:3,accepted:1,routed:0,fixed:0,retained_undecided:1,outcome:'failed' as const,complete:false,attributable:false,finalized:false};
+  const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
+  expect(html).toContain('Partial · Needs adjudication');
+  expect(html).toContain('aria-label="cli current review state"');
+  expect(html).toContain('Needs agent attention');
+  expect(html).toContain('0 runs');
+  expect(html).not.toContain('review-pill-running');
+ });
  it('never lets a stale completion replace an active attempt with matching source identity',()=>{
   const html=markup([completed],[attempt],{...progress,closed:true});
   expect(html).toContain('aria-label="cli execution: Reviewing"');

@@ -1081,9 +1081,13 @@ try {
   const resultCLI = activityRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
   await expect(activityRow.locator('.review-pill-running')).toHaveCount(0);
   await expect(resultCLI.locator('.review-lane-heading')).toContainText('0 runs');
-  await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained|Needs agent attention/u);
+  await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained/u);
+  // Process attention is separate from the captured partial result's adjudication.
+  await expect(resultCLI.getByLabel('cli current review state', {exact:true}).locator('.review-attempt-state')).toHaveText('Needs agent attention');
   const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
   await expect(partialLink).toHaveCount(1);
+  await expect(partialLink.locator('strong')).toHaveText('3/1/0');
+  await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial · Needs adjudication');
   await expect(partialLink.locator('time')).toHaveAttribute('datetime',activityStart);
   const partialURL = await partialLink.getAttribute('href');
   await page.unroute(progressPattern,startedEvidence);
@@ -1139,7 +1143,7 @@ try {
   const openFacts = deliveryQueue.locator('#review-pr-32 .review-pull-facts');
   await expect(mergedFacts.locator('.review-mergeability')).toHaveCount(0);
   await expect(mergedFacts).not.toContainText('Required CI:');
-  await expect(mergedFacts.locator('.review-diff')).toHaveText('73 files · +6,160 / −136 lines');
+  await expect(mergedFacts.locator('.review-diff')).toHaveText('Based on main · 73 files · +6,160 / −136 lines');
   await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
   await expect(mergedFacts).not.toContainText('Draft');
   await expect(mergedFacts.locator('.review-ci')).toHaveCount(0);
