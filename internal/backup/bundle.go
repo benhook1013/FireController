@@ -136,6 +136,11 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 func hashPrivate(ctx context.Context, path string, limit int64) (Artifact, error) {
+	return hashPrivateBuffer(ctx, path, limit, make([]byte, 64<<10))
+}
+
+// A buffer belongs to one sequential inspection; it is never shared by workers.
+func hashPrivateBuffer(ctx context.Context, path string, limit int64, buffer []byte) (Artifact, error) {
 	if checkContext(ctx) != nil || limit < 1 {
 		return Artifact{}, unavailable()
 	}
@@ -153,7 +158,7 @@ func hashPrivate(ctx context.Context, path string, limit int64) (Artifact, error
 		return Artifact{}, invalid()
 	}
 	h := sha256.New()
-	n, err := io.CopyBuffer(h, contextReader{ctx, io.LimitReader(f, before.Size())}, make([]byte, 64<<10))
+	n, err := io.CopyBuffer(h, contextReader{ctx, io.LimitReader(f, before.Size())}, buffer)
 	if err != nil {
 		return Artifact{}, unavailable()
 	}
@@ -370,13 +375,14 @@ func inspectBundleIntegrity(ctx context.Context, bundleDir string) (Manifest, er
 	if err = checkBundleFiles(ctx, absolute, expected); err != nil {
 		return m, err
 	}
-	db, err := hashPrivate(ctx, filepath.Join(absolute, m.Database.Path), maxDatabaseBytes)
+	buffer := make([]byte, 64<<10)
+	db, err := hashPrivateBuffer(ctx, filepath.Join(absolute, m.Database.Path), maxDatabaseBytes, buffer)
 	if err != nil || db.SHA256 != m.Database.SHA256 || db.Bytes != m.Database.Bytes {
 		return m, invalid()
 	}
 	for _, a := range m.Artifacts {
 		_, limit, _ := artifactPath(a.Path)
-		actual, err := hashPrivate(ctx, filepath.Join(absolute, filepath.FromSlash(a.Path)), limit)
+		actual, err := hashPrivateBuffer(ctx, filepath.Join(absolute, filepath.FromSlash(a.Path)), limit, buffer)
 		if err != nil || actual.SHA256 != a.SHA256 || actual.Bytes != a.Bytes {
 			return m, invalid()
 		}

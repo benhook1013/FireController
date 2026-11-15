@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func manifestHash(m Manifest) (string, error) {
@@ -26,7 +28,13 @@ type ownedBundle struct{ id, destination, instance, hash, state string }
 var errManagedVerificationInterrupted = unavailable()
 var errManagedRemovalNotStarted = unavailable()
 
-func (m *Manager) retain(ctx context.Context) error {
+func (m *Manager) retain(ctx context.Context) (result error) {
+	started := time.Now()
+	phase := "admission"
+	keepers, candidates, deleted := 0, 0, 0
+	defer func() {
+		slog.InfoContext(context.WithoutCancel(ctx), "Managed backup retention phase outcome", "phase", phase, "duration_ms", time.Since(started).Milliseconds(), "keepers_verified", keepers, "candidates_verified", candidates, "bundles_deleted", deleted, "failed", result != nil, "deadline_exceeded", errors.Is(ctx.Err(), context.DeadlineExceeded), "cancelled", errors.Is(ctx.Err(), context.Canceled))
+	}()
 	if checkContext(ctx) != nil {
 		return unavailable()
 	}
@@ -40,6 +48,7 @@ func (m *Manager) retain(ctx context.Context) error {
 	}
 	// Without an excess owned copy, retention has nothing to delete and makes
 	// no claim about the present bytes of the protected bundles.
+	phase = "capacity"
 	keep, oversized, err := m.retentionCount(ctx)
 	if err != nil {
 		return err
@@ -56,7 +65,8 @@ func (m *Manager) retain(ctx context.Context) error {
 	}
 	// Verify the retained safety floor once per maintenance pass, before any
 	// older copy can be removed. Ledger ownership alone is not a usable backup.
-	if err := m.verifyKeepersCount(ctx, keep); err != nil {
+	phase = "keepers"
+	if err := m.verifyKeepersObserved(ctx, keep, func() { keepers++ }); err != nil {
 		return err
 	}
 	for {
@@ -74,6 +84,7 @@ func (m *Manager) retain(ctx context.Context) error {
 		if err != nil {
 			return unavailable()
 		}
+		phase = "candidate_verification"
 		manifest, before, err := m.verifyOwnedBundle(ctx, b)
 		if err != nil {
 			if errors.Is(err, errManagedVerificationInterrupted) {
@@ -81,6 +92,8 @@ func (m *Manager) retain(ctx context.Context) error {
 			}
 			return m.cleanupFailed(ctx, b.id)
 		}
+		candidates++
+		phase = "admit_deletion"
 		path := filepath.Join(b.destination, b.id)
 		err = m.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			result, err := tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='deleting' WHERE id=? AND destination=? AND source_instance_id=? AND manifest_sha256=? AND state='retained'`, b.id, b.destination, b.instance, b.hash)
@@ -103,17 +116,20 @@ func (m *Manager) retain(ctx context.Context) error {
 		if checkContext(ctx) != nil {
 			return m.retainUntouched(b)
 		}
+		phase = "unlink"
 		if err = m.remove(ctx, path, manifest); err != nil {
 			if errors.Is(err, errManagedRemovalNotStarted) {
 				return m.retainUntouched(b)
 			}
 			return m.cleanupFailed(ctx, b.id)
 		}
+		phase = "sync"
 		if err = syncDirectory(b.destination); err != nil {
 			return m.cleanupFailed(ctx, b.id)
 		}
 		// The filesystem deletion is complete. Cancellation cannot undo it;
 		// settle its ledger fact with an independent, bounded deadline.
+		phase = "settlement"
 		settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), managedSettlementTimeout)
 		err = m.store.BackgroundWrite(settle, func(ctx context.Context, tx *sql.Tx) error {
 			result, e := tx.ExecContext(ctx, `UPDATE managed_backup_bundles SET state='deleted' WHERE id=? AND state='deleting'`, b.id)
@@ -130,12 +146,17 @@ func (m *Manager) retain(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		deleted++
+		phase = "next_candidate"
 	}
 }
 func (m *Manager) verifyKeepers(ctx context.Context) error {
 	return m.verifyKeepersCount(ctx, m.config.Keep)
 }
 func (m *Manager) verifyKeepersCount(ctx context.Context, keep int) error {
+	return m.verifyKeepersObserved(ctx, keep, nil)
+}
+func (m *Manager) verifyKeepersObserved(ctx context.Context, keep int, verified func()) error {
 	rows, err := m.store.DB().QueryContext(ctx, `SELECT id,destination,source_instance_id,manifest_sha256,state FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state='retained' ORDER BY sequence DESC LIMIT ?`, m.config.Destination, m.store.InstanceID(), keep)
 	if err != nil {
 		return unavailable()
@@ -157,6 +178,9 @@ func (m *Manager) verifyKeepersCount(ctx context.Context, keep int) error {
 	for _, b := range keepers {
 		if _, _, err := m.verifyOwnedBundle(ctx, b); err != nil {
 			return err
+		}
+		if verified != nil {
+			verified()
 		}
 	}
 	return nil
