@@ -294,7 +294,7 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			return err
 		}
 		type key struct {
-			p, id    string
+			p, id    any
 			revision int64
 		}
 		var keys []key
@@ -315,14 +315,22 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			return runUnavailable()
 		}
 		for _, k := range keys {
-			r, err := readRun(ctx, tx, k.p, k.id)
+			project, projectOK := k.p.(string)
+			id, idOK := k.id.(string)
+			if !projectOK || !idOK {
+				if _, err := quarantineNativeSelection(ctx, tx, k.p, k.id, "selecting", k.revision); err != nil {
+					return err
+				}
+				continue
+			}
+			r, err := readRun(ctx, tx, project, id)
 			if automaticProjectRefused(err) || err == nil && r.Revision == math.MaxInt64 {
-				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: k.p, ID: k.id, State: "selecting", Revision: k.revision})
+				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: project, ID: id, State: "selecting", Revision: k.revision})
 				if err != nil {
 					return err
 				}
 				if didChange {
-					changed = append(changed, k.id)
+					changed = append(changed, id)
 				}
 				continue
 			}
@@ -483,6 +491,18 @@ func quarantineSelection(ctx context.Context, tx *sql.Tx, expected Run) (bool, e
 		return false, nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, expected.ProjectID, expected.ID, expected.State, expected.Revision)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any, state string, revision int64) (bool, error) {
+	if state != "queued" && state != "selecting" {
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, project, id, state, revision)
 	if err != nil {
 		return false, err
 	}

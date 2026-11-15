@@ -217,13 +217,36 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
+	// Bound source work before metadata lookahead. Local suppression still
+	// rechecks the live prefix at admission if queued work changes afterward.
+	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var automatic bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+			return err
+		}
+		if !automatic {
+			return nil
+		}
+		limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+		if err != nil {
+			return err
+		}
+		if limit < 0 || limit > len(c.Queue) {
+			return schedulingUnavailable()
+		}
+		c.Queue = c.Queue[:limit]
+		return nil
+	})
+	if err != nil {
+		return runChoice{}, err
+	}
 	if len(c.Queue) == 0 {
 		return runChoice{state: "empty", reason: "queue_complete"}, nil
 	}
 	reads := &runReads{reader: reader, repos: map[int64]reviewprovider.Repository{}, pulls: map[string]map[int64]reviewprovider.Pull{}}
 	source := runSourceBudget{remaining: sourceBudget}
 	var repository reviewprovider.Repository
-	err := source.read(ctx, func(ctx context.Context) error {
+	err = source.read(ctx, func(ctx context.Context) error {
 		var err error
 		repository, err = reads.Repository(ctx, repo)
 		return err
@@ -450,9 +473,12 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	var repo int64
 	var changed string
 	var project, id string
+	var nativeProject, nativeID any
+	var quarantined bool
 	var expected int64
 	err := retryRunSelectionLocal(ctx, func() error {
 		project, id, expected = "", "", 0
+		nativeProject, nativeID = nil, nil
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
@@ -461,15 +487,26 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
  WHERE s.state='queued'
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&project, &id, &expected)
+ ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&nativeProject, &nativeID, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 			return err
 		})
 	})
-	if err != nil || id == "" {
+	if err != nil || nativeID == nil {
 		return false, err
+	}
+	var projectOK, idOK bool
+	project, projectOK = nativeProject.(string)
+	id, idOK = nativeID.(string)
+	if !projectOK || !idOK {
+		err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			quarantined, err = quarantineNativeSelection(ctx, tx, nativeProject, nativeID, "queued", expected)
+			return err
+		})
+		return quarantined, err
 	}
 	err = retryRunSelectionLocal(ctx, func() error {
 		// A rolled-back claim cannot retain a selected pointer or notification.

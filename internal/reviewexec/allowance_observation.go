@@ -78,7 +78,7 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 		var err error
 		var draft bool
 		var historical Operation
-		historical, draft, err = historicalCLIDraftOperation(ctx, q, o, a)
+		historical, draft, err = historicalUnusedPreparationOperation(ctx, q, o, a, true)
 		if err == nil {
 			if draft {
 				o = historical
