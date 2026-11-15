@@ -1196,8 +1196,8 @@ try {
     for (const pill of reasonPills) {
       await expect(pill).toHaveText('Needs agent attention');
       need(await pill.evaluate(element => {
-        // Compare to the actual shared channel badge in the same heading,
-        // including geometry, so a radius-only fix cannot satisfy this proof.
+        // Compare to a shared channel badge in the same embedded status line.
+        // Three-line pills intentionally remove the old heading-badge chrome.
         const standard=document.createElement('span');
         standard.className='badge review-channel-position'; standard.textContent=element.textContent;
         element.parentElement.append(standard);
@@ -1206,7 +1206,7 @@ try {
         const matching=properties.every(property=>style[property]===reference[property]) && Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
         standard.remove();
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return matching && style.textTransform === 'uppercase' && style.borderTopLeftRadius === '20px' && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
+        return matching && style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px') && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
       }));
     }
     const progressColors=await page.evaluate(()=>{

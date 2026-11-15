@@ -13,3 +13,11 @@ it('inherits badge geometry and typography instead of maintaining a second pill 
     expect(declarations).not.toMatch(/(?:^|;)(?:padding(?:-[a-z]+)?|font(?:-[a-z]+)?|line-height|letter-spacing|text-transform|border-radius|height):/u);
   }
 });
+
+
+it('removes badge chrome only inside the three-line status while preserving outer badges', async () => {
+  const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
+  const review = fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
+  const embedded = review.split('.review-pill-status .badge{')[1]?.split('}')[0];
+  for (const value of ['font:inherit', 'border-radius:0', 'padding:0', 'letter-spacing:normal', 'text-transform:none']) expect(embedded).toContain(value);
+});
