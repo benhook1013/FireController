@@ -85,7 +85,9 @@ func bundleDiskBytes(ctx context.Context, path string) (int64, error) {
 // Refuse more staging when unresolved deletion custody already prevents retention
 // and the retained-byte safety budget is exhausted. Never clear or retry a
 // possibly partial deletion here; existing copies and their ledger remain intact.
-func (m *Manager) admitSnapshotGrowth(ctx context.Context) error {
+func (m *Manager) admitSnapshotGrowth(ctx context.Context) (result error) {
+	diagnostics := beginCreateDiagnostics(ctx, "growth_admission")
+	defer func() { diagnostics.finish(result) }()
 	var held int
 	if err := m.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state IN ('deleting','cleanup_failed'))`, m.config.Destination, m.store.InstanceID()).Scan(&held); err != nil {
 		return unavailable()

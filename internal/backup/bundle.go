@@ -503,6 +503,8 @@ func createWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, d
 }
 
 func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string, now func() time.Time, since func(time.Time) time.Duration) (out createdBundle, err error) {
+	diagnostics := beginCreateDiagnostics(ctx, "preflight")
+	defer func() { diagnostics.finish(err) }()
 	if checkContext(ctx) != nil || sourceDB == nil {
 		return out, unavailable()
 	}
@@ -552,9 +554,11 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if err != nil || !os.SameFile(selected, actual) {
 		return out, invalid()
 	}
+	diagnostics.next("source_validation")
 	if err = ValidateSource(ctx, source); err != nil {
 		return out, err
 	}
+	diagnostics.next("staging")
 	id := core.NewID("backup")
 	final := filepath.Join(destination, id)
 	stage := filepath.Join(destination, "."+id+".pending")
@@ -586,18 +590,27 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	// A wall-clock adjustment cannot reverse or inflate the snapshot window.
 	started := now()
 	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: started.UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
+	diagnostics.next("snapshot_vacuum")
 	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(stage, "firecontroller.sqlite")); err != nil {
 		return out, unavailable()
 	}
 	m.SnapshotFinishedAt = started.Add(since(started)).UTC().Format(time.RFC3339Nano)
+	diagnostics.next("database_hash")
 	m.Database, err = hashPrivate(ctx, filepath.Join(stage, "firecontroller.sqlite"), maxDatabaseBytes)
 	if err != nil {
 		return out, err
 	}
+	diagnostics.databaseBytes = m.Database.Bytes
+	diagnostics.next("capture_copy")
 	m.Artifacts, err = copyInventory(ctx, source, stage)
 	if err != nil {
 		return out, err
 	}
+	diagnostics.captures = len(m.Artifacts)
+	for _, artifact := range m.Artifacts {
+		diagnostics.captureBytes += artifact.Bytes
+	}
+	diagnostics.next("snapshot_metadata")
 	sort.Slice(m.Artifacts, func(i, j int) bool { return m.Artifacts[i].Path < m.Artifacts[j].Path })
 	db, err := openSnapshot(ctx, filepath.Join(stage, "firecontroller.sqlite"))
 	if err != nil {
@@ -611,9 +624,11 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if !validManifest(m) {
 		return out, invalid()
 	}
+	diagnostics.next("full_validation")
 	if err = validateSnapshot(ctx, stage, m); err != nil {
 		return out, err
 	}
+	diagnostics.next("seal")
 	body, err := canonicalManifest(m)
 	if err != nil {
 		return out, err
@@ -660,6 +675,7 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if current, statErr := os.Lstat(stage); statErr != nil || !os.SameFile(owned, current) {
 		return out, unavailable()
 	}
+	diagnostics.next("publication")
 	if err = os.Rename(stage, final); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return out, exists()
