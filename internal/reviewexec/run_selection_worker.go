@@ -622,7 +622,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	choice, readErr := e.chooseRun(ctx, r, repo, configuration, readers[configuration.CapabilityID])
 	selectionElapsed := time.Since(started)
 	defer func() {
-		logSlowRunSelection(ctx, r, choice, len(configuration.Queue), selectionElapsed, time.Since(started)-selectionElapsed)
+		logSlowRunSelection(ctx, r, choice, len(configuration.Queue), started, selectionElapsed, time.Since(started)-selectionElapsed)
 	}()
 	if ctx.Err() != nil {
 		return true, nil
@@ -643,17 +643,28 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	return worked, err
 }
 
-func logSlowRunSelection(ctx context.Context, r Run, choice runChoice, queueSize int, selectionElapsed, settlementElapsed time.Duration) {
+func logSlowRunSelection(ctx context.Context, r Run, choice runChoice, queueSize int, claimedAt time.Time, selectionElapsed, settlementElapsed time.Duration) {
 	total := selectionElapsed + settlementElapsed
-	if total < 10*time.Second {
+	created, createdErr := time.Parse(time.RFC3339Nano, r.CreatedAt)
+	queued, queuedErr := time.Parse(time.RFC3339Nano, r.UpdatedAt)
+	admissionKnown := createdErr == nil && queuedErr == nil && !created.IsZero() &&
+		!queued.Before(created) && !claimedAt.Before(queued)
+	if total < 10*time.Second && (!admissionKnown || claimedAt.Sub(queued) < 10*time.Second) {
 		return
 	}
-	slog.WarnContext(ctx, "Review selection was slow",
+	fields := []any{
 		"project_id", r.ProjectID, "selection_id", r.ID, "channel", r.Channel,
 		"queue_size", queueSize, "evaluated_prefix", len(choice.prefix),
 		"duration_ms", total.Milliseconds(), "source_read_ms", choice.sourceElapsed.Milliseconds(),
 		"local_selection_ms", (selectionElapsed - choice.sourceElapsed).Milliseconds(),
-		"settlement_ms", settlementElapsed.Milliseconds())
+		"settlement_ms", settlementElapsed.Milliseconds(),
+		"admission_timing_known", admissionKnown,
+	}
+	if admissionKnown {
+		fields = append(fields, "queued_to_claim_ms", claimedAt.Sub(queued).Milliseconds(),
+			"accepted_to_claim_ms", claimedAt.Sub(created).Milliseconds())
+	}
+	slog.WarnContext(ctx, "Review selection was slow", fields...)
 }
 
 // A validated retained-data refusal belongs to this selection, not the worker

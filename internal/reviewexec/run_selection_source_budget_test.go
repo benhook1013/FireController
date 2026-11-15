@@ -104,11 +104,11 @@ func TestSlowReviewSelectionLogsPhaseDurations(t *testing.T) {
 
 	run := Run{ID: "selection", ProjectID: "project", Channel: "hosted"}
 	choice := runChoice{sourceElapsed: 2 * time.Second, prefix: make([]SourcePlan, 58)}
-	logSlowRunSelection(t.Context(), run, choice, 97, 5*time.Second, time.Second)
+	logSlowRunSelection(t.Context(), run, choice, 97, time.Now(), 5*time.Second, time.Second)
 	if output.Len() != 0 {
 		t.Fatal("ordinary selection emitted a warning")
 	}
-	logSlowRunSelection(t.Context(), run, choice, 97, 5*time.Second, 8*time.Second)
+	logSlowRunSelection(t.Context(), run, choice, 97, time.Now(), 5*time.Second, 8*time.Second)
 	var got struct {
 		SelectionID string `json:"selection_id"`
 		QueueSize   int    `json:"queue_size"`
