@@ -319,12 +319,13 @@ try {
   await expect(attention).toContainText('Synthetic routed follow-up');
   const attentionToggle = attention.getByRole('button',{name:'Synthetic routed follow-up',exact:true});
   await expect(attentionToggle).toHaveAttribute('aria-expanded','false');
-  await expect(attention.getByText('No receiving PR is assigned.',{exact:true})).toBeHidden();
+  await expect(attention.getByText('Unassigned work remains unresolved and trackable. It does not block source reviews; merging still requires manual approval.',{exact:true})).toBeHidden();
   await attentionToggle.click();
   await expect(attentionToggle).toHaveAttribute('aria-expanded','true');
-  await expect(attention.getByText('No receiving PR is assigned.',{exact:true})).toBeVisible();
+  await expect(attention.getByText('Unassigned work remains unresolved and trackable. It does not block source reviews; merging still requires manual approval.',{exact:true})).toBeVisible();
   await attentionToggle.click();
   await expect(attentionToggle).toHaveAttribute('aria-expanded','false');
+  await expect(attention.locator('.review-routed-attention-reason')).toBeHidden();
   await current.page.setViewportSize({width:1440,height:900});
   const workerHeads = await current.page.locator('.delivery-lane-heading').evaluateAll(heads=>heads.slice(0,3).map(head=>({height:head.getBoundingClientRect().height,nameTop:head.querySelector('h3').getBoundingClientRect().top-head.getBoundingClientRect().top,paused:!!head.querySelector('.worker-presence-paused > summary')})));
   need(workerHeads.length===3 && workerHeads[0].paused);
