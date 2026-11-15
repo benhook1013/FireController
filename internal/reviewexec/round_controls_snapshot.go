@@ -24,6 +24,8 @@ func ValidateRoundSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateRoundPhysicalVersion(ctx, q, version); err != nil {
 		return err
 	}
+	q, closeQueries := snapshotQueries(q)
+	defer closeQueries()
 	queries := []string{
 		`SELECT EXISTS(SELECT 1 FROM review_round_changes h LEFT JOIN review_round_controls c USING(project_id,pull_number,channel) WHERE c.project_id IS NULL)`,
 		`SELECT EXISTS(SELECT 1 FROM review_round_operation_bindings b LEFT JOIN review_operations o ON o.id=b.operation_id LEFT JOIN review_round_controls c ON c.project_id=b.project_id AND c.pull_number=b.pull_number AND c.channel=b.channel LEFT JOIN review_round_changes g ON g.project_id=b.project_id AND g.pull_number=b.pull_number AND g.channel=b.channel AND g.revision=b.grant_revision AND g.epoch=b.epoch WHERE o.id IS NULL OR c.project_id IS NULL OR o.project_id!=b.project_id OR o.pull_number!=b.pull_number OR o.channel!=b.channel OR g.action IS NULL OR g.action!='grant')`,

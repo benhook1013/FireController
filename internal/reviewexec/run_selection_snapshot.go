@@ -16,6 +16,8 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateSelectionPhysical(ctx, q); err != nil {
 		return err
 	}
+	q, closeQueries := snapshotQueries(q)
+	defer closeQueries()
 	orderColumn, limitColumn, err := operationFlagColumns(ctx, q)
 	if err != nil {
 		return err

@@ -22,6 +22,13 @@ func ValidateSnapshot(ctx context.Context, db SnapshotReader) error {
 	if err := ValidatePhysicalSchema(ctx, db); err != nil {
 		return err
 	}
+	// Only a concrete caller-owned transaction can retain SQL programs.
+	// Other SnapshotReader implementations keep the original path.
+	if tx, ok := db.(*sql.Tx); ok {
+		queries := newSnapshotQueries(tx)
+		defer queries.close()
+		db = queries
+	}
 	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(project_id AS BLOB))<=128 THEN project_id END,revision FROM coordination_import_state`)
 	if err != nil {
 		return err

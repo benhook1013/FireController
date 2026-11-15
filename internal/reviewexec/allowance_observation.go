@@ -233,6 +233,8 @@ func readHeldAllowance(ctx context.Context, q EvidenceQuery, o Operation) (*Allo
 // ValidateAllowanceSnapshot checks retained facts without applying ingestion
 // freshness. It opens no connection, filesystem artifact or provider request.
 func ValidateAllowanceSnapshot(ctx context.Context, q EvidenceQuery, executionVersion int) error {
+	q, closeQueries := snapshotQueries(q)
+	defer closeQueries()
 	tables := []string{}
 	if executionVersion >= 4 {
 		tables = append(tables, "review_cli_preflight")
