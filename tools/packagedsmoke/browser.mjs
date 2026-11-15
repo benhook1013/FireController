@@ -1194,8 +1194,9 @@ try {
   const attemptReadsBeforeLayout = reviewAttemptReads;
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
+      checkpoint = 'layout-reason-text';
       await expect(pill).toHaveText('Needs agent attention');
-      need(await pill.evaluate(element => {
+      const geometry=await pill.evaluate(element => {
         // Compare to a shared channel badge in the same embedded status line.
         // Three-line pills intentionally remove the old heading-badge chrome.
         const standard=document.createElement('span');
@@ -1203,11 +1204,17 @@ try {
         element.parentElement.append(standard);
         const style=getComputedStyle(element),reference=getComputedStyle(standard);
         const properties=['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','textTransform','paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopLeftRadius'];
-        const matching=properties.every(property=>style[property]===reference[property]) && Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
+        const typography=properties.every(property=>style[property]===reference[property]);
+        const height=Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
         standard.remove();
         const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return matching && style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px') && box.left >= lane.left-1 && box.right <= lane.right+1 && element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1;
-      }));
+        return {typography,height,chrome:style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px'),bounds:box.left >= lane.left-1 && box.right <= lane.right+1,overflow:element.scrollWidth <= element.clientWidth+1 && element.scrollHeight <= element.clientHeight+1};
+      });
+      checkpoint='layout-reason-typography'; need(geometry.typography);
+      checkpoint='layout-reason-height'; need(geometry.height);
+      checkpoint='layout-reason-chrome'; need(geometry.chrome);
+      checkpoint='layout-reason-bounds'; need(geometry.bounds);
+      checkpoint='layout-reason-overflow'; need(geometry.overflow);
     }
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
@@ -1220,8 +1227,11 @@ try {
         return {text,border,background,textContrast:contrast(text,background),borderContrast:contrast(border,background)};
       }));
     });
+    checkpoint='layout-progress-contrast';
     need(progressColors.length===4&&progressColors.every(value=>value.text===`rgb(${configuredInk})`&&value.border===value.text&&value.textContrast>=4.5&&value.borderContrast>=3));
+    checkpoint='layout-progress-consistency';
     for(let channel=0;channel<2;channel++)need(JSON.stringify(progressColors[channel])===JSON.stringify(progressColors[channel+2]));
+    checkpoint='layout-no-extra-reads';
     need(reviewOperationReads === 0 && reviewAttemptReads === attemptReadsBeforeLayout);
   });
   await jump.click();
