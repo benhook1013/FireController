@@ -21,3 +21,16 @@ it('removes badge chrome only inside the three-line status while preserving oute
   const embedded = review.split('.review-pill-status .badge{')[1]?.split('}')[0];
   for (const value of ['font:inherit', 'border-radius:0', 'padding:0', 'letter-spacing:normal', 'text-transform:none']) expect(embedded).toContain(value);
 });
+
+
+it('keeps embedded status badges wrapping despite the later channel badge nowrap rule', async () => {
+  const fs = await vi.importActual<{ readFileSync(path: URL, encoding: 'utf8'): string }>('node:fs');
+  const review = fs.readFileSync(new URL('./review-queue.css', import.meta.url), 'utf8');
+  const states = fs.readFileSync(new URL('./review-states.css', import.meta.url), 'utf8');
+  // The two-class embedded selector must override the shared one-class rule,
+  // independent of stylesheet load order. Outer channel badges keep nowrap.
+  const embedded = review.split('.review-pill-status .badge{')[1]?.split('}')[0];
+  expect(states.split('.review-channel-position{')[1]?.split('}')[0]).toContain('white-space:nowrap');
+  for (const value of ['max-width:100%', 'white-space:normal', 'overflow-wrap:anywhere']) expect(embedded).toContain(value);
+  expect(embedded).not.toMatch(/(?:overflow(?:-[xy])?:(?:hidden|clip)|text-overflow:ellipsis)/u);
+});

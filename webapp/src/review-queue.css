@@ -85,6 +85,6 @@
 
 /* Each private review pill has counts, age, then its own retained state. */
 .review-pill-status{display:block;font-size:.59rem;font-weight:650;line-height:1.2;max-width:100%;white-space:normal;color:inherit}
-.review-pill-status .badge{font:inherit;color:inherit;background:none;border:0;border-radius:0;padding:0;letter-spacing:normal;text-transform:none}
+.review-pill-status .badge{font:inherit;color:inherit;background:none;border:0;border-radius:0;padding:0;letter-spacing:normal;text-transform:none;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .review-pill-status .review-channel-position{margin:0}
 .review-pill-current{border-style:dashed}
