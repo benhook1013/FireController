@@ -8,6 +8,10 @@ import (
 
 // Shared completion retains the same generation, cancellation and hint rules.
 func (s *lifecycleSchedule) finishCIWatch(ctx context.Context, target lifecycleTarget, claim *ciWatchClaim, item CIWatchItem, providerErr error, releaseAccount bool) {
+	outcome := shareDiscarded
+	if claim.lifecycleShared {
+		defer func() { s.sharing.record(s.options.Now(), outcome) }()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := claim.entry
@@ -51,12 +55,16 @@ func (s *lifecycleSchedule) finishCIWatch(ctx context.Context, target lifecycleT
 	entry.metadataDone = claim.metadataGeneration
 	entry.next = s.options.Now().Add(ciWatchFallbackInterval)
 	entry.result = item
+	outcome = sharePublishedWithoutEligibleOwner
 	for sub := range entry.owners {
 		// Pin the first eligible fresh source observation before another
 		// completion can replace it, even if this subscriber reads late.
 		for i, owned := range sub.entries {
 			if owned != entry || claim.version < sub.minimum[i] {
 				continue
+			}
+			if sub.superseded[i] == nil && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) && (sub.bases[i] == "" || item.ObservedBaseSHA == sub.bases[i]) && entry.wanted == entry.done {
+				outcome = sharePublished
 			}
 			if sub.bases[i] == "" && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) {
 				sub.bases[i] = item.ObservedBaseSHA

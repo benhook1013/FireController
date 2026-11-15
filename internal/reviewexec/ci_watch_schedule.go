@@ -43,6 +43,7 @@ type ciGateHeadWorkflowReader interface {
 const ciWatchFallbackInterval = time.Minute
 
 type ciWatchClaim struct {
+	lifecycleShared       bool
 	entry                 *ciWatchEntry
 	generation            uint64
 	metadataGeneration    uint64

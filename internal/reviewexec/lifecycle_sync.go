@@ -102,6 +102,7 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
+	sharing         lifecycleSharingTelemetry
 	readers         map[string]TargetReader
 	watches         map[ciWatchKey]*ciWatchEntry
 	watchers        map[*ciWatchSubscription]bool

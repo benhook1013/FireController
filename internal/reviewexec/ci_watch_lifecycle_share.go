@@ -13,10 +13,13 @@ func (e *Engine) beginLifecycleCIShare(ctx context.Context, target lifecycleTarg
 	if target.lane != lifecycleEnrichment || target.comparison.state != "open" {
 		return nil
 	}
+	outcome := shareNotDue
+	defer func() { s.sharing.record(s.options.Now(), outcome) }()
 	d := target.due
 	if !target.forceCI && d.ciHead == target.comparison.head && d.ciBaseSHA == target.comparison.baseSHA && d.ciBaseRef == target.comparison.baseRef && s.options.Now().Before(d.ci) {
 		return nil
 	}
+	outcome = shareNoEligibleOwner
 	b := ciWatchBinding{project: target.project, capability: target.configuration.CapabilityID, fingerprint: target.fingerprint, account: target.account, repository: target.repository}
 	key := ciWatchKey{binding: b, number: target.number}
 	s.mu.Lock()
@@ -39,11 +42,13 @@ func (e *Engine) beginLifecycleCIShare(ctx context.Context, target lifecycleTarg
 	if !authorized {
 		return nil
 	}
+	outcome = shareDemandChanged
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.watches[key] != entry || entry.inflight || len(entry.owners) == 0 || len(ciWatchWorkflowUnion(entry, nil)) != 0 || !ciWatchHasDemand(entry, s.options.Now()) {
 		return nil
 	}
+	outcome = shareClaimed
 	entry.started++
 	entry.inflight = true
 	entry.lastAttempt = s.options.Now()
@@ -51,7 +56,7 @@ func (e *Engine) beginLifecycleCIShare(ctx context.Context, target lifecycleTarg
 	entry.inflightSHAOverflow = false
 	sharedCtx, cancel := context.WithCancel(ctx)
 	entry.cancel = cancel
-	return &ciWatchClaim{entry: entry, generation: entry.wanted, metadataGeneration: entry.metadataWanted, version: entry.started, ctx: sharedCtx}
+	return &ciWatchClaim{lifecycleShared: true, entry: entry, generation: entry.wanted, metadataGeneration: entry.metadataWanted, version: entry.started, ctx: sharedCtx}
 }
 
 // Only an already validated exact observation is projected. No optional
