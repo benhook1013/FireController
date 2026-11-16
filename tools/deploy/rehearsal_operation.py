@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Create a fresh, leased migration rehearsal and retain replay provenance.
 
-This is not a collector: it never deletes, enrolls or adopts existing output.
+This is not a collector: it never enrolls or adopts existing output.
+Explicit disposable mode removes only this successful invocation's temporary DB.
 The trusted foreground runner must preserve the lease in every descendant.
 """
 import argparse
@@ -102,7 +103,9 @@ def supervised_command(work, lease, lock_stat):
 
 
 def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
-            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False):
+            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False, discard_passed_output=False):
+    if type(discard_passed_output) is not bool:
+        raise Refuse("explicit disposable-output mode required")
     if type(supervised) is not bool:
         raise Refuse("explicit supervisor mode required")
     if supervised and timeout != 180:
@@ -225,6 +228,28 @@ def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
                         output_sha256=output_sha, report_sha256=report_sha,
                         logical_tables_sha256=semantic_sha, byte_equivalent_recovery=False)
         new_json(work / "terminal.json", terminal)
+        if discard_passed_output:
+            # Only the freshly created output is eligible. Historical, failed or
+            # uncertain operations are never adopted or recursively collected.
+            # This is a disposable-test policy, NOT byte-equivalent recovery.
+            current, current_stat = checked_file(copied, output_sha, max_database_bytes)
+            if (current_stat.st_dev, current_stat.st_ino) != (output_stat.st_dev, output_stat.st_ino):
+                raise Refuse("temporary output identity changed")
+            if current_stat.st_nlink != 1:
+                raise Refuse("temporary output acquired another link")
+            current.unlink()
+            fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            new_json(work / "disposal.json", {
+                "state": "passed_temporary_database_discarded",
+                "policy": "disposable-successful-rehearsal-v1",
+                "output_sha256": output_sha, "logical_tables_sha256": semantic_sha,
+                "source_sha256": source_sha256, "runner_sha256": runner_sha256,
+                "logical_bytes_discarded": current_stat.st_size,
+                "byte_equivalent_recovery": False})
         return {"state": "passed", "operation": operation, "enrolled": False}
 
 
@@ -233,6 +258,8 @@ def main():
     for name in ("root", "lease", "source", "source-sha256", "runner", "runner-sha256", "revision", "operation"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--supervised", action="store_true")
+    parser.add_argument("--discard-passed-output", action="store_true",
+                        help="discard only the new successful temporary database; preserve proofs and inputs")
     args = vars(parser.parse_args())
     print(json.dumps(execute(**args), sort_keys=True))
 
