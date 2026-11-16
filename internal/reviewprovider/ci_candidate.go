@@ -95,7 +95,13 @@ func sameCIBool(a, b *bool) bool { return a == nil && b == nil || a != nil && b 
 // assumed; both parents must bind to the head and a stable live branch tip.
 // https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
 // https://docs.github.com/en/rest/git/commits#get-a-commit-object
-func (g *GitHub) PullCICandidate(ctx context.Context, repository string, repositoryID, number int64, expectedHead string) (result CICandidate, err error) {
+func (g *GitHub) PullCICandidate(ctx context.Context, repository string, repositoryID, number int64, expectedHead string) (CICandidate, error) {
+	return g.pullCICandidate(ctx, repository, repositoryID, number, expectedHead, nil)
+}
+
+// commits is confined to one CI observation and one repository. Only exact
+// immutable Git objects may be reused; PR and live-base brackets stay fresh.
+func (g *GitHub) pullCICandidate(ctx context.Context, repository string, repositoryID, number int64, expectedHead string, commits map[string]githubCIMerge) (result CICandidate, err error) {
 	if ctx == nil || !validRepositorySelector(repository) || repositoryID <= 0 || !validPullNumber(number) || !lowerCISHA(expectedHead) {
 		return CICandidate{}, invalidSelector()
 	}
@@ -154,9 +160,11 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 			if !branchMatches {
 				return result, nil
 			}
-			var merge githubCIMerge
-			if _, err = g.actionsRead(ctx, "/repos/"+repository+"/git/commits/"+*first.MergeCommitSHA, nil, budget, &merge); err != nil {
-				return result, err
+			merge, reused := commits[*first.MergeCommitSHA]
+			if !reused {
+				if _, err = g.actionsRead(ctx, "/repos/"+repository+"/git/commits/"+*first.MergeCommitSHA, nil, budget, &merge); err != nil {
+					return result, err
+				}
 			}
 			if !lowerCISHA(merge.SHA) {
 				return result, invalidResponse(false, http.StatusOK)
@@ -165,6 +173,9 @@ func (g *GitHub) PullCICandidate(ctx context.Context, repository string, reposit
 				if !lowerCISHA(parent.SHA) {
 					return result, invalidResponse(false, http.StatusOK)
 				}
+			}
+			if commits != nil && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA {
+				commits[merge.SHA] = merge
 			}
 			after, branchMatches, branchErr := readBranch()
 			if branchErr != nil {

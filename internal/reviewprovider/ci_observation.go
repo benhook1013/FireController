@@ -96,8 +96,9 @@ func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITar
 		out.Reason = "ci_required_context_capacity"
 		return out, nil
 	}
+	commits := make(map[string]githubCIMerge, 2)
 	stage = "candidate"
-	candidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
+	candidate, err := g.pullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA, commits)
 	out.Candidate, out.MergeState = &candidate, candidate.MergeState
 	if err != nil {
 		out.Reason = "ci_source_unavailable"
@@ -209,7 +210,7 @@ func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITar
 		return out, err
 	}
 	stage = "candidate_recheck"
-	finalCandidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
+	finalCandidate, err := g.pullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA, commits)
 	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) && !NonstrictHeadCICandidate(finalCandidate, target, out.Authority) {
 		return out, err
 	}

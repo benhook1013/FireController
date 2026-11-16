@@ -56,8 +56,9 @@ func conditionalPressureCITrace(t *testing.T) []string {
 		t.Fatal("CI trace did not prove its selected gate", value.State, err)
 	}
 	paths, _ := f.snapshot()
-	if len(paths) != 27 {
-		t.Fatalf("one-workflow green CI reads = %d, want 27; review pressure assumptions", len(paths))
+	// Exact immutable merge-object reuse saves one request; mutable brackets remain.
+	if len(paths) != 26 {
+		t.Fatalf("one-workflow green CI reads = %d, want 26; review pressure assumptions", len(paths))
 	}
 	return paths
 }
@@ -140,8 +141,8 @@ func TestConditionalGETRetainsEnrolledSweepWorkingSet(t *testing.T) {
 			if len(g.cache) != len(seen) {
 				t.Fatalf("small-body working set did not fit: retained=%d, keys=%d", len(g.cache), len(seen))
 			}
-			if full != warmFull || same-warmSame != 63*number {
-				t.Fatalf("stable warm sweep: full responses=%d, conditional 304=%d, want 0/%d; keys=%d", full-warmFull, same-warmSame, 63*number, len(seen))
+			if full != warmFull || same-warmSame != 62*number {
+				t.Fatalf("stable warm sweep: full responses=%d, conditional 304=%d, want 0/%d; keys=%d", full-warmFull, same-warmSame, 62*number, len(seen))
 			}
 			t.Logf("keys=%d, warmed five-sweep reads=%d, full responses=0; every read revalidated", len(seen), same-warmSame)
 		})
