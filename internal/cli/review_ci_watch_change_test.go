@@ -45,3 +45,11 @@ func TestCIWatchChangeCLIRejectsInvalidBaselineBeforeProfile(t *testing.T) {
 		t.Fatal("offline help does not expose passed/failed rearm and terminal-wait limits", code, out.String(), diag.String())
 	}
 }
+
+func TestCIWatchInitialCLIAllowsImplicitBase(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	got, ok := parseCIWatch([]string{"--target", "4:" + head, "--wait-seconds", "0"})
+	if !ok || len(got.targets) != 1 || got.targets[0].BaseSHA != "" || got.targets[0].AfterObservationKey != "" {
+		t.Fatal("initial implicit base rejected", got, ok)
+	}
+}

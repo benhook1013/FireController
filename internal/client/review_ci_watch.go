@@ -217,7 +217,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.PullNumber != pin.PullNumber || item.HeadSHA != pin.HeadSHA || item.BaseSHA != pin.BaseSHA || !oneReviewOf(item.State, "pending", "passed", "failed", "superseded", "unconfigured", "closed") || item.Reason != "" && !validExecutionIdentifier(item.Reason) || !controlText(item.BaseRef, 256, false) || !controlText(item.GateRef, 256, false) || item.ObservedAt != "" && !controlTime(item.ObservedAt) || item.ObservedHeadSHA != "" && !controlHex(item.ObservedHeadSHA, 40) || item.ObservedBaseSHA != "" && !controlHex(item.ObservedBaseSHA, 40) {
 			return false
 		}
-		if item.Selection == "" && item.CICommitSHA != "" || item.Selection != "" && (!oneReviewOf(item.Selection, "head", "test_merge") || !controlHex(item.CICommitSHA, 40)) {
+		if item.Selection == "" && item.CICommitSHA != "" || item.Selection != "" && (!oneReviewOf(item.Selection, "head", "test_merge") || !controlHex(item.CICommitSHA, 40)) || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA {
 			return false
 		}
 		for _, count := range []int64{item.Required, item.Satisfied, item.Failed, item.Pending, item.Unproven} {

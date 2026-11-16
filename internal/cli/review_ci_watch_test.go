@@ -34,7 +34,7 @@ func TestCIWatchCLIExactTargetsAndLocalHelp(t *testing.T) {
 }
 
 func TestCIWatchHelpDocumentationAndBoundLauncher(t *testing.T) {
-	for _, operation := range []string{"ci-wait", "operations"} {
+	for _, operation := range []string{"ci-wait", "operations", "operation", "start", "run-read"} {
 		var out, diag bytes.Buffer
 		if RunContext(t.Context(), []string{"--profiles-file", "/unavailable", "reviews", operation, "--help"}, nil, &out, &diag) != ExitSuccess {
 			t.Fatal(diag.String())
@@ -44,8 +44,13 @@ func TestCIWatchHelpDocumentationAndBoundLauncher(t *testing.T) {
 			t.Fatal(out.String())
 		}
 		want := "docs/review-operations.md"
-		if operation == "ci-wait" {
+		switch operation {
+		case "ci-wait":
 			want = "docs/ci-wait.md"
+		case "operation":
+			want = "docs/review-execution.md"
+		case "start", "run-read":
+			want = "docs/review-round-controls.md"
 		}
 		if help.Documentation != want || !strings.HasPrefix(help.Usage, "<bound launcher> reviews ") {
 			t.Fatal(help)

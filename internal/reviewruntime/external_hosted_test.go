@@ -172,3 +172,35 @@ func TestExternalHostedReaderSupportsAttentionOnlyProvider(t *testing.T) {
 		t.Fatal("unsupported provider fabricated workflow results")
 	}
 }
+
+type externalArchiveProvider struct {
+	*driverHostedProvider
+	calls      int
+	repository string
+	number     int64
+	actor      reviewprovider.Author
+}
+
+func (p *externalArchiveProvider) ObserveHostedArchive(ctx context.Context, repository string, number int64, actor reviewprovider.Author) (reviewprovider.HostedPublicationSnapshot, error) {
+	p.calls++
+	p.repository, p.number, p.actor = repository, number, actor
+	return reviewprovider.HostedPublicationSnapshot{Complete: true}, ctx.Err()
+}
+func TestExternalHostedReaderUsesActorBoundPassiveArchive(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	p := &externalArchiveProvider{driverHostedProvider: f.provider}
+	f.hosted.provider = p
+	reader := f.hosted.HostedObservationReader()
+	snapshot, err := reader.ObserveHosted(t.Context(), "owner/repo", 2)
+	if err != nil || !snapshot.Complete || p.calls != 1 || p.repository != "owner/repo" || p.number != 2 || p.actor != f.provider.bot {
+		t.Fatal("archive selector or actor binding lost", snapshot, p, err)
+	}
+	if f.provider.baselines != 0 || f.provider.queries != 0 || f.provider.reviews != 0 || f.provider.histories != 0 || f.provider.activities != 0 {
+		t.Fatal("passive archive called native acquisition or command methods")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := reader.ObserveHosted(ctx, "owner/repo", 2); err == nil {
+		t.Fatal("archive cancellation lost")
+	}
+}

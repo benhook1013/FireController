@@ -776,3 +776,41 @@ func TestCIWatchShutdownInterruptsStalledUpload(t *testing.T) {
 	}
 	ciWatchRegistered(t, schedule, 0)
 }
+
+func TestCIWatchSubscriberJoiningInflightNeedsFollowingCollection(t *testing.T) {
+	f, s, clock, r, scope := ciWatchFixture(t)
+	r.states[42] = "satisfied"
+	binding, err := f.e.ciWatchBinding(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := []CIWatchTarget{{PullNumber: 42, HeadSHA: strings.Repeat("a", 40)}}
+	first, err := s.registerCIWatch(scope, binding, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(first)
+	claim, err := f.e.claimCIWatch(t.Context(), s.readers, s)
+	if err != nil || claim == nil {
+		t.Fatal(claim, err)
+	}
+	late, err := s.registerCIWatch(scope, binding, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(late)
+	if err := f.e.observeLifecycle(t.Context(), *claim, s); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ciWatchResult(first); got.State != "passed" {
+		t.Fatal("inflight join withheld original owner", got)
+	}
+	if got := s.ciWatchResult(late); got.State != "pending" || got.Targets[0].ObservedAt != "" {
+		t.Fatal("inflight join reused earlier collection", got)
+	}
+	clock.Add(5 * time.Second)
+	watchTick(t, f, s)
+	if got := s.ciWatchResult(late); got.State != "passed" || r.calls != 2 {
+		t.Fatal("inflight join was not refreshed", got, r.calls)
+	}
+}

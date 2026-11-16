@@ -359,9 +359,12 @@ func (e *Engine) claimLifecycleMember(ctx context.Context, readers map[string]Ta
 			return nil, err
 		}
 		s.mu.Lock()
-		for k := range s.due {
-			if k.project == p.id && !slices.Contains(numbers, k.number) {
-				delete(s.due, k)
+		// Preserve hint generations while either lane still owns a project claim.
+		if !s.lanes[lifecycleMetadata].projects[p.id] && !s.lanes[lifecycleEnrichment].projects[p.id] {
+			for k := range s.due {
+				if k.project == p.id && !slices.Contains(numbers, k.number) {
+					delete(s.due, k)
+				}
 			}
 		}
 		start := slices.Index(numbers, s.lanes[lane].lastPull[p.id]) + 1

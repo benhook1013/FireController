@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,10 +67,42 @@ func TestCIWatchHTTPScopeReadContentionIsBounded(t *testing.T) {
 
 type ciWatchScopeDeadlineWriter struct {
 	*httptest.ResponseRecorder
-	deadline time.Time
+	deadline  time.Time
+	deadlines []time.Time
 }
 
 func (w *ciWatchScopeDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
 	w.deadline = deadline
+	w.deadlines = append(w.deadlines, deadline)
 	return nil
+}
+
+func TestCIWatchHTTPRetainsResponseHeadroomAfterAuthentication(t *testing.T) {
+	for _, wait := range []int{0, 1} {
+		t.Run(strconv.Itoa(wait), func(t *testing.T) {
+			f, s, _, reader, _ := ciWatchFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			req := httptest.NewRequest("POST", "/api/v1/projects/"+attemptProject+"/reviews/ci/watch", strings.NewReader(`{"targets":[{"pull_number":42,"head_sha":"`+strings.Repeat("a", 40)+`"}]}`)).WithContext(ctx)
+			req.Header.Set("Authorization", "Bearer "+f.reader)
+			req.Header.Set("Prefer", "wait="+strconv.Itoa(wait))
+			w := &ciWatchScopeDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+			started := time.Now()
+			f.handler.ServeHTTP(w, req)
+			if len(w.deadlines) != 2 {
+				t.Fatal("did not reach authenticated watch deadline", w.deadlines, w.Body.String())
+			}
+			if wait > 0 {
+				if !w.deadlines[1].Equal(w.deadlines[0]) {
+					t.Fatal("positive wait shortened refusal-write headroom", w.deadlines)
+				}
+			} else if d := w.deadline.Sub(started); d < 5*time.Second || d > 6*time.Second {
+				t.Fatal("zero wait changed ordinary response allowance", d)
+			}
+			ciWatchRegistered(t, s, 0)
+			if reader.calls != 0 {
+				t.Fatal("deadline proof acquired provider work", reader.calls)
+			}
+		})
+	}
 }

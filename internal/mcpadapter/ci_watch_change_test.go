@@ -98,13 +98,17 @@ func TestCIWatchChangeSDKRejectsInvalidBaselineBeforeCredentials(t *testing.T) {
 	identity.ServerURL = service.URL
 	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": identity}, "missing-credential"), "chosen"), "")
 	for _, value := range []any{nil, "", "short", strings.Repeat("A", 64), strings.Repeat("g", 64), strings.Repeat("c", 65), 123} {
-		args := map[string]any{"targets": []map[string]any{{"pull_number": 2, "head_sha": strings.Repeat("a", 40), "after_observation_key": value}}, "wait_seconds": 0}
+		args := map[string]any{"targets": []map[string]any{{"pull_number": 2, "head_sha": strings.Repeat("a", 40), "base_sha": strings.Repeat("b", 40), "after_observation_key": value}}, "wait_seconds": 0}
 		diagnosticResult(t, call(t, session, "wait_for_ci", args), "invalid_arguments", false)
 	}
 	for _, field := range []string{"AfterObservationKey", "private_body"} {
 		args := map[string]any{"targets": []map[string]any{{"pull_number": 2, "head_sha": strings.Repeat("a", 40), field: strings.Repeat("c", 64)}}, "wait_seconds": 0}
 		diagnosticResult(t, call(t, session, "wait_for_ci", args), "invalid_arguments", false)
 	}
+	// A valid key still requires an explicit base pin. Keep this refusal
+	// separate so it cannot mask the malformed-key cases above.
+	missingBase := map[string]any{"targets": []map[string]any{{"pull_number": 2, "head_sha": strings.Repeat("a", 40), "after_observation_key": strings.Repeat("c", 64)}}, "wait_seconds": 0}
+	diagnosticResult(t, call(t, session, "wait_for_ci", missingBase), "invalid_arguments", false)
 	if reads.Load() != 0 {
 		t.Fatal("malformed baseline reached credentials/HTTP", reads.Load())
 	}

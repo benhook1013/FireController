@@ -31,7 +31,9 @@ func reviewWaitTargetError(err error, operationID string, targets []CIWatchTarge
 	ciRefusal := operationID == "" && ValidateCIWatchTargets(targets) == nil && (workflowRefusal ||
 		ciWatchRefusalReason(details["reason"]) && (failure.Code == "overloaded" && failure.Status == http.StatusServiceUnavailable ||
 			failure.Code == "storage_unavailable" && failure.Status == http.StatusInternalServerError))
-	if !shutdown && !local && !ciRefusal {
+	transport := failure.Status == 0 && failure.Code == "connection_failed"
+	gateway := failure.Code == "service_unavailable" && (failure.Status == http.StatusBadGateway || failure.Status == http.StatusServiceUnavailable || failure.Status == http.StatusGatewayTimeout)
+	if !shutdown && !local && !ciRefusal && !transport && !gateway {
 		return err
 	}
 	if operationID != "" {
