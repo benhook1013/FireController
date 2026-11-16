@@ -52,10 +52,11 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 
 // runReads coalesces source identities only within one bounded selection phase.
 type runReads struct {
-	reader  TargetReader
-	repos   map[int64]reviewprovider.Repository
-	pulls   map[string]map[int64]reviewprovider.Pull
-	parents map[string]reviewprovider.Pull
+	reader     TargetReader
+	repos      map[int64]reviewprovider.Repository
+	pulls      map[string]map[int64]reviewprovider.Pull
+	parents    map[string]reviewprovider.Pull
+	parentHint *runParentHint
 }
 
 func (r *runReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
@@ -140,7 +141,18 @@ func (r *runReads) pullWindow(ctx context.Context, repo string, repositoryID int
 	return results[:consumed]
 }
 
+// runParentHint authorizes no source or admission shortcut. It permits one raw
+// next metadata read during an already required uncached parent read.
+type runParentHint struct {
+	repository                  string
+	repositoryID, current, next int64
+	head, base, branch          string
+}
+
 func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (reviewprovider.Pull, error) {
+	hint := r.parentHint
+	r.parentHint = nil // One call only, including cache hits and refused bindings.
+
 	key := repository + "\x00" + branch
 	if value, ok := r.parents[key]; ok {
 		return value, nil
@@ -149,7 +161,41 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 	if !ok {
 		return reviewprovider.Pull{}, sourceHold("parent_unavailable")
 	}
+
+	type joinedMetadata struct {
+		runPullResult
+		completedLive bool
+	}
+	var pending chan joinedMetadata
+	var cancel context.CancelFunc
+	if hint != nil && hint.repository == repository && hint.branch == branch {
+		current, found := r.pulls[repository][hint.current]
+		_, cached := r.pulls[repository][hint.next]
+		if found && !cached && hint.next != hint.current && sameTarget(current, hint.repositoryID, hint.current) &&
+			current.State == "open" && !current.Merged && (current.IsDraft == nil || !*current.IsDraft) &&
+			current.HeadSHA == hint.head && current.BaseSHA == hint.base && current.BaseRef == hint.branch && ctx.Err() == nil {
+			var nextCtx context.Context
+			nextCtx, cancel = context.WithCancel(ctx)
+			defer cancel()
+			pending = make(chan joinedMetadata, 1)
+			go func() {
+				pull, err := r.reader.Pull(nextCtx, repository, hint.next)
+				pending <- joinedMetadata{runPullResult: runPullResult{pull: pull, err: err}, completedLive: nextCtx.Err() == nil}
+			}()
+		}
+	}
 	value, err := reader.ParentPull(ctx, repository, branch)
+	if pending != nil {
+		cancel()
+		next := <-pending // No map access until both readers have joined.
+		if err == nil && ctx.Err() == nil && next.completedLive && next.err == nil && sameTarget(next.pull, hint.repositoryID, hint.next) && value.Number != hint.next {
+			if r.pulls[repository] == nil {
+				r.pulls[repository] = map[int64]reviewprovider.Pull{}
+			}
+			r.pulls[repository][hint.next] = next.pull
+		}
+	}
+
 	if err == nil {
 		if r.parents == nil {
 			r.parents = map[string]reviewprovider.Pull{}
@@ -361,7 +407,36 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 				if result, fetched := windows[n]; fetched && result.err != nil {
 					return sourceFailure(runReason(result.err)), nil
 				}
+				// Local round completion is only a performance hint. It never skips
+				// current source resolution or the ordinary local/final admission checks.
+				// A reopened round may select this PR; the unused next read has no authority.
+				if !retained && c.Mode == "stacked" && i+1 < len(queue) {
+					current, fresh := reads.pulls[repository.FullName][n]
+					next := queue[i+1]
+					_, historical := history[next]
+					_, cached := reads.pulls[repository.FullName][next]
+					_, windowed := windows[next]
+					if fresh && sameTarget(current, repo, n) && current.State == "open" && !current.Merged &&
+						(current.IsDraft == nil || !*current.IsDraft) && current.BaseRef != repository.DefaultBranch &&
+						!historical && !cached && !windowed {
+						eligible := false
+						hintErr := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+							rounds, err := readRoundControl(ctx, tx, r.ProjectID, n, r.Channel)
+							if err != nil {
+								return err
+							}
+							control, err := readPullScheduling(ctx, tx, r.ProjectID, next)
+							eligible = err == nil && !control.Paused && rounds.Configured && (rounds.Closed || roundDone(rounds))
+							return err
+						})
+						if hintErr == nil && eligible {
+							reads.parentHint = &runParentHint{repository: repository.FullName, repositoryID: repo, current: n, next: next, head: current.HeadSHA, base: current.BaseSHA, branch: current.BaseRef}
+						}
+					}
+				}
 				plan, err = readRunPlan(ctx, &source, reads, repo, c, r.Channel, n)
+				reads.parentHint = nil
+
 				if err != nil {
 					return sourceFailure(runReason(err)), nil
 				}

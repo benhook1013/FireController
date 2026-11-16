@@ -177,7 +177,10 @@ func (r *adaptiveStackReader) ParentPull(ctx context.Context, repo, branch strin
 }
 
 func TestRunSelectionAdaptiveStackSourceBudget(t *testing.T) {
-	for _, delay := range []time.Duration{200 * time.Millisecond, 400 * time.Millisecond} {
+	// Before parent pipelining: 200ms completed 50 boundaries in 10.029s;
+	// 400ms exhausted the unchanged 15s budget after 38 boundaries/prefix12.
+	// Pipeline retains all 50 boundaries, overlapping only next raw metadata.
+	for _, delay := range []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 450 * time.Millisecond} {
 		t.Run(delay.String(), func(t *testing.T) {
 			queue := make([]int64, 17)
 			pulls := map[int64]reviewprovider.Pull{}
@@ -213,7 +216,7 @@ func TestRunSelectionAdaptiveStackSourceBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("17 real parent-linked open PRs delay=%s boundaries=%d prefix=%d state=%s reason=%s source=%s wall=%s", delay, reader.boundaries.Load(), len(choice.prefix), choice.state, choice.reason, choice.sourceElapsed, time.Since(start))
-			if delay == 200*time.Millisecond && (choice.state != "selected" || choice.number != 17 || len(choice.prefix) != 17 || reader.boundaries.Load() != 50) {
+			if delay <= 400*time.Millisecond && (choice.state != "selected" || choice.number != 17 || len(choice.prefix) != 17 || reader.boundaries.Load() != 50 || choice.sourceElapsed >= 15*time.Second) {
 				t.Fatal(choice.state, choice.reason, len(choice.prefix), reader.boundaries.Load())
 			}
 			for _, plan := range choice.prefix {
@@ -221,7 +224,7 @@ func TestRunSelectionAdaptiveStackSourceBudget(t *testing.T) {
 					t.Fatal("parent identity changed", plan)
 				}
 			}
-			if delay == 400*time.Millisecond && choice.reason != "source_budget_exhausted" {
+			if delay == 450*time.Millisecond && choice.reason != "source_budget_exhausted" {
 				t.Fatal(choice.state, choice.reason)
 			}
 		})
