@@ -35,15 +35,17 @@ const (
 // never discovers repositories or chooses review targets. CI inventory movement
 // permits one bounded recollection of the same immutable commit.
 type GitHub struct {
-	readGate   func(context.Context) error
-	quota      *GitHubQuota
-	token      string
-	baseURL    string
-	httpClient *http.Client
-	cacheMu    sync.Mutex
-	cache      map[string]conditionalEntry
-	cacheBytes int
-	cacheClock uint64
+	readGate          func(context.Context) error
+	quota             *GitHubQuota
+	token             string
+	baseURL           string
+	httpClient        *http.Client
+	cacheMu           sync.Mutex
+	cache             map[string]conditionalEntry
+	cacheBytes        int
+	cacheClock        uint64
+	conditionalNext   time.Time
+	conditionalCounts map[string]conditionalCount
 }
 
 // NewGitHub creates the production GitHub API adapter. An empty token permits
@@ -441,9 +443,11 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 		if json.Unmarshal(cached.body, &rows) == nil && len(rows) == githubPageSize && !paginationContinues(cached.headers.Values("Link")) {
 			request.Header.Del("If-None-Match")
 			conditional = false
+			g.recordConditional(path, "terminal_page_bypass")
 		}
 	}
 	started := time.Now()
+	defer func() { g.reportConditional(ctx, time.Now()) }()
 	phase := "headers"
 	defer func() { g.quota.observeReadCompletion(ctx, time.Now(), path, started, phase, resultErr) }()
 	response, err := client.Do(request)

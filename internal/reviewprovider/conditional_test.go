@@ -100,6 +100,7 @@ func TestHostedObservationFindsAllowanceAfterFullCachedTerminalPage(t *testing.T
 	}))
 	defer server.Close()
 	g := testGitHub(server, "secret")
+	g.SetQuotaTelemetry(NewGitHubQuota())
 	warm, err := g.ObserveHosted(t.Context(), "owner/repo", 1)
 	if err != nil || !warm.Complete || len(warm.IssueComments) != 200 {
 		t.Fatalf("warm history has %d comments: %v", len(warm.IssueComments), err)
@@ -108,6 +109,9 @@ func TestHostedObservationFindsAllowanceAfterFullCachedTerminalPage(t *testing.T
 	next, err := g.ObserveHosted(t.Context(), "owner/repo", 1)
 	if err != nil || !next.Complete || len(next.IssueComments) != 202 || !oldPageValidated.Load() || !newPageRead.Load() {
 		t.Fatalf("grown history has %d comments, preceding page revalidated=%t, new page read=%t: %v", len(next.IssueComments), oldPageValidated.Load(), newPageRead.Load(), err)
+	}
+	if g.conditionalCounts["issue_comments"].TerminalPageBypass == 0 {
+		t.Fatal("intentional terminal-page bypass not diagnosed")
 	}
 	got, err := ResolveHostedAllowance(HostedAllowanceSnapshot{IssueComments: next.IssueComments, Complete: next.Complete, ObservedAt: next.ObservedAt}, intent, posting, provider, earliest)
 	if err != nil || got.State != "available_observed" || got.QueryCommentID != query.ID || got.ResponseCommentID != reply.ID {

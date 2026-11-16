@@ -46,6 +46,11 @@ func (g *GitHub) conditionalRequest(request *http.Request) (conditionalEntry, bo
 	defer g.cacheMu.Unlock()
 	entry, ok := g.cache[request.URL.String()]
 	if ok {
+		g.recordConditionalLocked(request.URL.Path, "hit")
+	} else {
+		g.recordConditionalLocked(request.URL.Path, "miss")
+	}
+	if ok {
 		g.cacheClock++
 		entry.used = g.cacheClock
 		g.cache[request.URL.String()] = entry
@@ -78,6 +83,25 @@ func (g *GitHub) rememberConditional(request *http.Request, response *http.Respo
 	g.cacheMu.Lock()
 	defer g.cacheMu.Unlock()
 	key := request.URL.String()
+	g.recordConditionalLocked(request.URL.Path, "response_200")
+	if etag != "" {
+		g.recordConditionalLocked(request.URL.Path, "etag_present")
+	}
+	if etag == "" {
+		g.recordConditionalLocked(request.URL.Path, "no_etag")
+	}
+	if etag != "" && (len(etag) > 1024 || strings.ContainsAny(etag, "\r\n")) {
+		g.recordConditionalLocked(request.URL.Path, "invalid_etag")
+	}
+	if strings.Contains(strings.ToLower(response.Header.Get("Cache-Control")), "no-store") {
+		g.recordConditionalLocked(request.URL.Path, "no_store")
+	}
+	if !cacheable && etag != "" && len(etag) <= 1024 && !strings.ContainsAny(etag, "\r\n") && !strings.Contains(strings.ToLower(response.Header.Get("Cache-Control")), "no-store") {
+		g.recordConditionalLocked(request.URL.Path, "invalid_json")
+	}
+	if size > conditionalMaxBytes {
+		g.recordConditionalLocked(request.URL.Path, "oversize")
+	}
 	if old, ok := g.cache[key]; ok {
 		g.cacheBytes -= conditionalSize(old) + len(key)
 		delete(g.cache, key)
@@ -86,6 +110,13 @@ func (g *GitHub) rememberConditional(request *http.Request, response *http.Respo
 		return
 	}
 	for len(g.cache) >= conditionalMaxEntries || g.cacheBytes+size > conditionalMaxBytes {
+		g.recordConditionalLocked(request.URL.Path, "eviction")
+		if len(g.cache) >= conditionalMaxEntries {
+			g.recordConditionalLocked(request.URL.Path, "entry_pressure")
+		}
+		if g.cacheBytes+size > conditionalMaxBytes {
+			g.recordConditionalLocked(request.URL.Path, "byte_pressure")
+		}
 		var oldest string
 		var clock uint64
 		for k, candidate := range g.cache {
@@ -104,4 +135,5 @@ func (g *GitHub) rememberConditional(request *http.Request, response *http.Respo
 	entry.used = g.cacheClock
 	g.cache[key] = entry
 	g.cacheBytes += size
+	g.recordConditionalLocked(request.URL.Path, "stored")
 }
