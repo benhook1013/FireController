@@ -78,3 +78,29 @@ describe('aggregate channel holds do not relabel a clean result',()=>{
   expect(html).toContain('review-pill-status">Fixes pending');
  });
 });
+
+
+describe('adjudication indicator age', () => {
+ it.each(['cli', 'hosted'] as const)('uses the exact returned %s review start, not preparation or finish', channel => {
+  const run = {...completed, channel, finalized:false, display_start_at:'2026-11-15T05:35:00Z'};
+  const html=markup([run],[{...attempt,channel,state:'completed',finished_at:run.finished_at}],{...progress,channel,pending:1,pending_adjudication:1});
+  const indicator=html.split(`aria-label="${channel} current review state"`)[1].split('</div>')[0];
+  expect(indicator).toContain('Needs adjudication');
+  expect(indicator).toContain('dateTime="2026-11-15T05:35:00Z"');
+  expect(indicator).not.toContain(`dateTime="${stamp}"`);
+  expect(indicator).not.toContain(`dateTime="${run.finished_at}"`);
+ });
+ it('dates retained partial adjudication from its matching run', () => {
+  const run={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,retained_undecided:1};
+  const html=markup([run],[{...attempt,state:'failed',finished_at:run.finished_at}],{...progress,retained_adjudication_pending:true});
+  expect(html.split('aria-label="cli current review state"')[1]).toContain(`dateTime="${stamp}"`);
+ });
+ it.each(['different-run', 'different-head', 'settled', 'active'])('does not invent an adjudication start for %s', scenario => {
+  const run={...completed,finalized:scenario==='settled'};
+  const a: ReviewAttemptSummary={...attempt,state:scenario==='active'?'active':'completed',finished_at:scenario==='active'?'':run.finished_at,source_run_id:scenario==='different-run'?'unrelated':run.source_run_id,head_sha:scenario==='different-head'?'b'.repeat(40):head};
+  const html=markup([run],[a],{...progress,pending:1,pending_adjudication:1});
+  const indicator=html.split('aria-label="cli current review state"')[1];
+  if(scenario==='active') expect(indicator).not.toContain('Needs adjudication');
+  else expect(indicator).not.toContain('<time');
+ });
+});

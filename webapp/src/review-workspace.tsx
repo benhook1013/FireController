@@ -464,6 +464,13 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   // every captured result unless that result's own retained fields establish it.
   const currentStatus = !running && (waiting || badge)
     ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
+  // Only the exact returned result can date this adjudication indicator.
+  // Aggregate pending counts may instead refer to an older, unloaded run;
+  // never borrow the latest attempt preparation or a clean result timestamp.
+  const adjudicationStart = badge?.text === 'Needs adjudication' && returned &&
+    (partialCLIResult(returned) ? (returned.retained_undecided ?? 0) > 0 : returned.complete && returned.attributable && !returned.finalized)
+    ? reviewStart(returned) : undefined;
+  const currentStart = badge?.activity?.startedAt || adjudicationStart?.value;
   const slots = capacity - Number(!!running || !!currentStatus);
   const visiblePills = slots > 0 ? pills.slice(-slots) : [];
   const completedTotal = returned?.outcome === 'completed' ? currentTotal : total;
@@ -474,8 +481,8 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     <ReviewProgressView value={progress} />
     {visiblePills.length > 0 || running || currentStatus ? <div className="review-round-pills review-recent-rounds">
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
-      {currentStatus && <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-current" title="Current channel state; no completed review counts are implied." label={`${channel} current review state`} status={currentStatus}>
-        {badge?.activity?.startedAt ? <RelativeTime value={badge.activity.startedAt} /> : <span className="review-pill-age" aria-hidden="true">—</span>}
+      {currentStatus && <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-current" title={`Current channel state; no completed review counts are implied.${adjudicationStart ? ` ${adjudicationStart.label} ${time(adjudicationStart.value)}.` : ''}`} label={`${channel} current review state`} status={currentStatus}>
+        {currentStart ? <RelativeTime value={currentStart} /> : <span className="review-pill-age" aria-hidden="true">—</span>}
       </ReviewRoundPillDisplay>}
       {running && <RunningReviewPill key={running.attempt_id} evidence={running} channel={channel} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
