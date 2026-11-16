@@ -192,3 +192,40 @@ class ScheduleTests(unittest.TestCase):
         for name in ("recovery", "current", "rollback"):
             self.assertEqual((self.root/name).read_bytes(), payload)
         self.assertEqual((self.root/"terminal.json").read_bytes(), receipt)
+
+    def test_successful_sqlite_consumer_cannot_enroll_changed_rehearsal_output(self):
+        import hashlib
+        import sqlite3
+        import artifact_operation
+        recovery = self.root / "recovery.sqlite"
+        with sqlite3.connect(recovery) as db:
+            db.execute("CREATE TABLE retained (value TEXT NOT NULL)")
+            db.execute("INSERT INTO retained VALUES ('original')")
+        before = recovery.read_bytes()
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({"version": 1, "workflow_receipt": "terminal.json", "artifacts": [
+            {"path": "copy.sqlite", "recovery_path": "recovery.sqlite",
+             "sha256": hashlib.sha256(before).hexdigest(), "revision": "c"*40,
+             "kind": "rehearsal-copy", "terminal": True, "expires_at": time.time()-1}]}))
+        artifact_operation.execute(self.root, self.lock, [sys.executable, "-c",
+            "import shutil; shutil.copyfile('recovery.sqlite', 'copy.sqlite')"], manifest)
+        receipt = (self.root/"terminal.json").read_bytes()
+        result = artifact_operation.execute(self.root, self.lock, [sys.executable, "-c",
+            "import sqlite3; db=sqlite3.connect('copy.sqlite'); "
+            "db.execute('CREATE TABLE rehearsal_schema (value TEXT)'); db.commit(); db.close()"],
+            consumer=True)
+        self.assertEqual(result["state"], "consumer_finished")
+        changed = (self.root/"copy.sqlite").read_bytes()
+        self.assertNotEqual(changed, before)
+        with sqlite3.connect(self.root/"copy.sqlite") as db:
+            self.assertEqual(db.execute("SELECT value FROM retained").fetchall(), [("original",)])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM rehearsal_schema").fetchone(), (0,))
+        self.data["apply"] = True
+        self.write()
+        with patch("artifact_retention.active_paths", return_value=[]):
+            with self.assertRaisesRegex(Refuse, "equivalent-copy hash verification failed"):
+                self.execute()
+        self.assertEqual((self.root/"copy.sqlite").read_bytes(), changed)
+        self.assertEqual(recovery.read_bytes(), before)
+        self.assertEqual((self.root/"terminal.json").read_bytes(), receipt)
+        self.assertEqual(json.loads((self.results/"latest.json").read_text())["state"], "refused")
