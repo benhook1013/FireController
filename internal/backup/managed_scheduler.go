@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/benhook1013/FireController/internal/backupphase"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -22,6 +23,7 @@ const managedSettlementTimeout = 5 * time.Second
 const DefaultMaxBytes int64 = 5 << 30
 
 type ScheduleConfig struct {
+	PhaseLease  string        `json:"-"`
 	MaxBytes    int64         `json:"max_bytes,omitempty"`
 	Destination string        `json:"destination"`
 	Interval    time.Duration `json:"interval"`
@@ -39,6 +41,9 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 	}
 	if cfg.Destination == "" || strings.TrimSpace(cfg.Destination) != cfg.Destination || len(cfg.Destination) > 2048 || strings.IndexFunc(cfg.Destination, unicode.IsControl) >= 0 || cfg.Interval < time.Minute || cfg.Interval > 30*24*time.Hour || cfg.Keep < 1 || cfg.Keep > 1000 || cfg.Timeout < 0 || cfg.Timeout > 24*time.Hour || cfg.MaxBytes < 0 {
 		return ScheduleConfig{}, core.Fail("configuration_invalid", "Supply a private backup destination, interval from one minute to thirty days, keep from one to one thousand, a positive timeout no greater than twenty-four hours, and a nonnegative retained-byte budget (zero uses 5 GiB).", 400)
+	}
+	if cfg.PhaseLease != "" && (len(cfg.PhaseLease) > 2048 || strings.IndexFunc(cfg.PhaseLease, unicode.IsControl) >= 0 || !filepath.IsAbs(cfg.PhaseLease) || filepath.Clean(cfg.PhaseLease) != cfg.PhaseLease || inspect && (within(cfg.PhaseLease, cfg.Destination) || dataDir != "" && within(cfg.PhaseLease, dataDir))) {
+		return ScheduleConfig{}, invalid()
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute
@@ -91,6 +96,7 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 }
 
 type Manager struct {
+	phaseLease      string
 	store           *core.Store
 	dataDir         string
 	config          ScheduleConfig
@@ -167,7 +173,9 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 	if err = EnsureManagedSchema(ctx, store); err != nil {
 		return nil, err
 	}
-	m := &Manager{store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: createManaged, remove: removeManagedBundle}
+	phaseLease := cfg.PhaseLease
+	cfg.PhaseLease = "" // Runtime custody is not restored authority or a backup-format change.
+	m := &Manager{phaseLease: phaseLease, store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: createManaged, remove: removeManagedBundle}
 	now := time.Now().UTC()
 	err = store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		old, err := loadManaged(ctx, tx)
@@ -335,6 +343,11 @@ func retentionSettledAfter(r *RetentionStatus, finished string) bool {
 }
 
 func (m *Manager) attempt(parent context.Context) error {
+	release, leaseErr := backupphase.Acquire(parent, m.phaseLease)
+	if leaseErr != nil {
+		return unavailable()
+	}
+	defer release()
 	// An incomplete pass must be resumed before more snapshot
 	// growth. The same serial worker owns this bounded phase; no second job
 	// or unverified cache is created. Once maintenance completes, normal

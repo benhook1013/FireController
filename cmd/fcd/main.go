@@ -61,6 +61,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
 	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
+	backupPhaseLease := flags.String("backup-phase-lease", "", "preprovisioned shared backup storage phase lease file")
 	backupMaxBytes := flags.Int64("backup-max-bytes", 0, "retained managed backup byte budget; default 5 GiB")
 	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
 	var backupHealthFiles server.BackupHealthFiles
@@ -90,11 +91,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	providedBackupFlags := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { providedBackupFlags[f.Name] = true })
 	hasSchedule := providedBackupFlags["backup-destination"] || providedBackupFlags["backup-interval"] || providedBackupFlags["backup-keep"]
-	if hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) || providedBackupFlags["backup-max-bytes"] && (!hasSchedule || *backupMaxBytes <= 0) {
+	if providedBackupFlags["backup-phase-lease"] && (!hasSchedule || *backupPhaseLease == "") || hasSchedule && (!providedBackupFlags["backup-destination"] || !providedBackupFlags["backup-interval"] || !providedBackupFlags["backup-keep"] || *backupDestination == "" || *backupInterval <= 0 || *backupKeep <= 0) || providedBackupFlags["backup-timeout"] && (!hasSchedule || *backupTimeout <= 0) || providedBackupFlags["backup-max-bytes"] && (!hasSchedule || *backupMaxBytes <= 0) {
 		diagnostic(stderr, "configuration_invalid", "Configure --backup-destination, --backup-interval and --backup-keep together; --backup-timeout and --backup-max-bytes require a schedule and positive values.")
 		return 2
 	}
-	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout, MaxBytes: *backupMaxBytes})
+	schedule, err := backup.ValidateScheduleConfig(*dataDir, backup.ScheduleConfig{PhaseLease: *backupPhaseLease, Destination: *backupDestination, Interval: *backupInterval, Keep: *backupKeep, Timeout: *backupTimeout, MaxBytes: *backupMaxBytes})
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 2

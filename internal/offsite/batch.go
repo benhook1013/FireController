@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backup"
+	"github.com/benhook1013/FireController/internal/backupphase"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -19,6 +20,7 @@ import (
 // BatchConfig explicitly opts a finite set of destinations into serial work.
 // Destination configurations and their durable ownership ledgers stay separate.
 type BatchConfig struct {
+	PhaseLease   string   `json:"phase_lease,omitempty"`
 	Version      int      `json:"version"`
 	StateDir     string   `json:"state_dir"`
 	Configs      []string `json:"configs"`
@@ -157,6 +159,16 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 			}
 		}
 	}
+	if b.PhaseLease != "" {
+		if !absolute(b.PhaseLease) {
+			return result, failure("offsite_configuration_invalid")
+		}
+		for _, dir := range append(mutable, configs[0].SourceRoot) {
+			if pathsOverlap(dir, b.PhaseLease) {
+				return result, failure("offsite_configuration_invalid")
+			}
+		}
+	}
 	// One group owns preparation and serial verification. Old independent timer
 	// units must be drained before enabling this command; their per-destination
 	// locks remain an additional guard, not a global resource reservation.
@@ -175,6 +187,16 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 	if lock(f) != nil {
 		return result, failure("offsite_busy")
 	}
+	ctx, cancel := context.WithTimeout(ctx, 24*time.Hour)
+	defer cancel()
+	release, leaseErr := backupphase.Acquire(ctx, b.PhaseLease)
+	if leaseErr != nil {
+		if ctx.Err() != nil {
+			return result, failure("offsite_cancelled")
+		}
+		return result, failure("offsite_storage_unavailable")
+	}
+	defer release()
 	marker := configs[0]
 	marker.StateDir = b.StateDir
 	encoded, _ := json.Marshal(b.Configs)
@@ -189,8 +211,6 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 	}
 	defer os.RemoveAll(work)
 	shared := &batchPreparation{work: work, floor: b.MinFreeBytes}
-	ctx, cancel := context.WithTimeout(ctx, 24*time.Hour)
-	defer cancel()
 	failed := false
 	for i, c := range configs {
 		if ctx.Err() != nil {
