@@ -209,12 +209,21 @@ func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, ope
 	if op.State != "completed" {
 		return "", 0, nil
 	}
-	proof, err := deriveComparisonProof(ctx, q, project, operationID)
-	if err != nil || proof.evidence == "" {
-		return "", 0, err
+	var proof comparisonProof
+	var evidence ReviewEvidence
+	var state ReviewAdjudication
+	if _, sameTransaction := q.(*occupancyQueries); sameTransaction {
+		proof, evidence, state, err = deriveComparisonProofFromOperation(ctx, q, project, operationID, "2", op)
+		if err == nil {
+			err = ctx.Err()
+		}
+	} else {
+		proof, err = deriveComparisonProof(ctx, q, project, operationID)
+		if err == nil && proof.evidence != "" {
+			evidence, state, err = loadReviewAdjudication(ctx, q, project, proof.evidence)
+		}
 	}
-	evidence, state, err := loadReviewAdjudication(ctx, q, project, proof.evidence)
-	if err != nil {
+	if err != nil || proof.evidence == "" {
 		return "", 0, err
 	}
 	if !state.Finalized {
