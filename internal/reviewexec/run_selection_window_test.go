@@ -35,16 +35,16 @@ func TestRunSelectionOpenHeadBoundsAndJoinsLookahead(t *testing.T) {
 			}}
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, receipt.ID)
-			if got.State != "held" || got.Reason != "expected_pr_mismatch" || calls.Load() != 4 || reader.calls.Load() != 5 || active.Load() != 0 || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+			if got.State != "held" || got.Reason != "expected_pr_mismatch" || calls.Load() != 1 || reader.calls.Load() != 2 || active.Load() != 0 || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
 				t.Fatal(got, calls.Load(), reader.calls.Load())
 			}
 			mu.Lock()
-			for _, n := range []int64{1, 2, 3, 4} {
+			for _, n := range []int64{1} {
 				if identities[n] != 1 {
 					t.Errorf("metadata identity not read exactly once: %d=%d", n, identities[n])
 				}
 			}
-			if len(identities) != 4 {
+			if len(identities) != 1 {
 				t.Error("unexpected speculative identities", identities)
 			}
 			mu.Unlock()
@@ -164,10 +164,9 @@ func TestRunSelectionCancellationStopsCurrentRead(t *testing.T) {
 	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 		active.Add(1)
 		defer active.Add(-1)
-		// Wait for the entire three-member window before cancelling.
-		// Only the last entrant closes the barrier; concurrent reads must not
-		// close the same channel repeatedly.
-		if started.Add(1) == 3 {
+		// The adaptive phase starts with exactly one probe. Cancellation
+		// must join it without launching the unknown suffix.
+		if started.Add(1) == 1 {
 			close(entered)
 		}
 		<-ctx.Done()
@@ -186,7 +185,7 @@ func TestRunSelectionCancellationStopsCurrentRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("read not joined")
 	}
-	if active.Load() != 0 || reader.calls.Load() != 4 {
+	if active.Load() != 0 || reader.calls.Load() != 2 {
 		t.Fatal(active.Load(), reader.calls.Load())
 	}
 }

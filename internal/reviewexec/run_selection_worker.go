@@ -282,6 +282,9 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		return runChoice{}, err
 	}
 	windows := map[int64]runPullResult{}
+	// Probe an unknown region before speculating. Only a freshly verified
+	// merged prefix earns parallel lookahead; a live boundary resets it.
+	windowWidth := 1
 	for i, n := range queue {
 		traceDecision(ctx, n, "", "unknown", "source_pending", 0)
 		if err := ctx.Err(); err != nil {
@@ -315,7 +318,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					// for speculative reads. Future control damage only stops
 					// lookahead; the ordered member retains its normal checks.
 					numbers := []int64{n}
-					window := min(i+4, len(queue))
+					window := min(i+windowWidth, len(queue))
 					// A retained open state is only a conservative performance hint.
 					// Do not launch suffix reads that the ordered live result will
 					// immediately cancel and potentially fetch again. A stale hint
@@ -344,6 +347,10 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					err = source.read(ctx, func(ctx context.Context) error {
 						for j, result := range reads.pullWindow(ctx, repository.FullName, repo, numbers) {
 							windows[numbers[j]] = result
+							windowWidth = 1
+							if result.err == nil && sameTarget(result.pull, repo, numbers[j]) && result.pull.Merged && result.pull.State == "closed" {
+								windowWidth = 4
+							}
 						}
 						return nil
 					})
@@ -359,6 +366,9 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					return sourceFailure(runReason(err)), nil
 				}
 			}
+		}
+		if plan.retainedMerged || plan.schedulingPaused {
+			windowWidth = 1
 		}
 		choice.prefix = append(choice.prefix, plan)
 		if err = e.resolveRunParents(ctx, &source, reads, repo, c, r.Channel, choice.prefix); err != nil {

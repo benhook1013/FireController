@@ -121,8 +121,8 @@ func TestRunSelectionFreshWindowCancellationJoinsAllReads(t *testing.T) {
 }
 
 func TestRunSelectionEarlyMismatchCancelsLookaheadAndFailureRetainsPrefix(t *testing.T) {
-	f := selectionFixtureWithQueue(t, []int64{1, 2, 3})
-	expected := int64(3)
+	f := selectionFixtureWithQueue(t, []int64{1, 2, 3, 4})
+	expected := int64(4)
 	receipt, _ := selectionEnqueue(t, f, "early-window-mismatch", "cli", &expected)
 	r := selectionRead(t, f, receipt.ID)
 	c, err := f.e.configurationRevision(t.Context(), r.ProjectID, r.ConfigurationRevision)
@@ -134,10 +134,12 @@ func TestRunSelectionEarlyMismatchCancelsLookaheadAndFailureRetainsPrefix(t *tes
 	reader := &refreshTestReader{pull: func(ctx context.Context, _ string, n int64) (reviewprovider.Pull, error) {
 		switch n {
 		case 1:
+			return selectionSnapshotReader{merged: true}.Pull(ctx, "owner/repo", n)
+		case 2:
 			<-blocked
 			<-failed
 			return selectionSnapshotReader{}.Pull(ctx, "owner/repo", n)
-		case 2:
+		case 3:
 			close(blocked)
 			<-ctx.Done()
 			joined.Store(true)
@@ -149,7 +151,7 @@ func TestRunSelectionEarlyMismatchCancelsLookaheadAndFailureRetainsPrefix(t *tes
 	}}
 	started := time.Now()
 	choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, 500*time.Millisecond)
-	if err != nil || choice.state != "held" || choice.reason != "expected_pr_mismatch" || len(choice.prefix) != 1 || !joined.Load() || time.Since(started) >= 500*time.Millisecond {
+	if err != nil || choice.state != "held" || choice.reason != "expected_pr_mismatch" || len(choice.prefix) != 2 || !joined.Load() || time.Since(started) >= 500*time.Millisecond {
 		t.Fatal("unused slow/failed lookahead overrode the earlier fresh candidate", choice.state, choice.reason, len(choice.prefix), joined.Load(), time.Since(started), err)
 	}
 	// The next real worker phase uses a fresh merged first member, then a
