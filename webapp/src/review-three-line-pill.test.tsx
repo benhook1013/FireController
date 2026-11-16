@@ -20,9 +20,9 @@ function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], cha
  try{return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['fixture'],home:'/projects/project',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView number={78} snapshot="snapshot" head={head} attempts={attempts} recentRuns={runs} expected={runs.length} channelTotals={{cli:runs.filter(x=>x.complete).length,hosted:0,manual:0,subagent:0}} progress={channelProgress?{pull_number:78,channels:[channelProgress]} as ReviewProgressItem:undefined}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);}finally{client.clear();}
 }
 describe('three-line review state pills',()=>{
- it('shows counts, age, then each captured result status',()=>{
+ it('shows counts, each captured result status, then age',()=>{
   const html=markup([completed]);
-  expect(html).toMatch(/<strong>2\/1\/0<\/strong><time[^>]*>[\s\S]*?<\/time><span class="review-pill-status">Finished<\/span>/u);
+  expect(html).toMatch(/<strong>2\/1\/0<\/strong><span class="review-pill-status">Finished<\/span><time[^>]*>[\s\S]*?<\/time>/u);
   expect(reviewRunPillStatus({...completed,fixed:0})).toBe('Fixes pending');
   expect(reviewRunPillStatus({...completed,finalized:false})).toBe('Needs adjudication');
   expect(reviewRunPillStatus({...completed,attributable:false})).toBe('Incomplete');
@@ -30,7 +30,7 @@ describe('three-line review state pills',()=>{
  it('keeps confirmed running counts, elapsed time and status as distinct lines',()=>{
   const evidence={attempt_id:attempt.source_attempt_id,head_sha:head,observed_at:stamp,kind:'cli_process_spawned' as const,process_started_at:stamp};
   const html=markup([],[{...attempt,source_run_id:''}],{...progress,activity_evidence:evidence});
-  expect(html).toMatch(/<strong>\?\/\?\/\?<\/strong><time[^>]*>[\s\S]*?<\/time><span class="review-pill-status">Running<\/span>/u);
+  expect(html).toMatch(/<strong>\?\/\?\/\?<\/strong><span class="review-pill-status">Running<\/span><time[^>]*>[\s\S]*?<\/time>/u);
   expect(html).not.toContain('?/?/?Running');
  });
  it('keeps real partial-case semantics without completed credit',()=>{

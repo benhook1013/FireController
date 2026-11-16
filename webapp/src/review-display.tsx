@@ -79,7 +79,7 @@ export function ReviewRoundPillDisplay({ found, accepted, routed, className = ''
   const content: RoundPillContent = {
     className: ['review-round-pill', className.trim(), zeroAccepted ? 'review-pill-zero' : ''].filter(Boolean).join(' '),
     title, 'aria-label': label,
-    children: <><strong>{reviewRoundCountText(found, accepted, routed)}</strong>{children}{status && <span className="review-pill-status">{status}</span>}</>,
+    children: <><strong>{reviewRoundCountText(found, accepted, routed)}</strong>{status && <span className="review-pill-status">{status}</span>}{children}</>,
   };
   return wrap ? <>{wrap(content)}</> : <span {...content} />;
 }

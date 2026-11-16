@@ -201,12 +201,12 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: both });
     expect(html).not.toContain('Review front ·');
     const row = html.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
-    expect(row).toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
-    expect(row).toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
+    expect(row).toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
+    expect(row).toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
     const independent = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: fronts() });
     const selected = independent.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
-    expect(selected).toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
-    expect(selected).not.toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
+    expect(selected).toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
+    expect(selected).not.toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
   });
   it('keeps an already-started review visible after head movement', () => {
     const attempt = { channel: 'hosted', head_sha: pull(2).head_sha, state: 'active', finished_at: '', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'active' } as ReviewAttemptSummary;
@@ -222,8 +222,8 @@ describe('truthful stored review presentation', () => {
     held.channels.push({...held.channels[0],channel:'cli',state:'ready',reason:undefined});
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:held});
     expect(html).toMatch(/aria-label="hosted current review state"[\s\S]*?review-pill-status[\s\S]*?title="[^"]*holds new reviews[^"]*">Carried work<\/span>/u);
-    expect(html).toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
-    expect(html).not.toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-age" aria-hidden="true">—</span><span class="review-pill-status"><span class="badge review-channel-position">Up next</span>');
+    expect(html).toContain('aria-label="cli current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
+    expect(html).not.toContain('aria-label="hosted current review state"><strong>?/?/?</strong><span class="review-pill-status"><span class="badge review-channel-position">Up next</span></span><span class="review-pill-age" aria-hidden="true">—</span>');
     const attempt={channel:'hosted',head_sha:pull(2).head_sha,state:'active',finished_at:'',started_at:'2026-10-22T00:00:00Z',source_attempt_id:'active'} as ReviewAttemptSummary;
     const running=markup(<ReviewQueueView />,queue([{...pull(2),latest_attempts:[attempt]}]),undefined,{fronts:held});
     expect(running).toContain('aria-label="hosted execution: Reviewing"');
