@@ -39,13 +39,14 @@ func TestConditionalDiagnosticsSeparateByteAndEntryEvictions(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			g := &GitHub{token: "synthetic", quota: NewGitHubQuota()}
 			count, body := conditionalMaxEntries+1, []byte(`{}`)
+			header := http.Header{"Etag": []string{`"same"`}}
 			if mode == "bytes" {
 				count = 4
-				body = []byte(`"` + strings.Repeat("x", 5<<20) + `"`)
+				header.Set("X-Budget-Fixture", strings.Repeat("x", 5<<20))
 			}
 			for i := 0; i < count; i++ {
 				r, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("https://api.github.com/repos/PRIVATE/repo/actions/runs/%d", i), nil)
-				g.rememberConditional(r, &http.Response{StatusCode: 200, Header: http.Header{"Etag": []string{`"same"`}}}, body)
+				g.rememberConditional(r, &http.Response{StatusCode: 200, Header: header}, body)
 			}
 			got := g.conditionalCounts["actions_current_run"]
 			if got.Evictions != 1 || (mode == "bytes") != (got.BytePressure == 1) || (mode == "entries") != (got.EntryPressure == 1) || g.cacheBytes > conditionalMaxBytes || len(g.cache) > conditionalMaxEntries {

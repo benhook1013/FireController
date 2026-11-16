@@ -188,7 +188,8 @@ func TestConditionalGETExactByteLimitAndLRUTouch(t *testing.T) {
 	}
 	response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Etag": []string{`"stable"`}}}
 	overhead := conditionalSize(conditionalEntry{etag: `"stable"`, headers: response.Header}) + len(request(0).URL.String())
-	body := []byte(`"` + strings.Repeat("x", conditionalMaxBytes/4-overhead-2) + `"`)
+	body := []byte("{}")
+	response.Header.Set("X-Budget-Fixture", strings.Repeat("x", conditionalMaxBytes/4-overhead-len(body)-len("X-Budget-Fixture")))
 	for n := range 4 {
 		g.rememberConditional(request(n), response, body)
 	}
