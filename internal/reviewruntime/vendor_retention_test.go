@@ -96,6 +96,28 @@ func TestVendorRetentionRuntimeUsesJournalAndDurableCapture(t *testing.T) {
 			t.Fatal("invalid marker qualified", ok, err)
 		}
 	}
+
+	var original string
+	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE attempt_id=?`, a.ID).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"id", "project_id", "operation_id", "capability_fingerprint"} {
+		var altered map[string]any
+		if err := json.Unmarshal([]byte(original), &altered); err != nil {
+			t.Fatal(err)
+		}
+		altered[field] = "different"
+		encoded, _ := json.Marshal(altered)
+		if _, err := f.store.DB().Exec(`UPDATE review_execution_evidence SET body_json=? WHERE attempt_id=?`, string(encoded), a.ID); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := f.driver.qualifyVendorSession(t.Context(), meta, marker, future); err != nil || ok {
+			t.Fatal("mismatched ledger body qualified", field, ok, err)
+		}
+	}
+	if _, err := f.store.DB().Exec(`UPDATE review_execution_evidence SET body_json=? WHERE attempt_id=?`, original, a.ID); err != nil {
+		t.Fatal(err)
+	}
 	// Damage only synthetic retained data; no new review or provider call.
 	if err := os.WriteFile(filepath.Join(f.captures.root, a.ID+".json"), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)

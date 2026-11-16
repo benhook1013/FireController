@@ -50,8 +50,8 @@ func (d *CLIDriver) qualifyVendorSession(ctx context.Context, metadata, marker [
 	if err != nil || !allowed {
 		return false, err
 	}
-	var body, completedAt string
-	err = d.store.DB().QueryRowContext(ctx, `SELECT e.body_json,o.updated_at FROM review_execution_evidence e JOIN review_execution_attempts a ON a.id=e.attempt_id AND a.project_id=e.project_id JOIN review_operations o ON o.id=a.operation_id AND o.project_id=a.project_id WHERE a.id=? AND a.state='completed' AND o.state='completed' AND o.channel='cli' AND o.attempt_id=a.id`, id).Scan(&body, &completedAt)
+	var body, completedAt, evidenceID, projectID, operationID, fingerprint string
+	err = d.store.DB().QueryRowContext(ctx, `SELECT e.body_json,o.updated_at,e.id,e.project_id,e.operation_id,o.capability_fingerprint FROM review_execution_evidence e JOIN review_execution_attempts a ON a.id=e.attempt_id AND a.project_id=e.project_id JOIN review_operations o ON o.id=a.operation_id AND o.project_id=a.project_id WHERE a.id=? AND a.state='completed' AND o.state='completed' AND o.channel='cli' AND o.attempt_id=a.id`, id).Scan(&body, &completedAt, &evidenceID, &projectID, &operationID, &fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -66,7 +66,7 @@ func (d *CLIDriver) qualifyVendorSession(ctx context.Context, metadata, marker [
 		return false, nil
 	}
 	var e reviewexec.ReviewEvidence
-	if json.Unmarshal([]byte(body), &e) != nil {
+	if json.Unmarshal([]byte(body), &e) != nil || e.ID != evidenceID || e.ProjectID != projectID || e.OperationID != operationID || e.CapabilityFingerprint != fingerprint {
 		return false, nil
 	}
 	_, ref, err := d.captures.Read(ctx, id)
