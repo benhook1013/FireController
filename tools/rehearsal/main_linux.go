@@ -4,9 +4,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,8 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strings"
 	"time"
 )
 
@@ -90,53 +86,11 @@ func snapshot(ctx context.Context, db *sql.DB) (map[string]tableProof, error) {
 	}
 	out := map[string]tableProof{}
 	for _, n := range names {
-		r, e := db.QueryContext(ctx, `SELECT * FROM "`+strings.ReplaceAll(n, `"`, `""`)+`"`)
+		proof, e := snapshotTable(ctx, db, n)
 		if e != nil {
 			return nil, e
 		}
-		cols, e := r.Columns()
-		if e != nil {
-			r.Close()
-			return nil, e
-		}
-		var encoded []string
-		for r.Next() {
-			v := make([]any, len(cols))
-			ptr := make([]any, len(cols))
-			for i := range v {
-				ptr[i] = &v[i]
-			}
-			if e = r.Scan(ptr...); e != nil {
-				r.Close()
-				return nil, e
-			}
-			cells, e := taggedCells(v)
-			if e != nil {
-				r.Close()
-				return nil, e
-			}
-			b, e := json.Marshal(cells)
-			if e != nil {
-				r.Close()
-				return nil, e
-			}
-			encoded = append(encoded, string(b))
-		}
-		e = r.Err()
-		r.Close()
-		if e != nil {
-			return nil, e
-		}
-		sort.Strings(encoded)
-		b, e := json.Marshal(struct {
-			Columns []string
-			Rows    []string
-		}{cols, encoded})
-		if e != nil {
-			return nil, e
-		}
-		h := sha256.Sum256(b)
-		out[n] = tableProof{len(encoded), hex.EncodeToString(h[:])}
+		out[n] = proof
 	}
 	return out, nil
 }

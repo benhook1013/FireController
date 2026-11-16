@@ -75,6 +75,7 @@ func TestGitHubBodyReadLoopbackFailuresRemainTransportFailures(t *testing.T) {
 				defer server.Close()
 				defer close(release)
 				g := testGitHub(server, "PRIVATE_TOKEN")
+				g.SetQuotaTelemetry(NewGitHubQuota())
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				switch mode {
@@ -99,6 +100,15 @@ func TestGitHubBodyReadLoopbackFailuresRemainTransportFailures(t *testing.T) {
 					status = http.StatusRequestTimeout
 				}
 				assertGitHubBodyReadDiagnostic(t, err, "provider_unavailable", status, method == http.MethodPost, server.URL)
+				if method == http.MethodGet {
+					got := g.quota.completions[githubCompletionKey{"other", "other"}]
+					if got.Completed != 1 || got.ReadFailed != 1 || mode != "caller-cancellation" && got.BodyFailed != 1 {
+						t.Fatal("body failure lost from completion telemetry", got)
+					}
+					if (status == http.StatusRequestTimeout) != (got.TimedOut == 1) || (mode == "caller-cancellation") != (got.Canceled == 1) {
+						t.Fatal("timeout/cancellation completion identity lost", mode, got)
+					}
+				}
 				if calls.Load() != 1 {
 					t.Fatal("failed body read retried the request", calls.Load())
 				}

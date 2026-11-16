@@ -34,12 +34,14 @@ type githubQuotaCount struct {
 // GitHubQuota aggregates requests for one configured credential. Bucket IDs
 // are random for this process, so logs carry no credential-derived material.
 type GitHubQuota struct {
-	mu        sync.Mutex
-	bucket    string
-	next      time.Time
-	rows      map[githubQuotaKey]githubQuotaCount
-	coreFloor RetryTimingEvidence
-	targets   githubTargetWindow
+	mu             sync.Mutex
+	bucket         string
+	next           time.Time
+	rows           map[githubQuotaKey]githubQuotaCount
+	coreFloor      RetryTimingEvidence
+	completionNext time.Time
+	completions    map[githubCompletionKey]githubCompletionCount
+	targets        githubTargetWindow
 }
 
 func NewGitHubQuota() *GitHubQuota {

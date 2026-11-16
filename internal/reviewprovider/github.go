@@ -408,7 +408,7 @@ func (g *GitHub) requestBytes(ctx context.Context, method, path string, query ur
 	return g.requestBytesWithClient(ctx, g.httpClient, method, path, query, body)
 }
 
-func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client, method, path string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
+func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client, method, path string, query url.Values, body []byte) (_ []byte, _ http.Header, _ int, resultErr error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
@@ -443,6 +443,9 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 			conditional = false
 		}
 	}
+	started := time.Now()
+	phase := "headers"
+	defer func() { g.quota.observeReadCompletion(ctx, time.Now(), path, started, phase, resultErr) }()
 	response, err := client.Do(request)
 	g.quota.observe(ctx, time.Now(), path, response, conditional, false)
 	if err != nil {
@@ -458,6 +461,7 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 	if response.StatusCode != http.StatusOK {
 		return nil, response.Header.Clone(), response.StatusCode, nil
 	}
+	phase = "body"
 	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
 	if len(data) > githubMaxBody {
 		return nil, nil, 0, invalidResponse(false, response.StatusCode)
