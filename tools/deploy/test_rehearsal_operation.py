@@ -65,6 +65,40 @@ with os.fdopen(fd,'w') as f:json.dump(report,f)
     def run_operation(self, **changes):
         return operation.execute(**dict(self.args, **changes))
 
+    def test_disposable_success_preserves_source_runner_and_proof(self):
+        runner_bytes = self.runner.read_bytes()
+        result = self.run_operation(discard_passed_output=True)
+        work = self.root/'first'
+        self.assertEqual(result['state'], 'passed')
+        self.assertFalse((work/'data/firecontroller.sqlite').exists())
+        self.assertEqual(self.source.read_bytes(), self.original)
+        self.assertEqual(self.runner.read_bytes(), runner_bytes)
+        self.assertTrue((work/'terminal.json').exists())
+        self.assertTrue((work/'rehearsal.json').exists())
+        proof = json.loads((work/'disposal.json').read_text())
+        self.assertFalse(proof['byte_equivalent_recovery'])
+        self.assertGreater(proof['logical_bytes_discarded'], 0)
+        self.run_operation(operation='second', discard_passed_output=True)
+        self.assertFalse((self.root/'second/data/firecontroller.sqlite').exists())
+        self.assertEqual(json.loads((self.root/'second/disposal.json').read_text())['logical_tables_sha256'], proof['logical_tables_sha256'])
+
+    def test_disposable_failure_preserves_diagnostic_database(self):
+        self.set_runner(self.code + '\nraise SystemExit(1)\n')
+        with self.assertRaisesRegex(Refuse, 'rehearsal failed'):
+            self.run_operation(discard_passed_output=True)
+        work = self.root/'first'
+        self.assertTrue((work/'data/firecontroller.sqlite').exists())
+        self.assertFalse((work/'disposal.json').exists())
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_disposable_mode_does_not_adopt_old_work(self):
+        self.run_operation()
+        output = self.root/'first/data/firecontroller.sqlite'
+        before = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            self.run_operation(discard_passed_output=True)
+        self.assertEqual(output.read_bytes(), before)
+
     def test_mutating_consumer_and_fresh_recovery_replay(self):
         self.assertEqual(self.run_operation(), {'state':'passed','operation':'first','enrolled':False})
         first = json.loads((self.root/'first/terminal.json').read_text())
