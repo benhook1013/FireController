@@ -22,6 +22,16 @@ Install only once producer and consumer call sites use these wrappers, with a sc
 
 Run tests with `python3 -m unittest discover -s tools/deploy -p 'test_artifact_*.py'`.
 
+## Zero-copy producer custody before enrollment
+
+Use `artifact_operation.py --root ROOT --lock-file EXISTING_LOCK --producer-only -- COMMAND...` to adopt the existing exclusive producer lease without enrolling any output. This mode rejects a manifest and cannot be combined with `--consumer`. It returns `producer_finished_unenrolled` only when the foreground command succeeds and leaves no process-group descendants; it never issues a cleanup terminal receipt. Failure preserves existing outputs for inspection. A lease alone does not prove recovery or make a file eligible for collection.
+
+For an existing image-preparation pipeline, the owner can wrap its current foreground image producer and synchronous local containerd import in this mode, leaving the original archive path and bytes unchanged. The producer, its child image builder and every local content-read/import/tag/inspection subprocess must preserve the descriptor using `lease_subprocess_options(required=True)` from `artifact_operation.py`. Combine its returned `pass_fds` tuple with any existing deployment-lock descriptors rather than replacing them. Install both this helper and `artifact_retention.py` beside the prepared callsite; isolated Python entry points need an explicit trusted helper import path. Missing or invalid inherited custody fails before child dispatch. All later local archive readers still require the shared consumer wrapper. Remote asynchronous work and persistent image/service references are not made collectible by a completed local import.
+
+This adoption adds no archive copy, no enrollment, no collector, no new timer and no claimed disk savings. Preserve the installation's deployment lock, immutable image/source guards, headroom checks and external time/memory/process-group supervision. The optional artifact lease does not replace them or reserve space against unrelated writers. Archive recovery, producer/consumer installation and any eventual disposal policy remain separate proofs before enabling cleanup.
+
+`test_artifact_unenrolled.py` verifies zero-copy output, manifest/mode refusal, failure preservation, required-descriptor validation and a real nested subprocess handoff. Killing the outer wrapper leaves the nested importer holding the same lease inode until it finishes; no terminal cleanup receipt appears. This is local custody proof, not live containerd, deployment or recovery qualification.
+
 ## Opt-in bounded scheduled collector
 
 The supplied `firecontroller-artifact-retention.service` and `.timer` are deployable templates, not an installation action. The service calls `artifact_schedule.py` once, with a two-minute control-group deadline, 128 MiB memory limit and 25% CPU quota. It uses the host process/mount namespace for conservative reference inspection. The timer schedules one check an hour after completion, with jitter; it does not replay missed hours or loop on failure. Inspect journal failures and headroom alerts through the installation's existing operator monitoring. Exit 2 is a completed check with insufficient headroom; it never broadens deletion.

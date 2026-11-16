@@ -5,23 +5,42 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
 
-from artifact_retention import Refuse, canonical_relative, open_lease
+from artifact_retention import Refuse, canonical_relative, open_lease, validate_lease
 
 
-def execute(root, lock_path, command, manifest_path=None, consumer=False):
+def lease_subprocess_options(*, required=False):
+    """Preserve managed custody through a foreground local subprocess boundary."""
+    raw = os.environ.get("FC_ARTIFACT_LEASE_FD")
+    if raw is None and not required:
+        return {}
+    if raw is None or not re.fullmatch(r"[0-9]{1,10}", raw) or int(raw) < 3:
+        raise Refuse("valid inherited artifact lease required")
+    fd = int(raw)
+    try:
+        with os.fdopen(os.dup(fd), "r+") as lease:
+            validate_lease(lease)
+    except (OSError, OverflowError) as error:
+        raise Refuse("unavailable inherited artifact lease") from error
+    return {"pass_fds": (fd,)}
+
+
+def execute(root, lock_path, command, manifest_path=None, consumer=False, producer_only=False):
+    if consumer and producer_only:
+        raise Refuse("consumer and unenrolled producer modes are exclusive")
     root = Path(root)
     if root.resolve() != root or not root.is_dir() or not command:
         raise Refuse("canonical existing root and command required")
     with open_lease(lock_path) as lock:
         fcntl.flock(lock, (fcntl.LOCK_SH if consumer else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         lock_stat = os.fstat(lock.fileno())
-        if consumer:
+        if consumer or producer_only:
             if manifest_path is not None:
-                raise Refuse("consumers cannot issue terminal receipts")
+                raise Refuse("unenrolled operations cannot issue terminal receipts")
         else:
             if manifest_path is None or Path(manifest_path).stat().st_size > 1024**2:
                 raise Refuse("bounded enrollment manifest required")
@@ -46,8 +65,8 @@ def execute(root, lock_path, command, manifest_path=None, consumer=False):
             raise Refuse("operation left descendants; no terminal receipt issued")
         if code != 0:
             raise Refuse("operation failed; no terminal receipt issued")
-        if consumer:
-            return {"state": "consumer_finished"}
+        if consumer or producer_only:
+            return {"state": "consumer_finished" if consumer else "producer_finished_unenrolled"}
         if Path(manifest_path).read_bytes() != data:
             raise Refuse("enrollment changed during operation")
         result = {"state": "terminal", "finished_at": time.time(), "root": str(root),
@@ -66,11 +85,14 @@ def main():
     p.add_argument("--root", required=True, type=Path)
     p.add_argument("--lock-file", required=True, type=Path)
     p.add_argument("--manifest", type=Path)
-    p.add_argument("--consumer", action="store_true")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--consumer", action="store_true")
+    modes.add_argument("--producer-only", action="store_true",
+                       help="exclusive custody only; no enrollment or terminal receipt")
     p.add_argument("command", nargs=argparse.REMAINDER)
     a = p.parse_args()
     command = a.command[1:] if a.command[:1] == ["--"] else a.command
-    print(json.dumps(execute(a.root, a.lock_file, command, a.manifest, a.consumer)))
+    print(json.dumps(execute(a.root, a.lock_file, command, a.manifest, a.consumer, a.producer_only)))
 
 
 if __name__ == "__main__":
