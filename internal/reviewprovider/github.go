@@ -439,8 +439,7 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 	if conditional && query.Has("page") && query.Get("per_page") == strconv.Itoa(githubPageSize) {
 		// An unchanged body cannot prove the list still ends here. A new
 		// page can appear after a full terminal page without changing its ETag.
-		var rows []json.RawMessage
-		if json.Unmarshal(cached.body, &rows) == nil && len(rows) == githubPageSize && !paginationContinues(cached.headers.Values("Link")) {
+		if cached.fullTerminalPage {
 			request.Header.Del("If-None-Match")
 			conditional = false
 			g.recordConditional(path, "terminal_page_bypass")
@@ -460,7 +459,11 @@ func (g *GitHub) requestBytesWithClient(ctx context.Context, client *http.Client
 		if !conditional {
 			return nil, nil, 0, invalidResponse(false, response.StatusCode)
 		}
-		return cached.body, cached.headers.Clone(), http.StatusOK, nil
+		data, err := cached.decodedBody()
+		if err != nil {
+			return nil, nil, 0, invalidResponse(false, response.StatusCode)
+		}
+		return data, cached.headers.Clone(), http.StatusOK, nil
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, response.Header.Clone(), response.StatusCode, nil

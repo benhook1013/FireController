@@ -242,8 +242,8 @@ func TestConditionalGETByteBudgetAndMutationsAreNotCached(t *testing.T) {
 		response := &http.Response{StatusCode: 200, Header: http.Header{"Etag": []string{`"large"`}}}
 		g.rememberConditional(request, response, body)
 	}
-	if len(g.cache) != 3 || g.cacheBytes > conditionalMaxBytes {
-		t.Fatal("body bytes did not evict least recently used entry", len(g.cache), g.cacheBytes)
+	if len(g.cache) != 4 || g.cacheBytes > conditionalMaxBytes {
+		t.Fatal("compressed bodies exceeded retained budget", len(g.cache), g.cacheBytes)
 	}
 	before := len(g.cache)
 	request, _ := http.NewRequest(http.MethodPost, "https://api.github.com/mutation", nil)
