@@ -177,3 +177,116 @@ This qualifies a local synthetic systemd execution context, not an exact clone o
 all node path restrictions, target-host runtime provenance, live timer behavior,
 atomic deployment switching or rollback. The target's full inaccessible/read-only
 path graph and its Google discrepancy remain unresolved.
+
+
+### Target runtime and publisher launch compatibility checkpoint
+
+A read-only target-node probe on 2026-11-17 verified the exact observed publisher
+source hash, compiled it in memory, imported every explicitly declared dependency,
+and ran only its `--help` parser with `-I -S -B` (no report publication). The target
+was x86_64 Python 3.12.3, cache tag cpython-312, resolved `/usr/bin/python3.12`,
+SHA256 `e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f`.
+All imports succeeded from the standard library or built-ins; help exited zero.
+This is a timestamped runtime compatibility observation, not immutable custody or
+a full transitive-library/provenance guarantee for a future installation.
+
+The disposable local service test additionally runs the legacy plain-Python launch
+against reports just written by the packaged isolated launch, then runs the
+packaged launch again. All three providers retain identical fields except the
+expected observation timestamp, and synthetic source inputs stay byte-identical.
+The subsequent wrong-pin refusal preserves the latest reports. Four transient
+units, including the failed case, are collected and checked as unloaded. This
+round-trip passed in 3.184 seconds. It establishes publisher/report compatibility
+for the same pinned publisher and historical reader, not application database
+rollback, an atomic unit switch, or exact target-node service restrictions.
+
+
+### Observed path/capability restriction regression
+
+A fresh read-only service inspection confirmed target systemd 255, AF_UNIX-only
+address families, CAP_CHOWN/CAP_DAC_OVERRIDE only, kernel/control-group protections,
+PrivateNetwork, the two OneDrive/S3 read-only roots and four inaccessible paths.
+The disposable test now applies those observed restrictions to its synthetic
+filesystem and supplies only synthetic placeholders at the inaccessible paths.
+The packaged→legacy→packaged publication round-trip and wrong-pin refusal still
+passed (3.378 seconds); all four transient units were collected. No original
+service settings were changed. Google remains absent from the observed explicit
+credential mask; the fixture intentionally does not silently amend that policy.
+
+This strengthens compatibility under the observed restrictions on local WSL
+systemd, but does not qualify target systemd's exact namespace implementation,
+all unspecified defaults, unit-file atomic switching, rollout cancellation, or
+automatic rollback. The install plan must preserve and recheck the complete
+effective unit/dependency graph before any activation.
+
+
+### Atomic switch/rollback protocol experiment (test only)
+
+`test_switch_protocol.py` exercises file-level drop-in replacement in private
+temporary directories, never `/etc` or a service manager. Under the explicit
+single cooperating writer assumption it persists exact old/new bytes and their
+hashes, then stages and atomically replaces only the selected drop-in. It does
+not touch unrelated settings. A new process after an actual forced exit recovers
+identity solely from the on-disk operation record. Rollback requires the exact
+known candidate; unknown external edits or corrupt intent are refused unchanged.
+A pre-replace crash leaves the old file intact and fences its ambiguous staged
+file instead of silently removing it. Four tests passed in 0.233 seconds.
+
+This is deliberately not a production installer: the fixture uses synthetic
+launch text, no writer lock implementation, no hostile pathname-race defense,
+no complete prepared-directory repair and no power-loss durability qualification.
+Its operation record is retained only for the disposable test lifetime.
+
+A safe production service switch additionally needs these separate gates:
+1. Bind the exact installed unit/drop-ins, bundle, helper, target runtime and
+   effective restrictions to an approved immutable operation.
+2. Hold deployment/source custody and recheck the exact preimage immediately
+   before replacement; preserve unrelated unit properties.
+3. Treat file replacement and systemd reload/start as separate transitions.
+   A lost response must not be treated as proof either old or new code is active.
+4. Reconcile loaded unit properties, process executable/arguments and report
+   ownership/binding before selecting forward completion or exact rollback.
+5. Roll back only after revalidating the old reader/runtime/input compatibility;
+   preserve unknown edits and avoid disrupting an already-running publisher.
+
+No automatic rollback or activation is authorized by these experiments, and
+application/database rollback remains outside this health-publisher proof.
+
+
+### Running-generation reconciliation experiment (test only)
+
+`test_service_reconciliation.py` requires root and explicit
+`FC_HEALTH_RECONCILE=1`. It starts only randomly named disposable local synthetic
+units, with no publisher or production data. A private flock excludes a real
+competing process. Under that custody it reads systemd's InvocationID/MainPID and
+active/running state, compares actual `/proc` arguments, and rechecks the same
+observation. Reusing the same unit name for a different generation must reject the
+old receipt. Desired arguments do not override the actual running generation;
+completed/unloaded units cannot satisfy a running receipt. The test passed in
+0.230 seconds and verifies all test units unload.
+
+This is a reconciliation design proof, not daemon-reload or a production switch.
+Invocation/PID/argv observations are not executable-byte custody, a defense
+against hostile PID/path reuse, or a guarantee after releasing the lock. The
+fixture's lock is private to cooperating test writers and has not been wired to
+the existing deployment producer's real custody. A production implementation
+must bind that custody and exact executable/dependency identity, and distinguish
+a oneshot service that legitimately completed from one still executing.
+
+
+### Joined file/running-generation qualification
+
+`test_joined_switch_qualification.py` combines the two test-only protocols under
+one private cooperating lock. With the old synthetic generation actually running,
+switching the file to new must still reject a claim that new is running. After
+normal completion, a new invocation is observed. Rolling the file back while new
+is running likewise cannot claim runtime rollback; only a subsequently observed
+fresh old-generation invocation satisfies that comparison. All random local
+units are unloaded. The two-test run passed in 0.533 seconds.
+
+The selected file contains synthetic fixture text mapped to exact test worker
+arguments, not a production unit parser or installer. There is no combined
+process-crash/reload proof, executable-byte custody, live unit update or production
+activation. Idempotent file-state acceptance alone also does not clean unresolved
+staged files. These experiments remain evidence for an eventual installer, not
+a replacement for its complete deployment and recovery contract.
