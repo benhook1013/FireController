@@ -100,7 +100,6 @@ Every provider-bearing operation reports its selected PR and anchor, refresh sco
 
 The original proof inventory is a regression source, not an instruction to reproduce historical JSON/SQLite bridges, path names, public marker format, or historical repair commands. Migration from those records is a separately reviewed adapter after the new engine's native behavior is proven.
 
-
 ### Project queue sorting
 
 The project queue setting is **Auto** by default, including retained configurations that omit `queue_sort_mode`. **Manual** preserves the saved queue order. This is separate from stacked/independent comparison mode and never bypasses draft, readiness, dependency or explicit-override admission checks. The browser and automatic/front selectors use the same project setting. Switching modes does not rewrite saved membership/order. Unknown or conflicting delivery-branch observations never establish independence.
