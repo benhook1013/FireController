@@ -25,12 +25,12 @@ from artifact_retention import Refuse, digest, open_lease
 MAX_REPORT = 1024 * 1024
 
 
-def checked_file(path, expected, limit):
+def checked_file(path, expected, limit, owner_uid=None):
     path = Path(path)
     if not path.is_absolute() or path.resolve() != path:
         raise Refuse("input must be canonical")
     s = path.lstat()
-    if (not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_mode & 0o022
+    if (not stat.S_ISREG(s.st_mode) or s.st_uid != (os.geteuid() if owner_uid is None else owner_uid) or s.st_mode & 0o022
             or s.st_size > limit):
         raise Refuse("unsafe or oversized input")
     actual, s = digest(path)
@@ -103,7 +103,7 @@ def supervised_command(work, lease, lock_stat):
 
 
 def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
-            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False, discard_passed_output=False):
+            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False, discard_passed_output=False, source_owner_uid=None):
     if type(discard_passed_output) is not bool:
         raise Refuse("explicit disposable-output mode required")
     if type(supervised) is not bool:
@@ -129,7 +129,7 @@ def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
         raise Refuse("private operator root required")
     with open_lease(lease) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        source, source_stat = checked_file(source, source_sha256, max_database_bytes)
+        source, source_stat = checked_file(source, source_sha256, max_database_bytes, source_owner_uid)
         runner, runner_stat = checked_file(runner, runner_sha256, 128 * 1024**2)
         if not os.access(runner, os.X_OK):
             raise Refuse("runner is not executable")
@@ -212,7 +212,7 @@ def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
         if code != 0:
             raise Refuse("rehearsal failed")
         # A successful consumer may change DB bytes; only replay provenance is claimed.
-        checked_file(source, source_sha256, max_database_bytes)
+        checked_file(source, source_sha256, max_database_bytes, source_owner_uid)
         checked_file(runner, runner_sha256, 128 * 1024**2)
         for suffix in ("-wal", "-shm", "-journal"):
             if Path(str(source) + suffix).exists():

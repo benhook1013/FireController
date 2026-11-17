@@ -9,3 +9,11 @@ The installation-specific rollout must also create a versioned helper binary **o
 These fixes address recurrent producer allocations. They do not enable the artifact collector, dispose of mutated rehearsal databases, select historical cleanup candidates, or automatically install a new deployment template. The production preparation entrypoint must use the qualified changed producer rather than copying an older release script. Keep exact before/after source and immutable original deployment receipts; do not replay a completed release operation.
 
 Run `python3 -m unittest discover -s tools/deploy -p 'test_image_layers.py'` for the layer contract tests. Full deployment-helper tests use `test_*.py` in the same directory.
+
+## Bounded schema rehearsal production
+
+`bounded_rehearsal.py` is the producer entrypoint for populated schema rehearsals. A private shared workspace and nonblocking budget lease prevent release-specific copies from accumulating. The existing managed-backup storage-phase lease protects the source for copying and equivalence verification. An existing incomplete, failed or uniquely migrated output prevents another copy; the producer does not silently collect it or create an archive. Existing schema-unchanged qualification still skips the rehearsal entirely.
+
+Only this invocation's byte-identical successful database output is automatically unlinked, after checking the retained original and consumer lease again. Its staged runner is removed only when identical to the retained original runner. Reports and receipts remain, with a maximum of 1024 settled operation receipts. Unique migrated output requires an explicit disposition before the next populated rehearsal. Failed or unknown output is retained. No historical adoption, force-unlock, backup pruning or vendor-review processing occurs.
+
+`prepare_rehearsal.render` produces a supervised entrypoint from installation-owned fixed shared paths and explicit candidate inputs, or preserves an explicit schema-unchanged proof without copying a database. The installation's canonical successor preparer must require one of these modes and emit `rehearse.py`; merely shipping these helpers does not prove production adoption. Focused tests: `python3 -m unittest discover -s tools/deploy -p 'test_bounded_rehearsal.py'`.
