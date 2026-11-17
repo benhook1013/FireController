@@ -17,7 +17,7 @@ type distinctCIMember struct {
 	pull, run, workflow, suite, check, job int64
 }
 
-func newDistinctCIFixture(t *testing.T, mode string) (*GitHub, []CITarget, *atomic.Int64) {
+func newDistinctCIFixture(t *testing.T, mode string, observe ...func(*http.Request)) (*GitHub, []CITarget, *atomic.Int64) {
 	t.Helper()
 	members := [2]distinctCIMember{
 		{strings.Repeat("a", 40), strings.Repeat("c", 40), 7, 50, 30, 40, 1070, 70},
@@ -36,6 +36,9 @@ func newDistinctCIFixture(t *testing.T, mode string) (*GitHub, []CITarget, *atom
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		for _, observer := range observe {
+			observer(r)
+		}
 		if r.Header.Get("Authorization") != "Bearer synthetic-distinct-ci" {
 			t.Error("wrong credential binding")
 		}
