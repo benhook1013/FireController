@@ -290,3 +290,19 @@ process-crash/reload proof, executable-byte custody, live unit update or product
 activation. Idempotent file-state acceptance alone also does not clean unresolved
 staged files. These experiments remain evidence for an eventual installer, not
 a replacement for its complete deployment and recovery contract.
+
+
+### Existing producer custody integration
+
+`tools/release/test_operator_producer_custody.py` runs the assembler as a real
+child of the existing `artifact_operation.execute(..., producer_only=True)`.
+The native-packaging fixture checks that its subprocess inherits the usable
+lease FD and that an independent open cannot acquire the same exclusive lease.
+The same check runs after final archive publication. The existing wrapper returns
+`producer_finished_unenrolled`, the operation contains only the resulting archive,
+and the lease is reacquirable after completion. The test passed in 3.014 seconds.
+
+Native binary packaging is explicitly stubbed in this custody test; the earlier
+clean-binary assembly/smoke proof covers a separate boundary. No automatic
+collector enrollment is invented for an installed or externally consumed release.
+This does not protect a future deployment after producer custody is released.
