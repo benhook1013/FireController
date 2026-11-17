@@ -3,7 +3,6 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strconv"
 	"strings"
 
@@ -88,31 +87,27 @@ func comparisonSchemaMigrations() [][]string {
 func retainedComparisonSchema(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }) (bool, error) {
-	var raw string
-	err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		var installed bool
-		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&installed); err != nil {
-			return false, core.NormalizeStorageError(err)
-		}
+	// One statement gives both schema facts the same SQLite read snapshot,
+	// including when another startup commits the domain concurrently.
+	var marker sql.NullString
+	var installed bool
+	err := q.QueryRowContext(ctx, `SELECT (SELECT value FROM metadata WHERE key='schema:review_comparison'), EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&marker, &installed)
+	if err != nil {
+		return false, core.NormalizeStorageError(err)
+	}
+	if !marker.Valid {
 		if installed {
 			return false, core.Fail("schema_invalid", "Retained comparison proof table is missing schema metadata.", 500)
 		}
 		return false, nil
 	}
-	if err != nil {
-		return false, core.NormalizeStorageError(err)
-	}
+	raw := marker.String
 	version, err := strconv.Atoi(raw)
 	if err != nil || version < 1 || strconv.Itoa(version) != raw {
 		return false, core.Fail("schema_invalid", "Domain schema version metadata is invalid.", 500)
 	}
 	if version > len(comparisonSchemaMigrations()) {
 		return false, core.Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
-	}
-	var installed bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&installed); err != nil {
-		return false, core.NormalizeStorageError(err)
 	}
 	if !installed {
 		return false, core.Fail("schema_invalid", "Retained comparison schema is missing its proof table.", 500)
