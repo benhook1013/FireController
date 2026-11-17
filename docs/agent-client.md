@@ -126,3 +126,7 @@ The orchestrator explicitly inspected the original handle once to verify silence
 ## Installed Codex host long-wait proof
 
 The same bundled Codex app-server binary used by the desktop completed one original quiet synthetic MCP call after 72.07 seconds with a 120-second per-server timeout. Independent configuration and server-status reads completed while it was pending. The thread was ephemeral with no persisted path; no model turn, provider request, worker mutation or real configuration change was used. This proves that the installed host binary can support quiet calls beyond 60 seconds. It does not prove that an already running desktop connection has reloaded new configuration, nor automatic idle-chat wakeup.
+
+## Explicit Actions update-age diagnostic
+
+Use `reviews actions-liveness --age-hours 24 --limit 10` or MCP `actions_liveness_read` only for an explicit bounded read of the bound project's configured repository. This is a provider read, not an ordinary stored view or a recurring watchdog. It uses existing source workers, refuses unavailable/busy admission and never automatically retries. The [provider observation contract](provider-observations.md#explicit-actions-diagnostic-read) defines byte/count limits, omitted rows and current authorization checks. `capacity: unknown` and non-atomic bucket completeness are deliberate: an aged run is not a dead run, and neither a result nor an empty scan permits cancellation, recovery or a passing CI claim.

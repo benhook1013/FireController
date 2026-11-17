@@ -61,6 +61,9 @@ func invalidArguments() *Diagnostic {
 }
 
 func parseArguments(name string, data json.RawMessage) (arguments, error) {
+	if name == "actions_liveness_read" {
+		return actionsDiagnosticArguments(data)
+	}
 	if name == externalHostedSettlementTool {
 		return externalHostedSettlementArguments(data)
 	}

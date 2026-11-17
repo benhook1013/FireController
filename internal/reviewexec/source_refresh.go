@@ -398,6 +398,7 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 	for _, id := range recovered {
 		e.notifySourceRefresh(id)
 	}
+	e.startActionsDiagnostics()
 	done := make(chan error, 1)
 	go func() {
 		workerCtx, cancel := context.WithCancel(ctx)
@@ -414,6 +415,7 @@ func (e *Engine) StartSourceRefresh(ctx context.Context, readers map[string]Targ
 				cancel()
 			}
 		}
+		e.stopActionsDiagnostics()
 		e.sourceRunning.Store(false)
 		done <- first
 		close(done)
@@ -457,6 +459,9 @@ func (e *Engine) sourceRefreshLoopScheduled(ctx context.Context, readers map[str
 		select {
 		case <-ctx.Done():
 			return nil
+		case request := <-e.actionsDiagnosticQueue:
+			e.collectActionsDiagnostic(ctx, readers, schedule, request)
+			continue
 		case <-e.sourceWake:
 		case <-timer.C:
 		}
@@ -513,6 +518,13 @@ func (e *Engine) refreshNextScheduled(ctx context.Context, readers map[string]Ta
 		})
 		if err != nil || id == "" {
 			return err
+		}
+		e.actionsDiagnosticMu.Lock()
+		diagnosticBusy := e.actionsDiagnosticProject == project
+		e.actionsDiagnosticMu.Unlock()
+		if diagnosticBusy {
+			schedule.lastProject = project
+			return nil
 		}
 		err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			r, err := readSourceRefresh(ctx, tx, project, id)

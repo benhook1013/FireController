@@ -47,8 +47,9 @@ type options struct {
 }
 
 type invocation struct {
-	reviewFollowing *reviewFollowingInvocation
-	ownerManagement *ownerManagementInvocation
+	actionsDiagnostic *client.ActionsDiagnosticOptions
+	reviewFollowing   *reviewFollowingInvocation
+	ownerManagement   *ownerManagementInvocation
 	options
 	command               string
 	subcommand            string
@@ -260,6 +261,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	// Bootstrap may recover one transient read; ordinary HTTP operations keep
 	// their five-second limit and successful connections add no waiting.
+	if call.actionsDiagnostic != nil {
+		timeout = client.ActionsDiagnosticBudget + 2*serviceTimeout
+	}
 	timeout = max(timeout, 3*serviceTimeout)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

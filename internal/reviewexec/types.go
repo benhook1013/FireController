@@ -122,6 +122,11 @@ type Attempt struct {
 }
 
 type Engine struct {
+	actionsDiagnosticMu        sync.Mutex
+	actionsDiagnosticQueue     chan *actionsDiagnosticRequest
+	actionsDiagnosticActive    bool
+	actionsDiagnosticCurrent   *actionsDiagnosticRequest
+	actionsDiagnosticProject   string
 	queueSortingWrites         bool
 	decisionOmissions          decisionOmissionBuffer
 	runSourceBudget            time.Duration
