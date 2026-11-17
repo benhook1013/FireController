@@ -18,6 +18,8 @@ import (
 // LifecycleSyncOptions are trusted process configuration, never browser or
 // worker instructions. Clock and wait injection make cadence proof deterministic.
 type LifecycleSyncOptions struct {
+	// CadenceShadow explicitly enables aggregate diagnostics; it never changes cadence.
+	CadenceShadow                                            bool
 	Now                                                      func() time.Time
 	Wait                                                     func(context.Context, time.Duration) error
 	OpenInterval, ClosedInterval, MergedInterval, CIInterval time.Duration
@@ -31,6 +33,7 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 	}
 	if len(options) == 1 {
 		o := options[0]
+		c.CadenceShadow = o.CadenceShadow
 		if o.Now != nil {
 			c.Now = o.Now
 		}
@@ -102,19 +105,21 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
-	sharing         lifecycleSharingTelemetry
-	readers         map[string]TargetReader
-	watches         map[ciWatchKey]*ciWatchEntry
-	watchers        map[*ciWatchSubscription]bool
-	watchPrincipals map[string]int
-	watchTurn       bool
-	startedAt       time.Time
-	claim           chan struct{}
-	mu              sync.Mutex
-	lanes           [2]lifecycleLaneSchedule
-	due             map[lifecycleKey]lifecycleDue
-	accounts        map[string]lifecycleAccount
-	options         LifecycleSyncOptions
+	sharing          lifecycleSharingTelemetry
+	shadowNext       time.Time
+	demandShadowNext time.Time
+	readers          map[string]TargetReader
+	watches          map[ciWatchKey]*ciWatchEntry
+	watchers         map[*ciWatchSubscription]bool
+	watchPrincipals  map[string]int
+	watchTurn        bool
+	startedAt        time.Time
+	claim            chan struct{}
+	mu               sync.Mutex
+	lanes            [2]lifecycleLaneSchedule
+	due              map[lifecycleKey]lifecycleDue
+	accounts         map[string]lifecycleAccount
+	options          LifecycleSyncOptions
 }
 type lifecycleTarget struct {
 	cohortOwned        bool

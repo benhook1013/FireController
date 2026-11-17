@@ -46,7 +46,7 @@ func lifecycleReader(driver reviewexec.Driver, fallback reviewexec.TargetReader)
 // Review-attempt recovery commits before any observer starts. All worker
 // startup completes before HTTP accepts work; the returned owner joins the
 // supervisor, source/publication workers and observers.
-func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver, diagnostics io.Writer) (<-chan error, error) {
+func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drivers map[string]reviewexec.Driver, diagnostics io.Writer, lifecycleOptions ...reviewexec.LifecycleSyncOptions) (<-chan error, error) {
 	if len(drivers) == 0 {
 		return nil, execution.RecoverInterrupted(ctx)
 	}
@@ -134,7 +134,7 @@ func startReviewWorkers(ctx context.Context, execution *reviewexec.Engine, drive
 			for id, reader := range readers {
 				lifecycleReaders[id] = lifecycleReader(drivers[id], reader)
 			}
-			done, err = execution.StartLifecycleSync(workerCtx, lifecycleReaders)
+			done, err = execution.StartLifecycleSync(workerCtx, lifecycleReaders, lifecycleOptions...)
 			if err != nil {
 				startupErr = err
 				cancel()

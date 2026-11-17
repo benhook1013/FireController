@@ -76,3 +76,33 @@ func TestReadCompletionClassifiesOnlySafeCountersAndBoundsWindow(t *testing.T) {
 		t.Fatal(q.completions)
 	}
 }
+
+func TestReadCompletionDeadlineOriginUsesCapturedFailureIdentity(t *testing.T) {
+	q := NewGitHubQuota()
+	now := time.Now()
+	caller, cancel := context.WithDeadline(t.Context(), now.Add(-time.Second))
+	defer cancel()
+	transportCtx, transportCancel := context.WithCancel(t.Context())
+	transport := providerTransportError(transportCtx, context.DeadlineExceeded, false)
+	// Cancellation after the failure must not rewrite its recorded origin.
+	transportCancel()
+	cases := []struct {
+		name              string
+		failure           error
+		caller, transport int
+	}{
+		{"caller", providerTransportError(caller, context.DeadlineExceeded, false), 1, 0},
+		{"transport", transport, 0, 1},
+		{"unclassified", providerError("provider_unavailable", "safe", http.StatusRequestTimeout, 0, false), 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q = NewGitHubQuota()
+			q.observeReadCompletion(t.Context(), now, "/PRIVATE", now, "headers", tc.failure)
+			got := q.completions[githubCompletionKey{"other", "other"}]
+			if got.Completed != 1 || got.ReadFailed != 1 || got.TimedOut != 1 || got.CallerDeadline != tc.caller || got.TransportTimeout != tc.transport || got.BodyFailed != 0 || got.Canceled != 0 {
+				t.Fatal(got)
+			}
+		})
+	}
+}

@@ -3,7 +3,9 @@ package reviewexec
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,21 +31,18 @@ func TestSelectionAdmissionTiming(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
+			var out selectionTimingBuffer
 			old := slog.Default()
 			slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
 			defer slog.SetDefault(old)
 			r := Run{ID: "selection", ProjectID: "project", Channel: "cli", CreatedAt: tc.created, UpdatedAt: tc.queued}
 			logSlowRunSelection(t.Context(), r, runChoice{}, 2, now, tc.phases, 0)
-			if (out.Len() > 0) != tc.emitted {
-				t.Fatalf("unexpected event: %s", out.String())
+			got, err := selectionTimingLog(out.snapshot(), "selection", tc.emitted)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if !tc.emitted {
 				return
-			}
-			var got map[string]any
-			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-				t.Fatal(err)
 			}
 			if got["admission_timing_known"] != tc.known {
 				t.Fatal(got)
@@ -70,20 +69,94 @@ func TestSelectionAdmissionTimingUsesPreclaimQueuedTimestamp(t *testing.T) {
 	if _, err := f.store.DB().Exec(`UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(-20*time.Second).Format(time.RFC3339Nano), receipt.ID); err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
+	var out selectionTimingBuffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
 	defer slog.SetDefault(old)
+	slog.Info(`{"event":"adoption_read_cost","reads":1}`)
 	selectionNext(t, f, &refreshTestReader{})
 	gotRun := selectionRead(t, f, receipt.ID)
 	if gotRun.OperationID == "" {
 		t.Fatal("expected ordinary child", gotRun)
 	}
-	var got map[string]any
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatal(err, out.String())
+	got, err := selectionTimingLog(out.snapshot(), receipt.ID, true)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if got["admission_timing_known"] != true || got["queued_to_claim_ms"].(float64) < 20000 || got["accepted_to_claim_ms"].(float64) < 60000 {
 		t.Fatal(got)
+	}
+}
+
+// Capture remains safe if unrelated background telemetry writes while the test
+// takes its snapshot. Every complete JSONL record is validated; only the exact
+// selection event supplies assertions, never merely the first or last record.
+type selectionTimingBuffer struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (b *selectionTimingBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.data.Write(p)
+}
+func (b *selectionTimingBuffer) snapshot() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Clone(b.data.Bytes())
+}
+
+func selectionTimingLog(data []byte, id string, required bool) (map[string]any, error) {
+	var found map[string]any
+	for i, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil || row == nil {
+			return nil, fmt.Errorf("invalid log record %d", i+1)
+		}
+		if row["msg"] != "Review selection was slow" || row["selection_id"] != id {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("duplicate timing record for %s", id)
+		}
+		found = row
+	}
+	if (found != nil) != required {
+		return nil, fmt.Errorf("timing record presence for %s: got %t want %t", id, found != nil, required)
+	}
+	return found, nil
+}
+
+func TestSelectionTimingLogJSONL(t *testing.T) {
+	target := `{"msg":"Review selection was slow","selection_id":"wanted","queued_to_claim_ms":20000}`
+	other := `{"msg":"{\"event\":\"adoption_read_cost\"}"}`
+	foreign := `{"msg":"Review selection was slow","selection_id":"different","queued_to_claim_ms":1}`
+	cases := []struct {
+		name, data        string
+		required, wantErr bool
+	}{
+		{"unrelated before and after", other + "\n" + foreign + "\n" + target + "\n" + other, true, false},
+		{"missing target", other + "\n" + foreign, true, true},
+		{"duplicate target", target + "\n" + target, true, true},
+		{"malformed before", "{broken\n" + target, true, true},
+		{"malformed after", target + "\n{broken", true, true},
+		{"null record", "null\n" + target, true, true},
+		{"expected absence", other + "\n" + foreign, false, false},
+		{"unexpected event", target, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectionTimingLog([]byte(tc.data), "wanted", tc.required)
+			if (err != nil) != tc.wantErr {
+				t.Fatal(got, err)
+			}
+			if err == nil && tc.required && got["queued_to_claim_ms"] != float64(20000) {
+				t.Fatal(got)
+			}
+		})
 	}
 }

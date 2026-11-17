@@ -13,8 +13,8 @@ export function relativeAge(value: string, now = Date.now()): string {
   return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ago`;
 }
 
-export function RelativeTime({ value }: { value: string }) {
+export function RelativeTime({ value, label }: { value: string; label?: string }) {
   const [, refresh] = useState(0);
   useEffect(() => { const timer = setInterval(() => refresh(tick => tick + 1), 60000); return () => clearInterval(timer); }, []);
-  return <time dateTime={value} title={new Date(value).toLocaleString()}>{relativeAge(value)}</time>;
+  return <time dateTime={value} title={`${label ? `${label}: ` : ''}${new Date(value).toLocaleString()}`}>{relativeAge(value)}</time>;
 }

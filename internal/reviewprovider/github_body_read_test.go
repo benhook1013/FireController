@@ -109,6 +109,12 @@ func TestGitHubBodyReadLoopbackFailuresRemainTransportFailures(t *testing.T) {
 						t.Fatal("timeout/cancellation completion identity lost", mode, got)
 					}
 				}
+				if method == http.MethodGet {
+					got := g.quota.completions[githubCompletionKey{"other", "other"}]
+					if (got.CallerDeadline == 1) != (mode == "caller-deadline") || (got.TransportTimeout == 1) != (mode == "client-timeout") {
+						t.Fatal("deadline origin lost", mode, got)
+					}
+				}
 				if calls.Load() != 1 {
 					t.Fatal("failed body read retried the request", calls.Load())
 				}
