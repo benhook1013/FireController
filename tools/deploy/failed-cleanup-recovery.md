@@ -2,7 +2,7 @@
 
 ## Candidate boundaries
 
-The helper candidate remains unactivated. Its deployment-tool subtree applies without source drift to live application source c43eba23824a530ce869f2a3b4fb3faeec73dc1e; no application binary, database schema, backup cap or backup format change is required. There is no new PR. Existing default behavior is unchanged.
+The helper candidate remains unactivated. Earlier source-compatibility checks are historical evidence, not proof of the currently serving generation. Each adoption must qualify the exact selected source, packaged helper dependency closure and immutable manifest against the current operation preimage. These helper changes require no database schema, backup cap or backup format change. Existing default behavior is unchanged.
 
 For a future bounded rehearsal, the explicit configuration `failed_equivalent_cleanup: true` enables both retained supervisor observation and equivalent-copy disposal. The preparer refuses missing or changed runtime helpers against the selected package manifest. The runtime closure is `artifact_retention.py`, `rehearsal_operation.py`, `bounded_rehearsal.py`, `failed_equivalent.py`, `supervised_failure.py` and `supervised_equivalent.py`; the package also needs the updated preparer and its existing successor/template dependencies. Never install only one changed Python file into the active package. Use a new immutable versioned helper directory, verify every manifest hash, preserve the current package as rollback, and render a fresh operation with the existing approved deployment supervisor. Do not repoint active or pending operations.
 
