@@ -22,6 +22,8 @@ type LifecycleSyncOptions struct {
 	CadenceShadow bool
 	// BatchMetadata is opt-in; ordinary cadence and individual hints are unchanged.
 	BatchMetadata bool
+	// QualifyMetadataPair admits one natural diagnostic per account; never publishes probe facts.
+	QualifyMetadataPair bool
 	// BatchCIWitnesses is opt-in; no daemon configuration enables it by default.
 	BatchCIWitnesses                                         bool
 	QualifyCIBatching                                        bool
@@ -40,6 +42,10 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 		o := options[0]
 		c.CadenceShadow = o.CadenceShadow
 		c.BatchMetadata = o.BatchMetadata
+		c.QualifyMetadataPair = o.QualifyMetadataPair
+		if c.BatchMetadata && c.QualifyMetadataPair {
+			return c, invalid()
+		}
 		c.BatchCIWitnesses = o.BatchCIWitnesses
 		c.QualifyCIBatching = o.QualifyCIBatching
 		if c.BatchCIWitnesses && c.QualifyCIBatching {
@@ -116,23 +122,24 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
-	qualificationClaimed map[string]bool
-	sharing              lifecycleSharingTelemetry
-	batching             lifecycleBatchTelemetry
-	shadowNext           time.Time
-	demandShadowNext     time.Time
-	readers              map[string]TargetReader
-	watches              map[ciWatchKey]*ciWatchEntry
-	watchers             map[*ciWatchSubscription]bool
-	watchPrincipals      map[string]int
-	watchTurn            bool
-	startedAt            time.Time
-	claim                chan struct{}
-	mu                   sync.Mutex
-	lanes                [2]lifecycleLaneSchedule
-	due                  map[lifecycleKey]lifecycleDue
-	accounts             map[string]lifecycleAccount
-	options              LifecycleSyncOptions
+	qualificationClaimed         map[string]bool
+	metadataQualificationClaimed map[string]bool
+	sharing                      lifecycleSharingTelemetry
+	batching                     lifecycleBatchTelemetry
+	shadowNext                   time.Time
+	demandShadowNext             time.Time
+	readers                      map[string]TargetReader
+	watches                      map[ciWatchKey]*ciWatchEntry
+	watchers                     map[*ciWatchSubscription]bool
+	watchPrincipals              map[string]int
+	watchTurn                    bool
+	startedAt                    time.Time
+	claim                        chan struct{}
+	mu                           sync.Mutex
+	lanes                        [2]lifecycleLaneSchedule
+	due                          map[lifecycleKey]lifecycleDue
+	accounts                     map[string]lifecycleAccount
+	options                      LifecycleSyncOptions
 }
 type lifecycleTarget struct {
 	cohortOwned        bool

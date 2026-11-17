@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -10,6 +11,10 @@ import (
 
 type metadataPairReader interface {
 	PullMetadataPair(context.Context, int64, string, [2]int64) [2]reviewprovider.PullMetadataPairResult
+}
+
+type metadataPairQualifier interface {
+	QualifyMetadataPair(context.Context, int64, string, [2]int64) (reviewprovider.MetadataPairQualification, error)
 }
 
 func periodicMetadataDue(d lifecycleDue, now time.Time) bool {
@@ -28,6 +33,25 @@ func (e *Engine) observeMetadataCohort(ctx context.Context, first lifecycleTarge
 	if support, known := first.reader.(interface{ SupportsMetadataPair() bool }); known && !support.SupportsMetadataPair() {
 		return e.observeLifecycle(ctx, first, s)
 	}
+	var qualification *reviewprovider.MetadataPairQualification
+	defer func() {
+		if qualification != nil {
+			slog.Info("metadata_pair_qualification", "bucket", qualification.Bucket, "state", qualification.State, "transport_calls", qualification.Requests)
+		}
+	}()
+	qualifier, canQualify := first.reader.(metadataPairQualifier)
+	if s.options.QualifyMetadataPair {
+		if support, known := first.reader.(interface{ SupportsMetadataQualification() bool }); known && !support.SupportsMetadataQualification() {
+			canQualify = false
+		}
+		s.mu.Lock()
+		claimed := s.metadataQualificationClaimed[first.account]
+		s.mu.Unlock()
+		if !canQualify || claimed {
+			return e.observeLifecycle(ctx, first, s)
+		}
+	}
+
 	next, err := e.claimLifecycleMember(ctx, readers, s, lifecycleMetadata, &first)
 	if err != nil {
 		s.finish(first, "", "", false, false, nil)
@@ -60,6 +84,44 @@ func (e *Engine) observeMetadataCohort(ctx context.Context, first lifecycleTarge
 			return nil
 		}
 	}
+	if s.options.QualifyMetadataPair {
+		qualify := false
+		if !lifecycleCohortHasSubscribers(s, targets) {
+			s.mu.Lock()
+			if s.metadataQualificationClaimed == nil {
+				s.metadataQualificationClaimed = map[string]bool{}
+			}
+			if !s.metadataQualificationClaimed[first.account] && !s.options.Now().Before(s.accounts[first.account].until) {
+				s.metadataQualificationClaimed[first.account] = true
+				qualify = true
+			}
+			s.mu.Unlock()
+		}
+		if qualify {
+			result, probeErr := qualifier.QualifyMetadataPair(reviewprovider.WithGitHubCaller(ctx, "lifecycle_metadata"), first.repository, first.repositoryName, [2]int64{first.number, next.number})
+			qualification = &result
+			if probeErr != nil {
+				s.mu.Lock()
+				s.finishAccountLocked(targets[0], probeErr, s.options.Now())
+				s.mu.Unlock()
+				return nil
+			}
+		}
+		// Diagnostic facts never become prepared source evidence. Both members
+		// receive the ordinary fresh individual observation and publication guards.
+		for _, target := range targets {
+			s.mu.Lock()
+			cooling := s.options.Now().Before(s.accounts[target.account].until)
+			s.mu.Unlock()
+			if ctx.Err() != nil || cooling {
+				return nil
+			}
+			if err := e.observeLifecycle(ctx, target, s); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	rows := reader.PullMetadataPair(reviewprovider.WithGitHubCaller(ctx, "lifecycle_metadata"), first.repository, first.repositoryName, [2]int64{first.number, next.number})
 	// A shared-query error cannot publish successful partner evidence as if the
 	// account read completed. Preserve source evidence; invalid inventory uses
@@ -75,7 +137,7 @@ func (e *Engine) observeMetadataCohort(ctx context.Context, first lifecycleTarge
 				}
 			} else {
 				s.mu.Lock()
-				s.finishAccountLocked(first, row.Err, s.options.Now())
+				s.finishAccountLocked(targets[0], row.Err, s.options.Now())
 				s.mu.Unlock()
 			}
 			return nil

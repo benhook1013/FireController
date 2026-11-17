@@ -86,3 +86,24 @@ including one stale cached PR base that differed from the live branch tip. Those
 are not daemon-credential, moving-source, or universal permissions qualification.
 GraphQL cost was one point for the sampled pair; conditional REST 304 reads can cost
 zero core points, so reduced HTTP volume does not imply reduced charged quota.
+
+### Natural metadata compatibility qualification
+
+`--lifecycle-metadata-qualification` is a default-off diagnostic, mutually exclusive
+with metadata batching. It samples at most one naturally due two-PR cohort per
+account per process, retaining the existing project/account reservation. Event
+hints and existing CI subscribers do not initiate the sample. The actual bound
+provider credential, read admission and shared quota apply. The sample has a
+15-second aggregate deadline and at most five transport requests: two individual
+REST observations, one paired GraphQL query, then two individual REST observations.
+All normalized pull and repository fields must agree; movement or disagreement is
+inconclusive. The log contains only a process-local account bucket, state and
+transport count, not repository identity or provider payloads.
+
+Diagnostic observations never publish source facts or grant CI freshness. After a
+successful or inconclusive comparison, both PRs still take ordinary fresh
+individual observation paths, including their binding and hint checks. Provider
+errors retain ordinary account cooldown and stop the cohort. A later cohort is
+ordinary, not another diagnostic attempt. This mode temporarily adds requests; it
+is compatibility evidence, not a quota-saving feature or permission to activate
+batching. Live results and deployment qualification remain separate.

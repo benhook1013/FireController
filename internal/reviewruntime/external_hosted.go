@@ -139,3 +139,19 @@ func (r *hostedArchiveSource) PullMetadataPair(ctx context.Context, id int64, re
 	}
 	return [2]reviewprovider.PullMetadataPairResult{{Err: reviewprovider.ErrCombinedPullUnsupported}, {Err: reviewprovider.ErrCombinedPullUnsupported}}
 }
+
+// Qualification is optional and forwards only to the existing bound provider.
+func (r *hostedArchiveSource) SupportsMetadataQualification() bool {
+	_, ok := r.provider.(interface {
+		QualifyMetadataPair(context.Context, int64, string, [2]int64) (reviewprovider.MetadataPairQualification, error)
+	})
+	return ok
+}
+func (r *hostedArchiveSource) QualifyMetadataPair(ctx context.Context, id int64, repository string, numbers [2]int64) (reviewprovider.MetadataPairQualification, error) {
+	if reader, ok := r.provider.(interface {
+		QualifyMetadataPair(context.Context, int64, string, [2]int64) (reviewprovider.MetadataPairQualification, error)
+	}); ok {
+		return reader.QualifyMetadataPair(ctx, id, repository, numbers)
+	}
+	return reviewprovider.MetadataPairQualification{State: "refused"}, reviewprovider.ErrCombinedPullUnsupported
+}
