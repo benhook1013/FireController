@@ -1,0 +1,27 @@
+# Failed rehearsal evidence
+
+The isolated candidate records known foreground failures without deleting output. `KnownForegroundFailure` is an invocation-local result, not historical enrollment or cleanup authority. It is emitted after the foreground child is reaped, its process group is absent, and the consumer lease plus protected inputs still match. The existing contract requires trusted descendants to preserve the lease; this does not protect against deliberately escaped or noncooperating writers. Failure receipts preserve output identity and bytes. Timeouts remain unresolved. No CLI or default bounded-producer behavior changes; the later opt-in candidate is described below.
+
+## Supervised producer gap
+
+The deployed producer uses `systemd-run --wait --pipe --collect`. A nonzero client exit can mean either a completed unsuccessful service or a failed handoff. Automatic unit collection can remove the evidence needed to distinguish them. Acquiring the shared lease alone does not prove that an external unit cannot subsequently start or reacquire it. Therefore the candidate deliberately does not classify any supervised nonzero result as safely disposable.
+
+Before extending failure disposal to this real path, retain an invocation-specific unit record until finalization; verify unit identity, terminal service state, no running control process and an empty cgroup while holding the consumer lease. Do not treat a missing unit, missing cgroup or wrapper exit alone as positive proof. A start job still queued or a unit replaced under the same name must refuse. Qualification must exercise a real failed child, delayed child/descendant, client death and lease replacement in disposable local services. The selected workflow must explicitly retire only its own terminal transient unit afterward, without changing shared services. This is a design boundary, not implemented supervisor qualification.
+
+Only after that evidence is qualified should bounded producer cleanup acquire the source/budget/consumer custody, compare every candidate byte against the retained immutable source, write a durable disposition intent, and remove the freshly created identical output while retaining failure evidence. Unique output and historical failures remain untouched. Interrupted intent reconciliation requires exact original identities and source equivalence, not absence alone.
+
+The existing bounded producer already automatically disposes successful byte-identical output and refuses a second unresolved rehearsal. This work must not be presented as previously absent lifecycle management. The approximately 428 MB historical failed duplicate is not adopted by this candidate; its source and distinct successful successor remain protected. The optional compressed local-history candidate remains unactivated, and all broader filesystem/database inventory obligations remain open.
+
+## Isolated implementation checkpoint
+
+The foreground path now has an explicit, default-off `discard_failed_equivalent` API option. It catches only this invocation's typed failure, holds the budget and immutable-source leases, reacquires the exact consumer lease, and verifies the full started/failure schemas, protected inputs, operation/output inode identities and byte equality. It writes a durable disposition intent before removing that one equivalent output, retains all failure evidence, and rethrows the original failure. There is no CLI/preparer opt-in and no server activation. Unique output, ambiguous supervision and the historical failed rehearsal remain protected.
+
+An isolated repair API reacquires all three leases and can settle an intent only when the output is already absent and the retained source still matches exactly. It reestablishes directory durability before publishing completion. It never deletes surviving output or silently retries deletion. Real child hard-exit tests cover interruption immediately before and after unlink; these are not host-power-loss qualifications.
+
+The separate supervised driver records its fresh unit start intent and observed active invocation/cgroup. Actual disposable-service tests cover a failed child, changed lease, client timeout and a detached-process-group descendant retained in the service cgroup. The driver has no producer caller yet and remains frozen for independent review. Its final qualification returns evidence only, not cleanup authorization. Fast failure without a captured active binding remains unresolved rather than guessed safe.
+
+### Smallest practical next gate
+
+After independent driver review, connect it behind the existing default-off producer option. Bind its exact observed identity into the typed failure and extend the equivalent-output policy only for that qualified service invocation. Preserve complete failure receipts and do not reset/remove the service until the same invocation is confirmed terminal. Add integrated tests proving unknown outcomes and changed custody cannot reach unlink. This is intentionally a small producer change, not a filesystem-wide collector or an attempt to automatically adopt old artifacts.
+
+This candidate addresses recurrence of redundant failed rehearsal output and the blocked bounded-rehearsal slot. It does not itself remove the previously inventoried historical duplicate, establish the sole rollback release, retire old images, replace backup retention, or complete the broader database/filesystem storage job. Existing successful-rehearsal cleanup remains in place throughout.
