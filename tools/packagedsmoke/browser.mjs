@@ -1337,6 +1337,9 @@ try {
   const currentLink = () => page.locator('#review-pr-32').getByRole('link',{name:/^Open hosted run current-fix-correction:/});
   await expect(currentLink().locator('.review-pill-status')).toHaveText('Fixes pending');
   const pendingURL = await currentLink().getAttribute('href');
+  await currentLink().click();
+  await expect(page.locator('.review-run-summary .review-pill-status')).toHaveText('Fixes pending');
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Review queue',exact:true}).click();
   const rejected = {...corrected,findings:[...corrected.findings.slice(0,2),finding('corrected','rejected')]};
   await publishCurrent(5,[rejected]);
   await expect(currentLink().locator('.review-pill-status')).toHaveText('Finished');
@@ -1347,7 +1350,11 @@ try {
   await expect(page.locator('.review-run-summary .review-pill-status')).toHaveText('Finished');
   await expect(page.locator('.review-run-summary')).toContainText('Accepted: 3 · Routed: 0 · 2 fixed');
   // Pinned old detail must retain its genuine pending obligation.
-  await page.goto(config.origin+pendingURL);
+  // Follow real browser history to the earlier detail without renewing the
+  // session via a full document reload or changing the lifecycle counters.
+  await page.goBack();
+  await page.goBack();
+  await expect(page).toHaveURL(config.origin+pendingURL);
   await expect(page.locator('.review-run-summary .review-pill-status')).toHaveText('Fixes pending');
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Review queue',exact:true}).click();
   const zero = {...run,source_run_id:'current-zero-correction',found:1,accepted:0,findings:[finding('new-acceptance','rejected')]};
