@@ -9,6 +9,8 @@ from pathlib import Path
 import stat
 
 import rehearsal_operation as operation
+import failed_equivalent
+import supervised_equivalent
 from artifact_retention import Refuse, open_lease
 
 
@@ -27,6 +29,12 @@ def admit(root):
             if not child.is_dir(follow_symlinks=False):
                 raise Refuse('unknown bounded rehearsal entry')
             work = root / child.name
+            if (work / supervised_equivalent.RECEIPT).exists():
+                supervised_equivalent.verify_disposed(work)
+                continue
+            if (work / 'failed-equivalent-disposal.json').exists():
+                failed_equivalent.verify_disposed(work)
+                continue
             receipt = work / 'equivalent-output-disposal.json'
             if not receipt.exists() or (work / 'data' / 'firecontroller.sqlite').exists():
                 raise Refuse('prior rehearsal output requires explicit disposition before another copy')
@@ -61,7 +69,9 @@ def open_source_lease(path, uid):
     return os.fdopen(fd, 'r+')
 
 
-def execute(*, budget_lease, source_lease, source_lease_uid=None, **args):
+def execute(*, budget_lease, source_lease, source_lease_uid=None, discard_failed_equivalent=False, **args):
+    if type(discard_failed_equivalent) is not bool:
+        raise Refuse("explicit failure disposal mode required")
     if args.get('discard_passed_output'):
         raise Refuse('bounded producer forbids unverified automatic disposal')
     root = Path(args['root'])
@@ -77,7 +87,16 @@ def execute(*, budget_lease, source_lease, source_lease_uid=None, **args):
         source_custody = locks.enter_context(open_source_lease(source_lock, os.geteuid() if source_lease_uid is None else source_lease_uid))
         fcntl.flock(source_custody, fcntl.LOCK_EX | fcntl.LOCK_NB)
         admit(root)
-        result = operation.execute(**args)
+        try:
+            result = operation.execute(**args)
+        except operation.KnownForegroundFailure as failure:
+            if discard_failed_equivalent:
+                failed_equivalent.dispose(args, failure, [(budget,custody),(source_lock,source_custody)])
+            raise  # Removing a redundant copy never turns a failed rehearsal into success.
+        except operation.KnownSupervisedFailure as failure:
+            if discard_failed_equivalent:
+                supervised_equivalent.dispose(args,failure,[(budget,custody),(source_lock,source_custody)])
+            raise
         work = root / args['operation']
         source, _ = operation.checked_file(args['source'], args['source_sha256'], args.get('max_database_bytes', 1024**3), args.get('source_owner_uid'))
         terminal = json.loads((work / 'terminal.json').read_text())

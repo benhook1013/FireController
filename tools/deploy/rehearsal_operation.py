@@ -25,6 +25,21 @@ from artifact_retention import Refuse, digest, open_lease
 MAX_REPORT = 1024 * 1024
 
 
+class KnownForegroundFailure(Refuse):
+    """Invocation-local termination evidence, never historical cleanup authority."""
+    def __init__(self, evidence):
+        super().__init__("rehearsal failed")
+        self.evidence = evidence
+
+
+
+class KnownSupervisedFailure(Refuse):
+    """Fresh qualified service failure; distinct from foreground authority."""
+    def __init__(self, evidence):
+        super().__init__("rehearsal failed")
+        self.evidence = evidence
+
+
 def checked_file(path, expected, limit, owner_uid=None):
     path = Path(path)
     if not path.is_absolute() or path.resolve() != path:
@@ -103,7 +118,9 @@ def supervised_command(work, lease, lock_stat):
 
 
 def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
-            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False, discard_passed_output=False, source_owner_uid=None):
+            operation, *, timeout=180, max_database_bytes=1024**3, reserve_bytes=1024**3, supervised=False, discard_passed_output=False, source_owner_uid=None, observe_supervised_failure=False):
+    if type(observe_supervised_failure) is not bool or (observe_supervised_failure and not supervised):
+        raise Refuse("explicit supervised observation mode required")
     if type(discard_passed_output) is not bool:
         raise Refuse("explicit disposable-output mode required")
     if type(supervised) is not bool:
@@ -177,11 +194,20 @@ def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
             checked_file(staged_runner, runner_sha256, 128 * 1024**2)
             (work / "tmp").mkdir(mode=0o700)
             command = supervised_command(work, Path(lease), lock_stat)
+            observed_supervisor = None
+            if observe_supervised_failure:
+                import supervised_failure as supervisor
+                command = [('--unit=' + supervisor.unit_for(work) if part.startswith('--unit=') else part)
+                           for part in command if part != '--collect']
             fcntl.flock(lock, fcntl.LOCK_UN)
             try:
-                result = subprocess.run(command, stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL, timeout=210)
-                code = result.returncode
+                if observe_supervised_failure:
+                    code, observed_supervisor = supervisor.run_observed(
+                        work, Path(lease), [lock_stat.st_dev, lock_stat.st_ino], command)
+                else:
+                    result = subprocess.run(command, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL, timeout=210)
+                    code = result.returncode
             except subprocess.TimeoutExpired:
                 # Do not rerun or assume client death stopped the external service.
                 # RuntimeMaxSec/KillMode remain systemd's independent responsibility.
@@ -210,6 +236,40 @@ def execute(root, lease, source, source_sha256, runner, runner_sha256, revision,
             else:
                 raise Refuse("rehearsal left descendants")
         if code != 0:
+            # A systemd client exit does not prove the external unit is gone.
+            # Only a reaped foreground child with no remaining process group
+            # qualifies. Timeouts and uncertain descendants remain unclassified.
+            if not supervised:
+                current_lease = Path(lease).lstat()
+                if (current_lease.st_dev, current_lease.st_ino) != (lock_stat.st_dev, lock_stat.st_ino):
+                    raise Refuse("foreground lease identity changed")
+                checked_file(source, source_sha256, max_database_bytes, source_owner_uid)
+                checked_file(runner, runner_sha256, 128 * 1024**2)
+                output_sha, output_stat = digest(copied)
+                checked_file(copied, output_sha, max_database_bytes)
+                work_stat = work.lstat()
+                evidence = dict(identity, state="failed_foreground_reaped",
+                    exit_code=code, finished_at=time.time(),
+                    work_identity=[work_stat.st_dev, work_stat.st_ino],
+                    output_identity=[output_stat.st_dev, output_stat.st_ino],
+                    output_sha256=output_sha)
+                new_json(work / "failure.json", evidence)
+                raise KnownForegroundFailure(evidence)
+            if observe_supervised_failure:
+                # Distinct evidence only. Foreground disposal must not consume
+                # supervised proofs until sandbox disposition is qualified.
+                supervisor_proof = supervisor.qualify_failure(
+                    work, Path(lease), lock, observed_supervisor, code)
+                checked_file(source, source_sha256, max_database_bytes, source_owner_uid)
+                checked_file(runner, runner_sha256, 128 * 1024**2)
+                output_sha, output_stat = digest(copied)
+                checked_file(copied, output_sha, max_database_bytes)
+                supervised_evidence = dict(identity,
+                    state="qualified_supervised_failure_evidence_only", exit_code=code,
+                    supervisor=supervisor_proof, output_sha256=output_sha,
+                    output_identity=[output_stat.st_dev, output_stat.st_ino])
+                new_json(work / "supervised-failure.json", supervised_evidence)
+                raise KnownSupervisedFailure(supervised_evidence)
             raise Refuse("rehearsal failed")
         # A successful consumer may change DB bytes; only replay provenance is claimed.
         checked_file(source, source_sha256, max_database_bytes, source_owner_uid)
