@@ -91,8 +91,8 @@ func (w *historySnapshotWrite) run(ctx context.Context, tx *sql.Tx, source strin
 // retainedAttemptState performs the same read-only ownership/settlement guards for preview and writes.
 func retainedAttemptState(ctx context.Context, tx HistoryQuery, project, source string, number int64, attempt Attempt) error {
 	var oldNumber int64
-	var channel, head, started, state, run, trigger, provider string
-	err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, project, source, attempt.SourceAttemptID).Scan(&oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider)
+	var channel, head, started, state, run, trigger, provider, reason string
+	err := tx.QueryRowContext(ctx, `SELECT pull_number,channel,head_sha,started_at,state,source_run_id,trigger_id,provider_review_id,reason FROM review_attempt_versions WHERE project_id=? AND source=? AND source_attempt_id=? ORDER BY version_revision DESC LIMIT 1`, project, source, attempt.SourceAttemptID).Scan(&oldNumber, &channel, &head, &started, &state, &run, &trigger, &provider, &reason)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -106,7 +106,7 @@ func retainedAttemptState(ctx context.Context, tx HistoryQuery, project, source 
 				return core.Fail("observation_conflict", "Known capture and provider identities cannot be cleared or replaced.", 409)
 			}
 		}
-		if oneOf(state, "completed", "failed", "cancelled", "rate_limited", "held") && state != attempt.State {
+		if oneOf(state, "completed", "failed", "cancelled", "rate_limited", "held") && state != attempt.State && !allowsRetainedHostedRecovery(ctx, project, source, state, reason, run, attempt) {
 			return core.Fail("observation_conflict", "A settled retained attempt cannot be reopened.", 409)
 		}
 	}

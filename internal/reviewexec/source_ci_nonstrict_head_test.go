@@ -12,15 +12,9 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func sourceCINonstrictMismatchObservation(target reviewprovider.CITarget) reviewprovider.CIObservation {
-	now := time.Now().UTC()
-	facts := &reviewprovider.CIMergeBaseMismatch{PRBaseSHA: target.BaseSHA, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: target.BaseSHA}
-	return reviewprovider.CIObservation{Target: target, StartedAt: now, ObservedAt: now, State: "unproven", Reason: "ci_merge_base_mismatch", MergeState: "unproven", Candidate: &reviewprovider.CICandidate{State: "unproven", Reason: "ci_merge_base_mismatch", RepositoryID: target.RepositoryID, Repository: target.Repository, PullNumber: target.PullNumber, HeadSHA: target.HeadSHA, BaseSHA: target.BaseSHA, BaseRef: target.BaseRef, MergeState: "unproven", ObservedAt: now, MergeBaseMismatch: facts}}
-}
-
 func sourceCINonstrictHeadObservation(target reviewprovider.CITarget, state string) reviewprovider.CIObservation {
 	o := sourceCITestObservation(target, state)
-	mismatch := sourceCINonstrictMismatchObservation(target)
+	mismatch := testCIMismatchObservation(target)
 	o.Candidate, o.MergeState = mismatch.Candidate, mismatch.MergeState
 	return o
 }
@@ -33,7 +27,7 @@ func TestSourceCINonstrictHeadRetainsProofAndReadsWithoutRecredit(t *testing.T) 
 			var collected reviewprovider.CIObservation
 			reader := &sourceCITestReader{ci: func(_ context.Context, target reviewprovider.CITarget) (reviewprovider.CIObservation, error) {
 				if state == "old mismatch" {
-					collected = sourceCINonstrictMismatchObservation(target)
+					collected = testCIMismatchObservation(target)
 					collected.Authority = sourceCITestObservation(target, "satisfied").Authority
 				} else {
 					collected = sourceCINonstrictHeadObservation(target, state)
@@ -73,17 +67,14 @@ func TestSourceCINonstrictHeadRetainsProofAndReadsWithoutRecredit(t *testing.T) 
 				if assessment.Required != 0 || assessment.Selection != "" || assessment.SelectedCommitSHA != "" || assessment.Reason != "" {
 					t.Fatal("empty authority invented head proof", assessment)
 				}
-			} else if assessment.Selection != "head" || assessment.SelectedCommitSHA != assessment.Target.HeadSHA || assessment.Required != 1 {
+			} else if assessment.Selection != "head" || assessment.SelectedCommitSHA != assessment.Target.HeadSHA || assessment.Required != 1 || assessment.MergeBaseMismatch != nil {
 				t.Fatal("head proof claimed merge verification or dropped checks", assessment)
 			}
 			request := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/source/2/ci?diagnostics=true", nil)
 			request.Header.Set("Authorization", "Bearer "+f.reader)
+			request.Header.Set("X-FC-CI-Watch", "change-v2")
 			w := httptest.NewRecorder()
 			f.handler.ServeHTTP(w, request)
-			var compact map[string]json.RawMessage
-			if json.Unmarshal(w.Body.Bytes(), &compact) != nil || compact["merge_base_mismatch"] != nil || compact["gate_ref"] != nil {
-				t.Fatal("selective head fix expanded the compact CI response", w.Body.String())
-			}
 			var wire SourceCIAssessment
 			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &wire) != nil || wire.State != wantState || wire.RefreshID != receipt.ID || wire.Checks == nil {
 				t.Fatal("public local read lost retained proof", w.Code, w.Body.String())

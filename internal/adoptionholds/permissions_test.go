@@ -57,7 +57,7 @@ func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing
 	login.Header.Set("Authorization", "Bearer "+token)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	browserID := strings.Repeat("c", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, browserID, false)
+	_, cookie, err := f.store.CreateBrowserSession(login, browserID)
 	if err != nil {
 		t.Fatal(err)
 	}

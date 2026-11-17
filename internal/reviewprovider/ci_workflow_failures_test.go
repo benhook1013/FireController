@@ -210,7 +210,7 @@ func TestObserveCIGateWithWorkflowsKeepsGateAndBoundsExtraReads(t *testing.T) {
 			}
 			paths, counts := f.snapshot()
 			if mode == "optional" {
-				if len(failures) != 1 || failures[0] != (CIWorkflowFailure{WorkflowID: 31, RunID: 60, RunAttempt: 2, JobID: 90, CheckRunID: 1090, Name: "test [linux]", Conclusion: "failure"}) || len(paths) != len(basePaths)+4 || counts[actionsRunsPath+"/60/attempts/2/jobs"] != 1 {
+				if len(failures) != 1 || failures[0] != (CIWorkflowFailure{WorkflowID: 31, RunID: 60, RunAttempt: 2, JobID: 90, CheckRunID: 1090, Name: "test [linux]", Conclusion: "failure"}) || len(paths) != len(basePaths)+3 || counts[actionsRunsPath+"/60/attempts/2/jobs"] != 1 || counts[actionsRunsPath+"/60"] != 2 {
 					t.Fatal("optional workflow was not selected once with its lowest failed job", failures, paths)
 				}
 			} else if mode == "overlap" {
@@ -226,6 +226,9 @@ func TestObserveCIGateWithWorkflowsKeepsGateAndBoundsExtraReads(t *testing.T) {
 				}
 			}
 			for _, path := range paths {
+				if strings.Contains(path, "check_suite_id=41") {
+					t.Fatal("optional workflow repeated same-observation suite discovery", path)
+				}
 				if strings.Contains(path, "/logs") || strings.Contains(path, "/check-runs/") {
 					t.Fatal("attention fetched individual jobs or logs", path)
 				}

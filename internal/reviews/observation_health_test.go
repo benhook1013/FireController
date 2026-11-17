@@ -26,7 +26,7 @@ func TestQueueObservationHealthIsScopedLiveAndNegotiated(t *testing.T) {
 	if old.Code != 200 || called != 0 || strings.Contains(old.Body.String(), `"observer"`) {
 		t.Fatal(old.Code, called)
 	}
-	for _, view := range []string{""} {
+	for _, view := range []string{"", "&view=recent"} {
 		got := f.call("GET", base+"?include_observation=true"+view, f.readToken, "", nil)
 		if got.Code != 200 || !strings.Contains(got.Body.String(), `"last_success_at":"2026-10-23T00:01:00Z"`) {
 			t.Fatal(got.Code, got.Body.String())

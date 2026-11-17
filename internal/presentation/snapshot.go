@@ -29,6 +29,9 @@ func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
 		if current.Revision < 1 {
 			return unavailable()
 		}
+		if err = validateWorkerOrder(ctx, tx, project, current.WorkerOrder); err != nil {
+			return err
+		}
 		if err = validateHistory(ctx, tx, current); err != nil {
 			return err
 		}

@@ -13,24 +13,50 @@ import (
 // CheckpointPayload binds original source facts. Mutable adjudication revisions
 // and receiving proof do not participate in this historical publication.
 type CheckpointPayload struct {
-	PublicationID    string `json:"publication_id"`
-	EvidenceID       string `json:"evidence_id"`
-	RepositoryID     int64  `json:"repository_id"`
-	PullNumber       int64  `json:"pull_number"`
-	Channel          string `json:"channel"`
-	HeadSHA          string `json:"head_sha"`
-	BaseSHA          string `json:"base_sha"`
-	BaseRef          string `json:"base_ref"`
-	ParentSHA        string `json:"parent_sha"`
-	MergeBaseSHA     string `json:"merge_base_sha"`
-	PatchSHA256      string `json:"patch_sha256"`
-	CaptureSHA256    string `json:"capture_sha256"`
-	ParentPullNumber int64  `json:"parent_pull_number"`
-	Found            int64  `json:"found"`
-	Accepted         int64  `json:"accepted"`
-	Routed           int64  `json:"routed"`
-	Files            *int64 `json:"files,omitempty"`
-	DurationSeconds  *int64 `json:"duration_seconds,omitempty"`
+	PublicationID    string                      `json:"publication_id"`
+	EvidenceID       string                      `json:"evidence_id"`
+	RepositoryID     int64                       `json:"repository_id"`
+	PullNumber       int64                       `json:"pull_number"`
+	Channel          string                      `json:"channel"`
+	HeadSHA          string                      `json:"head_sha"`
+	BaseSHA          string                      `json:"base_sha"`
+	BaseRef          string                      `json:"base_ref"`
+	ParentSHA        string                      `json:"parent_sha"`
+	MergeBaseSHA     string                      `json:"merge_base_sha"`
+	PatchSHA256      string                      `json:"patch_sha256"`
+	CaptureSHA256    string                      `json:"capture_sha256"`
+	ParentPullNumber int64                       `json:"parent_pull_number"`
+	Found            int64                       `json:"found"`
+	Accepted         int64                       `json:"accepted"`
+	Routed           int64                       `json:"routed"`
+	AcceptedSeverity *CheckpointAcceptedSeverity `json:"accepted_severity,omitempty"`
+	Files            *int64                      `json:"files,omitempty"`
+	DurationSeconds  *int64                      `json:"duration_seconds,omitempty"`
+}
+
+// CheckpointAcceptedSeverity partitions the original accepted source findings.
+// A nil partition is unknown, never a guessed all-zero result.
+type CheckpointAcceptedSeverity struct {
+	Major    int64 `json:"major"`
+	Minor    int64 `json:"minor"`
+	Trivial  int64 `json:"trivial"`
+	Critical int64 `json:"critical,omitempty"`
+	Unknown  int64 `json:"unknown,omitempty"`
+}
+
+// Valid reports whether known original severities account for every accepted finding.
+func (s *CheckpointAcceptedSeverity) Valid(accepted int64) bool {
+	if s == nil {
+		return true
+	}
+	remaining := accepted
+	for _, n := range []int64{s.Major, s.Minor, s.Trivial, s.Critical, s.Unknown} {
+		if n < 0 || n > remaining {
+			return false
+		}
+		remaining -= n
+	}
+	return remaining == 0
 }
 
 type CheckpointRender struct {
@@ -58,7 +84,7 @@ func checkpointHex(value string, size int) bool {
 	return true
 }
 func validCheckpointPayload(p CheckpointPayload) bool {
-	if !hostedTriggerID(p.PublicationID, "review_publication_") || !hostedTriggerID(p.EvidenceID, "review_evidence_") || p.RepositoryID <= 0 || !validPullNumber(p.PullNumber) || p.Channel != "cli" && p.Channel != "hosted" || !checkpointHex(p.HeadSHA, 40) || !checkpointHex(p.BaseSHA, 40) || !checkpointHex(p.ParentSHA, 40) || !checkpointHex(p.MergeBaseSHA, 40) || !checkpointHex(p.PatchSHA256, 64) || !checkpointHex(p.CaptureSHA256, 64) || len(p.BaseRef) > 256 || strings.TrimSpace(p.BaseRef) == "" || !utf8.ValidString(p.BaseRef) || p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.Found < 0 || p.Found > 100 || p.Accepted < 0 || p.Routed < 0 || p.Accepted > p.Found || p.Routed > p.Found-p.Accepted || p.Files != nil && *p.Files < 0 || p.DurationSeconds != nil && *p.DurationSeconds < 0 {
+	if !p.AcceptedSeverity.Valid(p.Accepted) || !hostedTriggerID(p.PublicationID, "review_publication_") || !hostedTriggerID(p.EvidenceID, "review_evidence_") || p.RepositoryID <= 0 || !validPullNumber(p.PullNumber) || p.Channel != "cli" && p.Channel != "hosted" || !checkpointHex(p.HeadSHA, 40) || !checkpointHex(p.BaseSHA, 40) || !checkpointHex(p.ParentSHA, 40) || !checkpointHex(p.MergeBaseSHA, 40) || !checkpointHex(p.PatchSHA256, 64) || !checkpointHex(p.CaptureSHA256, 64) || len(p.BaseRef) > 256 || strings.TrimSpace(p.BaseRef) == "" || !utf8.ValidString(p.BaseRef) || p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.Found < 0 || p.Found > 100 || p.Accepted < 0 || p.Routed < 0 || p.Accepted > p.Found || p.Routed > p.Found-p.Accepted || p.Files != nil && *p.Files < 0 || p.DurationSeconds != nil && *p.DurationSeconds < 0 {
 		return false
 	}
 	for _, r := range p.BaseRef {
@@ -86,15 +112,43 @@ func RenderCheckpoint(payload CheckpointPayload) (CheckpointRender, error) {
 	if payload.Channel == "hosted" {
 		label = "Hosted"
 	}
-	line := fmt.Sprintf("%s: Found %d, Accepted %d, Routed %d; head %s", label, payload.Found, payload.Accepted, payload.Routed, payload.HeadSHA)
+	accepted := fmt.Sprintf("%d Accepted", payload.Accepted)
+	severity := payload.AcceptedSeverity
+	if severity == nil && payload.Accepted == 0 {
+		severity = &CheckpointAcceptedSeverity{}
+	}
+	if severity != nil {
+		accepted = fmt.Sprintf("%d/%d/%d Accepted (Major/Minor/Trivial)", severity.Major, severity.Minor, severity.Trivial)
+		if severity.Critical != 0 {
+			accepted += fmt.Sprintf(" + %d Critical", severity.Critical)
+		}
+		if severity.Unknown != 0 {
+			accepted += fmt.Sprintf(" + %d Unclassified", severity.Unknown)
+		}
+	}
+	line := fmt.Sprintf("**CodeRabbit %s — %d Found, %s, %d Routed**", label, payload.Found, accepted, payload.Routed)
+	facts := []string{}
 	if payload.Files != nil {
-		line += fmt.Sprintf("; files %d", *payload.Files)
+		facts = append(facts, fmt.Sprintf("%d files", *payload.Files))
 	}
 	if payload.DurationSeconds != nil {
-		line += fmt.Sprintf("; duration %d seconds", *payload.DurationSeconds)
+		facts = append(facts, checkpointDuration(*payload.DurationSeconds))
 	}
-	body := line + "\nOriginal source counts; current review coverage and readiness are assessed separately.\n\n<!-- firecontroller-checkpoint:v1 publication=" + payload.PublicationID + " semantic=" + semantic + " -->"
+	// GitHub automatically links and abbreviates an unquoted full commit SHA.
+	// Retain the exact original SHA rather than depending on a mutable repository name.
+	facts = append(facts, payload.HeadSHA)
+	body := line + "\n" + strings.Join(facts, " · ") + "\n\n<!-- firecontroller-checkpoint:v1 publication=" + payload.PublicationID + " semantic=" + semantic + " -->"
 	return CheckpointRender{Body: body, SemanticSHA256: semantic}, nil
+}
+
+func checkpointDuration(seconds int64) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%dm %02ds", seconds/60, seconds%60)
+	}
+	return fmt.Sprintf("%dh %02dm %02ds", seconds/3600, seconds/60%60, seconds%60)
 }
 
 // MatchCheckpoint accepts only neutral Unicode whitespace changes. Exact words,

@@ -52,6 +52,10 @@ func TestReviewPolicyAssessmentCLIBoundReadAndArgumentPrecedence(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &result) != nil || result.State != "held" || result.IncomingRoutesPending != 103 || !result.Channels[0].Covered || !result.Channels[0].Pending || result.Source != "captured_comparison" || strings.Count(out, "\n") != 1 || calls.Load() != 2 {
 		t.Fatal("assessment was not one quiet explicit read", code, out, stderr)
 	}
+	var explained client.ReviewPolicyAssessmentOutput
+	if json.Unmarshal([]byte(out), &explained) != nil || len(explained.Channels) != 1 || explained.Channels[0].Reason != "review_work_pending" || explained.Channels[0].NextAction != "finish_retained_review_work" || !strings.Contains(out, `"rounds_complete":false`) {
+		t.Fatal("CLI omitted the channel hold or explicit false", out)
+	}
 	before := calls.Load()
 	for _, args := range [][]string{
 		{"reviews", "assess"}, {"reviews", "assess", "../private"}, {"reviews", "assess", cliEvidenceID, "extra"},

@@ -60,8 +60,9 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	if err != nil || selected.State != "selected" || op.PullNumber != 4 || op.HeadSHA != strings.Repeat("c", 40) {
 		t.Fatal("pending external results did not skip the same PR without holding the later PR", selected, op, err)
 	}
-	if cli, hosted := roundRead(t, f, 2, "cli"), roundRead(t, f, 2, "hosted"); cli.Used != 0 || hosted.Used != 0 {
-		t.Fatal("archive/pending evidence supplied native completion credit", cli, hosted)
+	progress := readProgress(t, f, 2).Items[0].Channels
+	if progress[0].Used != 0 || progress[0].Pending != 0 || progress[1].Used != 0 || progress[1].Pending != 1 {
+		t.Fatal("archive/pending evidence supplied native completion credit", progress)
 	}
 	roundFinalize(t, f, a, evidence, 710, false)
 	if got := roundRead(t, f, 2, "cli"); !got.Closed || got.Used != 1 {
@@ -84,9 +85,14 @@ func TestSelectionExternalHostedPendingUsesVerifiedCurrentMembership(t *testing.
 	}
 	check := func(project string, repository, pull int64, want bool) {
 		t.Helper()
-		got, err := selectionExternalHostedPending(t.Context(), f.store.DB(), project, repository, pull)
-		if err != nil || got != want {
-			t.Fatal("wrong pending identity", project, repository, pull, got, err)
+		var got ComparisonState
+		err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			got, err = channelProgress(ctx, tx, project, repository, pull, "hosted")
+			return err
+		})
+		if err != nil || got.ExternalPending != want {
+			t.Fatal("wrong pending identity", project, repository, pull, got.ExternalPending, err)
 		}
 	}
 	check(attemptProject, 801, 2, true)
@@ -121,10 +127,10 @@ func TestSelectionExternalHostedPendingUsesVerifiedCurrentMembership(t *testing.
 			tx.Rollback()
 			t.Fatal(err)
 		}
-		got, err := selectionExternalHostedPending(t.Context(), tx, attemptProject, 801, 2)
+		got, err := channelProgress(t.Context(), tx, attemptProject, 801, 2, "hosted")
 		tx.Rollback()
-		if err != nil || got {
-			t.Fatal("unverified imported label created an obligation", got, err)
+		if err != nil || got.ExternalPending {
+			t.Fatal("unverified imported label created an obligation", got.ExternalPending, err)
 		}
 	}
 	// Ordinary native capture reconciles the observer alias from current

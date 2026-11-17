@@ -11,6 +11,40 @@ async function flush() { for (let i = 0; i < 80; i++) await Promise.resolve(); }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('independent project metadata transport', () => {
+  it('delivers ordinary and adopted PR/channel round events without disconnecting', async () => {
+    vi.stubGlobal('location', { origin: 'https://service.example' });
+    let output!: ReadableStreamDefaultController<Uint8Array>;
+    const opens: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/instance')) return json({ instance_id: 'instance_one' });
+      if (url.pathname.endsWith('/project_one')) return json(project);
+      opens.push(url.searchParams.get('cursor')!);
+      const signal = init!.signal as AbortSignal;
+      let closed = false;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        output = controller;
+        signal.addEventListener('abort', () => { if (!closed) { closed = true; controller.close(); } }, { once: true });
+      }, cancel() { closed = true; } }), { headers: { 'content-type': 'text/event-stream' } });
+    }));
+    const api = new Api('private-test-token', project.id); await api.connect();
+    const lifetime = new AbortController(), received: ProjectMetadataPage[] = [], failures: unknown[] = [];
+    const watch = startMetadataAttempt(api, initial, { retry: false, lifetime: lifetime.signal, current: () => true, appearance() {}, refresh: async page => { if (page) received.push(page); }, status() {}, failure: error => { failures.push(error); } });
+    const page: ProjectMetadataPage = { items: [
+      { event_type: 'reviews.rounds_configured', resource_id: '32/hosted', revision: 1, event_cursor: 'ordinary_grant' },
+      { event_type: 'reviews.rounds_configured', resource_id: '33/cli', revision: 1, event_cursor: 'adopted_grant' },
+      { event_type: 'reviews.rounds_configured', resource_id: '32/hosted', revision: 2, event_cursor: 'later_close' },
+    ], event_cursor: 'later_close', has_more: false };
+    try {
+      await flush();
+      output.enqueue(frame('project-events', page.event_cursor, page));
+      await flush();
+      expect(received).toEqual([page]);
+      expect(failures).toEqual([]);
+      expect(opens).toEqual(['project_start']);
+    } finally { lifetime.abort(); await watch.done; api.close(); }
+  });
+
   it('keeps its worker-independent cursor/socket while an inbox watch changes workers', async () => {
     vi.stubGlobal('location', { origin: 'https://service.example' });
     const streams: { path: string; worker: string | null; signal: AbortSignal; output: ReadableStreamDefaultController<Uint8Array> }[] = [];

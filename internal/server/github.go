@@ -34,27 +34,9 @@ func validRepository(value string) bool {
 // GitHubResolver loads optional operator credentials once and verifies only the
 // explicitly requested repository. It never starts a queue scan or mutation.
 func GitHubResolver(tokenFile string) (RepositoryResolver, error) {
-	token := ""
-	if tokenFile != "" {
-		info, err := os.Lstat(tokenFile)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
-			return nil, core.Fail("configuration_invalid", "The GitHub credential must be a private regular file.", 500)
-		}
-		f, err := os.Open(tokenFile)
-		if err != nil {
-			return nil, core.Fail("configuration_invalid", "The GitHub credential file is unavailable.", 500)
-		}
-		opened, err := f.Stat()
-		if err != nil || !opened.Mode().IsRegular() {
-			_ = f.Close()
-			return nil, core.Fail("configuration_invalid", "The GitHub credential must be a private regular file.", 500)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, 4097))
-		closeErr := f.Close()
-		token = strings.TrimSpace(string(data))
-		if err != nil || closeErr != nil || len(data) > 4096 || token == "" || strings.ContainsAny(token, " \t\r\n") {
-			return nil, core.Fail("configuration_invalid", "The GitHub credential file is invalid.", 500)
-		}
+	token, err := loadGitHubCredential(tokenFile)
+	if err != nil {
+		return nil, err
 	}
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 3 || req.URL.Scheme != "https" || req.URL.Host != "api.github.com" {
@@ -63,6 +45,37 @@ func GitHubResolver(tokenFile string) (RepositoryResolver, error) {
 		return nil
 	}}
 	return githubResolver(token, client), nil
+}
+
+func loadGitHubCredential(tokenFile string) (string, error) {
+	token := ""
+	if tokenFile != "" {
+		info, err := os.Lstat(tokenFile)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
+			return "", core.Fail("configuration_invalid", "The GitHub credential must be a private regular file.", 500)
+		}
+		f, err := os.Open(tokenFile)
+		if err != nil {
+			return "", core.Fail("configuration_invalid", "The GitHub credential file is unavailable.", 500)
+		}
+		opened, err := f.Stat()
+		if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) || (runtime.GOOS != "windows" && opened.Mode().Perm()&0077 != 0) {
+			_ = f.Close()
+			return "", core.Fail("configuration_invalid", "The GitHub credential must be a private regular file.", 500)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, 4097))
+		closeErr := f.Close()
+		token = strings.TrimSpace(string(data))
+		if err != nil || closeErr != nil || len(data) > 4096 || token == "" || strings.ContainsAny(token, " \t\r\n") {
+			return "", core.Fail("configuration_invalid", "The GitHub credential file is invalid.", 500)
+		}
+		for i := 0; i < len(token); i++ {
+			if token[i] < 0x21 || token[i] > 0x7e {
+				return "", core.Fail("configuration_invalid", "The GitHub credential file is invalid.", 500)
+			}
+		}
+	}
+	return token, nil
 }
 
 func githubResolver(token string, client *http.Client) RepositoryResolver {

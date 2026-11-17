@@ -39,11 +39,11 @@ func (q obligationQueryFailure) QueryRowContext(ctx context.Context, query strin
 func TestReadFactsMissingRetainedRowsRemainProtective(t *testing.T) {
 	f := fresh(t)
 	f.apply(batch(), "missing-retained-rows")
-	for _, stage := range []string{"SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT source_key"} {
+	for _, stage := range []string{"SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id"} {
 		q := obligationQueryFailure{Query: f.store.DB(), match: stage, row: true, missing: true}
 		_, err := h.ReadFacts(t.Context(), q, "project_one", 3251)
 		var failure *core.Error
-		if !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+		if !errors.As(err, &failure) || failure.Code != "storage_unavailable" || !h.IsProjectStateError(err) {
 			t.Fatal("missing retained row escaped protection", stage, err)
 		}
 	}
@@ -60,17 +60,17 @@ func TestReadFactsPreservesOperationalErrors(t *testing.T) {
 	for _, stage := range []string{"SELECT obligation_id", "SELECT project_id,pull_number"} {
 		for _, failure := range []error{obligationStorageCode(5), obligationStorageCode(6), context.Canceled, context.DeadlineExceeded, core.Fail("overloaded", "Safe transient failure.", 503), errors.New("private unknown SQL failure")} {
 			q := obligationQueryFailure{Query: f.store.DB(), match: stage, err: failure}
-			if _, err := h.ReadFacts(t.Context(), q, "project_one", 3251); !errors.Is(err, failure) {
+			if _, err := h.ReadFacts(t.Context(), q, "project_one", 3251); !errors.Is(err, failure) || h.IsProjectStateError(err) {
 				t.Fatalf("%s erased %T: %v", stage, failure, err)
 			}
 		}
 	}
-	for _, stage := range []string{"schema:review_adoption_obligations", "SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT source_key", "SELECT revision,reason"} {
+	for _, stage := range []string{"schema:review_adoption_obligations", "SELECT id,project_id,namespace", "SELECT repository_id", "SELECT github_repository_id", "SELECT revision,reason"} {
 		t.Run(stage, func(t *testing.T) {
 			q := obligationQueryFailure{Query: f.store.DB(), match: stage, row: true}
 			_, err := h.ReadFacts(t.Context(), q, "project_one", 3251)
 			var code interface{ Code() int }
-			if !errors.As(err, &code) || code.Code()&255 != 1 {
+			if !errors.As(err, &code) || code.Code()&255 != 1 || h.IsProjectStateError(err) {
 				t.Fatal("query failure became a retained-data hold", err)
 			}
 		})
@@ -103,7 +103,7 @@ func TestReadFactsPreservesIterationFailure(t *testing.T) {
 	rows.Close()
 	_, err = h.ReadFacts(t.Context(), q, "project_one", 3251)
 	var code interface{ Code() int }
-	if !errors.As(err, &code) || code.Code()&255 != 1 {
+	if !errors.As(err, &code) || code.Code()&255 != 1 || h.IsProjectStateError(err) {
 		t.Fatal("partial row list concealed iteration failure", err)
 	}
 }
@@ -122,9 +122,12 @@ func TestReadFactsStoredValueCorruptionRemainsProtective(t *testing.T) {
 		name, statement string
 		args            []any
 	}{
+		{"mismatched-source-key", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET source_key=source_key||'wrong'`, nil},
+		{"blob-source-key", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET source_key=CAST(source_key AS BLOB)`, nil},
 		{"oversized-original", `DROP TRIGGER review_adoption_originals_immutable; UPDATE review_adoption_obligations SET original_json=?`, []any{strings.Repeat("x", 65537)}},
 		{"nonnumeric-source-epoch", `UPDATE review_adoption_sources SET revision='broken'`, nil},
 		{"nonnumeric-domain-version", `UPDATE metadata SET value='broken' WHERE key='schema:review_adoption_obligations'`, nil},
+		{"missing-domain-table", `ALTER TABLE review_adoption_retargets RENAME TO missing_adoption_retargets`, nil},
 		{"noncanonical-domain-version", `UPDATE metadata SET value='01' WHERE key='schema:review_adoption_obligations'`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +145,10 @@ func TestReadFactsStoredValueCorruptionRemainsProtective(t *testing.T) {
 			if !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
 				t.Fatal("malformed stored value escaped protective classification", err)
 			}
+			wantLocal := !strings.Contains(tc.name, "domain")
+			if h.IsProjectStateError(err) != wantLocal {
+				t.Fatal("project corruption and shared schema failure were conflated", err)
+			}
 		})
 	}
 }
@@ -156,13 +163,13 @@ func TestVerifyRetainedSourceSeparatesQueryFailureAndOversizedBody(t *testing.T)
 	q := obligationQueryFailure{Query: f.store.DB(), match: "CASE WHEN length(CAST(batch_json", row: true}
 	err = h.VerifyRetainedSource(t.Context(), q, "project_one", state.Source, state.Revision)
 	var code interface{ Code() int }
-	if !errors.As(err, &code) || code.Code()&255 != 1 {
+	if !errors.As(err, &code) || code.Code()&255 != 1 || h.IsProjectStateError(err) {
 		t.Fatal("retained provenance query failure became corruption", err)
 	}
 	f.exec(`DROP TRIGGER review_adoption_imports_immutable; UPDATE review_adoption_imports SET batch_json=?`, strings.Repeat("x", 262145))
 	err = h.VerifyRetainedSource(t.Context(), f.store.DB(), "project_one", state.Source, state.Revision)
 	var failure *core.Error
-	if !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+	if !errors.As(err, &failure) || failure.Code != "storage_unavailable" || !h.IsProjectStateError(err) {
 		t.Fatal("oversized retained provenance lost protective classification", err)
 	}
 }
@@ -196,7 +203,7 @@ func TestRetargetAggregateStoredTypesRemainProtective(t *testing.T) {
 			} {
 				t.Run(read.name, func(t *testing.T) {
 					var failure *core.Error
-					if err := read.call(); !errors.As(err, &failure) || failure.Code != "storage_unavailable" {
+					if err := read.call(); !errors.As(err, &failure) || failure.Code != "storage_unavailable" || !h.IsProjectStateError(err) {
 						t.Fatal("corrupt aggregate escaped protective classification", err)
 					}
 				})
@@ -215,8 +222,33 @@ func TestRetargetAggregatePreservesQueryFailure(t *testing.T) {
 		func() error { _, err := h.HasOpen(t.Context(), q, "project_one", 3341); return err },
 	} {
 		var code interface{ Code() int }
-		if err := read(); !errors.As(err, &code) || code.Code()&255 != 1 {
+		if err := read(); !errors.As(err, &code) || code.Code()&255 != 1 || h.IsProjectStateError(err) {
 			t.Fatal("aggregate query failure became a retained-data hold", err)
+		}
+	}
+}
+
+func TestProjectStateMarkerPreservesContextAndTransactionFailures(t *testing.T) {
+	f := fresh(t)
+	f.apply(batch(), "project-marker-operational-errors")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := h.ReadFacts(ctx, f.store.DB(), "project_one", 3251); !errors.Is(err, context.Canceled) || h.IsProjectStateError(err) {
+		t.Fatal("cancelled SQLite read became project corruption", err)
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ReadFacts(t.Context(), tx, "project_one", 3251); !errors.Is(err, sql.ErrTxDone) || h.IsProjectStateError(err) {
+		t.Fatal("completed SQLite transaction became project corruption", err)
+	}
+	for _, err := range []error{nil, core.Fail("storage_unavailable", "Shared storage failure.", 500), core.Fail("not_found", "Unrelated missing resource.", 404), context.DeadlineExceeded, sql.ErrTxDone} {
+		if h.IsProjectStateError(err) {
+			t.Fatal("unvalidated failure received project classification", err)
 		}
 	}
 }

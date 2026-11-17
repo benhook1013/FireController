@@ -14,13 +14,13 @@ import (
 	"unicode/utf8"
 )
 
-const fetchBudget = 30 * time.Second
+const fetchBudget = 60 * time.Second
 const fetchOutputLimit = 64 << 10
 
 // Fetch provisions or refreshes this manager's private bare cache from one
 // fixed GitHub repository URL. It fetches only the two caller-pinned commits;
 // no remote refs, credentials, or provider metadata are retained.
-func (m *Manager) Fetch(ctx context.Context, repositoryID int64, canonicalRepository, candidateSHA, baseSHA, token string) error {
+func (m *Manager) Fetch(ctx context.Context, repositoryID int64, canonicalRepository, candidateSHA, baseSHA, token string) (result error) {
 	if m == nil || ctx == nil || repositoryID <= 0 || !validCanonicalRepository(canonicalRepository) || !validSHA(candidateSHA) || !validSHA(baseSHA) || !validGitHubToken(token) {
 		return errInput
 	}
@@ -33,6 +33,11 @@ func (m *Manager) Fetch(ctx context.Context, repositoryID int64, canonicalReposi
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, fetchBudget)
 	defer cancel()
+	defer func() {
+		if result != nil && operationCtx.Err() != nil {
+			result = errors.Join(result, operationCtx.Err())
+		}
+	}()
 	select {
 	case m.fetchGate <- struct{}{}:
 		defer func() { <-m.fetchGate }()
@@ -79,17 +84,40 @@ func (m *Manager) Fetch(ctx context.Context, repositoryID int64, canonicalReposi
 		return errMaterialize
 	}
 
-	remote := "https://github.com/" + canonicalRepository + ".git"
-	if _, err = m.fetchOutput(operationCtx, cache, token, gitDir, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, candidateSHA, baseSHA); err != nil {
-		return errMaterialize
+	if !m.completeFetchObjects(operationCtx, cache, gitDir, candidateSHA, baseSHA) {
+		remote := "https://github.com/" + canonicalRepository + ".git"
+		if _, err = m.fetchOutput(operationCtx, cache, token, gitDir, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, candidateSHA, baseSHA); err != nil {
+			return errMaterialize
+		}
+		if !m.completeFetchObjects(operationCtx, cache, gitDir, candidateSHA, baseSHA) {
+			return errMaterialize
+		}
 	}
-	for _, sha := range []string{candidateSHA, baseSHA} {
-		commit, verifyErr := m.fetchOutput(operationCtx, cache, token, gitDir, "rev-parse", "--verify", sha+"^{commit}")
-		if verifyErr != nil || commit != sha {
+	// Fixed private refs let a genuinely new pinned fetch negotiate retained
+	// ancestry. They never select source, track a remote branch or store a token.
+	for _, pin := range []struct{ ref, sha string }{{"refs/firecontroller/cache/candidate", candidateSHA}, {"refs/firecontroller/cache/base", baseSHA}} {
+		if _, err := m.fetchOutput(operationCtx, cache, "", gitDir, "update-ref", pin.ref, pin.sha); err != nil {
 			return errMaterialize
 		}
 	}
 	return nil
+}
+
+func (m *Manager) completeFetchObjects(ctx context.Context, cache, gitDir, candidateSHA, baseSHA string) bool {
+	shallow, err := m.fetchOutput(ctx, cache, "", gitDir, "rev-parse", "--is-shallow-repository")
+	if err != nil || shallow != "false" {
+		return false
+	}
+	for _, sha := range []string{candidateSHA, baseSHA} {
+		commit, err := m.fetchOutput(ctx, cache, "", gitDir, "rev-parse", "--verify", sha+"^{commit}")
+		if err != nil || commit != sha {
+			return false
+		}
+	}
+	// Quiet suppresses object/path output, but --missing=error still verifies
+	// reachable blobs as well as commits/trees. No implicit partial-clone fetch.
+	_, err = m.fetchOutput(ctx, cache, "", gitDir, "rev-list", "--objects", "--missing=error", "--quiet", candidateSHA, baseSHA)
+	return err == nil
 }
 
 func validCanonicalRepository(value string) bool {
@@ -131,12 +159,14 @@ func (m *Manager) fetchOutput(ctx context.Context, directory, token string, args
 	fixed := []string{"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "credential.helper=", "-c", "http.followRedirects=false"}
 	command := exec.CommandContext(commandCtx, m.git, append(fixed, args...)...)
 	command.Dir = directory
-	command.Env = append([]string(nil), m.env...)
+	command.Env = append(append([]string(nil), m.env...), "GIT_NO_LAZY_FETCH=1")
 	if token != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		command.Env = append(command.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
 	}
 	command.WaitDelay = time.Second
+	cleanup := configureFetchProcess(command)
+	defer cleanup()
 	var stdout bytes.Buffer
 	command.Stdout = &boundedWriter{writer: &stdout, remaining: fetchOutputLimit, cancel: cancel}
 	command.Stderr = &boundedWriter{writer: ioDiscard{}, remaining: fetchOutputLimit, cancel: cancel}

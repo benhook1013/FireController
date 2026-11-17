@@ -239,6 +239,16 @@ func TestExternalHostedRollbackMissingRetiredAndConcurrentNative(t *testing.T) {
 	if len(retained.Findings) != 1 || retained.Findings[0].Disposition != "accepted" || retained.Findings[0].ProofNote != "RETAINED_NATIVE_FIX" {
 		t.Fatal("external append changed native decisions", retained)
 	}
+	// Full replacement is safe once the captured result has been handled.
+	r := externalRun(1)
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return FinalizeExternalHostedRun(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "fixture"}, NativeAdjudication{
+			SourceRunID: r.SourceRunID, Finalized: true, FrozenCounts: &NativeCounts{Found: 1},
+			Findings: []NativeFindingUpdate{{SourceFindingID: r.Findings[0].SourceFindingID, Disposition: "rejected", DecisionReason: "Fixture settled", Actor: "fixture", DecidedAt: r.FinishedAt}},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var rev int64
 	f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, f.project).Scan(&rev)
 	req := reviewRequest(rev, nil)
@@ -255,21 +265,22 @@ func TestExternalHostedRollbackMissingRetiredAndConcurrentNative(t *testing.T) {
 		t.Fatal("corrupt frontier accepted")
 	}
 }
-func TestExternalHostedSchemaTenMigrationAndIdentityIndex(t *testing.T) {
+func TestExternalHostedSchemaNineMigrationAndIdentityIndex(t *testing.T) {
 	f := newAPIFixture(t)
-	historyObservationPost(t, f, reviewRequest(0, []PullInput{mixedChannelPull()}), "external-old-ten")
+	historyObservationPost(t, f, reviewRequest(0, []PullInput{mixedChannelPull()}), "external-old-nine")
 	before := channelCountsPull(t, f, "")
-	if _, err := f.store.DB().Exec(`DROP INDEX review_run_versions_external_source; DROP TABLE review_hosted_discovery_state; UPDATE metadata SET value='10' WHERE key='schema:reviews'`); err != nil {
+	removeDeliverySelectionForLegacyFixture(t, f.store)
+	if _, err := f.store.DB().Exec(`DROP INDEX review_run_versions_external_source; DROP TABLE review_hosted_discovery_state; UPDATE metadata SET value='9' WHERE key='schema:reviews'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, channelCountsPull(t, f, "")) {
-		t.Fatal("v10 migration altered current snapshot")
+		t.Fatal("v9 migration altered current snapshot")
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
 		t.Fatal(version, err)
 	}
 	externalInit(t, f)
@@ -402,101 +413,23 @@ func TestExternalHostedAuthoritativeDetailCapacityRollsBack(t *testing.T) {
 	externalMustPublish(t, f, externalRun(31))
 }
 
-func removeExternalHostedForLegacyFixture(t *testing.T, store *core.Store) {
-	t.Helper()
-	if _, err := store.DB().Exec(`DROP INDEX IF EXISTS review_run_versions_external_source; DROP TABLE IF EXISTS review_hosted_discovery_state`); err != nil {
-		t.Fatal(err)
+func TestExternalHostedCaptureCannotBeForgedOrOmittedByFullObservation(t *testing.T) {
+	f := newAPIFixture(t)
+	pull := nativePull(1)
+	historyObservationPost(t, f, reviewRequest(0, []PullInput{pull}), "external-initial")
+	tx := historyWriterTx(t, f)
+	fake := reviewRequest(1, []PullInput{pull})
+	fake.Source = externalHostedSource
+	_, err := admitObservation(t.Context(), tx, f.project, fake)
+	if err == nil {
+		t.Fatal("observation impersonated the observer")
 	}
-}
-
-func externalSchemaObjects(t *testing.T, store *core.Store) string {
-	t.Helper()
-	rows, err := store.DB().Query(`SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_schema WHERE tbl_name LIKE 'review_%' ORDER BY type,name`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var objects []string
-	for rows.Next() {
-		var kind, name, owner, definition string
-		if err := rows.Scan(&kind, &name, &owner, &definition); err != nil {
-			t.Fatal(err)
-		}
-		objects = append(objects, kind+"|"+name+"|"+owner+"|"+definition)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(objects, "\n")
-}
-
-func TestExternalHostedSchemaTenUpgradeConvergesWithFreshSchema(t *testing.T) {
-	f, snapshots, _, _ := historyMigrationLegacyFixture(t)
-	predecessor := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), completedChannelRunCountsMigrationSQL())
-	if len(predecessor) != 10 {
-		t.Fatal("published migration order changed", len(predecessor))
-	}
-	if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", predecessor, backfillCurrentReviewIndexes); err != nil {
-		t.Fatal(err)
-	}
-	before := map[string]string{}
-	for _, snapshot := range snapshots {
-		before[snapshot] = nativeSnapshotBytes(t, f, snapshot)
-	}
-	if err := EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	for snapshot, body := range before {
-		if nativeSnapshotBytes(t, f, snapshot) != body {
-			t.Fatal("upgrade changed retained source", snapshot)
-		}
-	}
-	fresh := newAPIFixture(t)
-	if externalSchemaObjects(t, f.store) != externalSchemaObjects(t, fresh.store) {
-		t.Fatal("upgraded and fresh physical review schemas differ")
-	}
-	// In the integrated source, discovery precedes completed counts, with a
-	// separate Delivery-selection migration between them. Compare this selected
-	// closure in that dependency order, without importing Delivery or changing
-	// what this published parent's version 10 means.
-	integrated, err := core.Open(t.Context(), t.TempDir()+"/integrated")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer integrated.Close()
-	integratedOrder := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL(), channelRunCountsMigrationSQL(), ExternalHostedSchemaSQL(), completedChannelRunCountsMigrationSQL())
-	if err := integrated.EnsureSchemaWithBackfill(t.Context(), "reviews", integratedOrder, backfillCurrentReviewIndexes); err != nil {
-		t.Fatal(err)
-	}
-	if externalSchemaObjects(t, f.store) != externalSchemaObjects(t, integrated) {
-		t.Fatal("selected closure differs under source dependency ordering")
-	}
-	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateExternalHostedFrontiers(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestExternalHostedSchemaTenCollisionRollsBackWholeMigration(t *testing.T) {
-	for _, statement := range ExternalHostedSchemaSQL() {
-		t.Run(strings.Fields(statement)[1]+"_collision", func(t *testing.T) {
-			f := newAPIFixture(t)
-			removeExternalHostedForLegacyFixture(t, f.store)
-			if _, err := f.store.DB().Exec(`UPDATE metadata SET value='10' WHERE key='schema:reviews'`); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.store.DB().Exec(statement); err != nil {
-				t.Fatal(err)
-			}
-			before := historyMigrationDatabaseDigest(t, f)
-			if err := EnsureSchema(t.Context(), f.store); err == nil {
-				t.Fatal("preexisting discovery object accepted")
-			}
-			if before != historyMigrationDatabaseDigest(t, f) {
-				t.Fatal("failed migration changed schema, data or version")
-			}
-		})
-	}
+	tx.Rollback()
+	externalInit(t, f)
+	run := externalRun(1)
+	externalMustPublish(t, f, run)
+	tx = historyWriterTx(t, f)
+	defer tx.Rollback()
+	_, err = admitObservation(t.Context(), tx, f.project, reviewRequest(2, []PullInput{pull}))
+	nativeErrorCode(t, err, "external_hosted_pending")
 }

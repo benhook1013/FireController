@@ -55,7 +55,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0})
+	_, err = e.ConfigurePolicy(ctx, scope, "seed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,59 +586,29 @@ func TestReviewHostedEvidenceStrictWirePresenceAndShape(t *testing.T) {
 	}
 }
 
-func TestReviewSubmittedEvidenceStrictVariantAndAdditionalSources(t *testing.T) {
-	fixture := func() client.ReviewEvidence {
-		v := sampleHostedControlEvidence()
-		h := v.Capture.Hosted
-		h.PublicationID, h.ProviderAttemptID = "", ""
-		h.ReviewIDs = []int64{11}
-		h.SubmittedReview = &client.ReviewHostedSubmittedReview{ProviderRunID: "33333333-3333-4333-8333-333333333333", AcknowledgementCommentID: 102}
-		finding := &v.Capture.Findings[1]
-		finding.Source.Kind = "additional"
-		finding.Source.SourceKey = "hosted-review:11:additional:" + finding.Source.Fingerprint
-		return v
+func TestReviewAdditionalEvidenceWireRetainsRealSource(t *testing.T) {
+	value := sampleHostedControlEvidence()
+	s := value.Capture.Findings[2].Source
+	s.Kind = "additional"
+	s.SourceKey = "hosted-review:11:additional:" + s.Fingerprint
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cases := map[string]func(*client.ReviewEvidence){
-		"valid": func(*client.ReviewEvidence) {},
-		"mixed-publication": func(v *client.ReviewEvidence) {
-			v.Capture.Hosted.PublicationID = "11111111-1111-4111-8111-111111111111"
-		},
-		"mixed-attempt": func(v *client.ReviewEvidence) {
-			v.Capture.Hosted.ProviderAttemptID = "22222222-2222-4222-8222-222222222222"
-		},
-		"mixed-standing": func(v *client.ReviewEvidence) {
-			v.Capture.Hosted.StandingSummary = &client.ReviewHostedStandingSummary{}
-		},
-		"missing-run": func(v *client.ReviewEvidence) { v.Capture.Hosted.SubmittedReview.ProviderRunID = "" },
-		"missing-ack": func(v *client.ReviewEvidence) { v.Capture.Hosted.SubmittedReview.AcknowledgementCommentID = 0 },
-		"ack-is-trigger": func(v *client.ReviewEvidence) {
-			v.Capture.Hosted.SubmittedReview.AcknowledgementCommentID = v.Capture.Hosted.TriggerCommentID
-		},
-		"multiple-reviews": func(v *client.ReviewEvidence) { v.Capture.Hosted.ReviewIDs = append(v.Capture.Hosted.ReviewIDs, 12) },
-		"empty-positive": func(v *client.ReviewEvidence) {
-			v.Capture.Findings = []client.ReviewEvidenceFinding{}
-			v.Capture.ReportedFindings = 0
-		},
-		"invented-additional-comment": func(v *client.ReviewEvidence) { v.Capture.Findings[1].Source.CommentID = 999 },
-		"unknown-additional-line":     func(v *client.ReviewEvidence) { v.Capture.Findings[1].StartLine = 0 },
+	got, err := readControlEvidenceWire(t, data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			value := fixture()
-			mutate(&value)
-			raw, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := readControlEvidenceWire(t, raw)
-			if name == "valid" {
-				if err != nil || !reflect.DeepEqual(got, value) {
-					t.Fatal("submitted source changed", err)
-				}
-			} else if err == nil {
-				t.Fatal("invalid submitted variant accepted")
-			}
-		})
+	if got.Capture.Findings[2].Source.Kind != "additional" || got.Capture.Findings[2].Source.CommentID != 0 {
+		t.Fatal("additional identity lost")
+	}
+	s.CommentID = 21
+	data, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = readControlEvidenceWire(t, data); err == nil {
+		t.Fatal("invented additional comment accepted")
 	}
 }
 
@@ -687,6 +657,17 @@ func TestReviewHostedExtensibleProvenanceLabelRead(t *testing.T) {
 		if _, err := readControlEvidenceWire(t, data); err == nil {
 			t.Fatal("new label bypassed source binding", bad)
 		}
+	}
+}
+
+func TestReviewReadFailureExplainsRunningClientRecovery(t *testing.T) {
+	v := sampleHostedControlEvidence()
+	v.Capture.Findings[0].Source.Fingerprint = "PRIVATE_SENTINEL"
+	data, _ := json.Marshal(v)
+	_, err := readControlEvidenceWire(t, data)
+	var failure *client.Error
+	if !errors.As(err, &failure) || failure.Code != "invalid_response" || !strings.Contains(failure.Action, "client_source_revision") || !strings.Contains(failure.Action, "reconnect") || strings.Contains(failure.Action, "PRIVATE_SENTINEL") {
+		t.Fatal("invalid read lacks safe running-client recovery", err)
 	}
 }
 

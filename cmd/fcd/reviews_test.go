@@ -111,6 +111,17 @@ func TestReviewExecutionCompositionIsExplicit(t *testing.T) {
 				cancel()
 				t.Fatal("worker startup failed", err)
 			}
+			if mode == "cli" || mode == "dual" {
+				starter, ok := drivers["local-cli"].(cliRecoveryStarter)
+				if !ok {
+					cancel()
+					t.Fatal("CLI recovery is absent from daemon composition")
+				}
+				if _, err := starter.StartCLIRecovery(workerCtx); err == nil {
+					cancel()
+					t.Fatal("daemon failed to start its one owned CLI recovery observer")
+				}
+			}
 			cancel()
 			if done != nil {
 				select {
@@ -149,21 +160,36 @@ func TestDaemonCatalogFailurePrecedesDatabaseCreation(t *testing.T) {
 func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T) {
 	path, _ := privateTestCatalog(t, []string{"cli"})
 	dir := filepath.Join(t.TempDir(), "private")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancel(t.Context())
 	stdout := &output{ready: make(chan struct{})}
 	stderr := &output{ready: make(chan struct{})}
 	done := make(chan int, 1)
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("native daemon did not stop after test cancellation")
+			}
+		}
+	})
+	startedAt := time.Now()
 	go func() {
 		done <- run(ctx, []string{"--data-dir", dir, "--listen", "127.0.0.1:0", "--review-catalog", path}, stdout, stderr)
 	}()
 	select {
 	case <-stdout.ready:
 	case code := <-done:
+		joined = true
 		t.Fatalf("native startup failed: %d %s", code, stderr.String())
-	case <-time.After(5 * time.Second):
-		t.Fatal("native startup deadline")
+	case <-time.After(15 * time.Second):
+		// This fresh installation includes all domain migrations; readyz and
+		// shutdown below retain their independent short readiness/drain bounds.
+		t.Fatalf("native cold schema installation deadline: diagnostics=%s", stderr.String())
 	}
+	t.Logf("native cold schema installation completed in %s", time.Since(startedAt))
 	var started map[string]string
 	if err := json.Unmarshal([]byte(stdout.String()), &started); err != nil {
 		t.Fatal(err)
@@ -180,6 +206,7 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	cancel()
 	select {
 	case code := <-done:
+		joined = true
 		if code != 0 || stderr.String() != "" {
 			t.Fatalf("native shutdown: %d %s", code, stderr.String())
 		}
@@ -189,5 +216,48 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	entries, err := os.ReadDir(filepath.Join(dir, "review-captures"))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("idle startup created a provider capture", err)
+	}
+}
+
+func TestReviewExecutionCompositionUsesCLIAllowanceTimeout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	store, err := core.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = reviewexec.EnsureSchema(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := privateTestCatalog(t, []string{"cli"})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Version      int              `json:"version"`
+		Capabilities []map[string]any `json:"capabilities"`
+	}
+	if json.Unmarshal(data, &file) != nil {
+		t.Fatal("catalog fixture")
+	}
+	file.Capabilities[0]["cli_allowance_timeout_seconds"] = 60
+	data, err = json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := reviewruntime.LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = buildReviewExecution(store, dir, catalog); err != nil {
+		t.Fatal("configured timeout not composed", err)
+	}
+	catalog.Capabilities[0].CLIAllowanceTimeoutSeconds = 61
+	if _, _, err = buildReviewExecution(store, dir, catalog); err == nil {
+		t.Fatal("inconsistent timeout capability was accepted")
 	}
 }

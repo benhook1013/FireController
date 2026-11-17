@@ -313,7 +313,7 @@ func TestExternalHostedNativeIdentityIndexesAndConflictingOriginal(t *testing.T)
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "4" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_evidence'`).Scan(&version); err != nil || version != "5" {
 		t.Fatal("latest schema was not used", version, err)
 	}
 }
@@ -427,7 +427,7 @@ func TestExternalHostedConflictingNativeUUIDIsHeld(t *testing.T) {
 	}
 	op := "review_operation_" + strings.Repeat("f", 32)
 	attempt := "review_attempt_" + strings.Repeat("f", 32)
-	admissionSQL(t, f, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,?,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, op, attempt, a.OperationID)
+	admissionSQL(t, f, `INSERT INTO review_operations(id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision,allow_out_of_order) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,?,created_at,updated_at,capability_fingerprint,policy_revision,allow_out_of_order FROM review_operations WHERE id=?`, op, attempt, a.OperationID)
 	admissionSQL(t, f, `INSERT INTO review_execution_attempts(id,operation_id,project_id,provider,account,state,revision,anchor_json,intent,external_id) SELECT ?,?,project_id,provider,account,state,revision,anchor_json,intent,external_id FROM review_execution_attempts WHERE id=?`, attempt, op, a.ID)
 	admissionSQL(t, f, `INSERT INTO review_execution_evidence(id,project_id,attempt_id,operation_id,body_json,fingerprint) SELECT ?,project_id,?,?,body_json,fingerprint FROM review_execution_evidence WHERE attempt_id=?`, "review_evidence_"+strings.Repeat("f", 32), attempt, op, a.ID)
 	run := reviewprovider.ExternalHostedRun{HeadSHA: a.Anchor.CandidateSHA, Inventory: reviewprovider.HostedFindingInventory{Publication: reviewprovider.HostedPublication{PublicationID: in.Hosted.PublicationID}}}

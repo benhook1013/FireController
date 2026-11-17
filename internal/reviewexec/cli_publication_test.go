@@ -28,7 +28,12 @@ func (trap *cliPublicationHTTPTrap) RoundTrip(*http.Request) (*http.Response, er
 
 func cliPublicationFixture(t *testing.T, count int, outcome string) (*attemptFixture, Attempt, ReviewEvidence) {
 	t.Helper()
-	f, a, input := evidenceFixture(t, "cli", true)
+	f, a, input := evidenceFixture(t, "cli", false)
+	input.ExpectedAnchor.ParentSHA = input.ExpectedAnchor.BaseSHA
+	a, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, input.ExpectedAnchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := EnsureAdjudicationSchema(context.Background(), f.store); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +245,11 @@ func TestPublishEvidenceNilMetadataPreservesCurrentFactsWithoutHTTP(t *testing.T
 	}
 	facts := after.Pull
 	facts.RunCount, facts.RunCounts, facts.RecentRuns = before.Pull.RunCount, before.Pull.RunCounts, before.Pull.RecentRuns
+	if after.Pull.AttemptCount != before.Pull.AttemptCount+1 || len(after.Pull.LatestAttempts) != 1 ||
+		after.Pull.LatestAttempts[0].SourceAttemptID != a.ID || after.Pull.LatestAttempts[0].SourceRunID != evidence.ID || after.Pull.LatestAttempts[0].State != "active" {
+		t.Fatal("result publication did not attach the original attempt", after.Pull.LatestAttempts)
+	}
+	facts.AttemptCount, facts.LatestAttempts = before.Pull.AttemptCount, before.Pull.LatestAttempts
 	if !reflect.DeepEqual(facts, before.Pull) || after.ObservedAt != observed || !reflect.DeepEqual(afterMerged.Pull, beforeMerged.Pull) || projectionDigest(t, f, before.SnapshotID) != oldSnapshot || attemptState(t, f, a) != journal {
 		t.Fatal("nil publication replaced current metadata, history, freshness or journal")
 	}
@@ -441,16 +451,4 @@ func TestPublishEvidenceOversizedDetailRollsBackInitialProjection(t *testing.T) 
 	if receipt != (reviews.Receipt{}) || adjudicationState(t, f, a) != before || projectionDigest(t, f, "") != projection {
 		t.Fatal("oversized initial publication committed partial projection/event effects")
 	}
-}
-
-// Tampering targets the exact retained native body selected by this snapshot,
-// never every version of a producer or a writable compatibility view.
-func projectionNativeVersion(t *testing.T, f *attemptFixture, snapshot, evidenceID string) (string, int64) {
-	t.Helper()
-	var id string
-	var version int64
-	if err := f.store.DB().QueryRow(`SELECT id,version_revision FROM review_runs WHERE project_id=? AND snapshot_id=? AND source='native-executor' AND source_run_id=?`, attemptProject, snapshot, evidenceID).Scan(&id, &version); err != nil {
-		t.Fatal(err)
-	}
-	return id, version
 }

@@ -50,10 +50,17 @@ func TestLifecycleStoredMetadataIsolationAndRecovery(t *testing.T) {
 			if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
 				t.Fatal(err)
 			}
-			var got reviews.PullResponse
-			projectionRead(t, f, "/pulls/4", &got)
-			if got.Pull.Title != "independent metadata" {
-				t.Fatal("valid independent metadata did not publish", got.Pull)
+			// The scheduler must persist the independent PR while malformed PR2
+			// remains held. A public pull response also derives parent topology
+			// from the entire snapshot, so that read must still fail closed until
+			// the intentionally corrupted peer is repaired.
+			var title string
+			if err := f.store.DB().QueryRow(`SELECT v.title FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions v ON v.project_id=m.project_id AND v.number=m.number AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.number=4`, attemptProject).Scan(&title); err != nil || title != "independent metadata" {
+				t.Fatal("valid independent metadata did not publish", title, err)
+			}
+			response := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/pulls/4", f.reader, "", "")
+			if response.Code != 500 || !strings.Contains(response.Body.String(), `"code":"storage_unavailable"`) {
+				t.Fatal("malformed topology did not fail closed", response.Code, response.Body.String())
 			}
 			_, health, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{{Number: 2}, {Number: 4}})
 			if err != nil || health[2].Error != "stored_metadata_invalid" || health[2].State != "retrying" {
@@ -73,6 +80,11 @@ func TestLifecycleStoredMetadataIsolationAndRecovery(t *testing.T) {
 			}
 			if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
 				t.Fatal(err)
+			}
+			var got reviews.PullResponse
+			projectionRead(t, f, "/pulls/4", &got)
+			if got.Pull.Title != "independent metadata" {
+				t.Fatal("repaired topology lost independent metadata", got.Pull)
 			}
 			d := s.due[lifecycleKey{attemptProject, 2}]
 			if d.lastErrorCode != "" || d.enrichmentError != "" {

@@ -68,7 +68,7 @@ func TestRoundCumulativePreservesStreakMinimumAndMaxOnlyReopening(t *testing.T) 
 	if c = roundRead(t, f, 2, "cli"); c.Used != 4 || c.Dry != 0 || c.Tapered {
 		t.Fatal("accepted round did not reset carried streak", c)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeUnderwayAndUnfinalizedCountOnceAgainstOneMore(t *testing.T) {
@@ -87,9 +87,9 @@ func TestRoundCumulativeUnderwayAndUnfinalizedCountOnceAgainstOneMore(t *testing
 	if c.Epoch != original.Epoch || c.Used != 0 || c.Maximum != 1 {
 		t.Fatal("one more allocated a second pending round", c)
 	}
-	pending := roundPendingCount(t, f, 2, "cli")
-	if pending != 1 {
-		t.Fatal("completed-unfinalized capture freed its slot", pending)
+	p := readProgress(t, f, 2).Items[0].Channels[1]
+	if p.Pending != 1 {
+		t.Fatal("completed-unfinalized capture freed its slot", p)
 	}
 	_, err = f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "extra-should-refuse", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 	attemptCode(t, err, "review_round_capacity")
@@ -107,7 +107,7 @@ func TestRoundCumulativeUnderwayAndUnfinalizedCountOnceAgainstOneMore(t *testing
 	if roundTables(t, f) != before {
 		t.Fatal("completion replay counted twice")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
@@ -120,11 +120,11 @@ func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
 	if roundTables(t, f) != before {
 		t.Fatal("capacity refusal changed legacy history or allocated a binding")
 	}
-	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || roundPendingCount(t, f, 2, "cli") != 1 {
+	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || readProgress(t, f, 2).Items[0].Channels[1].Pending != 1 {
 		t.Fatal("legacy capture lost its reservation or received early credit", c)
 	}
 	roundFinalize(t, f, a, evidence, 0, false)
-	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || !roundDone(c) || roundPendingCount(t, f, 2, "cli") != 0 {
+	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || !roundDone(c) || readProgress(t, f, 2).Items[0].Channels[1].Pending != 0 {
 		t.Fatal("legacy finalization failed to convert occupancy into completion", c)
 	}
 	before = roundTables(t, f)
@@ -132,7 +132,7 @@ func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
 	if roundTables(t, f) != before {
 		t.Fatal("legacy completion replay changed history")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundLegacySpareCapacityPreservesPendingEvidenceDispatchGuard(t *testing.T) {
@@ -156,7 +156,7 @@ func TestRoundLegacySpareCapacityPreservesPendingEvidenceDispatchGuard(t *testin
 	if err = f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
 		t.Fatal("finalized evidence held the remaining legacy round", err)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeLateOriginalRevisionBeyondItsOldCap(t *testing.T) {
@@ -177,7 +177,7 @@ func TestRoundCumulativeLateOriginalRevisionBeyondItsOldCap(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT grant_revision,epoch FROM review_round_operation_bindings WHERE operation_id=?`, late.OperationID).Scan(&grant, &epoch); err != nil || grant != 1 || epoch != 1 {
 		t.Fatal("edit rewrote original binding", grant, epoch, err)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeAcceptedAfterClosureResetsEffectiveTaper(t *testing.T) {
@@ -201,7 +201,7 @@ func TestRoundCumulativeAcceptedAfterClosureResetsEffectiveTaper(t *testing.T) {
 	if !c.Closed || c.Tapered || c.Dry != 0 || c.Used != 4 {
 		t.Fatal("posted accepted result did not reset streak after closure", c)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeCapacityRefusalAndOriginalKeyReplay(t *testing.T) {
@@ -231,7 +231,7 @@ func TestRoundCumulativeCapacityRefusalAndOriginalKeyReplay(t *testing.T) {
 	if err != nil || string(first) != string(replay) || roundTables(t, f) != before {
 		t.Fatal("old key recalculated a grant from current state", err)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeInitializerOnlyCreatesAbsentRule(t *testing.T) {
@@ -259,7 +259,48 @@ func TestRoundCumulativeInitializerOnlyCreatesAbsentRule(t *testing.T) {
 	if roundTables(t, f) != before {
 		t.Fatal("initializer changed an explicit existing rule")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
+}
+
+func TestRoundCumulativeImportedEarnedProofInvalidatesOnAcceptedCompletion(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(fmt.Sprint(accepted), func(t *testing.T) {
+			f := adoptionFixture(t)
+			prepared := adoptionPrepared()
+			prepared.InitialDry = 0
+			prepared.Tapered = true
+			prepared.MinimumRemaining = 1
+			adoptRound(t, f, prepared, "carried")
+			var original string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&original); err != nil {
+				t.Fatal(err)
+			}
+			roundGrant(t, f, 2, "cli", 1, 2, 4, "limits")
+			a, id := roundCapture(t, f, 0, accepted)
+			roundFinalize(t, f, a, id, 0, accepted)
+			c := roundRead(t, f, 2, "cli")
+			if !c.InitiallyTapered || c.InitialDry != 0 || c.OriginSource != prepared.Source || c.Used != 1 || c.Tapered {
+				t.Fatal("carried proof or minimum changed", c)
+			}
+			// Every explicit grant reopens, preserving the imported proof until a
+			// new completion evaluates it. An accepted result invalidates that proof.
+			roundGrant(t, f, 2, "cli", 2, 0, 2, "minimum-met")
+			c = roundRead(t, f, 2, "cli")
+			if c.Tapered || c.Dry != map[bool]int64{false: 1, true: 0}[accepted] {
+				t.Fatal("accepted result failed to invalidate carried taper proof", c)
+			}
+			a, id = roundCapture(t, f, 1, false)
+			roundFinalize(t, f, a, id, 1, false)
+			if current := roundRead(t, f, 2, "cli"); current.Tapered == accepted || current.Used != 2 {
+				t.Fatal("fresh result failed to evaluate retained imported proof", current)
+			}
+			var after string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&after); err != nil || after != original {
+				t.Fatal("edit rewrote immutable adoption baseline", err)
+			}
+			adoptionValid(t, f)
+		})
+	}
 }
 
 func TestRoundCumulativeFiniteThresholdAboveRequestBoundAndOverflowRefusal(t *testing.T) {
@@ -272,7 +313,7 @@ func TestRoundCumulativeFiniteThresholdAboveRequestBoundAndOverflowRefusal(t *te
 	if c.Maximum != 1001 || c.Used != 1 || c.Minimum != 1 || c.Dry != 1 {
 		t.Fatal("stored threshold reused the additional-request ceiling", c)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 	// Synthetic numeric-boundary state tests refusal without manufacturing a
 	// lifetime native completion history or claiming it is a valid backup.
 	if _, err := f.store.DB().Exec(`UPDATE review_round_controls SET used=?,minimum=?,maximum=?,dry=0,tapered=0`, roundSafeInteger-1, roundSafeInteger, roundSafeInteger); err != nil {
@@ -309,12 +350,12 @@ func TestRoundCumulativeIncompleteTerminalCaptureDoesNotRetainCapacity(t *testin
 			if _, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "retained_incomplete_capture", ""); err != nil {
 				t.Fatal(err)
 			}
-			progress := roundRead(t, f, 2, "cli")
-			if progress.Used != 0 || roundPendingCount(t, f, 2, "cli") != 0 {
+			progress := readProgress(t, f, 2).Items[0].Channels[1]
+			if progress.Used != 0 || progress.Pending != 0 {
 				t.Fatal("incomplete capture manufactured a round or occupied a slot", progress)
 			}
 			roundGrant(t, f, 2, "cli", 1, 0, 1, "retry-capacity")
-			roundSnapshotValid(t, f)
+			adoptionValid(t, f)
 		})
 	}
 }
@@ -344,9 +385,70 @@ func TestRoundCumulativeStoppedSettingsCannotBecomeOriginalDispatchGrant(t *test
 	if _, err := readRoundGrant(t.Context(), f.store.DB(), attemptProject, 2, "cli", 2, 1); err == nil {
 		t.Fatal("already-tapered settings became an admission grant")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 // Legacy stopped updating Dry once carried taper had stopped the channel, even
 // while previously captured native reviews finalized. Conversion derives the
 // actual streak from those same credited immutable results, without new credit.
+func TestRoundCumulativeLegacyFrozenCarryConversion(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("late_accepted_%t", accepted), func(t *testing.T) {
+			f := adoptionFixture(t)
+			p := adoptionPrepared()
+			p.InitialDry, p.Tapered, p.MinimumRemaining = 0, true, 1
+			adoptRound(t, f, p, "legacy-carry")
+			late, evidence := roundCapture(t, f, 0, accepted)
+			first, firstEvidence := roundCapture(t, f, 1, false)
+			roundFinalize(t, f, first, firstEvidence, 1, false)
+			roundFinalize(t, f, late, evidence, 0, accepted)
+			before := roundRead(t, f, 2, "cli")
+			if before.Used != 2 || before.Dry != 1 || !before.Tapered {
+				t.Fatal("fixture lacks legacy frozen carried taper", before)
+			}
+			adoptionValid(t, f)
+			var original string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE pull_number=2 AND channel='cli' AND revision=1`).Scan(&original); err != nil {
+				t.Fatal(err)
+			}
+			roundGrant(t, f, 2, "cli", 1, 0, 2, "convert-frozen-carry")
+			after := roundRead(t, f, 2, "cli")
+			wantDry := int64(2)
+			if accepted {
+				wantDry = 0
+			}
+			if after.Used != before.Used || after.Epoch != before.Epoch || after.Dry != wantDry || after.Tapered || !sameRoundBaseline(before, after) {
+				t.Fatal("conversion lost evidence-backed earned carry or retained accepted carry", before, after)
+			}
+			adoptionValid(t, f)
+			roundGrant(t, f, 2, "cli", 2, 0, 3, "later-cumulative-edit")
+			if current := roundRead(t, f, 2, "cli"); current.Used != 2 || current.Dry != wantDry || current.Tapered {
+				t.Fatal("subsequent edit recredited or changed the projected streak", current)
+			}
+			var unchanged string
+			var completions int64
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE pull_number=2 AND channel='cli' AND revision=1`).Scan(&unchanged); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_round_completions`).Scan(&completions); err != nil {
+				t.Fatal(err)
+			}
+			if unchanged != original || completions != 2 {
+				t.Fatal("conversion rewrote history or completion credit", completions)
+			}
+			adoptionValid(t, f)
+			// An internally consistent public predicate alone is insufficient:
+			// the conversion streak must match immutable completion evidence.
+			wrongDry, wrongTaper := int64(0), "false"
+			if accepted {
+				wrongDry, wrongTaper = 2, "true"
+			}
+			if _, err := f.store.DB().Exec(`UPDATE review_round_changes SET body_json=json_set(body_json,'$.control.dry',?,'$.control.tapered',json(?)) WHERE revision=2`, wrongDry, wrongTaper); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateRoundSnapshot(t.Context(), f.store.DB()); err == nil {
+				t.Fatal("conversion accepted a fabricated dry projection")
+			}
+		})
+	}
+}

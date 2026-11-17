@@ -38,7 +38,9 @@ func TestOffsiteFetchMissingBackupReportsOperatorError(t *testing.T) {
 
 type missingVerificationTransport struct{ *memoryTransport }
 
-func (m missingVerificationTransport) get(context.Context, string, string) error { return notFound }
+func (m missingVerificationTransport) get(context.Context, string, string, ...int64) error {
+	return notFound
+}
 
 func TestOffsiteMissingRemoteArchivePersistsSpecificFailure(t *testing.T) {
 	f := newFixture(t)

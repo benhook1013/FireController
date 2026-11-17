@@ -136,6 +136,11 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 func hashPrivate(ctx context.Context, path string, limit int64) (Artifact, error) {
+	return hashPrivateBuffer(ctx, path, limit, make([]byte, 64<<10))
+}
+
+// A buffer belongs to one sequential inspection; it is never shared by workers.
+func hashPrivateBuffer(ctx context.Context, path string, limit int64, buffer []byte) (Artifact, error) {
 	if checkContext(ctx) != nil || limit < 1 {
 		return Artifact{}, unavailable()
 	}
@@ -153,7 +158,7 @@ func hashPrivate(ctx context.Context, path string, limit int64) (Artifact, error
 		return Artifact{}, invalid()
 	}
 	h := sha256.New()
-	n, err := io.CopyBuffer(h, contextReader{ctx, io.LimitReader(f, before.Size())}, make([]byte, 64<<10))
+	n, err := io.CopyBuffer(h, contextReader{ctx, io.LimitReader(f, before.Size())}, buffer)
 	if err != nil {
 		return Artifact{}, unavailable()
 	}
@@ -318,9 +323,24 @@ func readBounded(ctx context.Context, path string, limit int64) ([]byte, error) 
 	return data, nil
 }
 
-// inspectManifest verifies only a completed immutable bundle. The checksum file
-// is the commit marker; a reserved but unfinished directory is never usable.
+// inspectManifest verifies both the exact bundle bytes and their current
+// supported database/domain semantics for operator inspection and restore.
 func inspectManifest(ctx context.Context, bundleDir string) (Manifest, error) {
+	m, err := inspectBundleIntegrity(ctx, bundleDir)
+	if err != nil {
+		return m, err
+	}
+	absolute, _ := filepath.Abs(bundleDir)
+	if err = validateSnapshot(ctx, absolute, m); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+// inspectBundleIntegrity verifies completed immutable bytes, not database
+// semantics. Managed retention additionally requires the manifest hash recorded
+// only after full validation at creation. The checksum remains the commit marker.
+func inspectBundleIntegrity(ctx context.Context, bundleDir string) (Manifest, error) {
 	var m Manifest
 	if checkContext(ctx) != nil {
 		return m, unavailable()
@@ -355,19 +375,17 @@ func inspectManifest(ctx context.Context, bundleDir string) (Manifest, error) {
 	if err = checkBundleFiles(ctx, absolute, expected); err != nil {
 		return m, err
 	}
-	db, err := hashPrivate(ctx, filepath.Join(absolute, m.Database.Path), maxDatabaseBytes)
+	buffer := make([]byte, 64<<10)
+	db, err := hashPrivateBuffer(ctx, filepath.Join(absolute, m.Database.Path), maxDatabaseBytes, buffer)
 	if err != nil || db.SHA256 != m.Database.SHA256 || db.Bytes != m.Database.Bytes {
 		return m, invalid()
 	}
 	for _, a := range m.Artifacts {
 		_, limit, _ := artifactPath(a.Path)
-		actual, err := hashPrivate(ctx, filepath.Join(absolute, filepath.FromSlash(a.Path)), limit)
+		actual, err := hashPrivateBuffer(ctx, filepath.Join(absolute, filepath.FromSlash(a.Path)), limit, buffer)
 		if err != nil || actual.SHA256 != a.SHA256 || actual.Bytes != a.Bytes {
 			return m, invalid()
 		}
-	}
-	if err = validateSnapshot(ctx, absolute, m); err != nil {
-		return m, err
 	}
 	return m, nil
 }
@@ -485,6 +503,8 @@ func createWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, d
 }
 
 func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, dataDir, destinationRoot string, now func() time.Time, since func(time.Time) time.Duration) (out createdBundle, err error) {
+	diagnostics := beginCreateDiagnostics(ctx, "preflight")
+	defer func() { diagnostics.finish(err) }()
 	if checkContext(ctx) != nil || sourceDB == nil {
 		return out, unavailable()
 	}
@@ -534,9 +554,11 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if err != nil || !os.SameFile(selected, actual) {
 		return out, invalid()
 	}
+	diagnostics.next("source_validation")
 	if err = ValidateSource(ctx, source); err != nil {
 		return out, err
 	}
+	diagnostics.next("staging")
 	id := core.NewID("backup")
 	final := filepath.Join(destination, id)
 	stage := filepath.Join(destination, "."+id+".pending")
@@ -568,18 +590,27 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	// A wall-clock adjustment cannot reverse or inflate the snapshot window.
 	started := now()
 	m := Manifest{Version: 1, ID: id, SourceInstanceID: identity, SnapshotStartedAt: started.UTC().Format(time.RFC3339Nano), Artifacts: []Artifact{}}
+	diagnostics.next("snapshot_vacuum")
 	if err = core.SnapshotDatabase(ctx, sourceDB, filepath.Join(stage, "firecontroller.sqlite")); err != nil {
 		return out, unavailable()
 	}
 	m.SnapshotFinishedAt = started.Add(since(started)).UTC().Format(time.RFC3339Nano)
+	diagnostics.next("database_hash")
 	m.Database, err = hashPrivate(ctx, filepath.Join(stage, "firecontroller.sqlite"), maxDatabaseBytes)
 	if err != nil {
 		return out, err
 	}
+	diagnostics.databaseBytes = m.Database.Bytes
+	diagnostics.next("capture_copy")
 	m.Artifacts, err = copyInventory(ctx, source, stage)
 	if err != nil {
 		return out, err
 	}
+	diagnostics.captures = len(m.Artifacts)
+	for _, artifact := range m.Artifacts {
+		diagnostics.captureBytes += artifact.Bytes
+	}
+	diagnostics.next("snapshot_metadata")
 	sort.Slice(m.Artifacts, func(i, j int) bool { return m.Artifacts[i].Path < m.Artifacts[j].Path })
 	db, err := openSnapshot(ctx, filepath.Join(stage, "firecontroller.sqlite"))
 	if err != nil {
@@ -593,9 +624,11 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if !validManifest(m) {
 		return out, invalid()
 	}
+	diagnostics.next("full_validation")
 	if err = validateSnapshot(ctx, stage, m); err != nil {
 		return out, err
 	}
+	diagnostics.next("seal")
 	body, err := canonicalManifest(m)
 	if err != nil {
 		return out, err
@@ -642,6 +675,7 @@ func createBundleWithClock(ctx context.Context, sourceDB *sql.DB, identity, data
 	if current, statErr := os.Lstat(stage); statErr != nil || !os.SameFile(owned, current) {
 		return out, unavailable()
 	}
+	diagnostics.next("publication")
 	if err = os.Rename(stage, final); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return out, exists()

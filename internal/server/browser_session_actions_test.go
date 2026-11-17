@@ -31,7 +31,7 @@ func browserActionsFixture(t *testing.T) *fixture {
 
 func browserActionsLogin(t *testing.T, f *fixture, project, token, id string, admin bool) *http.Cookie {
 	t.Helper()
-	w := browserRequest(f, "POST", "/api/v1/projects/"+project+"/browser-session", token, "", `{"session_id":"`+id+`","allow_writes":true}`, "localhost")
+	w := browserRequest(f, "POST", "/api/v1/projects/"+project+"/browser-session", token, "", `{"session_id":"`+id+`"}`, "localhost")
 	v := require(t, w, 200)
 	if len(v) != 6 || v["allow_writes"] != true || v["can_edit_presentation"] != admin || v["session_id"] != id || v["project_id"] != project || v["instance_id"] != f.store.InstanceID() {
 		t.Fatal("write session capability mismatch")
@@ -61,6 +61,49 @@ func serveBrowserAction(f *fixture, r *http.Request) *httptest.ResponseRecorder 
 	w := httptest.NewRecorder()
 	f.handler.ServeHTTP(w, r)
 	return w
+}
+
+func TestBrowserSessionAutomaticLoginCapabilitiesAndNoEffects(t *testing.T) {
+	f := browserActionsFixture(t)
+	project := f.project(t, "owner/one")
+	reader, writer := "synthetic-auto-browser-read-token-1234567", "synthetic-auto-browser-write-token-1234567"
+	f.grant(t, project, reader, false)
+	f.grant(t, project, writer, true)
+	before := map[string]int{}
+	for _, table := range []string{"projects", "workers", "credentials", "grants", "receipts", "events", "inbox_messages", "project_presentations", "project_presentation_history"} {
+		before[table] = count(t, f.store, table)
+	}
+	providers := f.calls.Load()
+	for index, test := range []struct {
+		name, token      string
+		writes, settings bool
+	}{{"reader", reader, false, false}, {"writer", writer, true, false}, {"administrator", f.admin, true, true}} {
+		t.Run(test.name, func(t *testing.T) {
+			id := strings.Repeat(string(rune('a'+index)), 32)
+			path := "/api/v1/projects/" + project + "/browser-session"
+			w := browserRequest(f, "POST", path, test.token, "", `{"session_id":"`+id+`"}`, "localhost")
+			value := require(t, w, 200)
+			if len(value) != 6 || value["allow_writes"] != test.writes || value["can_edit_presentation"] != test.settings {
+				t.Fatalf("credential capabilities were not automatic: %#v", value)
+			}
+			cookies := w.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatal("login did not return exactly one selected cookie")
+			}
+			current := require(t, browserRequest(f, "GET", path, "", id, "", "localhost", cookies[0]), 200)
+			if current["allow_writes"] != test.writes || current["can_edit_presentation"] != test.settings {
+				t.Fatal("current session changed initial credential capabilities")
+			}
+		})
+	}
+	for table, expected := range before {
+		if count(t, f.store, table) != expected {
+			t.Fatalf("login wrote domain state in %s", table)
+		}
+	}
+	if f.calls.Load() != providers {
+		t.Fatal("login contacted provider")
+	}
 }
 
 func TestBrowserSessionActionsSendReplyHandlingAndExactRetry(t *testing.T) {
@@ -194,7 +237,9 @@ func TestBrowserSessionActionsCSRFRouteAllowlistAndReadPreservation(t *testing.T
 	if count(t, f.store, "receipts") != before || count(t, f.store, "inbox_messages") != 0 {
 		t.Fatal("forbidden action committed state")
 	}
-	readonly := browserLogin(t, f, p, f.admin, strings.Repeat("c", 32), "localhost")
+	readToken := "synthetic-browser-actions-read-token-1234567"
+	f.grant(t, p, readToken, false)
+	readonly := browserLogin(t, f, p, readToken, strings.Repeat("c", 32), "localhost")
 	require(t, serveBrowserAction(f, browserActionRequest(f, "POST", base+"/messages", strings.Repeat("c", 32), readonly, a, "readonly-action", body)), 403)
 }
 
@@ -269,16 +314,16 @@ func TestBrowserSessionActionsStrictCreationAndReadOnlyCredential(t *testing.T) 
 	id := strings.Repeat("f", 32)
 	token := "synthetic-browser-readonly-action-token-1234567"
 	f.grant(t, p, token, false)
-	for _, value := range []string{`null`, `"true"`, `1`, `{}`, `[]`} {
+	for _, value := range []string{`true`, `false`, `null`, `"true"`, `1`, `{}`, `[]`} {
 		require(t, browserRequest(f, "POST", "/api/v1/projects/"+p+"/browser-session", f.admin, "", `{"session_id":"`+id+`","allow_writes":`+value+`}`, "localhost"), 400)
 	}
 	for _, extra := range []string{`,"allow_writes":true`, `,"Allow_Writes":true`, `,"unexpected":true`} {
 		require(t, browserRequest(f, "POST", "/api/v1/projects/"+p+"/browser-session", f.admin, "", `{"session_id":"`+id+`","allow_writes":false`+extra+`}`, "localhost"), 400)
 	}
 	w := browserRequest(f, "POST", "/api/v1/projects/"+p+"/browser-session", token, "", `{"session_id":"`+id+`","allow_writes":true}`, "localhost")
-	require(t, w, 403)
+	require(t, w, 400)
 	if len(w.Result().Cookies()) != 0 {
-		t.Fatal("denied write connection installed cookie")
+		t.Fatal("unsupported connection field installed cookie")
 	}
 	cookie := browserLogin(t, f, p, token, id, "localhost")
 	current := require(t, browserRequest(f, "GET", "/api/v1/projects/"+p+"/browser-session", "", id, "", "localhost", cookie), 200)

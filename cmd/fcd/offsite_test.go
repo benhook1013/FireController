@@ -107,3 +107,38 @@ func TestOffsiteFetchValidTargetsReachPrivateConfigWithoutProviderWork(t *testin
 		t.Fatal("configuration refusal created fetch/provider state", entries, err)
 	}
 }
+
+func TestOffsiteBatchReportsIndexedFailuresWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	batch := offsite.BatchConfig{Version: 1, StateDir: filepath.Join(dir, "batch-state"), MinFreeBytes: 1}
+	for _, name := range []string{"first", "second"} {
+		c := offsite.Config{Version: 1, SourceRoot: filepath.Join(dir, "source"), StateDir: filepath.Join(dir, name+"-state"), InstanceID: "instance_" + strings.Repeat("a", 32), RcloneBinary: filepath.Join(dir, "absent-executable"), RcloneConfig: filepath.Join(dir, "private-secret"), Remote: "cloud:" + name, Keep: 1, Timeout: "1s", MaxBundleBytes: 1024}
+		path := filepath.Join(dir, name+".json")
+		raw, _ := json.Marshal(c)
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		batch.Configs = append(batch.Configs, path)
+	}
+	raw, _ := json.Marshal(batch)
+	path := filepath.Join(dir, "batch.json")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, diagnostics bytes.Buffer
+	if code := run(t.Context(), []string{"backup-push-batch", "--config", path}, &out, &diagnostics); code != 3 {
+		t.Fatal(code, diagnostics.String())
+	}
+	var result offsite.BatchResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.Destinations) != 2 {
+		t.Fatal(out.String(), err)
+	}
+	for i, item := range result.Destinations {
+		if item.Index != i || item.Reason == "" {
+			t.Fatal(result)
+		}
+	}
+	if strings.Contains(out.String()+diagnostics.String(), "private-secret") {
+		t.Fatal("configuration leaked")
+	}
+}

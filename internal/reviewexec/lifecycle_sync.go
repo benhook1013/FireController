@@ -18,6 +18,8 @@ import (
 // LifecycleSyncOptions are trusted process configuration, never browser or
 // worker instructions. Clock and wait injection make cadence proof deterministic.
 type LifecycleSyncOptions struct {
+	// CadenceShadow explicitly enables aggregate diagnostics; it never changes cadence.
+	CadenceShadow                                            bool
 	Now                                                      func() time.Time
 	Wait                                                     func(context.Context, time.Duration) error
 	OpenInterval, ClosedInterval, MergedInterval, CIInterval time.Duration
@@ -31,6 +33,7 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 	}
 	if len(options) == 1 {
 		o := options[0]
+		c.CadenceShadow = o.CadenceShadow
 		if o.Now != nil {
 			c.Now = o.Now
 		}
@@ -71,12 +74,14 @@ type lifecycleDue struct {
 	hints                                                [2]lifecycleHint
 	checkedAt, successAt, ciCheckedAt, hostedCheckedAt   time.Time
 	ciError, hostedError                                 string
+	hostedHead, hostedState                              string
 	baseSHA, baseRef                                     string
 	lastErrorCode                                        string
 	next, ci, enrichmentNext                             time.Time
 	head                                                 string
 	ciHead, ciBaseSHA, ciBaseRef                         string
 	ciCommit                                             string
+	ciGateRef, ciGateState                               string
 	enrichmentHead, enrichmentBaseSHA, enrichmentBaseRef string
 	enrichmentError                                      string
 }
@@ -90,6 +95,7 @@ type lifecycleLane uint8
 const (
 	lifecycleMetadata lifecycleLane = iota
 	lifecycleEnrichment
+	healthyHostedInterval = 5 * time.Minute
 )
 
 type lifecycleLaneSchedule struct {
@@ -99,26 +105,33 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
-	readers         map[string]TargetReader
-	watches         map[ciWatchKey]*ciWatchEntry
-	watchers        map[*ciWatchSubscription]bool
-	watchPrincipals map[string]int
-	watchTurn       bool
-	startedAt       time.Time
-	claim           chan struct{}
-	mu              sync.Mutex
-	lanes           [2]lifecycleLaneSchedule
-	due             map[lifecycleKey]lifecycleDue
-	accounts        map[string]lifecycleAccount
-	options         LifecycleSyncOptions
+	sharing          lifecycleSharingTelemetry
+	shadowNext       time.Time
+	demandShadowNext time.Time
+	readers          map[string]TargetReader
+	watches          map[ciWatchKey]*ciWatchEntry
+	watchers         map[*ciWatchSubscription]bool
+	watchPrincipals  map[string]int
+	watchTurn        bool
+	startedAt        time.Time
+	claim            chan struct{}
+	mu               sync.Mutex
+	lanes            [2]lifecycleLaneSchedule
+	due              map[lifecycleKey]lifecycleDue
+	accounts         map[string]lifecycleAccount
+	options          LifecycleSyncOptions
 }
 type lifecycleTarget struct {
+	cohortOwned        bool
+	prepared           *lifecyclePrepared
+	cohort             *reviewprovider.CIGateCohort
 	watch              *ciWatchClaim
 	hintGeneration     uint64
 	retainCIHint       bool
 	forceCI            bool
 	ciOnly             bool
 	project, account   string
+	repositoryName     string
 	repository, number int64
 	configuration      Configuration
 	fingerprint        string
@@ -211,7 +224,7 @@ func (e *Engine) lifecycleLoop(ctx context.Context, readers map[string]TargetRea
 		var target *lifecycleTarget
 		err := retrySourceRefreshLocal(ctx, func() error { var err error; target, err = e.claimLifecycleLane(ctx, readers, s, lane); return err })
 		if err == nil && target != nil {
-			err = e.observeLifecycle(ctx, *target, s)
+			err = e.observeLifecycleCohort(ctx, *target, readers, s)
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -238,6 +251,10 @@ func (e *Engine) claimLifecycle(ctx context.Context, readers map[string]TargetRe
 }
 
 func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]TargetReader, s *lifecycleSchedule, lane lifecycleLane) (*lifecycleTarget, error) {
+	return e.claimLifecycleMember(ctx, readers, s, lane, nil)
+}
+
+func (e *Engine) claimLifecycleMember(ctx context.Context, readers map[string]TargetReader, s *lifecycleSchedule, lane lifecycleLane, owner *lifecycleTarget) (*lifecycleTarget, error) {
 	select {
 	case s.claim <- struct{}{}:
 		defer func() { <-s.claim }()
@@ -246,7 +263,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 	}
 	s.mu.Lock()
 	last := s.lanes[lane].lastProject
-	watchFirst := lane == lifecycleEnrichment && s.watchTurn
+	watchFirst := owner == nil && lane == lifecycleEnrichment && s.watchTurn
 	s.mu.Unlock()
 	if watchFirst {
 		if target, err := e.claimCIWatch(ctx, readers, s); target != nil || err != nil {
@@ -259,14 +276,14 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		}
 	}
 	type project struct {
-		id                   string
+		id, repositoryName   string
 		revision, repository int64
 		config               Configuration
 		invalid              bool
 	}
 	var projects []project
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT p.id,c.revision,c.body_json,p.github_repository_id FROM projects p JOIN review_execution_config c ON c.project_id=p.id AND c.revision=(SELECT MAX(current.revision) FROM review_execution_config current WHERE current.project_id=p.id) ORDER BY (p.id<=?),p.id LIMIT 64`, last)
+		rows, err := tx.QueryContext(ctx, `SELECT p.id,c.revision,c.body_json,p.github_repository_id,p.repository FROM projects p JOIN review_execution_config c ON c.project_id=p.id AND c.revision=(SELECT MAX(current.revision) FROM review_execution_config current WHERE current.project_id=p.id) ORDER BY (p.id<=?),p.id LIMIT 64`, last)
 		if err != nil {
 			return err
 		}
@@ -274,7 +291,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		for rows.Next() {
 			var p project
 			var body any
-			if err = rows.Scan(&p.id, &p.revision, &body, &p.repository); err != nil {
+			if err = rows.Scan(&p.id, &p.revision, &body, &p.repository, &p.repositoryName); err != nil {
 				return err
 			}
 			p.config, err = decodeLifecycleConfiguration(p.id, body)
@@ -287,6 +304,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		return nil, err
 	}
 	for _, p := range projects {
+		if owner != nil && p.id != owner.project {
+			continue
+		}
 		s.mu.Lock()
 		s.lanes[lane].lastProject = p.id
 		s.mu.Unlock()
@@ -299,6 +319,8 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		}
 		if lane == lifecycleEnrichment {
 			_, ci := readers[p.config.CapabilityID].(sourceCIReader)
+			_, gateCI := readers[p.config.CapabilityID].(ciGateReader)
+			ci = ci || gateCI
 			_, hosted := readers[p.config.CapabilityID].(ExternalHostedReader)
 			if !ci && !hosted {
 				continue
@@ -310,6 +332,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		a := s.accounts[account]
 		busy := s.lanes[lane].projects[p.id] || s.lanes[lane].accounts[account] || now.Before(a.until)
 		s.mu.Unlock()
+		if owner != nil {
+			busy = account != owner.account || p.config.CapabilityID != owner.configuration.CapabilityID || cap.Fingerprint != owner.fingerprint || !reflect.DeepEqual(p.config, owner.configuration) || now.Before(a.until)
+		}
 		if busy {
 			continue
 		}
@@ -339,9 +364,7 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			return nil, err
 		}
 		s.mu.Lock()
-		// A different lane may still finish an observation for a PR removed
-		// from this snapshot. Preserve its hint generation until all project
-		// claims finish; otherwise completion recreates done without wanted.
+		// Preserve hint generations while either lane still owns a project claim.
 		if !s.lanes[lifecycleMetadata].projects[p.id] && !s.lanes[lifecycleEnrichment].projects[p.id] {
 			for k := range s.due {
 				if k.project == p.id && !slices.Contains(numbers, k.number) {
@@ -357,6 +380,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 		for offset := range len(numbers) {
 			n := numbers[(start+offset)%len(numbers)]
 			d := s.due[lifecycleKey{p.id, n}]
+			if owner != nil && (n == owner.number || !periodicCohortDue(d, now)) {
+				continue
+			}
 			next := d.next
 			changed := false
 			if lane == lifecycleEnrichment {
@@ -468,9 +494,9 @@ func (e *Engine) claimLifecycleLane(ctx context.Context, readers map[string]Targ
 			s.watchTurn = true
 		}
 		s.mu.Unlock()
-		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
+		return &lifecycleTarget{project: p.id, account: account, repository: p.repository, repositoryName: p.repositoryName, number: number, configuration: p.config, fingerprint: cap.Fingerprint, hostedRefusal: hostedRefusal, pins: pins, reader: readers[p.config.CapabilityID], due: due, lane: lane, comparison: comparison, wakeComparison: lifecycleComparison{head: due.head, baseSHA: due.baseSHA, baseRef: due.baseRef}, hintGeneration: generation, forceCI: hinted && lane == lifecycleEnrichment, ciOnly: hinted && lane == lifecycleEnrichment && !ordinaryDue}, nil
 	}
-	if lane == lifecycleEnrichment && !watchFirst {
+	if owner == nil && lane == lifecycleEnrichment && !watchFirst {
 		target, err := e.claimCIWatch(ctx, readers, s)
 		if target != nil {
 			s.mu.Lock()
@@ -543,10 +569,24 @@ func (s *lifecycleSchedule) finish(target lifecycleTarget, state, head string, c
 			due.ci = now.Add(s.options.CIInterval)
 			due.ciHead, due.ciBaseSHA, due.ciBaseRef = head, target.due.baseSHA, target.due.baseRef
 			due.ciCommit = target.due.ciCommit
+			due.ciGateRef, due.ciGateState = target.due.ciGateRef, target.due.ciGateState
 			due.ciCheckedAt, due.ciError = target.due.ciCheckedAt, target.due.ciError
 		}
 		if published && !target.ciOnly && !target.due.hostedCheckedAt.IsZero() {
 			due.hostedCheckedAt, due.hostedError = target.due.hostedCheckedAt, target.due.hostedError
+			due.hostedHead, due.hostedState = target.due.hostedHead, target.due.hostedState
+		}
+		if published && !target.ciOnly && state == "open" && providerErr == nil && !due.hostedCheckedAt.IsZero() && due.hostedError == "" {
+			// An unchanged, healthy comparison has no enrichment work until
+			// either evidence deadline. Webhook hints and moved comparisons
+			// can still claim the lane before this fallback.
+			due.enrichmentNext = due.hostedCheckedAt.Add(healthyHostedInterval)
+			if !due.ci.IsZero() && due.ci.Before(due.enrichmentNext) {
+				due.enrichmentNext = due.ci
+			}
+			if earliest := now.Add(interval); earliest.After(due.enrichmentNext) {
+				due.enrichmentNext = earliest
+			}
 		}
 	}
 	s.due[key] = due
@@ -561,8 +601,10 @@ func readLifecycleComparison(ctx context.Context, tx *sql.Tx, project string, nu
 func (s *lifecycleSchedule) finishAccountLocked(target lifecycleTarget, providerErr error, now time.Time) (string, time.Duration) {
 	var delay time.Duration
 	a := s.accounts[target.account]
-	delete(s.lanes[target.lane].projects, target.project)
-	delete(s.lanes[target.lane].accounts, target.account)
+	if !target.cohortOwned {
+		delete(s.lanes[target.lane].projects, target.project)
+		delete(s.lanes[target.lane].accounts, target.account)
+	}
 	errorCode := lifecycleErrorCode(providerErr)
 	if lifecycleInventoryInconclusive(providerErr) {
 		// Unsupported or malformed inventory is retried at this PR's normal cadence. It is

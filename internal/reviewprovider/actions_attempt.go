@@ -90,10 +90,16 @@ func (j *githubActionsJob) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+const actionsJobsRequestLimit = 10 * time.Second
+
 type actionsBudget struct{ bytes, items, pages int }
 
 func (g *GitHub) actionsRead(ctx context.Context, path string, query url.Values, budget *actionsBudget, dst any) (http.Header, error) {
-	data, headers, status, err := g.requestBytes(ctx, http.MethodGet, path, query, nil)
+	return g.actionsReadWithClient(ctx, g.httpClient, path, query, budget, dst)
+}
+
+func (g *GitHub) actionsReadWithClient(ctx context.Context, client *http.Client, path string, query url.Values, budget *actionsBudget, dst any) (http.Header, error) {
+	data, headers, status, err := g.requestBytesWithClient(ctx, client, http.MethodGet, path, query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +148,20 @@ func validActionsRun(r githubActionsRun, repository, head string, suite int64) b
 // GitHub documents the two run selectors and the attempt-specific jobs path:
 // https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
 // https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt
-func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head string, suiteID int64) (result ActionsAttempt, err error) {
+func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head string, suiteID int64) (ActionsAttempt, error) {
+	return g.currentActionsAttempt(ctx, repository, head, suiteID, nil)
+}
+
+// A same-observation complete head inventory can supply discovery identity only.
+// Direct current-run, exact-attempt jobs and final-run reads remain mandatory.
+func (g *GitHub) currentActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun) (ActionsAttempt, error) {
+	return g.collectActionsAttempt(ctx, repository, head, suiteID, discovered, false)
+}
+
+// An initial run from the complete same-observation inventory may select the
+// exact attempt jobs. The final direct current-run witness is never omitted:
+// stale inventory or a rerun must reject the collected attempt, not credit it.
+func (g *GitHub) collectActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun, inventoryInitial bool) (result ActionsAttempt, err error) {
 	if ctx == nil || !validRepositorySelector(repository) || !validSHA(head) || strings.ToLower(head) != head || suiteID <= 0 {
 		return ActionsAttempt{}, invalidSelector()
 	}
@@ -155,21 +174,32 @@ func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head str
 	defer func() { result.ObservedAt = time.Now().UTC() }()
 	budget := &actionsBudget{}
 	path := "/repos/" + repository + "/actions/runs"
-	rows, err := g.actionsRuns(ctx, path, repository, head, suiteID, budget)
-	if err != nil {
-		return result, err
-	}
-	if len(rows) != 1 {
-		result.Reason = "ci_attempt_missing"
-		if len(rows) > 1 {
-			result.Reason = "ci_attempt_ambiguous"
+	var selected githubActionsRun
+	if discovered == nil {
+		rows, readErr := g.actionsRuns(ctx, path, repository, head, suiteID, budget)
+		if readErr != nil {
+			return result, readErr
 		}
-		return result, nil
+		if len(rows) != 1 {
+			result.Reason = "ci_attempt_missing"
+			if len(rows) > 1 {
+				result.Reason = "ci_attempt_ambiguous"
+			}
+			return result, nil
+		}
+		selected = rows[0]
+	} else {
+		selected.ID, selected.WorkflowID, selected.RunNumber = discovered.ID, discovered.WorkflowID, discovered.RunNumber
+		selected.Repository.ID = discovered.RepositoryID
+		if discovered.HeadSHA != head || discovered.CheckSuiteID != suiteID || !strings.EqualFold(discovered.Repository, repository) || selected.ID <= 0 || selected.WorkflowID <= 0 || selected.RunNumber <= 0 || selected.Repository.ID <= 0 {
+			return result, invalidSelector()
+		}
 	}
-	selected := rows[0]
 	currentPath := path + "/" + strconv.FormatInt(selected.ID, 10)
 	var current githubActionsRun
-	if _, err = g.actionsRead(ctx, currentPath, nil, budget, &current); err != nil {
+	if inventoryInitial && discovered != nil {
+		current = actionsHeadRunWire(*discovered)
+	} else if _, err = g.actionsRead(ctx, currentPath, nil, budget, &current); err != nil {
 		return result, err
 	}
 	if !validActionsRun(current, repository, head, suiteID) || current.ID != selected.ID || current.WorkflowID != selected.WorkflowID || current.RunNumber != selected.RunNumber || current.Repository.ID != selected.Repository.ID {
@@ -264,6 +294,12 @@ func (g *GitHub) actionsRuns(ctx context.Context, path, repository, head string,
 }
 
 func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run githubActionsRun, budget *actionsBudget) ([]ActionsJob, error) {
+	// GitHub's attempt jobs endpoint can take longer for large partial reruns.
+	// Keep the caller's aggregate attempt deadline and all inventory bounds.
+	client := *g.httpClient
+	if client.Timeout != 0 {
+		client.Timeout = max(client.Timeout, actionsJobsRequestLimit)
+	}
 	rows := make([]ActionsJob, 0)
 	seen, checks := map[int64]bool{}, map[int64]bool{}
 	total := int64(-1)
@@ -277,7 +313,7 @@ func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run g
 			TotalCount int64              `json:"total_count,required"`
 			Jobs       []githubActionsJob `json:"jobs,required"`
 		}
-		headers, err := g.actionsRead(ctx, path, query, budget, &envelope)
+		headers, err := g.actionsReadWithClient(ctx, &client, path, query, budget, &envelope)
 		if err != nil {
 			return nil, err
 		}

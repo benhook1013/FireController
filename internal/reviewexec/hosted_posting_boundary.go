@@ -48,7 +48,7 @@ func readHostedPostingAttempt(ctx context.Context, tx *sql.Tx, project, attemptI
 	switch a.State {
 	case "posting", "active", "uncertain", "completed", "rate_limited":
 	case "failed":
-		if o.Reason != "hosted_review_skipped" {
+		if o.Reason != "hosted_review_skipped" && o.Reason != HostedFinishedIncompleteReason {
 			return Attempt{}, Operation{}, conflict()
 		}
 	default:

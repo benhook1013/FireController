@@ -39,7 +39,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 			if opened.Tapered || opened.Closed || opened.Dry != 3 || opened.Used != 3 || opened.Minimum != 3+tc.minimum || opened.Maximum != 5 || opened.Epoch != before.Epoch {
 				t.Fatal("grant failed to reopen with original history and exact bounds", opened)
 			}
-			roundSnapshotValid(t, f)
+			adoptionValid(t, f)
 			if original, err := readRoundGrant(t.Context(), f.store.DB(), attemptProject, 2, "cli", 2, 1); err != nil || original.Tapered {
 				t.Fatal("reopened grant cannot bind a new request", original, err)
 			}
@@ -73,7 +73,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 			if current := roundRead(t, f, 2, "cli"); current != opened {
 				t.Fatal("restart changed reopened progress", current)
 			}
-			roundSnapshotValid(t, f)
+			adoptionValid(t, f)
 			roundFinalize(t, f, a, evidence, 3, tc.accepted)
 			current := roundRead(t, f, 2, "cli")
 			wantDry := int64(4)
@@ -96,7 +96,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 			if replay.Code != 200 || replay.Body.String() != grant.Body.String() || roundTables(t, f) != state {
 				t.Fatal("grant replay reopened again or changed accounting")
 			}
-			roundSnapshotValid(t, f)
+			adoptionValid(t, f)
 		})
 	}
 }
@@ -118,7 +118,7 @@ func TestRoundGrantReopeningIncludesAlreadyCapturedRound(t *testing.T) {
 	if current.Tapered || current.Used != 3 || current.Minimum != 3 || current.Maximum != 4 || current.Dry != 3 {
 		t.Fatal("reopening changed one-more bounds or streak", current)
 	}
-	if pending := roundPendingCount(t, f, 2, "cli"); pending != 1 {
+	if pending := readProgress(t, f, 2).Items[0].Channels[1].Pending; pending != 1 {
 		t.Fatal("reopening lost original occupied round", pending)
 	}
 	roundFinalize(t, f, late, evidence, 0, false)
@@ -131,5 +131,25 @@ func TestRoundGrantReopeningIncludesAlreadyCapturedRound(t *testing.T) {
 	if roundTables(t, f) != state {
 		t.Fatal("original completion replay counted twice")
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
+}
+
+func TestRoundGrantReopensImportedHostedTaperWithoutReplacingHistory(t *testing.T) {
+	f := adoptionFixture(t)
+	p := adoptionPrepared()
+	p.Channel, p.InitialDry, p.Taper, p.Tapered = "hosted", 1, 1, true
+	adoptRound(t, f, p, "hosted-taper")
+	before := roundRead(t, f, 2, "hosted")
+	if !before.Tapered {
+		t.Fatal("fixture lacks carried hosted taper")
+	}
+	roundGrant(t, f, 2, "hosted", 1, 0, 2, "two-more-hosted")
+	current := roundRead(t, f, 2, "hosted")
+	if current.Tapered || current.Minimum != 0 || current.Maximum != 2 || current.Used != 0 || current.Dry != 1 || !sameRoundBaseline(before, current) {
+		t.Fatal("hosted reopening erased carry or changed requested bounds", current)
+	}
+	if _, err := readRoundGrant(t.Context(), f.store.DB(), attemptProject, 2, "hosted", 2, 1); err != nil {
+		t.Fatal("hosted reopened grant unavailable", err)
+	}
+	adoptionValid(t, f)
 }

@@ -18,7 +18,7 @@ import (
 	"github.com/benhook1013/FireController/internal/server"
 )
 
-func TestJobContextHelperSQLiteLocksRemainRetryable(t *testing.T) {
+func TestDefaultJobHelperSQLiteLocksRemainRetryable(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	store, err := core.Open(t.Context(), dir)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestJobContextHelperSQLiteLocksRemainRetryable(t *testing.T) {
 	store.DB().SetMaxOpenConns(1)
 	store.DB().SetMaxIdleConns(1)
 	read := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/projects/"+project+"/jobs/"+job+"/context", nil)
+		req := httptest.NewRequest("GET", "/api/v1/projects/"+project+"/jobs/"+job, nil)
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 		req.Header.Set("X-FC-Instance", store.InstanceID())
 		req.Header.Set("X-FC-Worker", worker)
@@ -88,7 +88,7 @@ func TestJobContextHelperSQLiteLocksRemainRetryable(t *testing.T) {
 		mux.ServeHTTP(result, req)
 		return result
 	}
-	for _, table := range []string{"job_checkpoints", "job_checklists", "worker_primary_jobs", "worker_pause_state"} {
+	for _, table := range []string{"job_progress", "job_checklists", "notes"} {
 		t.Run(table, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "helper.sqlite")
 			if _, err := store.DB().Exec(`ATTACH DATABASE ? AS context_locked`, path); err != nil {

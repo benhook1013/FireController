@@ -10,7 +10,7 @@ import (
 // EnsureRoundSchema installs explicit additional-round accounting. It never
 // derives grants or completion credit from existing execution/imported history.
 func EnsureRoundSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL(), roundV4MigrationSQL(), roundV5MigrationSQL())
+	return store.EnsureSchema(ctx, "review_rounds", RoundSchemaV1SQL(), roundV2MigrationSQL(), roundV3MigrationSQL(), roundV4MigrationSQL(), roundV5MigrationSQL(), roundV6MigrationSQL())
 }
 
 var roundSchemaV1SQL = []string{
@@ -110,9 +110,9 @@ func roundV4MigrationSQL() []string {
 	}
 }
 
-// RoundSchemaSQL adds a distinct threshold-setting event without changing any
+// RoundSchemaV5SQL adds a distinct threshold-setting event without changing any
 // allowance, completion or original operation-binding columns.
-func RoundSchemaSQL() []string {
+func RoundSchemaV5SQL() []string {
 	out := RoundSchemaV4SQL()
 	out[1] = strings.Replace(out[1], "action IN ('grant','close')", "action IN ('grant','close','taper')", 1)
 	return out
@@ -123,8 +123,27 @@ func roundV5MigrationSQL() []string {
 		`PRAGMA defer_foreign_keys=ON`,
 		`CREATE TEMP TABLE review_round_changes_copy_v5 AS SELECT * FROM review_round_changes`,
 		`DROP TABLE review_round_changes`,
-		RoundSchemaSQL()[1],
+		RoundSchemaV5SQL()[1],
 		`INSERT INTO review_round_changes SELECT * FROM temp.review_round_changes_copy_v5`,
 		`DROP TABLE temp.review_round_changes_copy_v5`,
+	}
+}
+
+const roundSchemaVersion = 6
+
+// RoundSchemaSQL preserves native completion authority and adds an independent
+// ledger for explicitly credited external Hosted rounds.
+func RoundSchemaSQL() []string { return append(RoundSchemaV5SQL(), roundV6MigrationSQL()...) }
+
+func roundV6MigrationSQL() []string {
+	return []string{
+		`CREATE TABLE review_round_external_credits(
+ batch_id TEXT NOT NULL PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),pull_number INTEGER NOT NULL,channel TEXT NOT NULL CHECK(channel='hosted'),
+ epoch INTEGER NOT NULL,revision INTEGER NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 9007199254740991),
+ accepted INTEGER NOT NULL CHECK(accepted BETWEEN 0 AND 100),completed_at TEXT NOT NULL,
+ UNIQUE(project_id,pull_number,channel,epoch,ordinal),FOREIGN KEY(project_id,pull_number,channel,revision,epoch) REFERENCES review_round_changes(project_id,pull_number,channel,revision,epoch));`,
+		`CREATE TABLE review_round_external_members(
+ project_id TEXT NOT NULL REFERENCES projects(id),run_id TEXT NOT NULL,batch_id TEXT NOT NULL REFERENCES review_round_external_credits(batch_id),PRIMARY KEY(project_id,run_id));`,
+		`CREATE INDEX review_round_external_members_batch ON review_round_external_members(batch_id,run_id);`,
 	}
 }

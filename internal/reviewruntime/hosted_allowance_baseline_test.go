@@ -82,16 +82,11 @@ func TestHostedAllowanceBotReportContinuesPendingThenRetainsReply(t *testing.T) 
 				t.Fatal("later exact reply not attributed to original query", third)
 			}
 			before := hostedBridgeState(t, f)
-			// This slice retains availability only; a decoded cooldown is still
-			// negative admission evidence, not a durable scheduling capability.
 			if cooldown {
-				if err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture); err == nil || hostedBridgeState(t, f) != before {
-					t.Fatal("cooldown became available allowance", err)
-				}
-				f.assertNotAdmitted(t)
-				return
+				err = RetainHostedCooldown(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
+			} else {
+				err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
 			}
-			err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
 			if err != nil {
 				t.Fatal("bridge did not derive same current observation", err)
 			}
@@ -99,7 +94,11 @@ func TestHostedAllowanceBotReportContinuesPendingThenRetainsReply(t *testing.T) 
 			if before == after {
 				t.Fatal("bridge did not retain allowance")
 			}
-			err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
+			if cooldown {
+				err = RetainHostedCooldown(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
+			} else {
+				err = RetainHostedAllowance(t.Context(), f.captures, f.f.engine, f.a, f.anchor, 2, third.Capture)
+			}
 			if err != nil || hostedBridgeState(t, f) != after {
 				t.Fatal("bridge replay mutated source", err)
 			}
@@ -113,7 +112,11 @@ func TestHostedAllowanceBotReportContinuesPendingThenRetainsReply(t *testing.T) 
 			if err = json.Unmarshal([]byte(stored), &retained); err != nil || retained.Input.Observation != third.Observation || retained.Input.CaptureID != third.Capture.ID {
 				t.Fatal("bridge changed allowance facts", retained, err)
 			}
-
+			if cooldown {
+				if _, err = f.f.engine.ReadHostedAllowance(t.Context(), f.f.project, f.a.ID); err == nil {
+					t.Fatal("cooldown became positive admission")
+				}
+			}
 			query, err := f.f.engine.ReadHostedAllowanceQuery(t.Context(), f.f.project, f.a.ID)
 			if err != nil || !reflect.DeepEqual(query, original) || !bytes.Equal(originalBytes, hostedBridgeBytes(t, f, first.Capture)) || p.posts != 1 || p.reads != 3 {
 				t.Fatal("Bot report handling changed original query/capture or performed extra provider work", err, p.posts, p.reads)

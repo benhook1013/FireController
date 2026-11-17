@@ -41,6 +41,14 @@ func TestOperationListSDKDiscoveryStrictArgumentsBeforeCredentials(t *testing.T)
 		if json.Unmarshal(data, &schema) != nil || len(schema.Properties) != 5 || len(schema.Required) != 0 || schema.Additional {
 			t.Fatal("operation list schema changed", string(data))
 		}
+		status, _ := json.Marshal(schema.Properties["status"])
+		var selector struct {
+			Default string   `json:"default"`
+			Enum    []string `json:"enum"`
+		}
+		if json.Unmarshal(status, &selector) != nil || selector.Default != "attention" || strings.Join(selector.Enum, ",") != "attention,pending,all" {
+			t.Fatal("discovery did not advertise attention", string(status))
+		}
 		for _, name := range []string{"pull_number", "channel", "status", "limit", "cursor"} {
 			if schema.Properties[name] == nil {
 				t.Fatal("missing list field", name)
@@ -59,7 +67,7 @@ func TestOperationListSDKDiscoveryStrictArgumentsBeforeCredentials(t *testing.T)
 }
 
 func TestOperationListSDKRealHandlerKeysetRecoveryAndRevocation(t *testing.T) {
-	f, handler, _ := reviewControlsFixture(t)
+	f, handler, evidence := reviewControlsFixture(t)
 	var lists atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/reviews/operations") {
@@ -77,8 +85,17 @@ func TestOperationListSDKRealHandlerKeysetRecoveryAndRevocation(t *testing.T) {
 	decodeResult(t, call(t, session, "review_request", executionArguments()), &queued)
 	var pending client.ReviewOperationsPage
 	decodeResult(t, call(t, session, "review_operations_list", map[string]any{}), &pending)
-	if len(pending.Items) != 1 || pending.Items[0].ID != queued.ID || pending.HasMore {
-		t.Fatal(pending)
+	if len(pending.Items) != 2 || pending.Items[0].ID != queued.ID || pending.Items[1].State != "completed" || pending.HasMore {
+		t.Fatal("default attention hid completed unfinished evidence", pending)
+	}
+	var evidenceOperation string
+	if err := f.store.DB().QueryRow(`SELECT operation_id FROM review_execution_evidence WHERE id=?`, evidence).Scan(&evidenceOperation); err != nil || pending.Items[1].ID != evidenceOperation {
+		t.Fatal("completed evidence lost native attribution", pending, err)
+	}
+	var providerPending client.ReviewOperationsPage
+	decodeResult(t, call(t, session, "review_operations_list", map[string]any{"status": "pending"}), &providerPending)
+	if len(providerPending.Items) != 1 || providerPending.Items[0].ID != queued.ID {
+		t.Fatal("explicit pending broadened", providerPending)
 	}
 	args := map[string]any{"status": "all", "pull_number": 2, "channel": "cli", "limit": 1}
 	var first, next client.ReviewOperationsPage
@@ -93,7 +110,7 @@ func TestOperationListSDKRealHandlerKeysetRecoveryAndRevocation(t *testing.T) {
 	}
 	args["status"] = "pending"
 	errorResult(t, call(t, session, "review_operations_list", args), "validation_failed")
-	if lists.Load() != 4 || f.providers.Load() != providers {
+	if lists.Load() != 5 || f.providers.Load() != providers {
 		t.Fatal("list paginated, retried or contacted provider", lists.Load())
 	}
 	if _, err := f.store.DB().Exec(`UPDATE grants SET can_read=0 WHERE project_id=?`, f.project); err != nil {

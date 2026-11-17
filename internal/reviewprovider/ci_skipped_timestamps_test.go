@@ -77,12 +77,12 @@ func TestAssessRequiredCIMixedSkippedSyntheticTimesDoNotHideRequiredOutcome(t *t
 			}
 		})
 	}
-	for _, conclusion := range []string{"success", "failure", "neutral", "cancelled", "future"} {
+	for _, conclusion := range []string{"success", "failure", "neutral", "timed_out", "action_required", "stale", "startup_failure", "future"} {
 		f := requiredCIFixture()
 		setCIJobState(&f, "completed", conclusion)
 		f.Inventory.Checks[0].CompletedAt = f.Inventory.Checks[0].StartedAt.Add(-time.Second)
 		if _, err := f.assess(); err == nil {
-			t.Fatal("non-skipped reversed execution interval accepted", conclusion)
+			t.Fatal("executed reversed interval accepted", conclusion)
 		}
 	}
 }

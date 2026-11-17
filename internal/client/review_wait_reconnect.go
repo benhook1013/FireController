@@ -32,22 +32,10 @@ func resumeResultWait(ctx context.Context, seconds int, read func(context.Contex
 		return read(ctx, 0)
 	}
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
-	initialWait := seconds
-	if parent, ok := ctx.Deadline(); ok {
-		// Reserve an ordinary request margin for the final immediate read after
-		// bootstrap or a late connection interruption consumes the wait budget.
-		if limit := parent.Add(-requestTimeout); limit.Before(deadline) {
-			deadline = limit
-			initialWait = int(max(0, time.Until(deadline)) / time.Second)
-		}
-	}
 	outer, cancel := context.WithTimeout(ctx, providerWaitBudget(seconds))
 	defer cancel()
-	err := read(outer, initialWait)
-	if err != nil && ctx.Err() != nil {
-		return contextError(ctx.Err())
-	}
-	if err == nil || initialWait == 0 || !resultWaitReconnectFailure(err) {
+	err := read(outer, seconds)
+	if err == nil || !resultWaitReconnectFailure(err) {
 		return err
 	}
 	interruption := err

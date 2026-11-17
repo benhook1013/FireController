@@ -111,7 +111,7 @@ func TestReviewSourceCLIDirectTerminalDefaultWaitAndStoredAssessment(t *testing.
 func TestReviewSourceCLIInvalidArgumentsBeforeCredentials(t *testing.T) {
 	base := sourceCLIArgs()
 	cases := [][]string{{"reviews", "source-refresh"}, {"reviews", "source-operation", "../private"}, {"reviews", "source-assess", "2"}, {"reviews", "source-assess", "--pr", "02"}, {"reviews", "source-assess", "--pr", "2", "--refresh"}, {"reviews", "source-operation", cliRefreshID, "--wait-seconds", "0"}}
-	for _, suffix := range [][]string{{"--wait-seconds", "-1"}, {"--wait-seconds", "61"}, {"--wait-seconds", "01"}, {"--wait-seconds", "1.5"}, {"--wait-seconds", "0", "--wait-seconds", "1"}, {"--project", "other"}, {"--worker", "other"}, {"--pr", "2"}} {
+	for _, suffix := range [][]string{{"--wait-seconds", "-1"}, {"--wait-seconds", "901"}, {"--wait-seconds", "01"}, {"--wait-seconds", "1.5"}, {"--wait-seconds", "0", "--wait-seconds", "1"}, {"--project", "other"}, {"--worker", "other"}, {"--pr", "2"}} {
 		args := append([]string{}, base...)
 		cases = append(cases, append(args, suffix...))
 	}
@@ -151,7 +151,7 @@ func TestReviewSourceCLICancellationKeepsUnknownMutationRecoverable(t *testing.T
 	var out, stderr bytes.Buffer
 	done := make(chan int, 1)
 	args := append([]string{"--profiles-file", path, "--profile", "builder"}, sourceCLIArgs()...)
-	args = append(args, "--wait-seconds", "60")
+	args = append(args, "--wait-seconds", "900")
 	go func() { done <- cli.RunContext(ctx, args, nil, &out, &stderr) }()
 	select {
 	case <-entered:

@@ -75,14 +75,14 @@ const legacyChannelRunCountAggregate = `SELECT coalesce(sum(v.channel='hosted'),
  CROSS JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision AND v.pull_number=m.pull_number
  WHERE r.project_id=t.project_id AND r.pull_number=t.pull_number`
 
-// Schema ten changes only derived cache meaning, not retained run records.
+// Schema twelve changes only derived cache meaning, not retained run records.
 const channelRunCountAggregate = legacyChannelRunCountAggregate + " AND v.outcome='completed'"
 
 func completedChannelRunCountsMigrationSQL() []string {
 	return []string{"UPDATE review_current_totals AS t SET (" + channelRunCountColumns + ")=(" + channelRunCountAggregate + ")"}
 }
 func channelRunCountAggregateForVersion(version int) string {
-	if version < 10 {
+	if version < 12 {
 		return legacyChannelRunCountAggregate
 	}
 	return channelRunCountAggregate
@@ -102,7 +102,7 @@ func backfillChannelRunCounts(ctx context.Context, q currentSummarySQL) error {
 func validateChannelRunCounts(ctx context.Context, q HistoryQuery, version int) error {
 	aggregate := channelRunCountAggregateForVersion(version)
 	comparison := "<"
-	if version < 10 {
+	if version < 12 {
 		comparison = "!="
 	}
 	var bad bool

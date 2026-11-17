@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"reflect"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/publicsitemodel"
 	"github.com/benhook1013/FireController/internal/strictjson"
@@ -203,10 +204,73 @@ func (c *Client) PreviewPublication(ctx context.Context, input PublicationInput)
 	if err = c.requestBounded(ctx, http.MethodPost, c.projectPath("publication", "preview"), nil, true, "", body, http.StatusOK, false, &result, 2*MaxPublicationDocumentBytes+2048, decode); err != nil {
 		return PublicationPreview{}, err
 	}
-	if result.ExpectedRevision != input.ExpectedRevision || result.Enabled != input.Enabled || !reflect.DeepEqual(result.Manifest, input.Manifest) || !reflect.DeepEqual(publicsitemodel.EditorialManifest(result.Content), input.Manifest) || !controlHex(result.SHA256, 64) {
+	if result.ExpectedRevision != input.ExpectedRevision || result.Enabled != input.Enabled || !reflect.DeepEqual(result.Manifest, input.Manifest) || !publicationContentMatchesManifest(result.Content, input.Manifest) || !controlHex(result.SHA256, 64) {
 		return PublicationPreview{}, invalidResponse()
 	}
 	return result, nil
+}
+
+// The authenticated server resolves pinned source prose. The client can check
+// the selected public keys and editorial prefix without fetching private source
+// records; the preview remains the operator's approval surface for that prose.
+func publicationContentMatchesManifest(content PublicationContent, selected PublicationManifest) bool {
+	editorial := publicsitemodel.EditorialManifest(content)
+	if len(editorial.ProjectMap) != len(selected.ProjectMap)+len(selected.MapRefs) || len(editorial.Progress) != len(selected.Progress)+len(selected.JobRefs) || len(editorial.WorkerLanes) != len(selected.WorkerLanes)+len(selected.WorkerRefs) {
+		return false
+	}
+	for i, ref := range selected.MapRefs {
+		card := editorial.ProjectMap[len(selected.ProjectMap)+i]
+		if card.Key != ref.Key || card.Phase != "" || len(card.Links) != 0 {
+			return false
+		}
+	}
+	jobs := editorial.Progress[len(selected.Progress):]
+	for i, ref := range selected.JobRefs {
+		card := jobs[i]
+		if card.Key != ref.Key || card.Phase != "" || len(card.Links) != 0 || !validStatus(card.Status) || strings.TrimSpace(card.Title) == "" || strings.TrimSpace(card.Description) == "" || len(card.Description) > 2000 {
+			return false
+		}
+	}
+	for i, ref := range selected.WorkerRefs {
+		lane := editorial.WorkerLanes[len(selected.WorkerLanes)+i]
+		if lane.Key != ref.Key || lane.Label != ref.Label {
+			return false
+		}
+		if lane.Headline == "" {
+			if lane.Status != "idle" || len(lane.Milestones) != 0 {
+				return false
+			}
+			continue
+		}
+		// Assignment is server-owned. A non-idle lane must nevertheless refer
+		// to selected public job prose, never another private job's title.
+		matched := false
+		for _, job := range jobs {
+			matched = matched || lane.Headline == job.Title && lane.Status == job.Status
+		}
+		if !matched || len(lane.Milestones) == 0 || lane.Milestones[0] != lane.Headline {
+			return false
+		}
+		position := 0
+		for _, title := range lane.Milestones {
+			for position < len(jobs) && jobs[position].Title != title {
+				position++
+			}
+			if position == len(jobs) {
+				return false
+			}
+			position++
+		}
+	}
+	// Truncate only the verified source tails, restoring private selections
+	// exclusively for the exact comparison with the authenticated manifest.
+	editorial.ProjectMap = editorial.ProjectMap[:len(selected.ProjectMap)]
+	editorial.Progress = editorial.Progress[:len(selected.Progress)]
+	editorial.WorkerLanes = editorial.WorkerLanes[:len(selected.WorkerLanes)]
+	editorial.JobRefs = selected.JobRefs
+	editorial.MapRefs = selected.MapRefs
+	editorial.WorkerRefs = selected.WorkerRefs
+	return reflect.DeepEqual(editorial, selected)
 }
 
 func (c *Client) ApplyPublication(ctx context.Context, key, previewSHA string, input PublicationInput) (PublicationReceipt, error) {

@@ -354,7 +354,7 @@ func TestCLIDriverFinalGuardsPreventProcessStart(t *testing.T) {
 				f.reader.pulls[2] = func() reviewprovider.Pull { p := f.reader.pulls[2]; p.HeadSHA = strings.Repeat("f", 40); return p }()
 			case "policy":
 				previous := int64(1)
-				if _, err := f.engine.ConfigurePolicy(context.Background(), f.scope(t, f.admin, true), "changed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: []string{"cli"}, PausedChannels: []string{}, MaxReviewFiles: 1}); err != nil {
+				if _, err := f.engine.ConfigurePolicy(context.Background(), f.scope(t, f.admin, true), "changed-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &previous, RequiredChannels: []string{"cli"}, MaxReviewFiles: 1}); err != nil {
 					t.Fatal(err)
 				}
 			case "revocation":
@@ -393,7 +393,7 @@ func TestCLIDriverGitFileCeilingAndPreparationBinding(t *testing.T) {
 				if mode == "two-files" {
 					limit = 2
 				}
-				if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=? WHERE project_id=?`, fmt.Sprintf(`{"required_channels":["cli"],"paused_channels":[],"max_review_files":%d}`, limit), f.project); err != nil {
+				if _, err := f.store.DB().Exec(`UPDATE review_policy_config SET body_json=? WHERE project_id=?`, fmt.Sprintf(`{"required_channels":["cli"],"max_review_files":%d}`, limit), f.project); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -421,6 +421,19 @@ func TestCLIDriverGitFileCeilingAndPreparationBinding(t *testing.T) {
 	}
 }
 
+func cliDriverChildCommit(t *testing.T, f *cliDriverFixture) string {
+	t.Helper()
+	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
+	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child review comparison\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, source, "add", "third.txt")
+	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child review")
+	head := gitTestOutput(t, source, "rev-parse", "HEAD")
+	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/child-review")
+	return head
+}
+
 func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 	for _, mode := range []string{"independent", "merged-prefix", "actual-parent-uncovered", "closed-parent"} {
 		t.Run(mode, func(t *testing.T) {
@@ -443,6 +456,7 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 				parent.HeadRef = "feature-parent"
 				f.reader.pulls[2] = parent
 				p := f.reader.pulls[4]
+				p.HeadSHA = cliDriverChildCommit(t, f)
 				p.BaseSHA = f.headSHA
 				p.BaseRef = "feature-parent"
 				f.reader.pulls[4] = p
@@ -457,12 +471,12 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 			}
 			op, a, c := f.start(t, 4, 2, "stack-driver")
 			_, err := f.driver.Prepare(context.Background(), op, c, a)
-			if mode == "independent" || mode == "merged-prefix" {
+			if mode != "closed-parent" {
 				if err != nil {
-					t.Fatal(err)
+					t.Fatal("valid child comparison was held by ancestor review work", err)
 				}
 			} else if err == nil {
-				t.Fatal("unfinished stack advanced")
+				t.Fatal("closed source parent advanced")
 			}
 			if f.reader.repositoryCalls != 1 {
 				t.Fatal("repository was fetched repeatedly within phase")
@@ -698,26 +712,26 @@ func TestCLIDriverPendingEvidenceBlocksRepeatSpendAcrossHeads(t *testing.T) {
 				f.configure(t, "stacked", []int64{2, 4})
 				number, revision = 4, 2
 				p := f.reader.pulls[4]
-				p.BaseSHA, p.BaseRef = f.headSHA, "parent"
+				p.HeadSHA, p.BaseSHA, p.BaseRef = cliDriverChildCommit(t, f), f.headSHA, "parent"
 				f.reader.pulls[4] = p
 			}
 			before, _ := os.ReadFile(f.log)
 			fetches := f.fetches.Load()
 			op, a, c := f.start(t, number, revision, "new-explicit-intent")
 			_, err := f.driver.Prepare(t.Context(), op, c, a)
-			var failure *core.Error
-			want := "review_evidence_pending"
 			if phase == "stacked-predecessor" {
-				want = "review_held"
-			}
-			if !errors.As(err, &failure) || failure.Code != want {
-				t.Fatal("pending source did not hold", phase, err)
-			}
-			if phase == "stacked-predecessor" {
-				details, ok := failure.Details.(map[string]string)
-				if !ok || details["reason"] != "predecessor_unfinished" {
-					t.Fatal(failure)
+				if err != nil || f.fetches.Load() <= fetches {
+					t.Fatal("ancestor evidence blocked child preparation", err)
 				}
+				after, _ := os.ReadFile(f.log)
+				if strings.Contains(string(after[len(before):]), "review --") {
+					t.Fatal("preparation dispatched a provider review")
+				}
+				return
+			}
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "review_evidence_pending" {
+				t.Fatal("pending target source did not hold", phase, err)
 			}
 			after, _ := os.ReadFile(f.log)
 			if string(after) != string(before) || f.fetches.Load() != fetches {
@@ -735,16 +749,42 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
-	// Review a genuine child of the completed parent. Its own channel has no
-	// credit; the older parent's later correction must stop Dispatch after Prepare.
-	source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
-	if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
+	// Deliberately grant another round; comparison movement does not reopen
+	// earned completion. Correct an older closed finding after Prepare's first
+	// comparison read; Dispatch must still refuse before invoking review.
+	runtimeRoundGrant(t, f, 2, "cli", 1)
+	f.reader.repository.DefaultBranch = "new-main"
+	p := f.reader.pulls[2]
+	p.BaseRef = "new-main"
+	f.reader.pulls[2] = p
+	usage := f.driver.usage
+	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
+		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
+		return usage(ctx, w, repo, org)
+	}
+	op, a := f.prepareAdmit(t, 2, 1, "changed-comparison")
+	before, _ := os.ReadFile(f.log)
+	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+	if err != nil || result.State != "failed" || result.Reason != "review_evidence_pending" {
+		t.Fatal("late pending evidence did not refuse action", result, err)
+	}
+	after, _ := os.ReadFile(f.log)
+	if string(before) != string(after) {
+		t.Fatal("late correction spent another review")
+	}
+}
+
+func TestCLIDriverLateAncestorCorrectionStillReviewsChild(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	_, id := cliDriverCompletedFinding(t, f)
+	cliDriverDecision(t, f, id, "reject-source", 0, "rejected")
+	revision := int64(1)
+	if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
-	gitTestRun(t, source, "add", "third.txt")
-	gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
-	third := gitTestOutput(t, source, "rev-parse", "HEAD")
-	gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+	// Review a genuine child of the completed parent. Its own channel has no
+	// credit; the older parent's later correction must not stop child review.
+	third := cliDriverChildCommit(t, f)
 	parent := f.reader.pulls[2]
 	parent.HeadRef = "covered-parent"
 	f.reader.pulls[2] = parent
@@ -758,18 +798,23 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 		return usage(ctx, w, repo, org)
 	}
 	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
-	before, _ := os.ReadFile(f.log)
-	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
-	if err != nil || result.State != "failed" || result.Reason != "source_admission_changed" {
-		t.Fatal("late pending evidence did not refuse action", result, err)
+	var reviews atomic.Int64
+	f.driver.review = func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+		reviews.Add(1)
+		return reviewprocess.Capture{ExitCode: -1}, &reviewprocess.Error{Code: "process_failed"}
 	}
-	after, _ := os.ReadFile(f.log)
-	if string(before) != string(after) {
-		t.Fatal("late correction spent another review")
+	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+	if err != nil || result.State != "failed" || result.Reason != "process_not_started" || reviews.Load() != 1 {
+		t.Fatal("ancestor correction blocked the distinct child review", result, reviews.Load(), err)
+	}
+	// Prepared dispatch remains one-use even when an ancestor's findings change.
+	_, _ = f.driver.Dispatch(t.Context(), op, a, nil)
+	if reviews.Load() != 1 {
+		t.Fatal("child review dispatched twice")
 	}
 }
 
-func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testing.T) {
+func TestCLIDriverAncestorCorrectionAfterGitVerificationKeepsChildReview(t *testing.T) {
 	for _, correct := range []bool{false, true} {
 		t.Run(fmt.Sprint(correct), func(t *testing.T) {
 			f := newCLIDriverFixture(t)
@@ -779,14 +824,7 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 			if _, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "finalize-parent", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 				t.Fatal(err)
 			}
-			source := filepath.Join(filepath.Dir(f.storeDir), "fixture-source")
-			if err := os.WriteFile(filepath.Join(source, "third.txt"), []byte("child comparison\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			gitTestRun(t, source, "add", "third.txt")
-			gitTestRun(t, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "child")
-			third := gitTestOutput(t, source, "rev-parse", "HEAD")
-			gitTestRun(t, source, "push", "cache", "HEAD:refs/heads/third")
+			third := cliDriverChildCommit(t, f)
 			merged := f.reader.pulls[3]
 			merged.Merged, merged.State = true, "closed"
 			f.reader.pulls[3] = merged
@@ -819,11 +857,8 @@ func TestCLIDriverPredecessorCorrectionAfterGitVerificationStopsReview(t *testin
 				t.Fatal("dispatch failed before real final Git verification", result, err)
 			}
 			wantReviews, wantReason := int64(1), "process_not_started"
-			if correct {
-				wantReviews, wantReason = 0, "admission_changed"
-			}
 			if result.State != "failed" || result.Reason != wantReason || reviews.Load() != wantReviews {
-				t.Fatal("late predecessor correction crossed final spend boundary", result, reviews.Load())
+				t.Fatal("ancestor correction changed child review admission", result, reviews.Load())
 			}
 			after, _ := os.ReadFile(f.log)
 			if string(before) != string(after) {
@@ -947,7 +982,7 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 			if mode == "publication_storage_failure" {
 				want, reservations = "uncertain", 1
 			}
-			if operation.State != want || mode == "missing_current_pull" && operation.Reason != "capture_retained" || mode == "publication_storage_failure" && operation.Reason != "capture_retention_failed" {
+			if operation.State != want || mode == "missing_current_pull" && operation.Reason != "capture_retained" || mode == "publication_storage_failure" && operation.Reason != "capture_publication_pending" {
 				t.Fatal("publication error changed retained execution outcome", operation.State, operation.Reason)
 			}
 			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, operation.AttemptID) != reservations || cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, operation.AttemptID) != 1 {
@@ -986,5 +1021,57 @@ func TestCLIDriverRetainedEvidenceSurvivesMissingCurrentProjection(t *testing.T)
 				t.Fatal("original request replay changed effect", err)
 			}
 		})
+	}
+}
+
+func TestCLIDriverKnownEndedIncompleteScopeFailsPreservingFindingsWithoutCredit(t *testing.T) {
+	f := newCLIDriverFixture(t)
+	zero, minimum, maximum := int64(0), int64(1), int64(2)
+	if _, err := f.engine.ConfigureRoundControl(t.Context(), f.scope(t, f.admin, true), "scope-failure-grant", 2, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &zero, Action: "grant", Minimum: &minimum, Maximum: &maximum}); err != nil {
+		t.Fatal(err)
+	}
+	op, a := f.prepareAdmit(t, 2, 1, "ended-scope-driver")
+	calls := 0
+	f.driver.review = func(_ context.Context, w reviewworkspace.Workspace) (reviewprocess.Capture, error) {
+		calls++
+		return makeCompleteCLICapture(t, w, []string{"reviewed.txt"}), nil
+	}
+	result, err := f.driver.Dispatch(t.Context(), op, a, nil)
+	if err != nil || result.State != "failed" || result.Reason != "coverage_incomplete" || calls != 1 {
+		t.Fatal("ended incomplete coverage remained uncertain or gained credit", result, err)
+	}
+	if _, err := f.engine.Advance(t.Context(), f.project, a.ID, a.Revision, result.State, result.Reason, ""); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := f.store.DB().QueryRow(`SELECT id FROM review_execution_evidence WHERE attempt_id=?`, a.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	scope := f.scopeWithAccess(t, f.readerToken(), false, "read")
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), scope, id)
+	if err != nil || evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "failed" || len(evidence.Capture.Review.Findings) != 1 || evidence.Capture.Review.Findings[0].Title != "Synthetic finding" || len(evidence.Capture.Review.ReviewedFiles) != 1 {
+		t.Fatal("partial findings or original scope lost", err)
+	}
+	if cliCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_round_completions`) != 0 || cliCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE operation_id=?`, op.ID) != 0 {
+		t.Fatal("failed capture retained reservation or gained native credit")
+	}
+	control, err := f.engine.ReadRoundControl(t.Context(), scope, 2, "cli")
+	if err != nil || control.Used != 0 || control.Dry != 0 {
+		t.Fatal("failed scope consumed round", control, err)
+	}
+	progress, err := f.engine.ReadRoundProgress(t.Context(), scope, []int64{2})
+	if err != nil || len(progress.Items) != 1 {
+		t.Fatal(progress, err)
+	}
+	for _, channel := range progress.Items[0].Channels {
+		if channel.Pending != 0 {
+			t.Fatal("failed capture retained round occupancy")
+		}
+	}
+	_, err = f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "cannot-finalize-failed-scope", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	assertCoreErrorCode(t, err, "review_conflict")
+	capture, _, err := f.captures.Read(t.Context(), a.ID)
+	if err != nil || !capture.Capture.Started || capture.Capture.ExitCode != 0 {
+		t.Fatal("raw ended execution lost", err)
 	}
 }

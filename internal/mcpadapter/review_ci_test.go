@@ -78,7 +78,20 @@ func TestReviewCIMCPActualPublicIdentityAndProviderFreeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := requests.Load()
-	diagnosticResult(t, call(t, session, "review_source_ci_assess", map[string]any{"pull_number": 2}), "reviews_ci_unavailable", false)
+	missing := call(t, session, "review_source_ci_assess", map[string]any{"pull_number": 2})
+	diagnosticResult(t, missing, "reviews_ci_unavailable", false)
+	wire, err := json.Marshal(missing.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phrase := range []string{"No completed retained source observation with CI", "wait_for_ci", "final merge branch", "retained selected-base CI", "include_ci:true"} {
+		if !strings.Contains(string(wire), phrase) {
+			t.Fatal("MCP lost CI-specific routing", phrase, string(wire))
+		}
+	}
+	if strings.Contains(string(wire), "current access") {
+		t.Fatal("missing CI looked like credential failure", string(wire))
+	}
 	var afterEvents, afterReceipts int
 	if err := f.store.DB().QueryRow(`SELECT (SELECT count(*) FROM events),(SELECT count(*) FROM receipts)`).Scan(&afterEvents, &afterReceipts); err != nil || afterEvents != events || afterReceipts != receipts || requests.Load() != before+2 || f.providers.Load() != providers {
 		t.Fatal("SDK local CI read mutated/refreshed/polled", err)

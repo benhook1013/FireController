@@ -11,7 +11,7 @@ import (
 )
 
 // Reconstruct the exact populated predecessor CHECK before exercising the real
-// migration. Native evidence and pending work stay intact.
+// migration. Carried provenance, native evidence and pending work stay intact.
 func roundTaperPredecessor(t *testing.T, f *restoreFixture) {
 	t.Helper()
 	conn, err := f.store.DB().Conn(t.Context())
@@ -23,6 +23,8 @@ func roundTaperPredecessor(t *testing.T, f *restoreFixture) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE review_round_external_members`,
+		`DROP TABLE review_round_external_credits`,
 		`CREATE TEMP TABLE taper_predecessor_changes AS SELECT * FROM review_round_changes`,
 		`DROP TABLE review_round_changes`,
 		reviewexec.RoundSchemaV4SQL()[1],
@@ -53,28 +55,28 @@ func lowerRoundTaper(t *testing.T, f *restoreFixture) {
 	}
 	e, err := reviewexec.New(f.store, []reviewexec.Capability{
 		{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)},
-		{ID: "bundle-cli", Provider: "coderabbit", Account: "cli-account", Channels: []string{"cli"}},
+		{ID: "adoption-cli", Provider: "coderabbit", Account: "adoption-account", Channels: []string{"cli"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := routePolicyInventoryScope(t, f)
 	prior, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
-	if err != nil || prior.Taper != 2 || prior.InitialDry != 0 || prior.Used != 1 || prior.Dry != 1 || !prior.Closed {
-		t.Fatal("predecessor native state missing", prior, err)
+	if err != nil || prior.Taper != 3 || prior.InitialDry != 2 || prior.Used != 1 || prior.Dry != 3 || !prior.Closed {
+		t.Fatal("predecessor carried/native state missing", prior, err)
 	}
 	var request reviewexec.RoundControlRequest
-	if err = json.Unmarshal([]byte(`{"expected_revision":2,"action":"taper","taper":1}`), &request); err != nil {
+	if err = json.Unmarshal([]byte(`{"expected_revision":2,"action":"taper","taper":2}`), &request); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = e.ConfigureRoundControl(t.Context(), scope, "lower-taper-without-reopening", 4, "cli", request); err != nil {
 		t.Fatal(err)
 	}
 	current, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
-	if err != nil || current.Taper != 1 || current.Revision != prior.Revision+1 || !current.Closed || !current.Tapered {
+	if err != nil || current.Taper != 2 || current.Revision != prior.Revision+1 || !current.Closed || !current.Tapered {
 		t.Fatal("taper edit did not preserve closed completed state", current, err)
 	}
-	current.Taper, current.Revision, current.UpdatedAt, current.Tapered = prior.Taper, prior.Revision, prior.UpdatedAt, prior.Tapered
+	current.Taper, current.Revision, current.UpdatedAt = prior.Taper, prior.Revision, prior.UpdatedAt
 	if !reflect.DeepEqual(current, prior) {
 		t.Fatal("taper edit changed grant, counters, epoch or imported provenance", prior, current)
 	}
@@ -88,12 +90,12 @@ func lowerRoundTaper(t *testing.T, f *restoreFixture) {
 }
 
 func TestRoundTaperInventoryPopulatedUpgradeAndInactiveRestore(t *testing.T) {
-	f := roundInventoryFixture(t, false)
+	f := roundAdoptionInventoryFixture(t, false)
 	roundTaperPredecessor(t, f)
 	// Inspection and inactive restore accept the original version-four bundle
 	// without upgrading its schema or rewriting its policy history.
-	for _, version := range []int{4, 5} {
-		if version == 5 {
+	for _, version := range []int{4, 6} {
+		if version == 6 {
 			lowerRoundTaper(t, f)
 		}
 		before := backupRows(t, f.store.DB())
@@ -126,7 +128,7 @@ func TestRoundTaperInventoryPopulatedUpgradeAndInactiveRestore(t *testing.T) {
 			t.Fatal("native completion changed", completions, err)
 		}
 		expectedChanges := 2
-		if version == 5 {
+		if version == 6 {
 			expectedChanges++
 		}
 		if err = db.QueryRow(`SELECT count(*) FROM review_round_changes WHERE project_id=? AND pull_number=4 AND channel='cli'`, f.project).Scan(&changes); err != nil || changes != expectedChanges {
@@ -151,7 +153,7 @@ func TestRoundTaperInventoryResealedStateAndHistoryRefused(t *testing.T) {
 		"changed-taper-history": `UPDATE review_round_changes SET body_json=json_set(body_json,'$.control.taper',3) WHERE action='taper'`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := roundInventoryFixture(t, false)
+			f := roundAdoptionInventoryFixture(t, false)
 			roundTaperPredecessor(t, f)
 			lowerRoundTaper(t, f)
 			before := backupRows(t, f.store.DB())

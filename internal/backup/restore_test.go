@@ -98,10 +98,11 @@ func newRestoreFixture(t *testing.T) *restoreFixture {
 	imported.Queue[1].Title = "New metadata retains old snapshot"
 	f.request(t, "POST", "/api/v1/projects/"+f.project+"/reviews/observations", imported)
 
-	if _, err = seedPreRoundBackupConfiguration(t, f, scope, "restore-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "restore-cap", Mode: "independent", Queue: []int64{2}, Channels: []string{"hosted"}}); err != nil {
-		t.Fatal("configure", err)
-	}
-	if _, err = e.ConfigurePolicy(ctx, scope, "restore-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, PausedChannels: []string{}, MaxReviewFiles: 0}); err != nil {
+	// This recovery fixture models an installed predecessor, whose enrollment
+	// did not create round rules. Later ordinary Configure calls still exercise
+	// the current enrollment defaults.
+	seedPredecessorExecutionConfiguration(t, f, scope, "restore-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "restore-cap", Mode: "independent", Queue: []int64{2}, Channels: []string{"hosted"}})
+	if _, err = e.ConfigurePolicy(ctx, scope, "restore-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"hosted"}, MaxReviewFiles: 0}); err != nil {
 		t.Fatal("policy", err)
 	}
 	raw, err := e.Enqueue(ctx, scope, "restore-original-request", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})
@@ -571,32 +572,4 @@ func restoreModifiedBundle(t *testing.T, bundle Summary, statement string) strin
 		t.Fatal(err)
 	}
 	return selected
-}
-
-// seedPreRoundBackupConfiguration preserves the original configuration journal
-// for retained backup fixtures created before automatic round enrollment. It
-// never enrolls then removes controls, so no earned evidence is rewritten.
-func seedPreRoundBackupConfiguration(t *testing.T, f *restoreFixture, scope core.Scope, key string, c reviewexec.Configuration) (json.RawMessage, error) {
-	t.Helper()
-	return f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var revision int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, f.project).Scan(&revision); err != nil {
-			return nil, err
-		}
-		if c.ExpectedRevision == nil || revision != *c.ExpectedRevision {
-			return nil, core.Fail("fixture_revision_mismatch", "Pre-round fixture configuration revision mismatch.", 409)
-		}
-		body, err := json.Marshal(c)
-		if err != nil {
-			return nil, err
-		}
-		revision++
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, f.project, revision, string(body)); err != nil {
-			return nil, err
-		}
-		if err = core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, revision, map[string]any{"revision": revision, "paused": c.Paused}); err != nil {
-			return nil, err
-		}
-		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: revision}, nil
-	})
 }

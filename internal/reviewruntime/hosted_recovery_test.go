@@ -143,7 +143,7 @@ func TestRecoverHostedFinishedInventoryUnprovenPersistsWithoutChurn(t *testing.T
 				t.Fatalf("finished unsupported inventory remained active or settled: %+v %v", got, err)
 			}
 			bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
-			if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != got.Reason || bound.Attempt.ExternalID != "100" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f) != 0 {
+			if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != got.Reason || bound.Attempt.ExternalID != "100" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 				t.Fatal("uncertainty lost original ownership or invented credit", bound, err)
 			}
 			var projectionState, finish string
@@ -598,50 +598,6 @@ func TestRecoverHostedLedgerOnlyRetirementAndReplay(t *testing.T) {
 
 		})
 	}
-}
-
-// Ask the parent's real comparison-coverage contract rather than creating a
-// later round-accounting table in this extracted fixture.
-func nativeHostedCredit(t *testing.T, f *cliEvidenceFixture) int {
-	t.Helper()
-	rows, err := f.store.DB().Query(`SELECT anchor_json FROM review_execution_attempts WHERE project_id=? AND anchor_json IS NOT NULL`, f.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var anchors []reviewexec.Anchor
-	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		if body == "null" || body == "" {
-			continue
-		}
-		var a reviewexec.Anchor
-		if err := json.Unmarshal([]byte(body), &a); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		anchors = append(anchors, a)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	credit := 0
-	for _, a := range anchors {
-		plan := reviewexec.SourcePlan{Repository: reviewprovider.Repository{ID: a.RepositoryID, FullName: a.Repository, DefaultBranch: a.BaseRef}, Pull: reviewprovider.Pull{RepositoryID: a.RepositoryID, Number: a.PullNumber, HeadSHA: a.CandidateSHA, BaseSHA: a.BaseSHA, BaseRef: a.BaseRef, State: "open", ChangedFiles: 1}, ParentPullNumber: a.ParentPullNumber, ParentSHA: a.ParentSHA, ObservedAt: a.ObservedAt}
-		covered, err := f.engine.Coverage(t.Context(), f.project, plan, "hosted")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if covered {
-			credit++
-		}
-	}
-	return credit
 }
 
 func TestHostedRecoveryObserverReasonPreservesSuccessfulAndKnownStates(t *testing.T) {

@@ -239,8 +239,11 @@ func TestMessageStreamRevocationSendsOneSafeErrorThenCloses(t *testing.T) {
 func TestMessageStreamBoundsFrameBeforeInitialHeaders(t *testing.T) {
 	f, project, _, recipient, _ := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
-	payload := `{"recipient_worker_id":"` + recipient + `","synthetic":"` + strings.Repeat("x", 1<<20) + `"}`
-	_, err := f.store.DB().Exec("INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?)", project, "message.sent", "synthetic-large", 1, "synthetic", payload, time.Now().UTC().Format(time.RFC3339Nano))
+	// Ordinary API delivery metadata is compact. Inject an oversized retained
+	// metadata field to exercise the defensive frame bound after public projection;
+	// unknown audit fields are intentionally omitted from the incoming feed.
+	payload := `{"recipient_worker_id":"` + recipient + `","conversation_id":"` + strings.Repeat("x", 1<<20) + `"}`
+	_, err := f.store.DB().Exec("INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?)", project, "message.sent", core.NewID("message"), 1, "synthetic", payload, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +258,10 @@ func TestMessageStreamBoundsFrameBeforeInitialHeaders(t *testing.T) {
 func TestMessageStreamSlowNativeSocketWriteHasDeadline(t *testing.T) {
 	f, project, _, recipient, _ := messageSetup(t)
 	cursor := snapshotRequest(t, f, project, recipient)
-	payload := `{"recipient_worker_id":"` + recipient + `","synthetic":"` + strings.Repeat("x", 8<<10) + `"}`
-	_, err := f.store.DB().Exec(`WITH RECURSIVE numbers(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM numbers WHERE x<3000) INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) SELECT ?,'message.sent','slow_'||x,1,'synthetic',?,? FROM numbers`, project, payload, time.Now().UTC().Format(time.RFC3339Nano))
+	// Use a projected field so the synthetic retained-data load reaches the native
+	// socket; unknown audit fields would be stripped before serialization.
+	payload := `{"recipient_worker_id":"` + recipient + `","conversation_id":"` + strings.Repeat("x", 8<<10) + `"}`
+	_, err := f.store.DB().Exec(`WITH RECURSIVE numbers(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM numbers WHERE x<3000) INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at) SELECT ?,'message.sent',printf('message_%032x',x),1,'synthetic',?,? FROM numbers`, project, payload, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatal(err)
 	}

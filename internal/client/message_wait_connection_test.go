@@ -35,7 +35,7 @@ func TestMessageWaitLostHTTPStreamReconnectsFromLastValidatedCursor(t *testing.T
 				if n > 1 && strings.HasPrefix(test.body, ready) {
 					wantCursor = "locally-validated"
 				}
-				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != wantCursor || r.URL.Query().Get("limit") != "1" || len(r.URL.Query()) != 2 {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/project-one/message-events/stream" || r.URL.Query().Get("cursor") != wantCursor || r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("include_assignments") != "true" || len(r.URL.Query()) != 3 {
 					t.Error("reconnect changed binding or advanced beyond the last validated frame")
 				}
 				w.Header().Set("Content-Type", "text/event-stream")

@@ -34,9 +34,9 @@ func TestRoundUnboundedNativeMinimumTaperAndFiniteReplacement(t *testing.T) {
 		}
 		adoptionValid(t, f)
 	}
-	control, err := f.e.ReadRoundControl(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), 2, "cli")
-	if err != nil || !control.MaximumUnbounded || control.Maximum != 0 {
-		t.Fatal("control read lost no-maximum fact", err)
+	progress, err := f.e.ReadRoundProgress(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), []int64{2})
+	if err != nil || !progress.Items[0].Channels[1].MaximumUnbounded || progress.Items[0].Channels[1].Maximum != 0 {
+		t.Fatal("progress lost no-maximum fact", err)
 	}
 	one := int64(1)
 	if _, err = f.e.ConfigureRoundControl(t.Context(), adoptionScope(t, f, f.admin, true), "close-unbounded", 2, "cli", RoundControlRequest{ExpectedRevision: &one, Action: "close"}); err != nil {

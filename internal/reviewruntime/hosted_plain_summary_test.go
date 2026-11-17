@@ -48,7 +48,7 @@ func TestRetainHostedPlainStandingSummarySameAttemptAndFinalization(t *testing.T
 	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-premature", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
 		t.Fatal("active capture finalized")
 	}
-	if nativeHostedCredit(t, f.f) != 0 {
+	if recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
 		t.Fatal("retention granted round credit")
 	}
 	completed, err := f.f.engine.Advance(t.Context(), f.f.project, original.ID, original.Revision, "completed", "synthetic_complete", original.ExternalID)
@@ -56,7 +56,7 @@ func TestRetainHostedPlainStandingSummarySameAttemptAndFinalization(t *testing.T
 		t.Fatal(err)
 	}
 	adjudication, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
-	if err != nil || adjudication.Finalized || nativeHostedCredit(t, f.f) != 0 {
+	if err != nil || adjudication.Finalized || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
 		t.Fatal("completion silently finalized or credited source", err)
 	}
 	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
@@ -98,7 +98,7 @@ func TestRetainHostedPlainFinishedAckWithoutInventoryUncredited(t *testing.T) {
 	record.Snapshot.IssueComments = append(record.Snapshot.IssueComments[:1], ack)
 	before := cliAttemptState(t, f.f.store, f.a.ID)
 	result, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
-	if err != nil || result.Complete || result.Reason != "hosted_finished_inventory_unproven" || result.Receipt.ID != "" || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f.f) != 0 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 1 || cliAttemptState(t, f.f.store, f.a.ID) != before {
+	if err != nil || result.Complete || result.Reason != "hosted_finished_inventory_unproven" || result.Receipt.ID != "" || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 1 || cliAttemptState(t, f.f.store, f.a.ID) != before {
 		t.Fatal("plain acknowledgment invented inventory/credit or lost reservation", result, err)
 	}
 	retained, err := f.captures.Read(t.Context(), f.a.ID, result.Capture)

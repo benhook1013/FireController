@@ -1,10 +1,11 @@
 package reviewexec
 
 import (
-	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func TestCommitDecoupledProgressKeepsCompletedNativeChannel(t *testing.T) {
@@ -52,7 +53,7 @@ func TestCommitDecoupledProgressKeepsCompletedNativeChannel(t *testing.T) {
 					if err != nil || got != (ComparisonState{Covered: true}) {
 						t.Fatal("source movement reopened completed PR/channel progress", got, err)
 					}
-					if done, err := f.e.Coverage(t.Context(), attemptProject, moved, channel); err != nil || !done {
+					if done, err := f.e.DiscoveryComplete(t.Context(), attemptProject, moved, channel); err != nil || !done {
 						t.Fatal("source movement forced another review", done, err)
 					}
 				})
@@ -85,11 +86,56 @@ func TestCommitDecoupledProgressKeepsCompletedNativeChannel(t *testing.T) {
 	}
 }
 
+func TestCommitDecoupledProgressPreservesExhaustionAndCleanTaper(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		maximum int64
+		rounds  int
+		tapered bool
+	}{
+		{"exhausted_without_taper", 1, 1, false},
+		{"clean_taper_before_maximum", 5, 2, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := roundFixture(t)
+			roundGrant(t, f, 2, "cli", 0, 0, test.maximum, "finite-grant")
+			var a Attempt
+			for i := 0; i < test.rounds; i++ {
+				var id string
+				a, id = roundCapture(t, f, i, false)
+				roundFinalize(t, f, a, id, i, false)
+			}
+			control := roundRead(t, f, 2, "cli")
+			if control.Used != int64(test.rounds) || control.Dry != int64(test.rounds) || control.Maximum != test.maximum || control.Tapered != test.tapered || !roundDone(control) {
+				t.Fatal("fixture did not distinguish exhaustion and taper", control)
+			}
+			progress := readProgress(t, f, 2).Items[0]
+			before := roundTables(t, f)
+			moved := SourcePlan{Repository: reviewprovider.Repository{ID: a.Anchor.RepositoryID, FullName: a.Anchor.Repository, DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: 2, RepositoryID: a.Anchor.RepositoryID, State: "open", HeadSHA: strings.Repeat("9", 40), HeadRef: "rewritten-head", BaseSHA: strings.Repeat("8", 40), BaseRef: "different-parent", ChangedFiles: 2}, ParentSHA: strings.Repeat("8", 40), ParentPullNumber: 17, ObservedAt: stamp()}
+			got, err := f.e.Comparison(t.Context(), attemptProject, moved, "cli")
+			if err != nil || got != (ComparisonState{Covered: true, RoundsConfigured: true, RoundsComplete: true}) {
+				t.Fatal("movement erased native completion or stopping state", got, err)
+			}
+			if done, err := f.e.DiscoveryComplete(t.Context(), attemptProject, moved, "cli"); err != nil || !done {
+				t.Fatal("movement reopened finished discovery", done, err)
+			}
+			_, err = f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "movement-must-not-buy-round", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: moved.Pull.HeadSHA})
+			attemptCode(t, err, "review_round_complete")
+			if !reflect.DeepEqual(control, roundRead(t, f, 2, "cli")) || !reflect.DeepEqual(progress, readProgress(t, f, 2).Items[0]) || before != roundTables(t, f) {
+				t.Fatal("movement changed counters, tapered state or grant history")
+			}
+		})
+	}
+}
+
 func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T) {
 	for _, mode := range []string{"missing_same_head_result", "original_result_finalized_after_move"} {
 		t.Run(mode, func(t *testing.T) {
 			f, ready, readyID, current := coverageFixture(t, 0, false)
 			coverageFinalize(t, f, ready, readyID, 0)
+			if err := EnsureRoundSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
 			var unfinished Attempt
 			var unfinishedID string
 			if mode == "missing_same_head_result" {
@@ -97,9 +143,7 @@ func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T
 			} else {
 				// This original-head result is retained before the source moves,
 				// but deliberately remains unfinalized until after that movement.
-				unfinished = coverageNextAttempt(t, f, "original-unfinished", "cli", current.Pull.HeadSHA)
-				unfinishedID = completionRetainFinding(t, f, readyID, unfinished)
-				adjudicationComplete(t, f, unfinished)
+				unfinished, unfinishedID = roundCapture(t, f, 901, true)
 			}
 			moved := current
 			moved.Pull.HeadSHA = strings.Repeat("9", 40)
@@ -107,16 +151,14 @@ func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T
 			moved.Pull.BaseRef, moved.ParentPullNumber = "new-parent", 17
 			for _, plan := range []SourcePlan{current, moved} {
 				coverageComparison(t, f, ready, plan, ComparisonState{Covered: true, Pending: true})
-				if done, err := f.e.Coverage(t.Context(), attemptProject, plan, "cli"); err != nil || done {
+				if done, err := f.e.DiscoveryComplete(t.Context(), attemptProject, plan, "cli"); err != nil || done {
 					t.Fatal("ready result hid unresolved original work", done, err)
 				}
 			}
 			if unfinishedID == "" {
 				return
 			}
-			adjudicationDecide(t, f, unfinishedID, "accept-original-after-move", 0, 0, "accepted")
-			body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-original-after-move", unfinishedID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-			adjudicationReceipt(t, body, err, unfinishedID, "finalized", 2)
+			roundFinalize(t, f, unfinished, unfinishedID, 901, true)
 			// Frozen accepted counts alone never clear the unfixed finding.
 			coverageComparison(t, f, ready, moved, ComparisonState{Covered: true, Pending: true})
 			coverageFix(t, f, unfinishedID, "fix-original-after-move", 2, 0, "")
@@ -128,22 +170,4 @@ func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T
 			}
 		})
 	}
-}
-
-// Reuse the canonical retained capture structure, preserving native attempt identity.
-func completionRetainFinding(t *testing.T, f *attemptFixture, originalID string, next Attempt) string {
-	t.Helper()
-	original, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), originalID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capture := original.Capture
-	capture.ExpectedAnchor = *next.Anchor
-	capture.Review.Findings = []reviewprovider.ParsedFinding{{Severity: "high", Title: "Original retained obligation", Detail: "Focused original finding", Path: "main.go", StartLine: 1, EndLine: 1}}
-	capture.Review.ReportedFindings = 1
-	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, next.ID, capture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return receipt.ID
 }

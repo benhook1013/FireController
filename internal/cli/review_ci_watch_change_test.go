@@ -38,7 +38,7 @@ func TestCIWatchChangeCLIRejectsInvalidBaselineBeforeProfile(t *testing.T) {
 		}
 	}
 	if _, ok := parseCIWatch([]string{"--target", "2:" + head, "--after-observation", "2:" + key}); ok {
-		t.Fatal("rearming with an implicit base accepted")
+		t.Fatal("observation baseline accepted without an explicit base pin")
 	}
 	var out, diag bytes.Buffer
 	if code := RunContext(t.Context(), []string{"reviews", "ci-wait", "--help"}, nil, &out, &diag); code != ExitSuccess || diag.Len() != 0 || !strings.Contains(out.String(), "--after-observation") || !strings.Contains(out.String(), "passed or failed") || !strings.Contains(out.String(), "Pending checks alone do not wake this terminal wait") {

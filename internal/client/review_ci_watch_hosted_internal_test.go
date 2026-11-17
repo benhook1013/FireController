@@ -14,7 +14,7 @@ func TestCIWatchImplicitBaseRetryAdvice(t *testing.T) {
 					original.Status = 503
 				}
 				pins := []CIWatchTarget{{PullNumber: 2, HeadSHA: strings.Repeat("a", 40), BaseSHA: base}}
-				got := ciWatchTargetError(original, "", pins).(*Error)
+				got := reviewWaitTargetError(original, "", pins).(*Error)
 				if base == "" {
 					for _, text := range []string{"base was implicit", "Verify the original comparison", "supply explicit base pins"} {
 						if !strings.Contains(got.Action, text) {

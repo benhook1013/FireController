@@ -21,6 +21,11 @@ func currentIndexV10Fixture(t *testing.T) *apiFixture {
 	if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", currentIndexV10Migrations(), backfillCurrentReviewIndexes); err != nil {
 		t.Fatal(err)
 	}
+	// Notification setup is independent of this retained reviews migration.
+	// Install it before digesting legacy rows so the before/after boundary is exact.
+	if err := EnsureNotificationSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 

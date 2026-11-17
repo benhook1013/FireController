@@ -15,7 +15,7 @@ import (
 )
 
 func TestSessionTransportReuseFreshAuthorityIsolationAndCleanup(t *testing.T) {
-	var connections, instances, workers, posts atomic.Int64
+	var connections, instances, pauses, posts atomic.Int64
 	var token, instance atomic.Value
 	token.Store("first-private-token")
 	instance.Store("instance-one")
@@ -35,9 +35,12 @@ func TestSessionTransportReuseFreshAuthorityIsolationAndCleanup(t *testing.T) {
 		if r.URL.Path == "/api/v1/instance" {
 			instances.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": instance.Load().(string)})
+		} else if r.URL.Path == "/api/v1/projects/project-one/workers/worker-one/pause" {
+			pauses.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"worker_id": "worker-one", "revision": 0, "paused": false, "reason": ""})
 		} else {
-			workers.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": "worker-one", "project_id": "project-one", "name": "Worker"})
+			t.Errorf("unexpected doctor read %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	service.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -69,8 +72,8 @@ func TestSessionTransportReuseFreshAuthorityIsolationAndCleanup(t *testing.T) {
 			t.Fatal("doctor failed")
 		}
 	}
-	if connections.Load() != 1 || instances.Load() != 2 || workers.Load() != 2 {
-		t.Fatal("calls did not reuse connection with fresh instance verification", connections.Load(), instances.Load(), workers.Load())
+	if connections.Load() != 1 || instances.Load() != 2 || pauses.Load() != 2 {
+		t.Fatal("calls did not reuse connection with fresh instance verification", connections.Load(), instances.Load(), pauses.Load())
 	}
 	second := connect(t, server, "")
 	if call(t, second, "doctor", nil).IsError || connections.Load() != 2 {

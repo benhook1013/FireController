@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"net/url"
@@ -11,6 +12,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 )
+
+// MaxNoteBodyBytes bounds decoded UTF-8 text, independently of JSON encoding.
+const MaxNoteBodyBytes = 16 << 10
 
 type Note struct {
 	ID           string `json:"id"`
@@ -132,8 +136,11 @@ func noteStatus(status string) bool {
 }
 
 func ValidateCreateNoteRequest(in CreateNoteRequest) error {
-	if !noteScope(in.WorkerID, in.JobID, in.Phase) || !noteKind(in.Kind) || !noteText(in.Body, 16<<10, true, true) {
+	if !noteScope(in.WorkerID, in.JobID, in.Phase) || !noteKind(in.Kind) {
 		return mutationValidation()
+	}
+	if !noteText(in.Body, MaxNoteBodyBytes, true, true) {
+		return noteBodyValidation(in.Body)
 	}
 	return nil
 }
@@ -144,7 +151,10 @@ func ValidateUpdateNoteRequest(in UpdateNoteRequest) error {
 	if in.WorkerID == nil && in.JobID == nil && in.Phase == nil && in.Kind == nil && in.Body == nil && in.Status == nil && in.StatusReason == nil {
 		return mutationValidation()
 	}
-	if in.WorkerID != nil && *in.WorkerID != "" && !validID(*in.WorkerID) || in.JobID != nil && *in.JobID != "" && !validID(*in.JobID) || in.Phase != nil && !noteText(*in.Phase, 200, *in.Phase != "", false) || in.Kind != nil && !noteKind(*in.Kind) || in.Body != nil && !noteText(*in.Body, 16<<10, true, true) || in.Status != nil && !noteStatus(*in.Status) || in.StatusReason != nil && !noteText(*in.StatusReason, 1024, false, true) {
+	if in.Body != nil && !noteText(*in.Body, MaxNoteBodyBytes, true, true) {
+		return noteBodyValidation(*in.Body)
+	}
+	if in.WorkerID != nil && *in.WorkerID != "" && !validID(*in.WorkerID) || in.JobID != nil && *in.JobID != "" && !validID(*in.JobID) || in.Phase != nil && !noteText(*in.Phase, 200, *in.Phase != "", false) || in.Kind != nil && !noteKind(*in.Kind) || in.Status != nil && !noteStatus(*in.Status) || in.StatusReason != nil && !noteText(*in.StatusReason, 1024, false, true) {
 		return mutationValidation()
 	}
 	if in.WorkerID != nil && in.JobID != nil && in.Phase != nil && !noteScope(*in.WorkerID, *in.JobID, *in.Phase) {
@@ -161,6 +171,14 @@ func ValidateUpdateNoteRequest(in UpdateNoteRequest) error {
 	}
 	return nil
 }
+func noteBodyValidation(body string) *Error {
+	message := fmt.Sprintf("body must be nonblank valid UTF-8 text of at most %d decoded UTF-8 bytes; newline and tab are allowed, other controls are not.", MaxNoteBodyBytes)
+	if len(body) > MaxNoteBodyBytes {
+		message = fmt.Sprintf("body exceeds %d decoded UTF-8 bytes (16 KiB). Character count and encoded JSON size do not measure this limit.", MaxNoteBodyBytes)
+	}
+	return &Error{Code: "validation_failed", Message: message, Action: "Provide a valid body within the byte limit; for note_update, omit body when unchanged. No request was sent.", Details: map[string]any{"field": "body", "max_utf8_bytes": MaxNoteBodyBytes}, Status: 400}
+}
+
 func ValidateNoteFilter(in NoteFilter) error {
 	if in.WorkerID != "" && !validID(in.WorkerID) || in.JobID != "" && !validID(in.JobID) || !noteText(in.Phase, 200, in.Phase != "", false) || in.Kind != "" && !noteKind(in.Kind) || in.Status != "" && in.Status != "all" && !noteStatus(in.Status) || in.IncludeAssignedJobs && in.WorkerID == "" {
 		return validation()
@@ -277,7 +295,7 @@ func (c *Client) Notes(ctx context.Context, options PageOptions, filter NoteFilt
 	var prev *NoteSummary
 	for i := range out.Items {
 		v := &out.Items[i]
-		if !c.validNoteSummary(*v) || seen[v.ID] || filter.JobID != "" && v.JobID != filter.JobID || filter.Phase != "" && v.Phase != filter.Phase || filter.Kind != "" && v.Kind != filter.Kind || filter.Status != "all" && v.Status != defaultNoteStatus(filter.Status) || filter.WorkerID != "" && !filter.IncludeAssignedJobs && v.WorkerID != filter.WorkerID {
+		if !c.validNoteSummary(*v) || seen[v.ID] || filter.JobID != "" && v.JobID != filter.JobID || filter.Phase != "" && v.Phase != filter.Phase || filter.Kind != "" && v.Kind != filter.Kind || filter.Status != "all" && v.Status != defaultNoteStatus(filter.Status) || filter.JobID == "" && filter.WorkerID != "" && !filter.IncludeAssignedJobs && v.WorkerID != filter.WorkerID {
 			return Page[NoteSummary]{}, invalidResponse()
 		}
 		if prev != nil {

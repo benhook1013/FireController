@@ -186,7 +186,9 @@ func (g *GitHub) collectCIWorkflowAttention(ctx context.Context, target CITarget
 					if len(attempts) >= 32 {
 						return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: ErrCIWorkflowAttemptLimit}
 					}
-					attempt, err = g.CurrentActionsAttempt(ctx, actions.Repository, actions.HeadSHA, run.CheckSuiteID)
+					// The complete same-observation inventory already proved suite uniqueness.
+					// Reuse discovery only; direct identity, jobs and final-run checks remain.
+					attempt, err = g.currentActionsAttempt(ctx, actions.Repository, actions.HeadSHA, run.CheckSuiteID, &run)
 					if err != nil {
 						return observation, withoutUnrecheckedFallback(), &CIWorkflowAttentionError{Cause: err}
 					}

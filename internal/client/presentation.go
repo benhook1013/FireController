@@ -14,18 +14,21 @@ import (
 type PresentationConfig = presentationmodel.Config
 
 type Presentation struct {
-	ProjectID string            `json:"project_id"`
-	Revision  int64             `json:"revision"`
-	Name      string            `json:"name"`
-	BrandName string            `json:"brand_name"`
-	Tagline   string            `json:"tagline"`
-	Headings  map[string]string `json:"headings"`
-	Theme     map[string]string `json:"theme"`
-	UpdatedAt string            `json:"updated_at"`
+	ProjectID           string                          `json:"project_id"`
+	Revision            int64                           `json:"revision"`
+	Name                string                          `json:"name"`
+	BrandName           string                          `json:"brand_name"`
+	Tagline             string                          `json:"tagline"`
+	Headings            map[string]string               `json:"headings"`
+	Theme               map[string]string               `json:"theme"`
+	ReviewGroups        []presentationmodel.ReviewGroup `json:"review_groups,omitempty"`
+	SuggestedMaxPRFiles int64                           `json:"suggested_max_pr_files,omitempty"`
+	WorkerOrder         []string                        `json:"worker_order,omitempty"`
+	UpdatedAt           string                          `json:"updated_at"`
 }
 
 func (p Presentation) Config() PresentationConfig {
-	return PresentationConfig{Name: p.Name, BrandName: p.BrandName, Tagline: p.Tagline, Headings: p.Headings, Theme: p.Theme}
+	return PresentationConfig{Name: p.Name, BrandName: p.BrandName, Tagline: p.Tagline, Headings: p.Headings, Theme: p.Theme, ReviewGroups: p.ReviewGroups, WorkerOrder: p.WorkerOrder, SuggestedMaxPRFiles: p.SuggestedMaxPRFiles}
 }
 
 type PresentationSnapshot struct {
@@ -78,7 +81,7 @@ func (c *Client) validPresentation(p Presentation) bool {
 	}
 	if p.Revision == 0 {
 		defaults := presentationmodel.Defaults()
-		if p.BrandName != defaults.BrandName || p.Tagline != defaults.Tagline || len(p.Headings) != 0 || len(p.Theme) != 0 {
+		if p.BrandName != defaults.BrandName || p.Tagline != defaults.Tagline || len(p.Headings) != 0 || len(p.Theme) != 0 || len(p.ReviewGroups) != 0 || len(p.WorkerOrder) != 0 || p.SuggestedMaxPRFiles != 0 {
 			return false
 		}
 		return p.Name != "" && len(p.Name) <= 200 && utf8.ValidString(p.Name)

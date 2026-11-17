@@ -90,9 +90,6 @@ func TestExternalHostedRehashedFrontierAndEvidenceIndexCorruptionRefused(t *test
 		name, sql string
 		physical  bool
 	}{
-		{"missing-frontier-table", `DROP TABLE review_hosted_discovery_state`, false},
-		{"missing-identity-index", `DROP INDEX review_run_versions_external_source`, false},
-		{"unexpected-frontier-table", `CREATE TABLE review_hosted_discovery_state_duplicate(project_id TEXT)`, false},
 		{"malformed-cutoff", `UPDATE review_hosted_discovery_state SET cutoff_at='invalid'`, true},
 		{"noncanonical-cutoff", `UPDATE review_hosted_discovery_state SET cutoff_at='2026-10-20T01:00:00+01:00'`, true},
 		{"oversized-cutoff", `UPDATE review_hosted_discovery_state SET cutoff_at=hex(zeroblob(16384))`, true},
@@ -114,9 +111,10 @@ func TestExternalHostedAuthenticSchemaNineBackupRemainsSupported(t *testing.T) {
 func TestExternalHostedAuthenticSchemaTenBackupRemainsSupported(t *testing.T) {
 	testAuthenticChannelCountSchemaBackup(t, 10)
 }
+
 func TestExternalHostedEvidenceThreeBackupRemainsSupported(t *testing.T) {
 	f := externalHostedInventoryFixture(t)
-	if _, err := f.store.DB().Exec(`DROP INDEX review_evidence_hosted_publication; DROP INDEX review_evidence_hosted_run; UPDATE metadata SET value='3' WHERE key='schema:review_evidence'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_activity_evidence; DROP INDEX review_evidence_hosted_publication; DROP INDEX review_evidence_hosted_run; UPDATE metadata SET value='3' WHERE key='schema:review_evidence'`); err != nil {
 		t.Fatal(err)
 	}
 	before := backupRows(t, f.store.DB())

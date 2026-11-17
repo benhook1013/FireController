@@ -118,6 +118,14 @@ func TestNotesClientPublicPartialCorrectionsHistoryAndReplay(t *testing.T) {
 	}
 }
 func TestNotesClientLocalValidationAndMalformedStates(t *testing.T) {
+	// Keep client admission permissive for exact retries of historical receipts;
+	// the service rejects a fresh phase-only mutation after replay lookup.
+	if err := client.ValidateCreateNoteRequest(client.CreateNoteRequest{Phase: "Retained label", Kind: "reminder", Body: "legacy retry"}); err != nil {
+		t.Fatal("client blocked a potentially retained create receipt", err)
+	}
+	if err := client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, WorkerID: notePtr("")}); err != nil {
+		t.Fatal("client preflighted partial scope without server state", err)
+	}
 	var c client.Client
 	for _, in := range []client.CreateNoteRequest{{Kind: "reminder", Body: "x"}, {WorkerID: "worker", Kind: "other", Body: "x"}, {WorkerID: "worker", Kind: "source", Body: "\r"}, {WorkerID: "worker", Kind: "reminder", Body: string([]byte{0xff})}} {
 		_, err := c.CreateNote(t.Context(), "k", in)
@@ -290,4 +298,31 @@ func TestNotesClientRequiresExplicitCompleteResponseFields(t *testing.T) {
 	c, _ = progressResponseClient(t, string(raw))
 	_, err := c.Notes(t.Context(), client.PageOptions{}, client.NoteFilter{})
 	checkError(t, err, "invalid_response")
+}
+
+func TestNoteBodyValidationUsesDecodedUTF8Bytes(t *testing.T) {
+	good := strings.Repeat("雪", client.MaxNoteBodyBytes/3) + "x"
+	if len(good) != client.MaxNoteBodyBytes {
+		t.Fatal("invalid exact-byte fixture")
+	}
+	if err := client.ValidateCreateNoteRequest(client.CreateNoteRequest{WorkerID: "worker-one", Kind: "reminder", Body: good}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, Body: &good}); err != nil {
+		t.Fatal(err)
+	}
+	bad := "PRIVATE_NOTE_BODY" + strings.Repeat("雪", client.MaxNoteBodyBytes/3+1)
+	for _, err := range []error{
+		client.ValidateCreateNoteRequest(client.CreateNoteRequest{WorkerID: "worker-one", Kind: "reminder", Body: bad}),
+		client.ValidateUpdateNoteRequest(client.UpdateNoteRequest{ExpectedRevision: 1, Body: &bad}),
+	} {
+		var failure *client.Error
+		if !errors.As(err, &failure) || failure.Code != "validation_failed" || failure.OutcomeUnknown || !strings.Contains(failure.Message, "body exceeds 16384 decoded UTF-8 bytes") || !strings.Contains(failure.Action, "omit body when unchanged") {
+			t.Fatal("missing body byte diagnostic", err)
+		}
+		raw, _ := json.Marshal(failure)
+		if strings.Contains(string(raw), "PRIVATE_NOTE_BODY") || !strings.Contains(string(raw), `"field":"body"`) {
+			t.Fatal("body leaked or field omitted", string(raw))
+		}
+	}
 }

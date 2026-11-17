@@ -25,10 +25,126 @@ function fixture() {
 }
 
 describe('live private project views', () => {
+  it('refreshes only current round progress when a live activity signal arrives', async () => {
+    const f = fixture(), progress = f.add(['reviews', 'current', 'round-progress', [31]]), queue = f.add(['reviews', 'current', 'queue', '']), history = f.add(['reviews', 'snapshot_old', 'runs']), other = f.add(['reviews', 'current', 'round-progress', [31]], true, ['fc', 'session', 'instance', 'other', 'worker']);
+    try {
+      const change = page([{ event_type: 'review.activity_observed', resource_id: `review_attempt_${'a'.repeat(32)}` }]);
+      expect(validMetadataPage(change, 25)).toBe(true);
+      await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
+      expect(progress.reads()).toBe(1);
+      for (const query of [queue, history, other]) expect(query.reads()).toBe(0);
+      for (const resource_id of ['record_one', `review_operation_${'a'.repeat(32)}`, `review_attempt_${'a'.repeat(32)}\n`]) expect(validMetadataPage(page([{ event_type: 'review.activity_observed', resource_id }]), 25)).toBe(false);
+    } finally { f.close(); }
+  });
+  it('refreshes selected job summaries and delivery without touching private briefs, archives or another project', async () => {
+    const f=fixture(), summary=f.add(['job-summary','job_one']), delivery=f.add(['delivery','','']), brief=f.add(['job','job_one']), other=f.add(['job-summary','job_one'],true,['fc','session','instance','other','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'job.summary_replaced',resource_id:'job_one'}]),new AbortController().signal);
+      expect(summary.reads()).toBe(1);expect(delivery.reads()).toBe(1);expect(brief.reads()).toBe(0);expect(other.reads()).toBe(0);
+    } finally {f.close();}
+  });
+
+  it('refreshes retirement, active/archive worker lists and lanes without changing retained history', async () => {
+    const f = fixture(), active = f.add(['workers', '']), archive = f.add(['workers', 'archive', '']), worker = f.add(['worker', 'worker_one']), preview = f.add(['worker-retirement', 'worker_one']), delivery = f.add(['delivery', '', '']);
+    const history = f.add(['worker-primary-history', 'worker_one']), other = f.add(['workers', ''], true, ['fc', 'session', 'instance', 'other_project', 'worker']);
+    try {
+      await refreshProjectMetadata(f.client, key, page([{ event_type: 'workers.retired', resource_id: 'worker_one' }]), new AbortController().signal);
+      for (const view of [active, archive, worker, preview, delivery]) expect(view.reads()).toBe(1);
+      for (const view of [history, other]) { expect(view.reads()).toBe(0); expect(view.state()?.data).toBe('old'); }
+    } finally { f.close(); }
+  });
+
+  it('validates operation resources and refreshes current progress, fronts and assessments without crossing project or history boundaries', async () => {
+    const f = fixture();
+    const operation = `review_operation_${'a'.repeat(32)}`;
+    const progress = f.add(['reviews', 'current', 'round-progress', [31, 32]]);
+    const fronts = f.add(['reviews', 'current', 'fronts']);
+    const inactiveProgress = f.add(['reviews', 'current', 'round-progress', [18]], false);
+    const inactiveFronts = f.add(['reviews', 'current', 'fronts', 'closed'], false);
+    const queue = f.add(['reviews', 'current', 'queue', '']);
+    const assessment = f.add(['reviews', 'policy-assessment', 'evidence_one']);
+    const history = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const inbox = f.add(['inbox', '']);
+    const otherProject = f.add(['reviews', 'current', 'round-progress', [31, 32]], true, ['fc', 'session', 'instance', 'other', 'worker']);
+    try {
+      for (const event_type of ['review.requested', 'review.operation_updated'] as const) {
+        const change = page([{ event_type, resource_id: operation }]);
+        expect(validMetadataPage(change, 25)).toBe(true);
+        await refreshProjectMetadata(f.client, key, change, new AbortController().signal);
+      }
+      for (const query of [progress, fronts, assessment]) expect(query.reads()).toBe(2);
+      for (const query of [inactiveProgress, inactiveFronts]) {
+        expect(query.reads()).toBe(0);
+        expect(query.state()?.isInvalidated).toBe(true);
+      }
+      for (const query of [queue, history, inbox, otherProject]) {
+        expect(query.reads()).toBe(0);
+        expect(query.state()?.isInvalidated).toBe(false);
+      }
+      for (const resource_id of ['record_one', 'review_operation_abc', `review_operation_${'A'.repeat(32)}`, `review_attempt_${'a'.repeat(32)}`, `${operation}\n`, ` ${operation}`]) {
+        for (const event_type of ['review.requested', 'review.operation_updated'] as const) {
+          expect(validMetadataPage(page([{ event_type, resource_id }]), 25)).toBe(false);
+        }
+      }
+    } finally { f.close(); }
+  });
+
+  it('refreshes active job and message views once for an import without opening bodies or crossing identities', async () => {
+    const f = fixture();
+    const jobs = f.add(['jobs', '', false, '']);
+    const checkpoint = f.add(['checkpoint-latest', 'job_one']);
+    const inactive = f.add(['job', 'not_open'], false);
+    const inbox = f.add(['inbox', '']);
+    const thread = f.add(['thread', 'conversation_one', '']);
+    const unopenedThread = f.add(['thread', 'not_open', ''], false);
+    const unopenedInboxPage = f.add(['inbox', 'older_cursor'], false);
+    const reviews = f.add(['reviews', 'current', 'queue', '']);
+    const captured = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const otherIdentities = [
+      ['fc', 'other_session', 'instance', 'project', 'worker'],
+      ['fc', 'session', 'other_instance', 'project', 'worker'],
+      ['fc', 'session', 'instance', 'other_project', 'worker'],
+      ['fc', 'session', 'instance', 'project', 'other_worker'],
+    ].flatMap(prefix => [f.add(['inbox', ''], true, prefix), f.add(['thread', 'conversation_one', ''], true, prefix)]);
+    try {
+      // A message-only import emits this batch hint, not historical message events.
+      await refreshProjectMetadata(f.client, key, page([
+        { event_type: 'coordination.imported', resource_id: 'project' },
+        { event_type: 'coordination.imported', resource_id: 'project' },
+      ]), new AbortController().signal);
+      for (const query of [jobs, checkpoint, inbox, thread]) {
+        expect(query.reads()).toBe(1); expect(query.state()?.data).toBe('committed');
+      }
+      for (const query of [inactive, unopenedThread, unopenedInboxPage]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(true); expect(query.state()?.data).toBe('old');
+      }
+      for (const query of [reviews, captured, ...otherIdentities]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); expect(query.state()?.data).toBe('old');
+      }
+      expect(f.client.getMutationCache().getAll()).toHaveLength(0);
+    } finally { f.close(); }
+  });
+  it('refreshes unified current progress and invalidates only its explicit history on job changes', async () => {
+    const f=fixture(), job=f.add(['job','job_one']), history=f.add(['job-progress-history','job_one',''],false), openHistory=f.add(['job-progress-history','job_one','open']), other=f.add(['job','job_two']), inbox=f.add(['inbox','']), old=f.add(['job-progress-history','job_one',''],false,['fc','old','instance','project','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'job.updated',resource_id:'job_one'}]),new AbortController().signal);
+      expect(job.reads()).toBe(1); expect(openHistory.reads()).toBe(1); expect(history.reads()).toBe(0); expect(history.state()?.isInvalidated).toBe(true);
+      for(const query of [other,inbox,old]) { expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); }
+    } finally {f.close();}
+  });
+  it('refreshes default attached notes through active jobs without opening histories or worker inboxes', async () => {
+    const f=fixture(), job=f.add(['job','job_one']), history=f.add(['job-progress-history','job_one',''],false), inbox=f.add(['inbox','']), other=f.add(['job','job_one'],true,['fc','session','instance','foreign','worker']);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type:'note.updated',resource_id:'note_one'}]),new AbortController().signal);
+      expect(job.reads()).toBe(1);
+      for(const query of [history,inbox,other]) {expect(query.reads()).toBe(0);expect(query.state()?.isInvalidated).toBe(false);}
+    } finally {f.close();}
+  });
   it('coalesces job changes into affected active reads without fetching unrelated context or archives', async () => {
     const f = fixture();
     const jobs = f.add(['jobs', '', false, '']);
     const job = f.add(['job', 'job_one']);
+    const summary = f.add(['job-summary', 'job_one']);
     const checklist = f.add(['checklist-current', 'job_one']);
     const checkpoint = f.add(['checkpoint-latest', 'job_one']);
     const updates = f.add(['job-updates', 'job_one', '']);
@@ -46,11 +162,19 @@ describe('live private project views', () => {
         { event_type: 'job.checklist_replaced', resource_id: 'job_one' },
         { event_type: 'job.update_appended', resource_id: 'update_record' },
       ]), new AbortController().signal);
-      for (const query of [jobs, job, checklist, checkpoint, updates, notes]) expect(query.reads()).toBe(1);
+      for (const query of [jobs, job, summary, checklist, checkpoint, updates, notes]) expect(query.reads()).toBe(1);
       expect(closedArchive.reads()).toBe(0); expect(closedArchive.state()?.isInvalidated).toBe(true);
       expect(inactiveNotes.reads()).toBe(0); expect(inactiveNotes.state()?.isInvalidated).toBe(true);
       for (const query of [otherJob, inbox, otherProject]) expect(query.reads()).toBe(0);
     } finally { f.close(); }
+  });
+
+  it.each(['job.update_appended','job.checklist_replaced'] as const)('refreshes Delivery and any identified current job on %s without archive fanout',async event_type=>{
+    const f=fixture(), delivery=f.add(['delivery','','']), job=f.add(['job','job_one']), archive=f.add(['checkpoints','job_one',''],false);
+    try {
+      await refreshProjectMetadata(f.client,key,page([{event_type,resource_id:event_type === 'job.checklist_replaced' ? 'job_one' : 'record_one'}]),new AbortController().signal);
+      expect(delivery.reads()).toBe(1); expect(job.reads()).toBe(event_type === 'job.checklist_replaced' ? 1 : 0); expect(archive.reads()).toBe(0); expect(archive.state()?.isInvalidated).toBe(false);
+    } finally {f.close();}
   });
 
   it('updates worker, note and current review views while preserving captured history and private inbox scope', async () => {
@@ -72,6 +196,9 @@ describe('live private project views', () => {
         { event_type: 'note.updated', resource_id: 'note_one' },
         { event_type: 'review.observed', resource_id: 'snapshot_new' },
         { event_type: 'reviews.policy_configured', resource_id: 'project' },
+        { event_type: 'reviews.adoption_obligations_imported', resource_id: 'sealed-source' },
+        { event_type: 'reviews.adoption_obligation_resolved', resource_id: 'adoption_obligation_one' },
+        { event_type: 'reviews.adoption_obligation_retargeted', resource_id: 'adoption_obligation_one' },
         { event_type: 'review.evidence.finalized', resource_id: 'evidence_one' },
       ]), new AbortController().signal);
       for (const query of [workers, pause, focus, notes, note, current, assessment]) expect(query.reads()).toBe(1);
@@ -86,20 +213,42 @@ describe('live private project views', () => {
     const inactiveBody = f.add(['note', 'not_open'], false);
     const immutable = f.add(['map-revision', 'entry_one', 1]);
     const inbox = f.add(['inbox', '']);
+    const thread = f.add(['thread', 'conversation_one', '']);
+    const unopenedThread = f.add(['thread', 'not_open', ''], false);
+    const unopenedInboxPage = f.add(['inbox', 'older_cursor'], false);
+    const captured = f.add(['reviews', 'snapshot_old', 'run', 'run_one']);
+    const otherIdentities = [
+      ['fc', 'other_session', 'instance', 'project', 'worker'],
+      ['fc', 'session', 'other_instance', 'project', 'worker'],
+      ['fc', 'session', 'instance', 'other_project', 'worker'],
+      ['fc', 'session', 'instance', 'project', 'other_worker'],
+    ].flatMap(prefix => [f.add(['inbox', ''], true, prefix), f.add(['thread', 'conversation_one', ''], true, prefix)]);
     try {
       await refreshProjectMetadata(f.client, key, undefined, new AbortController().signal);
-      for (const query of [...active, reviews]) expect(query.reads()).toBe(1);
-      expect(inactiveBody.reads()).toBe(0); expect(inactiveBody.state()?.isInvalidated).toBe(true);
-      for (const query of [immutable, inbox]) expect(query.reads()).toBe(0);
+      for (const query of [...active, reviews, inbox, thread]) {
+        expect(query.reads()).toBe(1); expect(query.state()?.data).toBe('committed');
+      }
+      for (const query of [inactiveBody, unopenedThread, unopenedInboxPage]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(true); expect(query.state()?.data).toBe('old');
+      }
+      for (const query of [immutable, captured, ...otherIdentities]) {
+        expect(query.reads()).toBe(0); expect(query.state()?.isInvalidated).toBe(false); expect(query.state()?.data).toBe('old');
+      }
+      expect(f.client.getMutationCache().getAll()).toHaveLength(0);
       const canceled = new AbortController(); canceled.abort();
       await refreshProjectMetadata(f.client, key, undefined, canceled.signal);
-      for (const query of [...active, reviews]) expect(query.reads()).toBe(1);
+      for (const query of [...active, reviews, inbox, thread]) expect(query.reads()).toBe(1);
     } finally { f.close(); }
   });
 
   it('accepts only the bounded explicit change vocabulary without messages or payloads', () => {
-    const complete = page(projectEventTypes.map(event_type => ({ event_type, resource_id: 'record_one' })));
-    expect(validMetadataPage(complete, projectEventTypes.length)).toBe(true);
+    const complete = page(projectEventTypes.map(event_type => ({
+      event_type,
+      resource_id: event_type === 'reviews.rounds_configured' ? '32/cli' :
+        event_type === 'review.activity_observed' ? `review_attempt_${'a'.repeat(32)}` :
+        event_type === 'review.requested' || event_type === 'review.operation_updated' ? `review_operation_${'a'.repeat(32)}` : 'record_one',
+    })));
+    expect(validMetadataPage(complete, 100)).toBe(true);
     for (const kind of ['message.sent', 'credentials.revoked', 'review.cli_preflight', 'review.future_kind']) {
       expect(validMetadataPage({ ...complete, items: [{ ...complete.items[0], event_type: kind }] }, 25)).toBe(false);
     }

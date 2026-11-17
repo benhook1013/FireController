@@ -80,6 +80,12 @@ func TestRouteRetargetMovesOnlyReceiverRetainsSourceAndResolvesAtCurrentRevision
 	if backlog.Revision != 3 || backlog.TargetPullNumber != 0 || !reflect.DeepEqual(backlog.AffectedPullNumbers, []int64{2898}) {
 		t.Fatal("unassigned route lost source scope", backlog)
 	}
+	if held, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 2898); err != nil || held {
+		t.Fatal("explicit backlog route still blocks source reviews", held, err)
+	}
+	if facts, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 2898); err != nil || facts.Open != 1 {
+		t.Fatal("backlog work disappeared from readiness", facts, err)
+	}
 	decode[m.RetargetReceipt](t, f.call("POST", path, f.token, "worker_one", "new-route", retargetInput(3, 3399)), 200)
 	four := int64(4)
 	resolution := m.ResolveRequest{ExpectedRevision: &four, Reason: "Verified the carried fix", Evidence: []string{"commit:verified-fix"}}
@@ -427,6 +433,32 @@ func TestOriginalSchemaMigrationRefusesOwnedFKCorruptionAtomically(t *testing.T)
 				if after := originalSchemaRows(t, f); !reflect.DeepEqual(before, after) {
 					t.Fatal("refused migration changed predecessor rows, schema or version")
 				}
+			}
+		})
+	}
+}
+
+func TestOnlyExplicitUnassignedCarriedRouteReleasesReviewAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		refs []string
+		held bool
+	}{
+		{"explicit", []string{"target-pr:unassigned"}, false},
+		{"missing", []string{}, true},
+		{"malformed", []string{"target-pr:00"}, true},
+		{"conflicting", []string{"target-pr:unassigned", "target-pr:4"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fresh(t)
+			retargetRoute(t, f, []int64{2898}, tc.refs)
+			held, err := h.HasOpen(t.Context(), f.store.DB(), "project_one", 2898)
+			if err != nil || held != tc.held {
+				t.Fatal(held, err)
+			}
+			facts, err := h.ReadFacts(t.Context(), f.store.DB(), "project_one", 2898)
+			if err != nil || facts.Open != 1 {
+				t.Fatal("unresolved provenance lost", facts, err)
 			}
 		})
 	}

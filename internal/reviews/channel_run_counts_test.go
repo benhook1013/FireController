@@ -52,7 +52,7 @@ func TestChannelRunCountsExactBeyondPreviewAndReusedPullVersion(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_pull_versions WHERE project_id=? AND number=1`, f.project).Scan(&versions); err != nil || versions != 1 {
 		t.Fatal("fixture must reuse identical compact pull version", versions, err)
 	}
-	for _, route := range []string{"/queue"} {
+	for _, route := range []string{"/queue", "/queue?view=recent"} {
 		var queue QueueResponse
 		nativeRead(t, f, route, &queue)
 		if len(queue.Items) != 1 || queue.Items[0].RunCounts != current.Pull.RunCounts {
@@ -122,61 +122,75 @@ func TestChannelRunCountsCorruptionAndPublicationRollback(t *testing.T) {
 }
 
 func TestChannelRunCountsSchemaEightMigrationAndRestart(t *testing.T) {
-	f, snapshots, _, _ := historyMigrationLegacyFixture(t)
-	migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL())
-	if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", migrations, backfillCurrentReviewIndexes); err != nil {
-		t.Fatal(err)
-	}
-	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
-		t.Fatal("genuine populated v8 required", version, err)
-	}
-	// A schema-only upgrade reuses valid caches. Damage a derived total so this
-	// fixture exercises backfill failure and rollback rather than a valid no-op.
-	if _, err := f.store.DB().Exec(`UPDATE review_current_totals SET run_count=run_count+1; CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	before := historyMigrationDatabaseDigest(t, f)
-	if err := EnsureSchema(t.Context(), f.store); err == nil || before != historyMigrationDatabaseDigest(t, f) {
-		t.Fatal("failed upgrade did not roll back metadata, DDL, cache and history", err)
-	}
-	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_counts_backfill`); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	var p PullResponse
-	nativeRead(t, f, "/pulls/7?snapshot="+snapshots[0], &p)
-	if !p.Pull.RunCounts.Valid(p.Pull.RunCount) || p.Pull.RunCounts.CLI != p.Pull.RunCount {
-		t.Fatal("v8 historical facts lost", p)
-	}
-	if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
-		t.Fatal(err)
-	}
-	before = historyMigrationDatabaseDigest(t, f)
-	if err := EnsureSchema(t.Context(), f.store); err != nil || before != historyMigrationDatabaseDigest(t, f) {
-		t.Fatal("current startup repeated backfill", err)
+	// Exercise both rollback boundaries: damaged totals require a cache rebuild,
+	// while valid totals still receive the channel-count migration UPDATE.
+	for _, scenario := range []struct{ name, failureSQL string }{
+		{"cache rebuild", `UPDATE review_current_totals SET run_count=run_count+1; CREATE TRIGGER reject_counts_backfill BEFORE INSERT ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`},
+		{"channel-count migration", `CREATE TRIGGER reject_counts_backfill BEFORE UPDATE ON review_current_totals BEGIN SELECT RAISE(ABORT,'synthetic count backfill failure'); END`},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f, snapshots, _, _ := historyMigrationLegacyFixture(t)
+			migrations := append(reviewSchemaMigrations(), historyMigrationSQL(), CurrentSummarySchemaSQLV8(), CurrentRunOrderSchemaSQL(), pullMetadataMigrationSQL(), attemptReasonMigrationSQL())
+			if err := f.store.EnsureSchemaWithBackfill(t.Context(), "reviews", migrations, backfillCurrentReviewIndexes); err != nil {
+				t.Fatal(err)
+			}
+			var version string
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "8" {
+				t.Fatal("genuine populated v8 required", version, err)
+			}
+			if _, err := f.store.DB().Exec(scenario.failureSQL); err != nil {
+				t.Fatal(err)
+			}
+			before := historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err == nil || before != historyMigrationDatabaseDigest(t, f) {
+				t.Fatal("failed upgrade did not roll back metadata, DDL, cache and history", err)
+			}
+			if _, err := f.store.DB().Exec(`DROP TRIGGER reject_counts_backfill`); err != nil {
+				t.Fatal(err)
+			}
+			if err := EnsureSchema(t.Context(), f.store); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+				t.Fatal("successful retry did not reach current schema", version, err)
+			}
+			var p PullResponse
+			nativeRead(t, f, "/pulls/7?snapshot="+snapshots[0], &p)
+			if !p.Pull.RunCounts.Valid(p.Pull.RunCount) || p.Pull.RunCounts.CLI != p.Pull.RunCount {
+				t.Fatal("v8 historical facts lost", p)
+			}
+			if err := ValidateCurrentSummaries(t.Context(), f.store.DB()); err != nil {
+				t.Fatal(err)
+			}
+			before = historyMigrationDatabaseDigest(t, f)
+			if err := EnsureSchema(t.Context(), f.store); err != nil || before != historyMigrationDatabaseDigest(t, f) {
+				t.Fatal("current startup repeated backfill", err)
+			}
+		})
 	}
 }
 
 func TestChannelRunCountsTransferAndObservationOmissionReturn(t *testing.T) {
-	t.Run("native append", func(t *testing.T) {
+	t.Run("additive", func(t *testing.T) {
 		f := newAPIFixture(t)
 		pull := completedChannelPull()
 		first := historyObservationPost(t, f, reviewRequest(0, []PullInput{pull}), "counts-initial")
 		selected := nativePull(1)
-		for _, run := range []RunInput{{SourceRunID: "extra-hosted", Channel: "hosted", Scope: "retained native", Outcome: "unknown"}, {SourceRunID: "extra-cli", Channel: "cli", Scope: "retained native", Outcome: "failed"}} {
-			mustNativePublish(t, f, NativePublication{Pull: selected, Run: &run})
-		}
+		selected.Runs = []RunInput{{SourceRunID: "extra-hosted", Channel: "hosted", Scope: "retained transfer", Outcome: "unknown"}, {SourceRunID: "extra-cli", Channel: "cli", Scope: "retained transfer", Outcome: "failed"}}
+		_, apply, body := transferApplyFor(t, f, transferRequest(1, TransferGroup{Source: "extra-original-producer", Pulls: []PullInput{selected}}), "counts-additive")
 		current := channelCountsPull(t, f, "")
-		if current.Pull.RunCount != 26 || current.Pull.RunCounts != (ChannelRunCounts{Hosted: 6, CLI: 6, Subagent: 6, Manual: 6}) || channelCountsPull(t, f, first.ID).Pull.RunCounts != current.Pull.RunCounts {
+		if current.Pull.RunCount != 26 || current.Pull.RunCounts != (ChannelRunCounts{Hosted: 6, CLI: 6, Subagent: 6, Manual: 6}) || channelCountsPull(t, f, first.ID).Pull.RunCounts != (ChannelRunCounts{Hosted: 6, CLI: 6, Subagent: 6, Manual: 6}) {
 			t.Fatal(current)
 		}
-		attempt := nativeAttempt("counts-metadata-only", "prepared")
-		mustNativePublish(t, f, NativePublication{Pull: selected, Attempt: &attempt})
+		selected.Runs = nil
+		transferApplyFor(t, f, transferRequest(2, TransferGroup{Source: "extra-original-producer", Pulls: []PullInput{selected}}), "counts-metadata-only")
 		if after := channelCountsPull(t, f, ""); after.Pull.RunCounts != current.Pull.RunCounts {
-			t.Fatal("attempt-only update lost channel totals", after)
+			t.Fatal("omitted additive history lost channel totals", after)
+		}
+		before := historyMigrationDatabaseDigest(t, f)
+		replayed := importHTTP(f, importBase(f)+"/transfer/apply", f.admin, "", "counts-additive", importJSON(t, apply))
+		if replayed.Code != 201 || replayed.Body.String() != body || before != historyMigrationDatabaseDigest(t, f) {
+			t.Fatal("transfer replay changed counts", replayed.Code)
 		}
 		assertCurrentSummaryReduction(t, f, 1)
 	})
@@ -216,9 +230,7 @@ func TestChannelRunCountsFailedCaptureAndCompletedZeroOutcomeUpdates(t *testing.
 		t.Helper()
 		pull := nativePull(1)
 		pull.Runs = []RunInput{run}
-		request := reviewRequest(revision, []PullInput{pull})
-		request.Source = "outcome-producer"
-		receipt := historyObservationPost(t, f, request, key)
+		receipt, _, _ := transferApplyFor(t, f, transferRequest(revision, TransferGroup{Source: "outcome-producer", Pulls: []PullInput{pull}}), key)
 		revision++
 		return receipt
 	}
@@ -299,10 +311,9 @@ func TestChannelRunCountsLegacyElevenValidationAndAtomicTwelveUpgrade(t *testing
 	}
 	snapshot := historyObservationPost(t, f, reviewRequest(0, []PullInput{pull}), "legacy-counts")
 	retained := nativeSnapshotBytes(t, f, snapshot.ID)
-	removeExternalHostedForLegacyFixture(t, f.store)
-	// Ten has no DDL changes. Reproduce a nine image with its original
+	// Twelve has no DDL changes. Reproduce an eleven image with its original
 	// all-outcome derived counters, without editing any retained source record.
-	if _, err := f.store.DB().Exec("UPDATE metadata SET value='9' WHERE key='schema:reviews'"); err != nil {
+	if _, err := f.store.DB().Exec("UPDATE metadata SET value='11' WHERE key='schema:reviews'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := backfillChannelRunCounts(t.Context(), f.store.DB()); err != nil {
@@ -329,7 +340,7 @@ func TestChannelRunCountsLegacyElevenValidationAndAtomicTwelveUpgrade(t *testing
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow("SELECT value FROM metadata WHERE key='schema:reviews'").Scan(&version); err != nil || version != "11" {
+	if err := f.store.DB().QueryRow("SELECT value FROM metadata WHERE key='schema:reviews'").Scan(&version); err != nil || version != "12" {
 		t.Fatal("semantic version not advanced", version, err)
 	}
 	got := assertCurrentSummaryReduction(t, f, 1)
@@ -340,7 +351,7 @@ func TestChannelRunCountsLegacyElevenValidationAndAtomicTwelveUpgrade(t *testing
 	if err := EnsureSchema(t.Context(), f.store); err != nil || before != historyMigrationDatabaseDigest(t, f) {
 		t.Fatal("current startup rebuilt unchanged caches", err)
 	}
-	for _, legacy := range []int{9} {
+	for _, legacy := range []int{9, 10, 11} {
 		if channelRunCountAggregateForVersion(legacy) != legacyChannelRunCountAggregate {
 			t.Fatal("legacy cache meaning changed", legacy)
 		}

@@ -36,14 +36,24 @@ func (d *PullDiff) UnmarshalJSON(raw []byte) error {
 }
 
 // PullDisplayMetadata contains provider display facts, never review authority.
+type PullBranches struct {
+	HeadRepositoryID int64  `json:"head_repository_id"`
+	HeadRef          string `json:"head_ref"`
+	DeliveryRef      string `json:"delivery_ref"`
+}
+
 type PullDisplayMetadata struct {
-	Diff             *PullDiff `json:"diff,omitempty"`
-	IsDraft          *bool     `json:"is_draft,omitempty"`
-	MergedAt         string    `json:"merged_at,omitempty"`
-	MergeStateStatus string    `json:"merge_state_status,omitempty"`
+	Diff             *PullDiff     `json:"diff,omitempty"`
+	IsDraft          *bool         `json:"is_draft,omitempty"`
+	MergedAt         string        `json:"merged_at,omitempty"`
+	MergeStateStatus string        `json:"merge_state_status,omitempty"`
+	Branches         *PullBranches `json:"branches,omitempty"`
 }
 
 func (m PullDisplayMetadata) Validate(state string) error {
+	if b := m.Branches; b != nil && (b.HeadRepositoryID < 1 || !validText(b.HeadRef, 255, true) || !validText(b.DeliveryRef, 255, true) || len(mustJSON(m)) > 512) {
+		return validationError("Pull branch identities are invalid or exceed their retained size.")
+	}
 	if !oneOf(m.MergeStateStatus, "", "BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE") {
 		return validationError("Merge state is unsupported.")
 	}
@@ -68,7 +78,7 @@ func (m PullDisplayMetadata) Validate(state string) error {
 	return nil
 }
 func pullMetadata(p PullInput) PullDisplayMetadata {
-	return PullDisplayMetadata{Diff: p.Diff, IsDraft: p.IsDraft, MergedAt: p.MergedAt, MergeStateStatus: p.MergeStateStatus}
+	return PullDisplayMetadata{Diff: p.Diff, IsDraft: p.IsDraft, MergedAt: p.MergedAt, MergeStateStatus: p.MergeStateStatus, Branches: p.Branches}
 }
 
 // ReadPullMetadata rejects malformed, oversized or noncanonical retained metadata.
@@ -110,6 +120,12 @@ func inheritedPullMetadata(body []any, p PullInput) (string, error) {
 	}
 	if p.State != "merged" {
 		m.MergedAt = ""
+	}
+	if p.Branches != nil {
+		m.Branches = p.Branches
+	}
+	if len(mustJSON(m)) > 512 {
+		m.Branches = nil
 	}
 	if err := m.Validate(p.State); err != nil {
 		return "", err

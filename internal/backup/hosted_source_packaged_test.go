@@ -249,7 +249,7 @@ func packagedCompletionEvidence(t *testing.T, f *restoreFixture, original review
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := submittedInventoryScope(t, f)
+	scope := routePolicyInventoryScope(t, f)
 	revision := int64(0)
 	if _, err := e.DecideReviewFinding(t.Context(), scope, "packaged-original-reject", original.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: "rejected", Reason: "Explicit synthetic false-positive decision"}); err != nil {
 		t.Fatal(err)

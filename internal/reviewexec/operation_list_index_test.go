@@ -15,6 +15,9 @@ func TestOperationListIndexFreshAndExistingDatabase(t *testing.T) {
 			f, a, _ := cliAllowanceFixture(t)
 			if upgrade {
 				admissionSQL(t, f, `DROP INDEX IF EXISTS review_operations_listing`)
+				for _, index := range []string{"review_waits_live_retry", "review_transitions_exhaustion_time", "review_transitions_exhaustion_attempt"} {
+					admissionSQL(t, f, "DROP INDEX "+index)
+				}
 				admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_execution_indexes'`)
 			}
 			before := attemptState(t, f, a)
@@ -54,7 +57,7 @@ func TestOperationListIndexFreshAndExistingDatabase(t *testing.T) {
 				}
 			}
 			var version string
-			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "2" {
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "3" {
 				t.Fatal("index migration missing", version, err)
 			}
 			if err := EnsureSchema(t.Context(), f.store); err != nil {
@@ -103,6 +106,10 @@ func TestPendingOperationListDoesNotTraverseTerminalHistory(t *testing.T) {
 			if page := listOperationPage(t, f, filter); len(page.Items) != 0 || page.HasMore {
 				t.Fatal("pending filters changed", filter, page)
 			}
+		}
+		attention := listOperationPage(t, f, "?status=attention&limit=1")
+		if len(attention.Items) != 1 || attention.Items[0].ID != live || attention.HasMore {
+			t.Fatal("pending optimization changed attention selection", retained, attention)
 		}
 		page := listOperationPage(t, f, "")
 		if len(page.Items) != 1 || page.Items[0].ID != live || page.HasMore {

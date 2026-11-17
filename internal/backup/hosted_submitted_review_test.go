@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -86,7 +85,7 @@ func submittedReviewInventoryFixture(t *testing.T) (*restoreFixture, reviewexec.
 	if err != nil || !reflect.DeepEqual(loaded, record) {
 		t.Fatal("retainer changed original provider record", err)
 	}
-	evidence, err := e.ReadReviewEvidence(t.Context(), submittedInventoryScope(t, f), retained.Receipt.ID)
+	evidence, err := e.ReadReviewEvidence(t.Context(), routePolicyInventoryScope(t, f), retained.Receipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +100,9 @@ func submittedReviewInventoryFixture(t *testing.T) (*restoreFixture, reviewexec.
 	}
 	if _, err = e.Advance(t.Context(), f.project, a.ID, a.Revision, "completed", "synthetic_captured", "100"); err != nil {
 		t.Fatal("complete original hosted operation", err)
+	}
+	if err := reviewexec.ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {
+		t.Fatal("completed submitted fixture has no valid comparison authority", err)
 	}
 	return f, evidence, "hosted-review-captures/" + a.ID + "-hosted-" + retained.Capture.SHA256 + ".json"
 }
@@ -149,8 +151,8 @@ func TestHostedSubmittedReviewCanonicalBackupInactiveRestoreAndMixedShapeRefusal
 	if err := restored.DB().QueryRow(`SELECT count(*) FROM credentials WHERE revoked<>1`).Scan(&enabled); err != nil || enabled != 0 {
 		t.Fatal("restore enabled old credentials", err)
 	}
-	if err := reviewexec.ValidateRetainedReviewCapture(evidence.Capture); err != nil {
-		t.Fatal("restored submitted capture metadata invalid", err)
+	if err := reviewexec.ValidateComparisonProofs(t.Context(), restored.DB()); err != nil {
+		t.Fatal("restored submitted comparison authority invalid", err)
 	}
 	after := backupRows(t, restored.DB())
 	for table, rows := range before {
@@ -167,7 +169,17 @@ func TestHostedSubmittedReviewCanonicalBackupInactiveRestoreAndMixedShapeRefusal
 
 	// Mix the positive submitted branch with a batched-publication identity in
 	// the disposable bundle. Recompute canonical JSON and its fingerprint and
-	// reseal the manifest: rejection must not merely detect stale hashes.
+	// reseal the manifest: rejection must not merely detect stale hashes. Keep
+	// the exact invalidation trigger so physical schema/FK validation still pass.
+	var trigger string
+	for _, statement := range reviewexec.ComparisonSchemaSQL() {
+		if strings.HasPrefix(statement, "CREATE TRIGGER review_comparison_dirty_review_execution_evidence_update ") {
+			trigger = statement
+		}
+	}
+	if trigger == "" {
+		t.Fatal("canonical evidence invalidation guard missing")
+	}
 	evidence.Capture.Hosted.PublicationID = "11111111-1111-4111-8111-111111111111"
 	capture, err := json.Marshal(evidence.Capture)
 	if err != nil {
@@ -178,7 +190,9 @@ func TestHostedSubmittedReviewCanonicalBackupInactiveRestoreAndMixedShapeRefusal
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutateBundleSQL(t, bundle.Path, `UPDATE review_execution_evidence SET body_json=?,fingerprint=? WHERE id=?`, string(body), hex.EncodeToString(fingerprint[:]), evidence.ID)
+	mutateBundleSQL(t, bundle.Path, `DROP TRIGGER review_comparison_dirty_review_execution_evidence_update;
+UPDATE review_execution_evidence SET body_json=?,fingerprint=? WHERE id=?;
+`+trigger, string(body), hex.EncodeToString(fingerprint[:]), evidence.ID)
 	db, err := openSnapshot(t.Context(), filepath.Join(bundle.Path, "firecontroller.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -189,25 +203,15 @@ func TestHostedSubmittedReviewCanonicalBackupInactiveRestoreAndMixedShapeRefusal
 	}
 	if err := validateEvidenceReferences(t.Context(), db, refs); err == nil {
 		db.Close()
-		t.Fatal("completed submitted mixed metadata was accepted by backup validation")
+		t.Fatal("mixed-shape fixture passed immutable capture validation")
+	}
+	if err := reviewexec.ValidateComparisonProofs(t.Context(), db); err == nil {
+		db.Close()
+		t.Fatal("completed submitted mixed metadata was accepted as comparison authority")
 	}
 	db.Close()
 	assertCurrentSummaryInventoryRefused(t, bundle, true)
 	if !reflect.DeepEqual(before, backupRows(t, f.store.DB())) {
 		t.Fatal("rejected mixed-shape bundle changed source")
 	}
-}
-
-func submittedInventoryScope(t *testing.T, f *restoreFixture) core.Scope {
-	t.Helper()
-	r := httptest.NewRequest("POST", "/", nil)
-	r.SetPathValue("project_id", f.project)
-	r.Header.Set("Authorization", "Bearer "+f.token)
-	r.Header.Set("X-FC-Instance", f.store.InstanceID())
-	r.Header.Set("X-FC-Worker", f.worker)
-	scope, err := f.store.AdminScope(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return scope
 }

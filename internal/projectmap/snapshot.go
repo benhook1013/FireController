@@ -10,6 +10,9 @@ import (
 // inspection. Ordinary map reads never scan archives. The caller owns a single
 // read transaction and schema/foreign-key validation.
 func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
+	if err := validateSectionSchema(ctx, tx); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM project_map_entries ORDER BY project_id,id`)
 	if err != nil {
 		return err
@@ -71,7 +74,13 @@ func ValidateSnapshot(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	return associations.Err()
+	if err := associations.Err(); err != nil {
+		return err
+	}
+	if err := associations.Close(); err != nil {
+		return err
+	}
+	return validateImportSnapshot(ctx, tx)
 }
 func validateEntryHistory(ctx context.Context, tx *sql.Tx, current Entry) error {
 	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN length(CAST(state_json AS BLOB))<=? THEN state_json ELSE NULL END,created_at FROM project_map_entry_history WHERE project_id=? AND entry_id=? ORDER BY revision`, maxEntryBytes, current.ProjectID, current.ID)
@@ -83,11 +92,15 @@ func validateEntryHistory(ctx context.Context, tx *sql.Tx, current Entry) error 
 	var count int64
 	for rows.Next() {
 		var rev int64
-		var actor, raw, at string
+		var actor, at string
+		var raw sql.NullString
 		if err = rows.Scan(&rev, &actor, &raw, &at); err != nil {
 			return err
 		}
-		value, err := decodeEntry(raw)
+		if !raw.Valid {
+			return unavailable()
+		}
+		value, err := decodeEntry(raw.String)
 		if err != nil {
 			return err
 		}

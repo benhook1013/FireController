@@ -24,9 +24,6 @@ func selectionFixture(t *testing.T) *attemptFixture {
 func selectionFixtureWithQueue(t *testing.T, queue []int64) *attemptFixture {
 	t.Helper()
 	f := newAttemptFixture(t)
-	if err := reviews.EnsureSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
 	zero := int64(0)
 	seedLegacyExecutionConfiguration(t, f, attemptProject, "config-exec-project-one-0", Configuration{ExpectedRevision: &zero, CapabilityID: "test-capability", Mode: "independent", Queue: queue, Channels: []string{"cli", "hosted"}})
 	for _, p := range []string{attemptProject, otherAttemptProject} {
@@ -97,7 +94,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 	before := selectionCounts(t, f)
 	selectionNext(t, f, reader)
 	got := selectionRead(t, f, r.ID)
-	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 3 {
+	if got.State != "selected" || got.OperationID == "" || got.Revision != 3 || got.WorkerID != "selection-worker" || reader.calls.Load() != 2 {
 		t.Fatal("selection did not create exactly one bounded child", got, reader.calls.Load())
 	}
 	op, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
@@ -109,7 +106,7 @@ func TestRunSelectionOneChildReplayRestartAndOriginalBinding(t *testing.T) {
 		t.Fatal("no durable child")
 	}
 	worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
-	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 3 {
+	if err != nil || worked || selectionCounts(t, f) != counts || reader.calls.Load() != 2 {
 		t.Fatal("completion autonomously repeated selection", err)
 	}
 	f.configure(t, attemptProject, "test-capability", 1, false)
@@ -228,7 +225,7 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 			selectionNext(t, f, reader)
 			got := selectionRead(t, f, r.ID)
 			want := int64(2)
-			wantCalls := map[int64]int{2: 1, 4: 1}
+			wantCalls := map[int64]int{2: 1}
 			if mode == "merged-prefix" || mode == "stopped-prefix" || mode == "closed-prefix" {
 				want = 4
 				wantCalls = map[int64]int{2: 1, 4: 1}
@@ -248,9 +245,6 @@ func TestRunSelectionFrontPrefixAndExpectedAssertion(t *testing.T) {
 				if err != nil || got.State != "selected" || op.PullNumber != want {
 					t.Fatal(got, op, err)
 				}
-			}
-			if mode == "closed-prefix" || mode == "stopped-prefix" {
-				wantCalls[4] = 2
 			}
 			gotCalls := map[int64]int{}
 			for _, number := range calls {
@@ -316,33 +310,52 @@ func TestRunSelectionRechecksAfterSourceAndRollsBackLinkedChild(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := selectionFixture(t)
 			r, _ := selectionEnqueue(t, f, "one", "cli", nil)
-			reader := &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-				p := reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
-				return p, nil
-			}}
-			worked, err := runNextWithSourceMutation(t, f, reader, 2, func() {
-				switch mode {
-				case "configuration":
-					f.configure(t, attemptProject, "test-capability", 1, false)
-				case "revoked":
-					if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
-						t.Fatal(err)
-					}
-				case "deleted-worker":
-					if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
-						t.Fatal(err)
-					}
-				case "round-close":
-					zero := int64(0)
-					if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-						t.Fatal(err)
-					}
-				case "event-failure":
-					if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
-						t.Fatal(err)
-					}
+			var mutationOnce sync.Once
+			reader := &refreshTestReader{}
+			reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+				if n == 2 {
+					mutationOnce.Do(func() {
+						switch mode {
+						case "configuration":
+							f.configure(t, attemptProject, "test-capability", 1, false)
+						case "revoked":
+							if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`); err != nil {
+								t.Fatal(err)
+							}
+						case "deleted-worker":
+							if _, err := f.store.DB().Exec(`DELETE FROM workers WHERE project_id=? AND id='selection-worker'`, attemptProject); err != nil {
+								t.Fatal(err)
+							}
+						case "round-close":
+							zero := int64(0)
+							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+								t.Fatal(err)
+							}
+						case "event-failure":
+							if _, err := f.store.DB().Exec(`CREATE TRIGGER selection_fault BEFORE INSERT ON events WHEN NEW.event_type='review.selection_updated' AND json_extract(NEW.payload_json,'$.state')='selected' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`); err != nil {
+								t.Fatal(err)
+							}
+						}
+					})
 				}
-			})
+				return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+			}
+			// The source phase can still finish local classification; a changed grant
+			// may finish the whole queue only if the remaining prefix is also complete.
+			if mode == "round-close" {
+				reader.pull = func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					zero := int64(0)
+					if n == 2 {
+						mutationOnce.Do(func() {
+							if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-during-read", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+					return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				}
+			}
+			worked, err := f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
 			if !worked {
 				t.Fatal("no selection work")
 			}
@@ -551,158 +564,6 @@ func TestRunSelectionNativeCoverageAndAdditionalGrantRemainChannelLocal(t *testi
 	}
 }
 
-// Keep fixture helpers (and their Fatal calls) on the test goroutine while the
-// selection worker is paused at a deterministic source-read checkpoint.
-func runNextWithSourceMutation(t *testing.T, f *attemptFixture, reader *refreshTestReader, number int64, mutate func()) (bool, error) {
-	t.Helper()
-	request, resume, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	pull := reader.pull
-	reader.pull = func(ctx context.Context, repo string, n int64) (reviewprovider.Pull, error) {
-		if n == number {
-			once.Do(func() { close(request); <-resume })
-		}
-		return pull(ctx, repo, n)
-	}
-	var worked bool
-	var err error
-	go func() {
-		defer close(finished)
-		worked, err = f.e.runNext(t.Context(), map[string]TargetReader{"test-capability": reader})
-	}()
-	released := false
-	defer func() {
-		if !released {
-			close(resume)
-		}
-		<-finished
-	}()
-	select {
-	case <-request:
-		mutate()
-	case <-finished:
-		t.Fatal("selection ended before source mutation", worked, err)
-	}
-	close(resume)
-	released = true
-	<-finished
-	return worked, err
-}
-
-func TestRunSelectionReaderlessRecoveryCannotResetLiveWorker(t *testing.T) {
-	f := selectionFixture(t)
-	receipt, _ := selectionEnqueue(t, f, "live-readerless-guard", "cli", nil)
-	entered := make(chan struct{})
-	var once sync.Once
-	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
-		once.Do(func() { close(entered) })
-		<-ctx.Done()
-		return reviewprovider.Repository{}, ctx.Err()
-	}}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done, err := f.e.StartReviewRuns(ctx, map[string]TargetReader{"test-capability": reader})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("live selection worker did not join")
-		}
-	})
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("live selection reader did not start")
-	}
-	before := selectionRead(t, f, receipt.ID)
-	counts := selectionCounts(t, f)
-	recovery, err := f.e.StartReviewRuns(t.Context(), nil)
-	attemptCode(t, err, "review_conflict")
-	if recovery != nil || !f.e.runRunning.Load() || !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
-		t.Fatal("reader-less start changed a live selection or its owner")
-	}
-}
-
-func TestRunSelectionReaderlessRecoveryOwnsLifetimeAndReleasesAfterFailure(t *testing.T) {
-	f := selectionFixture(t)
-	receipt, _ := selectionEnqueue(t, f, "readerless-recovery-owner", "cli", nil)
-	claim, cancelClaim := context.WithCancel(t.Context())
-	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
-		cancelClaim()
-		return reviewprovider.Repository{}, ctx.Err()
-	}}
-	if _, err := f.e.runNext(claim, map[string]TargetReader{"test-capability": reader}); err != nil {
-		t.Fatal(err)
-	}
-	cancelClaim()
-	if selectionRead(t, f, receipt.ID).State != "selecting" {
-		t.Fatal("fixture did not retain an interrupted read")
-	}
-	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_readerless_recovery BEFORE UPDATE ON review_selections BEGIN SELECT RAISE(ABORT,'synthetic recovery failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	before := selectionRead(t, f, receipt.ID)
-	counts := selectionCounts(t, f)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseWriter := func() { releaseOnce.Do(func() { close(release) }) }
-	writerDone := make(chan error, 1)
-	go func() {
-		writerDone <- f.store.BackgroundWrite(t.Context(), func(context.Context, *sql.Tx) error { close(entered); <-release; return nil })
-	}()
-	<-entered
-	t.Cleanup(func() {
-		releaseWriter()
-		select {
-		case <-writerDone:
-		case <-time.After(5 * time.Second):
-			t.Error("fixture writer did not join")
-		}
-	})
-	recoveryDone := make(chan error, 1)
-	go func() {
-		defer close(recoveryDone)
-		_, err := f.e.StartReviewRuns(t.Context(), nil)
-		recoveryDone <- err
-	}()
-	t.Cleanup(func() {
-		releaseWriter()
-		select {
-		case <-recoveryDone:
-		case <-time.After(5 * time.Second):
-			t.Error("reader-less recovery did not join")
-		}
-	})
-	// The reader-less starter must own the same lifetime while blocked on local
-	// writer admission, so a second starter cannot recover the same live rows.
-	waitSupervisor(t, "reader-less recovery did not acquire ownership", func() bool { return f.e.runRunning.Load() })
-	other, err := f.e.StartReviewRuns(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
-	attemptCode(t, err, "review_conflict")
-	if other != nil {
-		t.Fatal("second starter acquired recovery ownership")
-	}
-	releaseWriter()
-	if err := <-recoveryDone; err == nil || f.e.runRunning.Load() {
-		t.Fatal("failed recovery leaked ownership", err)
-	}
-	if !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
-		t.Fatal("failed recovery retained partial journal changes")
-	}
-	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_readerless_recovery`); err != nil {
-		t.Fatal(err)
-	}
-	done, err := f.e.StartReviewRuns(t.Context(), nil)
-	if err != nil || done != nil || f.e.runRunning.Load() || selectionRead(t, f, receipt.ID).State != "queued" {
-		t.Fatal("reader-less recovery did not release successful ownership", err)
-	}
-}
-
-// The proof can commit after chooseRun's read transaction but before its final
-// write. Exercise that exact interleaving without timers or provider traffic.
 func TestRunSelectionEvidenceProofBetweenChoiceAndSettlement(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
 		for _, scenario := range []struct {
@@ -836,5 +697,117 @@ func TestRunSelectionEvidenceProofBetweenChoiceAndSettlement(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRunSelectionReaderlessRecoveryCannotResetLiveWorker(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "live-readerless-guard", "cli", nil)
+	entered := make(chan struct{})
+	var once sync.Once
+	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done, err := f.e.StartReviewRuns(ctx, map[string]TargetReader{"test-capability": reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("live selection worker did not join")
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("live selection reader did not start")
+	}
+	before := selectionRead(t, f, receipt.ID)
+	counts := selectionCounts(t, f)
+	recovery, err := f.e.StartReviewRuns(t.Context(), nil)
+	attemptCode(t, err, "review_conflict")
+	if recovery != nil || !f.e.runRunning.Load() || !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
+		t.Fatal("reader-less start changed a live selection or its owner")
+	}
+}
+
+func TestRunSelectionReaderlessRecoveryOwnsLifetimeAndReleasesAfterFailure(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "readerless-recovery-owner", "cli", nil)
+	claim, cancelClaim := context.WithCancel(t.Context())
+	reader := &refreshTestReader{repository: func(ctx context.Context, id int64) (reviewprovider.Repository, error) {
+		cancelClaim()
+		return reviewprovider.Repository{}, ctx.Err()
+	}}
+	if _, err := f.e.runNext(claim, map[string]TargetReader{"test-capability": reader}); err != nil {
+		t.Fatal(err)
+	}
+	cancelClaim()
+	if selectionRead(t, f, receipt.ID).State != "selecting" {
+		t.Fatal("fixture did not retain an interrupted read")
+	}
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_readerless_recovery BEFORE UPDATE ON review_selections BEGIN SELECT RAISE(ABORT,'synthetic recovery failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	before := selectionRead(t, f, receipt.ID)
+	counts := selectionCounts(t, f)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWriter := func() { releaseOnce.Do(func() { close(release) }) }
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- f.store.BackgroundWrite(t.Context(), func(context.Context, *sql.Tx) error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	t.Cleanup(func() {
+		releaseWriter()
+		select {
+		case <-writerDone:
+		case <-time.After(5 * time.Second):
+			t.Error("fixture writer did not join")
+		}
+	})
+	recoveryDone := make(chan error, 1)
+	go func() {
+		defer close(recoveryDone)
+		_, err := f.e.StartReviewRuns(t.Context(), nil)
+		recoveryDone <- err
+	}()
+	t.Cleanup(func() {
+		releaseWriter()
+		select {
+		case <-recoveryDone:
+		case <-time.After(5 * time.Second):
+			t.Error("reader-less recovery did not join")
+		}
+	})
+	// The reader-less starter must own the same lifetime while blocked on local
+	// writer admission, so a second starter cannot recover the same live rows.
+	waitSupervisor(t, "reader-less recovery did not acquire ownership", func() bool { return f.e.runRunning.Load() })
+	other, err := f.e.StartReviewRuns(t.Context(), map[string]TargetReader{"test-capability": &refreshTestReader{}})
+	attemptCode(t, err, "review_conflict")
+	if other != nil {
+		t.Fatal("second starter acquired recovery ownership")
+	}
+	releaseWriter()
+	if err := <-recoveryDone; err == nil || f.e.runRunning.Load() {
+		t.Fatal("failed recovery leaked ownership", err)
+	}
+	if !reflect.DeepEqual(before, selectionRead(t, f, receipt.ID)) || selectionCounts(t, f) != counts {
+		t.Fatal("failed recovery retained partial journal changes")
+	}
+	if _, err := f.store.DB().Exec(`DROP TRIGGER reject_readerless_recovery`); err != nil {
+		t.Fatal(err)
+	}
+	done, err := f.e.StartReviewRuns(t.Context(), nil)
+	if err != nil || done != nil || f.e.runRunning.Load() || selectionRead(t, f, receipt.ID).State != "queued" {
+		t.Fatal("reader-less recovery did not release successful ownership", err)
 	}
 }

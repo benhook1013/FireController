@@ -31,6 +31,8 @@ type SourcePlan struct {
 	ParentSHA        string
 	ObservedAt       string
 	SourceReason     string
+	retainedMerged   bool
+	schedulingPaused bool
 }
 
 // ResolveSource refreshes only the asserted target and its actual base-branch
@@ -83,7 +85,11 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return SourcePlan{}, err
 	}
 	if !sameTarget(pull, repositoryID, request.PullNumber) || pull.State != "open" || pull.Merged || pull.HeadSHA != request.HeadSHA || pull.ChangedFiles < 1 {
-		return SourcePlan{}, sourceHold("target_changed")
+		failure := sourceHold("target_changed")
+		if obsolete := obsoleteTargetReason(pull, repositoryID, request.PullNumber, request.HeadSHA); obsolete != "" {
+			failure.(*core.Error).Details.(map[string]string)["stop_reason"] = obsolete
+		}
+		return SourcePlan{}, failure
 	}
 	if execution && pull.IsDraft != nil && *pull.IsDraft {
 		return SourcePlan{}, sourceHold("pull_draft")
@@ -152,4 +158,22 @@ func RecheckSource(ctx context.Context, reader TargetReader, repositoryID int64,
 // by the checked child; later provider observations cannot fill this history in.
 func unavailableParentHold(pull reviewprovider.Pull) error {
 	return &core.Error{Code: "review_held", Message: "The checked PR base branch has no available open parent.", Status: 409, Details: map[string]string{"reason": "parent_unavailable", "pull_number": strconv.FormatInt(pull.Number, 10), "base_ref": pull.BaseRef}}
+}
+
+// Classification requires the original target identity and valid source fields.
+// An invalid or ambiguous provider response never establishes obsolescence.
+func obsoleteTargetReason(pull reviewprovider.Pull, repositoryID, number int64, head string) string {
+	if !sameTarget(pull, repositoryID, number) {
+		return ""
+	}
+	if pull.Merged {
+		return "target_merged"
+	}
+	if pull.State == "closed" {
+		return "target_closed"
+	}
+	if pull.State == "open" && pull.HeadSHA != head {
+		return "target_superseded"
+	}
+	return ""
 }

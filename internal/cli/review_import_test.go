@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -78,6 +79,10 @@ func TestReviewImportCLIPublicPreviewLostResultAndExactRecovery(t *testing.T) {
 	defer service.Close()
 	profiles := mutationProfiles(t, f, service.URL, map[string][2]string{"admin": {project, worker}})
 	doc := reviewObservation()
+	doc.Queue[0].Attempts = nil
+	for j := 0; j < 6; j++ {
+		doc.Queue[0].Attempts = append(doc.Queue[0].Attempts, reviews.Attempt{SourceAttemptID: "unknown-duration-" + strconv.Itoa(j), Channel: "manual", State: "unknown", SourceRunID: "run-5"})
+	}
 	document, _ := json.MarshalIndent(doc, "", " ")
 	file := importCLIFile(t, document)
 	provider := f.resolverHit.Load()

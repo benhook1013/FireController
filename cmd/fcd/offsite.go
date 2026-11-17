@@ -60,6 +60,8 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	var value any
 	var err error
 	switch command {
+	case "backup-push-batch":
+		value, err = offsite.PushBatch(ctx, *config)
 	case "backup-push":
 		value, err = offsite.Push(ctx, *config)
 	case "backup-fetch":
@@ -73,7 +75,8 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	default:
 		return invalid()
 	}
-	if err != nil {
+	operationErr := err
+	if err != nil && command != "backup-push-batch" {
 		diagnosticError(stderr, err)
 		return 3
 	}
@@ -84,6 +87,10 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	}
 	if n, err := stdout.Write(append(b, '\n')); err != nil || n != len(b)+1 {
 		diagnostic(stderr, "offsite_output_failed", "The offsite result could not be written; inspect local transfer status before retrying.")
+		return 3
+	}
+	if operationErr != nil {
+		diagnosticError(stderr, operationErr)
 		return 3
 	}
 	return 0

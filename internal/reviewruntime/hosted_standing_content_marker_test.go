@@ -51,8 +51,8 @@ func TestHostedStandingContentMarkerRecoveryAndBlockedDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := f.f.engine.ReadOperation(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), f.a.OperationID)
-	if err != nil || status.State != "uncertain" || status.Reason != "hosted_finished_inventory_unproven" {
+	status, err := f.f.engine.ReadOperationStatus(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), f.a.OperationID)
+	if err != nil || status.Stage != "capture_blocked" || status.NextAction != "contact_controller_owner" {
 		t.Fatal("ordinary operation read hides capture refusal", status, err)
 	}
 	marker := "<summary><strong>ℹ️ Recent review info</strong></summary>\n<dl>\n<dd>\n"
@@ -78,7 +78,7 @@ func TestHostedStandingContentMarkerRecoveryAndBlockedDiagnostic(t *testing.T) {
 	if err != nil || replay.Reason != "already_completed" || replay.EvidenceID != final.EvidenceID || len(reader.calls) != calls || recoveryRuntimeCount(t, f.f, "review_execution_transitions") != transitions {
 		t.Fatal("recovery replay duplicated work", replay, err)
 	}
-	if recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 || nativeHostedCredit(t, f.f) != 0 {
+	if recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
 		t.Fatal("recovery duplicated evidence or awarded credit before finalization")
 	}
 }

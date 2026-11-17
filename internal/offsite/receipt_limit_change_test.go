@@ -149,9 +149,9 @@ type receiptLimitTransport struct {
 	gets int
 }
 
-func (m *receiptLimitTransport) get(ctx context.Context, name, destination string) error {
+func (m *receiptLimitTransport) get(ctx context.Context, name, destination string, limits ...int64) error {
 	m.gets++
-	return m.memoryTransport.get(ctx, name, destination)
+	return m.memoryTransport.get(ctx, name, destination, limits...)
 }
 
 func TestOffsiteLowerTransferLimitPreservesRecoverySpoolPhases(t *testing.T) {

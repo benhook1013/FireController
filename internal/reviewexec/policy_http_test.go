@@ -19,7 +19,7 @@ func policyHTTPFixture(t *testing.T) (*attemptFixture, string) {
 	return f, "/api/v1/projects/" + attemptProject + "/reviews/policy"
 }
 
-const policyHTTPInitial = `{"expected_revision":0,"required_channels":["hosted","cli"],"paused_channels":[],"max_review_files":0}`
+const policyHTTPInitial = `{"expected_revision":0,"required_channels":["hosted","cli"],"max_review_files":0}`
 
 func TestPolicyHTTPConfigurationReadAndHistoricalReceipt(t *testing.T) {
 	f, path := policyHTTPFixture(t)
@@ -35,8 +35,8 @@ func TestPolicyHTTPConfigurationReadAndHistoricalReceipt(t *testing.T) {
 	if !ok {
 		t.Fatal("policy is not an object")
 	}
-	evidenceHTTPKeys(t, policy, "required_channels", "paused_channels", "max_review_files")
-	if value["project_id"] != attemptProject || value["revision"] != float64(1) || value["actor_id"] == "" || value["recorded_at"] == "" || policy["max_review_files"] != float64(0) || !reflect.DeepEqual(policy["required_channels"], []any{"hosted", "cli"}) || !reflect.DeepEqual(policy["paused_channels"], []any{}) {
+	evidenceHTTPKeys(t, policy, "required_channels", "max_review_files")
+	if value["project_id"] != attemptProject || value["revision"] != float64(1) || value["actor_id"] == "" || value["recorded_at"] == "" || policy["max_review_files"] != float64(0) || !reflect.DeepEqual(policy["required_channels"], []any{"hosted", "cli"}) {
 		t.Fatal("policy record changed explicit order/zero/empty array", value)
 	}
 	if strings.Contains(encoded(value), "expected_revision") || strings.Contains(encoded(value), f.admin) || strings.Contains(encoded(value), "bootstrap-admin") {
@@ -45,7 +45,7 @@ func TestPolicyHTTPConfigurationReadAndHistoricalReceipt(t *testing.T) {
 	if policyState(t, f) != before {
 		t.Fatal("GET policy changed stored state")
 	}
-	second := `{"expected_revision":1,"required_channels":["cli"],"paused_channels":["hosted"],"max_review_files":100000}`
+	second := `{"expected_revision":1,"required_channels":["cli"],"max_review_files":100000}`
 	evidenceHTTPReceipt(t, f.request("POST", path, f.admin, "second-policy", second), attemptProject, "policy_configured", 2)
 	before = policyState(t, f)
 	replay := f.request("POST", path, f.admin, "first-policy", policyHTTPInitial)
@@ -97,18 +97,18 @@ func TestPolicyHTTPAuthorizationCookieInstanceAndRevocation(t *testing.T) {
 	}
 	first := evidenceHTTPReceipt(t, f.request("POST", path, f.admin, "configured", policyHTTPInitial), attemptProject, "policy_configured", 1)
 	evidenceHTTPRequire(t, f.request("GET", otherPath, f.other, "", ""), 409, "reviews_policy_unconfigured")
-	other := `{"expected_revision":0,"required_channels":["hosted"],"paused_channels":["cli"],"max_review_files":1}`
+	other := `{"expected_revision":0,"required_channels":["hosted"],"max_review_files":1}`
 	evidenceHTTPReceipt(t, f.request("POST", otherPath, f.admin, "other-project", other), otherAttemptProject, "policy_configured", 1)
 	if got := evidenceHTTPRequire(t, f.request("GET", otherPath, f.other, "", ""), 200, ""); got["project_id"] != otherAttemptProject || got["policy"].(map[string]any)["max_review_files"] != float64(1) {
 		t.Fatal("policy crossed projects")
 	}
-	// Even an administrator's derived browser session remains read-only.
+	// A reader's derived browser session permits only project reads.
 	login := httptest.NewRequest("POST", "http://localhost/api/v1/projects/"+attemptProject+"/browser-session", nil)
 	login.SetPathValue("project_id", attemptProject)
-	login.Header.Set("Authorization", "Bearer "+f.admin)
+	login.Header.Set("Authorization", "Bearer "+f.reader)
 	login.Header.Set("X-FC-Instance", f.store.InstanceID())
 	id := strings.Repeat("a", 32)
-	_, cookie, err := f.store.CreateBrowserSession(login, id, false)
+	_, cookie, err := f.store.CreateBrowserSession(login, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,13 +179,11 @@ func TestPolicyHTTPStrictRequiredFieldsAndNoMutationOnFailure(t *testing.T) {
 		strings.Replace(policyHTTPInitial, `["hosted","cli"]`, `["CLI"]`, 1),
 		strings.Replace(policyHTTPInitial, `["hosted","cli"]`, `["cli\ud800"]`, 1),
 		strings.Replace(policyHTTPInitial, `["hosted","cli"]`, `[null]`, 1),
-		strings.Replace(policyHTTPInitial, `"paused_channels":[]`, `"paused_channels":["hosted","hosted"]`, 1),
-		strings.Replace(policyHTTPInitial, `"paused_channels":[]`, `"paused_channels":[null]`, 1),
-		strings.Replace(policyHTTPInitial, `"paused_channels":[]`, `"paused_channels":{}`, 1),
 		strings.Replace(policyHTTPInitial, `["hosted","cli"]`, `["`+strings.Repeat("a", 256<<10)+`"]`, 1),
 	} {
 		evidenceHTTPRequire(t, f.request("POST", path, f.admin, "invalid", body), 400, "validation_failed")
 	}
+	evidenceHTTPRequire(t, f.request("POST", path, f.admin, "deprecated-field", strings.Replace(policyHTTPInitial, `"max_review_files":0`, `"max_review_files":0,"paused_channels":[]`, 1)), 400, "validation_failed")
 	for _, key := range []string{"", " padded "} {
 		evidenceHTTPRequire(t, f.request("POST", path, f.admin, key, policyHTTPInitial), 400, "idempotency_key_required")
 	}

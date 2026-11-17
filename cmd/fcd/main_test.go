@@ -42,20 +42,40 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	instance := ""
 	for _, listen := range []string{"127.0.0.1:0", "localhost:0"} {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		stdout := &output{ready: make(chan struct{})}
 		stderr := &output{ready: make(chan struct{})}
 		done := make(chan int, 1)
+		joined := false
+		t.Cleanup(func() {
+			cancel()
+			if !joined {
+				select {
+				case <-done:
+				case <-time.After(6 * time.Second):
+					t.Error("daemon did not stop after test cancellation")
+				}
+			}
+		})
+		phase, startupLimit := "warm restart", 5*time.Second
+		if instance == "" {
+			// Cold installation applies every domain migration. Keep that setup
+			// separate from the tighter existing-instance readiness bound.
+			phase, startupLimit = "cold schema installation", 15*time.Second
+		}
+		startedAt := time.Now()
 		go func() { done <- run(ctx, []string{"--data-dir", dir, "--listen", listen}, stdout, stderr) }()
 		select {
 		case <-stdout.ready:
 		case code := <-done:
+			joined = true
 			cancel()
 			t.Fatalf("startup stopped: code=%d diagnostics=%s", code, stderr.String())
-		case <-time.After(5 * time.Second):
+		case <-time.After(startupLimit):
 			cancel()
-			t.Fatal("startup deadline")
+			t.Fatalf("%s deadline after %s: diagnostics=%s", phase, startupLimit, stderr.String())
 		}
+		t.Logf("%s completed in %s", phase, time.Since(startedAt))
 		var started map[string]string
 		if err := json.Unmarshal([]byte(stdout.String()), &started); err != nil {
 			cancel()
@@ -131,6 +151,7 @@ func TestExecutableBootIdentityAndGracefulRestart(t *testing.T) {
 		cancel()
 		select {
 		case code := <-done:
+			joined = true
 			if code != 0 {
 				t.Fatalf("shutdown code=%d diagnostics=%s", code, stderr.String())
 			}
@@ -370,7 +391,9 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	}()
 
 	project := "failed"
-	postPath := "/api/v1/projects/failed/reviews/requests"
+	// Independent projects admit both waits without bypassing the single
+	// unfinished-request guard for each project, PR and channel.
+	postPath := "/api/v1/projects/sibling/reviews/requests"
 	getReceipt, err := engine.Enqueue(t.Context(), f.scope(t, project), "shutdown-get-seed", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("a", 40)})
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +402,7 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	if json.Unmarshal(getReceipt, &getOperation) != nil {
 		t.Fatal("GET wait fixture receipt is invalid")
 	}
-	getPath := postPath[:len(postPath)-len("requests")] + "operations/" + getOperation.ID
+	getPath := "/api/v1/projects/" + project + "/reviews/operations/" + getOperation.ID
 	body, err := json.Marshal(reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 1, Channel: "hosted", HeadSHA: strings.Repeat("b", 40)})
 	if err != nil {
 		t.Fatal(err)
@@ -427,8 +450,8 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	postDone := startRequest(http.MethodPost, postPath, "shutdown-post", string(body))
 	getDone := startRequest(http.MethodGet, getPath, "", "")
 	deadline := time.Now().Add(time.Second)
+	var count int
 	for time.Now().Before(deadline) {
-		var count int
 		if err = f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
@@ -436,6 +459,9 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 			break
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if count != 2 {
+		t.Fatal("both independent operations were not accepted before shutdown", count)
 	}
 	select {
 	case result := <-postDone:
@@ -452,6 +478,7 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatal("wait cancellation did not make daemon shutdown prompt", elapsed)
 	}
+	var postReceipt string
 	for index, done := range []<-chan struct {
 		status int
 		body   string
@@ -460,6 +487,9 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 		case result := <-done:
 			var accepted reviewexec.Receipt
 			postAccepted := index == 0 && result.status == http.StatusAccepted && json.Unmarshal([]byte(result.body), &accepted) == nil && accepted.State == "queued" && accepted.Revision == 1 && strings.HasPrefix(accepted.ID, "review_operation_") && !strings.Contains(result.body, "outcome_unknown")
+			if postAccepted {
+				postReceipt = strings.TrimSpace(result.body)
+			}
 			getCanceled := index == 1 && result.status == http.StatusServiceUnavailable && strings.Contains(result.body, `"code":"overloaded"`) && !strings.Contains(result.body, `"state":"completed"`)
 			if !postAccepted && !getCanceled {
 				t.Fatal("accepted wait returned unsafe shutdown response", result.status, result.body)
@@ -477,5 +507,23 @@ func TestHTTPShutdownDetachesLongReviewWaitsAndKeepsAcceptedWork(t *testing.T) {
 	}
 	if err = f.store.DB().QueryRow(`SELECT count(*) FROM receipts WHERE operation='reviews.request'`).Scan(&receipts); err != nil || receipts != 2 {
 		t.Fatal("shutdown changed accepted receipts", receipts, err)
+	}
+	for _, original := range []struct{ project, key, receipt string }{
+		{"failed", "shutdown-get-seed", string(getReceipt)},
+		{"sibling", "shutdown-post", postReceipt},
+	} {
+		var stored string
+		if err = f.store.DB().QueryRow(`SELECT response_json FROM receipts WHERE project_id=? AND operation='reviews.request' AND key=?`, original.project, original.key).Scan(&stored); err != nil || stored != original.receipt {
+			t.Fatal("shutdown changed the original scoped acceptance receipt", original.project, err)
+		}
+		var accepted reviewexec.Receipt
+		if err = json.Unmarshal([]byte(stored), &accepted); err != nil {
+			t.Fatal("retained acceptance receipt is invalid", err)
+		}
+		var state string
+		var revision int64
+		if err = f.store.DB().QueryRow(`SELECT state,revision FROM review_operations WHERE project_id=? AND id=?`, original.project, accepted.ID).Scan(&state, &revision); err != nil || state != "queued" || revision != 1 {
+			t.Fatal("shutdown changed the independent accepted operation", original.project, err)
+		}
 	}
 }

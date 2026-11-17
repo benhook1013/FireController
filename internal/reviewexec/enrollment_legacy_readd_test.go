@@ -1,7 +1,6 @@
 package reviewexec
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -22,7 +21,7 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 				if finalized {
 					roundFinalize(t, f, original, evidence, 0, false)
 				}
-				assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+				assessmentPolicy(t, f, 1, []string{"cli"})
 				reader := newReadinessTestReader()
 				collectReadiness(t, f, reader, "legacy-readiness", 2, 1)
 				operation := roundOperation(t, f, original.OperationID)
@@ -66,7 +65,7 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 				}
 				before = enrollmentState(t, f)
 				replay, err := f.e.Configure(t.Context(), scope, "readd-legacy-pair", readd)
-				if err != nil || !bytes.Equal(receipt, replay) || enrollmentState(t, f) != before {
+				if err != nil || !reflect.DeepEqual(receipt, replay) || enrollmentState(t, f) != before {
 					t.Fatal("re-enrollment replay changed retained allocations", err)
 				}
 

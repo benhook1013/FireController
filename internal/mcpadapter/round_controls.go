@@ -30,15 +30,6 @@ func roundControlArguments(name string, data json.RawMessage) (arguments, error)
 		}
 		return args, nil
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil {
-		return arguments{}, invalidArguments()
-	}
-	for _, field := range []string{"minimum", "maximum", "taper"} {
-		if raw, present := fields[field]; present && (string(raw) == "null" || in.Action == "close" || in.Action == "grant" && field == "taper" || in.Action == "taper" && field != "taper") {
-			return arguments{}, invalidArguments()
-		}
-	}
 	args.key = in.Key
 	args.roundControl = client.ConfigureReviewRoundControlRequest{ExpectedRevision: in.ExpectedRevision, Action: in.Action, Minimum: in.Minimum, Maximum: in.Maximum, Taper: in.Taper}
 	if !validKey(in.Key) || client.ValidateReviewRoundControlRequest(args.roundControl) != nil {

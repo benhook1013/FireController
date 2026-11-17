@@ -180,7 +180,7 @@ func TestFinalizedHistoryVersionOneMigrationAndReplay(t *testing.T) {
 	f.mux = mux
 	var version string
 	var revision int64
-	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "11" {
+	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
 		t.Fatal("migration version", version, err)
 	}
 	if err := store.DB().QueryRow(`SELECT snapshot_revision FROM review_runs WHERE project_id=? AND snapshot_id=?`, f.project, saved.ID).Scan(&revision); err != nil || revision != 1 {
@@ -247,20 +247,4 @@ func TestFinalizedHistoryLookupUsesOrderedSourceIndex(t *testing.T) {
 	if err := validateFinalizedCounts(context.Background(), tx, f.project, "test-import", []PullInput{pull}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func findingViewsForTest(findings []Finding) []FindingView {
-	result := make([]FindingView, len(findings))
-	for i, f := range findings {
-		result[i] = FindingView{Finding: f}
-	}
-	return result
-}
-
-func plainFindingsForTest(findings []FindingView) []Finding {
-	result := make([]Finding, len(findings))
-	for i, f := range findings {
-		result[i] = f.Finding
-	}
-	return result
 }

@@ -10,7 +10,7 @@ import (
 
 // RoutePolicySchemaSQL owns derived receiving-scope facts, not source review
 // coverage. Invalidations retain every affected scope until that route validates.
-func RoutePolicySchemaSQL() []string {
+func RoutePolicyV1SchemaSQL() []string {
 	statements := []string{
 		`CREATE TABLE review_route_policy_facts (
  route_id TEXT NOT NULL PRIMARY KEY REFERENCES review_finding_routes(id),
@@ -51,8 +51,40 @@ func RoutePolicySchemaSQL() []string {
 	return statements
 }
 
+// RoutePolicySchemaSQL includes explicit unassigned routes. Zero is not a PR.
+func RoutePolicySchemaSQL() []string {
+	statements := RoutePolicyV1SchemaSQL()
+	for i := range statements {
+		statements[i] = strings.ReplaceAll(statements[i], "CHECK(target_pull_number>0)", "CHECK(target_pull_number>=0)")
+	}
+	return statements
+}
+
+// Preserve old ledger facts while replacing only their derived schema.
+func unassignedRoutePolicyMigration() []string {
+	var steps []string
+	for _, statement := range RoutePolicyV1SchemaSQL() {
+		words := strings.Fields(statement)
+		if words[1] == "TRIGGER" {
+			steps = append(steps, "DROP TRIGGER "+words[2])
+		}
+	}
+	steps = append(steps,
+		"CREATE TEMP TABLE route_policy_saved_facts AS SELECT * FROM review_route_policy_facts",
+		"CREATE TEMP TABLE route_policy_saved_invalidations AS SELECT * FROM review_route_policy_invalidations",
+		"DROP TABLE review_route_policy_facts",
+		"DROP TABLE review_route_policy_invalidations")
+	steps = append(steps, RoutePolicySchemaSQL()...)
+	steps = append(steps,
+		"INSERT INTO review_route_policy_facts SELECT * FROM route_policy_saved_facts",
+		"INSERT INTO review_route_policy_invalidations SELECT * FROM route_policy_saved_invalidations",
+		"DROP TABLE route_policy_saved_facts",
+		"DROP TABLE route_policy_saved_invalidations")
+	return steps
+}
+
 func ensureRoutePolicySchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchemaWithBackfill(ctx, "review_route_policy", [][]string{RoutePolicySchemaSQL()}, backfillRoutePolicyFacts)
+	return store.EnsureSchemaWithBackfill(ctx, "review_route_policy", [][]string{RoutePolicyV1SchemaSQL(), unassignedRoutePolicyMigration()}, backfillRoutePolicyFacts)
 }
 
 func backfillRoutePolicyFacts(ctx context.Context, conn *sql.Conn) error {

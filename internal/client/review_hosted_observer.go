@@ -1,7 +1,5 @@
 package client
 
-import "time"
-
 // ReviewHostedObserverStatus describes observation of the original issued
 // Hosted attempt. It neither grants completion nor authorizes a replacement.
 // Unknown means no observer facts are available; absence supports older servers.
@@ -25,7 +23,7 @@ func validReviewHostedObserver(v *ReviewHostedObserverStatus, channel, state, at
 		return v.LastCheckAt == "" && v.LastSourceAt == "" && v.NextCheckAt == "" && v.Reason == "" && v.Error == ""
 	}
 	for _, instant := range []string{v.LastCheckAt, v.LastSourceAt, v.NextCheckAt} {
-		if instant != "" && !validObserverTime(instant) {
+		if instant != "" && !validAllowanceTime(instant) {
 			return false
 		}
 	}
@@ -33,9 +31,4 @@ func validReviewHostedObserver(v *ReviewHostedObserverStatus, channel, state, at
 		return false
 	}
 	return (v.State != "retrying" || v.Error != "") && (v.State != "waiting" || v.Error == "")
-}
-
-func validObserverTime(value string) bool {
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	return err == nil && !parsed.IsZero() && parsed.UTC().Format(time.RFC3339Nano) == value
 }

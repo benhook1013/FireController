@@ -22,8 +22,12 @@ func lifecycleProject(t *testing.T, f *attemptFixture, id, cap string, repo int6
 	if _, err := f.e.Configure(t.Context(), f.scope(t, id, f.admin, true), "lifecycle-config-"+id, Configuration{ExpectedRevision: &zero, CapabilityID: cap, Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}, Paused: true}); err != nil {
 		t.Fatal(err)
 	}
+	var projectionRevision int64
+	if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, id).Scan(&projectionRevision); err != nil {
+		t.Fatal(err)
+	}
 	p := projectionPull(2)
-	w := f.request("POST", "/api/v1/projects/"+id+"/reviews/observations", f.admin, "lifecycle-initial-"+id, encoded(reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: repo, Source: "fixture", ObservedAt: "2026-01-01T00:00:00Z", Queue: []reviews.PullInput{p}}))
+	w := f.request("POST", "/api/v1/projects/"+id+"/reviews/observations", f.admin, "lifecycle-initial-"+id, encoded(reviews.ObservationRequest{ExpectedRevision: &projectionRevision, RepositoryID: repo, Source: "fixture", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{p}}))
 	if w.Code != 201 {
 		t.Fatal(w.Code, w.Body.String())
 	}

@@ -80,3 +80,59 @@ func TestHostedSkippedCommandReplyStopsWithoutReviewCredit(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedHeadChangedWithHistoricalAnnotation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mutate     func(*HostedPublicationSnapshot, *HostedPublicationSnapshot)
+		wantFailed bool
+	}{
+		{name: "exact reply and old annotation", wantFailed: true},
+		{name: "exact reply without annotation", wantFailed: true, mutate: func(s, b *HostedPublicationSnapshot) {
+			s.ReviewComments[0] = b.ReviewComments[0]
+		}},
+		{name: "unrecognized outcome", mutate: func(s, _ *HostedPublicationSnapshot) {
+			s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, "Head commit changed.", "Head may change.", 1)
+		}},
+		{name: "unproven annotation", mutate: func(s, _ *HostedPublicationSnapshot) {
+			s.ReviewComments[0].Body += "\nNew finding."
+		}},
+		{name: "late annotation", mutate: func(s, _ *HostedPublicationSnapshot) {
+			s.ReviewComments[0].UpdatedAt = s.IssueComments[1].UpdatedAt.Add(time.Second)
+		}},
+		{name: "new submitted review", mutate: func(s, _ *HostedPublicationSnapshot) {
+			review := s.Reviews[0]
+			review.ID++
+			review.SubmittedAt = s.IssueComments[1].UpdatedAt
+			s.Reviews = append(s.Reviews, review)
+		}},
+		{name: "new inline root", mutate: func(s, _ *HostedPublicationSnapshot) {
+			root := s.ReviewComments[0]
+			root.ID++
+			root.CreatedAt = s.IssueComments[1].CreatedAt
+			root.UpdatedAt = root.CreatedAt
+			s.ReviewComments = append(s.ReviewComments, root)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, baseline, intent, poster, bot, earliest := annotationBaselineFixture(t)
+			reply := s.IssueComments[len(s.IssueComments)-1]
+			reply.Body = strings.Replace(skippedCommandReply(), "\n<dd>\n\nReview skipped.", "\n<dd>\n<br>\n\nHead commit changed.", 1)
+			s.IssueComments = []IssueComment{s.IssueComments[0], reply}
+			if tc.mutate != nil {
+				tc.mutate(&s, &baseline)
+			}
+			got, err := ExtractHostedFindingsWithBaseline(s, baseline, intent, poster, bot, earliest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := got.Publication.State == "failed" && got.Reason == "hosted_review_skipped"
+			if failed != tc.wantFailed || got.Complete || len(got.Findings) != 0 {
+				t.Fatalf("state=%s reason=%s complete=%v findings=%d, want terminal=%v", got.Publication.State, got.Reason, got.Complete, len(got.Findings), tc.wantFailed)
+			}
+			if failed && !got.Publication.FinishedAt.Equal(reply.UpdatedAt) {
+				t.Fatal("missing refusal timestamp")
+			}
+		})
+	}
+}

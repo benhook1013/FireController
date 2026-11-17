@@ -183,6 +183,17 @@ func TestNonstrictHeadCICandidateRejectsMissingOrForeignProof(t *testing.T) {
 	}
 }
 
+func TestNonstrictHeadCIAllowsExplicitWorkflowAttentionWithoutGateCredit(t *testing.T) {
+	f := newNonstrictHeadFixture(t, "attention")
+	o, rows, err := f.g.ObserveCIGateWithWorkflowAttention(t.Context(), ciObservationTarget(), "main", []int64{30}, []int64{30}, []int64{30})
+	if err != nil || o.State != "unproven" || o.Selection != "head" || len(rows) != 1 || rows[0].WorkflowID != 30 || rows[0].Basis != "" || !CIWorkflowFailureApplies(o, rows[0]) || o.Assessment.State != "unproven" {
+		t.Fatal("head-policy candidate blocked selected attention or changed required gate", o, rows, err)
+	}
+	if CIWorkflowAttentionBasis(o) != "" || o.WorkflowHeadActions != nil || o.TestMergeResults != nil {
+		t.Fatal("applicable head CI was mislabelled or stale merge was selected", o)
+	}
+}
+
 func TestNonstrictHeadCIEmptyAuthorityNeedsNoResultsOrSelection(t *testing.T) {
 	f := newNonstrictHeadFixture(t, "empty")
 	o, err := f.g.ObserveRequiredCI(t.Context(), ciObservationTarget())

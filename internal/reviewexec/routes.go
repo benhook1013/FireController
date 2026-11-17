@@ -17,6 +17,8 @@ import (
 )
 
 type FindingRouteRequest struct {
+	// Unassigned proves deliberate zero at the typed boundary; HTTP derives it from a required target field.
+	Unassigned            bool   `json:"-"`
 	ExpectedRevision      *int64 `json:"expected_revision"`
 	Finding               int64  `json:"finding"`
 	TargetPullNumber      int64  `json:"target_pull_number"`
@@ -104,6 +106,7 @@ func routeStampAtLeast(at, minimum string) string {
 }
 
 func validFindingRouteID(id string) bool { return hostedObservationID(id, "review_route_") }
+func validRouteTarget(n int64) bool      { return n >= 0 && n <= 2147483647 }
 func validRoutePull(n int64) bool        { return n > 0 && n <= 2147483647 }
 func routeStorageError() error {
 	return core.Fail("storage_unavailable", "Stored finding route is unavailable.", 500)
@@ -115,7 +118,7 @@ func routeTimestamp(s string) (time.Time, bool) {
 func validReviewRoute(r ReviewRoute) bool {
 	created, createdOK := routeTimestamp(r.CreatedAt)
 	updated, updatedOK := routeTimestamp(r.UpdatedAt)
-	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRoutePull(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
+	if !validFindingRouteID(r.ID) || !identifier.MatchString(r.ProjectID) || r.RepositoryID <= 0 || !hostedObservationID(r.SourceEvidenceID, "review_evidence_") || r.Finding < 0 || r.Finding >= 100 || !validRoutePull(r.SourcePullNumber) || !validRouteTarget(r.TargetPullNumber) || r.SourcePullNumber == r.TargetPullNumber || !sha.MatchString(r.SourceHeadSHA) || r.Revision < 1 || !safeText(r.RoutingReason, 2048) || strings.TrimSpace(r.RoutingReason) == "" || !identifier.MatchString(r.RoutingActorID) || !createdOK || !updatedOK || updated.Before(created) || !safeText(r.Reason, 2048) || !safeText(r.ProofNote, 2048) {
 		return false
 	}
 	if r.State != "active" && r.State != "superseded" {
@@ -156,7 +159,8 @@ func sameRouteOrigin(a, b ReviewRoute) bool {
 }
 
 // readFindingRoute never loads source adjudication, avoiding recursive loaders.
-// Consumers validate the current source link before using an active obligation.
+// Source-sensitive consumers also validate the current source link; receiving
+// policy separately preserves this self/current-history/origin boundary.
 func readFindingRoute(ctx context.Context, tx EvidenceQuery, project, id string) (ReviewRoute, error) {
 	var route ReviewRoute
 	var repositoryID, finding, sourcePull, targetPull, revision, hasFix int64
@@ -294,7 +298,7 @@ func supersedeFindingRoute(ctx context.Context, tx *sql.Tx, scope core.Scope, ev
 }
 
 func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, evidenceID string, request FindingRouteRequest) (json.RawMessage, error) {
-	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(evidenceID, "review_evidence_") || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || !validRoutePull(request.TargetPullNumber) || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 {
+	if ctx == nil || e == nil || e.store == nil || !hostedObservationID(evidenceID, "review_evidence_") || !validAdjudicationRevision(request.ExpectedRevision) || request.Finding < 0 || request.Finding >= 100 || !validRouteTarget(request.TargetPullNumber) || (request.TargetPullNumber == 0) != request.Unassigned || !safeText(request.Reason, 2048) || strings.TrimSpace(request.Reason) == "" || request.ExpectedRouteRevision < 0 || request.ExpectedRouteRevision == math.MaxInt64 {
 		return nil, invalid()
 	}
 	expected := *request.ExpectedRevision
@@ -320,7 +324,7 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if validateConfigurationShape(c) != nil {
 			return nil, routeStorageError()
 		}
-		if request.TargetPullNumber == evidence.Anchor.PullNumber || !slices.Contains(c.Queue, request.TargetPullNumber) {
+		if request.TargetPullNumber == evidence.Anchor.PullNumber || request.TargetPullNumber != 0 && !slices.Contains(c.Queue, request.TargetPullNumber) {
 			return nil, invalid()
 		}
 		f := &state.Findings[request.Finding]
@@ -514,15 +518,16 @@ func (e *Engine) ListFindingRoutes(ctx context.Context, scope core.Scope, target
 	return result, nil
 }
 
-// pendingIncomingRoutes reads the exact indexed unresolved count only when its
-// receiving scope has no invalidated route authority. Paging remains independent.
+// Receiving policy needs exact unresolved obligations and valid retained route
+// authority, including apparently resolved rows. A dependency change leaves an
+// indexed invalidation until that route is validated by its owning mutation.
 func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
 	var dirty bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_route_policy_invalidations WHERE project_id=? AND target_pull_number=?)`, project, pull).Scan(&dirty); err != nil {
 		return 0, err
 	}
 	if dirty {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	var pending int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_route_policy_facts WHERE project_id=? AND target_pull_number=? AND active=1 AND pending=1`, project, pull).Scan(&pending); err != nil {
@@ -531,7 +536,7 @@ func pendingIncomingRoutes(ctx context.Context, tx *sql.Tx, project string, pull
 	// Browser JSON must preserve the exact count; this is a wire precision
 	// invariant, not a practical retained-route capacity or page-size limit.
 	if pending < 0 || pending > 1<<53-1 {
-		return 0, routeStorageError()
+		return 0, &automaticProjectStateError{routeStorageError()}
 	}
 	return pending, nil
 }

@@ -101,7 +101,7 @@ func TestHostedSettlementPublicRouteReleasesOnlyStoppedCapacityAttempt(t *testin
 	if err := f.store.DB().QueryRow(`SELECT actor_id,payload_json FROM events WHERE event_type='review.hosted_settled' AND resource_id=?`, a.ID).Scan(&actor, &payload); err != nil {
 		t.Fatal(err)
 	}
-	var audit hostedSettlementAudit
+	var audit attemptSettlementAudit
 	if json.Unmarshal([]byte(payload), &audit) != nil || actor != f.scope(t, attemptProject, f.admin, true).PrincipalID || audit.Anchor != *a.Anchor || audit.ExpectedRevision != a.Revision || audit.ExternalID != a.ExternalID || !audit.ExternalActionStopped || audit.Reason != hostedSettlementBody(a)["reason"].(string) || audit.EvidenceReference != "operator-record:controlled-stop" {
 		t.Fatal("administrator audit lost original target or exact assertion")
 	}
@@ -151,7 +151,7 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		}
 	}
 	for _, change := range []map[string]any{
-		{"expected_revision": 0}, {"expected_revision": math.MaxInt64}, {"expected_revision": 1.5}, {"expected_repository_id": 0}, {"expected_head_sha": strings.Repeat("A", 40)}, {"expected_external_id": "with whitespace"}, {"external_action_stopped": false}, {"external_action_stopped": "true"}, {"reason": " "}, {"reason": "bad\u0085"}, {"reason": "bad\rtext"}, {"reason": strings.Repeat("x", 1025)}, {"evidence_reference": "bad\nreference"}, {"evidence_reference": "bad\tref"}, {"evidence_reference": strings.Repeat("x", 1025)}, {"unknown": "field"},
+		{"expected_revision": 0}, {"expected_revision": math.MaxInt64}, {"expected_revision": 1.5}, {"expected_repository_id": 0}, {"expected_head_sha": strings.Repeat("A", 40)}, {"expected_external_id": "with whitespace"}, {"external_action_stopped": "true"}, {"reason": " "}, {"reason": "bad\u0085"}, {"reason": "bad\rtext"}, {"reason": strings.Repeat("x", 1025)}, {"evidence_reference": "bad\nreference"}, {"evidence_reference": "bad\tref"}, {"evidence_reference": strings.Repeat("x", 1025)}, {"unknown": "field"},
 	} {
 		body := hostedSettlementBody(a)
 		for key, value := range change {
@@ -160,6 +160,9 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		settlementError(t, hostedSettlementCall(t, f, a, "invalid", body), 400, "validation_failed")
 	}
 	raw := encoded(hostedSettlementBody(a))
+	localAbandon := hostedSettlementBody(a)
+	localAbandon["external_action_stopped"] = false
+	settlementError(t, hostedSettlementCall(t, f, a, "unconfirmed-cannot-abandon", localAbandon), 409, "review_settlement_unavailable")
 	for _, body := range []string{strings.Replace(raw, `"external_action_stopped":true`, `"external_action_stopped":true,"external_action_stopped":true`, 1), strings.Replace(raw, `"reason":`, `"Reason":`, 1), strings.Replace(raw, `"reason":`, `"reason":"bad\ud800","other":`, 1)} {
 		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.admin, "invalid", body), 400, "validation_failed")
 	}
@@ -173,7 +176,7 @@ func TestHostedSettlementStrictInputAndAuditBudgetAreAtomic(t *testing.T) {
 		t.Fatal("invalid arguments/audit budget changed ledger or reservations")
 	}
 	// Exercise the exact canonical event limit without weakening raw text bounds.
-	base := hostedSettlementAudit{AttemptID: a.ID, OperationID: a.OperationID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: true, EvidenceReference: "operator:stop"}
+	base := attemptSettlementAudit{AttemptID: a.ID, OperationID: a.OperationID, ExpectedRevision: a.Revision, Provider: a.Provider, Account: a.Account, Anchor: *a.Anchor, ExternalID: a.ExternalID, ExternalActionStopped: true, EvidenceReference: "operator:stop"}
 	remaining := 4096 - len(encoded(base))
 	text := strings.Repeat("<", remaining/6) + strings.Repeat("x", remaining%6)
 	if len(text) > 1024 || remaining < 1 {
@@ -271,8 +274,9 @@ func TestHostedSettlementGuardTargetAndRetainedBindingFailures(t *testing.T) {
 		t.Fatal("noncanonical journal was rewritten or released")
 	}
 	admissionSQL(t, f, `UPDATE review_hosted_observations SET body_json=? WHERE attempt_id=? AND position=100`, originalBody, a.ID)
-	// A contiguous199-reference journal remains unavailable, rather than extending or
-	// rewriting the bounded raw-reference journal during settlement.
+	// Without a confirmed issued trigger, this class requires all 200 references;
+	// a valid 199-reference tail cannot borrow the confirmed-issued fallback.
+	f, a, _ = hostedSettlementFixture(t, false)
 	admissionSQL(t, f, `DELETE FROM review_hosted_observations WHERE attempt_id=? AND position=200`, a.ID)
 	before = hostedObservationState(t, f, a)
 	settlementError(t, hostedSettlementCall(t, f, a, "journal-hole", hostedSettlementBody(a)), 409, "review_settlement_unavailable")
@@ -301,7 +305,7 @@ func TestHostedSettlementRequiresCurrentAdminIncludingReplayAndTransaction(t *te
 	create.SetPathValue("project_id", attemptProject)
 	create.Header.Set("Authorization", "Bearer "+f.admin)
 	create.Header.Set("X-FC-Instance", f.store.InstanceID())
-	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32), false)
+	session, cookie, err := f.store.CreateBrowserSession(create, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatal(err)
 	}

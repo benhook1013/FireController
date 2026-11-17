@@ -38,6 +38,14 @@ func HostedAllowanceQueryBody(intent HostedTriggerIntent) (string, error) {
 }
 
 var hostedAllowanceCooldown = regexp.MustCompile(`^<!-- This is an auto-generated reply by CodeRabbit -->\nYour \[plan\]\(https://docs\.coderabbit\.ai/management/plans(?:#fair-usage-limits-policy)?\) includes PR reviews subject to \[rate limits\]\(https://docs\.coderabbit\.ai/management/plans#rate-limits\)\. More reviews will be available in ([1-9][0-9]{0,4}) (minute|minutes|second|seconds)\.$`)
+
+// Chat throttling is independent of PR-review allowance. Only the observed
+// plural minute/second envelope is supported; other formats remain unproven.
+var hostedChatCooldown = regexp.MustCompile("^" + regexp.QuoteMeta(hostedAllowanceGeneratedEnvelope) + "<!-- This is an auto-generated reply by CodeRabbit -->\\n### Rate Limit Exceeded\\n\\n`@([A-Za-z0-9][A-Za-z0-9-]{0,38})` have exceeded the limit for the number of chat messages per hour\\. Please wait \\*\\*([1-9][0-9]?) minutes and ([1-9][0-9]?) seconds\\*\\* before sending another message\\.$")
+
+// HostedChatCooldownReason identifies chat backoff, never review allowance.
+const HostedChatCooldownReason = "provider_chat_cooldown_observed"
+
 var hostedAllowanceCommand = regexp.MustCompile(`(?i)@coderabbitai(?:[ \t]|$)`)
 
 const hostedAllowanceAvailable = "<!-- This is an auto-generated reply by CodeRabbit -->\nYour [plan](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) includes PR reviews subject to [rate limits](https://docs.coderabbit.ai/management/plans#rate-limits). Reviews are available now."
@@ -53,6 +61,9 @@ func ValidHostedAllowanceOutcome(o HostedAllowanceObservation) bool {
 		return o.Reason == "provider_available_observed" && o.RetryNotBefore.IsZero()
 	}
 	delay := o.RetryNotBefore.Sub(o.ResponseCreatedAt)
+	if o.Reason == HostedChatCooldownReason {
+		return o.State == "cooldown_observed" && hostedTriggerTime(o.ResponseCreatedAt) && hostedTriggerTime(o.RetryNotBefore) && delay >= 62*time.Second && delay <= time.Hour && delay%time.Second == 0
+	}
 	return o.State == "cooldown_observed" && o.Reason == "provider_cooldown_observed" && hostedTriggerTime(o.ResponseCreatedAt) && hostedTriggerTime(o.RetryNotBefore) && delay >= 2*time.Second && delay <= 24*time.Hour && delay%time.Second == 0
 }
 
@@ -120,7 +131,7 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 		}
 	}
 	var response *IssueComment
-	var responseState string
+	var responseState, responseReason string
 	var responseDelay time.Duration
 	unsupported := false
 	for index := range snapshot.IssueComments {
@@ -136,10 +147,20 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 			continue
 		}
 		state, delay := "available_observed", time.Duration(0)
+		reason := "provider_available_observed"
 		// One observed envelope may precede the exact existing grammar. Do not
 		// normalize whitespace or strip arbitrary, repeated or embedded comments.
 		reply := strings.TrimPrefix(comment.Body, hostedAllowanceGeneratedEnvelope)
-		if reply != hostedAllowanceAvailable && reply != hostedAllowanceAvailableBasePlan {
+		if chat := hostedChatCooldown.FindStringSubmatch(comment.Body); chat != nil {
+			minutes, _ := strconv.Atoi(chat[2])
+			seconds, _ := strconv.Atoi(chat[3])
+			if chat[1] != postingAuthor.Login || minutes > 59 || seconds > 59 {
+				unsupported = true
+				continue
+			}
+			state, reason = "cooldown_observed", HostedChatCooldownReason
+			delay = time.Duration(minutes*60+seconds+1) * time.Second
+		} else if reply != hostedAllowanceAvailable && reply != hostedAllowanceAvailableBasePlan {
 			match := hostedAllowanceCooldown.FindStringSubmatch(reply)
 			if match == nil {
 				unsupported = true
@@ -156,14 +177,14 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 				continue
 			}
 			delay = time.Duration(count+1) * unit
-			state = "cooldown_observed"
+			state, reason = "cooldown_observed", "provider_cooldown_observed"
 		}
 		if response != nil {
 			result.State, result.Reason = "ambiguous", "conflicting_allowance_replies"
 			return result, nil
 		}
 		response = comment
-		responseState, responseDelay = state, delay
+		responseState, responseReason, responseDelay = state, reason, delay
 	}
 	if unsupported {
 		result.Reason = "allowance_reply_unsupported"
@@ -178,12 +199,12 @@ func ResolveHostedAllowance(snapshot HostedAllowanceSnapshot, intent HostedTrigg
 	var retry time.Time
 	if responseState == "cooldown_observed" {
 		retry = response.CreatedAt.Add(responseDelay)
-		if !ValidHostedAllowanceOutcome(HostedAllowanceObservation{State: responseState, Reason: "provider_cooldown_observed", ResponseCreatedAt: response.CreatedAt, RetryNotBefore: retry}) {
+		if !ValidHostedAllowanceOutcome(HostedAllowanceObservation{State: responseState, Reason: responseReason, ResponseCreatedAt: response.CreatedAt, RetryNotBefore: retry}) {
 			result.Reason = "allowance_reply_unsupported"
 			return result, nil
 		}
 	}
-	result.State, result.Reason = responseState, "provider_"+responseState
+	result.State, result.Reason = responseState, responseReason
 	result.ResponseCommentID, result.ResponseCreatedAt, result.RetryNotBefore = response.ID, response.CreatedAt, retry
 	return result, nil
 }

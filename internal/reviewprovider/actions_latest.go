@@ -26,12 +26,7 @@ func LatestActionsRuns(in ActionsHeadInventory) (ActionsHeadInventory, error) {
 	numbers := make(map[[2]int64]bool, len(in.Runs))
 	latest := make(map[int64]ActionsHeadRun)
 	for _, run := range in.Runs {
-		var conclusion *string
-		if run.Status == "completed" || run.Conclusion != "" {
-			conclusion = &run.Conclusion
-		}
-		wire := githubActionsRun{ID: run.ID, HeadSHA: run.HeadSHA, CheckSuiteID: run.CheckSuiteID, WorkflowID: run.WorkflowID, RunAttempt: run.RunAttempt, RunNumber: run.RunNumber, Status: run.Status, Conclusion: conclusion, Event: run.Event, CreatedAt: run.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: run.UpdatedAt.Format(time.RFC3339Nano)}
-		wire.Repository.ID, wire.Repository.FullName = run.RepositoryID, run.Repository
+		wire := actionsHeadRunWire(run)
 		number := [2]int64{run.WorkflowID, run.RunNumber}
 		if !validActionsRun(wire, in.Repository, in.HeadSHA, run.CheckSuiteID) || run.RepositoryID != in.RepositoryID || ids[run.ID] || suites[run.CheckSuiteID] || numbers[number] {
 			return ActionsHeadInventory{}, invalidResponse(false, http.StatusOK)
@@ -48,4 +43,14 @@ func LatestActionsRuns(in ActionsHeadInventory) (ActionsHeadInventory, error) {
 	}
 	sort.Slice(out.Runs, func(i, j int) bool { return out.Runs[i].WorkflowID < out.Runs[j].WorkflowID })
 	return out, nil
+}
+
+func actionsHeadRunWire(run ActionsHeadRun) githubActionsRun {
+	var conclusion *string
+	if run.Status == "completed" || run.Conclusion != "" {
+		conclusion = &run.Conclusion
+	}
+	wire := githubActionsRun{ID: run.ID, HeadSHA: run.HeadSHA, CheckSuiteID: run.CheckSuiteID, WorkflowID: run.WorkflowID, RunAttempt: run.RunAttempt, RunNumber: run.RunNumber, Status: run.Status, Conclusion: conclusion, Event: run.Event, CreatedAt: run.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: run.UpdatedAt.Format(time.RFC3339Nano)}
+	wire.Repository.ID, wire.Repository.FullName = run.RepositoryID, run.Repository
+	return wire
 }

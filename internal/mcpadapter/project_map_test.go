@@ -274,3 +274,51 @@ func TestProjectMapToolsCancellationDoesNotWriteOrBlockReuse(t *testing.T) {
 		t.Fatal("SDK reuse changed state", page)
 	}
 }
+
+func TestProjectMapToolsSectionPositionAndDiscovery(t *testing.T) {
+	f := mapSDKFixture(t)
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	identity := profile.Context{Profile: "chosen", ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"chosen": identity}, f.credential), "chosen"), "")
+	entry := map[string]any{"kind": "section", "title": "Narrative", "description": "# Markdown <literal>", "position": 42}
+	var receipt client.ProjectMapReceipt
+	decodeResult(t, call(t, session, "map_entry_create", map[string]any{"idempotency_key": "section-sdk", "entry": entry}), &receipt)
+	var current client.ProjectMapEntry
+	decodeResult(t, call(t, session, "map_entry_read", map[string]any{"entry_id": receipt.ID}), &current)
+	if current.Kind != "section" || current.Position != 42 || current.Description != entry["description"] {
+		t.Fatal(current)
+	}
+	var page client.Page[client.ProjectMapSummary]
+	decodeResult(t, call(t, session, "map_entry_list", map[string]any{"kind": "section"}), &page)
+	if len(page.Items) != 1 || page.Items[0].ID != receipt.ID {
+		t.Fatal(page)
+	}
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found int
+	for _, tool := range tools.Tools {
+		if tool.Name == "map_entry_create" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_list" {
+			raw, _ := json.Marshal(tool.InputSchema)
+			if !strings.Contains(string(raw), `"section"`) {
+				t.Fatal("section missing from schema", tool.Name)
+			}
+			if tool.Name != "map_entry_list" && !strings.Contains(string(raw), `"position"`) {
+				t.Fatal("position missing from schema", tool.Name)
+			}
+			found++
+		}
+	}
+	if found != 3 {
+		t.Fatal(found)
+	}
+	before := mapSDKCounts(t, f)
+	for _, raw := range []string{`{"idempotency_key":"bad","entry":{"kind":"section","title":"x","position":null}}`, `{"idempotency_key":"bad","entry":{"kind":"section","title":"x","position":1000001}}`, `{"idempotency_key":"bad","entry":{"kind":"section","title":"x","trigger":"wrong"}}`} {
+		diagnosticResult(t, call(t, session, "map_entry_create", json.RawMessage(raw)), "invalid_arguments", false)
+	}
+	if !reflect.DeepEqual(before, mapSDKCounts(t, f)) {
+		t.Fatal("invalid tool invocation mutated state")
+	}
+}

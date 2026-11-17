@@ -103,7 +103,7 @@ func TestRoundAdoptionCLIActualPreviewReplayAndRead(t *testing.T) {
 	}
 	var diagnostic strings.Builder
 	full := append([]string{"--profiles-file", profiles, "--profile", "admin"}, args...)
-	code = cli.RunContext(context.Background(), full, nil, roundFailWriter{}, &diagnostic)
+	code = cli.RunContext(context.Background(), full, nil, selectionFailWriter{}, &diagnostic)
 	if code != cli.ExitConfig || !strings.Contains(diagnostic.String(), `"outcome_unknown":true`) || count() != afterGrant {
 		t.Fatal("lost stdout recovery failed", code, diagnostic.String())
 	}

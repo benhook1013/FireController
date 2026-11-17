@@ -9,7 +9,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func TestHostedSchedulerSuccessfulPendingUsesBoundedBackoffThenResets(t *testing.T) {
+func TestHostedSchedulerSuccessfulPendingKeepsShortCadenceThenResets(t *testing.T) {
 	for _, kind := range []string{"publication_not_proven", "missing_publication_batches"} {
 		t.Run(kind, func(t *testing.T) {
 			f, a, p := schedulerUncertainFixture(t)
@@ -31,7 +31,7 @@ func TestHostedSchedulerSuccessfulPendingUsesBoundedBackoffThenResets(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			for index, seconds := range []int{30, 60, 120, 240, 300, 300} {
+			for index, seconds := range []int{30, 30, 30, 30, 30, 30} {
 				if index > 0 {
 					gate.resume(t)
 				}

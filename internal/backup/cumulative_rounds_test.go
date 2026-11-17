@@ -1,18 +1,52 @@
 package backup
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
+// Preserve the exact pre-default enrollment transaction in recovery fixtures.
+// This records a genuine predecessor configuration, receipt and event; it does
+// not disable or replace the current Configure path used for later enrollments.
+func seedPredecessorExecutionConfiguration(t *testing.T, f *restoreFixture, scope core.Scope, key string, configuration reviewexec.Configuration) {
+	t.Helper()
+	_, err := f.store.Mutate(t.Context(), scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: configuration}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		var previous int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, f.project).Scan(&previous); err != nil {
+			return nil, err
+		}
+		if configuration.ExpectedRevision == nil || *configuration.ExpectedRevision != previous {
+			return nil, core.Fail("fixture_revision_mismatch", "Predecessor configuration revision mismatch.", 409)
+		}
+		body, err := json.Marshal(configuration)
+		if err != nil {
+			return nil, err
+		}
+		next := previous + 1
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_execution_config(project_id,revision,body_json) VALUES(?,?,?)`, f.project, next, string(body)); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "reviews.configured", f.project, next, map[string]any{"revision": next, "paused": configuration.Paused}); err != nil {
+			return nil, err
+		}
+		return reviewexec.Receipt{ID: f.project, State: "configured", Revision: next}, nil
+	})
+	if err != nil {
+		t.Fatal("seed authentic predecessor configuration", err)
+	}
+}
+
 func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndCompletions(t *testing.T) {
-	for _, version := range []int{5, 4, 3} {
-		t.Run(map[int]string{5: "current-v5", 4: "frozen-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
+	for _, version := range []int{6, 5, 4, 3} {
+		t.Run(map[int]string{6: "current-v6", 5: "frozen-v5", 4: "frozen-v4", 3: "legacy-v3"}[version], func(t *testing.T) {
 			f := roundInventoryFixture(t, false)
 			if version >= 4 {
 				e, err := reviewexec.New(f.store, []reviewexec.Capability{{ID: "restore-cap", Provider: "coderabbit", Account: "fixture-account", Channels: []string{"hosted"}, Fingerprint: strings.Repeat("f", 64)}, {ID: "bundle-cli", Provider: "coderabbit", Account: "cli-account", Channels: []string{"cli"}}})
@@ -26,6 +60,11 @@ func TestCumulativeRoundInventoryCurrentAndPredecessorsPreserveHistoryAndComplet
 				control, err := e.ReadRoundControl(t.Context(), routePolicyInventoryScope(t, f), 4, "cli")
 				if err != nil || control.Epoch != 1 || control.Used != 1 || control.Dry != 1 || control.Maximum != 1001 {
 					t.Fatal("fixture lost cumulative thresholds or completion credit", control, err)
+				}
+			}
+			if version == 5 {
+				if _, err := f.store.DB().Exec(`DROP TABLE review_round_external_members; DROP TABLE review_round_external_credits; UPDATE metadata SET value='5' WHERE key='schema:review_rounds'`); err != nil {
+					t.Fatal("reconstruct version-five predecessor", err)
 				}
 			}
 			if version <= 4 {

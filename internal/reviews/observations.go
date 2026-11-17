@@ -405,6 +405,19 @@ func admitObservation(ctx context.Context, tx *sql.Tx, projectID string, req Obs
 	}
 	reads := newHistoryReads(tx)
 	defer reads.close()
+	if req.Source == externalHostedSource {
+		return 0, transferNativeConflict()
+	}
+	pending, err := PendingExternalHosted(ctx, reads, projectID, repositoryID, 0, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) != 0 {
+		return 0, core.Fail("external_hosted_pending", "Settle the pending manual Hosted results before replacing the review history snapshot.", http.StatusConflict)
+	}
+	if err := guardSubagentImport(ctx, reads, projectID, req.Source, req.Queue); err != nil {
+		return 0, err
+	}
 	if err := validateFinalizedCounts(ctx, reads, projectID, req.Source, req.Queue); err != nil {
 		return 0, err
 	}
@@ -419,7 +432,7 @@ func queueNumbersForSnapshot(ctx context.Context, tx *sql.Tx, projectID, snapsho
 	if snapshotID == "" {
 		return []int64{}, retired, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT number,0 FROM review_pulls WHERE project_id=? AND snapshot_id=?
+	rows, err := tx.QueryContext(ctx, `SELECT number,0 FROM review_pulls WHERE project_id=? AND snapshot_id=? AND delivery_selected=1
  UNION ALL SELECT number,1 FROM review_retired_pulls WHERE project_id=? AND snapshot_id=?`, projectID, snapshotID, projectID, snapshotID)
 	if err != nil {
 		return nil, nil, err
@@ -576,7 +589,7 @@ var findingRouteID = regexp.MustCompile(`^review_route_[0-9a-f]{32}$`)
 var findingRouteActor = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 func validFindingRoute(route *FindingRoute, sourcePull int64, native bool) bool {
-	if route == nil || !findingRouteID.MatchString(route.ID) || route.TargetPullNumber < 1 || route.TargetPullNumber > 2147483647 || sourcePull > 0 && route.TargetPullNumber == sourcePull || route.Revision < 1 || !oneOf(route.State, "active", "superseded") || native && route.State != "active" || !oneOf(route.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(route.Reason, 2048, false) || !nativeAdjudicationText(route.Actor, 128, false) || !nativeAdjudicationText(route.ProofNote, 2048, false) {
+	if route == nil || !findingRouteID.MatchString(route.ID) || route.TargetPullNumber < 0 || route.TargetPullNumber > 2147483647 || sourcePull > 0 && route.TargetPullNumber == sourcePull || route.Revision < 1 || !oneOf(route.State, "active", "superseded") || native && route.State != "active" || !oneOf(route.Disposition, "unadjudicated", "accepted", "rejected") || !nativeAdjudicationText(route.Reason, 2048, false) || !nativeAdjudicationText(route.Actor, 128, false) || !nativeAdjudicationText(route.ProofNote, 2048, false) {
 		return false
 	}
 	if route.Disposition == "unadjudicated" {

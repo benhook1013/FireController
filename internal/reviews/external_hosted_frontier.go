@@ -9,7 +9,7 @@ import (
 
 const externalHostedSource = "github-hosted-observer"
 
-// ExternalHostedSchemaSQL is the schema-eleven automatic-discovery boundary.
+// ExternalHostedSchemaSQL is the schema-ten automatic-discovery boundary.
 // Frontiers survive current membership removal and never advance automatically.
 func ExternalHostedSchemaSQL() []string {
 	return []string{

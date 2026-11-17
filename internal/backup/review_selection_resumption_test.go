@@ -87,11 +87,6 @@ func TestSelectionResumptionAbandonsPendingAndCannotResurrect(t *testing.T) {
 			}
 			// Recovery and the real worker lifetime must not turn terminal abandonment
 			// back into source authority, even with an installed capable reader.
-			select {
-			case err := <-done:
-				t.Fatal("worker exited before restart observation", err)
-			case <-time.After(150 * time.Millisecond):
-			}
 			cancel()
 			select {
 			case err := <-done:

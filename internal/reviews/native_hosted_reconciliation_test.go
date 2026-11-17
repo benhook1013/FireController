@@ -140,7 +140,16 @@ func TestNativeHostedReconciliationRequiresExactCurrentReplacement(t *testing.T)
 	for _, kind := range []string{"missing-native", "omitted-native", "wrong-native-pr", "wrong-native-head", "wrong-external-head", "other-producer", "other-project", "wrong-repository", "incomplete-native"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newAPIFixture(t)
-			external, _ := hostedReconciliationExternal(t, f, 1)
+			var external RunInput
+			if kind == "other-producer" {
+				pull := nativePull(1)
+				external = externalRun(99)
+				external.SourceRunID = "publication:00000000-0000-0000-0000-000000000099"
+				pull.Runs = []RunInput{external}
+				historyObservationPost(t, f, reviewRequest(0, []PullInput{pull}), "other-import-producer")
+			} else {
+				external, _ = hostedReconciliationExternal(t, f, 1)
+			}
 			run := hostedReconciliationRun("guard-native")
 			if kind == "wrong-native-head" {
 				run.HeadSHA = strings.Repeat("b", 40)
@@ -153,18 +162,19 @@ func TestNativeHostedReconciliationRequiresExactCurrentReplacement(t *testing.T)
 			if kind == "wrong-native-pr" {
 				pull = nativePull(2)
 			}
-			if kind != "missing-native" && kind != "other-project" && kind != "other-producer" {
+			if kind != "missing-native" && kind != "other-project" {
 				mustNativePublish(t, f, NativePublication{Pull: pull, Run: &run})
 			}
 			if kind == "omitted-native" {
-				p := nativePull(1)
-				p.Runs = []RunInput{external}
-				request := reviewRequest(3, []PullInput{p})
-				request.Source = externalHostedSource
-				historyObservationPost(t, f, request, "omit-replacement-only")
-				current := channelCountsPull(t, f, "")
-				if current.Pull.RunCounts.Hosted != 1 || len(current.Pull.RecentRuns) != 1 || current.Pull.RecentRuns[0].Source != externalHostedSource {
-					t.Fatal("fixture must retain observer while omitting native", current)
+				// Model a pre-existing omitted replacement. Public import now
+				// refuses to replace history while the observer result is pending.
+				id := runOpaqueID(f.project, nativeSource, run.SourceRunID)
+				result, err := f.store.DB().Exec(`DELETE FROM review_current_runs WHERE project_id=? AND id=?`, f.project, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+					t.Fatal("fixture did not omit the current native replacement", affected, err)
 				}
 			}
 			if kind == "wrong-repository" {
@@ -184,20 +194,7 @@ func TestNativeHostedReconciliationRequiresExactCurrentReplacement(t *testing.T)
 				mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &other})
 				before = historyMigrationDatabaseDigest(t, f)
 			}
-			if kind == "other-producer" {
-				externalID = "publication:00000000-0000-0000-0000-000000000099"
-				p := nativePull(1)
-				observer := externalRun(99)
-				observer.SourceRunID = externalID
-				p.Runs = []RunInput{observer}
-				var revision int64
-				if err := f.store.DB().QueryRow(`SELECT revision FROM review_workspace WHERE project_id=?`, f.project).Scan(&revision); err != nil {
-					t.Fatal(err)
-				}
-				historyObservationPost(t, f, reviewRequest(revision, []PullInput{p}), "other-import-producer")
-				mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
-				before = historyMigrationDatabaseDigest(t, f)
-			}
+
 			var receipt Receipt
 			var changed bool
 			var err error

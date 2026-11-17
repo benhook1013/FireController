@@ -76,7 +76,7 @@ func TestIdentityBootstrapSlowTLSReusesConnectionAndRevalidatesIdentity(t *testi
 	defer service.Close()
 	transport := newTransport()
 	transport.TLSClientConfig = service.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-	pool := &TransportPool{transport: transport}
+	pool := &TransportPool{transport: transport, sessionID: "synthetic-bootstrap-session"}
 	defer pool.Close()
 	credential := filepath.Join(t.TempDir(), "credential")
 	if err := os.WriteFile(credential, []byte(token), 0600); err != nil {

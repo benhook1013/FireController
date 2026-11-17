@@ -93,7 +93,7 @@ func TestHostedDefinitionListScopeNativeRetentionRecoveryOnceOnly(t *testing.T) 
 	if err != nil || replay.Reason != "already_completed" || replay.EvidenceID != retained.Receipt.ID || len(reader.calls) != 0 || recoveryRuntimeCount(t, f.f, "review_execution_transitions") != transitions {
 		t.Fatal("completed replay restarted observation or settlement", replay, err)
 	}
-	if recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 || nativeHostedCredit(t, f.f) != 0 || cliCount(t, f.f.store, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 1 || !bytes.Equal(raw, hostedBridgeBytes(t, f, retained.Capture)) {
+	if recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 || cliCount(t, f.f.store, `SELECT count(*) FROM events WHERE event_type='review.captured'`) != 1 || !bytes.Equal(raw, hostedBridgeBytes(t, f, retained.Capture)) {
 		t.Fatal("recovery duplicated final evidence/credit or changed raw capture")
 	}
 	journal, err := f.f.engine.ReadHostedObservations(t.Context(), f.f.project, f.a.ID)

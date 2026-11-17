@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './styles.css';
+import './review-states.css';
 
 const queryClient = new QueryClient({defaultOptions: {queries: {retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false}}});
 const router = createBrowserRouter([{path: '*', element: <App />}]);

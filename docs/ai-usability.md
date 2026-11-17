@@ -12,9 +12,11 @@ Successful writes return the affected resource ID, revision or durable action ID
 
 Lists return compact selected fields with a cursor and `has_more`. A default 20 items and maximum 100 are calibration candidates; choose final defaults from representative agent-use measurements rather than inherited page sizes. Include bounded body previews for message selection, not every conversation's full archive. Archive, diagnostics, and provider captures require explicit requests.
 
-The deliberate [current-job context read](job-context.md) provides the authoritative brief, latest checkpoint, and selected relevant pending coordination in one deliberate operation. If the complete required context exceeds the configured response budget, state what is missing and provide resumable sections; do not silently truncate a standing instruction or pretend the partial packet is complete. Routine coordination reads need not fetch this resume packet.
+The default [job read](job-state.md#default-reads) provides the complete brief and current progress, remaining checklist/counts and compact pending notes attached to that job. It does not pull unrelated worker coordination or history. If the complete required context exceeds the configured response budget, state what is missing and provide resumable sections; do not silently truncate a standing instruction or pretend the partial packet is complete. Routine coordination reads use `jobs status` / `job_status_read`, which returns bounded progress previews and explicit truncation flags rather than this resume packet. Full authoritative context remains available without truncating standing instructions.
 
 Responses do not echo credentials, profile files, submitted large text, redundant timestamps, or long invocation examples. Errors state the stable cause, whether retry is safe, the conflicting revision or held operation where relevant, and the smallest useful next action. Verbose traces are opt-in. A transient provider issue does not bury an unrelated successful job update under diagnostics.
+
+A non-JSON HTTP 5xx response from the service or its proxy reports `service_unavailable` with the original status, rather than implying oversized data or client incompatibility. Finite reads can be retried when service is available; message waits retain their saved cursor. A mutation retains its unknown-outcome classification and exact-key recovery instructions. Clients do not retry automatically or expose the proxy response body. Successful-response validation and structured JSON error handling remain unchanged.
 
 ## Calls and attention
 
@@ -27,6 +29,18 @@ Variable-duration calls first allow a short bounded wait so fast completion retu
 Keep message subscriptions quiet until relevant information exists; the [bounded agent wait](message-wait.md) owns current CLI/MCP selection and suppression rules. Transport heartbeats, repeated empty polls, and every review log line must not enter the model context. Coalesce redundant notifications for a resource while retaining durable events and complete message records. Coalescing cannot discard a distinct requested action or silently acknowledge it.
 
 Message bodies are external information, not higher-priority instructions or approval. Untrusted provider text and project content cannot redirect the adapter into another project or grant access. Reads and waits never silently acknowledge messages; explicit mutations own that state. Checkpoint cadence and human-decision handling are project workflow choices, illustrated in the optional [usage guide](agent-workflow.md).
+
+## Authoring effort
+
+Expose small edits as small inputs. Project-entry updates preserve omitted fields server-side under the current revision guard; an agent need not read and resend an entire long narrative to change its state. Complete replacement stays explicit. Publication preparation accepts compact linked selections and writes the exact full approved request locally, keeping model-facing output bounded while preserving the existing deliberate preview/apply boundary and uncertain-outcome recovery.
+
+The [suggested workflow](agent-workflow.md#text-ownership) explains optional record ownership: Project narrative, job execution, message coordination, reminders and audience-specific public prose each have a purpose. The tool does not require an explanation in every optional field, automatically summarize private prose into public output, or impose another narration step when a mechanically derived value already exists.
+
+## Discovery cost and local help
+
+Operation-specific CLI help supplies the routine edit syntax locally, without loading connection files or requesting service/provider data. An argument error points to that operation instead of making the caller repeat general help and search a large guide. MCP Project properties explain the distinct purpose of optional description, state, milestone and reconsideration fields at discovery time; full replacement and partial-update semantics remain explicit.
+
+A measured configured agent host exposed 22 coordination tools per worker connection while the corresponding raw server catalog contained 77 tools. The serialized baseline schemas were 15,861 bytes for that selected subset and 59,276 bytes for the complete catalog. These are transport/schema measurements, not measured model tokens or evidence that every schema enters a turn. A sampled context result carries both structured content and compatibility text; the host's final model-visible representation was not established. Preserve compatible result forms and existing host selection unless actual exposure demonstrates a useful reason to change them.
 
 ## Inspection and acceptance
 
@@ -50,3 +64,13 @@ A bounded Linux/WSL check used actual packaged `fc` and `fcd`, 32 explicitly bou
 | Stream delivery from sender invocation, 32 observed deliveries | 22.3 ms | 34.9 ms | 45.6 ms |
 
 CLI timings include subprocess startup, profile validation and the API identity handshake. Stream timing starts at sender invocation rather than the precise commit. The burst took 0.447 seconds; it does not establish sustained throughput, saturation, remote latency or model-visible delivery. Provider workers were disabled, with two controlled setup repository lookups and zero provider calls during the workload. Review interference, actual model sessions/token cost, browser behavior and multi-replica operation were not measured by this check.
+
+## Blocked provider collection and coordination
+
+A separate check used clean packaged runtime `923bf9c4a14517f85ceb7dc9a5739fbac318ef44` with one synthetic project and two workers. The actual CLI queued history collection in the daemon, while an owned loopback provider held its second review page closed. Four concurrent send/read lanes and four quiet typed-client waits continued during five seconds of blocked provider I/O. Twelve HTTP message creations and twelve selected inbox reads completed without errors; send p95/maximum was 14.94 ms and read p95/maximum was 6.45 ms. The four waits returned their selected quiet timeouts normally. Every message remained unseen and unacknowledged.
+
+The initial private harness incorrectly required HTTP 200 for creation responses that correctly returned 201. Its failed result and raw samples were preserved; after that assertion alone was corrected, one authorized fresh workload passed. Source and supplied binaries stayed unchanged, six controlled provider GETs reached only the owned fixture, and cleanup left no owned processes. Finite timings measure direct loopback HTTP, not CLI startup or model-visible delivery. This small sample proves coordination continued during blocked collection I/O; it does not establish native-review interference, cross-project fairness, sustained throughput or fleet capacity.
+
+## Gameplay audit improvements
+
+Routine active-queue selection filters open PRs before pagination and returns only selected scalar facts. Full queue/history views retain merged records. Agent run summaries omit unrelated workspace-origin timestamps; each original run keeps its own start/finish times and pinned cursor. Review-operation reads default to compact retained stages, causes, evidence handles and next actions, with full diagnostics explicit. No claim of provider execution is inferred from a posted trigger. Bounded same-evidence decision/fix batches replace per-item revision loops while preserving explicit reasons, atomicity, source counts and same-key recovery. See the owning [workspace](review-workspace.md), [operation](review-operations.md) and [control](review-controls.md) contracts.

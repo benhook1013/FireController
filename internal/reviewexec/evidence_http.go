@@ -24,13 +24,13 @@ type evidenceResponse struct {
 }
 
 type hostedPublicationResponse struct {
-	SubmittedReview   *HostedSubmittedReviewMetadata `json:"submitted_review,omitempty"`
 	PublicationID     string                         `json:"publication_id"`
 	ProviderAttemptID string                         `json:"provider_attempt_id"`
 	TriggerCommentID  int64                          `json:"trigger_comment_id"`
 	ReviewIDs         []int64                        `json:"review_ids"`
 	ObservedBaseSHA   string                         `json:"observed_base_sha"`
 	StandingSummary   *HostedStandingSummaryMetadata `json:"standing_summary,omitempty"`
+	SubmittedReview   *HostedSubmittedReviewMetadata `json:"submitted_review,omitempty"`
 }
 
 type captureResponse struct {
@@ -82,13 +82,13 @@ func publicEvidence(value ReviewEvidence) evidenceResponse {
 	var hosted *hostedPublicationResponse
 	if h := capture.Hosted; h != nil {
 		hosted = &hostedPublicationResponse{PublicationID: h.PublicationID, ProviderAttemptID: h.ProviderAttemptID, TriggerCommentID: h.TriggerCommentID, ReviewIDs: append([]int64{}, h.ReviewIDs...), ObservedBaseSHA: h.ObservedBaseSHA}
-		if h.SubmittedReview != nil {
-			submitted := *h.SubmittedReview
-			hosted.SubmittedReview = &submitted
-		}
 		if h.StandingSummary != nil {
 			standing := *h.StandingSummary
 			hosted.StandingSummary = &standing
+		}
+		if h.SubmittedReview != nil {
+			submitted := *h.SubmittedReview
+			hosted.SubmittedReview = &submitted
 		}
 	}
 	files := append([]string{}, capture.Review.ReviewedFiles...)
@@ -150,6 +150,8 @@ func (e *Engine) readAdjudicationHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	// Frozen severity is private publication metadata, not another agent text field.
+	value.FrozenAcceptedSeverity = nil
 	core.WriteJSON(w, http.StatusOK, value)
 }
 

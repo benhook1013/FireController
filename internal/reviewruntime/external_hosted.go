@@ -17,6 +17,14 @@ func (r *hostedArchiveSource) Repository(ctx context.Context, id int64) (reviewp
 func (r *hostedArchiveSource) Pull(ctx context.Context, repository string, number int64) (reviewprovider.Pull, error) {
 	return r.provider.Pull(ctx, repository, number)
 }
+func (r *hostedArchiveSource) PullWithRepository(ctx context.Context, repository string, number int64) (reviewprovider.Pull, reviewprovider.Repository, error) {
+	if reader, ok := r.provider.(interface {
+		PullWithRepository(context.Context, string, int64) (reviewprovider.Pull, reviewprovider.Repository, error)
+	}); ok {
+		return reader.PullWithRepository(ctx, repository, number)
+	}
+	return reviewprovider.Pull{}, reviewprovider.Repository{}, reviewprovider.ErrCombinedPullUnsupported
+}
 func (r *hostedArchiveSource) ObserveHosted(ctx context.Context, repository string, number int64) (reviewprovider.HostedPublicationSnapshot, error) {
 	if archive, ok := r.provider.(interface {
 		ObserveHostedArchive(context.Context, string, int64, reviewprovider.Author) (reviewprovider.HostedPublicationSnapshot, error)
@@ -99,4 +107,20 @@ func (r *hostedArchiveSource) ObserveCIGateWithWorkflowAttention(ctx context.Con
 		return reviewprovider.CIObservation{}, nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "Advanced workflow attention is unavailable for this source adapter."}
 	}
 	return r.ObserveCIGateWithWorkflows(ctx, target, gateRef, ids)
+}
+
+// Cohorts remain an optional capability of the underlying authenticated adapter.
+func (r *hostedArchiveSource) SupportsCIGateCohort() bool {
+	_, ok := r.provider.(interface {
+		NewCIGateCohort(context.Context, []reviewprovider.CITarget, string) (*reviewprovider.CIGateCohort, error)
+	})
+	return ok
+}
+func (r *hostedArchiveSource) NewCIGateCohort(ctx context.Context, targets []reviewprovider.CITarget, gate string) (*reviewprovider.CIGateCohort, error) {
+	if reader, ok := r.provider.(interface {
+		NewCIGateCohort(context.Context, []reviewprovider.CITarget, string) (*reviewprovider.CIGateCohort, error)
+	}); ok {
+		return reader.NewCIGateCohort(ctx, targets, gate)
+	}
+	return nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "CI cohort observation is unavailable for this source adapter."}
 }

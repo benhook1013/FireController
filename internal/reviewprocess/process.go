@@ -27,9 +27,22 @@ const maxUsageOutput = 64 << 10
 const maxReviewOutput = 16 << 20
 const maxErrorOutput = 64 << 10
 
+// FailureStage is a closed diagnostic category for an unsuccessful usage query.
+// The zero value leaves failures outside known command stages unclassified.
+type FailureStage string
+
+const (
+	FailureStageCommandNotStarted FailureStage = "command_not_started"
+	FailureStageTimeout           FailureStage = "timeout"
+	FailureStageCommandFailed     FailureStage = "command_failed"
+	FailureStageResponseUnproven  FailureStage = "response_unproven"
+	FailureStageLookupFailed      FailureStage = "lookup_failed"
+)
+
 // Error contains only a stable public classification. It never includes a
 // filesystem path, provider output, executable stderr or underlying error.
 type Error struct {
+	FailureStage   FailureStage
 	Code           string
 	OutcomeUnknown bool
 }
@@ -74,6 +87,7 @@ type Runner struct {
 	mu              sync.Mutex
 	permit          *usagePermit
 	usageGeneration uint64
+	usageTimeout    time.Duration
 	now             func() time.Time
 }
 
@@ -86,10 +100,24 @@ type workspaceKey struct {
 	directory, comparison, candidate, base, mergeBase, patch, repositoryCanonical string
 }
 
+// Option configures an operator-owned process runner.
+type Option func(*Runner) error
+
+// WithUsageTimeout selects only the allowance subprocess deadline. It neither
+// extends the caller context nor grants permission to start a review.
+func WithUsageTimeout(timeout time.Duration) Option {
+	return func(r *Runner) error {
+		if timeout < time.Second || timeout > time.Minute {
+			return processError("configuration_invalid", false)
+		}
+		r.usageTimeout = timeout
+		return nil
+	}
+}
+
 // New resolves the executable once and builds a closed child environment.
-// authenticationEnvironment is operator-owned and may contain only private
-// home/config directory paths; it is never taken from a worker request.
-func New(manager *reviewworkspace.Manager, executable string, authenticationEnvironment map[string]string) (*Runner, error) {
+// Authentication options and deadlines are operator-owned, never worker commands.
+func New(manager *reviewworkspace.Manager, executable string, authenticationEnvironment map[string]string, options ...Option) (*Runner, error) {
 	if !processGroupsSupported || manager == nil || executable == "" || strings.IndexByte(executable, 0) >= 0 {
 		return nil, processError("configuration_invalid", false)
 	}
@@ -115,16 +143,25 @@ func New(manager *reviewworkspace.Manager, executable string, authenticationEnvi
 		env = append(env, key+"="+value)
 	}
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", "LANG=C.UTF-8", "NO_COLOR=1")
-	return &Runner{manager: manager, executable: resolved, env: env, now: time.Now}, nil
+	runner := &Runner{manager: manager, executable: resolved, env: env, now: time.Now, usageTimeout: usageTimeout}
+	for _, option := range options {
+		if option == nil {
+			return nil, processError("configuration_invalid", false)
+		}
+		if err := option(runner); err != nil {
+			return nil, err
+		}
+	}
+	return runner, nil
 }
 
 func processError(code string, unknown bool) error {
 	return &Error{Code: code, OutcomeUnknown: unknown}
 }
 
-// Usage executes exactly one agent-mode allowance query against the pinned
-// workspace and expected account/repository. Every attempt replaces any old
-// one-use permit, including failed refreshes.
+// Usage checks allowance against the pinned workspace and expected account and
+// repository. An explicit provider lookup failure gets one retry within the same
+// deadline. Every call replaces any old one-use permit, including failed checks.
 func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace, expectedRepository, expectedOrganization string) (Usage, error) {
 	r.mu.Lock()
 	r.usageGeneration++
@@ -140,21 +177,30 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 		}
 		return Usage{}, processError("source_changed", false)
 	}
-	commandCtx, cancel := context.WithTimeout(ctx, usageTimeout)
+	commandCtx, cancel := context.WithTimeout(ctx, r.usageTimeout)
 	defer cancel()
 	if commandCtx.Err() != nil {
 		return Usage{}, processError("usage_unavailable", false)
 	}
-	result := r.run(commandCtx, workspace.Directory, []string{"usage", "--agent"}, maxUsageOutput, maxErrorOutput)
-	if result.err != nil || result.capture.ExitCode != 0 || !result.capture.Started {
-		return Usage{}, processError("usage_unavailable", false)
+	usage, err := r.readUsage(commandCtx, workspace, expectedRepository, expectedOrganization)
+	var failure *Error
+	if errors.As(err, &failure) && failure.FailureStage == FailureStageLookupFailed {
+		// Both reads share the operator's original allowance-check deadline.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if commandCtx.Err() == nil {
+				usage, err = r.readUsage(commandCtx, workspace, expectedRepository, expectedOrganization)
+			}
+		case <-commandCtx.Done():
+		}
 	}
-	usage, err := parseUsage(result.capture.Stdout, expectedRepository, expectedOrganization)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Usage{}, processError("usage_unavailable", false)
+		}
 		return Usage{}, err
-	}
-	if usage.Remaining == 0 {
-		return Usage{}, processError("rate_limited", false)
 	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
@@ -163,19 +209,52 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 		return Usage{}, processError("source_changed", false)
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if generation != r.usageGeneration || ctx.Err() != nil {
-		r.mu.Unlock()
 		return Usage{}, processError("usage_unavailable", false)
 	}
+	// Negative allowance is retained by callers too, so it must share the
+	// same latest-query fence as a positive one-use permit.
+	if usage.Remaining == 0 {
+		return usage, processError("rate_limited", false)
+	}
 	r.permit = &usagePermit{workspace: keyFor(workspace), issued: r.now()}
-	r.mu.Unlock()
 	return usage, nil
+}
+
+func (r *Runner) readUsage(ctx context.Context, workspace reviewworkspace.Workspace, repository, organization string) (Usage, error) {
+	result := r.run(ctx, workspace.Directory, []string{"usage", "--agent"}, maxUsageOutput, maxErrorOutput)
+	if result.err == nil && result.capture.Started && (result.capture.ExitCode == 0 || result.capture.ExitCode == 1) {
+		usage, err := parseUsage(result.capture.Stdout, repository, organization)
+		if errors.Is(err, errUsageLookupFailed) {
+			return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageLookupFailed}
+		}
+		if result.capture.ExitCode == 0 {
+			if err != nil {
+				return Usage{}, &Error{Code: "usage_unavailable", FailureStage: FailureStageResponseUnproven}
+			}
+			return usage, nil
+		}
+	}
+	stage := FailureStageCommandFailed
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		stage = FailureStageTimeout
+	} else if !result.capture.Started {
+		stage = FailureStageCommandNotStarted
+	}
+	return Usage{}, &Error{Code: "usage_unavailable", FailureStage: stage}
 }
 
 // Review consumes the exact fresh usage permit before starting one process.
 // A returned capture is raw evidence for a caller-owned private journal; this
 // package does not classify success from exit status or inspect provider data.
 func (r *Runner) Review(ctx context.Context, workspace reviewworkspace.Workspace) (Capture, error) {
+	return r.ReviewWithStart(ctx, workspace, nil)
+}
+
+// ReviewWithStart reports successful OS process creation before waiting. The
+// callback is evidence only, not evidence that provider review work began.
+func (r *Runner) ReviewWithStart(ctx context.Context, workspace reviewworkspace.Workspace, onStart func(time.Time)) (Capture, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return Capture{}, processError("process_failed", false)
 	}
@@ -200,7 +279,7 @@ func (r *Runner) Review(ctx context.Context, workspace reviewworkspace.Workspace
 	if commandCtx.Err() != nil {
 		return Capture{}, processError("process_failed", false)
 	}
-	result := r.run(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput)
+	result := r.run(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput, onStart)
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
 			return result.capture, processError("process_failed", result.capture.Started)
@@ -218,7 +297,7 @@ type runResult struct {
 	err     error
 }
 
-func (r *Runner) run(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int) runResult {
+func (r *Runner) run(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int, onStart ...func(time.Time)) runResult {
 	commandCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, r.executable, args...)
@@ -237,6 +316,10 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 		return runResult{capture: Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1}, err: err}
 	}
 	started := true
+	startedAt := r.now().UTC()
+	if len(onStart) > 0 && onStart[0] != nil {
+		onStart[0](startedAt)
+	}
 	err = command.Wait()
 	cleanupErr := cleanup()
 	code := 0
@@ -309,6 +392,8 @@ func validRepository(s string) bool {
 	return true
 }
 
+var errUsageLookupFailed = errors.New("provider reported an unavailable usage lookup")
+
 func parseUsage(data []byte, expectedRepository, expectedOrganization string) (Usage, error) {
 	var zero Usage
 	trimmed := bytes.TrimSpace(data)
@@ -325,11 +410,24 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		Status       string `json:"status"`
 		Organization string `json:"organization"`
 	}
-	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || event.Status != "complete" || event.Organization != expectedOrganization {
+	// The provider can mark the whole report partial when its separate credits
+	// lookup is unavailable. Dispatch only uses the two independently validated
+	// sections below: inactive billing and included quota for this repository.
+	if json.Unmarshal(trimmed, &event) != nil || event.Type != "status" || event.Phase != "usage" || event.Organization != expectedOrganization {
 		return zero, processError("usage_unavailable", false)
 	}
 	var billing map[string]json.RawMessage
-	if json.Unmarshal(root["billingPeriod"], &billing) != nil || billing == nil || hasAliases(billing, "state", "usageBillingStatus") {
+	if json.Unmarshal(root["billingPeriod"], &billing) != nil || billing == nil || hasAliases(billing, "state", "reason", "usageBillingStatus") {
+		return zero, processError("usage_unavailable", false)
+	}
+	if event.Status == "unavailable" || event.Status == "partial" {
+		var quota map[string]json.RawMessage
+		if json.Unmarshal(root["includedReviews"], &quota) == nil &&
+			(usageLookupFailed(quota) || usageLookupFailed(billing)) {
+			return zero, errUsageLookupFailed
+		}
+	}
+	if event.Status != "complete" && event.Status != "partial" {
 		return zero, processError("usage_unavailable", false)
 	}
 	var billingState, billingStatus string
@@ -350,6 +448,13 @@ func parseUsage(data []byte, expectedRepository, expectedOrganization string) (U
 		return zero, processError("usage_unavailable", false)
 	}
 	return u, nil
+}
+
+func usageLookupFailed(fields map[string]json.RawMessage) bool {
+	var state, reason string
+	return !hasAliases(fields, "state", "reason") &&
+		decodeExact(fields, "state", &state) == nil && state == "unavailable" &&
+		decodeExact(fields, "reason", &reason) == nil && reason == "lookup_failed"
 }
 
 func hasAliases(fields map[string]json.RawMessage, names ...string) bool {

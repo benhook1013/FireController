@@ -8,7 +8,9 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/benhook1013/FireController/internal/backuphealth"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -255,14 +257,59 @@ func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
 		return Status{}, unavailable()
 	}
 	defer tx.Rollback()
-	recovery, err := readRecoveryStatus(ctx, tx)
+	return readStoredStatus(ctx, tx)
+}
+
+// ReadStoreStatus reads retained scheduling facts from the already-open serving
+// store. It neither opens another database nor inspects any backup destination.
+// API callers must apply their project authorization before invoking it.
+func ReadStoreStatus(ctx context.Context, store *core.Store) (Status, error) {
+	if checkContext(ctx) != nil || store == nil {
+		return Status{}, unavailable()
+	}
+	tx, err := store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Status{}, unavailable()
+	}
+	defer tx.Rollback()
+	return readStoredStatus(ctx, tx)
+}
+
+// ReadHealthRecord projects retained status inside the caller's existing
+// authorized SQL snapshot. No backup destination or credential is consulted.
+func ReadHealthRecord(ctx context.Context, tx *sql.Tx) (backuphealth.LocalRecord, error) {
+	if checkContext(ctx) != nil || tx == nil {
+		return backuphealth.LocalRecord{}, unavailable()
+	}
+	status, err := readStoredStatus(ctx, tx)
+	if err != nil {
+		return backuphealth.LocalRecord{}, err
+	}
+	interval, _ := time.ParseDuration(status.Interval)
+	timeout, _ := time.ParseDuration(status.Timeout)
+	r := backuphealth.LocalRecord{Configured: status.State != "unconfigured" && status.State != "disabled", State: status.State, Interval: interval, Timeout: timeout, RetentionWarning: status.Retention != nil && status.Retention.State == "failed"}
+	if status.LastSuccess != nil {
+		r.LastSnapshotAt, r.SuccessInstance = status.LastSuccess.SnapshotFinishedAt, status.LastSuccess.SourceInstanceID
+	}
+	if status.LastAttempt != nil {
+		a := status.LastAttempt
+		r.AttemptState, r.AttemptInstance, r.LastAttemptAt = a.State, a.SourceInstanceID, a.FinishedAt
+		if a.State == "running" {
+			r.LastAttemptAt = a.StartedAt
+		}
+	}
+	return r, nil
+}
+
+func readStoredStatus(ctx context.Context, reader sqlReader) (Status, error) {
+	recovery, err := readRecoveryStatus(ctx, reader)
 	if err != nil {
 		return Status{}, err
 	}
 	if recovery.State == "inactive" {
 		return Status{}, core.Fail("restore_inactive", "The restored installation is inactive; use restore-activate after fencing its predecessor before reading managed backup status.", 409)
 	}
-	present, err := managedStatusSchema(ctx, tx)
+	present, err := managedStatusSchema(ctx, reader)
 	if err != nil {
 		return Status{}, err
 	}
@@ -270,7 +317,7 @@ func ReadStatus(ctx context.Context, dataDir string) (Status, error) {
 		return Status{State: "unconfigured"}, nil
 	}
 
-	r, err := loadManaged(ctx, tx)
+	r, err := loadManaged(ctx, reader)
 	if err != nil {
 		return Status{}, err
 	}

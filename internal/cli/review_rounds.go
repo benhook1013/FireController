@@ -13,7 +13,6 @@ import (
 
 type reviewRoundsInvocation struct {
 	operation    string
-	helpCommand  string
 	pull         int64
 	channel, key string
 	input        client.ConfigureReviewRoundControlRequest
@@ -22,12 +21,6 @@ type reviewRoundsInvocation struct {
 func parseReviewRounds(args []string) (*reviewRoundsInvocation, bool) {
 	if len(args) == 0 {
 		return nil, false
-	}
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
-		return &reviewRoundsInvocation{operation: "help"}, true
-	}
-	if len(args) == 2 && args[1] == "--help" && (args[0] == "read" || args[0] == "grant" || args[0] == "close" || args[0] == "taper") {
-		return &reviewRoundsInvocation{operation: "help", helpCommand: args[0]}, true
 	}
 	in := &reviewRoundsInvocation{operation: args[0]}
 	allowed := map[string]bool{"--pr": true, "--channel": true}
@@ -158,40 +151,4 @@ func executeReviewRounds(ctx, parent context.Context, c *client.Client, in *revi
 		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The round-control receipt could not be written.", Action: "Retry the exact same key, round-control arguments and bound instance; do not invent a replacement key.", OutcomeUnknown: true})
 	}
 	return ExitSuccess
-}
-
-// Round help is local and must run before resolving any profile or credential.
-func emitReviewRoundsHelp(in *reviewRoundsInvocation, stdout, stderr io.Writer) int {
-	usage := "fc reviews rounds read|grant|close|taper --help"
-	required, optional := []string{}, []string{}
-	semantics := []string{"Reads and settings are provider-free. Settings never request a review.", "Use an explicit original key and current revision for mutations; preserve both after an uncertain result."}
-	if in.helpCommand != "" {
-		usage = "fc reviews rounds " + in.helpCommand + " --pr NUMBER --channel cli|hosted"
-		required = append(required, "--pr NUMBER", "--channel cli|hosted")
-		if in.helpCommand != "read" {
-			usage += " --expect-revision N --key KEY"
-			required = append(required, "--expect-revision N", "--key KEY")
-			optional = append(optional, "--expected-revision N (compatible alias; do not combine revision flags)")
-		}
-		switch in.helpCommand {
-		case "read":
-			semantics = append(semantics, "Returns configured bounds, completed count, dry streak, taper, closure and revision.")
-		case "grant":
-			usage += " (--max N [--min N] | --exact N)"
-			required = append(required, "--max N or --exact N")
-			optional = append(optional, "--min N (default zero; incompatible with --exact)")
-		case "taper":
-			usage += " --taper N"
-			required = append(required, "--taper N (1-1000)")
-			semantics = append(semantics, "Changes only the clean-streak threshold, preserving allowance and closure.")
-		case "close":
-			semantics = append(semantics, "Stops new dispatch without cancelling possibly posted work; no allocation fields.")
-		}
-	}
-	return emit(stdout, stderr, struct {
-		Usage     string   `json:"usage"`
-		Required  []string `json:"required"`
-		Optional  []string `json:"optional"`
-		Semantics []string `json:"semantics"`
-	}{usage, required, optional, semantics})
 }

@@ -3,6 +3,7 @@ package reviewprovider
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -714,6 +715,334 @@ func TestHostedStandingZeroOptionalIgnoredNeverHidesMalformedInventory(t *testin
 			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
 			if err != nil || got.Complete || got.Publication.State == "attributed" {
 				t.Fatalf("malformed optional inventory credited: %s %v", got.Reason, err)
+			}
+		})
+	}
+}
+
+// This historical sentence is the independently verified trigger for the
+// substring false positive. All source identities and surrounding proof are
+// independently authored by standingTestFixture, not native capture bytes.
+const standingHistoricalCheckpointTest = "The latest reported Hosted review checkpoint lists 3 accepted findings: 2 minor and 1 trivial, with 0 major and 0 routed. Finding details and current review findings are not available."
+
+func standingTestHistoricalCheckpoint(body string) string {
+	return strings.Replace(body, "<summary><strong>📝 Summary</strong></summary>\n<dl><dd>Independent synthetic change description.</dd></dl>", "<summary><strong>Summary</strong></summary>\n<dl>\n<dd>\n<br>\n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n## Validation\n\n"+standingHistoricalCheckpointTest+"\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->\nIndependent synthetic change description.\n</dd>\n</dl>", 1)
+}
+
+func TestHostedStandingZeroHistoricalCheckpointNarrative(t *testing.T) {
+	s, intent, poster, bot, earliest := standingTestFixture(t)
+	s.IssueComments[1].Body = standingTestHistoricalCheckpoint(s.IssueComments[1].Body)
+	before := append([]IssueComment(nil), s.IssueComments...)
+	got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+	if err != nil || !got.Complete || got.Findings == nil || len(got.Findings) != 0 || got.Publication.StandingZero == nil || got.Publication.Reason != "standing_zero_inventory_attributed" {
+		t.Fatalf("historical release-note prose prevented explicit current zero inventory: complete=%v reason=%s err=%v", got.Complete, got.Reason, err)
+	}
+	z := got.Publication.StandingZero
+	if z.ProviderRunID != standingTestRun || z.HeadSHA != intent.HeadSHA || z.BaseSHA != strings.Repeat("b", 40) || z.Summary != s.IssueComments[1] || z.Acknowledgement != s.IssueComments[2] || !reflect.DeepEqual(before, s.IssueComments) {
+		t.Fatal("narrative classification changed identity or raw source")
+	}
+}
+
+func TestHostedStandingZeroHistoricalCheckpointBoundaries(t *testing.T) {
+	const releaseStart = "<!-- This is an auto-generated comment: release notes by coderabbit.ai -->"
+	const releaseEnd = "<!-- end of auto-generated comment: release notes by coderabbit.ai -->"
+	changes := map[string]func(string) string{
+		"no walkthrough start": func(b string) string { return strings.Replace(b, "<!-- walkthrough_start -->", "", 1) },
+		"no walkthrough end":   func(b string) string { return strings.Replace(b, "<!-- walkthrough_end -->", "", 1) },
+		"duplicate walkthrough start": func(b string) string {
+			return strings.Replace(b, "<!-- walkthrough_start -->", "<!-- walkthrough_start -->\n<!-- walkthrough_start -->", 1)
+		},
+		"duplicate walkthrough end": func(b string) string {
+			return strings.Replace(b, "<!-- walkthrough_end -->", "<!-- walkthrough_end -->\n<!-- walkthrough_end -->", 1)
+		},
+		"nested walkthrough": func(b string) string {
+			return strings.Replace(b, releaseStart, "<!-- walkthrough_start -->\n"+releaseStart, 1)
+		},
+		"wrong summary label": func(b string) string {
+			return strings.Replace(b, "<summary><strong>Summary</strong></summary>", "<summary><strong>Current findings</strong></summary>", 1)
+		},
+		"nested summary": func(b string) string {
+			return strings.Replace(strings.Replace(b, "<!-- walkthrough_start -->", "<section>\n<!-- walkthrough_start -->", 1), "<!-- walkthrough_end -->", "<!-- walkthrough_end -->\n</section>", 1)
+		},
+		"hidden summary": func(b string) string {
+			return strings.Replace(b, "<!-- walkthrough_start -->\n<details>", "<!-- walkthrough_start -->\n<details hidden>", 1)
+		},
+		"wrong release wrapper": func(b string) string {
+			return strings.Replace(strings.Replace(b, "<dd>\n<br>\n"+releaseStart, "<div>\n<br>\n"+releaseStart, 1), "Independent synthetic change description.\n</dd>", "Independent synthetic change description.\n</div>", 1)
+		},
+		"missing release start":   func(b string) string { return strings.Replace(b, releaseStart, "", 1) },
+		"missing release end":     func(b string) string { return strings.Replace(b, releaseEnd, "", 1) },
+		"duplicate release start": func(b string) string { return strings.Replace(b, releaseStart, releaseStart+"\n"+releaseStart, 1) },
+		"duplicate release end":   func(b string) string { return strings.Replace(b, releaseEnd, releaseEnd+"\n"+releaseEnd, 1) },
+		"second release region": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n"+releaseStart+"\nOther notes.\n"+releaseEnd, 1)
+		},
+		"altered release start": func(b string) string {
+			return strings.Replace(b, releaseStart, "<!-- This is an auto-generated comment: Release notes by coderabbit.ai -->", 1)
+		},
+		"trailing release start": func(b string) string { return strings.Replace(b, releaseStart, releaseStart+" extra", 1) },
+		"indented release start": func(b string) string { return strings.Replace(b, releaseStart, "    "+releaseStart, 1) },
+		"quoted release start":   func(b string) string { return strings.Replace(b, releaseStart, "> "+releaseStart, 1) },
+		"fenced release start":   func(b string) string { return strings.Replace(b, releaseStart, "```\n"+releaseStart+"\n```", 1) },
+		"commented release start": func(b string) string {
+			return strings.Replace(b, releaseStart, "<!-- example\n"+releaseStart+"\n-->", 1)
+		},
+		"release end after summary": func(b string) string {
+			return strings.Replace(strings.Replace(b, releaseEnd, "", 1), "<!-- walkthrough_end -->", releaseEnd+"\n<!-- walkthrough_end -->", 1)
+		},
+		"repeated presentation break": func(b string) string {
+			return strings.Replace(b, "<br>\n"+releaseStart, "<br>\n<br>\n"+releaseStart, 1)
+		},
+		"claim before release": func(b string) string {
+			return strings.Replace(strings.Replace(b, standingHistoricalCheckpointTest, "", 1), releaseStart, standingHistoricalCheckpointTest+"\n"+releaseStart, 1)
+		},
+		"claim after release": func(b string) string {
+			return strings.Replace(strings.Replace(b, standingHistoricalCheckpointTest, "", 1), releaseEnd, releaseEnd+"\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"claim at root": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "", 1) + "\n" + standingHistoricalCheckpointTest
+		},
+		"claim in recent": func(b string) string {
+			return strings.Replace(strings.Replace(b, standingHistoricalCheckpointTest, "", 1), standingRecentEnd, standingHistoricalCheckpointTest+"\n"+standingRecentEnd, 1)
+		},
+		"claim in risk": func(b string) string {
+			return strings.Replace(strings.Replace(b, standingHistoricalCheckpointTest, "", 1), "<!-- final_review_risk_end -->", standingHistoricalCheckpointTest+"\n<!-- final_review_risk_end -->", 1)
+		},
+		"nested claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "<section>\n"+standingHistoricalCheckpointTest+"\n</section>", 1)
+		},
+		"quoted claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "> "+standingHistoricalCheckpointTest, 1)
+		},
+		"bold claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "**"+standingHistoricalCheckpointTest+"**", 1)
+		},
+		"duplicate claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, standingHistoricalCheckpointTest+"\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"duplicate entire walkthrough": func(b string) string {
+			start := strings.Index(b, "<!-- walkthrough_start -->")
+			end := strings.Index(b, "<!-- walkthrough_end -->") + len("<!-- walkthrough_end -->")
+			return b + "\n" + b[start:end]
+		},
+	}
+	for name, replacement := range map[string]string{
+		"current checkpoint":                    strings.Replace(standingHistoricalCheckpointTest, "latest reported Hosted review checkpoint", "current Hosted review", 1),
+		"missing reported qualifier":            strings.Replace(standingHistoricalCheckpointTest, "reported ", "", 1),
+		"missing current unavailable qualifier": strings.Replace(standingHistoricalCheckpointTest, " Finding details and current review findings are not available.", "", 1),
+		"altered unavailable qualifier":         strings.Replace(standingHistoricalCheckpointTest, "not available", "available", 1),
+		"truncated qualifier":                   strings.TrimSuffix(standingHistoricalCheckpointTest, "available."),
+		"unknown prefix":                        "Current review inventory: " + standingHistoricalCheckpointTest,
+		"unknown suffix":                        standingHistoricalCheckpointTest + " Current findings: 2",
+		"count mismatch":                        strings.Replace(standingHistoricalCheckpointTest, "3 accepted", "4 accepted", 1),
+		"major count mismatch":                  strings.Replace(standingHistoricalCheckpointTest, "0 major", "1 major", 1),
+		"positive routed":                       strings.Replace(standingHistoricalCheckpointTest, "0 routed", "1 routed", 1),
+		"leading zero":                          strings.Replace(standingHistoricalCheckpointTest, "3 accepted", "03 accepted", 1),
+		"negative count":                        strings.Replace(standingHistoricalCheckpointTest, "3 accepted", "-3 accepted", 1),
+		"overflow count":                        strings.Replace(standingHistoricalCheckpointTest, "3 accepted", "18446744073709551616 accepted", 1),
+		"bounded total exceeded":                strings.Replace(strings.Replace(standingHistoricalCheckpointTest, "3 accepted", "101 accepted", 1), "2 minor", "100 minor", 1),
+	} {
+		changes[name] = func(b string) string { return strings.Replace(b, standingHistoricalCheckpointTest, replacement, 1) }
+	}
+	for _, claim := range []string{
+		"findings: 1", "comments: 2", "Current findings: 1", "Current review findings: 0",
+		"The current review has findings: 2.", "**Actionable comments posted: 1**", "**Actionable comments posted: 0**",
+		"<details>\n<summary>Unknown findings (1)</summary>\n</details>", "<summary>Duplicate comments (1)</summary>",
+		hfMarker(1), hfOutsideCategory(1, hfOutside(1, "pkg/alpha.go", "1", "Synthetic issue.")),
+	} {
+		for _, where := range []string{"release", "after walkthrough", "risk", "root"} {
+			changes[where+"/"+claim] = func(b string) string {
+				switch where {
+				case "release":
+					return strings.Replace(b, releaseEnd, claim+"\n"+releaseEnd, 1)
+				case "after walkthrough":
+					return strings.Replace(b, "<!-- walkthrough_end -->", "<!-- walkthrough_end -->\n"+claim, 1)
+				case "risk":
+					return strings.Replace(b, "<!-- final_review_risk_end -->", claim+"\n<!-- final_review_risk_end -->", 1)
+				default:
+					return b + "\n" + claim
+				}
+			}
+		}
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			body := standingTestHistoricalCheckpoint(s.IssueComments[1].Body)
+			s.IssueComments[1].Body = change(body)
+			if s.IssueComments[1].Body == body {
+				t.Fatal("negative fixture did not change source")
+			}
+			before := append([]IssueComment(nil), s.IssueComments...)
+			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || got.Complete || got.Publication.StandingZero != nil || got.Publication.State == "attributed" {
+				t.Fatalf("unsupported narrative or contradictory current claim became clean: complete=%v reason=%s err=%v", got.Complete, got.Reason, err)
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("negative classification rewrote source")
+			}
+		})
+	}
+}
+
+func TestHostedStandingZeroHistoricalCheckpointCountAndPresentation(t *testing.T) {
+	for _, mode := range []string{"zero counts", "major count", "maximum count", "no break", "CRLF", "separate status"} {
+		t.Run(mode, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			body := standingTestHistoricalCheckpoint(s.IssueComments[1].Body)
+			switch mode {
+			case "zero counts":
+				body = strings.Replace(strings.Replace(strings.Replace(body, "3 accepted", "0 accepted", 1), "2 minor", "0 minor", 1), "1 trivial", "0 trivial", 1)
+			case "major count":
+				body = strings.Replace(strings.Replace(body, "3 accepted", "4 accepted", 1), "0 major", "1 major", 1)
+			case "maximum count":
+				body = strings.Replace(strings.Replace(body, "3 accepted", "100 accepted", 1), "2 minor", "99 minor", 1)
+			case "no break":
+				body = strings.Replace(body, "<br>\n", "", 1)
+			case "CRLF":
+				body = strings.ReplaceAll(body, "\n", "\r\n")
+			case "separate status":
+				body = strings.Replace(body, "No actionable comments were generated in the recent review. 🎉\n", "", 1)
+				body = standingStatusStart + "\nNo actionable comments were generated in the recent review.\n" + standingStatusEnd + "\n" + body
+			}
+			s.IssueComments[1].Body = body
+			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || !got.Complete || got.Publication.StandingZero == nil || len(got.Findings) != 0 {
+				t.Fatalf("bounded historical variation lost current proof: complete=%v reason=%s err=%v", got.Complete, got.Reason, err)
+			}
+		})
+	}
+}
+
+func TestHostedStandingZeroHistoricalCheckpointPreservesBaselineProof(t *testing.T) {
+	changes := map[string]func(*HostedPublicationSnapshot, *HostedPublicationSnapshot){
+		"valid original root annotation": func(_, _ *HostedPublicationSnapshot) {},
+		"missing baseline":               func(_, b *HostedPublicationSnapshot) { *b = HostedPublicationSnapshot{} },
+		"incomplete baseline":            func(_, b *HostedPublicationSnapshot) { b.Complete = false },
+		"changed root body":              func(s, _ *HostedPublicationSnapshot) { s.ReviewComments[0].Body += "\nNew finding." },
+		"missing original root":          func(_, b *HostedPublicationSnapshot) { b.ReviewComments = []ReviewComment{} },
+		"changed root actor":             func(_, b *HostedPublicationSnapshot) { b.ReviewComments[0].Author.ID++ },
+		"changed review body":            func(s, _ *HostedPublicationSnapshot) { s.Reviews[0].Body += "\nChanged inventory." },
+		"missing ack":                    func(s, _ *HostedPublicationSnapshot) { s.IssueComments = s.IssueComments[:2] },
+		"foreign ack actor":              func(s, _ *HostedPublicationSnapshot) { s.IssueComments[2].Author.ID++ },
+		"foreign summary actor":          func(s, _ *HostedPublicationSnapshot) { s.IssueComments[1].Author.ID++ },
+		"late summary":                   func(s, _ *HostedPublicationSnapshot) { s.IssueComments[1].UpdatedAt = s.ObservedAt.Add(time.Second) },
+		"incomplete capture":             func(s, _ *HostedPublicationSnapshot) { s.Complete = false },
+		"missing source head": func(s, _ *HostedPublicationSnapshot) {
+			s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, " and "+strings.Repeat("c", 40)+".", " and "+strings.Repeat("d", 40)+".", 1)
+		},
+		"missing run": func(s, _ *HostedPublicationSnapshot) {
+			s.IssueComments[1].Body = strings.Replace(s.IssueComments[1].Body, standingTestRun, "not-a-run", 1)
+		},
+		"reused historical run": func(s, _ *HostedPublicationSnapshot) {
+			old := s.IssueComments[1]
+			old.ID += 100
+			old.UpdatedAt = old.CreatedAt
+			s.IssueComments = append(s.IssueComments, old)
+		},
+		"unknown submitted inventory": func(s, _ *HostedPublicationSnapshot) {
+			review := s.Reviews[0]
+			review.ID += 100
+			review.HeadSHA = strings.Repeat("c", 40)
+			review.SubmittedAt = s.IssueComments[1].UpdatedAt
+			review.Body = "Unknown current review inventory."
+			s.Reviews = append(s.Reviews, review)
+		},
+		"positive submitted inventory": func(s, _ *HostedPublicationSnapshot) {
+			review := s.Reviews[0]
+			review.ID += 100
+			review.HeadSHA = strings.Repeat("c", 40)
+			review.SubmittedAt = s.IssueComments[1].UpdatedAt
+			review.Body = "**Actionable comments posted: 1**"
+			s.Reviews = append(s.Reviews, review)
+		},
+
+		"duplicate recent": func(s, _ *HostedPublicationSnapshot) { s.IssueComments[1].Body += "\n" + s.IssueComments[1].Body },
+		"duplicate risk": func(s, _ *HostedPublicationSnapshot) {
+			body := s.IssueComments[1].Body
+			s.IssueComments[1].Body += "\n" + body[strings.LastIndex(body, "<details>\n<summary><strong>Merge Risk:"):]
+		},
+		"duplicate status": func(s, _ *HostedPublicationSnapshot) {
+			s.IssueComments[1].Body += "\n" + standingStatusStart + "\nNo actionable comments were generated in the recent review.\n" + standingStatusEnd
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			s, b, intent, poster, bot, earliest := annotationBaselineFixture(t)
+			s.IssueComments[1].Body = standingTestHistoricalCheckpoint(s.IssueComments[1].Body)
+			change(&s, &b)
+			before, beforeBase := append([]IssueComment(nil), s.IssueComments...), slices.Clone(b.ReviewComments)
+			strict, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || strict.Complete {
+				t.Fatal("historical prose bypassed original-root baseline requirement", strict.Reason, err)
+			}
+			got, err := ExtractHostedFindingsWithBaseline(s, b, intent, poster, bot, earliest)
+			want := name == "valid original root annotation"
+			if err != nil || got.Complete != want || (got.Publication.StandingZero != nil) != want {
+				t.Fatalf("historical prose changed baseline proof: complete=%v reason=%s err=%v", got.Complete, got.Reason, err)
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) || !reflect.DeepEqual(beforeBase, b.ReviewComments) {
+				t.Fatal("baseline proof rewrote original captures")
+			}
+		})
+	}
+}
+
+func TestHostedStandingZeroHistoricalCheckpointEnvelopeContinuity(t *testing.T) {
+	const releaseStart = "<!-- This is an auto-generated comment: release notes by coderabbit.ai -->"
+	const releaseEnd = "<!-- end of auto-generated comment: release notes by coderabbit.ai -->"
+	for name, change := range map[string]func(string) string{
+		"reviewer sibling dd immediately after release start": func(b string) string {
+			return strings.Replace(b, releaseStart, releaseStart+"\n</dd><dd>", 1)
+		},
+		"reviewer differently labelled root immediately after release start": func(b string) string {
+			return strings.Replace(b, releaseStart, releaseStart+"\n</dd></dl></details><details><summary><strong>Current review findings</strong></summary><dl><dd>", 1)
+		},
+		"reviewer unrelated root immediately after release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl></details>\n<details>\n<summary><strong>Unrelated section</strong></summary>\n<dl>\n<dd>", 1)
+		},
+
+		"sibling dd before claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "</dd><dd>\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"sibling dd before release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, "</dd><dd>\n"+releaseEnd, 1)
+		},
+		"sibling dl before claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "</dd></dl><dl><dd>\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"sibling Summary before claim": func(b string) string {
+			return strings.Replace(b, standingHistoricalCheckpointTest, "</dd></dl></details><details><summary><strong>Summary</strong></summary><dl><dd>\n"+standingHistoricalCheckpointTest, 1)
+		},
+		"sibling dd after release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd><dd>", 1)
+		},
+		"sibling dl after release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl><dl><dd>", 1)
+		},
+		"sibling Summary after release end": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl></details><details><summary><strong>Summary</strong></summary><dl><dd>", 1)
+		},
+		"closed Summary then root prose and new Summary": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl></details>\nProse outside the owning Summary.\n<details>\n<summary><strong>Summary</strong></summary>\n<dl>\n<dd>", 1)
+		},
+		"closed Summary then new labelled root": func(b string) string {
+			return strings.Replace(b, releaseEnd, releaseEnd+"\n</dd></dl></details>\n<details>\n<summary><strong>Different result</strong></summary>\n<dl>\n<dd>", 1)
+		},
+		"sibling dd before release start": func(b string) string {
+			return strings.Replace(b, releaseStart, "</dd><dd>\n"+releaseStart, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, intent, poster, bot, earliest := standingTestFixture(t)
+			s.IssueComments[1].Body = change(standingTestHistoricalCheckpoint(s.IssueComments[1].Body))
+			before := slices.Clone(s.IssueComments)
+			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			if err != nil || got.Complete || got.Publication.StandingZero != nil || got.Publication.State == "attributed" {
+				t.Fatalf("a historical exemption crossed its owning Summary/body: complete=%v reason=%s err=%v", got.Complete, got.Reason, err)
+			}
+			if !reflect.DeepEqual(before, s.IssueComments) {
+				t.Fatal("continuity rejection changed source")
 			}
 		})
 	}

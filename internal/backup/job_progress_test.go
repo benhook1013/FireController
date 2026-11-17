@@ -11,10 +11,10 @@ func TestJobProgressBackupRoundTripPreservesIndependentHistory(t *testing.T) {
 	jobs := restoreRows(t, f.store.DB(), `SELECT id FROM jobs LIMIT 1`)
 	jobID := jobs[0][0].(string)
 	base := "/api/v1/projects/" + f.project + "/jobs/" + jobID
-	f.request(t, "POST", base+"/updates", map[string]any{"expected_job_revision": 1, "body": "Independent retained progress <literal> 雪", "evidence": []string{"ref-first", "ref-second"}})
-	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 0, "items": []map[string]any{{"id": "stable-one", "text": "Initial plan", "done": false}, {"id": "stable-two", "text": "Next plan", "done": true}}})
-	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 1, "expected_revision": 1, "items": []map[string]any{{"id": "stable-two", "text": "Next plan", "done": false}}})
-	tables := []string{"jobs", "job_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "events", "receipts"}
+	f.request(t, "PATCH", base, map[string]any{"expected_revision": 1, "progress": map[string]any{"summary": "Independent retained progress <literal> 雪", "evidence": []string{"ref-first", "ref-second"}}})
+	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 2, "expected_revision": 0, "items": []map[string]any{{"id": "stable-one", "text": "Initial plan", "done": false}, {"id": "stable-two", "text": "Next plan", "done": true}}})
+	f.request(t, "PUT", base+"/checklist", map[string]any{"expected_job_revision": 2, "expected_revision": 1, "items": []map[string]any{{"id": "stable-two", "text": "Next plan", "done": false}}})
+	tables := []string{"jobs", "job_history", "job_progress", "job_progress_history", "job_checkpoints", "job_updates", "job_checklists", "job_checklist_history", "events", "receipts"}
 	original := map[string][][]any{}
 	for _, name := range tables {
 		original[name] = restoreRows(t, f.store.DB(), `SELECT * FROM `+name+` ORDER BY rowid`)

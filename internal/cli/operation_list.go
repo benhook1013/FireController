@@ -8,7 +8,7 @@ import (
 )
 
 func parseOperationList(call invocation, args []string) (invocation, bool) {
-	o := client.ReviewOperationsOptions{PageOptions: client.PageOptions{Limit: 5}, Status: "pending"}
+	o := client.ReviewOperationsOptions{PageOptions: client.PageOptions{Limit: 5}, Status: "attention"}
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		flag, value, assigned := strings.Cut(args[i], "=")
@@ -17,13 +17,13 @@ func parseOperationList(call invocation, args []string) (invocation, bool) {
 		}
 		seen[flag] = true
 		if flag == "--all" {
-			if assigned {
+			if assigned || seen["--status"] {
 				return call, false
 			}
 			o.Status = "all"
 			continue
 		}
-		if flag != "--pr" && flag != "--channel" && flag != "--limit" && flag != "--cursor" {
+		if flag != "--pr" && flag != "--channel" && flag != "--status" && flag != "--limit" && flag != "--cursor" || flag == "--status" && seen["--all"] {
 			return call, false
 		}
 		if !assigned {
@@ -45,6 +45,8 @@ func parseOperationList(call invocation, args []string) (invocation, bool) {
 			o.PullNumber = n
 		case "--channel":
 			o.Channel = value
+		case "--status":
+			o.Status = value
 		case "--limit":
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 1 || strconv.Itoa(n) != value {

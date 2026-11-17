@@ -26,18 +26,63 @@ type hostedObserverEntry struct {
 	status                      HostedObserverStatus
 	active                      int
 	stopped                     bool
+	forget                      bool
 }
 
 // HostedObserverCheck binds one in-process pass. Its private identity prevents
 // a late completion from changing another attempt's current diagnostics.
+type hostedObserverKey struct{ capability, attempt string }
+type hostedAccountKey struct{ provider, account string }
+
+func (e *Engine) hostedRecoveryAccount(capability string) (hostedAccountKey, bool) {
+	if e == nil {
+		return hostedAccountKey{}, false
+	}
+	c, ok := e.capabilities[capability]
+	return hostedAccountKey{c.Provider, c.Account}, ok && slices.Contains(c.Channels, "hosted")
+}
+
+// HostedRecoveryNotBefore is a process-local provider response deadline shared
+// by configured capabilities for that exact account, never inferred from age.
+func (e *Engine) HostedRecoveryNotBefore(capability string) time.Time {
+	key, ok := e.hostedRecoveryAccount(capability)
+	if !ok {
+		return time.Time{}
+	}
+	e.hostedObserverMu.Lock()
+	defer e.hostedObserverMu.Unlock()
+	return e.hostedAccountNext[key]
+}
+
+func (e *Engine) DelayHostedRecoveryAccount(capability string, until time.Time) {
+	key, ok := e.hostedRecoveryAccount(capability)
+	if !ok || hostedObserverTime(until) == "" {
+		return
+	}
+	e.hostedObserverMu.Lock()
+	defer e.hostedObserverMu.Unlock()
+	if e.hostedAccountNext == nil {
+		e.hostedAccountNext = map[hostedAccountKey]time.Time{}
+	}
+	if until.After(e.hostedAccountNext[key]) {
+		e.hostedAccountNext[key] = until
+	}
+	for id, entry := range e.hostedObservers {
+		account, known := e.hostedRecoveryAccount(id.capability)
+		if known && account == key && !entry.stopped && (entry.status.NextCheckAt == "" || until.After(mustWaitTime(entry.status.NextCheckAt))) {
+			entry.status.NextCheckAt = hostedObserverTime(e.hostedAccountNext[key])
+		}
+	}
+}
+
 type HostedObserverCheck struct {
-	capability string
-	entry      *hostedObserverEntry
-	finished   bool
+	key      hostedObserverKey
+	entry    *hostedObserverEntry
+	finished bool
 }
 
 // BeginHostedObserver is called by the trusted runtime after selecting an
-// original attempt. Storage is bounded to one entry per configured capability.
+// original attempt. Storage is bounded to the pending admission limit per capability.
 func (e *Engine) BeginHostedObserver(capabilityID, project, operation, attempt string) *HostedObserverCheck {
 	if e == nil || !identifier.MatchString(project) || !hostedObservationID(operation, "review_operation_") || !hostedObservationID(attempt, "review_attempt_") {
 		return nil
@@ -49,18 +94,33 @@ func (e *Engine) BeginHostedObserver(capabilityID, project, operation, attempt s
 	e.hostedObserverMu.Lock()
 	defer e.hostedObserverMu.Unlock()
 	if e.hostedObservers == nil {
-		e.hostedObservers = make(map[string]*hostedObserverEntry)
+		e.hostedObservers = make(map[hostedObserverKey]*hostedObserverEntry)
 	}
-	entry := e.hostedObservers[capabilityID]
-	if entry == nil || entry.project != project || entry.operation != operation || entry.attempt != attempt {
+	key := hostedObserverKey{capabilityID, attempt}
+	for oldKey, old := range e.hostedObservers {
+		if oldKey.capability == capabilityID && old.project == project && old.operation == operation && old.attempt != attempt {
+			delete(e.hostedObservers, oldKey)
+		}
+	}
+	entry := e.hostedObservers[key]
+	if entry == nil || entry.forget || entry.project != project || entry.operation != operation || entry.attempt != attempt {
+		count := 0
+		for k := range e.hostedObservers {
+			if k.capability == capabilityID {
+				count++
+			}
+		}
+		if entry == nil && count >= maxHostedRecoveryCandidates {
+			return nil
+		}
 		entry = &hostedObserverEntry{project: project, operation: operation, attempt: attempt}
-		e.hostedObservers[capabilityID] = entry
+		e.hostedObservers[key] = entry
 	}
 	entry.active++
 	entry.stopped = false
 	entry.status.State = "checking"
 	entry.status.NextCheckAt = ""
-	return &HostedObserverCheck{capability: capabilityID, entry: entry}
+	return &HostedObserverCheck{key: key, entry: entry}
 }
 
 // FinishHostedObserver records a completed pass. sourceAt is supplied only for
@@ -72,12 +132,16 @@ func (e *Engine) FinishHostedObserver(check *HostedObserverCheck, at, sourceAt t
 	}
 	e.hostedObserverMu.Lock()
 	defer e.hostedObserverMu.Unlock()
-	if e.hostedObservers[check.capability] != check.entry || check.finished {
+	if e.hostedObservers[check.key] != check.entry || check.finished {
 		return
 	}
 	check.finished = true
 	entry := check.entry
 	entry.active--
+	if entry.forget && entry.active == 0 {
+		delete(e.hostedObservers, check.key)
+		return
+	}
 	if value := hostedObserverTime(at); value != "" {
 		entry.status.LastCheckAt = value
 	}
@@ -106,7 +170,10 @@ func (e *Engine) ScheduleHostedObserver(check *HostedObserverCheck, next time.Ti
 	}
 	e.hostedObserverMu.Lock()
 	defer e.hostedObserverMu.Unlock()
-	if e.hostedObservers[check.capability] == check.entry && !check.entry.stopped {
+	if e.hostedObservers[check.key] == check.entry && !check.entry.stopped {
+		if key, known := e.hostedRecoveryAccount(check.key.capability); known && e.hostedAccountNext[key].After(next) {
+			next = e.hostedAccountNext[key]
+		}
 		check.entry.status.NextCheckAt = hostedObserverTime(next)
 	}
 }
@@ -119,7 +186,7 @@ func (e *Engine) StopHostedObserver(check *HostedObserverCheck, failure error) {
 	}
 	e.hostedObserverMu.Lock()
 	defer e.hostedObserverMu.Unlock()
-	if e.hostedObservers[check.capability] != check.entry {
+	if e.hostedObservers[check.key] != check.entry {
 		return
 	}
 	entry := check.entry
@@ -130,6 +197,23 @@ func (e *Engine) StopHostedObserver(check *HostedObserverCheck, failure error) {
 	}
 	if entry.active == 0 {
 		entry.status.State = "stopped"
+	}
+}
+
+// ForgetHostedObserver retires only this exact ended attempt's local health.
+// An overlapping pass may finish, but cannot recreate its retired entry.
+func (e *Engine) ForgetHostedObserver(check *HostedObserverCheck) {
+	if e == nil || check == nil {
+		return
+	}
+	e.hostedObserverMu.Lock()
+	defer e.hostedObserverMu.Unlock()
+	if e.hostedObservers[check.key] != check.entry {
+		return
+	}
+	check.entry.forget = true
+	if check.entry.active == 0 {
+		delete(e.hostedObservers, check.key)
 	}
 }
 
@@ -144,7 +228,7 @@ func (e *Engine) observerStatus(o Operation) *HostedObserverStatus {
 		if c.Fingerprint != o.CapabilityFingerprint {
 			continue
 		}
-		entry := e.hostedObservers[id]
+		entry := e.hostedObservers[hostedObserverKey{id, o.AttemptID}]
 		if entry != nil && entry.project == o.ProjectID && entry.operation == o.ID && entry.attempt == o.AttemptID {
 			*result = entry.status
 			break
@@ -181,7 +265,7 @@ func hostedObserverReason(reason string) string {
 	switch reason {
 	case "":
 		return ""
-	case "comparison_unproven", "observation_pending", "already_completed", "trigger_recording_pending", "publication_pending", "hosted_evidence_observed", "settlement_pending", "hosted_evidence_recovered", "observation_unavailable", "hosted_observation_capacity", "source_unavailable", "repository_changed", "observation_incomplete", "trigger_not_proven", "conflicting_trigger_evidence", "incomplete_collection", "exact_trigger_found", "trigger_identity_changed", "publication_not_proven", "invalid_publication_evidence", "hosted_review_rate_limited", "conflicting_publication_evidence", "hosted_finished_inventory_unproven", "attribution_window_closed", "missing_publication_batches", "invalid_actionable_count", "root_binding_mismatch", "root_count_mismatch", "publication_inventory_attributed":
+	case "observation_pending", "already_completed", "trigger_recording_pending", "publication_pending", "hosted_evidence_observed", "settlement_pending", "hosted_evidence_recovered", "observation_unavailable", "hosted_observation_capacity", "source_unavailable", "repository_changed", "observation_incomplete", "trigger_not_proven", "conflicting_trigger_evidence", "incomplete_collection", "exact_trigger_found", "trigger_identity_changed", "publication_not_proven", "invalid_publication_evidence", "hosted_review_rate_limited", "hosted_review_skipped", "conflicting_publication_evidence", "hosted_finished_inventory_unproven", HostedFinishedIncompleteReason, "attribution_window_closed", "missing_publication_batches", "invalid_actionable_count", "root_binding_mismatch", "root_count_mismatch", "publication_inventory_attributed", "comparison_unproven", "standing_baseline_unproven", "standing_run_not_new", "capture_invalid", "finding_inventory_incomplete", "finding_inventory_limit", "evidence_unavailable", "source_changed":
 		return reason
 	}
 	return "observation_unproven"

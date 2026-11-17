@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -86,8 +87,80 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 	target, _ := url.Parse("http://" + daemon.address)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = -1
+	// Hold successful responses from the real daemon at each independent public
+	// boundary. Controls are disposable loopback fixture state, not API writes.
+	type publicResponseGate struct {
+		arrived, release chan struct{}
+		arrivedOnce      sync.Once
+		fail             bool
+	}
+	var gateMu sync.Mutex
+	gates := map[string]*publicResponseGate{}
+	gateControl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		kind := r.URL.Query().Get("kind")
+		if kind != "location" && kind != "snapshot" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gateMu.Lock()
+		gate := gates[kind]
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/arm" && gate == nil:
+			gates[kind] = &publicResponseGate{arrived: make(chan struct{}), release: make(chan struct{}), fail: r.URL.Query().Get("fail") == "1"}
+			gateMu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "POST" && r.URL.Path == "/release" && gate != nil:
+			delete(gates, kind)
+			close(gate.release)
+			gateMu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "GET" && r.URL.Path == "/arrived" && gate != nil:
+			gateMu.Unlock()
+			timer := time.NewTimer(stepTimeout)
+			defer timer.Stop()
+			select {
+			case <-gate.arrived:
+				w.WriteHeader(http.StatusNoContent)
+			case <-r.Context().Done():
+			case <-ctx.Done():
+			case <-timer.C:
+				w.WriteHeader(http.StatusGatewayTimeout)
+			}
+		default:
+			gateMu.Unlock()
+			w.WriteHeader(http.StatusConflict)
+		}
+	}))
+	t.Cleanup(func() { gateControl.CloseClientConnections(); gateControl.Close() })
 	var compressed atomic.Int64
 	proxy.ModifyResponse = func(response *http.Response) error {
+		kind := ""
+		switch response.Request.URL.Path {
+		case "/api/v1/public/project-locations/packaged-smoke":
+			kind = "location"
+		case "/api/v1/public/projects/public-smoke":
+			kind = "snapshot"
+		}
+		gateMu.Lock()
+		gate := gates[kind]
+		gateMu.Unlock()
+		if gate != nil && response.StatusCode == http.StatusOK {
+			gate.arrivedOnce.Do(func() { close(gate.arrived) })
+			timer := time.NewTimer(stepTimeout)
+			defer timer.Stop()
+			select {
+			case <-gate.release:
+				if gate.fail {
+					return io.ErrUnexpectedEOF
+				}
+			case <-response.Request.Context().Done():
+				return response.Request.Context().Err()
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return io.ErrUnexpectedEOF
+			}
+		}
 		if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.Path, "/api/v1/public/projects/") || strings.HasSuffix(response.Request.URL.Path, "/events") {
 			return nil
 		}
@@ -111,6 +184,7 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 		compressed.Add(1)
 		return nil
 	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) { w.WriteHeader(http.StatusServiceUnavailable) }
 	gateway := httptest.NewServer(proxy)
 	t.Cleanup(func() { gateway.CloseClientConnections(); gateway.Close() })
 	executable := os.Getenv("FC_BROWSER_EXECUTABLE")
@@ -131,7 +205,7 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 		t.Fatal("PLAYWRIGHT_BROWSERS_PATH must be absolute")
 	}
 	env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserPath)
-	config := map[string]string{"origin": gateway.URL, "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "executable": executable, "proxy": browserDeny.URL}
+	config := map[string]string{"origin": gateway.URL, "gate_origin": gateControl.URL, "public_address": "packaged-smoke", "project": project, "worker": worker, "other_worker": otherWorker, "instance": daemon.instance, "admin_file": adminFile, "executable": executable, "proxy": browserDeny.URL}
 	if directory := os.Getenv("FC_PUBLIC_BROWSER_PROOF_DIR"); directory != "" {
 		if !filepath.IsAbs(directory) {
 			t.Fatal("FC_PUBLIC_BROWSER_PROOF_DIR must be absolute")
@@ -182,36 +256,53 @@ func TestPackagedPublicBrowserSmoke(t *testing.T) {
 	}
 	if err != nil || stderr.len() != 0 || output.len() > 64<<10 {
 		phase := "driver-start-or-cleanup"
+		var pageErrors, privateRequests, pageWrites, externalRequests int
 		for _, line := range bytes.Split(output.bytes(), []byte("\n")) {
-			var record struct{ State, Phase string }
+			var record struct {
+				State, Phase     string
+				PageErrors       int `json:"page_errors"`
+				PrivateRequests  int `json:"private_requests"`
+				PageWrites       int `json:"page_writes"`
+				ExternalRequests int `json:"external_requests"`
+			}
 			if json.Unmarshal(line, &record) == nil && record.State == "FAIL" {
-				for _, allowed := range []string{"configuration", "fixture", "launch", "desktop", "private-quiet", "live-summary", "frozen-history", "phone", "unpublish"} {
+				for _, allowed := range []string{"configuration", "fixture", "launch", "pending-location-desktop", "pending-snapshot-desktop", "pending-location-phone", "pending-snapshot-phone", "initial-error", "retry-pending", "retry-loaded", "desktop", "private-quiet", "live-summary", "frozen-history", "phone", "public-window", "window-private-quiet", "window-history", "unpublish", "unpublish-retained", "unpublish-frozen", "unpublish-legacy", "privacy-final"} {
 					if record.Phase == allowed {
 						phase = allowed
+						pageErrors, privateRequests, pageWrites, externalRequests = record.PageErrors, record.PrivateRequests, record.PageWrites, record.ExternalRequests
 					}
 				}
 			}
 		}
-		t.Fatalf("public browser failed at phase=%s; raw fixture output withheld", phase)
+		t.Fatalf("public browser failed at phase=%s page_errors=%d private_requests=%d page_writes=%d external_requests=%d; raw fixture output withheld", phase, pageErrors, privateRequests, pageWrites, externalRequests)
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.bytes()), []byte("\n"))
 	var result struct {
-		State            string `json:"state"`
-		FixtureCalls     int    `json:"fixture_calls"`
-		PublicRequests   int    `json:"public_requests"`
-		PrivateRequests  int    `json:"private_requests"`
-		PageWrites       int    `json:"page_writes"`
-		PageErrors       int    `json:"page_errors"`
-		ExternalRequests int    `json:"external_requests"`
-		Desktop          int    `json:"desktop"`
-		Phone            int    `json:"phone"`
+		State              string `json:"state"`
+		FixtureCalls       int    `json:"fixture_calls"`
+		PublicRequests     int    `json:"public_requests"`
+		PrivateRequests    int    `json:"private_requests"`
+		PageWrites         int    `json:"page_writes"`
+		PageErrors         int    `json:"page_errors"`
+		ExternalRequests   int    `json:"external_requests"`
+		Desktop            int    `json:"desktop"`
+		Phone              int    `json:"phone"`
+		WindowRounds       int    `json:"window_rounds"`
+		WindowHasMore      bool   `json:"window_has_more"`
+		WindowQuiet        bool   `json:"window_private_quiet"`
+		WindowHistory      bool   `json:"window_history"`
+		PendingChecks      int    `json:"pending_checks"`
+		RetryRecovered     bool   `json:"retry_recovered"`
+		UnpublishFallbacks bool   `json:"unpublish_fallbacks"`
 	}
-	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureCalls != 10 || result.PrivateRequests != 0 || result.PageWrites != 0 || result.PageErrors != 0 || result.ExternalRequests != 0 || result.Desktop != 1280 || result.Phone != 390 {
+	// The window observation and subsequent private-only job edit add exactly
+	// two fixture writes; anonymous page clients still perform no writes.
+	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.FixtureCalls != 12 || result.PrivateRequests != 0 || result.PageWrites != 0 || result.PageErrors != 0 || result.ExternalRequests != 0 || result.Desktop != 1280 || result.Phone != 390 || result.WindowRounds != 100 || !result.WindowHasMore || !result.WindowQuiet || !result.WindowHistory || result.PendingChecks != 5 || !result.RetryRecovered || !result.UnpublishFallbacks {
 		t.Fatal("invalid public browser result")
 	}
 	daemon.stop(t)
 	if external.Load() != 0 || compressed.Load() < 6 {
 		t.Fatal("public browser attempted external HTTP or did not exercise compressed public JSON")
 	}
-	t.Logf("public browser passed total=%s desktop=1280 phone=390 fixture_calls=%d public_requests=%d compressed_json=%d private_requests=0 page_writes=0 external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.FixtureCalls, result.PublicRequests, compressed.Load(), engine.Load())
+	t.Logf("public browser passed total=%s desktop=1280 phone=390 pending_checks=5 retry_recovered=true unpublish_fallbacks=true fixture_calls=%d public_requests=%d compressed_json=%d window_rounds=100 window_has_more=true window_private_quiet=true window_history=true private_requests=0 page_writes=0 external_http=0 blocked_engine_requests=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.FixtureCalls, result.PublicRequests, compressed.Load(), engine.Load())
 }

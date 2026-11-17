@@ -16,9 +16,9 @@ import (
 
 const (
 	MessageWaitDefaultLimit   = 20
-	MessageWaitDefaultSeconds = 25
+	MessageWaitDefaultSeconds = 300
 	MessageWaitMaxLimit       = 100
-	MessageWaitMaxSeconds     = 60
+	MessageWaitMaxSeconds     = 900
 	messageWaitFrameBytes     = 1 << 20
 )
 
@@ -40,9 +40,9 @@ func MessageWaitBudget(waitSeconds int) time.Duration {
 var errMessageWaitExpired = errors.New("message wait expired")
 
 // WaitForMessages owns one incoming-message stream until the first page with
-// message.sent or a quiet timeout. It never acknowledges messages and
+// message.sent or assignment events or a quiet timeout. It never acknowledges messages and
 // reconnects within the original call budget; the caller retains its cursor if any error occurs. Typed zero
-// limit/waitSeconds select 20 events and 25 seconds respectively.
+// limit/waitSeconds select 20 events and 300 seconds respectively.
 func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, waitSeconds int) (MessageEventPage, error) {
 	if limit == 0 {
 		limit = MessageWaitDefaultLimit
@@ -112,15 +112,17 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 		}
 		u.Path, _ = url.PathUnescape(escaped)
 		u.RawPath = escaped
-		u.RawQuery = url.Values{"cursor": {lastCursor}, "limit": {strconv.Itoa(limit)}}.Encode()
+		u.RawQuery = url.Values{"cursor": {lastCursor}, "limit": {strconv.Itoa(limit)}, "include_assignments": {"true"}}.Encode()
 		r, err := http.NewRequestWithContext(stream, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return MessageEventPage{}, validation()
 		}
 		r.Header.Set("Accept", "text/event-stream")
+		r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
 		r.Header.Set("Authorization", "Bearer "+c.token)
 		r.Header.Set("X-FC-Instance", c.identity.InstanceID)
 		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+		r.Header.Set("X-FC-Session", c.sessionID)
 		response, err := ownedClient.Do(r)
 		if err != nil {
 			if stream.Err() != nil {
@@ -199,7 +201,7 @@ func (c *Client) WaitForMessages(ctx context.Context, cursor string, limit, wait
 					return MessageEventPage{}, invalidResponse()
 				}
 				previous = item.Sequence
-				if item.Type == "message.sent" {
+				if item.Type == "message.sent" || item.Type == "job.assigned" || item.Type == "job.unassigned" {
 					sent = append(sent, item)
 				}
 			}

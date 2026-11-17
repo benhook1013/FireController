@@ -37,7 +37,7 @@ func routePolicyReceiver(t *testing.T, f *attemptFixture, sourceID string) (Atte
 	adjudicationComplete(t, f, a)
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-policy-finalize-receiver", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
 	adjudicationReceipt(t, raw, err, receipt.ID, "finalized", 1)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	reader := &refreshTestReader{}
 	queued := refreshEnqueue(t, f, "route-policy-observe", SourceRefreshRequest{ExpectedConfigurationRevision: 2, PullNumber: 4, HeadSHA: anchor.CandidateSHA})
 	cancel, done := refreshStart(t, f, reader)

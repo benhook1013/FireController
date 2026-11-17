@@ -141,6 +141,9 @@ func replace(store *core.Store) http.HandlerFunc {
 			if old.Revision != req.ExpectedRevision {
 				return nil, conflict(old.Revision)
 			}
+			if err := validateWorkerOrder(ctx, tx, scope.ProjectID, c.WorkerOrder); err != nil {
+				return nil, err
+			}
 			if equalConfig(old.Config(), c) {
 				return Receipt{scope.ProjectID, old.Revision, "unchanged"}, nil
 			}

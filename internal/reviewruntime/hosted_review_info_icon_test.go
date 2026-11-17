@@ -19,7 +19,7 @@ func TestRecoverHostedReviewInfoIconKeepsOriginalAttemptAndFullFindings(t *testi
 		root.Body = hostedRetainInline(i, fmt.Sprintf("Preserve finding %d.", i))
 		reader.record.Snapshot.ReviewComments = append(reader.record.Snapshot.ReviewComments, root)
 	}
-	beforeCredit := nativeHostedCredit(t, f)
+	beforeCredit := recoveryRuntimeCount(t, f, "review_round_completions")
 	got, err := recoverRuntime(t, f, captures, a, reader)
 	if err != nil || got.State != "completed" || got.EvidenceID == "" || got.TriggerCommentID != 100 {
 		t.Fatal("decorated metadata prevented same-attempt recovery", got, err)
@@ -37,7 +37,7 @@ func TestRecoverHostedReviewInfoIconKeepsOriginalAttemptAndFullFindings(t *testi
 			t.Fatal("recovery changed original finding text")
 		}
 	}
-	if recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || nativeHostedCredit(t, f) != beforeCredit {
+	if recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != beforeCredit {
 		t.Fatal("recovery duplicated evidence, retained reservation or invented round credit")
 	}
 	calls := len(reader.calls)

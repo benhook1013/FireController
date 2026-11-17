@@ -29,17 +29,8 @@ func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	phaseStarted := time.Now()
-	store, err := core.Open(context.Background(), dir)
-	if err != nil {
-		t.Fatalf("fixture store open after %s: %v", time.Since(phaseStarted), err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openHTTPFixtureStore(t, dir)
 	t.Logf("fixture store open completed in %s", time.Since(phaseStarted))
-	phaseStarted = time.Now()
-	if err := EnsureSchema(context.Background(), store); err != nil {
-		t.Fatalf("fixture execution schema after %s: %v", time.Since(phaseStarted), err)
-	}
-	t.Logf("fixture execution schema completed in %s", time.Since(phaseStarted))
 	phaseStarted = time.Now()
 	adminBytes, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
 	if err != nil {
@@ -53,7 +44,7 @@ func newHTTPFixtureWithPolicy(t *testing.T, configured bool) *httpFixture {
 	}
 	if configured {
 		for _, project := range []string{attemptProject, otherAttemptProject} {
-			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}, PausedChannels: []string{}}), stamp()); err != nil {
+			if _, err := store.DB().Exec(`INSERT INTO review_policy_config(project_id,revision,body_json,actor_id,created_at) VALUES(?,1,?,'synthetic-admin',?)`, project, encoded(Policy{RequiredChannels: []string{"cli", "hosted"}}), stamp()); err != nil {
 				t.Fatalf("fixture seed rows after %s: %v", time.Since(phaseStarted), err)
 			}
 		}

@@ -25,7 +25,7 @@ func TestRoundCumulativeV3UpgradePreservesLegacyRecordsUntilExplicitEdit(t *test
 			t.Fatal(err)
 		}
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 	before := roundTables(t, f)
 	var ddl string
 	if err := f.store.DB().QueryRow(`SELECT sql FROM sqlite_schema WHERE name='review_round_controls'`).Scan(&ddl); err != nil {
@@ -64,7 +64,7 @@ func TestRoundCumulativeV3UpgradePreservesLegacyRecordsUntilExplicitEdit(t *test
 	if err != nil || record.cumulative {
 		t.Fatal("upgrade changed legacy semantics", err)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 	roundGrant(t, f, 2, "cli", 1, 0, 2, "explicit-edit")
 	record, err = readRoundRecord(t.Context(), f.store.DB(), attemptProject, 2, "cli")
 	if err != nil || !record.cumulative || record.Epoch != 1 || record.Used != 1 || record.Dry != 1 || record.Maximum != 3 {
@@ -73,7 +73,7 @@ func TestRoundCumulativeV3UpgradePreservesLegacyRecordsUntilExplicitEdit(t *test
 	if err = f.store.DB().QueryRow(`SELECT body_json FROM review_round_changes WHERE revision=1`).Scan(&afterHistory); err != nil || afterHistory != originalHistory {
 		t.Fatal("explicit edit rewrote old history", err)
 	}
-	roundSnapshotValid(t, f)
+	adoptionValid(t, f)
 }
 
 func TestRoundCumulativeHistoryRejectsAlteredCutoffAndUnknownFormat(t *testing.T) {
@@ -84,7 +84,7 @@ func TestRoundCumulativeHistoryRejectsAlteredCutoffAndUnknownFormat(t *testing.T
 			a, id := roundCapture(t, f, 0, false)
 			roundFinalize(t, f, a, id, 0, false)
 			roundGrant(t, f, 2, "cli", 1, 0, 3, "limits")
-			roundSnapshotValid(t, f)
+			adoptionValid(t, f)
 			query := `UPDATE review_round_changes SET body_json=json_set(body_json,'$.control.used',2) WHERE revision=2`
 			if kind == "format" {
 				query = `UPDATE review_round_changes SET body_json=json_set(body_json,'$.format',3) WHERE revision=2`

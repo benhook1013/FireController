@@ -26,6 +26,10 @@ type comparisonWriter interface {
 // Evaluate exactly one native operation using the same retained authority as
 // the former all-history comparison loop. Missing capture remains an obligation.
 func deriveComparisonProof(ctx context.Context, q EvidenceQuery, project, id string) (comparisonProof, error) {
+	return deriveComparisonProofForVersion(ctx, q, project, id, "2")
+}
+
+func deriveComparisonProofForVersion(ctx context.Context, q EvidenceQuery, project, id, version string) (comparisonProof, error) {
 	if !identifier.MatchString(project) || !identifier.MatchString(id) {
 		return comparisonProof{}, adjudicationStorageError()
 	}
@@ -33,13 +37,27 @@ func deriveComparisonProof(ctx context.Context, q EvidenceQuery, project, id str
 	if err != nil {
 		return comparisonProof{}, err
 	}
+	proof, _, _, err := deriveComparisonProofFromOperation(ctx, q, project, id, version, operation)
+	return proof, err
+}
+
+// The supplied operation was read and validated by this caller in this same
+// transaction. Return the evidence already validated during derivation so a
+// snapshot-only caller need not deserialize and validate it a second time.
+// Nothing survives this synchronous call or is shared across operations.
+func deriveComparisonProofFromOperation(ctx context.Context, q EvidenceQuery, project, id, version string, operation Operation) (comparisonProof, ReviewEvidence, ReviewAdjudication, error) {
+	var evidence ReviewEvidence
+	var state ReviewAdjudication
+	if !identifier.MatchString(project) || !identifier.MatchString(id) || operation.ID != id || operation.ProjectID != project {
+		return comparisonProof{}, evidence, state, adjudicationStorageError()
+	}
 	proof := comparisonProof{operation: id, project: project, number: operation.PullNumber, channel: operation.Channel, state: "pending"}
 	if operation.State != "completed" || operation.Channel != "cli" && operation.Channel != "hosted" {
-		return proof, adjudicationStorageError()
+		return proof, evidence, state, adjudicationStorageError()
 	}
 	rows, err := q.QueryContext(ctx, `SELECT id,attempt_id FROM review_execution_evidence WHERE project_id=? AND operation_id=? ORDER BY id LIMIT 2`, project, id)
 	if err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	var evidenceID, evidenceAttempt string
 	found := 0
@@ -54,43 +72,43 @@ func deriveComparisonProof(ctx context.Context, q EvidenceQuery, project, id str
 	}
 	rows.Close()
 	if err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	if found == 0 {
-		return proof, nil
+		return proof, evidence, state, nil
 	}
 	if found != 1 || evidenceAttempt != operation.AttemptID {
-		return proof, adjudicationStorageError()
+		return proof, evidence, state, adjudicationStorageError()
 	}
-	evidence, state, err := loadReviewAdjudication(ctx, q, project, evidenceID)
+	evidence, state, err = loadReviewAdjudication(ctx, q, project, evidenceID)
 	if err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	attempt, err := readAttempt(ctx, q, project, operation.AttemptID)
 	if err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	var repositoryID int64
 	if err = q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	if validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || attempt.State != "completed" || operation.ConfigurationRevision < 1 ||
 		!identifier.MatchString(attempt.Provider) || !identifier.MatchString(attempt.Account) || !hash.MatchString(evidence.CapabilityFingerprint) || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || attempt.Anchor == nil || !validEvidenceAnchor(evidence.Anchor) || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA || evidence.Anchor.RepositoryID != repositoryID {
-		return proof, adjudicationStorageError()
+		return proof, evidence, state, adjudicationStorageError()
 	}
 	if operation.Channel == "hosted" && validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil {
-		return proof, adjudicationStorageError()
+		return proof, evidence, state, adjudicationStorageError()
 	}
-	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel)
+	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel, version == "1")
 	if err != nil {
-		return proof, err
+		return proof, evidence, state, err
 	}
 	if ready {
 		proof.state = "ready"
 	}
 	a := evidence.Anchor
 	proof.repository, proof.candidate, proof.base, proof.parent, proof.parentNumber, proof.baseRef, proof.evidence = a.RepositoryID, a.CandidateSHA, a.BaseSHA, a.ParentSHA, a.ParentPullNumber, a.BaseRef, evidence.ID
-	return proof, nil
+	return proof, evidence, state, nil
 }
 
 func refreshComparisonProof(ctx context.Context, q comparisonWriter, project, id string) error {
@@ -155,6 +173,10 @@ func validateComparisonProofSet(ctx context.Context, q EvidenceQuery) error {
 // ValidateComparisonProofs is full read-only maintenance validation, not a
 // per-command scan. Re-derive credit from actual journals, captures and routes.
 func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
+	var version string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&version); err != nil || version != "1" && version != "2" {
+		return adjudicationStorageError()
+	}
 	if err := validateComparisonProofSet(ctx, q); err != nil {
 		return err
 	}
@@ -181,7 +203,7 @@ func ValidateComparisonProofs(ctx context.Context, q EvidenceQuery) error {
 			return err
 		}
 		for _, stored := range page {
-			actual, err := deriveComparisonProof(ctx, q, stored.project, stored.operation)
+			actual, err := deriveComparisonProofForVersion(ctx, q, stored.project, stored.operation, version)
 			if err != nil {
 				return err
 			}

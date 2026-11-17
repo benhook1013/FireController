@@ -23,6 +23,25 @@ func sourceHTTPFixture(t *testing.T) *attemptFixture {
 	f.handler = mux
 	return f
 }
+
+func TestSourceResultWaitPreferenceFiniteMaximum(t *testing.T) {
+	for _, seconds := range []string{"0", "60", "900", "901"} {
+		r := httptest.NewRequest("POST", "/", nil)
+		r.Header.Set("Prefer", "wait="+seconds)
+		wait, err := sourceRefreshPreference(r)
+		if seconds == "901" {
+			if err == nil {
+				t.Fatal("unbounded wait accepted")
+			}
+		} else if err != nil || wait.String() != map[string]string{"0": "0s", "60": "1m0s", "900": "15m0s"}[seconds] {
+			t.Fatal("finite wait bound changed", seconds, wait, err)
+		}
+	}
+	r := httptest.NewRequest("POST", "/", nil)
+	if wait, err := sourceRefreshPreference(r); err != nil || wait != 2*time.Second {
+		t.Fatal("default source request wait changed", wait, err)
+	}
+}
 func sourceHTTPRequest(f *attemptFixture, method, path, token, key, body string, prefer *string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	if token != "" {
@@ -50,7 +69,7 @@ func TestSourceRefreshHTTPStrictScopedBoundariesAndImmediateReceipt(t *testing.T
 			t.Fatal("malformed source refresh accepted", w.Code, bad, w.Body.String())
 		}
 	}
-	for _, bad := range []string{"", "wait=-1", "wait=61", "wait=1.0", "wait=01", "wait=+1", "wait=2, wait=3", "respond-async"} {
+	for _, bad := range []string{"", "wait=-1", "wait=901", "wait=1.0", "wait=01", "wait=+1", "wait=2, wait=3", "respond-async"} {
 		w := sourceHTTPRequest(f, "POST", path, f.writer, "bad-prefer", body, &bad)
 		if w.Code != 400 {
 			t.Fatal("invalid Prefer header accepted", bad, w.Code)

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	holdmodel "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
@@ -235,7 +236,70 @@ func integrationSelectionWorker(t *testing.T, f *attemptFixture) {
 	}
 }
 
-func TestAdoptionHoldsIntegrationFinalPredecessorRecheck(t *testing.T) {
+func TestAdoptionHoldsIntegrationQueueSkipsPreserveUnrelatedHolds(t *testing.T) {
+	for _, mode := range []string{"closed", "tapered", "covered", "merged"} {
+		t.Run(mode, func(t *testing.T) {
+			var f *attemptFixture
+			reader := &refreshTestReader{}
+			switch mode {
+			case "covered":
+				var a Attempt
+				var id string
+				f, a, id, _ = coverageFixture(t, 0, false)
+				coverageFinalize(t, f, a, id, 0)
+			case "tapered":
+				f = adoptionFixture(t)
+				p := adoptionPrepared()
+				p.Tapered, p.InitialDry = true, 3
+				adoptRound(t, f, p, "tapered-predecessor")
+			case "closed":
+				f = selectionFixture(t)
+				zero := int64(0)
+				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-predecessor", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+					t.Fatal(err)
+				}
+			case "merged":
+				f = selectionFixture(t)
+				reader.pull = func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+					p := reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
+					if number == 2 {
+						p.State, p.Merged = "closed", true
+					}
+					return p, nil
+				}
+			}
+			integrationSelectionWorker(t, f)
+			baseline, _ := selectionEnqueue(t, f, "baseline-skip", "cli", nil)
+			selectionNext(t, f, reader)
+			selected := selectionRead(t, f, baseline.ID)
+			if selected.State != "selected" || roundOperation(t, f, selected.OperationID).PullNumber != 4 {
+				t.Fatal("fixture did not establish a skipped predecessor", selected)
+			}
+			// Settle the synthetic baseline before asking for a fresh selection;
+			// an unrelated inflight operation would independently stop selection.
+			baselineAttempt := f.start(t, attemptProject, Receipt{ID: selected.OperationID})
+			if _, err := f.e.Advance(t.Context(), attemptProject, baselineAttempt.ID, baselineAttempt.Revision, "cancelled", "synthetic-baseline-settled", ""); err != nil {
+				t.Fatal(err)
+			}
+			_, _, hold := integrationImportHold(t, f, 2)
+			beforeHold := integrationHoldDetail(t, f, hold.ID)
+			before := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`)
+			r, _ := selectionEnqueue(t, f, "held-skip", "cli", nil)
+			selectionNext(t, f, reader)
+			got := selectionRead(t, f, r.ID)
+			if got.State != "selected" || got.OperationID == "" || roundOperation(t, f, got.OperationID).PullNumber != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != before+1 {
+				t.Fatal("unrelated carried hold blocked independent work", got)
+			}
+			if after := integrationHoldDetail(t, f, hold.ID); !reflect.DeepEqual(beforeHold, after) || after.Status != "open" {
+				t.Fatal("queue skip changed the retained original hold", beforeHold, after)
+			}
+			_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "original-target-still-held", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+			integrationSourceHeld(t, err)
+		})
+	}
+}
+
+func TestAdoptionHoldsIntegrationAncestorObligationsStayLocal(t *testing.T) {
 	for _, mode := range []string{"covered", "closed", "tapered", "merged"} {
 		t.Run(mode, func(t *testing.T) {
 			f, prior, id, predecessor := coverageFixture(t, 0, false)
@@ -289,7 +353,11 @@ func TestAdoptionHoldsIntegrationFinalPredecessorRecheck(t *testing.T) {
 				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "merged-source-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 				integrationSourceHeld(t, err)
 			} else {
-				integrationSourceHeld(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, predecessors...))
+				if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, predecessors...); err != nil {
+					t.Fatal("ancestor adoption work blocked child review", err)
+				}
+				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "ancestor-target-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+				integrationSourceHeld(t, err)
 			}
 			if after := integrationHoldDetail(t, f, hold.ID); !reflect.DeepEqual(beforeHold, after) || after.Status != "open" {
 				t.Fatal("final guard changed the retained source hold", beforeHold, after)
@@ -309,7 +377,7 @@ func TestAdoptionHoldsIntegrationCaptureFinalizationPolicyAndResolution(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	input.Review.Findings, input.Review.ReportedFindings = []reviewprovider.ParsedFinding{}, 0
 	before := attemptState(t, f, a)
 	request, originalReceipt, hold := integrationImportHold(t, f, 2)
@@ -363,6 +431,49 @@ func TestAdoptionHoldsIntegrationCaptureFinalizationPolicyAndResolution(t *testi
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Status != "resolved" || detail.Resolution == nil || !reflect.DeepEqual(detail.Original, request.Batch.Obligations[0]) {
 		t.Fatal("resolution/replay lost immutable original or resolution history", w.Body.String())
 	}
+}
+
+func TestAdoptionHoldsIntegrationSelectionRechecksActualParent(t *testing.T) {
+	f := selectionFixture(t)
+	zero := int64(0)
+	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-prefix", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(1)
+	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "actual-parent-selection", Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
+		t.Fatal(err)
+	}
+	imported := false
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	reader := &refreshTestReader{parents: map[string]reviewprovider.Pull{"actual-parent": {Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), HeadRef: "actual-parent", BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}}, pull: func(ctx context.Context, _ string, number int64) (reviewprovider.Pull, error) {
+		// The first check found actual parent2 complete. A source hold arrives
+		// while its explicitly branch-dependent child is being read.
+		pull := reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
+		if number == 4 {
+			once.Do(func() { close(entered) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return reviewprovider.Pull{}, ctx.Err()
+			}
+			pull.HeadSHA, pull.BaseSHA, pull.BaseRef = strings.Repeat("c", 40), strings.Repeat("a", 40), "actual-parent"
+		}
+		return pull, nil
+	}}
+	r, _ := selectionEnqueue(t, f, "late-prefix-hold", "cli", nil)
+	cancel, done := selectionContentionStart(t, f, reader)
+	selectionContentionEntered(t, entered)
+	integrationImportHold(t, f, 2)
+	imported = true
+	close(release)
+	got := selectionContentionWait(t, f, r.ID, "selected")
+	selectionContentionStop(t, cancel, done)
+	if !imported || got.State != "selected" || got.OperationID == "" || roundOperation(t, f, got.OperationID).PullNumber != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("ancestor adoption work blocked exact child selection", got)
+	}
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "late-ancestor-target-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	integrationSourceHeld(t, err)
 }
 
 func TestAdoptionHoldsIntegrationSourceAssessmentsRemainProviderFree(t *testing.T) {
@@ -506,102 +617,6 @@ func TestAdoptionHoldsIntegrationSupervisorRetainsPossiblyDispatchedWork(t *test
 				t.Fatal("repeat scheduling retried possibly dispatched work", err)
 			}
 		})
-	}
-}
-
-func TestAdoptionHoldsIntegrationQueueSkipsPreserveUnrelatedHolds(t *testing.T) {
-	for _, mode := range []string{"closed", "tapered", "covered", "merged"} {
-		t.Run(mode, func(t *testing.T) {
-			var f *attemptFixture
-			reader := &refreshTestReader{}
-			switch mode {
-			case "covered":
-				var a Attempt
-				var id string
-				f, a, id, _ = coverageFixture(t, 0, false)
-				coverageFinalize(t, f, a, id, 0)
-			case "tapered":
-				f = adoptionFixture(t)
-				p := adoptionPrepared()
-				p.Tapered, p.InitialDry = true, 3
-				adoptRound(t, f, p, "tapered-predecessor")
-			case "closed":
-				f = selectionFixture(t)
-				zero := int64(0)
-				if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "closed-predecessor", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-					t.Fatal(err)
-				}
-			case "merged":
-				f = selectionFixture(t)
-				reader.pull = func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
-					p := reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
-					if number == 2 {
-						p.State, p.Merged = "closed", true
-					}
-					return p, nil
-				}
-			}
-			integrationSelectionWorker(t, f)
-			baseline, _ := selectionEnqueue(t, f, "baseline-skip", "cli", nil)
-			selectionNext(t, f, reader)
-			selected := selectionRead(t, f, baseline.ID)
-			if selected.State != "selected" || roundOperation(t, f, selected.OperationID).PullNumber != 4 {
-				t.Fatal("fixture did not establish a skipped predecessor", selected)
-			}
-			// Settle the synthetic baseline before asking for a fresh selection;
-			// an unrelated inflight operation would independently stop selection.
-			baselineAttempt := f.start(t, attemptProject, Receipt{ID: selected.OperationID})
-			if _, err := f.e.Advance(t.Context(), attemptProject, baselineAttempt.ID, baselineAttempt.Revision, "cancelled", "synthetic-baseline-settled", ""); err != nil {
-				t.Fatal(err)
-			}
-			_, _, hold := integrationImportHold(t, f, 2)
-			beforeHold := integrationHoldDetail(t, f, hold.ID)
-			before := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`)
-			r, _ := selectionEnqueue(t, f, "held-skip", "cli", nil)
-			selectionNext(t, f, reader)
-			got := selectionRead(t, f, r.ID)
-			if got.State != "selected" || got.OperationID == "" || roundOperation(t, f, got.OperationID).PullNumber != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != before+1 {
-				t.Fatal("unrelated carried hold blocked independent work", got)
-			}
-			if after := integrationHoldDetail(t, f, hold.ID); !reflect.DeepEqual(beforeHold, after) || after.Status != "open" {
-				t.Fatal("queue skip changed the retained original hold", beforeHold, after)
-			}
-			_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "original-target-still-held", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
-			integrationSourceHeld(t, err)
-		})
-	}
-}
-
-func TestAdoptionHoldsIntegrationSelectionRechecksActualParent(t *testing.T) {
-	f := selectionFixture(t)
-	zero := int64(0)
-	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-prefix", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"}); err != nil {
-		t.Fatal(err)
-	}
-	revision := int64(1)
-	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "actual-parent-selection", Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
-		t.Fatal(err)
-	}
-	imported := false
-	reader := &refreshTestReader{parents: map[string]reviewprovider.Pull{"actual-parent": {Number: 2, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), HeadRef: "actual-parent", BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}}, pull: func(_ context.Context, _ string, number int64) (reviewprovider.Pull, error) {
-		// The first check found actual parent2 complete. A source hold arrives
-		// while its explicitly branch-dependent child is being read.
-		pull := reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}
-		if number == 4 {
-			pull.HeadSHA, pull.BaseSHA, pull.BaseRef = strings.Repeat("c", 40), strings.Repeat("a", 40), "actual-parent"
-		}
-		return pull, nil
-	}}
-	r, _ := selectionEnqueue(t, f, "late-prefix-hold", "cli", nil)
-	if worked, err := runNextWithSourceMutation(t, f, reader, 4, func() {
-		integrationImportHold(t, f, 2)
-		imported = true
-	}); err != nil || !worked {
-		t.Fatal(worked, err)
-	}
-	got := selectionRead(t, f, r.ID)
-	if !imported || got.State != "held" || got.Reason != "source_obligations_pending" || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
-		t.Fatal("late actual-parent hold escaped transactional child admission", got)
 	}
 }
 

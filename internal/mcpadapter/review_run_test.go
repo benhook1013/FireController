@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -164,14 +163,4 @@ func TestReviewSelectionMCPSourceHoldExplainsOriginalReadOnlyResult(t *testing.T
 	if !reflect.DeepEqual(out.ReviewRunState, value) || out.Operation != nil || out.Diagnostic == nil || !strings.Contains(out.Diagnostic.Explanation, "did not retain its exact failure cause") || !strings.Contains(out.Diagnostic.NextAction, "old key replays") || reads.Load() != 1 || unexpected.Load() != 0 {
 		t.Fatal("SDK hold invented cause, changed facts or requested work", out)
 	}
-}
-
-func boundedPositiveReviewWait(t *testing.T, preference string) bool {
-	t.Helper()
-	seconds, err := strconv.Atoi(strings.TrimPrefix(preference, "wait="))
-	if !strings.HasPrefix(preference, "wait=") || err != nil || seconds < 0 || seconds > 50 {
-		t.Error("invalid bounded review wait", preference)
-		return false
-	}
-	return seconds > 0
 }

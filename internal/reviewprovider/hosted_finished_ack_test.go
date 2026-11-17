@@ -129,3 +129,41 @@ func TestHostedFinishedAcknowledgementGeneratedV1Wrapper(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedFinishedMarkedReviewWithProcessingFailuresEarnsNoCredit(t *testing.T) {
+	const inventory = "<details>\n<summary>Files not reviewed due to moderation or processing errors: 2</summary>\n<dl>\n<dd>\n<br>\n\n* src/one.go\n* src/two.go\n\n</dd>\n</dl>\n</details>"
+	for _, mode := range []string{"verified", "no ack", "late command", "wrong count", "duplicate file", "hidden list", "invalid actionable count", "wrong head"} {
+		t.Run(mode, func(t *testing.T) {
+			s, intent, poster, bot, earliest := publicationFixture(t)
+			s.ReviewComments = []ReviewComment{}
+			trigger := s.IssueComments[0].CreatedAt
+			s.IssueComments = append(s.IssueComments, IssueComment{ID: 3001, Author: bot, Body: standingTestAck(), CreatedAt: trigger.Add(time.Second), UpdatedAt: trigger.Add(3 * time.Second)})
+			block := inventory
+			switch mode {
+			case "no ack":
+				s.IssueComments = s.IssueComments[:1]
+			case "late command":
+				at := trigger.Add(2500 * time.Millisecond)
+				s.IssueComments = append(s.IssueComments, IssueComment{ID: 3002, Author: poster, Body: "@coderabbitai full review", CreatedAt: at, UpdatedAt: at})
+			case "wrong count":
+				block = strings.Replace(block, "errors: 2", "errors: 3", 1)
+			case "duplicate file":
+				block = strings.Replace(block, "src/two.go", "src/one.go", 1)
+			case "hidden list":
+				block = "```html\n" + block + "\n```"
+			case "wrong head":
+				s.Reviews[0].HeadSHA = strings.Repeat("b", 40)
+			}
+			s.Reviews[0].Body = "<!-- coderabbit-ai-generated:v1 -->\n<h6>\n<details>\n" + syntheticReviewInfoIcon() + "\n<dl>\n<dd>\n<br>\n" + block + "\n</dd>\n</dl>\n</details>\n</h6>\n" + publicationTestMarker(1, 1)
+			if mode == "invalid actionable count" {
+				s.Reviews[0].Body = "**Actionable comments posted: unknown**\n" + s.Reviews[0].Body
+			}
+			got, err := ExtractHostedFindings(s, intent, poster, bot, earliest)
+			wantFinished := mode == "verified" || mode == "wrong head"
+			if err != nil || got.Complete || len(got.Findings) != 0 || !got.Publication.FinishedAt.IsZero() ||
+				(got.Reason == "hosted_finished_inventory_unproven") != wantFinished {
+				t.Fatalf("unexpected evidence for %s: %s/%s %v", mode, got.Publication.State, got.Reason, err)
+			}
+		})
+	}
+}

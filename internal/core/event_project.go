@@ -14,12 +14,13 @@ const projectFeed = "events:project-metadata"
 // exact allowlist shared by replay and live hints; messages and authentication
 // events retain their separate delivery/authorization paths.
 var projectEventTypes = [...]string{
+	"coordination.imported",
 	"project.presentation_changed", "map.entry_created", "map.entry_updated",
-	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
-	"workers.created", "worker.pause_changed", "worker.primary_job_changed",
+	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced", "job.summary_replaced",
+	"workers.created", "workers.renamed", "workers.retired", "worker.pause_changed", "worker.primary_job_changed",
 	"note.created", "note.updated",
-	"review.observed", "reviews.policy_configured", "reviews.rounds_configured",
 	"reviews.adoption_obligations_imported", "reviews.adoption_obligation_resolved", "reviews.adoption_obligation_retargeted",
+	"review.observed", "reviews.configured", "reviews.policy_configured", "reviews.rounds_configured", "review.requested", "review.operation_updated", "review.activity_observed",
 	"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",
 	"review.route.routed", "review.route.superseded", "review.route.adjudicated", "review.route.fix_recorded",
 }
@@ -42,7 +43,7 @@ func (s *Store) ProjectEventCursor(ctx context.Context, tx *sql.Tx, scope Scope)
 	if err := tx.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM events WHERE project_id=?", scope.ProjectID).Scan(&sequence); err != nil {
 		return "", storageError(err)
 	}
-	return s.Cursor(scope, projectFeed, strconv.FormatInt(sequence, 10)), nil
+	return s.ProjectEventCursorAt(scope, sequence), nil
 }
 
 type ProjectEventItem struct {
@@ -127,4 +128,13 @@ func (s *Store) streamProjectEvents(ctx context.Context, scope Scope, cursor str
 		page, err := s.readProjectEvents(ctx, scope, after, limit)
 		return streamEventPage{page.EventCursor, page.HasMore, len(page.Items), func() error { return deliver(page) }}, err
 	}, heartbeat, interval)
+}
+
+// ProjectEventPosition and ProjectEventCursorAt let a domain read project events
+// in its own authorized snapshot while reusing the existing stream's cursor.
+func (s *Store) ProjectEventPosition(scope Scope, cursor string) (int64, error) {
+	return s.eventPosition(scope, projectFeed, cursor)
+}
+func (s *Store) ProjectEventCursorAt(scope Scope, sequence int64) string {
+	return s.Cursor(scope, projectFeed, strconv.FormatInt(sequence, 10))
 }

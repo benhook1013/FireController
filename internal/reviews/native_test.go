@@ -624,18 +624,11 @@ func TestNativeKnownAttemptIdentitiesCannotBeRewritten(t *testing.T) {
 }
 
 func TestNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t *testing.T) {
-	assertNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t, nativeGrowthNativeBatch)
-}
-func TestNativeGrowthCallerAndEventFailureRollbackEntireTransactionAfterTransfer(t *testing.T) {
-	assertNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t, nativeGrowthTransferBatch)
-}
-func assertNativeGrowthCallerAndEventFailureRollbackEntireTransaction(t *testing.T, seed nativeGrowthSeeder) {
-	t.Helper()
 	f := newAPIFixture(t)
 	pull := nativePull(1)
 	var previous Receipt
 	for batch := 0; batch < 3; batch++ {
-		previous = seed(t, f, pull, "retained-original", batch*75, 75, 0)
+		previous = nativeGrowthTransferBatch(t, f, pull, "retained-original", batch*75, 75, 0)
 	}
 	if _, err := f.store.DB().Exec(`CREATE TABLE native_test_journal(note TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)

@@ -79,6 +79,10 @@ func (r ciWatchSkippedReader) ObserveCIGateWithWorkflows(ctx context.Context, ta
 	return o, []reviewprovider.CIWorkflowFailure{row}, nil
 }
 
+func (r ciWatchSkippedReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, _, _ []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
+	return r.ObserveCIGateWithWorkflows(ctx, target, gate, ids)
+}
+
 func TestCIWatchSkippedFailureHTTPAcceptedByStrictClient(t *testing.T) {
 	f, s, _, base, _ := ciWatchFixture(t)
 	base.states[42] = "pending"
@@ -143,10 +147,4 @@ func TestCIWatchSkippedFailureHTTPAcceptedByStrictClient(t *testing.T) {
 		t.Fatal("typed CI watch did not return attention")
 	}
 	ciWatchRegistered(t, s, 0)
-}
-
-// The strict client negotiates advanced attention; this fixture intentionally
-// supplies the same retained failure for each supported attention selector.
-func (r ciWatchSkippedReader) ObserveCIGateWithWorkflowAttention(ctx context.Context, target reviewprovider.CITarget, gate string, ids, headIDs, historicalIDs []int64) (reviewprovider.CIObservation, []reviewprovider.CIWorkflowFailure, error) {
-	return r.ObserveCIGateWithWorkflows(ctx, target, gate, ids)
 }

@@ -1,32 +1,37 @@
 package mcpadapter_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 )
 
-func TestJobProgressToolsRoundTripAndRecoverUncertainWrites(t *testing.T) {
+func TestUnifiedJobToolsRecoverCLICommittedResponseAndPartialProgress(t *testing.T) {
 	f := mutationFixture(t)
 	var corrupt atomic.Bool
 	var writes atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/updates") {
+		if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/jobs/") {
 			writes.Add(1)
 			if corrupt.CompareAndSwap(true, false) {
-				recorder := httptest.NewRecorder()
-				f.handler.ServeHTTP(recorder, r)
-				if recorder.Code != http.StatusCreated {
-					t.Error("update did not commit before response damage")
+				rec := httptest.NewRecorder()
+				f.handler.ServeHTTP(rec, r)
+				if rec.Code != 200 {
+					t.Error("write did not commit")
 				}
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusCreated)
+				w.WriteHeader(200)
 				_, _ = w.Write([]byte(`{"id":"incomplete"}`))
 				return
 			}
@@ -34,92 +39,112 @@ func TestJobProgressToolsRoundTripAndRecoverUncertainWrites(t *testing.T) {
 		f.handler.ServeHTTP(w, r)
 	}))
 	defer service.Close()
-	session := connect(t, f.adapter(t, service.URL, f.sender), "")
+	binding := localContext()
+	binding.ServerURL = service.URL
+	binding.InstanceID = f.store.InstanceID()
+	binding.ProjectID = f.project
+	binding.WorkerID = f.sender
+	path := profiles(t, map[string]profile.Context{"chosen": binding}, f.credential)
+	session := connect(t, adapter(t, path, "chosen"), "")
 	var job client.JobReceipt
-	decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "progress-setup", "title": "Progress", "brief": "Standing instructions"}), &job)
-	var empty client.Checklist
-	decodeResult(t, call(t, session, "job_checklist_read", map[string]any{"job_id": job.ID}), &empty)
-	if empty.Revision != 0 || empty.Items == nil || empty.JobRevision != 1 {
-		t.Fatal("initial checklist not explicit")
-	}
-	update := map[string]any{"job_id": job.ID, "idempotency_key": "progress-once", "expected_job_revision": 1, "body": "  PRIVATE_UPDATE\n", "evidence": []string{"proof:one", "proof:two"}}
+	decodeResult(t, call(t, session, "jobs_create", map[string]any{"idempotency_key": "setup-current", "title": "Job", "brief": "Standing brief"}), &job)
 	corrupt.Store(true)
-	diagnosticResult(t, call(t, session, "job_update_append", update), "invalid_response", true)
-	var receipt, replay client.UpdateReceipt
-	decodeResult(t, call(t, session, "job_update_append", update), &receipt)
-	decodeResult(t, call(t, session, "job_update_append", update), &replay)
-	if receipt != replay || receipt.JobRevision != 1 || receipt.Sequence < 1 || writes.Load() != 3 {
-		t.Fatal("uncertain update was automatically retried or duplicate replay changed")
+	var out, stderr bytes.Buffer
+	code := cli.Run([]string{"--profiles-file", path, "--profile", "chosen", "jobs", "update", job.ID, "--expect-revision", "1", "--key", "original-key", "--progress", "PRIVATE_PROGRESS", "--evidence", "proof:one"}, nil, &out, &stderr)
+	if code == cli.ExitSuccess || out.Len() != 0 || !strings.Contains(stderr.String(), "outcome_unknown") {
+		t.Fatal("lost committed response not uncertain")
 	}
-	var updates client.Page[client.Update]
-	decodeResult(t, call(t, session, "job_update_history", map[string]any{"job_id": job.ID}), &updates)
-	if len(updates.Items) != 1 || updates.Items[0].Body != "  PRIVATE_UPDATE\n" || updates.Items[0].WorkerID != f.sender || updates.HasMore {
-		t.Fatal("update archive lost text/attribution or fetched unexpected history")
+	request := map[string]any{"job_id": job.ID, "idempotency_key": "original-key", "expected_revision": 1, "progress": map[string]any{"summary": "PRIVATE_PROGRESS", "evidence": []string{"proof:one"}}}
+	var original client.JobReceipt
+	decodeResult(t, call(t, session, "job_update", request), &original)
+	if original.Revision != 2 || original.Outcome != "updated" || writes.Load() != 2 {
+		t.Fatal("cross-adapter recovery retried or duplicated")
 	}
-	items := []map[string]any{{"id": "prove", "text": "Check behavior", "done": false}}
-	set := map[string]any{"job_id": job.ID, "idempotency_key": "checklist-once", "expected_job_revision": 1, "expected_revision": 0, "items": items}
-	var setReceipt client.ChecklistReceipt
-	decodeResult(t, call(t, session, "job_checklist_replace", set), &setReceipt)
-	if setReceipt.Revision != 1 || setReceipt.Outcome != "updated" {
-		t.Fatal("checklist replacement receipt changed")
-	}
-	var state client.Checklist
-	decodeResult(t, call(t, session, "job_checklist_read", map[string]any{"job_id": job.ID}), &state)
-	if state.Revision != 1 || state.JobRevision != 1 || len(state.Items) != 1 || state.Items[0].Done {
-		t.Fatal("read changed checklist completion")
-	}
-	set["idempotency_key"], set["expected_revision"] = "checklist-done", 1
-	items[0]["done"] = true
-	decodeResult(t, call(t, session, "job_checklist_replace", set), &setReceipt)
-	var history client.Page[client.ChecklistHistoryEntry]
-	decodeResult(t, call(t, session, "job_checklist_history", map[string]any{"job_id": job.ID, "limit": 1}), &history)
-	if len(history.Items) != 1 || history.Items[0].Revision != 2 || !history.Items[0].Items[0].Done || !history.HasMore {
-		t.Fatal("checklist current history lost completion")
-	}
-	decodeResult(t, call(t, session, "job_checklist_history", map[string]any{"job_id": job.ID, "limit": 1, "cursor": history.Cursor}), &history)
-	if len(history.Items) != 1 || history.Items[0].Revision != 1 || history.Items[0].Items[0].Done || history.HasMore {
-		t.Fatal("checklist older history was rewritten")
+	var correction client.JobReceipt
+	decodeResult(t, call(t, session, "job_update", map[string]any{"job_id": job.ID, "idempotency_key": "correction", "expected_revision": 2, "status": "blocked", "progress": map[string]any{"next": "Next", "evidence": []string{}}}), &correction)
+	var replay client.JobReceipt
+	decodeResult(t, call(t, session, "job_update", request), &replay)
+	if replay != original {
+		t.Fatal("later edit changed original receipt")
 	}
 	var current client.Job
 	decodeResult(t, call(t, session, "job_read", map[string]any{"job_id": job.ID}), &current)
-	if current.Revision != 1 || current.Brief != "Standing instructions" || f.providers.Load() != 1 {
-		t.Fatal("progress changed brief/revision or performed provider calls")
+	if current.Revision != 3 || current.Progress.Summary != "PRIVATE_PROGRESS" || current.Progress.Next != "Next" || len(current.Progress.Evidence) != 0 || current.Brief != "Standing brief" || current.Notes.Items == nil || current.Checklist.Remaining == nil {
+		t.Fatal("default job state incomplete")
+	}
+	var page client.Page[client.ProgressHistoryEntry]
+	decodeResult(t, call(t, session, "job_progress_history", map[string]any{"job_id": job.ID, "limit": 1}), &page)
+	if len(page.Items) != 1 || !page.HasMore || page.Items[0].JobRevision != 3 {
+		t.Fatal("archive was not bounded")
+	}
+	var noop client.JobReceipt
+	decodeResult(t, call(t, session, "job_update", map[string]any{"job_id": job.ID, "idempotency_key": "noop", "expected_revision": 3, "status": "blocked"}), &noop)
+	if noop.Revision != 3 || noop.Outcome != "unchanged" {
+		t.Fatal("noop revision changed")
+	}
+	if f.providers.Load() != 1 {
+		t.Fatal("unexpected provider work")
+	}
+}
+func TestUnifiedJobToolsRejectBeforeCredentialAndNetwork(t *testing.T) {
+	var count atomic.Int64
+	s := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { count.Add(1) }))
+	defer s.Close()
+	binding := localContext()
+	binding.ServerURL = s.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": binding}, "missing-credential"), "alpha"), "")
+	base := `{"job_id":"job-one","idempotency_key":"key","expected_revision":1,"progress":{"summary":"ok"}}`
+	cases := []string{`{}`, strings.Replace(base, `"expected_revision":1`, `"expected_revision":0`, 1), strings.Replace(base, `"summary":"ok"`, `"summary":null`, 1), strings.Replace(base, `"summary":"ok"`, `"evidence":null`, 1), strings.Replace(base, `"summary":"ok"`, `"summary":"one","summary":"two"`, 1), strings.Replace(base, `"summary":"ok"`, `"Summary":"ok"`, 1), strings.Replace(base, `"summary":"ok"`, `"summary":"bad\ud800"`, 1), strings.Replace(base, `"summary":"ok"`, `"evidence":[null]`, 1), strings.Replace(base, `"summary":"ok"`, `"summary":"ok","unexpected":1`, 1)}
+	for _, raw := range cases {
+		diagnosticResult(t, call(t, session, "job_update", json.RawMessage(raw)), "invalid_arguments", false)
+	}
+	if count.Load() != 0 {
+		t.Fatal("invalid arguments reached HTTP")
 	}
 }
 
-func TestJobProgressToolsRejectBeforeCredentialAndNetwork(t *testing.T) {
-	var requests atomic.Int64
-	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+func TestUnifiedJobReadStrictBeforeCredentialsAndCancellation(t *testing.T) {
+	var calls atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 	defer service.Close()
-	c := localContext()
-	c.ServerURL = service.URL
-	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing-private-credential")
-	session := connect(t, adapter(t, path, "alpha"), "")
-	base := `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"expected_revision":0,"items":[{"id":"prove","text":"Proof","done":false}]}`
-	cases := []struct{ name, raw string }{
-		{"job_checklist_replace", strings.Replace(base, `,"done":false`, "", 1)},
-		{"job_checklist_replace", strings.Replace(base, `"done":false`, `"done":null`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"done":false`, `"done":false,"done":true`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"done":false`, `"Done":false`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"id":"prove"`, `"id":"bad/id"`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"expected_revision":0`, `"expected_revision":null`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"expected_revision":0,`, "", 1)},
-		{"job_checklist_replace", strings.Replace(base, `"expected_revision":0`, `"expected_revision":9223372036854775807`, 1)},
-		{"job_checklist_replace", strings.Replace(base, `"items":[{"id":"prove","text":"Proof","done":false}]`, `"items":null`, 1)},
-		{"job_update_append", `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"body":"Update","evidence":null}`},
-		{"job_update_append", `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"body":"Update","evidence":[null]}`},
-		{"job_update_append", `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"body":"bad\ud800"}`},
-		{"job_update_append", `{"job_id":"job-one","idempotency_key":"explicit","expected_job_revision":1,"body":"Update","actor_id":"override"}`},
-		{"job_checklist_read", `{"job_id":"job-one","limit":1}`},
-		{"job_checklist_history", `{"job_id":"job-one","limit":0}`},
-		{"job_checklist_history", `{"job_id":"job-one","cursor":""}`},
-		{"job_update_history", `{"job_id":"job-one","cursor":""}`},
-		{"job_update_history", `{"job_id":"../other"}`},
+	identity := localContext()
+	identity.ServerURL = service.URL
+	session := connect(t, adapter(t, profiles(t, map[string]profile.Context{"alpha": identity}, "missing-credential"), "alpha"), "")
+	for _, raw := range []string{`{}`, `null`, `{"job_id":null}`, `{"job_id":"../job"}`, `{"job_id":"job","limit":0}`, `{"job_id":"job","limit":101}`, `{"job_id":"job","limit":null}`, `{"job_id":"job","limit":1.0}`, `{"job_id":"job","limit":1,"limit":2}`, `{"job_id":"job","worker_id":"other"}`, `{"job_id":"job","cursor":"next"}`, `{"Job_id":"job"}`, `{"job_id":"\ud800"}`} {
+		diagnosticResult(t, call(t, session, "job_read", json.RawMessage(raw)), "invalid_arguments", false)
 	}
-	for _, test := range cases {
-		diagnosticResult(t, call(t, session, test.name, json.RawMessage(test.raw)), "invalid_arguments", false)
+	if calls.Load() != 0 {
+		t.Fatal("invalid arguments contacted service")
 	}
-	if requests.Load() != 0 {
-		t.Fatalf("invalid tools made %d HTTP requests", requests.Load())
+	f := mutationFixture(t)
+	var reads atomic.Int64
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			f.handler.ServeHTTP(w, r)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/jobs/job-one") {
+			t.Error("fanout")
+		}
+		reads.Add(1)
+		<-r.Context().Done()
+	}))
+	defer blocked.Close()
+	a := f.adapter(t, blocked.URL, f.sender)
+	a.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, r mcp.Request) (mcp.Result, error) {
+			if method == "tools/call" {
+				ctx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
+				defer cancel()
+				return next(ctx, method, r)
+			}
+			return next(ctx, method, r)
+		}
+	})
+	bounded := connect(t, a, "")
+	started := time.Now()
+	diagnosticResult(t, call(t, bounded, "job_read", map[string]any{"job_id": "job-one"}), "deadline_exceeded", false)
+	if reads.Load() != 1 || time.Since(started) > time.Second {
+		t.Fatal("cancellation/retry", reads.Load())
 	}
 }

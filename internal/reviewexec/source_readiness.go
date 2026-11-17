@@ -34,6 +34,7 @@ type SourceReviewStateSummary struct {
 }
 
 type SourceReadinessAssessment struct {
+	UnassignedRoutesPending  int64                     `json:"unassigned_routes_pending,omitempty"`
 	SourceObligationsPending int64                     `json:"source_obligations_pending,omitempty"`
 	ProjectID                string                    `json:"project_id"`
 	RefreshID                string                    `json:"refresh_id"`
@@ -261,6 +262,15 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 			}
 			return nil
 		}
+		out.UnassignedRoutesPending, err = pendingUnassignedSourceRoutes(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		carriedUnassigned, err := unassignedCarriedRouteCount(ctx, tx, scope.ProjectID, number)
+		if err != nil {
+			return err
+		}
+		out.UnassignedRoutesPending += carriedUnassigned
 		out.IncomingRoutesPending, out.IncomingRoutesCapacity, err = incomingRoutePolicyFacts(ctx, tx, scope.ProjectID, number)
 		if err != nil {
 			return err
@@ -270,10 +280,10 @@ func (e *Engine) ReadSourceReadiness(ctx context.Context, scope core.Scope, numb
 		} else if out.IncomingRoutesPending > 0 {
 			out.Reasons = append(out.Reasons, "routed_findings_pending")
 		}
-		missing, pending, roundsPending := false, false, false
 		if out.SourceObligationsPending > 0 {
 			out.Reasons = append(out.Reasons, "source_obligations_pending")
 		}
+		missing, pending, roundsPending := false, false, false
 		for _, channel := range policy.Policy.RequiredChannels {
 			state, err := channelProgress(ctx, tx, scope.ProjectID, r.repositoryID, number, channel)
 			if err != nil {

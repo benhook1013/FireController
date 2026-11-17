@@ -19,7 +19,7 @@ import (
 type transport interface {
 	read(context.Context, string) ([]byte, error)
 	put(context.Context, string, string) error
-	get(context.Context, string, string) error
+	get(context.Context, string, string, ...int64) error
 	remove(context.Context, string) error
 }
 
@@ -145,11 +145,22 @@ func (r *rclone) put(ctx context.Context, source, name string) error {
 	}
 	return err
 }
-func (r *rclone) get(ctx context.Context, name, destination string) error {
+func (r *rclone) get(ctx context.Context, name, destination string, limits ...int64) error {
+	if len(limits) > 1 {
+		return failure("offsite_configuration_invalid")
+	}
+	if len(limits) == 1 {
+		if limits[0] <= 0 || limits[0] > r.c.MaxBundleBytes {
+			return failure("offsite_size_limit")
+		}
+		copy := *r
+		copy.c.MaxBundleBytes = limits[0]
+		r = &copy
+	}
 	if !filepath.IsAbs(destination) {
 		return failure("offsite_configuration_invalid")
 	}
-	_, err := r.run(ctx, "copyto", name, destination, "--ignore-times")
+	_, err := r.run(ctx, "copyto", name, destination, "--ignore-times", "--local-no-preallocate")
 	if err == nil {
 		if chmodErr := os.Chmod(destination, 0600); chmodErr != nil {
 			// S3 can resolve an absent key as a virtual directory: copyto

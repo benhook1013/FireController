@@ -40,7 +40,7 @@ func routeCLIFixture(t *testing.T) (*serviceFixture, string, string, string) {
 		t.Fatal(err)
 	}
 	zero := int64(0)
-	if _, err = engine.ConfigurePolicy(t.Context(), scope, "route-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}, PausedChannels: []string{}}); err != nil {
+	if _, err = engine.ConfigurePolicy(t.Context(), scope, "route-policy", reviewexec.PolicyConfiguration{ExpectedRevision: &zero, RequiredChannels: []string{"cli"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = engine.Configure(t.Context(), scope, "route-config", reviewexec.Configuration{ExpectedRevision: &zero, CapabilityID: "fixture", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli"}}); err != nil {

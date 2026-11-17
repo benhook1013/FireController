@@ -71,6 +71,12 @@ func admitTransfer(ctx context.Context, transaction *sql.Tx, project string, req
 		}
 	}
 	for _, group := range req.Groups {
+		if group.Source == externalHostedSource {
+			return plan, transferNativeConflict()
+		}
+		if err := guardSubagentImport(ctx, tx, project, group.Source, group.Pulls); err != nil {
+			return plan, err
+		}
 		if err := validateFinalizedCounts(ctx, tx, project, group.Source, group.Pulls); err != nil {
 			return plan, err
 		}
@@ -155,7 +161,7 @@ func planTransferPull(ctx context.Context, tx HistoryQuery, project, snapshot st
 		if retired != 0 {
 			return nil, transferConflict("A retired PR requires explicit queue reactivation before historical transfer.")
 		}
-		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]", mustJSON(pullMetadata(pull)))
+		body = append(metadata, int64(0), int64(0), int64(0), "[]", "[]", mustJSON(pullMetadata(pull)), int64(1))
 		position = next
 	} else if err != nil {
 		return nil, err

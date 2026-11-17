@@ -7,6 +7,10 @@ import (
 // advanceRoundReplay follows immutable completion ordinals, not timestamps or
 // settings revision order. A nonnegative through is the next settings cutoff.
 func advanceRoundReplay(ctx context.Context, q EvidenceQuery, c *roundRecord, through int64) error {
+	return advanceRoundReplayMode(ctx, q, c, through, false)
+}
+
+func advanceRoundReplayMode(ctx context.Context, q EvidenceQuery, c *roundRecord, through int64, validatePolicy bool) error {
 	if through >= 0 && through < c.Used {
 		return roundUnavailable()
 	}
@@ -14,18 +18,24 @@ func advanceRoundReplay(ctx context.Context, q EvidenceQuery, c *roundRecord, th
 		return nil
 	}
 	for {
-		rows, err := q.QueryContext(ctx, `SELECT operation_id,evidence_id,ordinal,accepted,completed_at FROM review_round_completions WHERE project_id=? AND pull_number=? AND channel=? AND epoch=? AND ordinal>? ORDER BY ordinal LIMIT 64`, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, c.Used)
+		query := `SELECT operation_id,evidence_id,ordinal,accepted,completed_at,'',0 FROM review_round_completions WHERE project_id=? AND pull_number=? AND channel=? AND epoch=? AND ordinal>?`
+		args := []any{c.ProjectID, c.PullNumber, c.Channel, c.Epoch, c.Used}
+		if c.external && c.Channel == "hosted" {
+			query += ` UNION ALL SELECT '','',ordinal,accepted,completed_at,batch_id,revision FROM review_round_external_credits WHERE project_id=? AND pull_number=? AND channel=? AND epoch=? AND ordinal>?`
+			args = append(args, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, c.Used)
+		}
+		rows, err := q.QueryContext(ctx, query+` ORDER BY ordinal LIMIT 64`, args...)
 		if err != nil {
 			return err
 		}
 		type completion struct {
-			operation, evidence, at string
-			ordinal, accepted       int64
+			operation, evidence, at, batch string
+			ordinal, accepted, revision    int64
 		}
 		page := []completion{}
 		for rows.Next() {
 			var v completion
-			if err = rows.Scan(&v.operation, &v.evidence, &v.ordinal, &v.accepted, &v.at); err != nil {
+			if err = rows.Scan(&v.operation, &v.evidence, &v.ordinal, &v.accepted, &v.at, &v.batch, &v.revision); err != nil {
 				break
 			}
 			page = append(page, v)
@@ -44,32 +54,34 @@ func advanceRoundReplay(ctx context.Context, q EvidenceQuery, c *roundRecord, th
 				}
 				return nil
 			}
-			if v.ordinal != c.Used+1 || v.ordinal > roundSafeInteger || !c.MaximumUnbounded && v.ordinal > c.Maximum || !identifier.MatchString(v.operation) || !identifier.MatchString(v.evidence) || !roundTime(v.at) {
+			if v.ordinal != c.Used+1 || v.ordinal > roundSafeInteger || !c.MaximumUnbounded && v.ordinal > c.Maximum || !roundTime(v.at) {
 				return roundUnavailable()
 			}
-			evidence, accepted, err := roundCompletionAuthority(ctx, q, c.ProjectID, v.operation)
-			if err != nil {
+			if v.batch != "" {
+				if !identifier.MatchString(v.batch) || validatePolicy && (v.revision != c.Revision || checkRoundOpen(c.RoundControl) != nil) {
+					return roundUnavailable()
+				}
+				members, err := externalRoundMembers(ctx, q, c.ProjectID, v.batch)
+				if err != nil {
+					return err
+				}
+				if err = validateExternalRoundAccepted(ctx, q, c.ProjectID, c.PullNumber, members, v.accepted); err != nil {
+					return err
+				}
+			} else {
+				if !identifier.MatchString(v.operation) || !identifier.MatchString(v.evidence) {
+					return roundUnavailable()
+				}
+				evidence, accepted, err := roundCompletionAuthority(ctx, q, c.ProjectID, v.operation, c.external)
+				if err != nil {
+					return err
+				}
+				if evidence != v.evidence || accepted != v.accepted {
+					return roundUnavailable()
+				}
+			}
+			if err = advanceRoundCounters(c, v.accepted); err != nil {
 				return err
-			}
-			if evidence != v.evidence || accepted != v.accepted {
-				return roundUnavailable()
-			}
-			done := roundDone(c.RoundControl)
-			c.Used++
-			if c.cumulative || !done {
-				if accepted == 0 {
-					if c.Dry >= roundSafeInteger {
-						return roundUnavailable()
-					}
-					c.Dry++
-				} else {
-					c.Dry = 0
-				}
-				if c.cumulative {
-					c.Tapered = effectiveRoundTapered(*c)
-				} else if c.Used >= c.Minimum && (c.InitiallyTapered || c.Dry >= c.Taper) {
-					c.Tapered = true
-				}
 			}
 			c.UpdatedAt = v.at
 			if through >= 0 && c.Used == through {
@@ -126,7 +138,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 			if err != nil || v.revision != revision+1 || c.ProjectID != project || c.PullNumber != pull || c.Channel != channel || c.Revision != v.revision || c.Epoch != v.epoch || v.worker != "" && !identifier.MatchString(v.worker) {
 				return roundUnavailable()
 			}
-			record := roundRecord{RoundControl: c, cumulative: cumulative, grantRevision: previous.grantRevision, taperSet: previous.taperSet}
+			record := roundRecord{RoundControl: c, cumulative: cumulative, grantRevision: previous.grantRevision, taperSet: previous.taperSet, external: version >= 6}
 			first := revision == 0
 			newEpoch := !first && c.Epoch != previous.Epoch
 			if first || newEpoch {
@@ -134,7 +146,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 					return roundUnavailable()
 				}
 				if !first {
-					if err = advanceRoundReplay(ctx, q, &previous, -1); err != nil {
+					if err = advanceRoundReplayMode(ctx, q, &previous, -1, true); err != nil {
 						return err
 					}
 				}
@@ -161,7 +173,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 				if !sameRoundBaseline(previous.RoundControl, baseline) {
 					return roundUnavailable()
 				}
-				if err = advanceRoundReplay(ctx, q, &previous, c.Used); err != nil {
+				if err = advanceRoundReplayMode(ctx, q, &previous, c.Used, true); err != nil {
 					return err
 				}
 				if (v.action == "grant" || v.action == "taper") && cumulative && !previous.cumulative {
@@ -203,7 +215,7 @@ func validateCumulativeRoundHistory(ctx context.Context, q EvidenceQuery, projec
 	if revision == 0 {
 		return roundUnavailable()
 	}
-	if err = advanceRoundReplay(ctx, q, &previous, -1); err != nil {
+	if err = advanceRoundReplayMode(ctx, q, &previous, -1, true); err != nil {
 		return err
 	}
 	if current.RoundControl != previous.RoundControl || current.grantRevision != previous.grantRevision || current.cumulative != previous.cumulative {

@@ -8,6 +8,8 @@ import (
 )
 
 var hostedUnavailableHeader = regexp.MustCompile(`^<details>\s*<summary>(?:` + standingPicture + ` )?Files not fully reviewed because their changes were unavailable: ([^<>]*)</summary>`)
+var hostedProcessingFailureHeader = regexp.MustCompile(`^<details>\s*<summary>Files not reviewed due to moderation or processing errors: ([1-9][0-9]{0,4})</summary>`)
+var hostedProcessingFailureList = regexp.MustCompile(`(?s)^<dl>\s*<dd>\s*<br>\s*(.*?)\s*</dd>\s*</dl>\s*</details>$`)
 var hostedUnavailableList = regexp.MustCompile(`(?s)^<dl>\s*<dd>\s*(.*?)\s*</dd>\s*</dl>\s*</details>$`)
 
 const hostedCoverageUnknown = "CodeRabbit reported unavailable file changes, but its affected-file metadata could not be verified."
@@ -17,6 +19,14 @@ const hostedCoverageMore = "Additional CodeRabbit coverage limitations were repo
 // coverage metadata. Other details scopes (including prompts/examples) and
 // non-presentation HTML ancestors are opaque. Source bodies remain unchanged.
 func (d *findingDecoder) reviewInfoCoverage(body string, lines []findingLine, start, end int) {
+	forReviewInfoBlock(body, lines, start, end, func(block string) {
+		if limit := hostedUnavailableCoverage(block); limit != "" {
+			d.addCoverageLimit(limit)
+		}
+	})
+}
+
+func forReviewInfoBlock(body string, lines []findingLine, start, end int, visit func(string)) {
 	var stack []string
 	for i := start + 1; i < end; i++ {
 		line := lines[i]
@@ -33,9 +43,7 @@ func (d *findingDecoder) reviewInfoCoverage(body string, lines []findingLine, st
 				presentation = presentation && (tag == "dl" || tag == "dd")
 			}
 			if presentation {
-				if limit := hostedUnavailableCoverage(strings.TrimSpace(body[line.start:lines[last].end])); limit != "" {
-					d.addCoverageLimit(limit)
-				}
+				visit(strings.TrimSpace(body[line.start:lines[last].end]))
 			}
 			i = last
 			continue
@@ -59,6 +67,49 @@ func (d *findingDecoder) reviewInfoCoverage(body string, lines []findingLine, st
 			}
 		}
 	}
+}
+
+// A current generated Review info block can attest to failed processing
+// without proving any finding count or completed coverage.
+func hostedReportedProcessingFailure(body string) bool {
+	lines, valid := findingLines(body)
+	if !valid {
+		return false
+	}
+	for i, line := range lines {
+		if line.hidden || line.quote != 0 || line.text != "<h6>" {
+			continue
+		}
+		start, end, ok := currentReviewInfoHeading(lines, i)
+		if !ok {
+			continue
+		}
+		found := false
+		forReviewInfoBlock(body, lines, start, end-1, func(block string) {
+			header := hostedProcessingFailureHeader.FindStringSubmatchIndex(block)
+			if header == nil {
+				return
+			}
+			list := hostedProcessingFailureList.FindStringSubmatch(strings.TrimSpace(block[header[1]:]))
+			if list == nil {
+				return
+			}
+			count, _ := strconv.Atoi(block[header[2]:header[3]])
+			paths := map[string]bool{}
+			for _, item := range strings.Split(strings.TrimSpace(list[1]), "\n") {
+				path, ok := strings.CutPrefix(strings.TrimSuffix(item, "\r"), "* ")
+				if !ok || !cliPortablePath(path, false) || strings.ContainsAny(path, "<>`&") || paths[path] {
+					return
+				}
+				paths[path] = true
+			}
+			found = found || count == len(paths)
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 func hostedUnavailableCoverage(body string) string {

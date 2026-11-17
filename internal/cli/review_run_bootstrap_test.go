@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,10 +20,10 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 	project := f.project(t, "selection-bootstrap")
 	worker := f.worker(t, project, "Builder")
 	for _, command := range []string{"start", "run-read"} {
-		for _, wait := range []string{"default", "0", "2", "cancel-before", "cancel-after", "earlier-deadline", "reduced-budget"} {
+		for _, wait := range []string{"default", "0", "2", "cancel-before", "cancel-after", "earlier-deadline", "reduced-budget", "deadline-after"} {
 			t.Run(command+"/"+wait, func(t *testing.T) {
 				t.Parallel()
-				var identities, operations, commandDeadline, identityReturned atomic.Int64
+				var identities, operations atomic.Int64
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 
@@ -35,8 +34,11 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 				if wait == "0" || wait == "2" {
 					selected = wait
 				}
-				if wait == "reduced-budget" {
+				if wait == "reduced-budget" || wait == "deadline-after" {
 					selected = "2"
+					if command == "start" {
+						selected = "0"
+					}
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/instance" {
@@ -44,27 +46,14 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 							http.Error(w, "synthetic gateway restart", http.StatusServiceUnavailable)
 							return
 						} // Six attempts consume 5.75 seconds of bounded identity backoff, above the ordinary five-second limit.
-						identityReturned.Store(time.Now().UnixNano())
 						f.handler.ServeHTTP(w, r)
 						return
 					}
 					operations.Add(1)
-					// Bootstrap and scheduling consume the shared caller budget. Both
-					// interfaces reserve five seconds for the operation response, so
-					// a short selected wait can legitimately shrink before dispatch.
-					requested, _ := strconv.Atoi(selected)
-					remaining := time.Until(time.Unix(0, commandDeadline.Load())) - 5*time.Second
-					margin := 250 * time.Millisecond
-					minimum := min(requested, int(max(0, remaining-margin)/time.Second))
-					// The calculation occurs after the identity response and before
-					// this request arrives. Bracket that interval rather than making
-					// server scheduling delay part of the expected wait.
-					beforeDispatch := time.Duration(commandDeadline.Load()-identityReturned.Load()) - 5*time.Second
-					maximum := min(requested, int(max(0, beforeDispatch+margin)/time.Second))
-					prefer := r.Header.Get("Prefer")
-					actual, err := strconv.Atoi(strings.TrimPrefix(prefer, "wait="))
-					if !strings.HasPrefix(prefer, "wait=") || err != nil || actual < minimum || actual > maximum {
-						t.Errorf("wait exceeded remaining budget: got %q, want %d..%d", prefer, minimum, maximum)
+					// An earlier caller deadline can shorten receipt collection
+					// while the request body, key and binding remain exact.
+					if r.Header.Get("Prefer") != "wait="+selected {
+						t.Errorf("selected wait changed: got %q, want wait=%s", r.Header.Get("Prefer"), selected)
 					}
 					if r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("Authorization") != "Bearer "+f.admin {
 						t.Error("binding changed")
@@ -82,6 +71,10 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 						<-r.Context().Done()
 						return
 					}
+					if wait == "deadline-after" {
+						<-r.Context().Done()
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(client.ReviewRunState{Selection: client.ReviewRunSelection{ID: cliSelectionID, ProjectID: project, ActorID: "principal_one", WorkerID: worker, Channel: "hosted", ConfigurationRevision: 1, PolicyRevision: 1, State: "empty", Reason: "queue_complete", Revision: 2, CreatedAt: "2026-10-18T01:00:00Z", UpdatedAt: "2026-10-18T01:01:00Z"}})
 				}))
@@ -96,7 +89,7 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 				if wait == "0" || wait == "2" {
 					args = append(args, "--wait-seconds", wait)
 				}
-				if wait == "reduced-budget" {
+				if wait == "reduced-budget" || wait == "deadline-after" {
 					args = append(args, "--wait-seconds", "2")
 					var deadlineCancel context.CancelFunc
 					ctx, deadlineCancel = context.WithTimeout(ctx, 8*time.Second)
@@ -111,11 +104,7 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					defer deadlineCancel()
 				}
 				var out, diagnostic strings.Builder
-				deadline := time.Now().Add(15 * time.Second)
-				if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
-					deadline = parent
-				}
-				commandDeadline.Store(deadline.UnixNano())
+				started := time.Now()
 				code := cli.RunContext(ctx, args, map[string]string{"FC_PROFILE": "builder"}, &out, &diagnostic)
 				if wait == "earlier-deadline" {
 					if code == cli.ExitSuccess || operations.Load() != 0 || !strings.Contains(diagnostic.String(), "deadline_exceeded") || strings.Contains(diagnostic.String(), "outcome_unknown") {
@@ -136,6 +125,13 @@ func TestReviewRunCLIIdentityFloorForDefaultAndShortWaits(t *testing.T) {
 					unknown := strings.Contains(diagnostic.String(), `"outcome_unknown":true`)
 					if code != cli.ExitCancelled || out.Len() != 0 || unknown != (command == "start") {
 						t.Fatal("post-dispatch cancellation changed uncertainty", code, out.String(), diagnostic.String())
+					}
+					return
+				}
+				if wait == "deadline-after" {
+					unknown := strings.Contains(diagnostic.String(), `"outcome_unknown":true`)
+					if code != cli.ExitCancelled || ctx.Err() != context.DeadlineExceeded || out.Len() != 0 || !strings.Contains(diagnostic.String(), "deadline_exceeded") || unknown != (command == "start") || time.Since(started) > 9*time.Second {
+						t.Fatal("post-dispatch deadline changed original request or uncertainty", code, out.String(), diagnostic.String(), time.Since(started))
 					}
 					return
 				}

@@ -2,7 +2,6 @@ package reviewexec
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -75,9 +74,9 @@ func sourceSuffixReader() *readinessTestReader {
 }
 
 func TestSourceTargetAssessmentsReuseCombinedObservationAcrossSuffixEdits(t *testing.T) {
-	f, a, evidence := sourceSuffixCoverageFixture(t)
+	f, a, evidence, _ := coverageFixture(t, 0, false)
 	coverageFinalize(t, f, a, evidence, 0)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	revision := int64(1)
 	configuration := Configuration{CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}
 	replace := func() {
@@ -94,7 +93,7 @@ func TestSourceTargetAssessmentsReuseCombinedObservationAcrossSuffixEdits(t *tes
 	if original.Observation == nil || original.Observation.ParentPullNumber != 4 {
 		t.Fatal("fixture did not resolve actual parent after target", original)
 	}
-	retained := sourceConfigurationSnapshot(t, f, "review_source_refreshes")
+	retained := snapshotTable(t, f, "review_source_refreshes")
 	sourceCalls, ciCalls, reviewCalls := reader.calls.Load(), reader.ciCalls.Load(), reader.reviewCalls.Load()
 	scope := sourceCIScope(t, f)
 	assertAssessments := func(stale bool) {
@@ -133,13 +132,15 @@ func TestSourceTargetAssessmentsReuseCombinedObservationAcrossSuffixEdits(t *tes
 		} else if policy.State != "sufficient" || policy.Reason != "" || ci.State != "not_required" || diagnostics.State != "not_required" || readiness.State != "ready_as_observed" || len(readiness.Reasons) != 0 || !reflect.DeepEqual(readiness.CI, *original.CI) || !reflect.DeepEqual(readiness.ReviewState, *original.ReviewState) {
 			t.Fatal("irrelevant suffix/pause invalidated retained comparison", policy, ci, readiness)
 		}
-		if before != readinessDurable(t, f, a) || retained != sourceConfigurationSnapshot(t, f, "review_source_refreshes") || sourceCalls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || reviewCalls != reader.reviewCalls.Load() {
+		if before != readinessDurable(t, f, a) || retained != snapshotTable(t, f, "review_source_refreshes") || sourceCalls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || reviewCalls != reader.reviewCalls.Load() {
 			t.Fatal("assessment mutated retained source/CI/readiness or contacted provider")
 		}
 	}
 	assertAssessments(false)
-	configuration.Queue = append(configuration.Queue, 6)
-	replace()
+	if _, err := f.e.ChangeQueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "enroll-later", "add", QueueChange{ExpectedConfigurationRevision: revision, PullNumber: 6}); err != nil {
+		t.Fatal(err)
+	}
+	revision++
 	configuration.Queue = []int64{2, 4, 6}
 	assertAssessments(false)
 	configuration.Queue = []int64{2, 6, 4}
@@ -185,7 +186,7 @@ func TestSourceTargetAssessmentsReuseCombinedObservationAcrossSuffixEdits(t *tes
 	// re-evaluates the same facts and can add a missing required channel.
 	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 	assertAssessments(false)
-	assessmentPolicy(t, f, 2, []string{"cli", "hosted"}, []string{})
+	assessmentPolicy(t, f, 2, []string{"cli", "hosted"})
 	policy, err := f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || policy.State != "held" || policy.Reason != "" || policy.PolicyRevision != 3 {
 		t.Fatal("current policy did not re-evaluate retained facts", policy, err)
@@ -194,7 +195,7 @@ func TestSourceTargetAssessmentsReuseCombinedObservationAcrossSuffixEdits(t *tes
 	if err != nil || readiness.State != "held" || !slices.Contains(readiness.Reasons, "review_coverage_missing") {
 		t.Fatal("current readiness policy bypassed", readiness, err)
 	}
-	if retained != sourceConfigurationSnapshot(t, f, "review_source_refreshes") || sourceCalls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || reviewCalls != reader.reviewCalls.Load() {
+	if retained != snapshotTable(t, f, "review_source_refreshes") || sourceCalls != reader.calls.Load() || ciCalls != reader.ciCalls.Load() || reviewCalls != reader.reviewCalls.Load() {
 		t.Fatal("current policy update required provider refresh or rewrote observations")
 	}
 	// Repository rebinding invalidates native derived proofs too; keep this
@@ -258,57 +259,4 @@ func TestSourceTargetInFlightRefreshAllowsSuffixAndRejectsActualParentRemoval(t 
 	if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
 		t.Fatal("source compatibility authorized review execution")
 	}
-}
-
-func sourceConfigurationSnapshot(t *testing.T, f *attemptFixture, table string) string {
-	t.Helper()
-	rows, err := f.store.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := [][]any{}
-	for rows.Next() {
-		values := make([]any, len(columns))
-		ptrs := make([]any, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatal(err)
-		}
-		result = append(result, values)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(result)
-	return string(b)
-}
-
-func sourceSuffixCoverageFixture(t *testing.T) (*attemptFixture, Attempt, string) {
-	t.Helper()
-	f, a, input := evidenceFixture(t, "cli", false)
-	if err := EnsureAdjudicationSchema(t.Context(), f.store); err != nil {
-		t.Fatal(err)
-	}
-	input.ExpectedAnchor.ParentSHA = input.ExpectedAnchor.BaseSHA
-	input.ExpectedAnchor.ParentPullNumber = 4
-	input.ExpectedAnchor.BaseRef = "source-4"
-	var err error
-	a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, input.ExpectedAnchor, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input.Review.Findings = []reviewprovider.ParsedFinding{}
-	input.Review.ReportedFindings = 0
-	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return f, a, receipt.ID
 }

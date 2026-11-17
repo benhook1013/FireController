@@ -84,6 +84,10 @@ func findingLines(body string) ([]findingLine, bool) {
 		l := findingLine{start: offset, end: end, next: next, quote: quote, text: strings.TrimSpace(text)}
 		trimmed := strings.TrimLeft(text, " ")
 		indent := len(text) - len(trimmed)
+		preText := trimmed
+		if pre == 0 {
+			preText = findingPreStructuralText(trimmed)
+		}
 		if quote > 1 {
 			l.hidden = true
 		} else if fence != 0 {
@@ -97,9 +101,9 @@ func findingLines(body string) ([]findingLine, bool) {
 			}
 		} else if indent > 3 || strings.HasPrefix(trimmed, "\t") {
 			l.hidden = true
-		} else if pre > 0 || findingPre.MatchString(trimmed) {
+		} else if pre > 0 || findingPre.MatchString(preText) {
 			l.hidden = true
-			for _, tag := range findingPre.FindAllString(trimmed, -1) {
+			for _, tag := range findingPre.FindAllString(preText, -1) {
 				if strings.HasPrefix(tag, "</") {
 					if pre > 0 {
 						pre--
@@ -1063,4 +1067,54 @@ func decodeHostedFindings(publication HostedPublication) HostedFindingInventory 
 		result.Reason = "finding_inventory_complete"
 	}
 	return result
+}
+
+// Inline code is literal text, not an HTML pre opener. This projection is used
+// only for pre tags: original lines, finding offsets and count evidence stay intact.
+// Unmatched delimiters remain untouched rather than hiding unproven structure.
+func findingPreStructuralText(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] != '`' {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && text[i] == '`' {
+			i++
+		}
+		width := i - start
+		// Backslash-escaped delimiters are literal, not a proven code-span boundary.
+		slashes := 0
+		for k := start - 1; k >= 0 && text[k] == '\\'; k-- {
+			slashes++
+		}
+		if slashes%2 != 0 {
+			out.WriteString(text[start:i])
+			continue
+		}
+		end := -1
+		for j := i; j < len(text); {
+			if text[j] != '`' {
+				j++
+				continue
+			}
+			a := j
+			for j < len(text) && text[j] == '`' {
+				j++
+			}
+			if j-a == width {
+				end = j
+				break
+			}
+		}
+		if end < 0 {
+			out.WriteString(text[start:])
+			break
+		}
+		out.WriteByte(' ')
+		i = end
+	}
+	return out.String()
 }

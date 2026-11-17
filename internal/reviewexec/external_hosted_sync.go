@@ -178,7 +178,7 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 	if run.NativeOperationID == "" || run.TriggerCommentID <= 0 {
 		return false, false, nil
 	}
-	o, err := readOperation(ctx, tx, target.project, run.NativeOperationID)
+	o, err := readOperationBase(ctx, tx, target.project, run.NativeOperationID)
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "not_found" {
@@ -211,6 +211,16 @@ func externalHostedNativeBinding(ctx context.Context, tx *sql.Tx, target lifecyc
 	}
 	if a.State == "posting" || a.State == "active" || a.State == "uncertain" {
 		return true, false, nil
+	}
+	// Explicit local abandonment releases execution ownership, not the original
+	// provider's eventual findings. Preserve a later supported publication through
+	// the ordinary external archive without reopening or crediting this attempt.
+	if a.State == "cancelled" && o.State == "cancelled" && o.Reason == "operator_abandoned_pending" {
+		evidenceID, err := readHostedRecoveryEvidence(ctx, tx, a, o)
+		if err != nil || evidenceID != "" {
+			return false, true, nil
+		}
+		return false, false, nil
 	}
 	evidenceID, err := readHostedRecoveryEvidence(ctx, tx, a, o)
 	if err != nil && !externalNativeRecordMissing(err) {
@@ -311,7 +321,7 @@ func externalNativeCapturesWithinBudget(ctx, readCtx context.Context, tx Evidenc
 		if readCtx.Err() != nil {
 			return nil, true, nil
 		}
-		o, err := readOperation(readCtx, tx, target.project, b.operation)
+		o, err := readOperationBase(readCtx, tx, target.project, b.operation)
 		if err != nil {
 			if !externalNativeRecordMissing(err) {
 				return nil, false, err
@@ -474,6 +484,11 @@ func publishExternalHostedBatch(ctx context.Context, tx *sql.Tx, target lifecycl
 		}
 		unsupported = true
 		changed = false
+	}
+	if changed {
+		if err = holdQueuedExternalHosted(ctx, tx, target.project, target.number, true); err != nil {
+			return false, false, err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `RELEASE external_hosted_candidate`)
 	return changed, unsupported, err

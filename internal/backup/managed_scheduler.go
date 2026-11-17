@@ -13,12 +13,18 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/benhook1013/FireController/internal/backupphase"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 const managedSettlementTimeout = 5 * time.Second
 
+// DefaultMaxBytes bounds retained managed copies, not transient snapshot space.
+const DefaultMaxBytes int64 = 5 << 30
+
 type ScheduleConfig struct {
+	PhaseLease  string        `json:"-"`
+	MaxBytes    int64         `json:"max_bytes,omitempty"`
 	Destination string        `json:"destination"`
 	Interval    time.Duration `json:"interval"`
 	Timeout     time.Duration `json:"timeout"`
@@ -33,8 +39,11 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 	if cfg == (ScheduleConfig{}) {
 		return cfg, nil
 	}
-	if cfg.Destination == "" || strings.TrimSpace(cfg.Destination) != cfg.Destination || len(cfg.Destination) > 2048 || strings.IndexFunc(cfg.Destination, unicode.IsControl) >= 0 || cfg.Interval < time.Minute || cfg.Interval > 30*24*time.Hour || cfg.Keep < 1 || cfg.Keep > 1000 || cfg.Timeout < 0 || cfg.Timeout > 24*time.Hour {
-		return ScheduleConfig{}, core.Fail("configuration_invalid", "Supply a private backup destination, interval from one minute to thirty days, keep from one to one thousand, and a positive timeout no greater than twenty-four hours.", 400)
+	if cfg.Destination == "" || strings.TrimSpace(cfg.Destination) != cfg.Destination || len(cfg.Destination) > 2048 || strings.IndexFunc(cfg.Destination, unicode.IsControl) >= 0 || cfg.Interval < time.Minute || cfg.Interval > 30*24*time.Hour || cfg.Keep < 1 || cfg.Keep > 1000 || cfg.Timeout < 0 || cfg.Timeout > 24*time.Hour || cfg.MaxBytes < 0 {
+		return ScheduleConfig{}, core.Fail("configuration_invalid", "Supply a private backup destination, interval from one minute to thirty days, keep from one to one thousand, a positive timeout no greater than twenty-four hours, and a nonnegative retained-byte budget (zero uses 5 GiB).", 400)
+	}
+	if cfg.PhaseLease != "" && (len(cfg.PhaseLease) > 2048 || strings.IndexFunc(cfg.PhaseLease, unicode.IsControl) >= 0 || !filepath.IsAbs(cfg.PhaseLease) || filepath.Clean(cfg.PhaseLease) != cfg.PhaseLease || inspect && (within(cfg.PhaseLease, cfg.Destination) || dataDir != "" && within(cfg.PhaseLease, dataDir))) {
+		return ScheduleConfig{}, invalid()
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute
@@ -87,6 +96,7 @@ func normalizeScheduleConfig(dataDir string, cfg ScheduleConfig, inspect bool) (
 }
 
 type Manager struct {
+	phaseLease      string
 	store           *core.Store
 	dataDir         string
 	config          ScheduleConfig
@@ -163,7 +173,9 @@ func NewManager(store *core.Store, dataDir string, cfg ScheduleConfig) (*Manager
 	if err = EnsureManagedSchema(ctx, store); err != nil {
 		return nil, err
 	}
-	m := &Manager{store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: createManaged, remove: removeManagedBundle}
+	phaseLease := cfg.PhaseLease
+	cfg.PhaseLease = "" // Runtime custody is not restored authority or a backup-format change.
+	m := &Manager{phaseLease: phaseLease, store: store, dataDir: dataDir, config: cfg, now: time.Now, wait: scheduleWait, create: createManaged, remove: removeManagedBundle}
 	now := time.Now().UTC()
 	err = store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		old, err := loadManaged(ctx, tx)
@@ -331,6 +343,40 @@ func retentionSettledAfter(r *RetentionStatus, finished string) bool {
 }
 
 func (m *Manager) attempt(parent context.Context) error {
+	release, leaseErr := backupphase.Acquire(parent, m.phaseLease)
+	if leaseErr != nil {
+		return unavailable()
+	}
+	defer release()
+	// An incomplete pass must be resumed before more snapshot
+	// growth. The same serial worker owns this bounded phase; no second job
+	// or unverified cache is created. Once maintenance completes, normal
+	// creation proceeds immediately with its unchanged phase budget.
+	readCtx, readDone := context.WithTimeout(parent, managedSettlementTimeout)
+	prior, readErr := loadManaged(readCtx, m.store.DB())
+	readDone()
+	if readErr != nil {
+		return readErr
+	}
+	if prior != nil && prior.SourceInstanceID == m.store.InstanceID() && prior.Status.Retention != nil && prior.Status.Retention.State != "complete" {
+		if prior.Status.LastAttempt == nil {
+			// Legacy retention-only history cannot be labelled as a running
+			// creation. With no owned files there is no maintenance to perform;
+			// otherwise preserve custody and surface the missing history.
+			check, done := context.WithTimeout(parent, managedSettlementTimeout)
+			var owned int
+			e := m.store.DB().QueryRowContext(check, `SELECT EXISTS(SELECT 1 FROM managed_backup_bundles WHERE destination=? AND source_instance_id=? AND state!='deleted')`, m.config.Destination, m.store.InstanceID()).Scan(&owned)
+			done()
+			if e != nil {
+				return unavailable()
+			}
+			if owned != 0 {
+				return core.Fail("backup_retention_failed", "Managed maintenance requires retained creation history; existing owned bundles are preserved.", 503)
+			}
+		} else if err := m.maintain(parent); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, m.config.Timeout)
 	defer cancel()
 	start := managedStamp(m.now())
@@ -343,7 +389,11 @@ func (m *Manager) attempt(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	result, err := m.create(ctx, m.store, m.dataDir, m.config.Destination)
+	var result createdBundle
+	err = m.admitSnapshotGrowth(ctx)
+	if err == nil {
+		result, err = m.create(ctx, m.store, m.dataDir, m.config.Destination)
+	}
 	if err == nil {
 		// Creation already verified these exact bytes. Settlement must not use
 		// an expired snapshot context or rescan a potentially large bundle.
@@ -390,10 +440,25 @@ func (m *Manager) attempt(parent context.Context) error {
 		}
 		return safeManaged(err)
 	}
+	return m.maintain(parent)
+}
+
+func (m *Manager) maintain(parent context.Context) error {
+	// Persist activity before hashing; retain prior maintenance debt until a
+	// complete pass, including across cancellation, restart or a true error.
+	startCtx, startDone := context.WithTimeout(context.WithoutCancel(parent), managedSettlementTimeout)
+	startErr := m.update(startCtx, func(r *managedRecord, _ *sql.Tx) error {
+		r.Status.State, r.Status.NextAttemptAt = "running", ""
+		return nil
+	})
+	startDone()
+	if startErr != nil {
+		return startErr
+	}
 	// Retention has its own bounded phase budget, still owned by this worker's
 	// parent cancellation rather than detached from shutdown.
 	retentionCtx, cancelRetention := context.WithTimeout(parent, m.config.Timeout)
-	err = m.retain(retentionCtx)
+	err := m.retain(retentionCtx)
 	cancelRetention()
 	stamp := managedStamp(m.now())
 	settle, done := context.WithTimeout(context.Background(), 5*time.Second)

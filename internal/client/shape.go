@@ -23,6 +23,9 @@ func requiredShape(data []byte, t reflect.Type) bool {
 		}
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
+			if field.PkgPath != "" || field.Tag.Get("json") == "-" {
+				continue
+			}
 			tag := strings.Split(field.Tag.Get("json"), ",")
 			raw, present := object[tag[0]]
 			// Existing job pages omit the terminal cursor; the typed result still

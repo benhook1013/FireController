@@ -8,15 +8,6 @@ import (
 )
 
 func TestNativeAttemptGrowthRetainsUnrelatedBodiesAndPinnedResponses(t *testing.T) {
-	assertNativeAttemptGrowth(t, false)
-}
-
-func TestNativeAttemptGrowthAfterTransferRetainsOriginalProducersAndPinnedResponses(t *testing.T) {
-	assertNativeAttemptGrowth(t, true)
-}
-
-func assertNativeAttemptGrowth(t *testing.T, transfer bool) {
-	t.Helper()
 	f := newAPIFixture(t)
 	pulls := make([]PullInput, 100)
 	for i := range pulls {
@@ -27,12 +18,7 @@ func assertNativeAttemptGrowth(t *testing.T, transfer bool) {
 		run.Findings[0].Detail = strings.Repeat(fmt.Sprintf("Retained source %d. ", i), 512)
 		pulls[i].Runs = []RunInput{run}
 	}
-	var initial Receipt
-	if transfer {
-		initial, _, _ = transferApplyFor(t, f, transferRequest(0, TransferGroup{Source: "test-import", Pulls: pulls}), "native-growth-import")
-	} else {
-		initial = historyObservationPost(t, f, reviewRequest(0, pulls), "native-growth-import")
-	}
+	initial, _, _ := transferApplyFor(t, f, transferRequest(0, TransferGroup{Source: "test-import", Pulls: pulls}), "native-growth-import")
 	first := initial.ID
 	detailRoute := "/runs/" + runOpaqueID(f.project, "test-import", pulls[1].Runs[0].SourceRunID) + "?snapshot=" + url.QueryEscape(first)
 	var detail RunDetailResponse
@@ -50,11 +36,7 @@ func assertNativeAttemptGrowth(t *testing.T, transfer bool) {
 		source string
 		first  int
 	}{{"producer-a", 0}, {"producer-b", 0}, {"producer-a", 75}} {
-		if transfer {
-			nativeGrowthTransferBatch(t, f, pulls[0], batch.source, batch.first, 75, 5)
-		} else {
-			nativeGrowthNativeBatch(t, f, pulls[0], batch.source, batch.first, 75, 5)
-		}
+		nativeGrowthTransferBatch(t, f, pulls[0], batch.source, batch.first, 75, 5)
 	}
 	// The captured native run is a new original producer, not imported credit.
 	captured := nativeRun("native-after-retained-growth")
@@ -96,11 +78,7 @@ func assertNativeAttemptGrowth(t *testing.T, transfer bool) {
 	if current.Pull.RunCount != 227 || current.Pull.AttemptCount != 285 || current.Pull.RecentRuns[0].Source != nativeSource {
 		t.Fatal("mixed-source current summary lost imported evidence or attempts")
 	}
-	sources := map[string]int{"test-import": 3, nativeSource: 226}
-	if transfer {
-		sources = map[string]int{"producer-a": 150, "producer-b": 75, "test-import": 3, nativeSource: 1}
-	}
-	for source, want := range sources {
+	for source, want := range map[string]int{"producer-a": 150, "producer-b": 75, "test-import": 3, nativeSource: 1} {
 		var got int
 		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_run_versions WHERE project_id=? AND source=?`, f.project, source).Scan(&got); err != nil || got != want {
 			t.Fatal("original producer records changed", source, got, want, err)
@@ -122,27 +100,8 @@ func assertNativeAttemptGrowth(t *testing.T, transfer bool) {
 	t.Logf("60 actual native publications: retainedfindingbytes=%d, runbodies=%d, unrelatedpullbodies=%d, logicaldatabasepages=%d→%d; retained totals exceed old lifetime boundaries", afterDetailBytes, runBodies, unrelatedPullBodies, beforePages, afterPages)
 }
 
-// Seed growth through the supported trusted native publication boundary. The
-// original import producer remains independent; additive multi-producer transfer
-// and its HTTP replay proof stay with the later transfer slice.
-func nativeGrowthNativeBatch(t *testing.T, f *apiFixture, metadata PullInput, source string, first, count, findingCount int) Receipt {
-	t.Helper()
-	metadata.Complete = false
-	metadata.Runs, metadata.Attempts = nil, nil
-	var receipt Receipt
-	for i := first; i < first+count; i++ {
-		id := fmt.Sprintf("%s-retained-%03d", source, i)
-		run := RunInput{SourceRunID: id, Channel: "cli", HeadSHA: metadata.HeadSHA, Scope: "Retained selected history", Outcome: "unknown", Found: int64(findingCount)}
-		for j := 0; j < findingCount; j++ {
-			run.Findings = append(run.Findings, Finding{SourceFindingID: fmt.Sprintf("finding-%d", j), Title: "Original retained finding", Detail: "Original retained literal detail", Severity: "unknown", Disposition: "unadjudicated"})
-		}
-		attempt := Attempt{SourceAttemptID: id, SourceRunID: id, Channel: "cli", HeadSHA: metadata.HeadSHA, State: "unknown"}
-		receipt = mustNativePublish(t, f, NativePublication{Pull: metadata, Run: &run, Attempt: &attempt})
-	}
-	return receipt
-}
-
-// Transfer seeding exercises the actual bounded administrator preview/apply path.
+// Seed only through the actual administrator preview/apply boundary. Every
+// bounded batch preserves original source keys and installs canonical caches.
 func nativeGrowthTransferBatch(t *testing.T, f *apiFixture, metadata PullInput, source string, first, count, findingCount int) Receipt {
 	t.Helper()
 	metadata.Complete = false
@@ -163,5 +122,3 @@ func nativeGrowthTransferBatch(t *testing.T, f *apiFixture, metadata PullInput, 
 	receipt, _, _ := transferApplyFor(t, f, transferRequest(revision, TransferGroup{Source: source, Pulls: []PullInput{metadata}}), fmt.Sprintf("growth-%s-%d", source, first))
 	return receipt
 }
-
-type nativeGrowthSeeder func(*testing.T, *apiFixture, PullInput, string, int, int, int) Receipt

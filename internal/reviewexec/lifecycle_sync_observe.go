@@ -16,6 +16,18 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if target.watch != nil {
 		return e.observeCIWatch(ctx, target, s)
 	}
+	if target.lane == lifecycleMetadata {
+		ctx = reviewprovider.WithGitHubCaller(ctx, "lifecycle_metadata")
+	} else {
+		caller := "lifecycle_enrichment_periodic"
+		if target.forceCI {
+			caller = "lifecycle_enrichment_hint"
+		} else if target.due.head != target.due.enrichmentHead || target.due.baseSHA != target.due.enrichmentBaseSHA || target.due.baseRef != target.due.enrichmentBaseRef {
+			caller = "lifecycle_enrichment_comparison"
+		}
+		ctx = reviewprovider.WithGitHubCaller(ctx, caller)
+	}
+	ctx = reviewprovider.WithGitHubTarget(ctx, target.repository, target.number)
 	state, head := "", ""
 	var providerErr error
 	ciCollected := false
@@ -32,6 +44,10 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			s.holdStoredState(target.project, target.number, target.lane, target.wakeComparison, result)
 			result = nil
 		}
+		// Diagnostics must follow all result and protective-hold decisions:
+		// their bounded wait may expire the parent context.
+		s.observeCadenceShadow()
+		e.observeCadenceDemand(ctx, s)
 	}()
 	// Recheck selected configuration before provider work. A pause-only change
 	// is intentionally harmless; changing repository, enrollment or capability holds.
@@ -44,20 +60,29 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	if err != nil || !bound {
 		return err
 	}
-	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	repo, err := target.reader.Repository(readCtx, target.repository)
-	if err != nil {
-		cancel()
-		providerErr = err
-		return nil
+	shared := e.beginLifecycleCIShare(ctx, target, s)
+	var sharedItem CIWatchItem
+	sharedValid := false
+	if shared != nil {
+		defer func() {
+			if !published || result != nil || !sharedValid {
+				shared.entry.cancel()
+			}
+			s.finishCIWatch(shared.ctx, target, shared, sharedItem, nil, false)
+		}()
 	}
-	if repo.ID != target.repository || !repository.MatchString(repo.FullName) {
+	var pull reviewprovider.Pull
+	var repo reviewprovider.Repository
+	observedAt := ""
+	if target.prepared != nil {
+		pull, repo, err = target.prepared.pull, target.prepared.repo, target.prepared.err
+		observedAt = target.prepared.observedAt
+	} else {
+		readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		pull, repo, err = readLifecyclePull(readCtx, target)
 		cancel()
-		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
-		return nil
+		observedAt = stamp()
 	}
-	pull, err := target.reader.Pull(readCtx, repo.FullName, target.number)
-	cancel()
 	if err != nil {
 		providerErr = err
 		return nil
@@ -66,7 +91,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		providerErr = &reviewprovider.Error{Code: "provider_invalid_response"}
 		return nil
 	}
-	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: stamp()}
+	plan := SourcePlan{Repository: repo, Pull: pull, ObservedAt: observedAt}
 	display := sourceDisplayPull(plan)
 	// Reject invalid display fields before claiming a current comparison or
 	// doing enrichment. The publisher can omit invalid records in a batch,
@@ -132,34 +157,35 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	// is not refreshed by a cheap poll; a new head always requires fresh evidence.
 	collectCI := state == "open" && (target.forceCI || target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef || !s.options.Now().Before(target.due.ci))
 	if collectCI {
-		// A failed collection supplies no replacement commit identity. Keep a
-		// known webhook alias only while its original comparison still binds;
-		// this does not preserve CI success or bypass normal retry backoff.
+		// Retain an existing webhook alias on failed collection only for the same comparison.
 		if target.due.ciHead != head || target.due.ciBaseSHA != pull.BaseSHA || target.due.ciBaseRef != pull.BaseRef {
 			target.due.ciCommit = ""
 		}
 		ciCollected = true
 		ciState = "unknown"
 		ciReason = "ci_reader_unavailable"
-		if reader, ok := target.reader.(sourceCIReader); ok {
-			ciReason = "ci_observation_invalid"
-			ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
-			observation, readErr := reader.ObserveRequiredCI(ciCtx, sourceCITarget(sourcePlanObservation(plan)))
-			if readErr != nil {
-				providerErr = readErr
-				// Classify before cleanup cancels the collection context, or an
-				// ordinary provider failure would look like caller cancellation.
-				ciReason = sourceCIErrorReason(ciCtx, readErr)
-			} else if validSourceCI(observation, sourcePlanObservation(plan)) && !observation.StartedAt.Before(mustLifecycleTime(plan.ObservedAt)) && !observation.ObservedAt.Before(observation.StartedAt) && !observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
-				target.due.ciCommit = observation.SelectedCommitSHA
-				ciReason = observation.Reason
-				if ciReason == "" && observation.State == "unproven" {
-					ciReason = "ci_unproven"
-				}
-				ciState = sourceCIQueueState(observation.State)
+		target.due.ciGateRef, target.due.ciGateState = "", ""
+		ciCtx, ciCancel := context.WithTimeout(ctx, reviewprovider.CIObservationTimeout)
+		observation, reason, readErr := observeLifecycleCIGateWithCohort(ciCtx, target.reader, plan, target.cohort)
+		if readErr != nil {
+			providerErr = readErr
+			ciReason = sourceCIErrorReason(ciCtx, readErr)
+		} else if reason != "" {
+			ciReason = reason
+		} else {
+			target.due.ciGateRef = repo.DefaultBranch
+			target.due.ciCommit = observation.SelectedCommitSHA
+			ciReason = observation.Reason
+			if ciReason == "" && observation.State == "unproven" {
+				ciReason = "ci_unproven"
 			}
-			ciCancel()
+			ciState = sourceCIQueueState(observation.State)
+			target.due.ciGateState = ciState
+			if shared != nil {
+				sharedItem, sharedValid = lifecycleCIWatchItem(target.project, observation)
+			}
 		}
+		ciCancel()
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -167,7 +193,12 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 	var external []reviewprovider.ExternalHostedRun
 	var hostedCollected bool
 	var externalErr error
-	if !target.ciOnly {
+	// Hosted history is collected by PR and attributed to each review's own
+	// retained head. A moving base can invalidate CI, but does not invalidate
+	// an otherwise current inventory of the same head and lifecycle state.
+	hostedDue := head != target.due.hostedHead || state != target.due.hostedState || target.due.hostedError != "" ||
+		!s.options.Now().Before(target.due.hostedCheckedAt.Add(healthyHostedInterval))
+	if !target.ciOnly && hostedDue {
 		external, hostedCollected, externalErr = collectExternalHosted(ctx, target, repo.FullName, providerErr)
 	}
 	if externalErr != nil && (providerErr == nil || lifecycleProviderDelay(externalErr, 0) > lifecycleProviderDelay(providerErr, 0)) {
@@ -235,6 +266,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 		if hostedCollected {
 			target.due.hostedCheckedAt = s.options.Now()
+			target.due.hostedHead, target.due.hostedState = head, state
 			target.due.hostedError = lifecycleErrorCode(externalErr)
 			if externalErr == nil && externalDeferred {
 				target.due.hostedError = lifecycleErrorCode(externalHostedUnproven())
@@ -242,6 +274,33 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		}
 	}
 	return err
+}
+
+// Try the configured name first, but trust only the ID in the provider's
+// response. A renamed repository can be recovered through its stable ID.
+func readLifecyclePull(ctx context.Context, target lifecycleTarget) (reviewprovider.Pull, reviewprovider.Repository, error) {
+	if reader, ok := target.reader.(interface {
+		PullWithRepository(context.Context, string, int64) (reviewprovider.Pull, reviewprovider.Repository, error)
+	}); ok && repository.MatchString(target.repositoryName) {
+		pull, repo, err := reader.PullWithRepository(ctx, target.repositoryName, target.number)
+		if err == nil && repo.ID == target.repository && repository.MatchString(repo.FullName) {
+			return pull, repo, nil
+		}
+		var failure *reviewprovider.Error
+		if err != nil && !errors.Is(err, reviewprovider.ErrCombinedPullUnsupported) &&
+			(!errors.As(err, &failure) || (failure.Code != "provider_not_found" && failure.Status != 301 && failure.Status != 302 && failure.Status != 307 && failure.Status != 308)) {
+			return reviewprovider.Pull{}, reviewprovider.Repository{}, err
+		}
+	}
+	repo, err := target.reader.Repository(ctx, target.repository)
+	if err != nil {
+		return reviewprovider.Pull{}, reviewprovider.Repository{}, err
+	}
+	if repo.ID != target.repository || !repository.MatchString(repo.FullName) {
+		return reviewprovider.Pull{}, reviewprovider.Repository{}, &reviewprovider.Error{Code: "provider_invalid_response"}
+	}
+	pull, err := target.reader.Pull(ctx, repo.FullName, target.number)
+	return pull, repo, err
 }
 
 func (e *Engine) lifecycleEnrichmentCurrent(ctx context.Context, tx *sql.Tx, target *lifecycleTarget, comparison lifecycleComparison) (bool, error) {
@@ -297,4 +356,44 @@ func (e *Engine) lifecycleBinding(ctx context.Context, tx *sql.Tx, target lifecy
 		return false, err
 	}
 	return visible, nil
+}
+
+// Use the final branch's required-check authority without replacing the actual
+// PR comparison. A stacked result never claims a hypothetical final merge ran.
+func observeLifecycleCIGate(ctx context.Context, reader TargetReader, plan SourcePlan) (reviewprovider.CIObservation, string, error) {
+	return observeLifecycleCIGateWithCohort(ctx, reader, plan, nil)
+}
+
+func observeLifecycleCIGateWithCohort(ctx context.Context, reader TargetReader, plan SourcePlan, cohort *reviewprovider.CIGateCohort) (reviewprovider.CIObservation, string, error) {
+	var observation reviewprovider.CIObservation
+	gate := plan.Repository.DefaultBranch
+	if gate == "" || !safeText(gate, 256) {
+		return observation, "ci_gate_unproven", nil
+	}
+	source := sourcePlanObservation(plan)
+	var err error
+	if cohort != nil {
+		observation, err = cohort.ObserveCIGate(ctx, sourceCITarget(source), gate)
+	} else if gateReader, ok := advertisedCIGateReader(reader); ok {
+		observation, err = gateReader.ObserveCIGate(ctx, sourceCITarget(source), gate)
+	} else if baseReader, ok := reader.(sourceCIReader); ok && gate == source.BaseRef {
+		// Older adapters are safe only when selected and actual gates coincide.
+		observation, err = baseReader.ObserveRequiredCI(ctx, sourceCITarget(source))
+	} else {
+		return observation, "ci_gate_reader_unavailable", nil
+	}
+	if err != nil {
+		return reviewprovider.CIObservation{}, "", err
+	}
+	if !validCIWithAuthorityBranch(observation, source, gate, false) || observation.StartedAt.Before(mustLifecycleTime(source.ObservedAt)) || observation.ObservedAt.Before(observation.StartedAt) || observation.ObservedAt.After(time.Now().Add(5*time.Second)) {
+		return reviewprovider.CIObservation{}, "ci_observation_unproven", nil
+	}
+	finalRepo, err := reader.Repository(ctx, plan.Repository.ID)
+	if err != nil {
+		return reviewprovider.CIObservation{}, "", err
+	}
+	if finalRepo.ID != plan.Repository.ID || finalRepo.FullName != plan.Repository.FullName || finalRepo.DefaultBranch != gate {
+		return reviewprovider.CIObservation{}, "ci_gate_changed", nil
+	}
+	return observation, "", nil
 }

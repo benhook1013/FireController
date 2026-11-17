@@ -185,3 +185,9 @@ func TestCIWatchMixedFailureRequiresApplicableTrustedFacts(t *testing.T) {
 		})
 	}
 }
+
+func sourceCINonstrictMismatchObservation(target reviewprovider.CITarget) reviewprovider.CIObservation {
+	now := time.Now().UTC()
+	facts := &reviewprovider.CIMergeBaseMismatch{PRBaseSHA: target.BaseSHA, LiveBaseSHA: strings.Repeat("d", 40), MergeSHA: strings.Repeat("e", 40), MergeBaseParentSHA: target.BaseSHA}
+	return reviewprovider.CIObservation{Target: target, StartedAt: now, ObservedAt: now, State: "unproven", Reason: "ci_merge_base_mismatch", MergeState: "unproven", Candidate: &reviewprovider.CICandidate{State: "unproven", Reason: "ci_merge_base_mismatch", RepositoryID: target.RepositoryID, Repository: target.Repository, PullNumber: target.PullNumber, HeadSHA: target.HeadSHA, BaseSHA: target.BaseSHA, BaseRef: target.BaseRef, MergeState: "unproven", ObservedAt: now, MergeBaseMismatch: facts}}
+}

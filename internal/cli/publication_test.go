@@ -231,3 +231,78 @@ func TestPublicationCLIFIFORefusalExternallyBounded(t *testing.T) {
 		t.Fatal("FIFO blocked or failed", err, string(out))
 	}
 }
+
+func TestPublicationCLIActualLinkedSummaryMapAndWorkerPreviewApply(t *testing.T) {
+	f := mapCLIService(t)
+	if err := publicsite.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/", f.handler)
+	publicsite.New(f.store, nil).Register(mux, t.Context())
+	f.handler = mux
+	project := f.project(t, "linked-publication-cli")
+	worker := f.worker(t, project, "PRIVATE_WORKER_NAME")
+	base := "/api/v1/projects/" + project
+	job := f.call(t, "POST", base+"/jobs", f.admin, worker, map[string]any{"title": "PRIVATE_JOB_TITLE", "brief": "PRIVATE_BRIEF", "worker_id": worker})["id"].(string)
+	f.call(t, "PUT", base+"/jobs/"+job+"/summary", f.admin, worker, map[string]any{"expected_job_revision": 1, "expected_revision": 0, "title": "Selected CLI job 雪", "body": "Selected **public** summary"})
+	entry := f.call(t, "POST", base+"/map/entries", f.admin, worker, map[string]any{"kind": "workstream", "title": "Selected CLI map", "description": "Selected map description", "state": "in progress", "where": "PRIVATE_WHERE", "next": "PRIVATE_NEXT", "links": []map[string]string{{"label": "Private", "url": "https://private.invalid"}}})["id"].(string)
+	document := map[string]any{"expected_revision": 0, "enabled": true, "manifest": map[string]any{
+		"slug": "linked-cli", "presentation": map[string]any{"name": "Selected linked project"}, "description": "Manual description",
+		"project_map":  []map[string]any{{"key": "manual_map", "title": "Manual map", "phase": "Manual phase", "links": []map[string]any{{"key": "manual_link", "label": "Manual link", "url": "https://example.com/guide"}}}},
+		"progress":     []map[string]any{{"key": "manual_progress", "title": "Manual progress", "status": "Manual status"}},
+		"worker_lanes": []map[string]any{{"key": "manual_lane", "label": "Manual lane", "headline": "Manual headline", "milestones": []string{"Manual milestone"}}},
+		"job_refs":     []map[string]any{{"key": "selected_job", "job_id": job, "summary_revision": 1}},
+		"map_refs":     []map[string]any{{"key": "selected_map", "entry_id": entry, "revision": 1}},
+		"worker_refs":  []map[string]any{{"key": "selected_worker", "worker_id": worker, "label": "Explicit public label"}},
+	}}
+	raw, _ := json.Marshal(document)
+	file := publicationCLIFile(t, string(raw))
+	srv := httptest.NewServer(f.handler)
+	defer srv.Close()
+	profiles := mutationProfiles(t, f, srv.URL, map[string][2]string{"chosen": {project, worker}})
+	invoke := func(args ...string) string {
+		t.Helper()
+		code, out, diagnostic := mutationInvoke(t, profiles, "chosen", args...)
+		if code != 0 || diagnostic != "" {
+			t.Fatal(code, out, diagnostic)
+		}
+		return out
+	}
+	before := mapLedgerCounts(t, f)
+	providers := f.resolverHit.Load()
+	var preview client.PublicationPreview
+	if err := json.Unmarshal([]byte(invoke("publication", "preview", "--file", file)), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Content.Progress) != 2 || preview.Content.Progress[0].Status != "Manual status" || preview.Content.Progress[1].Title != "Selected CLI job 雪" || len(preview.Content.ProjectMap) != 2 || preview.Content.ProjectMap[0].Phase != "Manual phase" || preview.Content.ProjectMap[0].Links[0].URL != "https://example.com/guide" || preview.Content.ProjectMap[1].Description != "Selected map description" || len(preview.Content.WorkerLanes) != 2 || preview.Content.WorkerLanes[0].Headline != "Manual headline" || preview.Content.WorkerLanes[1].Label != "Explicit public label" || preview.Content.WorkerLanes[1].Headline != "Selected CLI job 雪" || !reflect.DeepEqual(before, mapLedgerCounts(t, f)) {
+		t.Fatal("linked preview lost editorial selection or changed state", preview)
+	}
+	selected, err := client.DecodePublicationInput(raw)
+	if err != nil || !reflect.DeepEqual(preview.Manifest, selected.Manifest) {
+		t.Fatal("preview lost authenticated source refs", err)
+	}
+	args := []string{"publication", "apply", "--file", file, "--preview-sha256", preview.SHA256, "--key", "linked-cli-apply"}
+	first := invoke(args...)
+	before = mapLedgerCounts(t, f)
+	if !strings.Contains(first, `"revision":1`) || invoke(args...) != first || !reflect.DeepEqual(before, mapLedgerCounts(t, f)) {
+		t.Fatal("linked apply/replay changed effects")
+	}
+	response, err := http.Get(srv.URL + "/api/v1/public/projects/linked-cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	published, _ := io.ReadAll(response.Body)
+	if response.StatusCode != 200 {
+		t.Fatal(response.StatusCode, string(published))
+	}
+	for _, private := range []string{job, entry, worker, "job_refs", "map_refs", "worker_refs", "PRIVATE_", "private.invalid"} {
+		if strings.Contains(string(published), private) {
+			t.Fatal("anonymous projection exposed private source", private)
+		}
+	}
+	if f.resolverHit.Load() != providers {
+		t.Fatal("publication invoked provider")
+	}
+}

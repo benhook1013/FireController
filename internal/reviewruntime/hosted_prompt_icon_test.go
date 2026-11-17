@@ -74,7 +74,7 @@ func TestRecoverHostedPromptIconPreservesSixFindingsAndOriginalAttempt(t *testin
 				t.Fatal("raw original provider facts changed", err)
 			}
 			adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scope(t, f.writer, false), got.EvidenceID)
-			if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || len(adjudication.Findings) != 6 || nativeHostedCredit(t, f) != 0 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 {
+			if err != nil || adjudication.Finalized || adjudication.FrozenCounts != nil || len(adjudication.Findings) != 6 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 {
 				t.Fatal("capture invented finalized credit or retained reservation", err)
 			}
 			for _, decision := range adjudication.Findings {
@@ -113,7 +113,7 @@ func TestRecoverHostedPromptUnknownFinishedInventoryStaysUncertainThenRecovers(t
 		t.Fatal("finished attributed publication with unknown summary was not held", got, err)
 	}
 	bound, err := f.engine.ReadHostedRecovery(t.Context(), f.project, a.ID, "runtime-capability")
-	if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != got.Reason || bound.Attempt.ExternalID != "100" || *bound.Attempt.Anchor != *a.Anchor || bound.Attempt.Intent != a.Intent || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || nativeHostedCredit(t, f) != 0 {
+	if err != nil || bound.Attempt.State != "uncertain" || bound.Operation.Reason != got.Reason || bound.Attempt.ExternalID != "100" || *bound.Attempt.Anchor != *a.Anchor || bound.Attempt.Intent != a.Intent || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 		t.Fatal("unsupported summary lost original ownership or gained credit", err)
 	}
 	journal, err := f.engine.ReadHostedObservations(t.Context(), f.project, a.ID)
@@ -138,7 +138,7 @@ func TestRecoverHostedPromptUnknownFinishedInventoryStaysUncertainThenRecovers(t
 	}
 	reader.record = supported
 	final, err := recoverRuntime(t, f, captures, a, reader)
-	if err != nil || final.State != "completed" || final.EvidenceID == "" || final.TriggerCommentID != 100 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || nativeHostedCredit(t, f) != 0 {
+	if err != nil || final.State != "completed" || final.EvidenceID == "" || final.TriggerCommentID != 100 || recoveryRuntimeCount(t, f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 || recoveryRuntimeCount(t, f, "review_round_completions") != 0 {
 		t.Fatal("supported inventory did not recover the original held attempt", final, err)
 	}
 	retained, err := captures.Read(t.Context(), a.ID, ref)

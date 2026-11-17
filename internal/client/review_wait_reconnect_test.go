@@ -2,12 +2,14 @@ package client_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,15 +18,23 @@ import (
 )
 
 func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
-	for _, kind := range []string{"operation", "compact", "selection"} {
+	for _, kind := range []string{"operation", "compact", "selection", "ci"} {
 		t.Run(kind, func(t *testing.T) {
 			var preferences []int
+			var bodies []string
 			op := sampleReviewOperation()
 			op.State = "completed"
 			op.Revision = 3
 			op.WorkerID = "worker-one"
 			op.AttemptID = "review_attempt_" + strings.Repeat("b", 32)
-			evidenceID := "review_evidence_" + strings.Repeat("c", 32)
+			op.EvidenceID = "review_evidence_" + strings.Repeat("c", 32)
+			selection := selectionSample()
+			selection.Operation = &op
+			selection.Selection.ConfigurationRevision = op.ConfigurationRevision
+			ci := ciWatchSample()
+			ciPins := ciWatchPins()
+			ciPins[1].BaseSHA = ci.Targets[1].ObservedBaseSHA
+			ci.Targets[1].BaseSHA = ciPins[1].BaseSHA
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/instance" {
 					handshake(w)
@@ -38,8 +48,18 @@ func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
 					t.Error(err)
 				}
 				preferences = append(preferences, n)
-				if r.Method != "GET" {
-					t.Error("operation was resubmitted")
+				var body any
+				if kind == "ci" {
+					if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/reviews/ci/watch") {
+						t.Error("CI pins retargeted")
+					}
+					if json.NewDecoder(r.Body).Decode(&body) != nil {
+						t.Error("CI body missing")
+					}
+					raw, _ := json.Marshal(body)
+					bodies = append(bodies, string(raw))
+				} else if r.Method != "GET" {
+					t.Error("operation/selection was resubmitted")
 				}
 				if len(preferences) == 1 {
 					w.Header().Set("X-Request-ID", "request-restart")
@@ -52,46 +72,54 @@ func TestResultWaitReconnectKeepsOriginalReadAcrossRestart(t *testing.T) {
 					return
 				}
 				switch kind {
-				case "selection":
-					if r.URL.Path != "/api/v1/projects/project-one/reviews/selections/"+runSelectionID {
-						t.Error("selection identity changed", r.URL.Path)
-					}
-					write(w, 200, selectionSample())
 				case "operation":
 					write(w, 200, op)
 				case "compact":
-					write(w, 200, client.ReviewOperationStatus{ID: op.ID, PullNumber: 2, Channel: "cli", State: "completed", Revision: 3, Stage: "evidence_ready", AttemptID: op.AttemptID, EvidenceID: evidenceID, UpdatedAt: op.UpdatedAt, NextAction: "read_evidence"})
-
+					write(w, 200, client.ReviewOperationStatus{ID: op.ID, PullNumber: 2, Channel: "cli", State: "completed", Revision: 3, Stage: "evidence_ready", AttemptID: op.AttemptID, EvidenceID: op.EvidenceID, UpdatedAt: op.UpdatedAt, NextAction: "read_evidence"})
+				case "selection":
+					write(w, 200, selection)
+				case "ci":
+					w.Header().Set("X-FC-CI-Watch", "change-v3")
+					write(w, 200, ci)
 				}
 			}))
 			defer server.Close()
 			c := newClient(t, server)
 			var err error
 			switch kind {
-			case "selection":
-				var got client.ReviewRunState
-				got, err = c.WaitReviewSelection(t.Context(), runSelectionID, 3)
-				if got.Selection.ID != runSelectionID {
-					t.Error(got)
-				}
 			case "operation":
 				var got client.ReviewOperation
 				got, err = c.WaitReviewOperation(t.Context(), op.ID, 3)
-				if got.ID != op.ID || got.State != "completed" {
+				if got.ID != op.ID || got.State != "completed" || got.EvidenceID != op.EvidenceID {
 					t.Error(got)
 				}
 			case "compact":
 				var got client.ReviewOperationStatus
 				got, err = c.WaitReviewOperationStatus(t.Context(), op.ID, 3)
-				if got.ID != op.ID || got.State != "completed" {
+				if got.ID != op.ID || got.State != "completed" || got.EvidenceID != op.EvidenceID {
 					t.Error(got)
 				}
-
+			case "selection":
+				var got client.ReviewRunState
+				got, err = c.WaitReviewSelection(t.Context(), runSelectionID, 3)
+				if got.Selection.ID != runSelectionID || got.Operation == nil || got.Operation.ID != op.ID {
+					t.Error(got)
+				}
+			case "ci":
+				var got client.CIWatchResult
+				got, err = c.WatchCI(t.Context(), ciPins, 3)
+				if !reflect.DeepEqual(got, ci) {
+					t.Error(got)
+				}
 			}
 			if err != nil || len(preferences) != 3 || preferences[0] != 3 || preferences[1] >= 3 || preferences[2] > preferences[1] {
 				t.Fatal("wait restarted its deadline or lost completion", preferences, err)
 			}
-
+			for _, body := range bodies {
+				if body != bodies[0] {
+					t.Fatal("CI original pins changed", bodies)
+				}
+			}
 		})
 	}
 }
@@ -134,6 +162,47 @@ func TestResultWaitReconnectExpiryUsesOneFinalReadAndRetainsIdentity(t *testing.
 			var failure *client.Error
 			if !errors.As(err, &failure) || failure.Code != "overloaded" || failure.RequestID != "request-original-shutdown" || failure.Details.(map[string]any)["operation_id"] != executionOperationID || failure.Details.(map[string]any)["reason"] != "result_wait_lifetime" {
 				t.Fatal("exhaustion lost original targeted shutdown", failure)
+			}
+		})
+	}
+}
+
+func TestReviewWatchReconnectsWhenGatewayMissesShutdownSignal(t *testing.T) {
+	for _, disconnect := range []bool{false, true} {
+		t.Run(strconv.FormatBool(disconnect), func(t *testing.T) {
+			var reads atomic.Int64
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				n := reads.Add(1)
+				if r.Method != "GET" || r.URL.Query().Get("after") != "original-event" || r.URL.Query().Get("channel") != "cli" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("X-FC-Worker") != "worker-one" {
+					t.Error("reattached read changed binding/cursor")
+				}
+				if n == 1 {
+					if disconnect {
+						connection, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						_ = connection.Close()
+						return
+					}
+					w.WriteHeader(503)
+					_, _ = w.Write([]byte("PRIVATE_RESTART_BODY"))
+					return
+				}
+				if r.Header.Get("Prefer") == "wait=3" {
+					t.Error("reconnection reset original wait")
+				}
+				write(w, 200, client.ReviewWatchResult{ProjectID: "project-one", Changes: []client.ReviewWatchChange{}, EventCursor: "resumed", TimedOut: true})
+			}))
+			defer service.Close()
+			got, err := newClient(t, service).WatchReviews(t.Context(), client.ReviewWatchOptions{Channel: "cli", Limit: 20, After: "original-event"}, 3)
+			if err != nil || got.EventCursor != "resumed" || !got.TimedOut || reads.Load() != 2 {
+				t.Fatal(got, err, reads.Load())
 			}
 		})
 	}

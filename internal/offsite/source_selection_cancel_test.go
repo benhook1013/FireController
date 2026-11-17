@@ -35,7 +35,7 @@ func (c *sourceInspectCancellation) Err() error {
 	frames := runtime.CallersFrames(pcs[:n])
 	for {
 		frame, more := frames.Next()
-		if strings.HasSuffix(frame.Function, "/backup.hashPrivate") {
+		if strings.HasSuffix(frame.Function, "/backup.hashPrivate") || strings.HasSuffix(frame.Function, "/backup.hashPrivateBuffer") {
 			c.cancel()
 			c.fired.Store(true)
 			return c.terminal.Err()

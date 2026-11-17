@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
 
@@ -28,6 +29,12 @@ func sourceDisplayPull(plan SourcePlan) reviews.PullInput {
 	if p.ChangedFiles >= 0 && p.Additions != nil && p.Deletions != nil {
 		pull.Diff = &reviews.PullDiff{Files: p.ChangedFiles, Additions: *p.Additions, Deletions: *p.Deletions}
 	}
+	if p.HeadRef != "" && p.HeadRepositoryID > 0 && plan.Repository.DefaultBranch != "" {
+		pull.Branches = &reviews.PullBranches{HeadRepositoryID: p.HeadRepositoryID, HeadRef: p.HeadRef, DeliveryRef: plan.Repository.DefaultBranch}
+		if !reviews.ValidSourceDisplayMetadata(pull) {
+			pull.Branches = nil
+		}
+	}
 	return pull
 }
 
@@ -35,13 +42,46 @@ func publishSourcePlans(ctx context.Context, tx *sql.Tx, scope core.Scope, repo 
 	if len(plans) == 0 || len(pins) == 0 {
 		return nil
 	}
-	pulls := make([]reviews.PullInput, 0, len(plans))
+	observations := make([]reviews.SourceStatus, 0, len(plans))
 	for _, plan := range plans {
+		if plan.retainedMerged || plan.schedulingPaused {
+			continue
+		}
 		if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
 			return invalid()
 		}
-		pulls = append(pulls, sourceDisplayPull(plan))
+		observations = append(observations, reviews.SourceStatus{Pull: sourceDisplayPull(plan)})
 	}
-	_, err := reviews.PublishSourceMetadata(ctx, tx, scope, repo, pins, pulls)
+	// Selection obtained these plans through the checked TargetReader path.
+	// Publish verified terminal transitions without claiming CI/merge checks.
+	_, err := reviews.PublishSourceStatus(ctx, tx, scope, repo, pins, observations)
+	return err
+}
+
+// Explicit refreshes reuse their independently collected status in the same
+// transaction as completion. Selection publishes only its verified PR facts.
+func publishSourceRefreshStatus(ctx context.Context, tx *sql.Tx, scope core.Scope, repo int64, pins map[int64]reviews.SourceMetadataPin, plan SourcePlan, ci *reviewprovider.CIObservation, review *reviewprovider.PullReviewObservation) error {
+	if plan.Repository.ID != repo || !sameTarget(plan.Pull, repo, plan.Pull.Number) {
+		return invalid()
+	}
+	mergeability := plan.Pull.Mergeability
+	if mergeability != "mergeable" && mergeability != "conflicting" {
+		mergeability = "unknown"
+	}
+	if review != nil && review.State == "complete" && validSourceReviewState(*review, sourcePlanObservation(plan)) {
+		mergeability = strings.ToLower(review.Mergeable)
+	}
+	mergeState := plan.Pull.MergeStateStatus
+	if review != nil && review.State == "complete" && validSourceReviewState(*review, sourcePlanObservation(plan)) {
+		mergeState = review.MergeStateStatus
+	}
+	if mergeState == "" {
+		mergeState = "UNKNOWN"
+	}
+	status := reviews.SourceStatus{Pull: sourceDisplayPull(plan), Mergeability: mergeability, MergeStateStatus: mergeState}
+	if ci != nil {
+		status.CIState = sourceCIQueueState(ci.State)
+	}
+	_, err := reviews.PublishSourceStatus(ctx, tx, scope, repo, pins, []reviews.SourceStatus{status})
 	return err
 }

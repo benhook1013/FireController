@@ -2,6 +2,8 @@
 // administrator-imported review observations.
 package reviews
 
+import "github.com/benhook1013/FireController/internal/reviewsize"
+
 // ObservationRequest replaces the current immutable review observation for a
 // project. ExpectedRevision is a pointer so the required zero initial revision
 // is distinct from an omitted field.
@@ -15,21 +17,22 @@ type ObservationRequest struct {
 }
 
 type PullInput struct {
-	MergeStateStatus string     `json:"merge_state_status,omitempty"`
-	Diff             *PullDiff  `json:"diff,omitempty"`
-	IsDraft          *bool      `json:"is_draft,omitempty"`
-	MergedAt         string     `json:"merged_at,omitempty"`
-	Number           int64      `json:"number"`
-	Title            string     `json:"title"`
-	State            string     `json:"state"`
-	HeadSHA          string     `json:"head_sha"`
-	BaseRef          string     `json:"base_ref"`
-	BaseSHA          string     `json:"base_sha"`
-	CIState          string     `json:"ci_state"`
-	Mergeability     string     `json:"mergeability"`
-	Complete         bool       `json:"complete"`
-	Runs             []RunInput `json:"runs"`
-	Attempts         []Attempt  `json:"attempts"`
+	Branches         *PullBranches `json:"-"`
+	MergeStateStatus string        `json:"merge_state_status,omitempty"`
+	Diff             *PullDiff     `json:"diff,omitempty"`
+	IsDraft          *bool         `json:"is_draft,omitempty"`
+	MergedAt         string        `json:"merged_at,omitempty"`
+	Number           int64         `json:"number"`
+	Title            string        `json:"title"`
+	State            string        `json:"state"`
+	HeadSHA          string        `json:"head_sha"`
+	BaseRef          string        `json:"base_ref"`
+	BaseSHA          string        `json:"base_sha"`
+	CIState          string        `json:"ci_state"`
+	Mergeability     string        `json:"mergeability"`
+	Complete         bool          `json:"complete"`
+	Runs             []RunInput    `json:"runs"`
+	Attempts         []Attempt     `json:"attempts"`
 }
 
 type RetiredPull struct {
@@ -121,6 +124,18 @@ type AttemptSummary struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
+// AcceptedSeverity is a read-only breakdown of the authoritative accepted scalar.
+// Complete means the accepted severity buckets reconcile to the accepted scalar.
+// A partial review can have a complete breakdown of its recorded accepted findings.
+type AcceptedSeverity struct {
+	Critical int64 `json:"critical"`
+	Major    int64 `json:"major"`
+	Minor    int64 `json:"minor"`
+	Trivial  int64 `json:"trivial"`
+	Unknown  int64 `json:"unknown"`
+	Complete bool  `json:"complete"`
+}
+
 // FindingView preserves the original finding and adds presentation-only evidence.
 type FindingView struct {
 	Finding
@@ -128,61 +143,72 @@ type FindingView struct {
 }
 
 type RunSummary struct {
-	Source         string   `json:"source"`
-	ID             string   `json:"id"`
-	PullNumber     int64    `json:"pull_number"`
-	SourceRunID    string   `json:"source_run_id"`
-	Channel        string   `json:"channel"`
-	HeadSHA        string   `json:"head_sha"`
-	Reviewer       string   `json:"reviewer"`
-	Scope          string   `json:"scope"`
-	Outcome        string   `json:"outcome"`
-	Attributable   bool     `json:"attributable"`
-	Complete       bool     `json:"complete"`
-	StartedAt      string   `json:"started_at"`
-	FinishedAt     string   `json:"finished_at"`
-	Found          int64    `json:"found"`
-	Accepted       int64    `json:"accepted"`
-	Routed         int64    `json:"routed"`
-	Finalized      bool     `json:"finalized"`
-	Fixed          int64    `json:"fixed"`
-	CoverageLimits []string `json:"coverage_limits"`
+	DisplayStartAt    string            `json:"display_start_at,omitempty"`
+	RetainedUndecided *int64            `json:"retained_undecided,omitempty"`
+	AcceptedSeverity  *AcceptedSeverity `json:"accepted_severity,omitempty"`
+	Source            string            `json:"source"`
+	ID                string            `json:"id"`
+	PullNumber        int64             `json:"pull_number"`
+	SourceRunID       string            `json:"source_run_id"`
+	Channel           string            `json:"channel"`
+	HeadSHA           string            `json:"head_sha"`
+	Reviewer          string            `json:"reviewer"`
+	Scope             string            `json:"scope"`
+	Outcome           string            `json:"outcome"`
+	Attributable      bool              `json:"attributable"`
+	Complete          bool              `json:"complete"`
+	StartedAt         string            `json:"started_at"`
+	FinishedAt        string            `json:"finished_at"`
+	Found             int64             `json:"found"`
+	Accepted          int64             `json:"accepted"`
+	Routed            int64             `json:"routed"`
+	Finalized         bool              `json:"finalized"`
+	Fixed             int64             `json:"fixed"`
+	CoverageLimits    []string          `json:"coverage_limits"`
 }
 
 type PullSummary struct {
-	Observation      *PullObservationHealth `json:"observation,omitempty"`
+	ParentPullNumber int64                  `json:"parent_pull_number,omitempty"`
+	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`
 	mergeStateStatus string
-	Diff             *PullDiff        `json:"diff,omitempty"`
-	IsDraft          *bool            `json:"is_draft,omitempty"`
-	MergedAt         string           `json:"merged_at,omitempty"`
-	Number           int64            `json:"number"`
-	Title            string           `json:"title"`
-	State            string           `json:"state"`
-	HeadSHA          string           `json:"head_sha"`
-	BaseRef          string           `json:"base_ref"`
-	BaseSHA          string           `json:"base_sha"`
-	CIState          string           `json:"ci_state"`
-	Mergeability     string           `json:"mergeability"`
-	Complete         bool             `json:"complete"`
-	RunCount         int64            `json:"run_count"`
-	RunCounts        ChannelRunCounts `json:"run_counts"`
-	AttemptCount     int64            `json:"attempt_count"`
-	RecentRuns       []RunSummary     `json:"recent_runs"`
-	LatestAttempts   []AttemptSummary `json:"latest_attempts"`
+	MergeStatus      *MergeStatus           `json:"merge_status,omitempty"`
+	Observation      *PullObservationHealth `json:"observation,omitempty"`
+	// QueuePosition is the original zero-based position, only on selected views.
+	QueuePosition  *int             `json:"queue_position,omitempty"`
+	Diff           *PullDiff        `json:"diff,omitempty"`
+	IsDraft        *bool            `json:"is_draft,omitempty"`
+	MergedAt       string           `json:"merged_at,omitempty"`
+	Number         int64            `json:"number"`
+	Title          string           `json:"title"`
+	State          string           `json:"state"`
+	HeadSHA        string           `json:"head_sha"`
+	BaseRef        string           `json:"base_ref"`
+	BaseSHA        string           `json:"base_sha"`
+	CIState        string           `json:"ci_state"`
+	Mergeability   string           `json:"mergeability"`
+	Complete       bool             `json:"complete"`
+	RunCount       int64            `json:"run_count"`
+	RunCounts      ChannelRunCounts `json:"run_counts"`
+	AttemptCount   int64            `json:"attempt_count"`
+	RecentRuns     []RunSummary     `json:"recent_runs"`
+	LatestAttempts []AttemptSummary `json:"latest_attempts"`
 }
 
 type QueueResponse struct {
-	Observer   *ObserverHealth `json:"observer,omitempty"`
-	ProjectID  string          `json:"project_id"`
-	Configured bool            `json:"configured"`
-	Revision   int64           `json:"revision"`
-	SnapshotID string          `json:"snapshot_id"`
-	Source     string          `json:"source"`
-	ObservedAt string          `json:"observed_at"`
-	RecordedAt string          `json:"recorded_at"`
-	Items      []PullSummary   `json:"items"`
-	Cursor     string          `json:"cursor,omitempty"`
-	HasMore    bool            `json:"has_more"`
+	Observer *ObserverHealth `json:"observer,omitempty"`
+	// HeadPosition is set only on selected views whose first nonmerged/nonclosed
+	// entry is known open. Unknown predecessors cannot establish an open head.
+	HeadPosition *int          `json:"head_position,omitempty"`
+	ProjectID    string        `json:"project_id"`
+	Configured   bool          `json:"configured"`
+	Revision     int64         `json:"revision"`
+	SnapshotID   string        `json:"snapshot_id"`
+	Source       string        `json:"source"`
+	ObservedAt   string        `json:"observed_at"`
+	RecordedAt   string        `json:"recorded_at"`
+	Items        []PullSummary `json:"items"`
+	Cursor       string        `json:"cursor,omitempty"`
+	HasMore      bool          `json:"has_more"`
 }
 
 type PullResponse struct {

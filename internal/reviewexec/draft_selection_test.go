@@ -68,7 +68,7 @@ func TestDraftFrontSelectionSkipsOnlyIndependentDraft(t *testing.T) {
 					t.Fatal("unrelated Draft blocked the ready independent target", got)
 				}
 				operation, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), got.OperationID)
-				if err != nil || operation.State != "queued" || operation.PullNumber != child.Number || operation.HeadSHA != child.HeadSHA || operation.Channel != channel {
+				if err != nil || operation.State != "queued" || operation.PullNumber != child.Number || operation.HeadSHA != child.HeadSHA || operation.Channel != channel || operation.AllowOutOfOrder {
 					t.Fatal("selected child bypassed or changed the normal target binding", operation, err)
 				}
 			}

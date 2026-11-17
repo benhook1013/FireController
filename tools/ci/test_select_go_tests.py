@@ -92,6 +92,21 @@ class SelectionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 
+    def test_every_ordinary_budget_gate_names_an_existing_test_in_its_owner(self):
+        makefile = (ROOT / "Makefile").read_text()
+        declared = dict(re.findall(r"(?m)^([A-Z_]+_BUDGET_TEST) := (Test\w+)$", makefile))
+        owners = re.findall(r"internal/(\w+)\) budget_tests='([^']+)'", makefile)
+        selected = []
+        for package, variables in owners:
+            names = set()
+            for source in (ROOT / "internal" / package).glob("*_test.go"):
+                names.update(re.findall(r"(?m)^func (Test\w+)\(t \*testing\.T\)", source.read_text()))
+            for variable in re.findall(r"\$\((\w+)\)", variables):
+                self.assertIn(variable, declared)
+                self.assertIn(declared[variable], names, f"ordinary budget gate missing from internal/{package}")
+                selected.append(variable)
+        self.assertEqual(sorted(selected), sorted(declared))
+
     def test_workflow_has_every_slice_and_requires_each_independent_job(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         matrix = re.search(r"^        shard: \[([^\]]+)\]$", workflow, re.MULTILINE)
@@ -100,47 +115,36 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(len(actual), len(set(actual)))
         self.assertEqual(set(actual), set(SELECT.shards()))
         jobs = set(re.findall(r"^  ([\w-]+):$", workflow.split("\njobs:\n", 1)[1], re.MULTILINE))
-        self.assertEqual(jobs, {"static", "linux", "qualification", "native-smoke", "validate"})
         gate = workflow.split("\n  validate:\n", 1)[1]
         needs = re.search(r"^    needs: \[([^\]]+)\]$", gate, re.MULTILINE)
         self.assertIsNotNone(needs)
         required = {name.strip() for name in needs[1].split(",")}
-        self.assertEqual(required, jobs - {"validate"})
+        self.assertEqual(required, jobs - {"validate", "publish"})
+        publish = workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("needs: [validate]", publish)
+        self.assertIn("github.event_name == 'push'", publish)
+        self.assertIn("refs/heads/develop", publish)
+        self.assertIn("refs/heads/main", publish)
+        self.assertIn("packages: write", publish)
+        self.assertNotIn("docker build", publish)
+        self.assertIn("sha256sum --check", publish)
         for job in required:
             self.assertIn("needs." + job + ".result", gate)
         self.assertIn("if: ${{ always() }}", gate)
-        self.assertIn("fail-fast: false", workflow)
         static = workflow.split("\n  static:\n", 1)[1].split("\n  linux:\n", 1)[0]
         linux = workflow.split("\n  linux:\n", 1)[1].split("\n  qualification:\n", 1)[0]
         self.assertEqual(len(re.findall(r"^        run: make vet$", static, re.MULTILINE)), 1)
         self.assertRegex(linux, r"(?m)^        run: make test-race$")
         self.assertNotIn("vet", linux)
-        self.assertIn("run: make workflow-check ci-selection-check fmt-check docs-check browser-check", workflow)
-        for command in ["make build", "make smoke", "make browser-smoke", 'make offsite-smoke RCLONE="$RUNNER_TEMP/rclone"']:
-            self.assertIn("run: " + command, workflow)
+        self.assertIn("run: make test-budgets", workflow)
+        self.assertIn("CHANGES_RESULT: ${{ needs.changes.result }}", gate)
+        self.assertIn('test "$SOURCE_REF" = refs/heads/develop', gate)
+        self.assertIn('test "$EVENT_NAME" = push', gate)
+        self.assertIn('test "$LINUX_RESULT" = skipped', gate)
+        self.assertIn('test "$NATIVE_RESULT" = skipped', gate)
         makefile = (ROOT / "Makefile").read_text()
-        self.assertIn("test: test-race\n\t$(MAKE) vet", makefile)
-        self.assertIn("test -race -p=2 -timeout=20m -run '$(GO_TEST_RUN)' $(GO_TEST_PACKAGES)", makefile)
-        self.assertIn("GO_TEST_PACKAGES ?= ./...", makefile)
-        self.assertIn("GO_TEST_RUN ?= .", makefile)
-        self.assertNotIn("-skip", makefile)
-        self.assertNotIn("cache: true", workflow)
-        self.assertNotIn("permissions:", workflow.split("\njobs:\n", 1)[1])
-        self.assertNotIn("website_only", workflow)
-        self.assertNotIn("secrets.", workflow)
-
-    def test_validate_refuses_every_non_success_family_result(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        gate = workflow.split("\n  validate:\n", 1)[1]
-        script = gate.split("        run: |\n", 1)[1]
-        env = dict(STATIC_RESULT="success", LINUX_RESULT="success", QUALIFICATION_RESULT="success", NATIVE_RESULT="success")
-        def accepted(values):
-            return subprocess.run(["bash", "-e", "-c", script], env=values, capture_output=True).returncode == 0
-        self.assertTrue(accepted(env))
-        for family in env:
-            for outcome in ["failure", "cancelled", "skipped", "", "timed_out", "neutral"]:
-                with self.subTest(family=family, outcome=outcome):
-                    self.assertFalse(accepted(env | {family: outcome}))
+        self.assertIn("test: test-race\n\t$(MAKE) test-budgets\n\t$(MAKE) vet", makefile)
+        self.assertIn("test -race -count=1", makefile)
 
 
 

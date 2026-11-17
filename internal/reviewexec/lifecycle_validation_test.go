@@ -108,10 +108,10 @@ func TestLifecycleCIObservationDiagnostics(t *testing.T) {
 			if err = f.e.observeLifecycle(t.Context(), *target, s); err != nil {
 				t.Fatal(err)
 			}
-			wantReason, wantState := "ci_observation_invalid", "unknown"
+			wantReason, wantState := "ci_observation_unproven", "unknown"
 			switch mode {
 			case "missing-reader":
-				wantReason = "ci_reader_unavailable"
+				wantReason = "ci_gate_reader_unavailable"
 			case "provider-error":
 				wantReason = "ci_provider_unavailable"
 			case "satisfied":

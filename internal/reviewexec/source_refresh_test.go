@@ -46,6 +46,9 @@ func (r *refreshTestReader) Pull(ctx context.Context, repository string, number 
 	}
 	return reviewprovider.Pull{Number: number, RepositoryID: 801, State: "open", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
 }
+
+// Only explicitly published head branches resolve parents; the fake never
+// guesses from the execution queue or enumerates unrelated pull requests.
 func (r *refreshTestReader) ParentPull(_ context.Context, _ string, branch string) (reviewprovider.Pull, error) {
 	r.calls.Add(1)
 	pull, ok := r.parents[branch]
@@ -54,7 +57,6 @@ func (r *refreshTestReader) ParentPull(_ context.Context, _ string, branch strin
 	}
 	return pull, nil
 }
-
 func refreshRequest() SourceRefreshRequest {
 	return SourceRefreshRequest{ExpectedConfigurationRevision: 1, PullNumber: 2, HeadSHA: strings.Repeat("a", 40)}
 }
@@ -378,7 +380,7 @@ func TestSourceRefreshCurrentAssessmentUsesNativeCoverageAndCurrentPolicy(t *tes
 	if err != nil || assessment.State != "held" || assessment.Channels[1].Covered {
 		t.Fatal("imported history credited hosted", assessment, err)
 	}
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{"cli"})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	assessment, err = f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || assessment.State != "sufficient" || assessment.PolicyRevision != 2 || assessment.Channels[0].Pending {
 		t.Fatal("current paused policy erased credit", assessment, err)
@@ -663,7 +665,7 @@ func TestSourceRefreshMovedHeadStillReportsOlderPendingNativeEvidence(t *testing
 	cancel, done := refreshStart(t, f, reader)
 	refreshWait(t, f, receipt.ID, "completed")
 	refreshStop(t, cancel, done)
-	assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+	assessmentPolicy(t, f, 1, []string{"cli"})
 	scope := evidenceReadScope(t, f, attemptProject, f.reader)
 	value, err := f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || value.State != "held" || value.Target.HeadSHA != request.HeadSHA || !value.Channels[0].Pending || value.Channels[0].Covered {
@@ -828,5 +830,67 @@ func TestSourceRefreshParentAmbiguityRetainsSafeReasonAndStrictClientRead(t *tes
 	// Direct provider errors and resolved holds retain the same safe reason.
 	if sourceRefreshReason(reviewprovider.ErrParentAmbiguous) != "parent_ambiguous" || sourceRefreshReason(sourceHold("parent_ambiguous")) != "parent_ambiguous" {
 		t.Fatal("parent ambiguity collapsed to generic source failure")
+	}
+}
+
+func TestSourceRefreshDamagedConfigurationIsCandidateLocal(t *testing.T) {
+	for _, retained := range []bool{false, true} {
+		t.Run(fmt.Sprint(retained), func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "other-account", 0, false)
+			bad := refreshEnqueue(t, f, "damaged-refresh", refreshRequest())
+			raw, err := f.e.EnqueueSourceRefresh(t.Context(), f.scope(t, otherAttemptProject, f.other, false), "healthy-refresh", refreshRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var healthy Receipt
+			if err = json.Unmarshal(raw, &healthy); err != nil {
+				t.Fatal(err)
+			}
+			if retained {
+				f.configure(t, attemptProject, "test-capability", 1, false)
+			}
+			admissionSQL(t, f, `UPDATE review_execution_config SET body_json='broken' WHERE project_id=? AND revision=1`, attemptProject)
+			schedule := newSourceRefreshSchedule()
+			for range 2 {
+				if _, err := f.e.refreshNextScheduled(t.Context(), nil, schedule); err != nil {
+					t.Fatal("one damaged project stopped source worker", err)
+				}
+			}
+			b := refreshRead(t, f, bad.ID)
+			if b.State != "held" || b.Reason != "source_configuration_changed" {
+				t.Fatal("damaged candidate not held", b)
+			}
+			var state, reason string
+			if err = f.store.DB().QueryRow(`SELECT state,reason FROM review_source_refreshes WHERE id=?`, healthy.ID).Scan(&state, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if state != "held" || reason != "source_reader_unavailable" {
+				t.Fatal("healthy project did not reach its independent reader check", state, reason)
+			}
+		})
+	}
+}
+
+func TestSourceRefreshOperationalFailuresRemainFatal(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			f := supervisorFixture(t)
+			receipt := refreshEnqueue(t, f, "operational-refresh", refreshRequest())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if cancelled {
+				cancel()
+			} else {
+				admissionSQL(t, f, `ALTER TABLE review_execution_config RENAME TO unavailable_configuration`)
+			}
+			if _, err := f.e.refreshNext(ctx, nil); err == nil {
+				t.Fatal("operational failure became local hold")
+			}
+			var state string
+			if err := f.store.DB().QueryRow(`SELECT state FROM review_source_refreshes WHERE id=?`, receipt.ID).Scan(&state); err != nil || state != "queued" {
+				t.Fatal("operational failure changed retained refresh", state, err)
+			}
+		})
 	}
 }

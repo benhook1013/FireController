@@ -65,7 +65,7 @@ func TestDaemonSchemaMigrationFailurePrecedesListen(t *testing.T) {
 	}
 	// The additive comparison schema is reached after earlier domain schemas.
 	// Refuse a newer retained version rather than modify or discard it.
-	if _, err := store.DB().Exec(`INSERT INTO metadata(key,value) VALUES('schema:review_comparison','2')`); err != nil {
+	if _, err := store.DB().Exec(`INSERT INTO metadata(key,value) VALUES('schema:review_comparison','3')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -92,7 +92,7 @@ func TestDaemonSchemaMigrationFailurePrecedesListen(t *testing.T) {
 	}
 	defer store.Close()
 	var version string
-	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&version); err != nil || version != "2" {
+	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_comparison'`).Scan(&version); err != nil || version != "3" {
 		t.Fatal("startup changed refused schema authority", version, err)
 	}
 	var count int

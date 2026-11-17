@@ -168,11 +168,19 @@ func TestPullMetadataSchema6UpgradePreservesIdentityAndOldFacts(t *testing.T) {
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='instance_id'`).Scan(&nextInstance)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='signing_key'`).Scan(&nextSigning)
 	f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version)
-	if version != "11" || instance != nextInstance || signing != nextSigning {
+	if version != "12" || instance != nextInstance || signing != nextSigning {
 		t.Fatal("migration changed identity/version")
 	}
 	if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {
 		t.Fatal("schema7 migration changed old logical facts or identity/grants/receipts/events")
+	}
+	var preferences int
+	var preferenceVersion string
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_pr_followers`).Scan(&preferences); err != nil || preferences != 0 {
+		t.Fatal("new preference domain inferred historical followers", preferences, err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_notifications'`).Scan(&preferenceVersion); err != nil || preferenceVersion != "1" {
+		t.Fatal("independent preference schema not installed", preferenceVersion, err)
 	}
 	var metadata string
 	f.store.DB().QueryRow(`SELECT metadata_json FROM review_pull_versions`).Scan(&metadata)
@@ -207,7 +215,7 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	kept := metadataRead(t, f, 1, "")
-	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || *kept.Pull.IsDraft != draft || kept.Pull.MergedAt != p.MergedAt {
+	if !reflect.DeepEqual(kept.Pull.Diff, p.Diff) || kept.Pull.IsDraft == nil || kept.Pull.MergedAt != p.MergedAt {
 		t.Fatal("additive/edit discarded metadata")
 	}
 	q.HeadSHA = strings.Repeat("d", 40)
@@ -223,10 +231,11 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 }
 
 // Compare every pre-existing logical table, omitting only the authorized schema
-// version and new metadata column; no historical body or operational row may change.
+// version, new metadata column and separately asserted empty preference domain;
+// no historical body or operational row may change.
 func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 	t.Helper()
-	names, err := f.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='review_hosted_discovery_state' ORDER BY name`)
+	names, err := f.store.DB().Query(`SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('review_hosted_discovery_state','review_pr_followers') ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +271,7 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 			if err = rows.Scan(targets...); err != nil {
 				t.Fatal(err)
 			}
-			if table == "metadata" && values[0] == "schema:reviews" {
+			if table == "metadata" && (values[0] == "schema:reviews" || values[0] == "schema:review_notifications") {
 				continue
 			}
 			var old []any

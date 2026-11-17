@@ -62,11 +62,18 @@ func (g *GitHub) ObserveCIGate(ctx context.Context, target CITarget, gateRef str
 	return g.observeCI(ctx, target, gateRef)
 }
 
-func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (out CIObservation, err error) {
+func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string) (CIObservation, error) {
+	return g.observeCIWithInitialAuthority(ctx, target, gateRef, nil, time.Time{})
+}
+
+func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITarget, gateRef string, initial *RequiredCheckAuthority, started time.Time) (out CIObservation, err error) {
 	if ctx == nil || !validRepositorySelector(target.Repository) || target.RepositoryID <= 0 || !validPullNumber(target.PullNumber) || !lowerCISHA(target.HeadSHA) || !lowerCISHA(target.BaseSHA) || !validRequiredBranch(target.BaseRef) || !validRequiredBranch(gateRef) {
 		return CIObservation{}, invalidSelector()
 	}
 	out = CIObservation{Target: target, State: "unproven", Reason: "ci_authority_unproven", StartedAt: time.Now().UTC()}
+	if !started.IsZero() {
+		out.StartedAt = started
+	}
 	stage := "authority"
 	defer func() {
 		out.ObservedAt = time.Now().UTC()
@@ -76,7 +83,12 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 	}()
 	ctx, cancel := context.WithTimeout(ctx, CIObservationTimeout)
 	defer cancel()
-	out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
+	if initial == nil {
+		out.Authority, err = g.RequiredCheckAuthority(ctx, target.Repository, gateRef)
+	} else {
+		out.Authority = *initial
+		out.Authority.Checks = slices.Clone(initial.Checks)
+	}
 	if err != nil || out.Authority.State != "complete" || out.Authority.Checks == nil {
 		return out, err
 	}
@@ -84,8 +96,9 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 		out.Reason = "ci_required_context_capacity"
 		return out, nil
 	}
+	commits := make(map[string]githubCIMerge, 2)
 	stage = "candidate"
-	candidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
+	candidate, err := g.pullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA, commits)
 	out.Candidate, out.MergeState = &candidate, candidate.MergeState
 	if err != nil {
 		out.Reason = "ci_source_unavailable"
@@ -157,7 +170,20 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 				continue
 			}
 			stage = "attempt"
-			attempt, readErr := g.CurrentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID)
+			// Only seed an exact attempt from this complete fresh head inventory.
+			// The mandatory final direct run read rejects stale or moved identity.
+			var discovered *ActionsHeadRun
+			matches := 0
+			for i := range actions.Runs {
+				if actions.Runs[i].CheckSuiteID == run.CheckSuiteID {
+					matches++
+					discovered = &actions.Runs[i]
+				}
+			}
+			if matches != 1 {
+				discovered = nil
+			}
+			attempt, readErr := g.collectActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID, discovered, true)
 			if readErr != nil {
 				out.Reason = "ci_attempt_unavailable"
 				return out, readErr
@@ -184,7 +210,7 @@ func (g *GitHub) observeCI(ctx context.Context, target CITarget, gateRef string)
 		return out, err
 	}
 	stage = "candidate_recheck"
-	finalCandidate, err := g.PullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA)
+	finalCandidate, err := g.pullCICandidate(ctx, target.Repository, target.RepositoryID, target.PullNumber, target.HeadSHA, commits)
 	if err != nil || !sameCICandidate(candidate, finalCandidate) || !matchesCITarget(finalCandidate, target) && !NonstrictHeadCICandidate(finalCandidate, target, out.Authority) {
 		return out, err
 	}

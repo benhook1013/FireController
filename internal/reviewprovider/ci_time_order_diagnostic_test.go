@@ -10,24 +10,34 @@ import (
 )
 
 func TestCIResultsTimeOrderIssuePreservesValidationAndErrorCode(t *testing.T) {
-	for _, mode := range []string{"success", "failure", "skipped", "malformed time", "invalid identity"} {
+	for _, mode := range []string{"success", "failure", "skipped", "cancelled", "malformed time", "invalid identity", "cancelled malformed start", "cancelled malformed end", "cancelled missing end", "cancelled invalid identity", "nonterminal cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			row := ciCheckFixture(1)
 			row["started_at"], row["completed_at"] = "2026-01-01T01:00:00Z", "2026-01-01T00:00:00Z"
 			want := "check_run_time_order"
 			switch mode {
-			case "failure", "skipped":
+			case "failure", "skipped", "cancelled":
 				row["conclusion"] = mode
 			case "malformed time":
 				row["completed_at"], want = "PRIVATE not a timestamp", ""
 			case "invalid identity":
 				row["id"], want = 0, ""
+			case "cancelled malformed start":
+				row["conclusion"], row["started_at"], want = "cancelled", "PRIVATE not a timestamp", ""
+			case "cancelled malformed end":
+				row["conclusion"], row["completed_at"], want = "cancelled", "PRIVATE not a timestamp", ""
+			case "cancelled missing end":
+				row["conclusion"], row["completed_at"], want = "cancelled", nil, ""
+			case "cancelled invalid identity":
+				row["conclusion"], row["id"], want = "cancelled", 0, ""
+			case "nonterminal cancelled":
+				row["status"], row["conclusion"], want = "in_progress", "cancelled", ""
 			}
 			g, calls := ciFixtureServer(t, ciJSON(ciEnvelope([]map[string]any{row}, 1)), `[]`)
 			got, err := g.CIResults(t.Context(), "owner/repo", ciHead)
-			if mode == "skipped" {
-				if err != nil || len(got.Checks) != 1 || !got.Checks[0].CompletedAt.Before(got.Checks[0].StartedAt) || calls.Load() != 4 {
-					t.Fatal("supported skipped interval changed", got, err, calls.Load())
+			if mode == "skipped" || mode == "cancelled" {
+				if err != nil || len(got.Checks) != 1 || got.Checks[0].Conclusion != mode || !got.Checks[0].CompletedAt.Before(got.Checks[0].StartedAt) || calls.Load() != 4 {
+					t.Fatal("supported terminal interval changed", got, err, calls.Load())
 				}
 				return
 			}
