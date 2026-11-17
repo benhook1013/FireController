@@ -6,9 +6,18 @@ import copy
 import gzip
 import hashlib
 import io
+import re
 import tarfile
 
 PREFIX = 'Install qualified clean develop FireController '
+LEGACY_PREFIX = 'Install qualified FireController '
+
+
+def overlay_history(source_revision):
+    """Single producer marker shared with verified overlay recognition."""
+    if not isinstance(source_revision, str) or not re.fullmatch(r'[0-9a-f]{40}', source_revision):
+        raise ValueError('exact source revision required')
+    return {'created_by': PREFIX + source_revision}
 
 
 def replacement_base(manifest, config, get_blob):
@@ -21,7 +30,7 @@ def replacement_base(manifest, config, get_blob):
     removed = 0
     while layers and history:
         entry = history[-1]
-        if entry.get('empty_layer') or not entry.get('created_by', '').startswith(PREFIX):
+        if entry.get('empty_layer') or not entry.get('created_by', '').startswith((PREFIX, LEGACY_PREFIX)):
             break
         layer = layers[-1]
         if layer.get('mediaType') != 'application/vnd.oci.image.layer.v1.tar+gzip':

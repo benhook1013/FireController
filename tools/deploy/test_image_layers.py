@@ -5,7 +5,7 @@ import io
 import tarfile
 import unittest
 
-from image_layers import replacement_base, PREFIX
+from image_layers import replacement_base, PREFIX, LEGACY_PREFIX, overlay_history
 
 
 def layer(name='fcd', data=b'daemon', extra=False):
@@ -61,6 +61,53 @@ class ReplacementTests(unittest.TestCase):
             desc, diff, packed = layer(name, extra=extra)
             mf['layers'][-1] = desc; cfg['rootfs']['diff_ids'][-1] = diff; blobs[desc['digest']] = packed
             with self.assertRaises(ValueError): replacement_base(mf, cfg, blobs.__getitem__)
+
+    def test_producer_history_round_trip_and_legacy_terminal_chain(self):
+        mf, cfg, blobs = self.fixture(3)
+        cfg['history'][-1] = overlay_history('a' * 40)
+        cfg['history'][-2] = {'created_by': LEGACY_PREFIX + '7a788e57'}
+        original = copy.deepcopy((mf, cfg, blobs))
+        result, config, removed = replacement_base(mf, cfg, blobs.__getitem__)
+        self.assertEqual(removed, 3)
+        self.assertEqual(len(result['layers']), 1)
+        self.assertEqual(config['config'], cfg['config'])
+        self.assertEqual((mf, cfg, blobs), original)
+        for revision in ('', '7a788e57', 'A' * 40, 'a' * 39, 'a' * 40 + '\n', None):
+            with self.assertRaises(ValueError): overlay_history(revision)
+
+    def test_legacy_marker_never_replaces_unknown_boundary_or_mixed_layer(self):
+        mf, cfg, blobs = self.fixture(3)
+        cfg['history'][-1] = {'created_by': LEGACY_PREFIX + '7a788e57'}
+        cfg['history'][-2] = {'created_by': 'unknown producer'}
+        result, config, removed = replacement_base(mf, cfg, blobs.__getitem__)
+        self.assertEqual(removed, 1)
+        self.assertEqual(result['layers'], mf['layers'][:-1])
+        self.assertEqual(config['history'][-1]['created_by'], 'unknown producer')
+        desc, diff, packed = layer(extra=True)
+        mf['layers'][-1] = desc; cfg['rootfs']['diff_ids'][-1] = diff
+        blobs[desc['digest']] = packed
+        with self.assertRaises(ValueError): replacement_base(mf, cfg, blobs.__getitem__)
+
+    def test_repeated_producer_replacement_keeps_one_overlay_and_same_final_files(self):
+        mf, cfg, blobs = self.fixture(0)
+        def files(manifest):
+            result = {}
+            for desc in manifest['layers']:
+                with tarfile.open(fileobj=io.BytesIO(gzip.decompress(blobs[desc['digest']]))) as archive:
+                    for member in archive.getmembers():
+                        result[member.name] = (member.mode, archive.extractfile(member).read())
+            return result
+        for i in range(10):
+            uncompressed_base = copy.deepcopy(mf)
+            mf, cfg, removed = replacement_base(mf, cfg, blobs.__getitem__)
+            self.assertEqual(removed, 0 if i == 0 else 1)
+            desc, diff, packed = layer(data=('binary-' + str(i)).encode())
+            blobs[desc['digest']] = packed
+            mf['layers'].append(desc); cfg['rootfs']['diff_ids'].append(diff)
+            cfg['history'].append(overlay_history(format(i, '040x')))
+            uncompressed_base['layers'].append(desc)
+            self.assertEqual(files(mf), files(uncompressed_base))
+            self.assertEqual(len(mf['layers']), 2)
 
     def test_initial_base_with_no_overlays_is_preserved(self):
         mf, cfg, blobs = self.fixture(0)
