@@ -20,7 +20,7 @@ func TestOptionalAttentionReusesSameObservationDiscovery(t *testing.T) {
 			}
 		}
 		t.Logf("optional attention total=%d suite-discovery=%d full-and-suite-head-list=%d direct60=%d jobs60=%d", len(paths), suite, counts[actionsRunsPath], counts[actionsRunsPath+"/60"], counts[actionsRunsPath+"/60/attempts/2/jobs"])
-		if suite != 0 || len(paths) != 18*pass || counts[actionsRunsPath] != pass || counts[actionsRunsPath+"/60"] != 2*pass || counts[actionsRunsPath+"/60/attempts/2/jobs"] != pass {
+		if suite != 0 || len(paths) != 17*pass || counts[actionsRunsPath] != pass || counts[actionsRunsPath+"/60"] != 2*pass || counts[actionsRunsPath+"/60/attempts/2/jobs"] != pass {
 			t.Fatalf("redundant suite count %d", suite)
 		}
 	}

@@ -170,8 +170,8 @@ func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITar
 				continue
 			}
 			stage = "attempt"
-			// Only reuse unambiguous discovery from this freshly collected full
-			// head inventory. No body or admission result is cached across reads.
+			// Only seed an exact attempt from this complete fresh head inventory.
+			// The mandatory final direct run read rejects stale or moved identity.
 			var discovered *ActionsHeadRun
 			matches := 0
 			for i := range actions.Runs {
@@ -183,7 +183,7 @@ func (g *GitHub) observeCIWithInitialAuthority(ctx context.Context, target CITar
 			if matches != 1 {
 				discovered = nil
 			}
-			attempt, readErr := g.currentActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID, discovered)
+			attempt, readErr := g.collectActionsAttempt(ctx, target.Repository, out.SelectedCommitSHA, run.CheckSuiteID, discovered, true)
 			if readErr != nil {
 				out.Reason = "ci_attempt_unavailable"
 				return out, readErr

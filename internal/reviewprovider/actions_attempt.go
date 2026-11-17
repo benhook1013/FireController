@@ -154,7 +154,14 @@ func (g *GitHub) CurrentActionsAttempt(ctx context.Context, repository, head str
 
 // A same-observation complete head inventory can supply discovery identity only.
 // Direct current-run, exact-attempt jobs and final-run reads remain mandatory.
-func (g *GitHub) currentActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun) (result ActionsAttempt, err error) {
+func (g *GitHub) currentActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun) (ActionsAttempt, error) {
+	return g.collectActionsAttempt(ctx, repository, head, suiteID, discovered, false)
+}
+
+// An initial run from the complete same-observation inventory may select the
+// exact attempt jobs. The final direct current-run witness is never omitted:
+// stale inventory or a rerun must reject the collected attempt, not credit it.
+func (g *GitHub) collectActionsAttempt(ctx context.Context, repository, head string, suiteID int64, discovered *ActionsHeadRun, inventoryInitial bool) (result ActionsAttempt, err error) {
 	if ctx == nil || !validRepositorySelector(repository) || !validSHA(head) || strings.ToLower(head) != head || suiteID <= 0 {
 		return ActionsAttempt{}, invalidSelector()
 	}
@@ -190,7 +197,9 @@ func (g *GitHub) currentActionsAttempt(ctx context.Context, repository, head str
 	}
 	currentPath := path + "/" + strconv.FormatInt(selected.ID, 10)
 	var current githubActionsRun
-	if _, err = g.actionsRead(ctx, currentPath, nil, budget, &current); err != nil {
+	if inventoryInitial && discovered != nil {
+		current = actionsHeadRunWire(*discovered)
+	} else if _, err = g.actionsRead(ctx, currentPath, nil, budget, &current); err != nil {
 		return result, err
 	}
 	if !validActionsRun(current, repository, head, suiteID) || current.ID != selected.ID || current.WorkflowID != selected.WorkflowID || current.RunNumber != selected.RunNumber || current.Repository.ID != selected.Repository.ID {
