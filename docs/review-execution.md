@@ -2,6 +2,12 @@
 
 [PR inbox notifications](review-notifications.md) retain merged/closed notices for workers participating through ordinary explicit PR work. Following is independent of review execution, scheduling, ownership and merge authority.
 
+## Vendor session-cache retention boundary
+
+Vendor session caches are separate from native workspaces and immutable retained captures. The isolated Linux cleanup implementation considers only `incrementalDiff.v2.json` and `internalState.json` in one exact session. It requires a completed current CLI attempt with matching retained capture bytes, no reservation, the existing five-minute terminal age, an absent manager-owned workspace, and matching bounded session metadata. Unknown files, session metadata, credentials, native captures and journal history are not removal targets. Preflight validates both payloads and the byte budget before any removal; each unlink repeats settlement, capture and path checks and syncs the parent. Interrupted partial removal can retry only after fresh validation. The five-second context is cooperative, not a hard filesystem syscall limit.
+
+CLI subprocesses share an in-process custody gate without serializing producers. An explicit participating HOME lease additionally pins a private lock inode, uses shared producer locks inherited by children and an exclusive maintenance lock. Maintenance refuses unresolved owned groups, replacement lock generations and absent lease configuration. Neither an empty new-process inventory nor a newly created lease proves that old or externally launched CLI processes are absent. First adoption must establish exclusive HOME ownership and previous-generation absence through the installation/runtime owner; inherited descriptor custody assumes cooperating descendants. There is no enabled daemon cache-cleanup caller or live retention policy yet.
+
 ## Checkout retention
 
 The daemon automatically reclaims native review checkouts after their attempt is terminal (completed, held, failed, cancelled or rate-limited), has no execution reservation and has remained terminal for at least five minutes. Active, preparing, posting, uncertain, reserved, unknown and differently bound attempts remain untouched. The maintenance pass runs once a minute in a separate local maintenance worker, with a twenty-second budget and at most sixteen removals. A cleanup failure retries without blocking reviews. Shared Git caches, durable provider captures, review evidence, findings and journal history are retained separately.
