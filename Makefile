@@ -9,9 +9,10 @@ EXTERNAL_HOSTED_BUDGET_TEST := TestExternalHostedMaximumInventoryUsesOrdinaryWri
 EXECUTION_QUEUE_BUDGET_TEST := TestExecutionQueueMaximumUsesOrdinaryWriteBudget
 MCP_HISTORY_BUDGET_TEST := TestJobHistoryEncodedPagesAcrossCLIAndSDK
 ORDINARY_BUDGET_TESTS := $(REVIEW_TRANSFER_BUDGET_TEST)|$(ADOPTION_OBLIGATIONS_BUDGET_TEST)|$(EXTERNAL_HOSTED_BUDGET_TEST)|$(EXECUTION_QUEUE_BUDGET_TEST)|$(MCP_HISTORY_BUDGET_TEST)
+COHORT_INTEGRATION_TESTS := TestLifecycleBatchedCohortDoesNotCreditLateWatch|TestLifecycleBatchedCohortStopsPartnerAfterProviderLimit|TestLifecycleCohortRealProviderPublication|TestLifecycleMetadataPairActualProviderPublication|TestLifecycleRequiredCIBatchActualPublication|TestLifecycleSuiteQualificationLimitPreservesCooldownAndEvidence|TestLifecycleSuiteQualificationUsesActualCredentialAndReservation
 ACTIONLINT ?= $(GO) run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-.PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check offsite-smoke
+.PHONY: check workflow-check ci-selection-check fmt-check test test-race test-budgets test-cohort-integration vet build docs-check browser-check browser-build smoke browser-smoke legacyimport migration-smoke source-converter-check offsite-smoke
 
 check: workflow-check ci-selection-check browser-check fmt-check test docs-check source-converter-check
 
@@ -35,6 +36,10 @@ test: test-race
 
 test-race:
 	$(GO) test -race -count=1 -p=2 -timeout=20m -run '$(GO_TEST_RUN)' -skip '^($(ORDINARY_BUDGET_TESTS))$$' $(GO_TEST_PACKAGES)
+
+# Loopback-only tagged provider/publication fixtures are absent from ordinary race discovery.
+test-cohort-integration:
+	$(GO) test -v -race -tags=cohortintegration -count=1 -p=2 -timeout=5m -run '^($(COHORT_INTEGRATION_TESTS))$$' ./internal/reviewexec
 
 test-budgets:
 	@packages="$$( $(GO) list $(GO_TEST_PACKAGES) )" || exit $$?; \

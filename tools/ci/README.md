@@ -7,3 +7,5 @@
 The workflow matrix and this selector must contain the same shards; `make ci-selection-check` verifies that boundary and the required validation dependencies. Full test, runtime-budget and build ownership is described in [development](../../docs/development.md#build-and-checks). No selection changes runtime deadlines or authorizes provider work.
 
 The [CI scheduling contract](scheduling.md) owns this workflow's job inventory, per-PR and per-branch supersession, twenty shared job lanes and rollout checks.
+
+`make test-cohort-integration` runs the explicit `cohortintegration`-tagged lifecycle provider/publication fixtures with the race detector. The existing packaged-qualification job runs it without adding a job or concurrency lane. These loopback-only fixtures are deliberately excluded from production builds and ordinary test discovery; the CI contract test requires every tagged top-level test to appear in the anchored selection. They cover actual publication, CI batching, metadata pairing, qualification, late watchers and provider-limit handling without external credentials or provider calls.

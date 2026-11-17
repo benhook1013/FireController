@@ -217,6 +217,9 @@ jobs:
           test -z "$(git ls-files --others --exclude-standard -- internal/webui/assets)"
       - name: Check ordinary-runtime limits
         run: make test-budgets
+      - name: Check tagged provider-publication integration
+        timeout-minutes: 10
+        run: make test-cohort-integration
       - name: Smoke packaged binaries and legacy adoption
         run: make smoke migration-smoke
       - name: Install pinned optional backup transport
