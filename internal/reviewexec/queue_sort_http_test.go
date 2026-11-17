@@ -71,3 +71,20 @@ func TestQueueSortingHTTPReportsCompatibilityGateWithoutWriting(t *testing.T) {
 		t.Fatal(count, err)
 	}
 }
+
+func TestQueueSortingHTTPUnconfiguredIsReadOnlyState(t *testing.T) {
+	f := newAttemptFixture(t)
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	f.handler = mux
+	path := "/api/v1/projects/" + attemptProject + "/reviews/queue-sorting"
+	response := f.request("GET", path, f.reader, "", "")
+	var got queueSortingView
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &got) != nil || got.Revision != 0 || got.Writable || got.Reason != "reviews_unconfigured" {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var count int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM review_execution_config WHERE project_id=?`, attemptProject).Scan(&count); err != nil || count != 0 {
+		t.Fatal(count, err)
+	}
+}

@@ -112,6 +112,16 @@ describe('finite explicit cookie actions', () => {
 
 
 describe('project queue sorting actions',()=>{
+ it('accepts only the precise read-only unconfigured shape',async()=>{
+  const api=await connected();const unconfigured={project_id:project.id,revision:0,mode:'auto',writable:false,reason:'reviews_unconfigured'};
+  vi.stubGlobal('fetch',vi.fn(async()=>json(unconfigured)));
+  expect(await api.queueSorting()).toEqual(unconfigured);
+  for(const invalid of [{...unconfigured,writable:true},{...unconfigured,revision:1},{...unconfigured,mode:'manual'},{...unconfigured,reason:'compatible_backup_and_rollback_readers_required'}]) {
+   vi.stubGlobal('fetch',vi.fn(async()=>json(invalid)));
+   await expect(api.queueSorting()).rejects.toMatchObject({code:'invalid_response'});
+  }
+ });
+
  it('reads Auto and writes only mode and exact revision with retained action key',async()=>{
   const api=await connected();
   const fetch=vi.fn(async (_input:RequestInfo|URL,init?:RequestInit)=>{

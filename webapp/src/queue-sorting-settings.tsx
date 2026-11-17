@@ -8,7 +8,7 @@ type Input = { worker: string; revision: number; mode: 'auto'|'manual' };
 export function QueueSortingSettings() {
  const {session,key}=useWorkspace();const [reload,setReload]=useState(0);
  const query=useQuery({queryKey:[...key,'queue-sorting'],queryFn:({signal})=>session.api.queueSorting(signalFor(session,signal)),staleTime:Infinity});
- return <section className="panel"><h3>Queue sorting</h3><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <QueueSortingEditor key={reload} initial={query.data} reload={async()=>{const result=await query.refetch();if(!result.error)setReload(value=>value+1);}} />}</ReadState></section>;
+ return <section className="panel"><h3>Queue sorting</h3><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data?.reason==='reviews_unconfigured' ? <p className="notice">Queue sorting is unavailable until review execution is configured.</p> : query.data && <QueueSortingEditor key={reload} initial={query.data} reload={async()=>{const result=await query.refetch();if(!result.error)setReload(value=>value+1);}} />}</ReadState></section>;
 }
 function QueueSortingEditor({initial,reload}:{initial:QueueSorting;reload():Promise<void>}) {
  const {session,key}=useWorkspace();const client=useQueryClient();const worker=session.worker?.id ?? '';

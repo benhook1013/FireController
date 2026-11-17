@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
 )
@@ -31,6 +32,11 @@ func (e *Engine) queueSortingHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		c, err := e.ReadExecutionConfiguration(r.Context(), scope)
 		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+				core.WriteJSON(w, http.StatusOK, queueSortingView{ProjectID: scope.ProjectID, Mode: "auto", Reason: "reviews_unconfigured"})
+				return
+			}
 			core.WriteError(w, err)
 			return
 		}

@@ -1659,6 +1659,8 @@ try {
 
   phase = 'explicit-actions-settings';
   await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Settings',exact:true}).click();
+  await expect(page.getByText('Queue sorting is unavailable until review execution is configured.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save queue sorting',exact:true})).toHaveCount(0);
   await page.getByLabel('Project name',{exact:true}).fill('Browser configured project');
   await page.getByLabel('Brand name',{exact:true}).fill('Browser configured brand');
   await page.getByLabel('Suggested maximum PR size',{exact:true}).fill('1');
@@ -1678,6 +1680,8 @@ try {
   need(new URL(page.url()).pathname===home+'/settings');
   await expect.poll(() => sessionRenewals, {timeout:5000}).toBe(3);
   await page.getByLabel('Project name',{exact:true}).waitFor();
+  await expect(page.getByText('Queue sorting is unavailable until review execution is configured.',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save queue sorting',exact:true})).toHaveCount(0);
   checkpoint='worker-order-retained';
   await expect(page.locator('.worker-order-list strong')).toHaveText(['Builder','Inspector']);
   await expect(page.getByLabel('Suggested maximum PR size',{exact:true})).toHaveValue('1');

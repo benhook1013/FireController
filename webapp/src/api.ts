@@ -52,7 +52,7 @@ export class ApiError extends Error {
 export interface BrowserCapabilities { allow_writes: boolean; can_edit_presentation: boolean }
 export interface BrowserSessionView extends BrowserCapabilities { session_id: string; instance_id: string; project_id: string; expires_at: string }
 export type BrowserPresentationConfig = PresentationConfig;
-export interface QueueSorting { project_id: string; revision: number; mode: 'auto' | 'manual'; writable: boolean; reason?: 'compatible_backup_and_rollback_readers_required' }
+export interface QueueSorting { project_id: string; revision: number; mode: 'auto' | 'manual'; writable: boolean; reason?: 'compatible_backup_and_rollback_readers_required' | 'reviews_unconfigured' }
 export interface QueueSortingReceipt { id: string; state: 'configured'; revision: number }
 export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
 export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
@@ -754,7 +754,9 @@ export class Api {
   }
   async queueSorting(signal?: AbortSignal): Promise<QueueSorting> {
     const value=await this.finiteGet(this.projectRoute('reviews/queue-sorting'),signal);
-    if (!record(value) || !keys(value,['project_id','revision','mode','writable'],['reason']) || typeof value.writable!=='boolean' || (value.writable ? value.reason!==undefined : value.reason!=='compatible_backup_and_rollback_readers_required') || value.project_id!==this.projectId || !Number.isSafeInteger(value.revision) || Number(value.revision)<1 || (value.mode!=='auto' && value.mode!=='manual')) throw new ApiError('invalid_response','Invalid queue sorting settings.');
+    if (!record(value) || !keys(value,['project_id','revision','mode','writable'],['reason']) || typeof value.writable!=='boolean' || value.project_id!==this.projectId || !Number.isSafeInteger(value.revision) || (value.mode!=='auto' && value.mode!=='manual')) throw new ApiError('invalid_response','Invalid queue sorting settings.');
+    const unconfigured=value.reason==='reviews_unconfigured';
+    if (unconfigured ? value.revision!==0 || value.writable || value.mode!=='auto' : Number(value.revision)<1 || (value.writable ? value.reason!==undefined : value.reason!=='compatible_backup_and_rollback_readers_required')) throw new ApiError('invalid_response','Invalid queue sorting settings.');
     return value as unknown as QueueSorting;
   }
   async setQueueSorting(worker: string, revision: number, mode: 'auto'|'manual', key: string, signal?: AbortSignal): Promise<QueueSortingReceipt> {
