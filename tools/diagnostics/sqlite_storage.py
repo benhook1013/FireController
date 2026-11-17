@@ -37,18 +37,32 @@ def inspect(path, *, timeout=5.0, max_objects=1024):
         page_size = connection.execute('PRAGMA page_size').fetchone()[0]
         pages = connection.execute('PRAGMA page_count').fetchone()[0]
         free = connection.execute('PRAGMA freelist_count').fetchone()[0]
-        rows = connection.execute('''SELECT name, COUNT(*), SUM(pgsize), SUM(payload), SUM(unused)
-            FROM dbstat('main') GROUP BY name ORDER BY name LIMIT ?''', (max_objects + 1,)).fetchall()
+        rows = connection.execute('''SELECT d.name, COUNT(*), SUM(d.pgsize), SUM(d.payload), SUM(d.unused),
+            CASE WHEN d.name='sqlite_schema' THEN 'sqlite_schema' ELSE s.tbl_name END,
+            CASE WHEN d.name='sqlite_schema' THEN 'table' ELSE s.type END
+            FROM dbstat('main') AS d LEFT JOIN sqlite_schema AS s ON s.name=d.name AND s.type IN ('table','index')
+            GROUP BY d.name ORDER BY d.name LIMIT ?''', (max_objects + 1,)).fetchall()
         if len(rows) > max_objects:
             raise Refuse('snapshot object budget exceeded')
         if time.monotonic() - started >= timeout:
             raise Refuse('snapshot inspection deadline exceeded')
         if identity(path) != before:
             raise Refuse('snapshot changed during inspection')
-        objects = [dict(name=r[0], pages=r[1], allocated_bytes=r[2], payload_bytes=r[3], unused_bytes=r[4]) for r in rows]
+        objects = [dict(name=r[0], pages=r[1], allocated_bytes=r[2], payload_bytes=r[3], unused_bytes=r[4],
+                        owner_table=r[5], object_type=r[6]) for r in rows]
+        owners = {}
+        unattributed = 0
+        for obj in objects:
+            if obj['owner_table'] is None or obj['object_type'] not in ('table', 'index'):
+                unattributed += obj['allocated_bytes']
+                continue
+            owner = owners.setdefault(obj['owner_table'], dict(table=obj['owner_table'], table_bytes=0, index_bytes=0, total_bytes=0))
+            owner[obj['object_type'] + '_bytes'] += obj['allocated_bytes']
+            owner['total_bytes'] += obj['allocated_bytes']
+        tables = sorted(owners.values(), key=lambda item: (-item['total_bytes'], item['table']))
         return dict(state='complete', source_kind='offline_snapshot', file_bytes=before[2], page_size=page_size,
                     pages=pages, free_pages=free, free_bytes=free * page_size, objects=objects,
-                    object_bytes=sum(r['allocated_bytes'] for r in objects),
+                    object_bytes=sum(r['allocated_bytes'] for r in objects), tables=tables, unattributed_bytes=unattributed,
                     note='Unused page bytes are not a safe deletion or VACUUM recommendation.')
     finally:
         connection.close()
