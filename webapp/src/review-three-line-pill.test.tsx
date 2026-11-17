@@ -262,3 +262,13 @@ describe('current finding obligations remain distinct from frozen counts', () =>
   expect(reviewRunPillStatus({...partial,current_pending_fixes:undefined})).toBe('Partial');
  });
 });
+
+
+it('does not celebrate frozen zero acceptance after a current acceptance becomes pending', () => {
+ const zero = {...completed, accepted:0, fixed:0, current_accepted:0, current_pending_fixes:0};
+ expect(markup([zero])).toContain('review-pill-zero');
+ const pending = {...zero, current_accepted:1, current_pending_fixes:1};
+ expect(markup([pending])).toContain('review-pill-status">Fixes pending');
+ expect(markup([pending])).not.toContain('review-pill-zero');
+ expect(markup([{...zero,current_accepted:undefined,current_pending_fixes:undefined}])).not.toContain('review-pill-zero');
+});

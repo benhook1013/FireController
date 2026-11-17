@@ -1328,6 +1328,36 @@ try {
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'reviews-heading';
   await page.getByRole('heading', {name:'Review queue', exact:true}).waitFor();
+  // Exercise effective current obligations through the real retained projection,
+  // not intercepted review responses. The source tally remains frozen at three.
+  const finding = (id, disposition, fixed = false) => ({source_finding_id:id,title:'Current obligation '+id,detail:'Synthetic retained decision',severity:'low',disposition,decision_reason:'Synthetic decision',actor:'Fixture',decided_at:finished,fix_sha:fixed?'c'.repeat(40):'',proof_note:fixed?'Synthetic focused proof':'',resolved_at:fixed?finished:''});
+  const corrected = {...run,source_run_id:'current-fix-correction',found:3,accepted:3,findings:[finding('fixed-one','accepted',true),finding('fixed-two','accepted',true),finding('corrected','accepted')]};
+  const publishCurrent = (revision, extra) => write('POST','/reviews/observations',observation(revision,[merged,{...open,title:'Live review updated',runs:[run,partial,...extra],attempts:[hostedReturned,cliReturned,uncertainAttempt]}]),201);
+  await publishCurrent(4,[corrected]);
+  const currentLink = () => page.locator('#review-pr-32').getByRole('link',{name:/^Open hosted run current-fix-correction:/});
+  await expect(currentLink().locator('.review-pill-status')).toHaveText('Fixes pending');
+  const pendingURL = await currentLink().getAttribute('href');
+  const rejected = {...corrected,findings:[...corrected.findings.slice(0,2),finding('corrected','rejected')]};
+  await publishCurrent(5,[rejected]);
+  await expect(currentLink().locator('.review-pill-status')).toHaveText('Finished');
+  await expect(currentLink().locator('strong')).toHaveText('3/3/0');
+  await expect(currentLink().locator('time')).toHaveAttribute('datetime',activityStart);
+  await expect(currentLink()).toHaveAttribute('title',/2 currently accepted; 0 fixes pending/u);
+  await currentLink().click();
+  await expect(page.locator('.review-run-summary .review-pill-status')).toHaveText('Finished');
+  await expect(page.locator('.review-run-summary')).toContainText('Accepted: 3 · Routed: 0 · 2 fixed');
+  // Pinned old detail must retain its genuine pending obligation.
+  await page.goto(config.origin+pendingURL);
+  await expect(page.locator('.review-run-summary .review-pill-status')).toHaveText('Fixes pending');
+  await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Review queue',exact:true}).click();
+  const zero = {...run,source_run_id:'current-zero-correction',found:1,accepted:0,findings:[finding('new-acceptance','rejected')]};
+  await publishCurrent(6,[rejected,zero]);
+  const zeroLink = () => page.locator('#review-pr-32').getByRole('link',{name:/^Open hosted run current-zero-correction:/});
+  await expect(zeroLink()).toHaveClass(/review-pill-zero/u);
+  await publishCurrent(7,[rejected,{...zero,findings:[finding('new-acceptance','accepted')]}]);
+  await expect(zeroLink().locator('.review-pill-status')).toHaveText('Fixes pending');
+  await expect(zeroLink().locator('strong')).toHaveText('1/0/0');
+  await expect(zeroLink()).not.toHaveClass(/review-pill-zero/u);
   checkpoint = 'selected-worker';
   need(await selectedWorker() === config.worker);
   checkpoint = 'sanitized-literal';

@@ -17,7 +17,7 @@ const project = { id: 'project_one', name: 'Project', github_repository_id: 1, r
 const stamp = '2026-11-01T00:00:00Z';
 const metadata = { project_id: project.id, snapshot_id: snapshot, revision: 1, source: 'fixture', observed_at: stamp, recorded_at: stamp };
 const totals = { cli: 6, hosted: 0, subagent: 0, manual: 0 };
-function run(index: number, changes: Partial<ReviewRunSummary> = {}): ReviewRunSummary { return { id: 'review_run_' + index.toString(16).padStart(32, '0'), source: 'fixture', source_run_id: `completed_${index}`, pull_number: 3038, channel: 'cli', head_sha: head, reviewer: 'Reviewer', scope: 'Comparison', coverage_limits: [], outcome: 'completed', complete: true, attributable: true, finalized: true, found: 0, accepted: 0, routed: 0, fixed: 0, started_at: stamp, finished_at: stamp, ...changes }; }
+function run(index: number, changes: Partial<ReviewRunSummary> = {}): ReviewRunSummary { return { id: 'review_run_' + index.toString(16).padStart(32, '0'), source: 'fixture', source_run_id: `completed_${index}`, pull_number: 3038, channel: 'cli', head_sha: head, reviewer: 'Reviewer', scope: 'Comparison', coverage_limits: [], outcome: 'completed', complete: true, attributable: true, finalized: true, current_accepted:0, current_pending_fixes:0, found: 0, accepted: 0, routed: 0, fixed: 0, started_at: stamp, finished_at: stamp, ...changes }; }
 const failed = (index: number) => run(index, { source_run_id: `failed_${index}`, outcome: 'failed', complete: false, finalized: false });
 const mixed = [run(6), failed(8), run(5, { finalized: false }), failed(7), run(4), run(3), run(2), run(1)];
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });

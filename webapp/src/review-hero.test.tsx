@@ -85,7 +85,7 @@ describe('merge-head recent review rounds', () => {
       expect(markup(false)).not.toContain('review-pill-zero');
     }
     // A genuinely finalized clean result remains clean after later Git changes.
-    archive.items = [{ ...captured, accepted: 0, finalized: true, head_sha: 'original-reviewed-head' }];
+    archive.items = [{ ...captured, accepted: 0, current_accepted:0, current_pending_fixes:0, finalized: true, head_sha: 'original-reviewed-head' }];
     expect(markup(false)).toContain('review-pill-zero');
     for (const value of [{ ...archive.items[0] as ReviewRunSummary, complete: false }, { ...archive.items[0] as ReviewRunSummary, attributable: false }]) {
       archive.items = [value];
@@ -111,7 +111,7 @@ describe('merge-head recent review rounds', () => {
       }
       expect(JSON.stringify(value)).toBe(original);
     }
-    archive.items = [run('confirmed-clean', 'hosted', { found: 0, accepted: 0, routed: 0, finalized: true })];
+    archive.items = [run('confirmed-clean', 'hosted', { found: 0, accepted: 0, current_accepted:0, current_pending_fixes:0, routed: 0, finalized: true })];
     for (const hero of [false, true]) {
       const html = markup(hero);
       expect(html).toContain('<strong>0/0/0</strong>');
