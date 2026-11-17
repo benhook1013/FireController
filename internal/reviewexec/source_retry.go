@@ -27,6 +27,8 @@ type SourceRetry struct {
 	ObservedAt     string `json:"observed_at"`
 	RetryNotBefore string `json:"retry_not_before"`
 	Sequence       int    `json:"sequence"`
+	// Included only when a diagnostic caller explicitly requests timing classification.
+	TimingState string `json:"timing_state,omitempty"`
 }
 
 // WithSourceReadGroups binds installed capabilities sharing the exact same

@@ -80,7 +80,7 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 }
 
 type roundProgressView struct {
-	stages, queuePriority, activity, sourceRetry, fixes bool
+	stages, queuePriority, activity, sourceRetry, sourceRetryTiming, fixes bool
 }
 
 func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, view roundProgressView) (RoundProgress, error) {
@@ -131,6 +131,12 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				if view.sourceRetry {
 					progress.SourceRetry, err = readChannelSourceRetry(ctx, tx, scope.ProjectID, number, channel)
+					if err != nil {
+						return err
+					}
+				}
+				if view.sourceRetryTiming && progress.SourceRetry != nil {
+					progress.SourceRetry.TimingState, err = sourceRetryTimingState(ctx, tx, progress.SourceRetry.AttemptID)
 					if err != nil {
 						return err
 					}
