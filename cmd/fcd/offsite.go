@@ -60,6 +60,8 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	var value any
 	var err error
 	switch command {
+	case "backup-installation-inspect":
+		value, err = offsite.InspectBatchInstallation(*config)
 	case "backup-push-batch":
 		value, err = offsite.PushBatch(ctx, *config)
 	case "backup-push":

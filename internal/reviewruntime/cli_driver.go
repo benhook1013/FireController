@@ -21,21 +21,22 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
-	store        *core.Store
-	engine       *reviewexec.Engine
-	capability   OperatorCapability
-	manager      *reviewworkspace.Manager
-	captures     *CaptureStore
-	exhaustions  *CLIExhaustionStore
-	reader       reviewexec.TargetReader
-	fetch        func(context.Context, int64, string, string, string, string) error
-	verify       func(context.Context, reviewworkspace.Workspace) error
-	usage        func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
-	review       func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
-	mu           sync.Mutex
-	prepared     map[string]*cliPrepared
-	recovering   atomic.Bool
-	recoveryWait func(context.Context, time.Duration) error
+	workspaceMaintenance func(context.Context) error
+	store                *core.Store
+	engine               *reviewexec.Engine
+	capability           OperatorCapability
+	manager              *reviewworkspace.Manager
+	captures             *CaptureStore
+	exhaustions          *CLIExhaustionStore
+	reader               reviewexec.TargetReader
+	fetch                func(context.Context, int64, string, string, string, string) error
+	verify               func(context.Context, reviewworkspace.Workspace) error
+	usage                func(context.Context, reviewworkspace.Workspace, string, string) (reviewprocess.Usage, error)
+	review               func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
+	mu                   sync.Mutex
+	prepared             map[string]*cliPrepared
+	recovering           atomic.Bool
+	recoveryWait         func(context.Context, time.Duration) error
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }

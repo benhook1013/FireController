@@ -140,6 +140,15 @@ func removeChildren(ctx context.Context, root *os.Root) error {
 
 // StartPruning owns one maintenance loop independent of review result polling.
 func (m *Manager) StartPruning(ctx context.Context, disposable func(context.Context, string) (bool, error), report func(error)) (<-chan error, error) {
+	return m.StartPruningWithMaintenance(ctx, disposable, report, nil)
+}
+
+// StartPruningWithMaintenance optionally runs a cooperating local maintenance
+// callback after a successful prune. It shares the same pass deadline, worker
+// exclusion, cadence and shutdown context; it creates no second scheduler.
+// The callback owns its separate eligibility/custody rules and must obey ctx.
+// A nil callback preserves the ordinary checkout-only behavior.
+func (m *Manager) StartPruningWithMaintenance(ctx context.Context, disposable func(context.Context, string) (bool, error), report func(error), maintenance func(context.Context) error) (<-chan error, error) {
 	if m == nil || ctx == nil || disposable == nil || !m.pruning.CompareAndSwap(false, true) {
 		return nil, errConfiguration
 	}
@@ -150,6 +159,9 @@ func (m *Manager) StartPruning(ctx context.Context, disposable func(context.Cont
 		for ctx.Err() == nil {
 			pass, cancel := context.WithTimeout(ctx, 20*time.Second)
 			_, err := m.Prune(pass, disposable)
+			if err == nil && pass.Err() == nil && maintenance != nil {
+				err = maintenance(pass)
+			}
 			cancel()
 			if err != nil && ctx.Err() == nil && report != nil {
 				report(err)
