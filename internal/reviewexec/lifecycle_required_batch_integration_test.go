@@ -99,12 +99,21 @@ func engineRequiredNewDistinctCIFixture(t *testing.T, mode string, duringRead fu
 		}
 		var body any
 		if r.URL.Path == "/graphql" {
+			if mode == "qualification_limit" {
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(429)
+				return
+			}
 			if r.Method != "POST" {
 				t.Error("wrong graphql method")
 			}
 			var req struct{ Variables map[string]string }
 			if json.NewDecoder(r.Body).Decode(&req) != nil {
 				t.Error("query decode")
+			}
+			if req.Variables["h0"] == members[0].head && req.Variables["h1"] == members[1].head {
+				json.NewEncoder(w).Encode(engineRequiredSuiteBatchEnvelope(engineRequiredSuiteBatchNode(members[0].head, 1), engineRequiredSuiteBatchNode(members[1].head, 1)))
+				return
 			}
 			if req.Variables["h0"] != members[0].merge || req.Variables["h1"] != members[1].merge {
 				t.Error("mixed commit selectors", req)
@@ -142,6 +151,8 @@ func engineRequiredNewDistinctCIFixture(t *testing.T, mode string, duringRead fu
 					c := engineRequiredCandidateCommitFixture(engineRequiredCandidateBase, m.head)
 					c["sha"] = m.merge
 					body = c
+				case r.URL.Path == "/repos/owner/repo/commits/"+m.head+"/check-suites":
+					body = map[string]any{"total_count": 1, "check_suites": []any{map[string]any{"id": m.suite, "head_sha": m.head, "app": map[string]any{"id": 10}}}}
 				case r.URL.Path == "/repos/owner/repo/commits/"+m.merge+"/check-suites":
 					body = map[string]any{"total_count": 1, "check_suites": []any{map[string]any{"id": m.suite, "head_sha": m.merge, "app": map[string]any{"id": 10}}}}
 				case r.URL.Path == "/repos/owner/repo/commits/"+m.merge+"/check-runs":

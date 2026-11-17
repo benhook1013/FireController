@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -31,6 +32,13 @@ func periodicCohortDue(d lifecycleDue, now time.Time) bool {
 // It does not add provider concurrency. All fresh source plans precede the
 // shared authority read; original per-target publication guards remain intact.
 func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarget, readers map[string]TargetReader, s *lifecycleSchedule) error {
+	var qualification *reviewprovider.CISuiteQualification
+	defer func() {
+		if qualification != nil {
+			slog.Info("ci_batch_qualification", "state", qualification.State, "transport_calls", qualification.Requests)
+		}
+	}()
+
 	if s.options.BatchCIWitnesses {
 		defer func() { s.batching.report(s.options.Now()) }()
 	}
@@ -104,6 +112,31 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 		cohort, err := factory.NewCIGateCohort(bounded, members, gate)
 		if err == nil {
 			defer cohort.Close()
+			// One bounded diagnostic per account per process, only within the
+			// already-admitted natural cohort. Existing watches stay on their
+			// ordinary path; no late subscriber receives qualification evidence.
+			qualify := false
+			if s.options.QualifyCIBatching && members[0].HeadSHA != members[1].HeadSHA && !lifecycleCohortHasSubscribers(s, targets) {
+				s.mu.Lock()
+				if s.qualificationClaimed == nil {
+					s.qualificationClaimed = map[string]bool{}
+				}
+				if !s.qualificationClaimed[first.account] && !s.options.Now().Before(s.accounts[first.account].until) {
+					s.qualificationClaimed[first.account] = true
+					qualify = true
+				}
+				s.mu.Unlock()
+			}
+			if qualify {
+				result, probeErr := cohort.QualifySuiteBatch(reviewprovider.WithGitHubCaller(bounded, "lifecycle_enrichment_periodic"))
+				qualification = &result
+				if probeErr != nil {
+					s.mu.Lock()
+					s.finishAccountLocked(targets[0], probeErr, s.options.Now())
+					s.mu.Unlock()
+					return nil
+				}
+			}
 			batch := s.options.BatchCIWitnesses && !lifecycleCohortHasSubscribers(s, targets)
 			if s.options.BatchCIWitnesses {
 				s.batching.record(s.options.Now(), batchEligible)

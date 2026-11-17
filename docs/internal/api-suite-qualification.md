@@ -1,0 +1,15 @@
+# Natural-cohort suite batching qualification
+
+This isolated change is not in the published UI/API successor yet. It is not an activation authorization.
+
+`--lifecycle-ci-batching-qualification` is default off and mutually exclusive with `--lifecycle-ci-batching`. It admits one bounded diagnostic per account per process within an already-admitted natural two-PR periodic cohort. Existing watched cohorts and identical-head pairs are excluded. No target discovery, forced review, separate credential or standalone cooldown bypass is involved.
+
+The existing provider object supplies the actual credential, shared quota and read gate. An explicitly constructed private view shares those bindings without copying mutexes or modifying the daemon adapter. The existing account/project reservation remains held. Two ordinary REST head suite counts, one exact production paired GraphQL count query, then two fresh REST counts share a 15-second limit inside the cohort's existing 40-second lifetime. Each member retains its cumulative byte/page/item budget. An atomic transport wrapper allows at most five invocations to only those expected destinations. Opaque internal HTTP retries are not separately counted.
+
+Stable equal counts produce `matched`; movement produces `inconclusive`; failure produces `refused`. None is CI or readiness authority. Successful or inconclusive qualification is followed by the original full authoritative collector; a provider failure stops this cohort and feeds the existing account cooldown policy without replacing per-target evidence. The diagnostic consumes time from the existing deadline and can delay one ordinary observation; it does not enlarge provider budgets. Failed or cancelled qualification is not retried within that daemon process. Restart while the explicit flag remains on permits another one-shot; remove it after obtaining evidence.
+
+Only fixed state and transport-call count are logged, after provider work and reservation release. Existing suite-count quota telemetry supplies optional cost/header evidence; shared-window cost observations are not attributable solely to this diagnostic. No credential, repository, SHA, response body or raw error is logged. This is count/schema/permission compatibility evidence, not equivalent application identities, required contexts, Actions attempt/jobs or merge authority; all those remain in the normal collector.
+
+Local loopback tests cover stable match, movement, HTTP429/partial/cancel stop, atomic call cap, destination and inherited-read-gate refusal. Actual engine tests exercise the real provider adapter/credential, held reservation, original authoritative publication, one-shot behavior, watched-cohort exclusion and account cooldown. No real provider request has been issued by these tests.
+
+Before live diagnostic use, independently review this seam and qualify the exact serving build and release guard. Keep batching off. After diagnostic evidence is understood, activation still requires a guarded change and matched natural request/error/cost measurement. A matched diagnostic is neither activation permission nor a savings claim.
