@@ -122,8 +122,9 @@ func TestLifecycleSuiteQualificationUsesActualCredentialAndReservation(t *testin
 				if err = f.e.observeLifecycleCohort(t.Context(), *again, map[string]TargetReader{"test-capability": r}, s); err != nil {
 					t.Fatal(err)
 				}
-				if calls.Load() != 48 {
-					t.Fatal("one-shot qualification repeated", calls.Load())
+				// Two validated immutable merge objects remain warm; all mutable reads remain.
+				if calls.Load() != 46 {
+					t.Fatal("one-shot qualification repeated or mutable reads changed", calls.Load())
 				}
 			} else if len(s.qualificationClaimed) != 0 {
 				t.Fatal("watched cohort qualified")
@@ -251,6 +252,7 @@ func TestLifecycleSuiteQualificationLimitPreservesCooldownAndEvidence(t *testing
 				if err = f.e.observeLifecycleCohort(t.Context(), *again, map[string]TargetReader{"test-capability": r}, s); err != nil {
 					t.Fatal(err)
 				}
+				// The refused first pass never fetched immutable objects; this pass remains cold.
 				if calls.Load() != 48 {
 					t.Fatal("one-shot qualification repeated", calls.Load())
 				}
