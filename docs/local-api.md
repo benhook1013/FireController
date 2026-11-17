@@ -149,3 +149,5 @@ The [prepared coordination import](legacy-adoption.md) owns administrator previe
 ## Explicit Actions diagnostic
 
 `POST /api/v1/projects/{project_id}/reviews/actions-liveness/observe` is a bounded project-read operation through the existing supervised source workers. It requires strict `age_hours` and `limit` JSON fields and returns compact ephemeral facts, not a durable operation receipt. The [owning provider contract](provider-observations.md#explicit-actions-diagnostic-read) defines admission, current-identity checks, bounds and refusal semantics. It does not schedule scans or authorize cancellation/recovery; ordinary stored views remain provider-free.
+
+`POST /api/v1/projects/{project_id}/reviews/actions-run/observe` adds an explicitly selected exact-run/expected-attempt job read through the same one-shot source admission. The [selected-run contract](provider-observations.md#exact-selected-run-job-diagnostic) owns its strict fields, witnesses, bounds and non-authorizing output. No recurring observer, provider mutation or recovery authority is added.

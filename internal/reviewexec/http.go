@@ -20,6 +20,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	e.registerFollowingHTTP(mux)
 	e.registerCIWatchHTTP(mux)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/actions-liveness/observe", e.actionsDiagnosticHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/actions-run/observe", e.actionsRunDiagnosticHTTP)
 	e.registerSchedulingHTTP(mux)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/external-hosted/{pull_number}/settlement", e.settleExternalHostedHTTP)
 	mux.HandleFunc("DELETE /api/v1/operator/deployment-drain", e.deploymentDrainHTTP("cancel"))

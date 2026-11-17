@@ -49,15 +49,17 @@ type actionsDiagnosticBinding struct {
 	repositoryID, revision                                int64
 }
 type actionsDiagnosticRequest struct {
-	started    time.Time
-	ctx        context.Context
-	scope      core.Scope
-	binding    actionsDiagnosticBinding
-	age, limit int
-	result     chan actionsDiagnosticAnswer
+	started        time.Time
+	ctx            context.Context
+	scope          core.Scope
+	binding        actionsDiagnosticBinding
+	age, limit     int
+	runID, attempt int64
+	result         chan actionsDiagnosticAnswer
 }
 type actionsDiagnosticAnswer struct {
 	facts ActionsDiagnostic
+	run   ActionsRunDiagnostic
 	err   error
 }
 type actionsDiagnosticReader interface {
@@ -107,41 +109,48 @@ func (e *Engine) ObserveActionsDiagnostic(ctx context.Context, scope core.Scope,
 	if ctx == nil || e == nil || e.store == nil || age < 1 || age > 720 || limit < 1 || limit > 20 {
 		return ActionsDiagnostic{}, invalid()
 	}
+	answer, err := e.observeActionsRead(ctx, scope, age, limit, 0, 0)
+	return answer.facts, err
+}
+
+// Both explicit diagnostic modes share the same permit, workers, cancellation
+// lifetime, project exclusion and final authorization/configuration recheck.
+func (e *Engine) observeActionsRead(ctx context.Context, scope core.Scope, age, limit int, runID, attempt int64) (actionsDiagnosticAnswer, error) {
 	started := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(ctx, actionsDiagnosticBudget)
 	defer cancel()
 	binding, _, err := e.actionsBinding(ctx, scope)
 	if err != nil {
-		return ActionsDiagnostic{}, err
+		return actionsDiagnosticAnswer{}, err
 	}
-	request := &actionsDiagnosticRequest{started: started, ctx: ctx, scope: scope, binding: binding, age: age, limit: limit, result: make(chan actionsDiagnosticAnswer, 1)}
+	request := &actionsDiagnosticRequest{started: started, ctx: ctx, scope: scope, binding: binding, age: age, limit: limit, runID: runID, attempt: attempt, result: make(chan actionsDiagnosticAnswer, 1)}
 	e.actionsDiagnosticMu.Lock()
 	if !e.actionsDiagnosticActive {
 		e.actionsDiagnosticMu.Unlock()
-		return ActionsDiagnostic{}, actionsDiagnosticUnavailable()
+		return actionsDiagnosticAnswer{}, actionsDiagnosticUnavailable()
 	}
 	if e.actionsDiagnosticCurrent != nil {
 		e.actionsDiagnosticMu.Unlock()
-		return ActionsDiagnostic{}, actionsDiagnosticBusy()
+		return actionsDiagnosticAnswer{}, actionsDiagnosticBusy()
 	}
 	e.actionsDiagnosticCurrent = request
 	e.actionsDiagnosticQueue <- request // one global request, one buffered slot
 	e.actionsDiagnosticMu.Unlock()
 	select {
 	case <-ctx.Done():
-		return ActionsDiagnostic{}, actionsDiagnosticUnavailable()
+		return actionsDiagnosticAnswer{}, actionsDiagnosticUnavailable()
 	case answer := <-request.result:
 		if answer.err != nil {
-			return ActionsDiagnostic{}, answer.err
+			return actionsDiagnosticAnswer{}, answer.err
 		}
 		current, _, err := e.actionsBinding(ctx, scope)
 		if err != nil {
-			return ActionsDiagnostic{}, err
+			return actionsDiagnosticAnswer{}, err
 		}
 		if current != binding {
-			return ActionsDiagnostic{}, actionsDiagnosticUnavailable()
+			return actionsDiagnosticAnswer{}, actionsDiagnosticUnavailable()
 		}
-		return answer.facts, nil
+		return answer, nil
 	}
 }
 func (e *Engine) startActionsDiagnostics() {
@@ -210,21 +219,29 @@ func (e *Engine) collectActionsDiagnostic(worker context.Context, readers map[st
 	if binding != request.binding || ctx.Err() != nil {
 		return
 	}
+	if request.runID != 0 {
+		reader, ok := readers[binding.capability].(actionsRunDiagnosticReader)
+		if !ok {
+			return
+		}
+		facts, readErr := reader.ObserveActionsRunAttempt(reviewprovider.WithGitHubCaller(ctx, "source_refresh"), binding.repository, binding.repositoryID, request.runID, request.attempt)
+		if readErr != nil {
+			answer.err = actionsDiagnosticProviderFailure(readErr)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		answer.run, answer.err = projectActionsRunDiagnostic(request, facts)
+		return
+	}
 	reader, ok := readers[binding.capability].(actionsDiagnosticReader)
 	if !ok {
 		return
 	}
 	facts, err := reader.ObserveActionsLiveness(reviewprovider.WithGitHubCaller(ctx, "source_refresh"), binding.repository, binding.repositoryID, time.Duration(request.age)*time.Hour)
 	if err != nil {
-		reason := "provider_unavailable"
-		var failure *reviewprovider.Error
-		if errors.As(err, &failure) {
-			switch failure.Code {
-			case "provider_rate_limited", "provider_forbidden", "provider_not_found", "provider_invalid_response":
-				reason = failure.Code
-			}
-		}
-		answer.err = &core.Error{Code: "actions_diagnostic_unavailable", Message: "The bounded provider diagnostic failed; no partial facts or recovery permission were retained.", Status: 503, Details: map[string]string{"reason": reason}}
+		answer.err = actionsDiagnosticProviderFailure(err)
 		return
 	}
 	if ctx.Err() != nil {
@@ -296,4 +313,16 @@ func actionsDiagnosticEvent(value string) bool {
 		}
 	}
 	return true
+}
+
+func actionsDiagnosticProviderFailure(err error) error {
+	reason := "provider_unavailable"
+	var failure *reviewprovider.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "provider_rate_limited", "provider_forbidden", "provider_not_found", "provider_invalid_response":
+			reason = failure.Code
+		}
+	}
+	return &core.Error{Code: "actions_diagnostic_unavailable", Message: "The bounded provider diagnostic failed; no partial facts or recovery permission were retained.", Status: 503, Details: map[string]string{"reason": reason}}
 }

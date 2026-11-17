@@ -294,6 +294,10 @@ func (g *GitHub) actionsRuns(ctx context.Context, path, repository, head string,
 }
 
 func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run githubActionsRun, budget *actionsBudget) ([]ActionsJob, error) {
+	return g.actionsJobsBounded(ctx, path, repository, run, budget, githubMaxPages, githubMaxItems)
+}
+
+func (g *GitHub) actionsJobsBounded(ctx context.Context, path, repository string, run githubActionsRun, budget *actionsBudget, maxPages, maxItems int) ([]ActionsJob, error) {
 	// GitHub's attempt jobs endpoint can take longer for large partial reruns.
 	// Keep the caller's aggregate attempt deadline and all inventory bounds.
 	client := *g.httpClient
@@ -303,9 +307,9 @@ func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run g
 	rows := make([]ActionsJob, 0)
 	seen, checks := map[int64]bool{}, map[int64]bool{}
 	total := int64(-1)
-	for page := int64(1); page <= githubMaxPages; page++ {
+	for page := int64(1); page <= int64(maxPages); page++ {
 		budget.pages++
-		if budget.pages > githubMaxPages {
+		if budget.pages > maxPages {
 			return nil, invalidResponse(false, http.StatusOK)
 		}
 		query := url.Values{"page": {strconv.FormatInt(page, 10)}, "per_page": {strconv.Itoa(githubPageSize)}}
@@ -318,7 +322,7 @@ func (g *GitHub) actionsJobs(ctx context.Context, path, repository string, run g
 			return nil, err
 		}
 		budget.items += len(envelope.Jobs)
-		if envelope.Jobs == nil || len(envelope.Jobs) > githubPageSize || budget.items > githubMaxItems || envelope.TotalCount < 0 || envelope.TotalCount > githubMaxItems || total >= 0 && total != envelope.TotalCount {
+		if envelope.Jobs == nil || len(envelope.Jobs) > githubPageSize || budget.items > maxItems || envelope.TotalCount < 0 || envelope.TotalCount > int64(maxItems) || total >= 0 && total != envelope.TotalCount {
 			return nil, invalidResponse(false, http.StatusOK)
 		}
 		total = envelope.TotalCount

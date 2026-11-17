@@ -12,6 +12,11 @@ import (
 )
 
 func parseReview(call invocation, args []string) (invocation, bool) {
+	if call.subcommand == "actions-run" {
+		var ok bool
+		call.actionsRunDiagnostic, ok = parseActionsRunDiagnostic(args)
+		return call, ok
+	}
 	if call.subcommand == "actions-liveness" {
 		var ok bool
 		call.actionsDiagnostic, ok = parseActionsDiagnostic(args)
@@ -196,6 +201,8 @@ func reviewID(value, prefix string) bool {
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
 	switch call.subcommand {
+	case "actions-run":
+		return service.ActionsRun(ctx, *call.actionsRunDiagnostic)
 	case "actions-liveness":
 		return service.ActionsLiveness(ctx, *call.actionsDiagnostic)
 	case "scheduling":
