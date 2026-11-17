@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import patch
 import os
 import prepare_rehearsal
+import prepare_successor
+import hashlib
 from test_rehearsal_operation import RehearsalOperationTests
 import bounded_rehearsal as bounded
 from artifact_retention import Refuse
@@ -102,6 +104,34 @@ class BoundedTests(RehearsalOperationTests):
         skip = prepare_rehearsal.render(dict(mode='schema-unchanged', proof=proof), policy, self.base)
         self.assertNotIn('bounded_rehearsal', skip)
         compile(skip, 'rehearse.py', 'exec')
+
+    def test_successor_mandatory_rehearsal_and_hashes(self):
+        package = self.base/'package'
+        package.mkdir()
+        templates = {'image-next-template.py':"p='/old'\n", 'rollout-next-template.py':"p='/old'\n", 'image_layers.py':'# helper\n'}
+        for name, body in templates.items():
+            (package/name).write_text(body)
+        policy = dict(root=str(self.root), budget_lease=str(self.budget),
+                      source_lease=str(self.source_lock), source_lease_uid=os.geteuid(),
+                      source_owner_uid=os.geteuid(), lease=str(self.lease))
+        manifest = dict(source='a'*40, original_operation='/old', rehearsal_policy=policy,
+                        sha256={n:hashlib.sha256(v.encode()).hexdigest() for n,v in templates.items()})
+        (package/'manifest.json').write_text(json.dumps(manifest))
+        target = self.base/'new'
+        target.mkdir()
+        replacements = {n:{'/old':str(target)} for n in ('image.py','rollout.py')}
+        with self.assertRaises(Refuse):
+            prepare_successor.prepare(package,target,replacements,{})
+        self.assertEqual(list(target.iterdir()), [])
+        proof=dict(state='passed',storage_schema_unchanged=True,new_populated_rehearsal=False)
+        result=prepare_successor.prepare(package,target,replacements,dict(mode='schema-unchanged',proof=proof))
+        self.assertEqual(result['rehearsal_mode'], 'schema-unchanged')
+        self.assertEqual(set(result['outputs']), {'image.py','rollout.py','image_layers.py','rehearse.py'})
+        with self.assertRaisesRegex(ValueError, 'exists'):
+            prepare_successor.prepare(package,target,replacements,dict(mode='schema-unchanged',proof=proof))
+        (package/'image_layers.py').write_text('# changed')
+        with self.assertRaisesRegex(ValueError, 'template changed'):
+            prepare_successor.prepare(package,target,replacements,dict(mode='schema-unchanged',proof=proof))
 
 if __name__ == '__main__':
     unittest.main()
