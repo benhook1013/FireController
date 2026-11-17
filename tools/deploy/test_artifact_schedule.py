@@ -40,6 +40,36 @@ class ScheduleTests(unittest.TestCase):
     def execute(self):
         return schedule.execute(self.config, self.lock, self.results)
 
+    def test_fifo_state_refuses_without_waiting_for_writer(self):
+        # Run in a child so a regression cannot hang the test suite itself.
+        for target in (self.config, self.results / "latest.json", self.results / "previous.json"):
+            with self.subTest(target=target.name):
+                if target.exists():
+                    target.unlink()
+                os.mkfifo(target, 0o600)
+                try:
+                    child = subprocess.run([sys.executable, "-c", """
+import sys
+from pathlib import Path
+import artifact_schedule as s
+from artifact_retention import Refuse
+try:
+    if sys.argv[2] == 'config.json':
+        s.configuration(Path(sys.argv[1]), __import__('time').time())
+    else:
+        s.validate_result_store(Path(sys.argv[1]).parent)
+except Refuse:
+    sys.exit(0)
+raise AssertionError('FIFO was not refused')
+""", str(target), target.name], cwd=Path(schedule.__file__).parent,
+                        capture_output=True, text=True, timeout=3)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    self.assertTrue(target.exists())
+                finally:
+                    target.unlink()
+                    if target == self.config:
+                        self.write()
+
     def test_default_dryrun_and_same_lock_custody(self):
         def collect(a, held):
             self.assertFalse(a.apply)

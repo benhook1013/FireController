@@ -202,3 +202,93 @@ class LeaseSafetyTests(unittest.TestCase):
         with patch.object(sys,"argv",argv),patch.object(r,"collect_locked") as collect,self.assertRaises(r.Refuse):r.main()
         collect.assert_not_called()
         self.assertEqual(list(results.iterdir()),[])
+
+
+class MappedReferenceTests(unittest.TestCase):
+    def test_closed_descriptor_mapping_remains_a_retention_reference(self):
+        # libc mmap, unlike Python mmap, does not keep a duplicate file FD.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mapped file\nwith newline"
+            path.write_bytes(b"retained")
+            child = subprocess.Popen([sys.executable, "-c", """
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, ctypes.c_long]
+libc.mmap.restype = ctypes.c_void_p
+fd = os.open(sys.argv[1], os.O_RDONLY)
+address = libc.mmap(None, 8, 1, 2, fd, 0)
+if address == ctypes.c_void_p(-1).value:
+    raise OSError(ctypes.get_errno(), "mmap")
+os.close(fd)
+print("mapped", flush=True)
+sys.stdin.buffer.read(1)
+""", str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
+            try:
+                import select
+                self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                self.assertEqual(child.stdout.readline(), "mapped\n")
+                fds = Path(f"/proc/{child.pid}/fd")
+                self.assertNotIn(str(path), [os.readlink(p) for p in fds.iterdir()])
+                # Restrict discovery to this actual child to avoid unrelated host
+                # permission policy; actual map_files/fd/readlink remain in use.
+                from unittest.mock import patch
+                original = Path.iterdir
+                def directories(p):
+                    if p == Path("/proc"):
+                        return iter([Path(f"/proc/{child.pid}")])
+                    return original(p)
+                with patch.object(Path, "iterdir", directories):
+                    refs = r.active_paths()
+                self.assertIn(str(path), refs)
+                self.assertTrue(r.retained_by_reference(path, refs))
+                self.assertEqual(path.read_bytes(), b"retained")
+            finally:
+                try:
+                    child.communicate("x", timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate(timeout=5)
+
+    def test_inaccessible_mapping_inventory_refuses(self):
+        from unittest.mock import patch
+        original = Path.iterdir
+        def directories(p):
+            if p == Path("/proc"):
+                return iter([Path(f"/proc/{os.getpid()}")])
+            if p.name == "map_files":
+                raise PermissionError("mapping inventory denied")
+            return original(p)
+        with patch.object(Path, "iterdir", directories), self.assertRaises(r.Refuse):
+            r.active_paths()
+
+    def test_missing_mapping_directory_is_not_process_exit(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory) / "123"
+            proc.mkdir()
+            with self.assertRaises(r.Refuse):
+                r.mapping_links(proc)
+            proc.rmdir()
+            self.assertEqual(r.mapping_links(proc), [])
+
+
+class MountReferenceTests(unittest.TestCase):
+    def test_kernel_mount_escapes_preserve_exact_reference(self):
+        from unittest.mock import patch
+        cases = [
+            (r'/artifacts/a\040b', '/artifacts/a b'),
+            (r'/artifacts/a\011b', '/artifacts/a\tb'),
+            (r'/artifacts/a\012b', '/artifacts/a\nb'),
+            (r'/artifacts/a\134012b', r'/artifacts/a\012b'),
+        ]
+        for encoded, decoded in cases:
+            with self.subTest(encoded=encoded):
+                line = f'42 1 0:1 / {encoded} rw - tmpfs tmpfs rw\n'
+                with patch.object(Path, 'iterdir', return_value=iter([])), \
+                     patch.object(Path, 'read_text', return_value=line):
+                    refs = r.active_paths()
+                self.assertEqual(refs, [decoded])
+                self.assertTrue(r.retained_by_reference(Path(decoded) / 'old', refs))
+                self.assertFalse(r.retained_by_reference(Path(decoded + '-other') / 'old', refs))

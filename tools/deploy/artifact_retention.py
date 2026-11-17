@@ -81,14 +81,28 @@ def digest(path):
     return h.hexdigest(), after
 
 
+def mapping_links(proc):
+    try:
+        return list((proc / "map_files").iterdir())
+    except FileNotFoundError:
+        if proc.exists():
+            raise Refuse("mapping inventory unavailable for a live process")
+        return []  # Process exited during inventory.
+
+
 def active_paths():
-    """Conservatively retain open files, process directories and mount trees."""
+    """Retain open/mapped files, process directories and mount trees."""
     result = []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
         try:
-            entries = [proc / "cwd", proc / "exe"] + list((proc / "fd").iterdir())
+            # A file-backed mmap can survive closing every descriptor. Kernel
+            # map_files links preserve the actual pathname (including whitespace),
+            # unlike parsing the escaped/ambiguous textual /proc/PID/maps column.
+            entries = ([proc / "cwd", proc / "exe"] +
+                       list((proc / "fd").iterdir()) +
+                       mapping_links(proc))
             for item in entries:
                 try:
                     result.append(os.readlink(item).removesuffix(" (deleted)"))
@@ -99,7 +113,10 @@ def active_paths():
         except PermissionError as exc:
             raise Refuse("cannot establish complete active-process inventory") from exc
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
-        result.append(line.split()[4].replace("\\040", " ").replace("\\134", "\\"))
+        # Decode exactly the kernel mountinfo escapes in one pass. In
+        # particular a literal backslash followed by 012 is not a newline.
+        escapes = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+        result.append(re.sub(r"\\(040|011|012|134)", lambda m: escapes[m[1]], line.split()[4]))
     return result
 
 

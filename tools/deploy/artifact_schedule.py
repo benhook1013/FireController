@@ -14,7 +14,9 @@ from artifact_retention import Refuse, collect_locked, open_lease
 
 
 def private_file(path, limit):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    # A FIFO must reach the regular-file check instead of waiting for a writer.
+    # O_NONBLOCK does not change ordinary regular-file reads.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as f:
         s = os.fstat(f.fileno())
         if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_mode & 0o077 or s.st_size > limit:
