@@ -13,8 +13,8 @@ func TestCIObservationReusesOnlyImmutableMergeObject(t *testing.T) {
 			t.Fatalf("observation: %s %v", got.State, err)
 		}
 		_, counts := f.snapshot()
-		if counts[candidateCommitPath] != i {
-			t.Fatalf("immutable reads = %d, want %d", counts[candidateCommitPath], i)
+		if counts[candidateCommitPath] != 1 {
+			t.Fatalf("immutable reads = %d, want %d", counts[candidateCommitPath], 1)
 		}
 		if counts[candidatePullPath] != 4*i || counts[candidateBranchPath] != 4*i {
 			t.Fatalf("mutable brackets weakened: %v", counts)

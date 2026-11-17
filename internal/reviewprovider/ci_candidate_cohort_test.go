@@ -108,6 +108,8 @@ func TestCICandidateCohortSameFacts(t *testing.T) {
 			baselineCalls := calls
 			calls = 0
 			mu.Unlock()
+			// Compare cold candidates on both paths; warm reuse has separate proof.
+			g.mergeObjects = immutableMergeCache{}
 			got, err := g.pullCICandidateCohort(t.Context(), targets, nil)
 			if err != nil {
 				t.Fatal(err)

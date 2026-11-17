@@ -35,6 +35,7 @@ const (
 // never discovers repositories or chooses review targets. CI inventory movement
 // permits one bounded recollection of the same immutable commit.
 type GitHub struct {
+	mergeObjects      immutableMergeCache
 	readGate          func(context.Context) error
 	quota             *GitHubQuota
 	token             string

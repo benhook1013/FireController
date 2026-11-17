@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// The two fixture members share one immutable merge object: 40 reads minus one reuse.
 func TestCICohortPreparedBatchExactConsumption(t *testing.T) {
 	g, targets, calls := fullCountCohortFixture(t, "")
 	c, err := g.NewCIGateCohort(t.Context(), targets, "main")
@@ -15,7 +16,7 @@ func TestCICohortPreparedBatchExactConsumption(t *testing.T) {
 	if err = c.PrepareBatched(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 40 {
+	if calls.Load() != 39 {
 		t.Fatal(calls.Load())
 	}
 	if err = c.PrepareBatched(t.Context()); err == nil {
@@ -35,7 +36,7 @@ func TestCICohortPreparedBatchExactConsumption(t *testing.T) {
 			t.Fatal("repeat consumption")
 		}
 	}
-	if calls.Load() != 40 {
+	if calls.Load() != 39 {
 		t.Fatal("cached consumption fetched", calls.Load())
 	}
 }
@@ -59,7 +60,7 @@ func TestCICohortPreparedBatchCloseAndCallerCancel(t *testing.T) {
 		}
 		o, err := c.ObserveCIGate(ctx, targets[0], "main")
 		cancel()
-		if err == nil || o.State == "satisfied" || calls.Load() != 40 {
+		if err == nil || o.State == "satisfied" || calls.Load() != 39 {
 			t.Fatal(o, err, calls.Load())
 		}
 	}

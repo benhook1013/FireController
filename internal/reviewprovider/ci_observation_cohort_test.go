@@ -71,7 +71,7 @@ func TestCISourceCohortFullFactsAndCalls(t *testing.T) {
 			}
 			after, ac := f.snapshot()
 			if mode == "" {
-				if len(before) != 50 || len(after) != 44 {
+				if len(before) != 49 || len(after) != 43 {
 					t.Fatal("full green counts", len(before), len(after))
 				}
 				for path, n := range bc {

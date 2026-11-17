@@ -118,11 +118,18 @@ func (g *GitHub) pullCICandidateCohort(ctx context.Context, targets []CITarget, 
 		}
 		sha := *s.first.MergeCommitSHA
 		object, reused := commits[i][sha]
-		var err error
 		if !reused {
+			object, reused = g.mergeObjects.get(targets[i].Repository, sha)
+		}
+		fetched := !reused
+		var err error
+		if fetched {
 			_, err = g.actionsRead(ctx, "/repos/"+targets[i].Repository+"/git/commits/"+sha, nil, &budgets[i], &object)
 		}
 		s.acceptObject(object, err, commits[i])
+		if fetched && err == nil && s.phase == ciCandidateAfter && object.SHA == sha {
+			g.mergeObjects.put(targets[i].Repository, object)
+		}
 		stampDone(s)
 	}
 	branchPhase(ciCandidateAfter)

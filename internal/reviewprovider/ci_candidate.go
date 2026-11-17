@@ -120,11 +120,18 @@ func (g *GitHub) pullCICandidate(ctx context.Context, repository string, reposit
 	}
 	if p.phase == ciCandidateObject {
 		merge, reused := commits[*p.first.MergeCommitSHA]
-		var readErr error
 		if !reused {
+			merge, reused = g.mergeObjects.get(repository, *p.first.MergeCommitSHA)
+		}
+		fetched := !reused
+		var readErr error
+		if fetched {
 			_, readErr = g.actionsRead(ctx, "/repos/"+repository+"/git/commits/"+*p.first.MergeCommitSHA, nil, budget, &merge)
 		}
 		p.acceptObject(merge, readErr, commits)
+		if fetched && readErr == nil && p.phase == ciCandidateAfter && merge.SHA == *p.first.MergeCommitSHA {
+			g.mergeObjects.put(repository, merge)
+		}
 	}
 	if p.phase == ciCandidateAfter {
 		branch, matches, readErr := g.readCICandidateBranch(ctx, repository, p.first.Pull.Base.Ref, budget)

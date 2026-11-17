@@ -550,6 +550,8 @@ func TestPullCICandidateSharedDeadlineAndCancellation(t *testing.T) {
 			t.Fatal("candidate request reset aggregate deadline", deadlines)
 		}
 	}
+	// Exercise a cold immutable-object read rather than a previously cached object.
+	g.mergeObjects = immutableMergeCache{}
 	block.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
 	defer cancel()

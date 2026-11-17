@@ -100,8 +100,8 @@ func TestCIFullCountCohortFactsAndRequests(t *testing.T) {
 					t.Fatalf("member%d facts differ\ngot%+v\nwant%+v", i, got[i], want[i])
 				}
 			}
-			if mode == "" && calls.Load() != 40 {
-				t.Fatalf("full green physical requests=%d want40", calls.Load())
+			if mode == "" && calls.Load() != 39 {
+				t.Fatalf("full green physical requests=%d want39 (shared immutable object)", calls.Load())
 			}
 			t.Logf("mode=%q physical requests=%d", mode, calls.Load())
 		})
