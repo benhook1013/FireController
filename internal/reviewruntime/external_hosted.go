@@ -124,3 +124,18 @@ func (r *hostedArchiveSource) NewCIGateCohort(ctx context.Context, targets []rev
 	}
 	return nil, &reviewprovider.Error{Code: "provider_unavailable", Message: "CI cohort observation is unavailable for this source adapter."}
 }
+
+func (r *hostedArchiveSource) SupportsMetadataPair() bool {
+	_, ok := r.provider.(interface {
+		PullMetadataPair(context.Context, int64, string, [2]int64) [2]reviewprovider.PullMetadataPairResult
+	})
+	return ok
+}
+func (r *hostedArchiveSource) PullMetadataPair(ctx context.Context, id int64, repository string, numbers [2]int64) [2]reviewprovider.PullMetadataPairResult {
+	if reader, ok := r.provider.(interface {
+		PullMetadataPair(context.Context, int64, string, [2]int64) [2]reviewprovider.PullMetadataPairResult
+	}); ok {
+		return reader.PullMetadataPair(ctx, id, repository, numbers)
+	}
+	return [2]reviewprovider.PullMetadataPairResult{{Err: reviewprovider.ErrCombinedPullUnsupported}, {Err: reviewprovider.ErrCombinedPullUnsupported}}
+}

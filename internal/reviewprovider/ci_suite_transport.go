@@ -15,11 +15,21 @@ import (
 // per physical request; completion describes transport/body work, not semantic
 // GraphQL success. No body or query is logged. The caller classifies HTTP 200
 // GraphQL errors only after strict validation.
-func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ http.Header, _ int, resultErr error) {
+func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) ([]byte, http.Header, int, error) {
+	return g.boundedWitnessGraphQLPage(ctx, body, false)
+}
+
+// metadata selects a fixed diagnostic kind and a smaller body bound. Both kinds
+// share the credential quota reset floor, source read gate and transport policy.
+func (g *GitHub) boundedWitnessGraphQLPage(ctx context.Context, body []byte, metadata bool) (_ []byte, _ http.Header, _ int, resultErr error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
-	ctx = context.WithValue(ctx, suiteQueryMetricsKey{}, true)
+	if metadata {
+		ctx = context.WithValue(ctx, metadataQueryMetricsKey{}, true)
+	} else {
+		ctx = context.WithValue(ctx, suiteQueryMetricsKey{}, true)
+	}
 	if g.readGate != nil {
 		if err := g.readGate(ctx); err != nil {
 			g.quota.observe(ctx, time.Now(), "/graphql", nil, false, true)
@@ -65,8 +75,12 @@ func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ h
 		return nil, response.Header.Clone(), response.StatusCode, nil
 	}
 	phase = "body"
-	data, err := io.ReadAll(io.LimitReader(response.Body, githubMaxBody+1))
-	if len(data) > githubMaxBody {
+	maxBody := int64(githubMaxBody)
+	if metadata {
+		maxBody = 64 << 10
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+	if int64(len(data)) > maxBody {
 		return nil, nil, 0, invalidResponse(false, response.StatusCode)
 	}
 	if err != nil {
@@ -76,7 +90,7 @@ func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ h
 	return data, response.Header.Clone(), response.StatusCode, nil
 }
 
-// Only this experimental suite transport consults the new floor. Core REST
+// The bounded suite and metadata transports consult this account GraphQL floor. Core REST
 // and legacy pull-review GraphQL retain their separate behavior. The common
 // engine readGate above remains in force; this gate does not bypass it.
 func (q *GitHubQuota) suiteGraphQLReadGate(now time.Time) error {
@@ -92,7 +106,7 @@ func (q *GitHubQuota) suiteGraphQLReadGate(now time.Time) error {
 	local := floor
 	local.ObservedAt = now.UTC()
 	seconds := int64((floor.NotBefore.Sub(now) + time.Second - 1) / time.Second)
-	return &Error{Code: "provider_rate_limited", Message: "Local observation of a retained GraphQL suite-count reset floor; no provider request or availability is established.", Status: http.StatusTooManyRequests, RetryAfterSeconds: seconds, RetryTiming: local, retryDirected: true}
+	return &Error{Code: "provider_rate_limited", Message: "Local observation of a retained bounded GraphQL reset floor; no provider request or availability is established.", Status: http.StatusTooManyRequests, RetryAfterSeconds: seconds, RetryTiming: local, retryDirected: true}
 }
 
 // This is an outcome-only hook: it never adds requests, target observations or
@@ -118,6 +132,10 @@ func (q *GitHubQuota) observeSuiteGraphQLPrimary(ctx context.Context, status int
 		if caller == "" {
 			caller = "other"
 		}
-		slog.WarnContext(ctx, "GitHub suite GraphQL primary refusal", "bucket", q.bucket, "caller", caller, "query_kind", "suite_count", "http_status", status, "primary_200_total", count, "not_before", timing.NotBefore)
+		kind, message := "suite_count", "GitHub suite GraphQL primary refusal"
+		if ctx.Value(metadataQueryMetricsKey{}) == true {
+			kind, message = "pull_metadata", "GitHub metadata GraphQL primary refusal"
+		}
+		slog.WarnContext(ctx, message, "bucket", q.bucket, "caller", caller, "query_kind", kind, "http_status", status, "primary_200_total", count, "not_before", timing.NotBefore)
 	}
 }

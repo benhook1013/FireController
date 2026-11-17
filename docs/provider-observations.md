@@ -49,3 +49,30 @@ A finished reply alone cannot establish an empty review. Standing zero results r
 ## Validation boundary
 
 Focused validation scenarios include bounded HTTP and conditional revalidation, unique parent lookup, explicit history pages, required-check rule decoding and malformed or conflicting Hosted inventories. Qualification results belong to the slice's validation record; this document makes no installed-provider, native-recovery or operational-cutover claim.
+
+### Isolated metadata-pair experiment
+
+The default-off `LifecycleSyncOptions.BatchMetadata` experiment pairs two already-due,
+non-hinted metadata observations under the existing project/account reservation. It
+adds no provider concurrency and leaves one-minute metadata scheduling, CI collection,
+watch admission, and required-CI authority unchanged. A bounded GraphQL query returns
+both complete PR metadata records through the existing normalization path. This is
+not an atomic snapshot. The normal per-target configuration/comparison guards still
+control publication; late hints remain outstanding.
+
+The transport shares the credential's read gate, GraphQL quota floor, HTTP client,
+and request budget. It performs one request with a 64-KiB response bound, fixed aliases,
+strict integer identities, and no REST fallback. Shared or member errors discard the
+unpublished pair conservatively. Invalid inventory records ordinary failed-observation
+retry cadence without source success; account failures preserve per-target state and
+use normal account backoff. Later hints remain outstanding. Cancellation releases
+reservations. Malformed data cannot become a successful source observation. The explicit
+`--lifecycle-metadata-batching` daemon flag defaults false. No production activation or
+daemon-credential qualification is implied.
+
+The controlled two-target path uses one physical request instead of two source reads.
+Real PC-credential differential samples matched all 21 selected normalized fields,
+including one stale cached PR base that differed from the live branch tip. Those samples
+are not daemon-credential, moving-source, or universal permissions qualification.
+GraphQL cost was one point for the sampled pair; conditional REST 304 reads can cost
+zero core points, so reduced HTTP volume does not imply reduced charged quota.

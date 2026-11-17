@@ -9,14 +9,21 @@ import (
 )
 
 type suiteQueryMetricsKey struct{}
+type metadataQueryMetricsKey struct{}
 
 func observedGitHubEndpoint(ctx context.Context, path string) string {
+	if path == "/graphql" && ctx.Value(metadataQueryMetricsKey{}) == true {
+		return "pull_metadata_graphql"
+	}
 	if path == "/graphql" && ctx.Value(suiteQueryMetricsKey{}) == true {
 		return "suite_count_graphql"
 	}
 	return githubEndpoint(path)
 }
 func observedGitHubDetail(ctx context.Context, path string) string {
+	if path == "/graphql" && ctx.Value(metadataQueryMetricsKey{}) == true {
+		return "pull_metadata_graphql"
+	}
 	if path == "/graphql" && ctx.Value(suiteQueryMetricsKey{}) == true {
 		return "suite_count_graphql"
 	}
@@ -58,7 +65,7 @@ func (q *GitHubQuota) observeSuiteQueryCost(ctx context.Context, header http.Hea
 	if caller == "" {
 		caller = "other"
 	}
-	key := githubQuotaKey{caller, "suite_count_graphql", githubQuotaResource(header)}
+	key := githubQuotaKey{caller, observedGitHubEndpoint(ctx, "/graphql"), githubQuotaResource(header)}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.rows == nil {

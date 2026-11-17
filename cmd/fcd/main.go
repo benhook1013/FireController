@@ -60,6 +60,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
 	queueSortingWrites := flags.Bool("queue-sorting-writes", false, "allow project sorting writes only after compatible backup and rollback readers are qualified")
 	cadenceShadow := flags.Bool("lifecycle-cadence-shadow", false, "enable bounded aggregate lifecycle diagnostics; does not change observation cadence")
+	batchMetadata := flags.Bool("lifecycle-metadata-batching", false, "pair naturally due source metadata reads; preserves polling cadence and CI authority")
 	batchCIWitnesses := flags.Bool("lifecycle-ci-batching", false, "batch same-phase CI witnesses for existing periodic cohorts; preserves polling cadence")
 	qualifyCIBatching := flags.Bool("lifecycle-ci-batching-qualification", false, "one bounded natural-cohort compatibility diagnostic per account; does not enable batching")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
@@ -278,7 +279,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
 	var reviewDone <-chan error
 	if !recovery.ProvidersHeld {
-		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching})
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchMetadata: *batchMetadata, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching})
 	}
 	defer func() {
 		cancelReviews()

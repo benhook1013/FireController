@@ -20,6 +20,8 @@ import (
 type LifecycleSyncOptions struct {
 	// CadenceShadow explicitly enables aggregate diagnostics; it never changes cadence.
 	CadenceShadow bool
+	// BatchMetadata is opt-in; ordinary cadence and individual hints are unchanged.
+	BatchMetadata bool
 	// BatchCIWitnesses is opt-in; no daemon configuration enables it by default.
 	BatchCIWitnesses                                         bool
 	QualifyCIBatching                                        bool
@@ -37,6 +39,7 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 	if len(options) == 1 {
 		o := options[0]
 		c.CadenceShadow = o.CadenceShadow
+		c.BatchMetadata = o.BatchMetadata
 		c.BatchCIWitnesses = o.BatchCIWitnesses
 		c.QualifyCIBatching = o.QualifyCIBatching
 		if c.BatchCIWitnesses && c.QualifyCIBatching {
@@ -391,7 +394,7 @@ func (e *Engine) claimLifecycleMember(ctx context.Context, readers map[string]Ta
 		for offset := range len(numbers) {
 			n := numbers[(start+offset)%len(numbers)]
 			d := s.due[lifecycleKey{p.id, n}]
-			if owner != nil && (n == owner.number || !periodicCohortDue(d, now)) {
+			if owner != nil && (n == owner.number || lane == lifecycleEnrichment && !periodicCohortDue(d, now) || lane == lifecycleMetadata && !periodicMetadataDue(d, now)) {
 				continue
 			}
 			next := d.next

@@ -32,6 +32,9 @@ func periodicCohortDue(d lifecycleDue, now time.Time) bool {
 // It does not add provider concurrency. All fresh source plans precede the
 // shared authority read; original per-target publication guards remain intact.
 func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarget, readers map[string]TargetReader, s *lifecycleSchedule) error {
+	if s.options.BatchMetadata && first.lane == lifecycleMetadata {
+		return e.observeMetadataCohort(ctx, first, readers, s)
+	}
 	var qualification *reviewprovider.CISuiteQualification
 	defer func() {
 		if qualification != nil {

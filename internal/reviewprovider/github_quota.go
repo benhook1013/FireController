@@ -219,6 +219,9 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 		if key.endpoint == "suite_count_graphql" {
 			attrs = append(attrs, "suite_cost_known", row.suiteCostKnown, "suite_cost_unknown", row.suiteCostUnknown, "suite_points_sum", row.suitePointsSum, "suite_points_max", row.suitePointsMax)
 		}
+		if key.endpoint == "pull_metadata_graphql" {
+			attrs = append(attrs, "query_cost_known", row.suiteCostKnown, "query_cost_unknown", row.suiteCostUnknown, "query_points_sum", row.suitePointsSum, "query_points_max", row.suitePointsMax)
+		}
 		slog.InfoContext(ctx, "GitHub request totals", attrs...)
 	}
 }
