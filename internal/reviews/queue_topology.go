@@ -15,91 +15,140 @@ type queueNode struct {
 	metadata    PullDisplayMetadata
 }
 
-// topologyOrders groups sibling lines by walking each stack depth first.
-// Every open row needs a verified branch identity before promoting any row as
-// independent. A missing, ambiguous or cyclic parent keeps configured order.
+// topologyOrders sorts only proven components into their existing slots. Draft
+// status is dispatch eligibility, not topology. Unresolved components retain
+// saved order without preventing independent, fully observed stacks from sorting.
+// The boolean reports whole-queue completeness, not whether partial order is useful.
 func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64]int64, bool) {
 	type branch struct {
 		repository int64
 		ref        string
 	}
-	byBranch := make(map[branch]int64)
-	children := make(map[int64][]queueNode)
-	parents := make(map[int64]int64)
-	roots := []queueNode{}
-	delivery := ""
-	for _, n := range nodes {
+	byBranch := map[branch][]int{}
+	parents := map[int64]int64{}
+	children := map[int][]int{}
+	groups := make([]int, len(nodes))
+	invalid := make([]bool, len(nodes))
+	parent := make([]int, len(nodes))
+	deliveryRefs := map[string]bool{}
+	for i, n := range nodes {
+		groups[i], parent[i] = i, -1
 		b := n.metadata.Branches
-		if n.state != "open" || n.metadata.IsDraft == nil || b == nil && !*n.metadata.IsDraft {
-			return nodes, nil, false
+		if b != nil && b.DeliveryRef != "" {
+			deliveryRefs[b.DeliveryRef] = true
 		}
-		if b == nil {
+		invalid[i] = n.state != "open" || b == nil || b.HeadRepositoryID <= 0 || b.HeadRef == "" || b.DeliveryRef == "" || n.base == ""
+		if n.state == "open" && b != nil && b.HeadRepositoryID > 0 && b.HeadRef != "" {
+			key := branch{b.HeadRepositoryID, b.HeadRef}
+			byBranch[key] = append(byBranch[key], i)
+		}
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if groups[i] != i {
+			groups[i] = find(groups[i])
+		}
+		return groups[i]
+	}
+	join := func(a, b int) { groups[find(a)] = find(b) }
+	for _, matches := range byBranch {
+		if len(matches) > 1 {
+			for _, i := range matches {
+				invalid[i] = true
+				join(matches[0], i)
+			}
+		}
+	}
+	for i, n := range nodes {
+		if n.state != "open" && n.state != "unknown" {
 			continue
 		}
-		if delivery != "" && delivery != b.DeliveryRef {
-			return nodes, nil, false
-		}
-		delivery = b.DeliveryRef
-		key := branch{b.HeadRepositoryID, b.HeadRef}
-		if _, exists := byBranch[key]; exists {
-			return nodes, nil, false
-		}
-		byBranch[key] = n.number
-	}
-	for _, n := range nodes {
-		if n.base == delivery {
-			roots = append(roots, n)
+		b := n.metadata.Branches
+		if b != nil && n.base == b.DeliveryRef {
 			continue
 		}
-		parent, found := byBranch[branch{repository, n.base}]
-		if !found && *n.metadata.IsDraft {
-			// A parked draft can target a branch outside the enrolled queue.
-			// Keep it behind active stacks without inventing a parent.
-			roots = append(roots, n)
+		matches := byBranch[branch{repository, n.base}]
+		if len(matches) != 1 {
+			invalid[i] = true
+			for _, j := range matches {
+				join(i, j)
+			}
 			continue
 		}
-		if !found || parent == n.number {
-			return nodes, nil, false
+		j := matches[0]
+		join(i, j)
+		if i == j {
+			invalid[i] = true
+			continue
 		}
-		parents[n.number] = parent
-		children[parent] = append(children[parent], n)
+		parent[i] = j
+		parents[n.number] = nodes[j].number
+		children[j] = append(children[j], i)
 	}
-	order := make([]queueNode, 0, len(nodes))
-	for _, root := range roots {
-		if len(children[root.number]) == 0 && !*root.metadata.IsDraft {
-			order = append(order, root)
+	bad := map[int]bool{}
+	roots := map[int][]int{}
+	delivery := map[int]string{}
+	for i, n := range nodes {
+		g := find(i)
+		// Without authoritative project configuration, conflicting observed delivery
+		// branches cannot establish which disconnected roots are independent.
+		bad[g] = bad[g] || invalid[i] || len(deliveryRefs) > 1
+		if parent[i] < 0 {
+			roots[g] = append(roots[g], i)
+		}
+		if b := n.metadata.Branches; b != nil {
+			if prior := delivery[g]; prior != "" && prior != b.DeliveryRef {
+				bad[g] = true
+			}
+			delivery[g] = b.DeliveryRef
 		}
 	}
-	var drafts []queueNode
-	var walk func(queueNode)
-	walk = func(n queueNode) {
-		if *n.metadata.IsDraft {
-			drafts = append(drafts, n)
-		} else {
-			order = append(order, n)
-		}
-		for _, child := range children[n.number] {
-			walk(child)
+	// Each node has at most one parent. A connected component with no unique
+	// delivery root contains a cycle or unresolved edge, and must remain untouched.
+	for i := range nodes {
+		g := find(i)
+		if len(roots[g]) != 1 {
+			bad[g] = true
 		}
 	}
-	for _, root := range roots {
-		if len(children[root.number]) > 0 || *root.metadata.IsDraft {
-			walk(root)
+	var independent, stackRoots []int
+	complete := true
+	for i := range nodes {
+		if bad[find(i)] {
+			complete = false
+			continue
+		}
+		if parent[i] < 0 {
+			if len(children[i]) == 0 {
+				independent = append(independent, i)
+			} else {
+				stackRoots = append(stackRoots, i)
+			}
 		}
 	}
-	order = append(order, drafts...)
-	if len(order) != len(nodes) {
-		return nodes, nil, false
-	}
-	// A draft parent of a ready child must still precede its child.
-	seen := map[int64]bool{}
-	for _, n := range order {
-		if parent := parents[n.number]; parent != 0 && !seen[parent] {
-			return nodes, parents, false
+	ordered := make([]queueNode, 0, len(nodes))
+	var walk func(int)
+	walk = func(i int) {
+		ordered = append(ordered, nodes[i])
+		for _, j := range children[i] {
+			walk(j)
 		}
-		seen[n.number] = true
 	}
-	return order, parents, true
+	for _, i := range independent {
+		walk(i)
+	}
+	for _, i := range stackRoots {
+		walk(i)
+	}
+	result := slices.Clone(nodes)
+	next := 0
+	for i := range nodes {
+		if !bad[find(i)] {
+			result[i] = ordered[next]
+			next++
+		}
+	}
+	return result, parents, complete
 }
 
 func readQueueNodes(ctx context.Context, tx *sql.Tx, project, snapshot string) ([]queueNode, int64, error) {
@@ -189,16 +238,17 @@ func displayParents(nodes []queueNode, repository int64) map[int64]int64 {
 }
 
 func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) ([]queueNode, map[int64]int64) {
+	return orderedRecentNodesMode(nodes, repository, cutoff, "auto")
+}
+func orderedRecentNodesMode(nodes []queueNode, repository int64, cutoff time.Time, mode string) ([]queueNode, map[int64]int64) {
 	var open, other []queueNode
-	unknown := false
 	for _, n := range nodes {
 		switch n.state {
 		case "merged":
-		case "open":
+		case "open", "unknown":
 			open = append(open, n)
 		default:
 			other = append(other, n)
-			unknown = unknown || n.state == "unknown"
 		}
 	}
 	merged := mergedQueueNodes(nodes)
@@ -209,18 +259,10 @@ func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) (
 			recent = append(recent, n)
 		}
 	}
-	open, _, complete := topologyOrders(open, repository)
-	parents := displayParents(nodes, repository)
-	if !complete || unknown {
-		// Preserve relative stored order, including unresolved lifecycle rows.
-		open = nil
-		for _, n := range nodes {
-			if n.state != "merged" {
-				open = append(open, n)
-			}
-		}
-		other = nil
+	if mode == "auto" {
+		open, _, _ = topologyOrders(open, repository)
 	}
+	parents := displayParents(nodes, repository)
 	return append(append(recent, open...), other...), parents
 }
 
@@ -250,20 +292,17 @@ func OrderedExecutionQueue(ctx context.Context, tx *sql.Tx, project string, conf
 		return nil, err
 	}
 	defer rows.Close()
-	var open []queueNode
-	var slots []int
+	var nodes []queueNode
 	var repo int64
-	for i := 0; rows.Next(); i++ {
+	for rows.Next() {
 		var n queueNode
 		var state, base, raw sql.NullString
 		var sourceRepo sql.NullInt64
 		if err := rows.Scan(&n.number, &state, &base, &raw, &repo, &sourceRepo); err != nil {
 			return nil, err
 		}
-		if !state.Valid || state.String == "unknown" || !sourceRepo.Valid || sourceRepo.Int64 != repo {
-			return configured, nil
-		}
-		if state.String != "open" {
+		if !state.Valid || !sourceRepo.Valid || sourceRepo.Int64 != repo {
+			nodes = append(nodes, n) // Untrusted/missing row retains only its configured slot.
 			continue
 		}
 		n.state, n.base = state.String, base.String
@@ -271,21 +310,17 @@ func OrderedExecutionQueue(ctx context.Context, tx *sql.Tx, project string, conf
 		if err != nil {
 			// The normal acquisition path classifies retained display damage.
 			// Missing topology alone must not deny unrelated work.
-			return configured, nil
+			n.metadata = PullDisplayMetadata{}
 		}
-		open = append(open, n)
-		slots = append(slots, i)
+		nodes = append(nodes, n)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	ordered, _, complete := topologyOrders(open, repo)
-	if !complete {
-		return configured, nil
-	}
+	ordered, _, _ := topologyOrders(nodes, repo)
 	order := slices.Clone(configured)
-	for i, slot := range slots {
-		order[slot] = ordered[i].number
+	for i, n := range ordered {
+		order[i] = n.number
 	}
 	return order, nil
 }

@@ -10,13 +10,14 @@ import (
 // ExecutionConfiguration describes stored project settings, not capability
 // availability, permission to dispatch, review sufficiency or merge readiness.
 type ExecutionConfiguration struct {
-	ProjectID    string   `json:"project_id"`
-	Revision     int64    `json:"revision"`
-	CapabilityID string   `json:"capability_id"`
-	Mode         string   `json:"mode"`
-	Queue        []int64  `json:"queue"`
-	Channels     []string `json:"channels"`
-	Paused       bool     `json:"paused"`
+	ProjectID     string   `json:"project_id"`
+	Revision      int64    `json:"revision"`
+	CapabilityID  string   `json:"capability_id"`
+	Mode          string   `json:"mode"`
+	QueueSortMode string   `json:"queue_sort_mode,omitempty"`
+	Queue         []int64  `json:"queue"`
+	Channels      []string `json:"channels"`
+	Paused        bool     `json:"paused"`
 }
 
 func (e *Engine) ReadExecutionConfiguration(ctx context.Context, scope core.Scope) (ExecutionConfiguration, error) {
@@ -32,7 +33,7 @@ func (e *Engine) ReadExecutionConfiguration(ctx context.Context, scope core.Scop
 		if revision < 1 || validateConfigurationShape(configuration) != nil {
 			return core.Fail("storage_unavailable", "Stored review configuration is unavailable.", 500)
 		}
-		result = ExecutionConfiguration{ProjectID: scope.ProjectID, Revision: revision, CapabilityID: configuration.CapabilityID, Mode: configuration.Mode, Queue: configuration.Queue, Channels: configuration.Channels, Paused: configuration.Paused}
+		result = ExecutionConfiguration{ProjectID: scope.ProjectID, Revision: revision, CapabilityID: configuration.CapabilityID, Mode: configuration.Mode, QueueSortMode: configuration.QueueSortMode, Queue: configuration.Queue, Channels: configuration.Channels, Paused: configuration.Paused}
 		return nil
 	})
 	if err != nil {

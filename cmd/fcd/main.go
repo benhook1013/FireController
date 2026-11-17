@@ -58,6 +58,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
+	queueSortingWrites := flags.Bool("queue-sorting-writes", false, "allow project sorting writes only after compatible backup and rollback readers are qualified")
 	cadenceShadow := flags.Bool("lifecycle-cadence-shadow", false, "enable bounded aggregate lifecycle diagnostics; does not change observation cadence")
 	batchCIWitnesses := flags.Bool("lifecycle-ci-batching", false, "batch same-phase CI witnesses for existing periodic cohorts; preserves polling cadence")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
@@ -227,7 +228,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	resultWaitLifetime, cancelOperationWaits := context.WithCancel(ctx)
 	defer cancelOperationWaits()
-	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog, reviewexec.WithResultWaitLifetime(resultWaitLifetime))
+	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog, reviewexec.WithResultWaitLifetime(resultWaitLifetime), reviewexec.WithQueueSortingWrites(*queueSortingWrites))
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3

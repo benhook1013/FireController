@@ -32,7 +32,7 @@ const serverErrorCodes = new Set([
   'method_not_allowed', 'not_found', 'note_not_found', 'worker_not_found', 'overloaded', 'provider_unavailable', 'response_too_large', 'review_held', 'review_capacity', 'resync_required', 'schema_invalid',
   'schema_unsupported', 'storage_unavailable', 'stream_failed', 'stream_frame_too_large', 'stream_unavailable',
   'unauthorized', 'validation_failed', 'worker_already_configured',
-  'reviews_readiness_unavailable', 'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired', 'review_conflict', 'pull_scheduling_paused',
+  'queue_sorting_upgrade_required', 'reviews_readiness_unavailable', 'project_presentation_revision_conflict', 'worker_required', 'worker_retirement_blocked', 'worker_retired', 'review_conflict', 'pull_scheduling_paused',
 ]);
 
 export class ApiError extends Error {
@@ -52,6 +52,8 @@ export class ApiError extends Error {
 export interface BrowserCapabilities { allow_writes: boolean; can_edit_presentation: boolean }
 export interface BrowserSessionView extends BrowserCapabilities { session_id: string; instance_id: string; project_id: string; expires_at: string }
 export type BrowserPresentationConfig = PresentationConfig;
+export interface QueueSorting { project_id: string; revision: number; mode: 'auto' | 'manual'; writable: boolean; reason?: 'compatible_backup_and_rollback_readers_required' }
+export interface QueueSortingReceipt { id: string; state: 'configured'; revision: number }
 export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
 export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
 function browserSessionView(value: unknown, selector: string, instance: string, project: string): value is BrowserSessionView {
@@ -749,6 +751,16 @@ export class Api {
     if (!id(worker) || !validPresentationConfig(config) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision >= Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request', 'Use a validated presentation, observed revision, selected worker and original action key.');
     return this.browserMutation(this.projectRoute('presentation'), 'PUT', worker, key, { expected_revision: expectedRevision, presentation: config }, 200,
       (value): value is BrowserPresentationReceipt => record(value) && keys(value, ['project_id', 'revision', 'outcome']) && value.project_id === this.projectId && (value.outcome === 'updated' && value.revision === expectedRevision + 1 || value.outcome === 'unchanged' && value.revision === expectedRevision), signal, true);
+  }
+  async queueSorting(signal?: AbortSignal): Promise<QueueSorting> {
+    const value=await this.finiteGet(this.projectRoute('reviews/queue-sorting'),signal);
+    if (!record(value) || !keys(value,['project_id','revision','mode','writable'],['reason']) || typeof value.writable!=='boolean' || (value.writable ? value.reason!==undefined : value.reason!=='compatible_backup_and_rollback_readers_required') || value.project_id!==this.projectId || !Number.isSafeInteger(value.revision) || Number(value.revision)<1 || (value.mode!=='auto' && value.mode!=='manual')) throw new ApiError('invalid_response','Invalid queue sorting settings.');
+    return value as unknown as QueueSorting;
+  }
+  async setQueueSorting(worker: string, revision: number, mode: 'auto'|'manual', key: string, signal?: AbortSignal): Promise<QueueSortingReceipt> {
+    if (!id(worker) || !Number.isSafeInteger(revision) || revision<1 || revision>=Number.MAX_SAFE_INTEGER || !['auto','manual'].includes(mode) || !mutationKey(key)) throw new ApiError('invalid_request','Use the current queue sorting revision and selected worker.');
+    return this.browserMutation(this.projectRoute('reviews/queue-sorting'),'POST',worker,key,{expected_revision:revision,mode},200,
+      (value): value is QueueSortingReceipt => record(value) && keys(value,['id','state','revision']) && value.id===this.projectId && value.state==='configured' && value.revision===revision+1,signal,true);
   }
   async reviewScheduling(signal?: AbortSignal): Promise<ReviewScheduling> {
     const value=await this.finiteGet(this.projectRoute('reviews/scheduling'),signal,undefined,64<<10,assessmentJSON);

@@ -93,7 +93,7 @@ func (e *Engine) ReadFronts(ctx context.Context, scope core.Scope) (FrontSnapsho
 		out.Configured = true
 		out.ConfigurationRevision = revision
 		out.PolicyRevision = policy.Revision
-		order, err := reviews.OrderedExecutionQueue(ctx, tx, scope.ProjectID, c.Queue)
+		order, err := orderedConfiguredQueue(ctx, tx, scope.ProjectID, c)
 		if err != nil {
 			return err
 		}

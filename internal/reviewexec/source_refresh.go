@@ -279,7 +279,7 @@ func (e *Engine) refreshBinding(ctx context.Context, tx *sql.Tx, r sourceRefresh
 // reads. The actual parent can lie after the target or outside the queue; its
 // identity comes from provider facts, while its enrollment must remain stable.
 func sameSourceTargetConfiguration(a, b Configuration, number, parent int64) bool {
-	if a.CapabilityID != b.CapabilityID || a.Mode != b.Mode || !slices.Equal(a.Channels, b.Channels) {
+	if a.CapabilityID != b.CapabilityID || a.Mode != b.Mode || queueSortMode(a) != queueSortMode(b) || !slices.Equal(a.Channels, b.Channels) {
 		return false
 	}
 	left, right := slices.Index(a.Queue, number), slices.Index(b.Queue, number)
@@ -287,7 +287,7 @@ func sameSourceTargetConfiguration(a, b Configuration, number, parent int64) boo
 }
 
 func sameSourceConfiguration(a, b Configuration) bool {
-	return a.CapabilityID == b.CapabilityID && a.Mode == b.Mode && slices.Equal(a.Queue, b.Queue) && slices.Equal(a.Channels, b.Channels)
+	return a.CapabilityID == b.CapabilityID && a.Mode == b.Mode && queueSortMode(a) == queueSortMode(b) && slices.Equal(a.Queue, b.Queue) && slices.Equal(a.Channels, b.Channels)
 }
 func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revision int64) (Configuration, error) {
 	var c Configuration

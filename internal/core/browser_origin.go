@@ -47,7 +47,7 @@ func browserMutationAllowed(r *http.Request, project string) bool {
 	if r.URL.Path == base+"messages" {
 		return true
 	}
-	if r.URL.Path == base+"reviews/scheduling" {
+	if r.URL.Path == base+"reviews/scheduling" || r.URL.Path == base+"reviews/queue-sorting" {
 		return true
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, base), "/")

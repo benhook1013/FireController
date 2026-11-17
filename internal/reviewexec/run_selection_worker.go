@@ -311,7 +311,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	err = retryRunSelectionRead(ctx, func() error {
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
-			queue, err = reviews.OrderedExecutionQueue(ctx, tx, r.ProjectID, c.Queue)
+			queue, err = orderedConfiguredQueue(ctx, tx, r.ProjectID, c)
 			if err != nil {
 				return err
 			}
@@ -858,7 +858,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			}
 			bindingValidated = true
 			if choice.orderedQueue != nil {
-				order, err := reviews.OrderedExecutionQueue(ctx, tx, current.ProjectID, c.Queue)
+				order, err := orderedConfiguredQueue(ctx, tx, current.ProjectID, c)
 				if err != nil {
 					return err
 				}

@@ -14,6 +14,9 @@ import (
 )
 
 func validateConfigurationShape(c Configuration) error {
+	if c.QueueSortMode != "" && c.QueueSortMode != "auto" && c.QueueSortMode != "manual" {
+		return invalid()
+	}
 	if !identifier.MatchString(c.CapabilityID) || c.ExpectedRevision == nil || *c.ExpectedRevision < 0 || c.Mode != "independent" && c.Mode != "stacked" || c.Queue == nil || len(c.Queue) > 100 || len(c.Channels) == 0 || len(c.Channels) > 2 {
 		return invalid()
 	}
@@ -71,6 +74,13 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 			if err != nil {
 				return nil, err
 			}
+		}
+		if c.QueueSortMode != "" && !e.queueSortingWrites {
+			return nil, core.Fail("queue_sorting_upgrade_required", "Queue sorting changes require compatible backup and rollback readers.", 409)
+		}
+		// Older clients omit sorting; do not silently reset an explicit project choice.
+		if c.QueueSortMode == "" && revision > 0 {
+			c.QueueSortMode = previous.QueueSortMode
 		}
 		operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
 		if err != nil {

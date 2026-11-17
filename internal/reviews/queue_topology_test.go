@@ -76,7 +76,7 @@ func TestQueueTopologyBeforePaging(t *testing.T) {
 		}
 		cursor = "&cursor=" + url.QueryEscape(page.Cursor)
 	}
-	if want := []int64{3433, 3430, 3417, 3427, 3408, 3410, 3424, 3425, 3435, 3438}; !slices.Equal(all, want) {
+	if want := []int64{3433, 3430, 3417, 3427, 3408, 3410, 3438, 3435, 3424, 3425}; !slices.Equal(all, want) {
 		t.Fatalf("ordered %v want %v", all, want)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/pulls/3410", nil)

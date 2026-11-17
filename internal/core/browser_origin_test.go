@@ -68,3 +68,12 @@ func TestBrowserSessionMutationAllowlistDoesNotGrowWithOtherHandlers(t *testing.
 		}
 	}
 }
+
+func TestQueueSortingBrowserRouteIsNarrow(t *testing.T) {
+	for _, path := range []string{"reviews/queue-sorting", "reviews/execution/configuration"} {
+		r := httptest.NewRequest("POST", "http://localhost/api/v1/projects/project/"+path, nil)
+		if got := browserMutationAllowed(r, "project"); got != (path == "reviews/queue-sorting") {
+			t.Fatal(path, got)
+		}
+	}
+}

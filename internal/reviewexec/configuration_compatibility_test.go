@@ -9,7 +9,7 @@ import (
 )
 
 func TestWaitingReviewSurvivesOnlyQueueChangesAfterItsTarget(t *testing.T) {
-	for _, scenario := range []string{"remove later", "append later", "replace later", "move predecessor", "remove target", "mode", "channels", "capability", "paused then restored", "explicit unchanged replacement"} {
+	for _, scenario := range []string{"remove later", "append later", "replace later", "move predecessor", "remove target", "mode", "sorting", "channels", "capability", "paused then restored", "explicit unchanged replacement"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newAttemptFixture(t)
 			f.configure(t, attemptProject, "test-capability", 0, false)
@@ -46,6 +46,9 @@ func TestWaitingReviewSurvivesOnlyQueueChangesAfterItsTarget(t *testing.T) {
 				c.Queue = []int64{4}
 			case "mode":
 				c.Mode = "stacked"
+			case "sorting":
+				f.e.queueSortingWrites = true
+				c.QueueSortMode = "manual"
 			case "channels":
 				c.Channels = []string{"cli"}
 			case "capability":

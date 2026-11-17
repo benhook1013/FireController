@@ -31,6 +31,7 @@ type Configuration struct {
 	ExpectedRevision *int64   `json:"expected_revision"`
 	CapabilityID     string   `json:"capability_id"`
 	Mode             string   `json:"mode"`
+	QueueSortMode    string   `json:"queue_sort_mode,omitempty"`
 	Queue            []int64  `json:"queue"`
 	Channels         []string `json:"channels"`
 	Paused           bool     `json:"paused"`
@@ -121,6 +122,7 @@ type Attempt struct {
 }
 
 type Engine struct {
+	queueSortingWrites         bool
 	decisionOmissions          decisionOmissionBuffer
 	runSourceBudget            time.Duration
 	hostedRetainedDecoder      HostedRetainedDecoder
@@ -180,6 +182,12 @@ type Engine struct {
 // EngineOption composes trusted application integrations before an engine is
 // exposed to handlers or supervised workers.
 type EngineOption func(*Engine)
+
+// WithQueueSortingWrites enables new retained sorting fields only after the operator
+// has qualified the backup/restore and rollback reader generation. Default is off.
+func WithQueueSortingWrites(enabled bool) EngineOption {
+	return func(e *Engine) { e.queueSortingWrites = enabled }
+}
 
 // WithExecutionClock selects the trusted scheduling clock. Journal/provider
 // timestamps and observation freshness retain their independent clocks.

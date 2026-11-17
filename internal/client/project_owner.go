@@ -32,6 +32,7 @@ type ConfigureReviewExecutionRequest struct {
 	ExpectedRevision int64    `json:"expected_revision"`
 	CapabilityID     string   `json:"capability_id"`
 	Mode             string   `json:"mode"`
+	QueueSortMode    string   `json:"queue_sort_mode,omitempty"`
 	Queue            []int64  `json:"queue"`
 	Channels         []string `json:"channels"`
 	Paused           bool     `json:"paused"`
@@ -102,7 +103,7 @@ func ValidateConfigureReviewPolicy(r ConfigureReviewPolicyRequest) error {
 	return nil
 }
 func ValidateConfigureReviewExecution(r ConfigureReviewExecutionRequest) error {
-	if r.ExpectedRevision < 0 || r.ExpectedRevision == math.MaxInt64 || !validExecutionIdentifier(r.CapabilityID) || !oneReviewOf(r.Mode, "independent", "stacked") || r.Queue == nil || len(r.Queue) > 100 || !ownerChannels(r.Channels) {
+	if r.ExpectedRevision < 0 || r.ExpectedRevision == math.MaxInt64 || !validExecutionIdentifier(r.CapabilityID) || !oneReviewOf(r.Mode, "independent", "stacked") || !oneReviewOf(r.QueueSortMode, "", "auto", "manual") || r.Queue == nil || len(r.Queue) > 100 || !ownerChannels(r.Channels) {
 		return mutationValidation()
 	}
 	seen := map[int64]bool{}

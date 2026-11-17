@@ -13,13 +13,14 @@ import (
 // ReviewExecutionConfiguration contains stored project settings only. It does
 // not assert that a provider is runnable or that review/CI requirements pass.
 type ReviewExecutionConfiguration struct {
-	ProjectID    string   `json:"project_id"`
-	Revision     int64    `json:"revision"`
-	CapabilityID string   `json:"capability_id"`
-	Mode         string   `json:"mode"`
-	Queue        []int64  `json:"queue"`
-	Channels     []string `json:"channels"`
-	Paused       bool     `json:"paused"`
+	ProjectID     string   `json:"project_id"`
+	Revision      int64    `json:"revision"`
+	CapabilityID  string   `json:"capability_id"`
+	Mode          string   `json:"mode"`
+	QueueSortMode string   `json:"queue_sort_mode,omitempty"`
+	Queue         []int64  `json:"queue"`
+	Channels      []string `json:"channels"`
+	Paused        bool     `json:"paused"`
 }
 
 type ReviewRequest struct {
@@ -160,7 +161,7 @@ func (c *Client) ReviewExecution(ctx context.Context) (ReviewExecutionConfigurat
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "execution", "configuration"), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse); err != nil {
 		return ReviewExecutionConfiguration{}, err
 	}
-	if value.ProjectID != c.identity.ProjectID || !validExecutionIdentifier(value.ProjectID) || value.Revision < 1 || !validExecutionIdentifier(value.CapabilityID) || !oneReviewOf(value.Mode, "independent", "stacked") || value.Queue == nil || len(value.Queue) > 100 || value.Channels == nil || len(value.Channels) < 1 || len(value.Channels) > 2 {
+	if value.ProjectID != c.identity.ProjectID || !validExecutionIdentifier(value.ProjectID) || value.Revision < 1 || !validExecutionIdentifier(value.CapabilityID) || !oneReviewOf(value.Mode, "independent", "stacked") || !oneReviewOf(value.QueueSortMode, "", "auto", "manual") || value.Queue == nil || len(value.Queue) > 100 || value.Channels == nil || len(value.Channels) < 1 || len(value.Channels) > 2 {
 		return ReviewExecutionConfiguration{}, invalidResponse()
 	}
 	numbers := make(map[int64]bool, len(value.Queue))

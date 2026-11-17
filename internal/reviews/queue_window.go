@@ -14,10 +14,11 @@ import (
 )
 
 type queueWindowCursor struct {
-	View     string `json:"view"`
-	Snapshot string `json:"snapshot"`
-	Position int    `json:"position"`
-	Cutoff   string `json:"cutoff,omitempty"`
+	View            string `json:"view"`
+	Snapshot        string `json:"snapshot"`
+	Position        int    `json:"position"`
+	Cutoff          string `json:"cutoff,omitempty"`
+	SortingRevision int64  `json:"sorting_revision,omitempty"`
 }
 
 func queueWindowAfter(view, after string, now time.Time) (queueWindowCursor, error) {
@@ -29,7 +30,7 @@ func queueWindowAfter(view, after string, now time.Time) (queueWindowCursor, err
 		return value, nil
 	}
 	value = queueWindowCursor{}
-	if strictjson.Decode([]byte(after), &value) != nil || value.View != view || value.Position < 0 || value.Snapshot == "" || len(value.Snapshot) > 128 {
+	if strictjson.Decode([]byte(after), &value) != nil || value.View != view || value.Position < 0 || value.SortingRevision < 0 || value.Snapshot == "" || len(value.Snapshot) > 128 {
 		return value, validationError("Use a valid cursor from this queue view.")
 	}
 	if view == "recent" {
@@ -170,6 +171,19 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		response.Configured = true
 		setMetaQueue(&response, meta)
 		cursor.Snapshot = meta.SnapshotID
+		sortMode, sortRevision := "auto", int64(0)
+		var configured []int64
+		if topology {
+			sortMode, sortRevision, configured, err = queueSortingConfiguration(ctx, tx, scope.ProjectID)
+			if err != nil {
+				return err
+			}
+			if token != "" && cursor.SortingRevision != sortRevision {
+				return validationError("Queue sorting changed; reload the queue.")
+			}
+			cursor.SortingRevision = sortRevision
+		}
+
 		var positions []int
 		var parents map[int64]int64
 		var displayPositions map[int]int
@@ -183,7 +197,8 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 				ordered = mergedQueueNodes(nodes)
 			} else {
 				cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
-				ordered, parents = orderedRecentNodes(nodes, repository, cutoff)
+				nodes = savedQueueNodes(nodes, configured)
+				ordered, parents = orderedRecentNodesMode(nodes, repository, cutoff, sortMode)
 			}
 			displayPositions = make(map[int]int)
 			headSeen := false

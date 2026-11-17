@@ -109,3 +109,24 @@ describe('finite explicit cookie actions', () => {
     vi.stubGlobal('fetch', vi.fn(async () => refusal(503, 'overloaded'))); await expect(api.acknowledgeMessage('worker_one', 'msg_one', 'ack-key')).rejects.toMatchObject({ status: 503, outcomeUnknown: true });
   });
 });
+
+
+describe('project queue sorting actions',()=>{
+ it('reads Auto and writes only mode and exact revision with retained action key',async()=>{
+  const api=await connected();
+  const fetch=vi.fn(async (_input:RequestInfo|URL,init?:RequestInit)=>{
+   if(init?.method==='POST'){expect(JSON.parse(String(init.body))).toEqual({expected_revision:7,mode:'manual'});expect(new Headers(init.headers).get('idempotency-key')).toBe('sort-key');return json({id:project.id,state:'configured',revision:8});}
+   return json({project_id:project.id,revision:7,mode:'auto',writable:true});
+  });vi.stubGlobal('fetch',fetch);
+  expect((await api.queueSorting()).mode).toBe('auto');
+  expect((await api.setQueueSorting('worker_one',7,'manual','sort-key')).revision).toBe(8);
+ });
+ it('refuses sorting changes without verified admin-capable session',async()=>{
+  const api=await connected(true,false);const fetch=vi.fn();vi.stubGlobal('fetch',fetch);
+  await expect(api.setQueueSorting('worker_one',1,'manual','sort-key')).rejects.toMatchObject({code:'forbidden'});expect(fetch).not.toHaveBeenCalled();
+ });
+ it.each(['bogus',null,true])('rejects malformed sorting mode %s',async mode=>{
+  const api=await connected();vi.stubGlobal('fetch',vi.fn(async()=>json({project_id:project.id,revision:1,mode,writable:true})));
+  await expect(api.queueSorting()).rejects.toMatchObject({code:'invalid_response'});
+ });
+});
