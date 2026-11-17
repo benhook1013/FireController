@@ -33,3 +33,7 @@ func configureOwnedProcess(command *exec.Cmd) (func() error, error) {
 	command.Cancel = kill
 	return kill, nil
 }
+
+func ownedGroupAbsent(pid int) bool {
+	return pid > 0 && errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH)
+}

@@ -81,6 +81,8 @@ type Capture struct {
 }
 
 type Runner struct {
+	homeLease       *CacheHomeLease
+	cacheCustody    *CacheCustody
 	manager         *reviewworkspace.Manager
 	executable      string
 	env             []string
@@ -279,7 +281,28 @@ func (r *Runner) ReviewWithStart(ctx context.Context, workspace reviewworkspace.
 	if commandCtx.Err() != nil {
 		return Capture{}, processError("process_failed", false)
 	}
-	result := r.run(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput, onStart)
+	// Custody admission can wait. Revalidate the already-consumed permit and
+	// workspace immediately before OS process creation; never restore or refresh it.
+	var admissionErr error
+	beforeStart := func() error {
+		if err := r.manager.Verify(commandCtx, workspace); err != nil {
+			admissionErr = processError("source_changed", false)
+		}
+		if commandCtx.Err() != nil {
+			admissionErr = processError("process_failed", false)
+		}
+		if admissionErr == nil {
+			now := r.now()
+			if now.Before(permit.issued) || now.Sub(permit.issued) > permitLifetime {
+				admissionErr = processError("permit_required", false)
+			}
+		}
+		return admissionErr
+	}
+	result := r.runWithAdmission(commandCtx, workspace.Directory, []string{"review", "--agent", "--committed", "--base", workspace.ComparisonRef}, maxReviewOutput, maxErrorOutput, beforeStart, onStart)
+	if admissionErr != nil {
+		return result.capture, admissionErr
+	}
 	if err := r.manager.Verify(ctx, workspace); err != nil {
 		if ctx.Err() != nil {
 			return result.capture, processError("process_failed", result.capture.Started)
@@ -298,11 +321,33 @@ type runResult struct {
 }
 
 func (r *Runner) run(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int, onStart ...func(time.Time)) runResult {
+	return r.runWithAdmission(ctx, directory, args, stdoutLimit, stderrLimit, nil, onStart...)
+}
+
+func (r *Runner) runWithAdmission(ctx context.Context, directory string, args []string, stdoutLimit, stderrLimit int, beforeStart func() error, onStart ...func(time.Time)) runResult {
+	if r.cacheCustody != nil {
+		if err := r.cacheCustody.acquireProducer(ctx); err != nil {
+			return runResult{capture: Capture{ExitCode: -1}, err: err}
+		}
+		defer r.cacheCustody.mu.RUnlock()
+	}
+	var homeLock *os.File
+	if r.homeLease != nil {
+		var err error
+		homeLock, err = r.homeLease.acquireProducer(ctx)
+		if err != nil {
+			return runResult{capture: Capture{ExitCode: -1}, err: err}
+		}
+		defer homeLock.Close()
+	}
 	commandCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, r.executable, args...)
 	command.Dir = directory
 	command.Env = append([]string(nil), r.env...)
+	if homeLock != nil {
+		command.ExtraFiles = append(command.ExtraFiles, homeLock)
+	}
 	command.WaitDelay = time.Second
 	cleanup, err := configureOwnedProcess(command)
 	if err != nil {
@@ -312,8 +357,19 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 	stderr := &limitedBuffer{limit: stderrLimit, cancel: cancel}
 	command.Stdout = out
 	command.Stderr = stderr
+	if beforeStart != nil {
+		if err := beforeStart(); err != nil {
+			return runResult{capture: Capture{ExitCode: -1}, err: err}
+		}
+	}
+	if err := commandCtx.Err(); err != nil {
+		return runResult{capture: Capture{ExitCode: -1}, err: err}
+	}
 	if err := command.Start(); err != nil {
 		return runResult{capture: Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1}, err: err}
+	}
+	if r.cacheCustody != nil {
+		r.cacheCustody.track(command.Process.Pid)
 	}
 	started := true
 	startedAt := r.now().UTC()

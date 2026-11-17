@@ -58,6 +58,7 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 	}
 	quotas := make(map[string]*reviewprovider.GitHubQuota)
 	var captures *reviewruntime.CaptureStore
+	cacheCustody := &reviewprocess.CacheCustody{}
 	for _, capability := range catalog.Capabilities {
 		manager, err := reviewworkspace.New(filepath.Join(root, "review-workspaces", capability.ID), capability.GitExecutable)
 		if err != nil {
@@ -82,7 +83,7 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 					return nil, nil, err
 				}
 			}
-			var processOptions []reviewprocess.Option
+			processOptions := []reviewprocess.Option{reviewprocess.WithCacheCustody(cacheCustody)}
 			if capability.CLIAllowanceTimeoutSeconds != 0 {
 				processOptions = append(processOptions, reviewprocess.WithUsageTimeout(time.Duration(capability.CLIAllowanceTimeoutSeconds)*time.Second))
 			}
