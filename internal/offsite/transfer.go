@@ -379,6 +379,11 @@ func pushPrepared(ctx context.Context, c Config, t transport, shared *batchPrepa
 	}
 	defer s.close()
 	s.batch = shared
+	if shared != nil {
+		timed := &batchTimedTransport{transport: s.transport}
+		s.transport = timed
+		defer timed.report(ctx, shared.destination)
+	}
 	s.state.LastAttempt = &Attempt{State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err = s.save(); err != nil {
 		return result, err

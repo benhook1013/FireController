@@ -37,18 +37,21 @@ type BatchResult struct {
 }
 
 type batchPreparation struct {
-	work     string
-	selected *backup.Summary
-	receipt  *Receipt
-	floor    int64
-	verified map[Receipt]bool
+	destination int
+	work        string
+	selected    *backup.Summary
+	receipt     *Receipt
+	floor       int64
+	verified    map[Receipt]bool
 }
 
 func (p *batchPreparation) selectSource(ctx context.Context, c Config) (backup.Summary, error) {
 	if p.selected != nil {
 		return *p.selected, nil
 	}
+	finish := beginBatchPhase(ctx, p.destination, "source_inspection")
 	s, err := newest(ctx, c)
+	finish(err)
 	if err != nil {
 		return s, err
 	}
@@ -61,7 +64,9 @@ func (p *batchPreparation) linkArchive(ctx context.Context, s backup.Summary, ta
 		if err := p.admit(p.work, c.MaxBundleBytes); err != nil {
 			return Receipt{}, err
 		}
+		finishPack := beginBatchPhase(ctx, p.destination, "archive_pack")
 		r, err := packVerified(ctx, s, archive, c)
+		finishPack(err)
 		if err != nil {
 			return r, err
 		}
@@ -69,7 +74,9 @@ func (p *batchPreparation) linkArchive(ctx context.Context, s backup.Summary, ta
 		if err != nil {
 			return Receipt{}, failure("offsite_storage_unavailable")
 		}
+		finishValidation := beginBatchPhase(ctx, p.destination, "archive_validation")
 		err = p.validateArchive(ctx, archive, stage, r, c)
+		finishValidation(err)
 		cleanup := os.RemoveAll(stage)
 		if err != nil {
 			os.Remove(archive)
@@ -226,7 +233,10 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 			e = batchHeadroom(existingParent(c.StateDir), b.MinFreeBytes, 0)
 		}
 		if e == nil {
+			shared.destination = i
+			finish := beginBatchPhase(ctx, i, "destination")
 			r, e = pushPrepared(ctx, c, tr, shared)
+			finish(e)
 		}
 		item := BatchDestinationResult{Index: i, Result: r}
 		if e != nil {
