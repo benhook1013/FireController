@@ -12,7 +12,7 @@ vi.mock('./review-pill-capacity', () => ({ useReviewPillCapacity: () => ({ ref: 
 const archive = vi.hoisted(() => ({ items: [] as ReviewRunSummary[], hasMore: false, busy: false, error: undefined }));
 vi.mock('./review-archive', async original => ({ ...await original<typeof import('./review-archive')>(), ReviewArchive: class { snapshot = () => archive; subscribe = () => () => {}; } }));
 const head='a'.repeat(40), stamp='2026-11-15T05:34:45Z';
-const completed: ReviewRunSummary={id:'run',source:'native-executor',source_run_id:'evidence',pull_number:78,channel:'cli',head_sha:head,reviewer:'coderabbit',scope:'admitted comparison',coverage_limits:[],outcome:'completed',complete:true,attributable:true,finalized:true,found:2,accepted:1,routed:0,fixed:1,started_at:stamp,finished_at:'2026-11-15T05:42:08Z'};
+const completed: ReviewRunSummary={id:'run',source:'native-executor',source_run_id:'evidence',pull_number:78,channel:'cli',head_sha:head,reviewer:'coderabbit',scope:'admitted comparison',coverage_limits:[],outcome:'completed',complete:true,attributable:true,finalized:true,current_accepted:1,current_pending_fixes:0,found:2,accepted:1,routed:0,fixed:1,started_at:stamp,finished_at:'2026-11-15T05:42:08Z'};
 const attempt: ReviewAttemptSummary={source_attempt_id:`review_attempt_${'a'.repeat(32)}`,channel:'cli',head_sha:head,state:'active',started_at:stamp,finished_at:'',duration_seconds:0,source_run_id:'evidence',trigger_id:'',provider_review_id:''};
 const progress:ReviewRoundProgress={channel:'cli',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:7,taper:2,used:1,dry:0,tapered:false,pending:0,pending_execution:0,pending_adjudication:0};
 afterEach(()=>{archive.items=[];sizing.capacity=6;});
@@ -25,7 +25,7 @@ describe('three-line review state pills',()=>{
  it('shows counts, each captured result status, then age',()=>{
   const html=markup([completed]);
   expect(html).toMatch(/<strong>2\/1\/0<\/strong><span class="review-pill-status">Finished<\/span><time[^>]*>[\s\S]*?<\/time>/u);
-  expect(reviewRunPillStatus({...completed,fixed:0})).toBe('Fixes pending');
+  expect(reviewRunPillStatus({...completed,fixed:0,current_pending_fixes:1})).toBe('Fixes pending');
   expect(reviewRunPillStatus({...completed,finalized:false})).toBe('Needs adjudication');
   expect(reviewRunPillStatus({...completed,attributable:false})).toBe('Incomplete');
  });
@@ -72,7 +72,7 @@ describe('three-line review state pills',()=>{
 
 describe('aggregate channel holds do not relabel a clean result',()=>{
  it.each([{pending_adjudication:1,pending:1},{fixes_pending:true}])('keeps latest clean result finished while older work stays outstanding: %j', gate=>{
-  const older={...completed,id:'older',source_run_id:'older',fixed:0};
+  const older={...completed,id:'older',source_run_id:'older',fixed:0,current_pending_fixes:1};
   const html=markup([older,completed],[{...attempt,state:'completed',finished_at:completed.finished_at}],{...progress,...gate});
   const latest=html.split('aria-label="Open cli run evidence:')[1].split('</a>')[0];
   expect(latest).toContain('review-pill-status">Finished');
@@ -231,5 +231,34 @@ describe('honest review-start labels',()=>{
   expect(html).toContain('Start time unknown');
   expect(html).not.toContain(`<time`);
   expect(html).not.toContain('Assumed start');
+ });
+});
+
+
+describe('current finding obligations remain distinct from frozen counts', () => {
+ it.each(['native-executor', 'github-hosted-observer', 'worker-subagent', 'imported'])("uses proven current dispositions for %s", source => {
+  const corrected = {...completed, source, found:3, accepted:3, fixed:2, current_accepted:2, current_pending_fixes:0};
+  const html = markup([corrected]);
+  expect(html).toContain('<strong>3/3/0</strong>');
+  expect(html).toContain('review-pill-status">Finished</span>');
+  expect(html).toContain('2 currently accepted; 0 fixes pending.');
+  if (source !== 'github-hosted-observer') expect(html).toContain(`dateTime="${stamp}"`);
+  else expect(html).toContain('Start time unknown');
+  expect(reviewRunPillStatus({...corrected, current_accepted:3, current_pending_fixes:1})).toBe('Fixes pending');
+ });
+ it('never derives completion or pending from frozen subtraction when current inventory is absent', () => {
+  for (const fixed of [0, 1, 2]) {
+   const unknown = {...completed, fixed, current_accepted:undefined, current_pending_fixes:undefined};
+   expect(reviewRunPillStatus(unknown)).toBe('Reviewed');
+   expect(markup([unknown])).toContain('Current fix inventory unavailable.');
+   expect(markup([unknown])).not.toContain('Fix status unknown');
+  }
+ });
+ it('keeps partial retained adjudication and fix obligations without completed credit', () => {
+  const partial = {...completed, outcome:'failed' as const, complete:false, attributable:false, finalized:false, retained_undecided:0, accepted:3, current_accepted:2, current_pending_fixes:0};
+  expect(reviewRunPillStatus(partial)).toBe('Partial');
+  expect(reviewRunPillStatus({...partial,current_pending_fixes:1})).toBe('Partial · Fixes pending');
+  expect(reviewRunPillStatus({...partial,retained_undecided:1})).toBe('Partial · Needs adjudication');
+  expect(reviewRunPillStatus({...partial,current_pending_fixes:undefined})).toBe('Partial');
  });
 });

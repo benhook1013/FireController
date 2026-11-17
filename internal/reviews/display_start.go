@@ -75,10 +75,10 @@ func attachDisplayStarts(ctx context.Context, tx *sql.Tx, project string, groups
 	return rows.Err()
 }
 
-func attachQueueDisplayStarts(ctx context.Context, tx *sql.Tx, project string, pulls []PullSummary) error {
+func attachQueueDisplayStarts(ctx context.Context, tx *sql.Tx, project, snapshot string, pulls []PullSummary) error {
 	groups := make([][]RunSummary, 0, len(pulls))
 	for _, pull := range pulls {
 		groups = append(groups, pull.RecentRuns)
 	}
-	return attachDisplayStarts(ctx, tx, project, groups...)
+	return attachRunDisplay(ctx, tx, project, snapshot, groups...)
 }

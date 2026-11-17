@@ -106,7 +106,7 @@ function useSemanticHighlight(fingerprint: string, history?: Map<string, string>
 }
 export function runDisplayFingerprint(run: ReviewRunSummary, head: string): string {
   return JSON.stringify([run.channel, run.outcome, run.found, run.accepted, run.routed, run.fixed,
-    run.complete, run.finalized, run.attributable, run.retained_undecided, run.finished_at || run.started_at, run.display_start_at,
+    run.complete, run.finalized, run.attributable, run.retained_undecided, run.current_accepted, run.current_pending_fixes, run.finished_at || run.started_at, run.display_start_at,
     !head || !run.head_sha ? 'unknown' : head === run.head_sha ? 'same' : 'different']);
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
@@ -137,7 +137,7 @@ function RunPill({ run, snapshot, head }: { run: ReviewRunSummary; snapshot: str
   const highlight = useSemanticHighlight(runDisplayFingerprint(run, head));
   const partial = partialCLIResult(run);
   const { accepted, routed } = visibleReviewCounts(run);
-  return <Link className={`review-round review-outcome-${run.outcome} ${highlight}`} to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}><span className="review-channel">{run.channel}</span><strong>{run.found}<small>found</small></strong><span>{partial ? "Partial review" : reviewLabel(run.outcome)}</span><small>Accepted: {accepted} · Routed: {routed} · {run.fixed} fixed{partial && partialPendingText(run.retained_undecided)}</small>{!run.complete && !partial && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</Link>;
+  return <Link className={`review-round review-outcome-${run.outcome} ${highlight}`} to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${run.channel} run ${run.source_run_id}`}><span className="review-channel">{run.channel}</span><strong>{run.found}<small>found</small></strong><span>{partial ? "Partial review" : reviewLabel(run.outcome)}</span><span className="review-pill-status" title={run.current_pending_fixes === undefined ? "Current fix inventory unavailable" : `${run.current_accepted} currently accepted; ${run.current_pending_fixes} fixes pending`}>{reviewRunPillStatus(run)}</span><small>Accepted: {accepted} · Routed: {routed} · {run.fixed} fixed{partial && partialPendingText(run.retained_undecided)}</small>{!run.complete && !partial && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</Link>;
 }
 export function missingPullFacts(pull: ReviewPullSummary): string[] {
   const missing: string[] = [];
@@ -400,10 +400,10 @@ function reviewStart(run: ReviewRunSummary): { value: string; label: string } | 
   return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Assumed start (review requested)' : 'Started' };
 }
 export function reviewRunPillStatus(run: ReviewRunSummary): string {
-  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : run.fixed < run.accepted ? "Partial · Fixes pending" : "Partial";
+  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : (run.current_pending_fixes ?? 0) > 0 ? "Partial · Fixes pending" : "Partial";
   if (!run.complete || !run.attributable) return "Incomplete";
   if (!run.finalized) return "Needs adjudication";
-  return run.fixed < run.accepted ? "Fixes pending" : "Finished";
+  return run.current_pending_fixes === undefined ? "Reviewed" : run.current_pending_fixes > 0 ? "Fixes pending" : "Finished";
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
   const { home } = useWorkspace();
@@ -416,7 +416,7 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
     !partial && !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
-  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${start ? `${start.label} ${time(start.value)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''}`;
+  const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${start ? `${start.label} ${time(start.value)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''} ${run.current_pending_fixes === undefined ? 'Current fix inventory unavailable.' : `${run.current_accepted} currently accepted; ${run.current_pending_fixes} fixes pending.`}`;
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} status={reviewRunPillStatus(run)} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{start ? <RelativeTime value={start.value} label={start.label} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
 function RunningReviewPill({ evidence, channel }: { evidence: ReviewActivityEvidence; channel: ReviewChannel }) {
@@ -440,7 +440,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const returned = !activeAttempt && attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
     (run.outcome === 'completed' || partialCLIResult(run))) : undefined;
-  const statusAttempt = returned && partialCLIResult(returned) && returned.retained_undecided === 0 && returned.fixed >= returned.accepted && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
+  const statusAttempt = returned && partialCLIResult(returned) && returned.retained_undecided === 0 && returned.current_pending_fixes === 0 && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
     ? { ...attempt, reason: 'cli_partial_settled' }
     : attempt;
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);
@@ -560,7 +560,7 @@ export function ReviewHistoryRow({ number, run, snapshot, head, ordinal }: { num
       <span className="review-history-age">{start ? <RelativeTime value={start.value} label={start.label} /> : <span title="Start time unknown">—</span>}{duration && <span className="review-history-duration"> · {duration}</span>}</span>
       <span className="review-history-counts"><span className="review-count review-count-found">Found: <strong>{run.found}</strong></span><ReviewAcceptedCounts run={run} /><span className="review-count review-count-routed">Routed: <strong>{visibleReviewCounts(run).routed}</strong></span></span>
     </button><Link className="review-history-details-link" to={reviewLink(home, 'runs', run.id, snapshot)} aria-label={`Open ${round} run details`}>Run details ↗</Link></div>
-    <div className="review-history-flags">{partial ? <span className="review-warning">Partial review{partialPendingText(run.retained_undecided)}</span> : <>{run.outcome !== 'completed' && <span>{reviewLabel(run.outcome)}</span>}{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</>}{!head || !run.head_sha ? <span className="review-warning">Head association unknown</span> : null}</div>
+    <div className="review-history-flags"><span title={run.current_pending_fixes === undefined ? "Current fix inventory unavailable" : `${run.current_accepted} currently accepted; ${run.current_pending_fixes} fixes pending`}>{reviewRunPillStatus(run)}</span>{partial ? <span className="review-warning">Partial review{partialPendingText(run.retained_undecided)}</span> : <>{run.outcome !== 'completed' && <span>{reviewLabel(run.outcome)}</span>}{!run.complete && <span className="review-warning">Incomplete record</span>}{!run.attributable && <span className="review-warning">Attribution unconfirmed</span>}</>}{!head || !run.head_sha ? <span className="review-warning">Head association unknown</span> : null}</div>
     {open && <div id={findingsID}><InlineReviewFindings number={number} run={run} snapshot={snapshot} /></div>}
   </li>;
 }

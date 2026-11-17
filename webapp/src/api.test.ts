@@ -1483,3 +1483,28 @@ describe('open job list filter', () => {
     await expect(client.job('job_one')).rejects.toMatchObject({ code: 'invalid_response' }); client.close();
   });
 });
+
+
+describe('snapshot-bound current finding projections', () => {
+ it('accepts corrected current counts without rewriting frozen acceptance', async () => {
+  setupLocation(); const client = api(); await connect(client);
+  const run = {...reviewRun, current_accepted:0, current_pending_fixes:0, fixed:0};
+  const finding = {...reviewFinding, disposition:'rejected', fix_sha:'', proof_note:'', resolved_at:''};
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({...reviewDetail, run, findings:[finding]})));
+  const value = await client.reviewRun(run.id);
+  expect(value.run).toMatchObject({accepted:1, current_accepted:0, current_pending_fixes:0, started_at:reviewRun.started_at});
+ });
+ it.each([
+  {current_accepted:1}, {current_pending_fixes:0},
+  {current_accepted:-1, current_pending_fixes:0},
+  {current_accepted:0, current_pending_fixes:1},
+  {current_accepted:2, current_pending_fixes:0},
+  {current_accepted:1, current_pending_fixes:0.5},
+  {current_accepted:0, current_pending_fixes:0},
+  {current_accepted:1, current_pending_fixes:1},
+ ])('rejects invalid or finding-inconsistent projection %j', async projection => {
+  setupLocation(); const client = api(); await connect(client);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({...reviewDetail, run:{...reviewRun, ...projection}})));
+  await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({code:'invalid_response'});
+ });
+});

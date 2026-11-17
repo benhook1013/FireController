@@ -135,7 +135,7 @@ func serveTimelineRuns(w http.ResponseWriter, r *http.Request, store *core.Store
 			response.Cursor = store.Cursor(scope, filter, string(b))
 		}
 		if r.Header.Get(displayStartHeader) == "v1" {
-			if err := attachDisplayStarts(ctx, tx, scope.ProjectID, response.Items); err != nil {
+			if err := attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items); err != nil {
 				return err
 			}
 		}

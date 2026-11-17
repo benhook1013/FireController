@@ -288,7 +288,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			if err := rows.Close(); err != nil {
 				return err
 			}
-			return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+			return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 		}
 		return nil
 	})

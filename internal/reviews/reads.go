@@ -155,7 +155,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				if err := rows.Close(); err != nil {
 					return err
 				}
-				return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+				return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			}
 			return nil
 		})
@@ -243,7 +243,7 @@ func pull(store *core.Store) http.HandlerFunc {
 				return err
 			}
 			if r.Header.Get(displayStartHeader) == "v1" {
-				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Pull.RecentRuns)
+				return attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Pull.RecentRuns)
 			}
 			return nil
 		})
@@ -381,7 +381,7 @@ func runs(store *core.Store) http.HandlerFunc {
 				if err := rows.Close(); err != nil {
 					return err
 				}
-				return attachDisplayStarts(ctx, tx, scope.ProjectID, response.Items)
+				return attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			}
 			return nil
 		})
@@ -436,7 +436,7 @@ func runDetail(store *core.Store) http.HandlerFunc {
 				return err
 			}
 			runs := []RunSummary{response.Run}
-			if err := attachDisplayStarts(ctx, tx, scope.ProjectID, runs); err != nil {
+			if err := attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, runs); err != nil {
 				return err
 			}
 			response.Run = runs[0]
