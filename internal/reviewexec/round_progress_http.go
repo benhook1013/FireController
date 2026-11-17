@@ -14,7 +14,7 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 	if len(r.URL.RawQuery) > 4096 {
 		return nil, invalid()
 	}
-	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view", "include_activity_evidence", "include_source_retry")
+	query, err := core.QueryKeys(r, "validation_failed", "pull_numbers", "view", "include_activity_evidence", "include_source_retry", "include_source_retry_timing")
 	if err != nil {
 		return nil, err
 	}
@@ -22,6 +22,9 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 		return nil, invalid()
 	}
 	if query.Has("include_source_retry") && (query.Get("include_source_retry") != "true" || query.Get("view") != "stages") {
+		return nil, invalid()
+	}
+	if query.Has("include_source_retry_timing") && (query.Get("include_source_retry_timing") != "true" || query.Get("include_source_retry") != "true" || query.Get("view") != "stages") {
 		return nil, invalid()
 	}
 	if query.Has("view") && query.Get("view") != "stages" {
@@ -68,7 +71,8 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	progress, err := e.readRoundProgress(r.Context(), scope, numbers, roundProgressView{
 		stages: stages, queuePriority: r.Header.Get(operationWaitHeader) == "5",
 		activity: query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
-		fixes: stages && r.Header.Get(reviewFixStatusHeader) == "v1",
+		sourceRetryTiming: query.Get("include_source_retry_timing") == "true",
+		fixes:             stages && r.Header.Get(reviewFixStatusHeader) == "v1",
 	})
 	if err != nil {
 		core.WriteError(w, err)

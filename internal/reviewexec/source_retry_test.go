@@ -701,3 +701,60 @@ func TestHostedSourceRetryRechecksAuthorityAndConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestSourceRetryTimingDiagnosticRequiresSeparateOptIn(t *testing.T) {
+	for _, state := range []string{"proven", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			f, r, now := sourceFixture(t)
+			a := f.start(t, attemptProject, r)
+			timing := reviewprovider.RetryTimingEvidence{State: state, ObservedAt: *now}
+			expected := "conservative"
+			if state == "proven" {
+				timing.NotBefore = now.Add(time.Minute)
+				expected = "proven"
+			}
+			failure := PreparationFailureAt("source_resolution", &reviewprovider.Error{Code: "provider_rate_limited", Status: 429, RetryTiming: timing})
+			if ok, err := f.e.ScheduleSourceRetry(t.Context(), attemptProject, a.ID, a.Revision, failure); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+			path := roundProgressPath(attemptProject) + "?pull_numbers=2&view=stages&include_source_retry=true"
+			old := versionWaitRead(t, f, path, "5")
+			if old.Code != http.StatusOK || strings.Contains(old.Body.String(), "timing_state") {
+				t.Fatal("default shape changed", old.Body.String())
+			}
+			response := versionWaitRead(t, f, path+"&include_source_retry_timing=true", "5")
+			var progress RoundProgress
+			if err := json.Unmarshal(response.Body.Bytes(), &progress); err != nil || response.Code != http.StatusOK {
+				t.Fatal(err, response.Body.String())
+			}
+			got := progress.Items[0].Channels[1].SourceRetry
+			if got == nil || got.TimingState != expected || got.AttemptID != a.ID {
+				t.Fatal(got)
+			}
+			if strings.Contains(response.Body.String(), strings.Repeat("a", 64)) {
+				t.Fatal("credential group leaked")
+			}
+			if attemptCount(t, f.store, `SELECT count(*) FROM review_source_retries`) != 1 {
+				t.Fatal("diagnostic changed history")
+			}
+			op := cliWaitRead(t, f, r.ID)
+			body, err := json.Marshal(op)
+			if err != nil || strings.Contains(string(body), "timing_state") {
+				t.Fatal("diagnostic leaked to ordinary operation", err, string(body))
+			}
+		})
+	}
+}
+
+func TestSourceRetryTimingDiagnosticRejectsInvalidOptIns(t *testing.T) {
+	for _, query := range []string{
+		"pull_numbers=2&include_source_retry_timing=true",
+		"pull_numbers=2&view=stages&include_source_retry_timing=true",
+		"pull_numbers=2&view=stages&include_source_retry=true&include_source_retry_timing=false",
+	} {
+		req, _ := http.NewRequest(http.MethodGet, "http://example.test/?"+query, nil)
+		if _, err := roundProgressNumbers(req); err == nil {
+			t.Fatal("accepted", query)
+		}
+	}
+}
