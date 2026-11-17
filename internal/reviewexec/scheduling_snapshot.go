@@ -3,6 +3,8 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"github.com/benhook1013/FireController/internal/strictjson"
+	"strconv"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -70,6 +72,9 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 		}
 		if !identifier.MatchString(s.ProjectID) || s.PullNumber < 1 || s.PullNumber > 2147483647 || s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
 			err = schedulingUnavailable()
+			break
+		}
+		if err = validatePullSchedulingEvent(ctx, tx, s); err != nil {
 			break
 		}
 	}
@@ -156,4 +161,37 @@ func scanSchedulingSnapshot(row interface{ Scan(...any) error }, destinations ..
 		}
 	}
 	return nil
+}
+
+// A restored control must agree with its latest retained user decision.
+func validatePullSchedulingEvent(ctx context.Context, tx *sql.Tx, s PullScheduling) error {
+	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB))<=4096 THEN payload_json END FROM events WHERE project_id=? AND event_type='review.pull_scheduling_updated' AND resource_id=? AND revision>=? ORDER BY revision DESC,sequence DESC LIMIT 2`, s.ProjectID, strconv.FormatInt(s.PullNumber, 10), s.Revision)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var revision int64
+		var actor string
+		var payload sql.NullString
+		if err := rows.Scan(&revision, &actor, &payload); err != nil {
+			return err
+		}
+		var event struct {
+			PullNumber int64 `json:"pull_number"`
+			Paused     *bool `json:"paused"`
+		}
+		if count != 1 || revision != s.Revision || actor != s.ActorID || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.PullNumber != s.PullNumber || event.Paused == nil || *event.Paused != s.Paused {
+			return schedulingUnavailable()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count != 1 {
+		return schedulingUnavailable()
+	}
+	return rows.Close()
 }
