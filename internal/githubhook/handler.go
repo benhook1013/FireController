@@ -50,6 +50,7 @@ type Handler struct {
 	mu         sync.Mutex
 	deliveries map[string]*delivery
 	now        func() time.Time
+	telemetry  hookTelemetry
 }
 
 // New copies an explicit private secret (32..4096 bytes). Its callback must
@@ -64,6 +65,8 @@ func New(secret []byte, callback Callback) (*Handler, error) {
 var deliveryID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	eventLabel, outcome := "unverified", "rejected_request"
+	defer func() { h.observeOutcome(r.Context(), eventLabel, outcome) }()
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -86,6 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	signatures := r.Header.Values("X-Hub-Signature-256")
 	if len(signatures) != 1 || !validSignature(h.secret, body, signatures[0]) {
+		outcome = "rejected_signature"
 		http.Error(w, "Invalid delivery signature.", http.StatusUnauthorized)
 		return
 	}
@@ -95,7 +99,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := events[0]
+	eventLabel = "other"
+	if knownEvent(event) {
+		eventLabel = event
+	}
 	if !knownEvent(event) {
+		outcome = "ignored"
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -109,6 +118,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ignore {
+		outcome = "ignored"
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -125,18 +135,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		conflict, done := prior.event != event || prior.digest != digest, prior.done
 		h.mu.Unlock()
 		if conflict {
+			outcome = "conflict"
 			http.Error(w, "Conflicting delivery identity.", http.StatusBadRequest)
 			return
 		}
 		if !done {
+			outcome = "inflight"
 			http.Error(w, "The delivery is still being accepted.", http.StatusServiceUnavailable)
 			return
 		}
+		outcome = "duplicate"
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	if len(h.deliveries) >= deliveryLimit {
 		h.mu.Unlock()
+		outcome = "capacity"
 		http.Error(w, "Delivery capacity is temporarily occupied.", http.StatusServiceUnavailable)
 		return
 	}
@@ -153,9 +167,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Unlock()
 	if err != nil {
+		outcome = "callback_failed"
 		http.Error(w, "The delivery could not be queued; retry this delivery.", http.StatusServiceUnavailable)
 		return
 	}
+	outcome = "admitted"
 	w.WriteHeader(http.StatusAccepted)
 }
 func validSignature(secret, body []byte, signature string) bool {
