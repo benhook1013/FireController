@@ -69,3 +69,27 @@ export function useReviewQueueJump(queue: ReviewQueue | undefined, hash: string,
     return () => cancelAnimationFrame(frame);
   }, [queue, hash, entryKey, restoringPosition, jumpToHead, unavailable]);
 }
+
+// Pagination is deliberate navigation, unlike background queue observations.
+// Wait for the replacement page instead of anchoring its temporary loading shell.
+export function useReviewQueuePaginationScroll(pageKey: string, ready: boolean, failed: boolean): () => void {
+  const requested = useRef(false);
+  useEffect(() => {
+    if (failed) { requested.current = false; return; }
+    if (!requested.current || !ready) return;
+    const frame = requestAnimationFrame(() => {
+      const list = document.getElementById('review-queue-list');
+      if (!list) return;
+      requested.current = false;
+      const edge = Math.max(0, document.querySelector('.mast')?.getBoundingClientRect().bottom ?? 0) + 12;
+      notifyReadingNavigation();
+      window.scrollBy({ top: list.getBoundingClientRect().top - edge, left: 0, behavior: 'instant' });
+      retainReadingTarget('review-queue-list', edge);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pageKey, ready, failed]);
+  return () => {
+    requested.current = !window.matchMedia('(min-width: 651px)').matches;
+    if (requested.current) notifyReadingNavigation();
+  };
+}

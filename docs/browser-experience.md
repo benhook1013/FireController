@@ -22,6 +22,8 @@ The hero is one joined, two-tone surface, with project identity vertically cente
 
 Reads stay bounded and project-scoped. Reuse stored summaries and live invalidation; never expand every job brief, checkpoint, note archive or provider capture to paint the board. Expose continuation or partial coverage honestly at larger sizes, without presenting a partial page as the full project. Desktop and narrow layouts preserve readable lanes, a clear queue and stable loading geometry. On phones, the stacked identity panel contracts around its content rather than retaining the desktop panel's empty vertical space.
 
+On mobile, explicit queue Next and Previous navigation aligns the newly loaded queue list below the header, bounded by the document bottom for a short final page. It does not target the overall project page top. Initial loads, saved-position restoration, background observations and desktop pagination keep their existing behavior. Cursor and snapshot selection are unchanged.
+
 ### Refresh and reading position
 
 Confirmed Review closed badges and striped rails follow current PR/channel controls independently of a replacement source snapshot. Keep the project’s last configured channel set and retained round controls while front/source reads catch up; missing source data cannot make a closed channel appear reopened. Fresh reopened controls take effect immediately. This retention stays inside the authenticated project/connection and never grants review permission.

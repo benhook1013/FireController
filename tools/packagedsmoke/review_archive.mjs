@@ -414,8 +414,44 @@ try {
   need(explicitPages.size === expectedPages.length && expectedPages.every(row=>explicitPages.get(JSON.stringify(row.slice(0,5))) === row[5]));
   need(explicit.length === 19 && archives.length === explicit.length+previews.length);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && details.length === 3);
+  const verifiedArchiveRequests = archives.length;
+  phase = 'mobile-queue-pagination';
+  const queueRoute = '**/reviews/queue?*';
+  const paginateQueue = async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('view') !== 'recent') { await route.continue(); return; }
+    const second = url.searchParams.get('cursor') === 'mobile-page-two';
+    url.searchParams.delete('cursor');
+    const response = await route.fetch({url:url.toString()});
+    const data = await response.json();
+    data.items = second ? data.items.slice(3) : data.items.slice(0,3);
+    data.has_more = !second;
+    if (second) delete data.cursor; else data.cursor = 'mobile-page-two';
+    await route.fulfill({response,json:data});
+  };
+  await current.page.route(queueRoute, paginateQueue);
+  await current.page.goto(`${config.origin}${current.home}#review-queue`);
+  for (const width of [390,320]) {
+    await current.page.setViewportSize({width,height:900});
+    await current.page.reload();
+    await expect(queue.locator('.review-queue-row')).toHaveCount(3);
+    for (const [direction, count] of [['Next',2],['Previous',3]]) {
+      await queue.getByRole('button',{name:`${direction} review queue`,exact:true}).click();
+      await expect(queue.locator('.review-queue-row')).toHaveCount(count);
+      await expect.poll(() => current.page.evaluate(() => {
+        const list=document.getElementById('review-queue-list');
+        const edge=Math.max(0,document.querySelector('.mast')?.getBoundingClientRect().bottom ?? 0)+12;
+        // A short last page cannot scroll past the document bottom.
+        const delta=list.getBoundingClientRect().top-edge;
+        return Math.abs(Math.min(delta,document.documentElement.scrollHeight-innerHeight-scrollY));
+      })).toBeLessThan(3);
+      need(await current.page.evaluate(()=>window.scrollY>0));
+    }
+  }
+  await current.page.unroute(queueRoute,paginateQueue);
+  need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);
   await Promise.all(contexts.map(context=>context.close())); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',archive_requests:archives.length,explicit_archive_requests:explicit.length,preview_requests:previews.length,explicit_pages_verified:true,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',mobile_pagination:true,archive_requests:verifiedArchiveRequests,explicit_archive_requests:explicit.length,preview_requests:previews.length,explicit_pages_verified:true,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch (error) {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');

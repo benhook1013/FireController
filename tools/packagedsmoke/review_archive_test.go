@@ -334,6 +334,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		InlineFindings          bool   `json:"inline_findings"`
 		DetailRequests          int    `json:"detail_requests"`
 		FixtureWrites           int    `json:"fixture_writes"`
+		MobilePagination        bool   `json:"mobile_pagination"`
 		QueueWindow             bool   `json:"queue_window"`
 		MergedHistory           bool   `json:"merged_history"`
 	}
@@ -346,10 +347,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	// merged PR201 one timeline page with no attempts. Width-sized channel
 	// previews are verified separately against measured demand, without cursors
 	// or automatic archive walking, including the bounded reload.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.MobilePagination || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
-		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history":
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history", "mobile-queue-pagination":
 			phase = result.Phase
 		}
 		if result.DriverLine > 0 && result.DriverLine <= 10000 {
