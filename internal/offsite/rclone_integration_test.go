@@ -267,7 +267,24 @@ func TestOffsiteRealRcloneS3AndCryptRecovery(t *testing.T) {
 			if err != nil || got.ID != latest.ID {
 				t.Fatalf("fetch: %+v %#v", got, err)
 			}
-			restored, err := backup.Restore(t.Context(), got.Path, filepath.Join(t.TempDir(), "inactive"))
+			destination := filepath.Join(t.TempDir(), "inactive")
+			var restored backup.RestoreSummary
+			if operator == "" {
+				restored, err = backup.Restore(t.Context(), got.Path, destination)
+			} else {
+				// Exercise the shipped recovery executable, not the test
+				// process's library. Restore has no provider configuration.
+				cmd := exec.CommandContext(t.Context(), operator, "restore", "--bundle", got.Path, "--data-dir", destination)
+				cmd.Env = []string{"PATH=", "HOME=" + t.TempDir()}
+				var diagnostic strings.Builder
+				cmd.Stderr = &diagnostic
+				var output []byte
+				output, err = cmd.Output()
+				if err != nil {
+					t.Fatalf("packaged inactive restore failed: %v %s", err, diagnostic.String())
+				}
+				err = json.Unmarshal(output, &restored)
+			}
 			if err != nil || restored.State != "inactive" {
 				t.Fatal(restored, err)
 			}
