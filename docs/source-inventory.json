@@ -1,0 +1,313 @@
+{
+  "source_snapshot": {
+    "repository": "https://github.com/benhook1013/FireMUD",
+    "commit": "28263335caa23ef0706a8dc79add7eec4d0fcc53",
+    "test_discovery": "dev-tools/validation/test_fire_controller_*.py and dev-tools/validation/test_pr_review_*.py",
+    "counts": {
+      "test_files": 30,
+      "named_tests_ast": 1601,
+      "source_modules": 33,
+      "source_documents": 3
+    }
+  },
+  "tests": [
+    {
+      "path": "dev-tools/validation/test_fire_controller_cli.py",
+      "sha256": "8c3a18215f28760388c59aee01d357bab2bf13ac6718b2c7562163d284e4e29d",
+      "named_test_count_ast": 23
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_inbox.py",
+      "sha256": "9435f00115a72c808ffff4aa00f81930851404c940ddff779cc1f29965a15bc1",
+      "named_test_count_ast": 16
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_jobs.py",
+      "sha256": "ed7667dd4e65b3a6fbd759052747d0833c394a4023bed420ce141f021fdd7d50",
+      "named_test_count_ast": 31
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_map.py",
+      "sha256": "57491d4888d2ca3a91c8abb1a45ec75f29ac73bb941fafb4726e5419bb1b9cc5",
+      "named_test_count_ast": 13
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_map_cli.py",
+      "sha256": "d593335e42fcdf096f1460efebc93d481131c87b533c6376a70d9a72c0bd629e",
+      "named_test_count_ast": 3
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_markdown.py",
+      "sha256": "2b9a7ec04e4fccb2c73e337dc4326db3857bb2a943c37530808fa9868c81a47e",
+      "named_test_count_ast": 5
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_model.py",
+      "sha256": "885ab17664315dce7c0d24dde56e590b1054f884e184d6316d518071780f3d34",
+      "named_test_count_ast": 4
+    },
+    {
+      "path": "dev-tools/validation/test_fire_controller_web.py",
+      "sha256": "5ad95978fccb2f503c0cfbbd7dd1f296ed72412f9fd205642062260da02610cd",
+      "named_test_count_ast": 30
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_acceptance.py",
+      "sha256": "ca1fc27d4745b96e90bc09ca31c5ca8c8ca5ed2e02b476897048b5b368475aa2",
+      "named_test_count_ast": 24
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_checkpoint_publication.py",
+      "sha256": "50bb3f77ecc9b9ebe425f41d0ef6245230bed05f783d7d86db1932393ca59366",
+      "named_test_count_ast": 20
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_cli_runner.py",
+      "sha256": "5ce48c1452251f8cdc16b31870afb471ce34f88e29093f99da4db33cd4905768",
+      "named_test_count_ast": 108
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_controller.py",
+      "sha256": "f1a1f033f6b5bc01264806c7f684edc48c48ad64a1c50ed613bb2258e3d4fe67",
+      "named_test_count_ast": 424
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_evidence_hosted.py",
+      "sha256": "634fec5d998335fa223224e76e2aa4d968ffc8f0a0b758975f91735aed1332cd",
+      "named_test_count_ast": 127
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_github_pagination.py",
+      "sha256": "373d3b41116261a7c7989c3672cd9a6b089a2330045e975055cdd4df3abd11bb",
+      "named_test_count_ast": 13
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_hosted_posting_recovery.py",
+      "sha256": "321b302f4c4cf0e773fb6e34b8f538589c10052a17c6d6686f065ad3d002e7bd",
+      "named_test_count_ast": 10
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_hosted_wait.py",
+      "sha256": "8c515047e828538a5e328ea23f40d852655e1b3b86be4744358493b227ce6660",
+      "named_test_count_ast": 10
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_manual_hosted_adoption.py",
+      "sha256": "8292d4b7b6c15b23ff2ebfdc8426806462396df73c109b0ac17d7f600acb0db7",
+      "named_test_count_ast": 20
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_repository_comment_batch.py",
+      "sha256": "fa2cfbfbbe38e4e4f5aa32348fdc720eeb3c11b43edb49dae6d4d93a340f99c1",
+      "named_test_count_ast": 6
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_runtime.py",
+      "sha256": "372c5522e14bd8de2e4e191bcd214f86ee5f15fc3d846de2cc6edf9322142778",
+      "named_test_count_ast": 170
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_backup.py",
+      "sha256": "ff8cb7a8e887513a8e976b7e1bb2ff93973b527c85adfc4a1be404aee0844dc1",
+      "named_test_count_ast": 39
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_entrypoint.py",
+      "sha256": "08e86dd38cbba308c9f23b8d0727741484ad881bf2b6714b4a3251536e00ba69",
+      "named_test_count_ast": 5
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_hosted_capture.py",
+      "sha256": "6757f0ac8e1bf4a4e72f33f52e16eb0cce1738e8b43ffa07316ffc710508e997",
+      "named_test_count_ast": 66
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_migration.py",
+      "sha256": "84164f64912e4777855a671313250f3f87e794483a28baf2a6d4c9143b56be52",
+      "named_test_count_ast": 5
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_provider_imports.py",
+      "sha256": "d0651a7739f98c9eba00631d9cca02794f9a454ab1704ddacb7276147cf60de1",
+      "named_test_count_ast": 27
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_records_cli.py",
+      "sha256": "32d5eeddf0f08c47dd9181429f2b717200ffebd1e2dc43e44d12775b75c69c00",
+      "named_test_count_ast": 61
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_records_repair.py",
+      "sha256": "0a64c006d26e5e4bfad75ede4db170950236979b74a98ed866969f77cd1669a9",
+      "named_test_count_ast": 34
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_review_records.py",
+      "sha256": "4f7e6ca46a6687dbd27e57ff51a5e9657dc7732b57887d2dfef6582edfda6362",
+      "named_test_count_ast": 130
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_sqlite_store.py",
+      "sha256": "3a7154a5bf5d6b34719ce2416c406a90ba1cab1f3df7b9e0a3a72a199d2f8aa9",
+      "named_test_count_ast": 24
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_state_stack.py",
+      "sha256": "30d9bd2dd2e594f4e43ce2a4facca4f05ee73b976ae25e66a1e2cb814331d374",
+      "named_test_count_ast": 81
+    },
+    {
+      "path": "dev-tools/validation/test_pr_review_status.py",
+      "sha256": "442b7e60caae542d937d08ae091fc60b7e1f6ea6af37ca3f7c037b05912aec15",
+      "named_test_count_ast": 72
+    }
+  ],
+  "source_modules": [
+    {
+      "path": "dev-tools/fire_controller/__init__.py",
+      "sha256": "f2eee746a2fdedfc495a0dcd15fd3b39f695470a9ddf9e95ed777876ef701422"
+    },
+    {
+      "path": "dev-tools/fire_controller/cli.py",
+      "sha256": "2f2041a7b22c3eb5b930e317029d6bb0550d60871f644e56eac1b335d317c24e"
+    },
+    {
+      "path": "dev-tools/fire_controller/context.py",
+      "sha256": "00450bea572f69783a6bef7e9492d526a5360f65afb6fd614134e1523b4666ec"
+    },
+    {
+      "path": "dev-tools/fire_controller/inbox.py",
+      "sha256": "5bd948e1e74e919fd7eac0fa175db7f99f6b88c7a6309493d394b9b78af8636a"
+    },
+    {
+      "path": "dev-tools/fire_controller/jobs.py",
+      "sha256": "0b9495919cf59f4596ec2f826f2149d28b38d401c6466bdb4f819713b2285d3a"
+    },
+    {
+      "path": "dev-tools/fire_controller/map.py",
+      "sha256": "f99f510affcb0172288c590e051e5227c8cc193f1440adad3e570c8932b38aed"
+    },
+    {
+      "path": "dev-tools/fire_controller/markdown.py",
+      "sha256": "37d4c81e4e2040595f3424f6cc200b4b2d46f3f2d09bcc55d1d7a2182a782b68"
+    },
+    {
+      "path": "dev-tools/fire_controller/web.py",
+      "sha256": "b97a8c94938fd6beac434364a30ee7df2204816233824572413dfafd48b7333a"
+    },
+    {
+      "path": "dev-tools/pr_review/__init__.py",
+      "sha256": "2fb65cd4c036c220e338740d7747bf390bc179dbe10c89a91e567c2e70052fc7"
+    },
+    {
+      "path": "dev-tools/pr_review/acceptance.py",
+      "sha256": "6b5d06251636ae5a005ce35b45eae2b263b9fafa3fa8815038c1d67ec19ee01b"
+    },
+    {
+      "path": "dev-tools/pr_review/checkpoint_publication.py",
+      "sha256": "dfc1b518e2fcd84db5cc4202499cfeb3de1c9b8e74fe6f6838db793c8cbf7487"
+    },
+    {
+      "path": "dev-tools/pr_review/cli.py",
+      "sha256": "553d2eb6cbaafcfb7cc6f567bf499a59b78b74395f5306f2b32adf468c40e968"
+    },
+    {
+      "path": "dev-tools/pr_review/cli_attempts.py",
+      "sha256": "244a91211efc682cd045f86e410ae871849cfbe8c837f9e5fce20a85d866bc29"
+    },
+    {
+      "path": "dev-tools/pr_review/cli_runner.py",
+      "sha256": "48d549f97d97038a224833358327ce78d22f16378ff9a322383e960e3a8dfc77"
+    },
+    {
+      "path": "dev-tools/pr_review/controller.py",
+      "sha256": "c2c659c29b4ef7150fd4dfe0fd65fad412a4a1705c8a96d4ba7c61c6c8220f7b"
+    },
+    {
+      "path": "dev-tools/pr_review/evidence.py",
+      "sha256": "ffebc26b2aaf1b0105912ba87e27ed576549df27936239cb929a9eb423d3883f"
+    },
+    {
+      "path": "dev-tools/pr_review/git_merge.py",
+      "sha256": "d9ae3c1b32497ed6f6f98282f121df488e65692bb816f13f51dd935d6da9d428"
+    },
+    {
+      "path": "dev-tools/pr_review/github.py",
+      "sha256": "7ab3205079f07ae4b049411e2cc8eab9a730b022f8a2616afae05ec65d05e8f2"
+    },
+    {
+      "path": "dev-tools/pr_review/hosted.py",
+      "sha256": "fe6fad5fd5e172f0bffe28520cfe2c2f9cfe19e61d3f65359a49bcc1d1b08311"
+    },
+    {
+      "path": "dev-tools/pr_review/hosted_wait.py",
+      "sha256": "3fca284b72d2633db3ad9630d8dbcb0a4f7da36fe7bf64527b636e55bd0035cc"
+    },
+    {
+      "path": "dev-tools/pr_review/patch_identity.py",
+      "sha256": "a89d1eb68aba966ecaff75985c26cfd66cfd3f68a0c531d6e463d1d63c885293"
+    },
+    {
+      "path": "dev-tools/pr_review/policy.py",
+      "sha256": "ba69c64f5dbc28a453c396cd1f33a042929aba55885654d2275e2085441f7964"
+    },
+    {
+      "path": "dev-tools/pr_review/runtime.py",
+      "sha256": "0220f7c4bb94e59daac27262548200434b24b0c71aa5cda1a897dbe131aa0e29"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_backup.py",
+      "sha256": "0c36c104e830cc2cbfab8806ab71c0013954f33b890d307cb33c23ce72ad2513"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_finding_text.py",
+      "sha256": "fd01f2dbb8c1ec53652106b8b81f2db48eeeaabbc68cf978ef08d0bfaaae682c"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_hosted_capture.py",
+      "sha256": "f39bb5024e0fa9a7118938d59483b258e9c7ce883d026524a4e4a00b42f69256"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_provider_imports.py",
+      "sha256": "b191e9692d946fac12a23779d4f5a9aca00aadb6e809ce16554a0dc11b68c28d"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_records_repair.py",
+      "sha256": "133dac22225f51de8363e3703dd5e0e42cc0619a04a5cf5903e9ec3883484da5"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_review_records.py",
+      "sha256": "3b837330d68f12d1de65547c3aaa0c5cd8552cb39c862cd5e2795e1fab95f580"
+    },
+    {
+      "path": "dev-tools/pr_review/sqlite_store.py",
+      "sha256": "0f39ff5cb542183285a62b0fd4ee7198937bb13286c2672c70b818ed97941b75"
+    },
+    {
+      "path": "dev-tools/pr_review/stack.py",
+      "sha256": "b06ae8202cea6e5d6198b9674dd90471265a145e58b979c3091e5184c7f14b4c"
+    },
+    {
+      "path": "dev-tools/pr_review/state.py",
+      "sha256": "33b0d79ed33a001aa4419b484abb0919bb6056ed9e5b224a79992251a3f205a8"
+    },
+    {
+      "path": "dev-tools/pr_review/status.py",
+      "sha256": "2c3d9ef1d66a7323685fbba91569f64788210f2594d48f7dba4e2cccdb26bcf2"
+    }
+  ],
+  "source_documents": [
+    {
+      "path": "dev-tools/fire_controller/README.md",
+      "sha256": "dac80ffd4d0aef825767af86c75f89c8e6cf72ae13e68f8ce1ff36a988c37d0d"
+    },
+    {
+      "path": "dev-tools/pr_review/README.md",
+      "sha256": "a9f5258d2e842ce8d64987ccdc37f663d1f9863e7c5975f4a89af297b9e57c4a"
+    },
+    {
+      "path": "design/developer-workflows/pr-lifecycle.md",
+      "sha256": "80e5d9474b07a9ca9b71297889e6f411be39c527b6583bc0edd1367a91c22be1"
+    }
+  ]
+}

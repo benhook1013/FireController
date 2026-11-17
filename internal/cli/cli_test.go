@@ -1,0 +1,973 @@
+package cli_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/cli"
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/inbox"
+	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/server"
+)
+
+const privateReference = "private-credential-reference.token"
+
+func profiles() map[string]any {
+	return map[string]any{
+		"version": 1,
+		"profiles": map[string]any{
+			"alpha-overseer": map[string]any{"server_url": "http://127.0.0.1:8080", "instance_id": "instance-a", "project_id": "alpha-project", "worker_id": "overseer", "credential_file": privateReference},
+			"beta-overseer":  map[string]any{"server_url": "https://controller.example", "instance_id": "instance-b", "project_id": "beta-project", "worker_id": "overseer", "credential_file": "../" + privateReference},
+		},
+	}
+}
+
+func encode(t *testing.T, config map[string]any) []byte {
+	t.Helper()
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func fixture(t *testing.T, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func run(args []string, env map[string]string) (int, string, string) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(args, env, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
+func response(t *testing.T, code int, stdout, stderr string) map[string]string {
+	t.Helper()
+	if code != cli.ExitSuccess || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 8 {
+		t.Fatalf("unexpected context fields: %v", result)
+	}
+	for _, key := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id", "client_version", "client_source_revision", "client_source_state"} {
+		if result[key] == "" {
+			t.Fatalf("missing context field %s", key)
+		}
+	}
+	if strings.Contains(stdout, privateReference) || strings.Contains(stdout, "credential") {
+		t.Fatal("credential reference leaked")
+	}
+	return result
+}
+
+func failure(t *testing.T, args []string, env map[string]string, wantExit int, wantCode string) {
+	t.Helper()
+	code, stdout, stderr := run(args, env)
+	if code != wantExit || stdout != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result struct {
+		Error struct{ Code, Message, Action string }
+	}
+	if err := json.Unmarshal([]byte(stderr), &result); err != nil {
+		t.Fatalf("invalid error JSON: %v: %q", err, stderr)
+	}
+	if result.Error.Code != wantCode || result.Error.Message == "" || result.Error.Action == "" {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	if strings.Contains(stderr, privateReference) || strings.Contains(stderr, "SUPER_SECRET_TOKEN") {
+		t.Fatalf("private data leaked: %s", stderr)
+	}
+}
+
+func TestInterleavedProfilesDoNotChangeIdentityOrConfiguration(t *testing.T) {
+	data := encode(t, profiles())
+	path := fixture(t, data)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Credential references deliberately point at absent files: a local context
+	// read must succeed without opening a token or contacting these servers.
+	for _, name := range []string{"alpha-overseer", "beta-overseer", "alpha-overseer", "beta-overseer"} {
+		code, stdout, stderr := run([]string{"--profile", name, "--profiles-file", path, "context"}, nil)
+		got := response(t, code, stdout, stderr)
+		wantProject, wantInstance := "alpha-project", "instance-a"
+		if name == "beta-overseer" {
+			wantProject, wantInstance = "beta-project", "instance-b"
+		}
+		if got["profile"] != name || got["project_id"] != wantProject || got["instance_id"] != wantInstance || got["worker_id"] != "overseer" {
+			t.Fatalf("wrong identity: %v", got)
+		}
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, actual) || !before.ModTime().Equal(after.ModTime()) || before.Mode() != after.Mode() {
+		t.Fatal("context changed configuration")
+	}
+	files, err := os.ReadDir(filepath.Dir(path))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("unexpected configuration writes: files=%v err=%v", files, err)
+	}
+}
+
+func TestInterleavedProjectsOnOneInstanceKeepWorkerScope(t *testing.T) {
+	config := profiles()
+	entries := config["profiles"].(map[string]any)
+	alpha := entries["alpha-overseer"].(map[string]any)
+	beta := entries["beta-overseer"].(map[string]any)
+	beta["instance_id"], beta["server_url"] = alpha["instance_id"], alpha["server_url"]
+	data := encode(t, config)
+	path := fixture(t, data)
+	for _, name := range []string{"alpha-overseer", "beta-overseer", "alpha-overseer", "beta-overseer"} {
+		code, stdout, stderr := run([]string{"context", "--profile", name, "--profiles-file", path}, nil)
+		got := response(t, code, stdout, stderr)
+		want := entries[name].(map[string]any)
+		if got["profile"] != name || got["instance_id"] != "instance-a" || got["server_url"] != alpha["server_url"] || got["worker_id"] != "overseer" || got["project_id"] != want["project_id"] {
+			t.Fatalf("wrong same-instance project identity: %v", got)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, after) {
+		t.Fatalf("configuration changed: err=%v", err)
+	}
+}
+
+func TestProfilePrecedenceAndFlagsOnEitherSideOfCommand(t *testing.T) {
+	path := fixture(t, encode(t, profiles()))
+	env := map[string]string{"FC_PROFILE": "beta-overseer"}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"context", "--profiles-file", path}, "beta-overseer"},
+		{[]string{"--profile=alpha-overseer", "context", "--profiles-file=" + path}, "alpha-overseer"},
+		{[]string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, "alpha-overseer"},
+	} {
+		code, stdout, stderr := run(tc.args, env)
+		if got := response(t, code, stdout, stderr); got["profile"] != tc.want {
+			t.Fatalf("wrong profile: %v", got)
+		}
+	}
+	if env["FC_PROFILE"] != "beta-overseer" {
+		t.Fatal("environment map mutated")
+	}
+	// An invalid explicit selector must not fall back to a valid environment.
+	failure(t, []string{"context", "--profiles-file", path, "--profile", "missing"}, env, cli.ExitConfig, "profile_not_found")
+}
+
+func TestDefaultConfigPathUsesExplicitUserEnvironment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux configuration directory contract")
+	}
+	for _, useXDG := range []bool{true, false} {
+		t.Run(map[bool]string{true: "xdg", false: "home"}[useXDG], func(t *testing.T) {
+			directory := t.TempDir()
+			env := map[string]string{"HOME": directory, "FC_PROFILE": "alpha-overseer"}
+			configDir := filepath.Join(directory, ".config")
+			if useXDG {
+				configDir = filepath.Join(directory, "xdg")
+				env["XDG_CONFIG_HOME"] = configDir
+			}
+			path := filepath.Join(configDir, "firecontroller", "profiles.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, encode(t, profiles()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := run([]string{"context"}, env)
+			response(t, code, stdout, stderr)
+		})
+	}
+	failure(t, []string{"context"}, map[string]string{"FC_PROFILE": "alpha-overseer"}, cli.ExitConfig, "config_directory_unavailable")
+	failure(t, []string{"context"}, map[string]string{"FC_PROFILE": "alpha-overseer", "XDG_CONFIG_HOME": "relative", "HOME": t.TempDir()}, cli.ExitConfig, "config_directory_unavailable")
+}
+
+func TestRelativeDefaultDirectoryCannotSelectWorkspaceConfiguration(t *testing.T) {
+	env := map[string]string{"FC_PROFILE": "alpha-overseer"}
+	switch runtime.GOOS {
+	case "windows":
+		env["APPDATA"] = "relative"
+	case "plan9":
+		env["home"] = "relative"
+	default:
+		env["HOME"] = "relative"
+	}
+	failure(t, []string{"context"}, env, cli.ExitConfig, "config_directory_unavailable")
+}
+
+func TestVersionDoesNotNeedOrReadConfiguration(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nonexistent-profiles.json")
+	for _, args := range [][]string{{"version"}, {"--profiles-file", missing, "--profile=bound-role", "version"}, {"version", "--profile", "missing", "--profiles-file=" + missing}} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, args, map[string]string{"FC_PROFILE": "missing"}, &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, &stderr)
+		}
+		var result map[string]string
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || len(result) != 3 || result["version"] != cli.Version || result["source_revision"] == "" || result["source_state"] == "" {
+			t.Fatalf("version=%s err=%v", &stdout, err)
+		}
+	}
+}
+
+func TestLocalHelpUsesBoundSelectorsWithoutConfigurationOrNetwork(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer service.Close()
+	// An existing malformed file cannot be mistaken for a successfully resolved
+	// profile; the local commands must finish before any configuration admission.
+	path := filepath.Join(t.TempDir(), "malformed-profiles.json")
+	before := []byte(`PRIVATE_NOT_CONFIGURATION`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"help", "--help", "-h"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		code := cli.RunContext(ctx, []string{"--profiles-file", path, "--profile=bound-role", spelling}, map[string]string{"FC_PROFILE": "unrelated", "FC_SERVER": service.URL}, &stdout, &stderr)
+		if code != cli.ExitSuccess || stderr.Len() != 0 || stdout.Len() > 4096 {
+			t.Fatalf("local help %s: code=%d bytes=%d stderr=%s", spelling, code, stdout.Len(), &stderr)
+		}
+		var result struct {
+			Usage         string `json:"usage"`
+			Binding       string `json:"binding"`
+			CommandGroups []struct {
+				Name     string `json:"name"`
+				Commands []struct {
+					Command string `json:"command"`
+					Scope   string `json:"scope"`
+				} `json:"commands"`
+			} `json:"command_groups"`
+			Documentation struct {
+				Basis string   `json:"basis"`
+				Paths []string `json:"paths"`
+			} `json:"documentation"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Usage == "" || result.Binding == "" || len(result.CommandGroups) == 0 || !strings.Contains(result.Documentation.Basis, "same release") || len(result.Documentation.Paths) == 0 {
+			t.Fatalf("incomplete help: %s err=%v", &stdout, err)
+		}
+		for _, required := range []string{"doctor", "context", "jobs read JOB_ID", "notes read NOTE_ID", "inbox thread CONVERSATION_ID", "inbox send --to WORKER_ID --body TEXT --key KEY"} {
+			found := false
+			for _, group := range result.CommandGroups {
+				for _, command := range group.Commands {
+					if command.Command == required && command.Scope != "" {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing scoped discovery %q", required)
+			}
+		}
+		if strings.Contains(stdout.String(), path) || strings.Contains(stdout.String(), "PRIVATE_NOT_CONFIGURATION") || strings.Contains(stdout.String(), service.URL) {
+			t.Fatal("local help exposed configuration input")
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("local help contacted service")
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("local help changed profile file", err)
+	}
+}
+
+func TestLocalHelpAndVersionRejectMalformedArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "extra"}, {"--help", "extra"}, {"-h", "extra"}, {"version", "extra"}, {"jobs", "--help", "extra"},
+		{"help", "--unknown"}, {"version", "--unknown"}, {"help", "--profile"}, {"version", "--profiles-file="},
+		{"help", "--profile=a", "--profile=b"}, {"--profiles-file=a", "--profiles-file=b", "version"},
+		{"help", "--profile", " padded "}, {"version", "--profile", "bad\x00profile"}, {"help", "--profiles-file", "bad\npath"},
+	} {
+		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
+	}
+	code, stdout, stderr := run([]string{"unsupported-command"}, nil)
+	if code != cli.ExitUsage || stdout != "" || !strings.Contains(stderr, "bound launcher with help") || strings.Contains(stderr, "Use fc ") {
+		t.Fatal("unsupported command assumed an executable name", code, stdout, stderr)
+	}
+}
+
+func TestLocalHelpAndVersionReportOutputFailure(t *testing.T) {
+	for _, command := range []string{"help", "version"} {
+		var stderr bytes.Buffer
+		code := cli.Run([]string{"--profiles-file", "nonexistent", "--profile=bound-role", command}, nil, setupFailingWriter{}, &stderr)
+		if code != cli.ExitConfig || !strings.Contains(stderr.String(), `"code":"output_failed"`) || strings.Contains(stderr.String(), "private output failure") {
+			t.Fatal(command, code, stderr.String())
+		}
+	}
+}
+
+func TestUsageAndSelectionErrorsKeepStdoutClean(t *testing.T) {
+	for _, args := range [][]string{nil, {"unknown"}, {"context", "extra"}, {"context", "--unknown"}, {"context", "--profile"}, {"context", "--profiles-file="}, {"context", "--profile", "a", "--profile", "b"}, {"context", "--profiles-file", "a", "--profiles-file", "b"}, {"context", "--profile", "--profiles-file", "a"}} {
+		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
+	}
+	failure(t, []string{"context"}, nil, cli.ExitConfig, "profile_required")
+	failure(t, []string{"context", "--profile", " alpha-overseer "}, nil, cli.ExitConfig, "profile_required")
+	failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", filepath.Join(t.TempDir(), privateReference)}, nil, cli.ExitConfig, "profiles_unreadable")
+}
+
+func TestServiceArgumentFailuresPrecedeProfileAndCredentialReads(t *testing.T) {
+	missingProfiles := filepath.Join(t.TempDir(), "profiles-do-not-read.json")
+	invalidUTF8Cursor := string([]byte{0xff})
+	for _, args := range [][]string{
+		{"jobs", "create", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "read", "../other-project", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "read", "encoded%2fpath", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"inbox", "thread", "..", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "assigned", "--worker", "worker_other", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "list", "--limit", "101", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "list", "--status", "unknown", "--profile", "unused", "--profiles-file", missingProfiles},
+		{"jobs", "list", "--cursor", invalidUTF8Cursor, "--profile", "unused", "--profiles-file", missingProfiles},
+		{"inbox", "list", "--unread=true", "--profile", "unused", "--profiles-file", missingProfiles},
+	} {
+		failure(t, args, nil, cli.ExitUsage, "invalid_arguments")
+	}
+}
+
+func TestCredentialFailuresAreConfigurationErrorsAndContextRemainsLocal(t *testing.T) {
+	var requests atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"instance_id":"instance-a"}`))
+	}))
+	defer service.Close()
+
+	tests := []struct {
+		name       string
+		credential string
+		wantCode   string
+	}{
+		{name: "missing", credential: filepath.Join(t.TempDir(), "missing.token"), wantCode: "credential_unreadable"},
+	}
+	if runtime.GOOS != "windows" {
+		unsafePath := filepath.Join(t.TempDir(), "unsafe.token")
+		if err := os.WriteFile(unsafePath, []byte("unsafe-token\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(unsafePath, 0644); err != nil {
+			t.Fatal(err)
+		}
+		tests = append(tests, struct {
+			name       string
+			credential string
+			wantCode   string
+		}{name: "unsafe", credential: unsafePath, wantCode: "credential_invalid"})
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := profiles()
+			alpha := config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)
+			alpha["server_url"] = service.URL
+			alpha["credential_file"] = tc.credential
+			profilesPath := fixture(t, encode(t, config))
+
+			code, stdout, stderr := run([]string{"context", "--profile", "alpha-overseer", "--profiles-file", profilesPath}, nil)
+			if got := response(t, code, stdout, stderr); got["profile"] != "alpha-overseer" {
+				t.Fatalf("local context changed identity: %v", got)
+			}
+			code, stdout, stderr = run([]string{"doctor", "--profile", "alpha-overseer", "--profiles-file", profilesPath}, nil)
+			if code != cli.ExitConfig || stdout != "" {
+				t.Fatalf("credential failure exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			var diagnostic struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(stderr), &diagnostic); err != nil || diagnostic.Error.Code != tc.wantCode {
+				t.Fatalf("unexpected credential diagnostic %q err=%v", stderr, err)
+			}
+			if strings.Contains(stderr, tc.credential) || strings.Contains(stderr, "unsafe-token") {
+				t.Fatalf("credential details leaked: %s", stderr)
+			}
+		})
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("credential failures contacted the service: %d requests", got)
+	}
+}
+
+func TestStrictConfigurationFailures(t *testing.T) {
+	valid := string(encode(t, profiles()))
+	for _, tc := range []struct{ name, data, code string }{
+		{"malformed", `{"version":`, "profiles_invalid_json"},
+		{"trailing object", valid + `{}`, "profiles_invalid_json"},
+		{"trailing text", valid + `SUPER_SECRET_TOKEN`, "profiles_invalid_json"},
+		{"unknown root field", strings.Replace(valid, `"version":1`, `"version":1,"SUPER_SECRET_TOKEN":"`+privateReference+`"`, 1), "profiles_invalid_json"},
+		{"duplicate version", strings.Replace(valid, `"version":1`, `"version":1,"version":1`, 1), "profiles_invalid_json"},
+		{"duplicate profile", `{"version":1,"profiles":{"same":{},"same":{}}}`, "profiles_invalid_json"},
+		{"duplicate identity", strings.Replace(valid, `"worker_id":"overseer"`, `"worker_id":"overseer","worker_id":"other"`, 1), "profiles_invalid_json"},
+		{"case variant identity", strings.Replace(valid, `"worker_id":"overseer"`, `"worker_id":"overseer","WORKER_ID":"other"`, 1), "profiles_invalid_json"},
+		{"case variant schema", strings.Replace(valid, `"version":1`, `"Version":1`, 1), "profiles_invalid_json"},
+		{"unknown entry field", strings.Replace(valid, `"worker_id":"overseer"`, `"worker_id":"overseer","SUPER_SECRET_TOKEN":"`+privateReference+`"`, 1), "profiles_invalid_json"},
+		{"unsupported version", strings.Replace(valid, `"version":1`, `"version":2`, 1), "unsupported_profiles_version"},
+		{"missing version", `{"profiles":{}}`, "unsupported_profiles_version"},
+		{"missing profiles", `{"version":1}`, "profiles_invalid"},
+		{"deep nesting", strings.Repeat("[", 10000) + "0" + strings.Repeat("]", 10000), "profiles_invalid_json"},
+		{"oversize", strings.Repeat(" ", (1<<20)+1), "profiles_too_large"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixture(t, []byte(tc.data))
+			failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, tc.code)
+		})
+	}
+}
+
+func TestMalformedUTF8CannotRepairIdentityBytes(t *testing.T) {
+	valid := encode(t, profiles())
+	for _, field := range []struct{ name, value string }{
+		{"instance_id", "instance-a"}, {"project_id", "alpha-project"}, {"worker_id", "overseer"},
+	} {
+		for _, malformed := range [][]byte{{0xff}, {0xc3}, {0xc0, 0xaf}, {0xed, 0xa0, 0x80}} {
+			original := []byte(`"` + field.name + `":"` + field.value + `"`)
+			replacement := append([]byte(`"`+field.name+`":"broken-`), malformed...)
+			replacement = append(replacement, '"')
+			data := bytes.Replace(valid, original, replacement, 1)
+			path := fixture(t, data)
+			failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid_encoding")
+		}
+	}
+	// Valid multibyte identity text must retain its exact configured value.
+	config := profiles()
+	config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)["project_id"] = "alpha-project-雪"
+	path := fixture(t, encode(t, config))
+	code, stdout, stderr := run([]string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil)
+	if got := response(t, code, stdout, stderr); got["project_id"] != "alpha-project-雪" {
+		t.Fatalf("valid UTF-8 identity changed: %v", got)
+	}
+}
+
+func TestUnicodeEscapesCannotRepairIdentityText(t *testing.T) {
+	valid := string(encode(t, profiles()))
+	fields := []struct{ name, value string }{
+		{"profile", "alpha-overseer"}, {"instance_id", "instance-a"},
+		{"project_id", "alpha-project"}, {"worker_id", "overseer"},
+	}
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			for _, malformed := range []string{
+				`\ud800`, `\uDBFF`, `\udc00`, `\uDFFF`,
+				`\ud800\u0041`, `\ud800\ud800`, `\udc00\ud800`,
+				`\ud800\\udc00`, `\ud800雪`, `\ud800\n`,
+			} {
+				t.Run(malformed, func(t *testing.T) {
+					data := strings.Replace(valid, `"`+field.value+`"`, `"broken-`+malformed+`"`, 1)
+					path := fixture(t, []byte(data))
+					selected := "alpha-overseer"
+					if field.name == "profile" {
+						// A repaired lone surrogate must not become selectable.
+						selected = "broken-�"
+					}
+					failure(t, []string{"context", "--profile", selected, "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid_encoding")
+				})
+			}
+			for _, tc := range []struct{ name, raw, want string }{
+				{"paired supplementary character", `value-\ud83d\uDE80`, "value-🚀"},
+				{"paired endpoints", `value-\ud800\udc00\uDBFF\uDFFF`, "value-𐀀\U0010ffff"},
+				{"literal escape text", `value-\\uD800`, `value-\uD800`},
+				{"literal low surrogate text", `value-\\udfff`, `value-\udfff`},
+				{"escaped backslash before pair", `value-\\\ud83d\ude80`, "value-\\🚀"},
+				{"literal replacement character", `value-�`, "value-�"},
+				{"escaped replacement character", `value-\ufffd`, "value-�"},
+				{"Unicode literals", `value-雪🚀`, "value-雪🚀"},
+				{"normal escapes", `value-\"\\\/\b\f\n\r\t-end`, "value-\"\\/\b\f\n\r\t-end"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					data := strings.Replace(valid, `"`+field.value+`"`, `"`+tc.raw+`"`, 1)
+					path := fixture(t, []byte(data))
+					selected := "alpha-overseer"
+					if field.name == "profile" {
+						selected = tc.want
+					}
+					code, stdout, stderr := run([]string{"context", "--profile", selected, "--profiles-file", path}, nil)
+					if got := response(t, code, stdout, stderr); got[field.name] != tc.want {
+						t.Fatalf("valid Unicode or escape text changed: got %q, want %q", got[field.name], tc.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestContextRejectsDirectoriesAsConfiguration(t *testing.T) {
+	failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", t.TempDir()}, nil, cli.ExitConfig, "profiles_not_regular")
+}
+
+func TestContextRejectsFIFOWithoutBlocking(t *testing.T) {
+	// Run a potential blocking load only in the deadline-bounded child below.
+	// No process-global environment changes are needed to identify that child.
+	if len(os.Args) >= 2 && os.Args[len(os.Args)-2] == "--fifo-config-child" {
+		failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", os.Args[len(os.Args)-1]}, nil, cli.ExitConfig, "profiles_not_regular")
+		return
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux named-pipe failure proof")
+	}
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is required for the Linux named-pipe fixture")
+	}
+	path := filepath.Join(t.TempDir(), "profiles.fifo")
+	setupContext, cancelSetup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSetup()
+	setup := exec.CommandContext(setupContext, mkfifo, path)
+	setup.WaitDelay = time.Second
+	if output, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("create named-pipe fixture: %v: %s", err, output)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childContext, cancelChild := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelChild()
+	child := exec.CommandContext(childContext, executable, "-test.run=^TestContextRejectsFIFOWithoutBlocking$", "-test.timeout=4s", "--", "--fifo-config-child", path)
+	child.WaitDelay = time.Second
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("named-pipe configuration must fail promptly with a safe JSON error: %v: %s", err, output)
+	}
+}
+
+func TestRequiredAndUnambiguousProfileFields(t *testing.T) {
+	for _, field := range []string{"instance_id", "project_id", "worker_id", "credential_file"} {
+		for _, value := range []any{nil, "", " ", " padded "} {
+			config := profiles()
+			config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)[field] = value
+			path := fixture(t, encode(t, config))
+			failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid")
+		}
+	}
+	for _, name := range []string{"", " ", " alpha-overseer "} {
+		config := profiles()
+		entries := config["profiles"].(map[string]any)
+		entries[name] = entries["alpha-overseer"]
+		path := fixture(t, encode(t, config))
+		failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, "profiles_invalid")
+	}
+}
+
+func TestServerTransportAndURLSafety(t *testing.T) {
+	for _, value := range []string{"", " https://controller.example", "ftp://controller.example", "http://controller.example", "http://0.0.0.0", "http://localhost.evil.example", "https://user:SUPER_SECRET_TOKEN@controller.example", "https://controller.example?token=SUPER_SECRET_TOKEN", "https://controller.example?", "https://controller.example#SUPER_SECRET_TOKEN", "https://controller.example#", "https:///path", "https:controller.example", "https://controller.example:bad"} {
+		config := profiles()
+		config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)["server_url"] = value
+		path := fixture(t, encode(t, config))
+		failure(t, []string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil, cli.ExitConfig, "profiles_unsafe_url")
+	}
+	for _, value := range []string{"http://localhost:8080", "http://LOCALHOST", "http://127.8.0.1", "http://[::1]:8080", "https://controller.example/base", "https://192.0.2.1", "HTTPS://controller.example", "HTTP://LOCALHOST:8080"} {
+		config := profiles()
+		config["profiles"].(map[string]any)["alpha-overseer"].(map[string]any)["server_url"] = value
+		path := fixture(t, encode(t, config))
+		code, stdout, stderr := run([]string{"context", "--profile", "alpha-overseer", "--profiles-file", path}, nil)
+		if got := response(t, code, stdout, stderr); got["server_url"] != value {
+			t.Fatalf("wrong URL: %v", got)
+		}
+	}
+}
+
+type serviceFixture struct {
+	store       *core.Store
+	handler     http.Handler
+	admin       string
+	resolverHit atomic.Int64
+}
+
+func setupServiceFixture(t *testing.T) *serviceFixture {
+	t.Helper()
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "private-state")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := jobs.EnsureSchema(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := inbox.EnsureSchema(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	adminBytes, err := os.ReadFile(filepath.Join(dataDir, "bootstrap-admin.token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &serviceFixture{store: store, admin: strings.TrimSpace(string(adminBytes))}
+	base := server.New(store, server.WithRepositoryResolver(func(_ context.Context, repository string) (server.RepositoryIdentity, error) {
+		id := f.resolverHit.Add(1)
+		return server.RepositoryIdentity{ID: id, FullName: repository}, nil
+	}))
+	mux := http.NewServeMux()
+	mux.Handle("/", base)
+	jobs.Register(mux, store)
+	inbox.Register(mux, store)
+	f.handler = mux
+	return f
+}
+
+func (f *serviceFixture) call(t *testing.T, method, path, token, worker string, body any) map[string]any {
+	t.Helper()
+	var data []byte
+	if body != nil {
+		var err error
+		data, err = json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(data))
+	request.Header.Set("Authorization", "Bearer "+token)
+	if worker != "" {
+		request.Header.Set("X-FC-Worker", worker)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "cli-fixture-"+core.NewID("key"))
+	}
+	response := httptest.NewRecorder()
+	f.handler.ServeHTTP(response, request)
+	if response.Code < 200 || response.Code >= 300 {
+		t.Fatalf("fixture %s %s status=%d body=%s", method, path, response.Code, response.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("fixture response: %v: %s", err, response.Body.String())
+	}
+	return result
+}
+
+func (f *serviceFixture) project(t *testing.T, name string) string {
+	t.Helper()
+	result := f.call(t, http.MethodPost, "/api/v1/projects", f.admin, "", map[string]any{"name": name, "repository": "example/" + name})
+	return result["id"].(string)
+}
+
+func (f *serviceFixture) worker(t *testing.T, project, name string) string {
+	t.Helper()
+	result := f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/workers", f.admin, "", map[string]string{"name": name})
+	return result["id"].(string)
+}
+
+func (f *serviceFixture) grant(t *testing.T, project, token string) {
+	t.Helper()
+	hash := sha256.Sum256([]byte(token))
+	f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/credentials", f.admin, "", map[string]any{
+		"token_sha256": hex.EncodeToString(hash[:]), "permissions": []string{"read"},
+	})
+}
+
+func (f *serviceFixture) createJob(t *testing.T, project, title, brief, worker string) string {
+	t.Helper()
+	result := f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/jobs", f.admin, "", map[string]string{
+		"title": title, "brief": brief, "worker_id": worker, "status": "active",
+	})
+	return result["id"].(string)
+}
+
+func (f *serviceFixture) sendMessage(t *testing.T, project, sender, recipient, body string) (string, string) {
+	t.Helper()
+	result := f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/messages", f.admin, sender, map[string]string{
+		"recipient_worker_id": recipient, "body": body,
+	})
+	return result["id"].(string), result["conversation_id"].(string)
+}
+
+func writeCredential(t *testing.T, directory, name, token string) string {
+	t.Helper()
+	path := filepath.Join(directory, name+".token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
+	f := setupServiceFixture(t)
+	alphaProject := f.project(t, "alpha")
+	betaProject := f.project(t, "beta")
+	alphaBuilder := f.worker(t, alphaProject, "Builder")
+	alphaOverseer := f.worker(t, alphaProject, "Overseer")
+	betaBuilder := f.worker(t, betaProject, "Builder")
+	betaOverseer := f.worker(t, betaProject, "Overseer")
+	alphaToken, betaToken := "cli-alpha-private-token", "cli-beta-private-token"
+	f.grant(t, alphaProject, alphaToken)
+	f.grant(t, betaProject, betaToken)
+	alphaJob := f.createJob(t, alphaProject, "Alpha private title", "ALPHA_PRIVATE_BRIEF", alphaOverseer)
+	_ = f.createJob(t, alphaProject, "Second compact job", "SECOND_PRIVATE_BRIEF", alphaBuilder)
+	betaJob := f.createJob(t, betaProject, "Beta private title", "BETA_PRIVATE_BRIEF", betaOverseer)
+	longBody := strings.Repeat("ALPHA_PRIVATE_MESSAGE_", 12)
+	_, alphaConversation := f.sendMessage(t, alphaProject, alphaBuilder, alphaOverseer, longBody)
+	_, _ = f.sendMessage(t, betaProject, betaBuilder, betaOverseer, "BETA_PRIVATE_MESSAGE")
+	resolverCalls := f.resolverHit.Load()
+
+	httpServer := httptest.NewServer(f.handler)
+	t.Cleanup(httpServer.Close)
+	configDir := t.TempDir()
+	alphaCredential := writeCredential(t, configDir, "alpha", alphaToken)
+	betaCredential := writeCredential(t, configDir, "beta", betaToken)
+	unauthorizedCredential := writeCredential(t, configDir, "unauthorized", "not-a-granted-token")
+	config := map[string]any{"version": 1, "profiles": map[string]any{
+		"alpha":          map[string]any{"server_url": httpServer.URL, "instance_id": f.store.InstanceID(), "project_id": alphaProject, "worker_id": alphaOverseer, "credential_file": alphaCredential},
+		"beta":           map[string]any{"server_url": httpServer.URL, "instance_id": f.store.InstanceID(), "project_id": betaProject, "worker_id": betaOverseer, "credential_file": betaCredential},
+		"wrong-instance": map[string]any{"server_url": httpServer.URL, "instance_id": "different-instance", "project_id": alphaProject, "worker_id": alphaOverseer, "credential_file": alphaCredential},
+		"unauthorized":   map[string]any{"server_url": httpServer.URL, "instance_id": f.store.InstanceID(), "project_id": alphaProject, "worker_id": alphaOverseer, "credential_file": unauthorizedCredential},
+	}}
+	profilesPath := filepath.Join(configDir, "profiles.json")
+	if err := os.WriteFile(profilesPath, encode(t, config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"FC_PROFILE": "alpha"}
+	invoke := func(profile string, args ...string) (int, string, string) {
+		t.Helper()
+		full := append([]string{"--profiles-file", profilesPath, "--profile", profile}, args...)
+		return run(full, env)
+	}
+	decodeSuccess := func(args ...string) map[string]any {
+		t.Helper()
+		code, stdout, stderr := invoke("alpha", args...)
+		if code != cli.ExitSuccess || stderr != "" {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		if strings.Contains(stdout, alphaToken) || strings.Contains(stdout, betaToken) || strings.Contains(stdout, alphaCredential) || strings.Contains(stdout, betaCredential) {
+			t.Fatalf("service output leaked credential material: %s", stdout)
+		}
+		var value map[string]any
+		if err := json.Unmarshal([]byte(stdout), &value); err != nil {
+			t.Fatalf("args=%v invalid JSON %q: %v", args, stdout, err)
+		}
+		return value
+	}
+
+	doctor := decodeSuccess("doctor")
+	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 10 || doctor["client_source_revision"] == nil {
+		t.Fatalf("doctor output is not the configured verified identity: %v", doctor)
+	}
+	workers := decodeSuccess("workers", "list", "--limit", "1")
+	workerPage := workers["items"].([]any)
+	if len(workerPage) != 1 || workers["has_more"] != true || workers["cursor"] == "" || workerPage[0].(map[string]any)["project_id"] != alphaProject {
+		t.Fatalf("worker page was not bounded/scoped: %v", workers)
+	}
+	jobsPage := decodeSuccess("jobs", "list", "--limit", "1")
+	jobItems := jobsPage["items"].([]any)
+	if len(jobItems) != 1 || jobsPage["has_more"] != true || jobsPage["cursor"] == "" {
+		t.Fatalf("job page was not bounded: %v", jobsPage)
+	}
+	compact := jobItems[0].(map[string]any)
+	if _, ok := compact["brief"]; ok {
+		t.Fatalf("compact job list included full brief: %v", compact)
+	}
+	if _, ok := compact["project_id"]; ok {
+		t.Fatalf("compact job list unexpectedly changed shape: %v", compact)
+	}
+	assigned := decodeSuccess("jobs", "assigned")
+	for _, item := range assigned["items"].([]any) {
+		if item.(map[string]any)["worker_id"] != alphaOverseer {
+			t.Fatalf("assigned jobs escaped selected worker: %v", assigned)
+		}
+	}
+	job := decodeSuccess("jobs", "read", alphaJob)
+	if job["id"] != alphaJob || job["brief"] != "ALPHA_PRIVATE_BRIEF" || job["project_id"] != alphaProject {
+		t.Fatalf("explicit job read lost full scoped data: %v", job)
+	}
+	history := decodeSuccess("jobs", "history", alphaJob, "--limit", "10")
+	if len(history["items"].([]any)) != 1 {
+		t.Fatalf("unexpected job history: %v", history)
+	}
+	inboxPage := decodeSuccess("inbox", "list", "--unread", "--unacknowledged")
+	inboxItems := inboxPage["items"].([]any)
+	if len(inboxItems) != 1 {
+		t.Fatalf("selected worker inbox escaped project/recipient scope: %v", inboxPage)
+	}
+	message := inboxItems[0].(map[string]any)
+	if message["recipient_worker_id"] != alphaOverseer || message["seen"] != false || message["acknowledged"] != false || message["preview_truncated"] != true || strings.Contains(message["preview"].(string), longBody) {
+		t.Fatalf("inbox list returned incorrect compact receipt: %v", message)
+	}
+	thread := decodeSuccess("inbox", "thread", alphaConversation, "--limit", "10")
+	threadItems := thread["items"].([]any)
+	if len(threadItems) != 1 || threadItems[0].(map[string]any)["body"] != longBody {
+		t.Fatalf("explicit conversation read did not return full body: %v", thread)
+	}
+
+	// Interleave a second profile on the same service. Identical worker names do
+	// not make project or message identity ambient/global.
+	code, stdout, stderr := invoke("beta", "jobs", "read", betaJob)
+	if code != cli.ExitSuccess || stderr != "" {
+		t.Fatalf("beta read code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var betaValue map[string]any
+	if err := json.Unmarshal([]byte(stdout), &betaValue); err != nil || betaValue["project_id"] != betaProject || betaValue["brief"] != "BETA_PRIVATE_BRIEF" {
+		t.Fatalf("beta profile was not independently scoped: %s err=%v", stdout, err)
+	}
+	var envOut, envErr bytes.Buffer
+	if code := cli.RunContext(context.Background(), []string{"--profiles-file", profilesPath, "jobs", "read", betaJob}, map[string]string{"FC_PROFILE": "beta"}, &envOut, &envErr); code != cli.ExitSuccess || envErr.Len() != 0 {
+		t.Fatalf("FC_PROFILE service selection code=%d stdout=%q stderr=%q", code, envOut.String(), envErr.String())
+	}
+	var envResult map[string]any
+	if err := json.Unmarshal(envOut.Bytes(), &envResult); err != nil || envResult["project_id"] != betaProject {
+		t.Fatalf("FC_PROFILE selected wrong service identity: %s err=%v", envOut.String(), err)
+	}
+	var seen, acknowledged int
+	if err := f.store.DB().QueryRow(`SELECT seen, acknowledged FROM inbox_recipient_state WHERE project_id=? AND worker_id=?`, alphaProject, alphaOverseer).Scan(&seen, &acknowledged); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 0 || acknowledged != 0 {
+		t.Fatalf("read-only CLI changed inbox receipt state: seen=%d acknowledged=%d", seen, acknowledged)
+	}
+	if got := f.resolverHit.Load(); got != resolverCalls {
+		t.Fatalf("read-only CLI unexpectedly contacted repository provider: before=%d after=%d", resolverCalls, got)
+	}
+
+	for _, tc := range []struct {
+		profile string
+		args    []string
+		exit    int
+		code    string
+	}{
+		{profile: "wrong-instance", args: []string{"jobs", "list"}, exit: cli.ExitConflict, code: "instance_mismatch"},
+		{profile: "unauthorized", args: []string{"doctor"}, exit: cli.ExitService, code: "unauthorized"},
+		{profile: "alpha", args: []string{"jobs", "read", "missing-job"}, exit: cli.ExitService, code: "not_found"},
+	} {
+		code, stdout, stderr := invoke(tc.profile, tc.args...)
+		if code != tc.exit || stdout != "" || strings.Contains(stderr, alphaToken) || strings.Contains(stderr, alphaCredential) || strings.Contains(stderr, unauthorizedCredential) || strings.Contains(stderr, "not-a-granted-token") {
+			t.Fatalf("error path leaked data or returned wrong exit: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		var diagnostic struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+				Action  string `json:"action"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(stderr), &diagnostic); err != nil || diagnostic.Error.Code != tc.code || diagnostic.Error.Message == "" || diagnostic.Error.Action == "" {
+			t.Fatalf("unexpected service diagnostic for %v: %q err=%v", tc.args, stderr, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	var canceledOut, canceledErr bytes.Buffer
+	if code := cli.RunContext(canceled, []string{"--profiles-file", profilesPath, "--profile", "alpha", "jobs", "list"}, env, &canceledOut, &canceledErr); code != cli.ExitCancelled || canceledOut.Len() != 0 || !strings.Contains(canceledErr.String(), `"code":"cancelled"`) {
+		t.Fatalf("cancellation contract: code=%d stdout=%q stderr=%q", code, canceledOut.String(), canceledErr.String())
+	}
+}
+
+func TestReadOptionDashValuesReachTheirExistingFieldValidation(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "read-dash-values")
+	worker := f.worker(t, project, "Builder")
+	var reads atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/jobs") {
+			reads.Add(1)
+			if r.URL.Query().Get("cursor") != "--key" {
+				t.Error("read parser changed opaque cursor value")
+			}
+		}
+		f.handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {project, worker}})
+	providerCalls := f.resolverHit.Load()
+	for _, args := range [][]string{
+		{"jobs", "list", "--cursor", "--key"},
+		{"jobs", "list", "--cursor=--key"},
+	} {
+		// This is deliberately not a valid signed cursor: the existing service
+		// cursor check must reject it, rather than a dash-prefix heuristic.
+		failure(t, append([]string{"--profiles-file", path, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "validation_failed")
+	}
+	if reads.Load() != 2 || f.resolverHit.Load() != providerCalls {
+		t.Fatal("read values bypassed field validation or performed provider work")
+	}
+}
+
+func TestOpenJobsCLIUsesBoundListsAndRejectsOpenMutations(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "open-cli")
+	worker := f.worker(t, project, "Builder")
+	for _, status := range []string{"parked", "completed", "blocked", "active"} {
+		f.call(t, http.MethodPost, "/api/v1/projects/"+project+"/jobs", f.admin, "", map[string]string{"title": status, "worker_id": worker, "status": status})
+	}
+	service := httptest.NewServer(f.handler)
+	defer service.Close()
+	path := mutationProfiles(t, f, service.URL, map[string][2]string{"chosen": {project, worker}})
+	lookups := f.resolverHit.Load()
+	cursor := ""
+	for _, want := range []string{"active", "blocked", "parked"} {
+		args := []string{"--profiles-file", path, "--profile", "chosen", "jobs", "assigned", "--status", "open", "--limit", "1"}
+		if cursor != "" {
+			args = append(args, "--cursor", cursor)
+		}
+		code, out, diagnostics := run(args, nil)
+		if code != 0 || diagnostics != "" {
+			t.Fatal("open list failed", code, diagnostics)
+		}
+		var page struct {
+			Items []struct {
+				Status string `json:"status"`
+			} `json:"items"`
+			Cursor  string `json:"cursor"`
+			HasMore bool   `json:"has_more"`
+		}
+		if json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || page.Items[0].Status != want || page.HasMore != (want != "parked") {
+			t.Fatal("open ordered continuation", out)
+		}
+		cursor = page.Cursor
+	}
+	if f.resolverHit.Load() != lookups {
+		t.Fatal("list performed provider work")
+	}
+	missing := filepath.Join(t.TempDir(), "must-not-read-profiles")
+	for _, args := range [][]string{{"jobs", "list", "--status", "Open"}, {"jobs", "create", "--title", "Invalid", "--status", "open", "--key", "key"}, {"jobs", "list", "--status", "open", "--status", "active"}} {
+		failure(t, append([]string{"--profiles-file", missing, "--profile", "chosen"}, args...), nil, cli.ExitUsage, "invalid_arguments")
+	}
+}
+
+func TestAssignedHistorySelectionRejectsAmbiguityBeforeProfile(t *testing.T) {
+	for _, args := range [][]string{
+		{"jobs", "assigned", "--all", "--status", "open"},
+		{"jobs", "assigned", "--status", "completed", "--all"},
+		{"jobs", "assigned", "--all", "--all"},
+		{"jobs", "assigned", "--all=true"},
+	} {
+		var out, stderr bytes.Buffer
+		if code := cli.Run(args, nil, &out, &stderr); code != cli.ExitUsage || out.Len() != 0 {
+			t.Fatalf("ambiguous selection accepted: %v code=%d error=%s", args, code, &stderr)
+		}
+	}
+}

@@ -1,0 +1,570 @@
+// Package inbox implements project-scoped durable messages and explicit receipt state.
+package inbox
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/core"
+)
+
+const (
+	MaxBodyBytes = 16 << 10
+	PreviewRunes = 160
+)
+
+// Register adds the messages API to the shared authenticated application mux.
+func Register(mux *http.ServeMux, store *core.Store) {
+	h := &handler{store: store}
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", originRead(h.readMessage))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", originRead(h.readDelivery))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", originRead(h.list))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", originRead(h.listOutbox))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", originRead(h.snapshot))
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", originRead(h.conversation))
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/ack", h.ack)
+}
+
+type handler struct{ store *core.Store }
+
+type sendRequest struct {
+	RecipientWorkerID string `json:"recipient_worker_id"`
+	Body              string `json:"body"`
+	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
+}
+
+type receipt struct {
+	ID             string `json:"id"`
+	ConversationID string `json:"conversation_id"`
+	Outcome        string `json:"outcome"`
+}
+
+func (h *handler) send(w http.ResponseWriter, r *http.Request) {
+	scope, err := h.store.Scope(r, "write")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if scope.WorkerID == "" {
+		core.WriteError(w, core.Fail("validation_failed", "Select a sender with X-FC-Worker.", http.StatusBadRequest))
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request sendRequest
+	if err := core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if !cleanID(request.RecipientWorkerID) || (request.ReplyToMessageID != "" && !cleanID(request.ReplyToMessageID)) || strings.TrimSpace(request.Body) == "" || len(request.Body) > MaxBodyBytes || !utf8.ValidString(request.Body) {
+		core.WriteError(w, core.Fail("validation_failed", "Provide a recipient, a nonempty body of at most 16 KiB, and an optional message ID to reply to.", http.StatusBadRequest))
+		return
+	}
+	key, err := mutationKey(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: "messages.send", Target: "collection", Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
+			return nil, err
+		}
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, request.RecipientWorkerID); err != nil {
+			return nil, err
+		}
+		id := core.NewID("msg")
+		conversationID := core.NewID("conv")
+		if request.ReplyToMessageID != "" {
+			var origin string
+			if err := tx.QueryRowContext(ctx, "SELECT conversation_id,origin_kind FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, request.ReplyToMessageID).Scan(&conversationID, &origin); err != nil {
+				return nil, missing(err)
+			}
+			if origin == "controller" {
+				return nil, core.Fail("controller_message_one_way", "Controller notifications cannot receive replies; use normal project coordination for follow-up.", 409)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_conversations(project_id,id,root_message_id) VALUES(?,?,?)", scope.ProjectID, conversationID, id); err != nil {
+				return nil, err
+			}
+		}
+		var reply any
+		if request.ReplyToMessageID != "" {
+			reply = request.ReplyToMessageID
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_messages(project_id,id,conversation_id,sender_worker_id,recipient_worker_id,reply_to_message_id,body,created_at) VALUES(?,?,?,?,?,?,?,?)", scope.ProjectID, id, conversationID, scope.WorkerID, request.RecipientWorkerID, reply, request.Body, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_recipient_state(project_id,message_id,worker_id) VALUES(?,?,?)", scope.ProjectID, id, request.RecipientWorkerID); err != nil {
+			return nil, err
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "message.sent", id, 1, map[string]string{"conversation_id": conversationID, "sender_worker_id": scope.WorkerID, "recipient_worker_id": request.RecipientWorkerID}); err != nil {
+			return nil, err
+		}
+		return receipt{ID: id, ConversationID: conversationID, Outcome: "sent"}, nil
+	})
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusCreated, json.RawMessage(result))
+}
+
+type inboxItem struct {
+	OriginKind        string `json:"origin_kind,omitempty"`
+	ID                string `json:"id"`
+	ConversationID    string `json:"conversation_id"`
+	SenderWorkerID    string `json:"sender_worker_id"`
+	RecipientWorkerID string `json:"recipient_worker_id"`
+	Preview           string `json:"preview"`
+	PreviewTruncated  bool   `json:"preview_truncated"`
+	Seen              bool   `json:"seen"`
+	Acknowledged      bool   `json:"acknowledged"`
+	CreatedAt         string `json:"created_at"`
+	sequence          int64
+}
+
+type inboxPage struct {
+	Items   []inboxItem `json:"items"`
+	Cursor  string      `json:"cursor,omitempty"`
+	HasMore bool        `json:"has_more"`
+}
+
+func (h *handler) list(w http.ResponseWriter, r *http.Request) {
+	h.listMessages(w, r, incomingMessages)
+}
+
+func (h *handler) listMessages(w http.ResponseWriter, r *http.Request, direction messageDirection) {
+	scope, err := h.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged", "newest"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unread, err := boolFilter(r, "unread")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unacknowledged, err := boolFilter(r, "unacknowledged")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	workerID := r.PathValue("worker_id")
+	var exists int
+	if err := h.store.DB().QueryRowContext(r.Context(), "SELECT 1 FROM workers WHERE project_id=? AND id=?", scope.ProjectID, workerID).Scan(&exists); err != nil {
+		core.WriteError(w, missing(err))
+		return
+	}
+	newest, err := boolFilter(r, "newest")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := originFilter(r.Context(), inboxOrderFilter(workerID, unread, unacknowledged, newest))
+	if direction == outgoingMessages {
+		filter = "outbox:" + strings.TrimPrefix(filter, "inbox:")
+	}
+	limit, after, err := h.page(r, scope, filter)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	page, err := h.messagePage(r.Context(), h.store.DB(), scope, workerID, unread, unacknowledged, newest, filter, limit, after, direction)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, page)
+}
+
+type inboxSnapshot struct {
+	Inbox       inboxPage `json:"inbox"`
+	EventCursor string    `json:"event_cursor"`
+}
+
+func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
+	scope, err := h.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	workerID := r.PathValue("worker_id")
+	if scope.WorkerID == "" || workerID != scope.WorkerID {
+		core.WriteError(w, core.Fail("forbidden", "Select this inbox recipient with X-FC-Worker.", http.StatusForbidden))
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "unread", "unacknowledged", "newest"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unread, err := boolFilter(r, "unread")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	unacknowledged, err := boolFilter(r, "unacknowledged")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	newest, err := boolFilter(r, "newest")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	filter := originFilter(r.Context(), inboxOrderFilter(workerID, unread, unacknowledged, newest))
+	limit, after, err := h.page(r, scope, filter)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var result inboxSnapshot
+	err = h.store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		if err := checkInboxWorker(ctx, tx, scope.ProjectID, workerID); err != nil {
+			return err
+		}
+		page, err := h.inboxPage(ctx, tx, scope, workerID, unread, unacknowledged, newest, filter, limit, after)
+		if err != nil {
+			return err
+		}
+		cursor, err := h.store.MessageEventCursor(ctx, tx, scope)
+		if err != nil {
+			return err
+		}
+		result = inboxSnapshot{Inbox: page, EventCursor: cursor}
+		return nil
+	})
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, result)
+}
+
+type queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func checkInboxWorker(ctx context.Context, db queryer, projectID, workerID string) error {
+	var exists int
+	if err := db.QueryRowContext(ctx, "SELECT 1 FROM workers WHERE project_id=? AND id=?", projectID, workerID).Scan(&exists); err != nil {
+		return missing(err)
+	}
+	return nil
+}
+
+func (h *handler) inboxPage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged, newest bool, filter string, limit int, after int64) (inboxPage, error) {
+	return h.messagePage(ctx, db, scope, workerID, unread, unacknowledged, newest, filter, limit, after, incomingMessages)
+}
+
+func (h *handler) messagePage(ctx context.Context, db queryer, scope core.Scope, workerID string, unread, unacknowledged, newest bool, filter string, limit int, after int64, direction messageDirection) (inboxPage, error) {
+	workerColumn := "m.recipient_worker_id"
+	if direction == outgoingMessages {
+		workerColumn = "m.sender_worker_id"
+	}
+	query := `SELECT m.sequence,m.id,m.conversation_id,COALESCE(m.sender_worker_id,''),m.recipient_worker_id,m.body,m.created_at,s.seen,s.acknowledged,m.origin_kind FROM inbox_messages m LEFT JOIN inbox_recipient_state s ON s.project_id=m.project_id AND s.message_id=m.id AND s.worker_id=m.recipient_worker_id WHERE m.project_id=? AND ` + workerColumn + `=?`
+	args := []any{scope.ProjectID, workerID}
+	if !core.IncludesControllerInbox(ctx) {
+		query += " AND m.origin_kind='worker'"
+	}
+	if after > 0 {
+		if newest {
+			query += " AND m.sequence<?"
+		} else {
+			query += " AND m.sequence>?"
+		}
+		args = append(args, after)
+	}
+	if unread {
+		query += " AND COALESCE(s.seen,0)=0"
+	}
+	if unacknowledged {
+		query += " AND COALESCE(s.acknowledged,0)=0"
+	}
+	if newest {
+		query += " ORDER BY m.sequence DESC LIMIT ?"
+	} else {
+		query += " ORDER BY m.sequence ASC LIMIT ?"
+	}
+	args = append(args, limit+1)
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return inboxPage{}, err
+	}
+	defer rows.Close()
+	page := inboxPage{Items: make([]inboxItem, 0, limit)}
+	for rows.Next() {
+		var item inboxItem
+		var body string
+		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &body, &item.CreatedAt, &item.Seen, &item.Acknowledged, &item.OriginKind); err != nil {
+			return inboxPage{}, storedMessagesUnavailable(direction)
+		}
+		item.OriginKind = wireOrigin(item.OriginKind)
+		valid := validStoredInbox(item, body, workerID)
+		if direction == outgoingMessages {
+			valid = item.SenderWorkerID == workerID && cleanID(item.RecipientWorkerID) && utf8.ValidString(item.RecipientWorkerID) && validStoredInbox(item, body, item.RecipientWorkerID)
+		}
+		if !valid {
+			return inboxPage{}, storedMessagesUnavailable(direction)
+		}
+		item.Preview, item.PreviewTruncated = preview(body)
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return inboxPage{}, err
+	}
+	if len(page.Items) > limit {
+		page.HasMore = true
+		page.Items = page.Items[:limit]
+		page.Cursor = h.store.Cursor(scope, filter, strconv.FormatInt(page.Items[len(page.Items)-1].sequence, 10))
+	}
+	return page, nil
+}
+
+type message struct {
+	OriginKind        string `json:"origin_kind,omitempty"`
+	ID                string `json:"id"`
+	ConversationID    string `json:"conversation_id"`
+	SenderWorkerID    string `json:"sender_worker_id"`
+	RecipientWorkerID string `json:"recipient_worker_id"`
+	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
+	Body              string `json:"body"`
+	CreatedAt         string `json:"created_at"`
+	sequence          int64
+}
+
+type conversationPage struct {
+	ConversationID string    `json:"conversation_id"`
+	RootMessageID  string    `json:"root_message_id"`
+	Items          []message `json:"items"`
+	Cursor         string    `json:"cursor,omitempty"`
+	HasMore        bool      `json:"has_more"`
+}
+
+func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
+	scope, err := h.store.Scope(r, "read")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed", "limit", "cursor"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	id := r.PathValue("conversation_id")
+	filter := originFilter(r.Context(), "conversation:"+id)
+	limit, after, err := h.page(r, scope, filter)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	page := conversationPage{ConversationID: id, Items: make([]message, 0, limit)}
+	if err := h.store.DB().QueryRowContext(r.Context(), "SELECT c.root_message_id FROM inbox_conversations c JOIN inbox_messages m ON m.project_id=c.project_id AND m.id=c.root_message_id WHERE c.project_id=? AND c.id=?"+originSQL(r.Context(), "m."), scope.ProjectID, id).Scan(&page.RootMessageID); err != nil {
+		core.WriteError(w, missing(err))
+		return
+	}
+	rows, err := h.store.DB().QueryContext(r.Context(), "SELECT sequence,id,conversation_id,COALESCE(sender_worker_id,''),recipient_worker_id,COALESCE(reply_to_message_id,''),body,created_at,origin_kind FROM inbox_messages WHERE project_id=? AND conversation_id=?"+originSQL(r.Context(), "")+" AND sequence>? ORDER BY sequence ASC LIMIT ?", scope.ProjectID, id, after, limit+1)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item message
+		if err := rows.Scan(&item.sequence, &item.ID, &item.ConversationID, &item.SenderWorkerID, &item.RecipientWorkerID, &item.ReplyToMessageID, &item.Body, &item.CreatedAt, &item.OriginKind); err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		item.OriginKind = wireOrigin(item.OriginKind)
+		if !validMessageOrigin(item.OriginKind, item.SenderWorkerID) || item.OriginKind == "controller" && (item.ID != page.RootMessageID || item.ReplyToMessageID != "") {
+			core.WriteError(w, core.Fail("storage_unavailable", "Stored conversation origin is unavailable.", 500))
+			return
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if len(page.Items) > limit {
+		page.HasMore = true
+		page.Items = page.Items[:limit]
+		page.Cursor = h.store.Cursor(scope, filter, strconv.FormatInt(page.Items[len(page.Items)-1].sequence, 10))
+	}
+	core.WriteJSON(w, http.StatusOK, page)
+}
+
+func (h *handler) seen(w http.ResponseWriter, r *http.Request) { h.transition(w, r, false) }
+func (h *handler) ack(w http.ResponseWriter, r *http.Request)  { h.transition(w, r, true) }
+
+func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
+	scope, err := h.store.Scope(r, "write")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	var request struct {
+		WorkerID string `json:"worker_id,omitempty"`
+	}
+	var input struct {
+		WorkerID json.RawMessage `json:"worker_id,omitempty"`
+	}
+	var body any = &input
+	if !ack {
+		body = &struct{}{}
+	}
+	if err := core.ReadJSON(w, r, body); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	if input.WorkerID != nil && (json.Unmarshal(input.WorkerID, &request.WorkerID) != nil || !cleanID(request.WorkerID)) {
+		core.WriteError(w, core.Fail("validation_failed", "An explicit worker_id must identify the message recipient.", http.StatusBadRequest))
+		return
+	}
+	recipientWorker := scope.WorkerID
+	if request.WorkerID != "" {
+		recipientWorker = request.WorkerID
+	}
+	if !cleanID(recipientWorker) {
+		core.WriteError(w, core.Fail("validation_failed", "Select the recipient with X-FC-Worker or an explicit worker_id for acknowledgement.", http.StatusBadRequest))
+		return
+	}
+	onBehalf := recipientWorker != scope.WorkerID
+	if onBehalf {
+		if scope.WorkerID == "" {
+			core.WriteError(w, core.Fail("validation_failed", "Select the acting worker with X-FC-Worker for acknowledgement on behalf of another recipient.", http.StatusBadRequest))
+			return
+		}
+		scope = scope.RequireAdministration()
+	}
+	id := r.PathValue("message_id")
+	operation, outcome := "messages.seen", "seen"
+	if ack {
+		operation, outcome = "messages.ack", "acknowledged"
+	}
+	key, err := mutationKey(r)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: operation, Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if onBehalf {
+			if err := h.store.RequireProjectManagementTx(ctx, tx, scope); err != nil {
+				return nil, err
+			}
+		}
+		var conversationID, recipient, origin string
+		if err := tx.QueryRowContext(ctx, "SELECT conversation_id,recipient_worker_id,origin_kind FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient, &origin); err != nil {
+			return nil, missing(err)
+		}
+		if recipient != recipientWorker {
+			return nil, core.Fail("forbidden", "Only the message recipient can change receipt state.", http.StatusForbidden)
+		}
+		var seen, acknowledged bool
+		var revision int64
+		if err := tx.QueryRowContext(ctx, "SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?", scope.ProjectID, id, recipientWorker).Scan(&seen, &acknowledged, &revision); err != nil {
+			return nil, err
+		}
+		if (ack && acknowledged) || (!ack && seen) {
+			return receipt{ID: id, ConversationID: conversationID, Outcome: "unchanged"}, nil
+		}
+		acknowledged = acknowledged || ack
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_recipient_state SET seen=1,acknowledged=?,revision=revision+1 WHERE project_id=? AND message_id=? AND worker_id=?", acknowledged, scope.ProjectID, id, recipientWorker); err != nil {
+			return nil, err
+		}
+		payload := map[string]string{"conversation_id": conversationID, "recipient_worker_id": recipientWorker}
+		if origin == "controller" {
+			payload["origin_kind"] = "controller"
+		}
+		if onBehalf {
+			payload["actor_worker_id"] = scope.WorkerID
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "message."+outcome, id, revision+1, payload); err != nil {
+			return nil, err
+		}
+		return receipt{ID: id, ConversationID: conversationID, Outcome: outcome}, nil
+	})
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, json.RawMessage(result))
+}
+
+func (h *handler) page(r *http.Request, scope core.Scope, filter string) (int, int64, error) {
+	limit, err := core.PageLimit(r)
+	if err != nil {
+		return 0, 0, err
+	}
+	after, err := h.store.ParseCursor(scope, filter, r.URL.Query().Get("cursor"))
+	if err != nil {
+		return 0, 0, err
+	}
+	var sequence int64
+	if after != "" {
+		sequence, err = strconv.ParseInt(after, 10, 64)
+		if err != nil || sequence < 1 {
+			return 0, 0, core.Fail("validation_failed", "Use a valid cursor from this list.", http.StatusBadRequest)
+		}
+	}
+	return limit, sequence, nil
+}
+
+func cleanID(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && len(value) <= 256
+}
+
+func mutationKey(r *http.Request) (string, error) {
+	return core.IdempotencyKey(r, "validation_failed")
+}
+
+func missing(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Fail("not_found", "The selected resource does not exist in this project.", http.StatusNotFound)
+	}
+	return err
+}
+
+func preview(body string) (string, bool) {
+	runes := []rune(body)
+	if len(runes) > PreviewRunes {
+		return string(runes[:PreviewRunes]), true
+	}
+	return body, false
+}
+
+func boolFilter(r *http.Request, key string) (bool, error) {
+	values, present := r.URL.Query()[key]
+	if !present {
+		return false, nil
+	}
+	if len(values) == 1 {
+		switch values[0] {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+	return false, core.Fail("validation_failed", "Inbox filters must be true or false.", http.StatusBadRequest)
+}

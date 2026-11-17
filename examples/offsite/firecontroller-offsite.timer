@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically transfer the latest completed FireController backup
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=firecontroller-offsite.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "state_dir": "/var/lib/firecontroller-offsite/batch",
+  "min_free_bytes": 1073741824,
+  "configs": [
+    "/etc/firecontroller/offsite-s3.json",
+    "/etc/firecontroller/offsite-google.json",
+    "/etc/firecontroller/offsite-onedrive.json"
+  ]
+}
