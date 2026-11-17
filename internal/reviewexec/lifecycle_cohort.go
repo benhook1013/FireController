@@ -31,6 +31,9 @@ func periodicCohortDue(d lifecycleDue, now time.Time) bool {
 // It does not add provider concurrency. All fresh source plans precede the
 // shared authority read; original per-target publication guards remain intact.
 func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarget, readers map[string]TargetReader, s *lifecycleSchedule) error {
+	if s.options.BatchCIWitnesses {
+		defer func() { s.batching.report(s.options.Now()) }()
+	}
 	factory, ok := first.reader.(lifecycleCohortFactory)
 	if first.lane != lifecycleEnrichment || first.watch != nil || first.forceCI || first.ciOnly || first.comparison.state != "open" || !periodicCohortDue(first.due, s.options.Now()) || !ok {
 		return e.observeLifecycle(ctx, first, s)
@@ -102,6 +105,12 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 		if err == nil {
 			defer cohort.Close()
 			batch := s.options.BatchCIWitnesses && !lifecycleCohortHasSubscribers(s, targets)
+			if s.options.BatchCIWitnesses {
+				s.batching.record(s.options.Now(), batchEligible)
+				if !batch {
+					s.batching.record(s.options.Now(), batchWatchFallback)
+				}
+			}
 			if batch {
 				batchCtx := reviewprovider.WithGitHubCaller(bounded, "lifecycle_enrichment_periodic")
 				if err := cohort.PrepareBatched(batchCtx); err != nil {
@@ -112,10 +121,13 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 						s.mu.Lock()
 						s.finishAccountLocked(targets[0], accountFailure.Unwrap(), s.options.Now())
 						s.mu.Unlock()
+						s.batching.record(s.options.Now(), batchAccountAbort)
 						return nil
 					}
+					s.batching.record(s.options.Now(), batchPrepareRefused)
 					return err
 				}
+				s.batching.record(s.options.Now(), batchPrepared)
 			}
 			cohortCtx = bounded
 			for i := range targets {

@@ -109,6 +109,7 @@ type lifecycleLaneSchedule struct {
 }
 type lifecycleSchedule struct {
 	sharing          lifecycleSharingTelemetry
+	batching         lifecycleBatchTelemetry
 	shadowNext       time.Time
 	demandShadowNext time.Time
 	readers          map[string]TargetReader

@@ -26,6 +26,7 @@ func WithGitHubCaller(ctx context.Context, caller string) context.Context {
 type githubQuotaKey struct{ caller, endpoint, resource string }
 
 type githubQuotaCount struct {
+	suiteCostKnown, suiteCostUnknown, suitePointsSum, suitePointsMax uint64
 	requests, conditional, notModified, gated, primary, otherLimited int
 	remaining, reset, retryAfter                                     int64
 	details                                                          map[string]githubRequestDetail
@@ -130,15 +131,12 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 	if caller == "" {
 		caller = "other"
 	}
-	key := githubQuotaKey{caller, githubEndpoint(path), "unknown"}
+	key := githubQuotaKey{caller, observedGitHubEndpoint(ctx, path), "unknown"}
 	var header http.Header
 	var status int
 	if response != nil {
 		header, status = response.Header, response.StatusCode
-		switch resource := header.Get("X-RateLimit-Resource"); resource {
-		case "core", "graphql", "search", "code_search", "integration_manifest", "dependency_snapshots", "code_scanning_upload", "actions_runner_registration", "scim", "audit_log":
-			key.resource = resource
-		}
+		key.resource = githubQuotaResource(header)
 	}
 	remaining := quotaNumber(header, "X-RateLimit-Remaining")
 	reset := quotaNumber(header, "X-RateLimit-Reset")
@@ -201,7 +199,7 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 	if row.details == nil {
 		row.details = make(map[string]githubRequestDetail)
 	}
-	detailKey := githubEndpointDetail(path)
+	detailKey := observedGitHubDetail(ctx, path)
 	detail := row.details[detailKey]
 	detail.add(status, conditional, gated, response == nil)
 	row.details[detailKey] = detail
@@ -215,8 +213,12 @@ func (q *GitHubQuota) observe(ctx context.Context, now time.Time, path string, r
 			"remaining", remaining, "reset_epoch", reset, "retry_after_seconds", retryAfter)
 	}
 	for key, row := range previous {
-		slog.InfoContext(ctx, "GitHub request totals", "bucket", q.bucket, "window_ended", previousEnd, "caller", key.caller, "endpoint", key.endpoint, "resource", key.resource,
+		attrs := []any{"bucket", q.bucket, "window_ended", previousEnd, "caller", key.caller, "endpoint", key.endpoint, "resource", key.resource,
 			"requests", row.requests, "conditional", row.conditional, "not_modified", row.notModified, "local_gate_skips", row.gated,
-			"request_details", row.details, "primary_limits", row.primary, "other_limits", row.otherLimited, "remaining", row.remaining, "reset_epoch", row.reset, "retry_after_seconds", row.retryAfter)
+			"request_details", row.details, "primary_limits", row.primary, "other_limits", row.otherLimited, "remaining", row.remaining, "reset_epoch", row.reset, "retry_after_seconds", row.retryAfter}
+		if key.endpoint == "suite_count_graphql" {
+			attrs = append(attrs, "suite_cost_known", row.suiteCostKnown, "suite_cost_unknown", row.suiteCostUnknown, "suite_points_sum", row.suitePointsSum, "suite_points_max", row.suitePointsMax)
+		}
+		slog.InfoContext(ctx, "GitHub request totals", attrs...)
 	}
 }

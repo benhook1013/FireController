@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// This unconnected experimental seam batches only one count witness phase.
+// This count-only seam batches only one count witness phase.
 // Callers must issue a separate batch after inventory collection; this is not
 // an atomic snapshot, full suite inventory, or permission to reuse a witness.
 type ciSuiteCountResult struct {
@@ -36,7 +36,7 @@ type ciSuiteCountNode struct {
 	} `json:"checkSuites,required"`
 }
 
-const ciSuiteCountBatchQuery = `query($owner:String!,$repo:String!,$h0:GitObjectID!,$h1:GitObjectID!){repository(owner:$owner,name:$repo){nameWithOwner c0:object(oid:$h0){__typename ... on Commit{oid checkSuites(first:1){totalCount pageInfo{hasNextPage} nodes{databaseId commit{oid} app{databaseId}}}}} c1:object(oid:$h1){__typename ... on Commit{oid checkSuites(first:1){totalCount pageInfo{hasNextPage} nodes{databaseId commit{oid} app{databaseId}}}}}}}`
+const ciSuiteCountBatchQuery = `query($owner:String!,$repo:String!,$h0:GitObjectID!,$h1:GitObjectID!){repository(owner:$owner,name:$repo){nameWithOwner c0:object(oid:$h0){__typename ... on Commit{oid checkSuites(first:1){totalCount pageInfo{hasNextPage} nodes{databaseId commit{oid} app{databaseId}}}}} c1:object(oid:$h1){__typename ... on Commit{oid checkSuites(first:1){totalCount pageInfo{hasNextPage} nodes{databaseId commit{oid} app{databaseId}}}}}} rateLimit{cost}}`
 
 func (g *GitHub) ciSuiteCountsBatch(ctx context.Context, repository string, heads [2]string, budgets [2]*actionsBudget) (out [2]ciSuiteCountResult) {
 	fail := func(err error) [2]ciSuiteCountResult { return [2]ciSuiteCountResult{{Err: err}, {Err: err}} }

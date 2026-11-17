@@ -31,7 +31,7 @@ func (q *GitHubQuota) observeReadCompletion(ctx context.Context, now time.Time, 
 	if caller == "" {
 		caller = "other"
 	}
-	key := githubCompletionKey{caller, githubEndpointDetail(path)}
+	key := githubCompletionKey{caller, observedGitHubDetail(ctx, path)}
 	elapsed := max(int64(0), now.Sub(started).Milliseconds())
 	q.mu.Lock()
 	var previous map[githubCompletionKey]githubCompletionCount

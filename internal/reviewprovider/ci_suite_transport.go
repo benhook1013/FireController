@@ -19,6 +19,7 @@ func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ h
 	if ctx == nil || ctx.Err() != nil {
 		return nil, nil, 0, providerTransportError(ctx, nil, false)
 	}
+	ctx = context.WithValue(ctx, suiteQueryMetricsKey{}, true)
 	if g.readGate != nil {
 		if err := g.readGate(ctx); err != nil {
 			g.quota.observe(ctx, time.Now(), "/graphql", nil, false, true)
@@ -45,6 +46,12 @@ func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ h
 	defer func() { g.quota.observeReadCompletion(ctx, time.Now(), "/graphql", started, phase, resultErr) }()
 	response, err := g.httpClient.Do(request)
 	g.quota.observe(ctx, time.Now(), "/graphql", response, false, false)
+	var costHeader http.Header
+	var costBody []byte
+	if response != nil {
+		costHeader = response.Header
+	}
+	defer func() { g.quota.observeSuiteQueryCost(ctx, costHeader, costBody) }()
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
@@ -65,6 +72,7 @@ func (g *GitHub) suiteCountPage(ctx context.Context, body []byte) (_ []byte, _ h
 	if err != nil {
 		return nil, nil, 0, providerTransportError(ctx, err, false)
 	}
+	costBody = data
 	return data, response.Header.Clone(), response.StatusCode, nil
 }
 

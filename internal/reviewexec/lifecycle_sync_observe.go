@@ -40,6 +40,13 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			published = false
 		}
 		s.finish(target, state, head, ciCollected, published, providerErr)
+		if target.ciPreparedBatch {
+			outcome := batchDiscardedMember
+			if published && result == nil && ciCollected {
+				outcome = batchPublishedMember
+			}
+			s.batching.record(s.options.Now(), outcome)
+		}
 		if ctx.Err() == nil && lifecycleStoredStateCode(result, target.project, target.number) != "" {
 			s.holdStoredState(target.project, target.number, target.lane, target.wakeComparison, result)
 			result = nil

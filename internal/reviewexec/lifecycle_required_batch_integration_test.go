@@ -286,6 +286,18 @@ func TestLifecycleRequiredCIBatchActualPublication(t *testing.T) {
 					t.Fatal("required CI not published", target, d.ciGateState, d.ciError, d.ciHead)
 				}
 			}
+			counts := s.batching.counts
+			if !enabled {
+				if counts != [batchOutcomeCount]uint64{} {
+					t.Fatal("disabled batch diagnostics recorded", counts)
+				}
+			} else if watching {
+				if counts[batchEligible] != 1 || counts[batchWatchFallback] != 1 || counts[batchPrepared] != 0 || counts[batchPublishedMember] != 0 {
+					t.Fatal("watch fallback diagnostics", counts)
+				}
+			} else if counts[batchEligible] != 1 || counts[batchPrepared] != 1 || counts[batchPublishedMember] != 2 || counts[batchDiscardedMember] != 0 {
+				t.Fatal("prepared member diagnostics", counts)
+			}
 			if len(s.lanes[lifecycleEnrichment].accounts) != 0 || len(s.lanes[lifecycleEnrichment].projects) != 0 {
 				t.Fatal("reservation leak")
 			}
