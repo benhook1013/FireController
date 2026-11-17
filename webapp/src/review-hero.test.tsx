@@ -123,8 +123,8 @@ describe('merge-head recent review rounds', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
     archive.hasMore = false;
     const html = markup(false);
-    expect(links(html)).toEqual(['h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
-    expect(html).toContain('aria-label="hosted current review state"'); // Taper closure occupies a real pill slot.
+    expect(links(html)).toEqual(['h3','h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
+    expect(html).not.toContain('aria-label="hosted current review state"'); // Taper closure no longer consumes a result slot.
     expect(html).toContain('8 runs</span>'); expect(html).not.toContain(' · recent'); expect(html).not.toContain('Load more');
   });
   it('uses exact supplied channel totals independently of the fetched preview', () => {
@@ -220,7 +220,8 @@ it('shows closed native rounds instead of historical Held while preserving unfin
   const attempt: ReviewAttemptSummary = {channel:'hosted',head_sha:'head',state:'held',reason:'hosted_allowance_cooldown',source_attempt_id:'old',source_run_id:'',trigger_id:'',provider_review_id:'',duration_seconds:null,finished_at:'2026-10-30T11:59:00Z',started_at:'2026-10-30T11:58:00Z'};
   const closed: ReviewRoundProgress = {...progress,closed:true,tapered:false,pending:0};
   const render = (value: ReviewRoundProgress | undefined, latest = attempt) => markup(false,[latest],false,undefined,<ReviewRunsView number={7} snapshot="snapshot" head="head" attempts={[latest]} expected={0} channelTotals={{hosted:0,cli:0,manual:0,subagent:0}} progress={value && {pull_number:7,channels:[value]}} />);
-  expect(render(closed)).toContain('>Closed<');
+  expect(render(closed)).not.toContain('>Closed<');
+  expect(render(closed)).toContain('No reviews remaining');
   expect(render(closed)).not.toContain('>Held<');
   expect(render(closed)).toContain('Manually closed');
   expect(render(undefined)).toContain('>Needs agent attention<');

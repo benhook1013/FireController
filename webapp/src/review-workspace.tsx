@@ -400,7 +400,7 @@ function reviewStart(run: ReviewRunSummary): { value: string; label: string } | 
   return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Requested' : 'Started' };
 }
 export function reviewRunPillStatus(run: ReviewRunSummary): string {
-  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial · Adjudication unknown" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : run.fixed < run.accepted ? "Partial · Fixes pending" : "Partial";
+  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : run.fixed < run.accepted ? "Partial · Fixes pending" : "Partial";
   if (!run.complete || !run.attributable) return "Incomplete";
   if (!run.finalized) return "Needs adjudication";
   return run.fixed < run.accepted ? "Fixes pending" : "Finished";
@@ -445,7 +445,10 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     : attempt;
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);
   const running = returned ? undefined : status?.activity?.evidence;
-  const badge = (returned && status?.activity) || running ? undefined : status;
+  // Terminal round controls already appear in the lane progress summary.
+  // Keep actionable waits and unfinished work, not a duplicate unknown-count pill.
+  const terminalStatus = status?.text === 'Closed' || status?.text === 'Cap reached';
+  const candidateBadge = (returned && status?.activity) || running || terminalStatus ? undefined : status;
   const waiting = historical || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
   const partials = channel === 'cli' ? recentRuns.filter(partialCLIResult).reverse() : [];
   const completed = runs.filter(run => run.channel === channel && run.outcome === 'completed' && run.id !== returned?.id);
@@ -458,32 +461,30 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     const finished = (run: ReviewRunSummary) => Date.parse(run.finished_at || run.started_at) || 0;
     return finished(a.run) - finished(b.run);
   });
-  // A current request without a captured result gets its own non-result pill.
+  // Suppress only an exact returned result's duplicate pending label when that
+  // same result remains visible. Aggregate/older/unmatched work stays separate.
+  const duplicateReturnedStatus = !waiting && returned &&
+    candidateBadge?.text === 'Needs adjudication' && progress?.pending_adjudication === 1 && capacity > 0 &&
+    reviewRunPillStatus(returned) === candidateBadge.text &&
+    pills.slice(-Math.max(0, capacity)).some(item => item.run.id === returned.id);
+  const badge = duplicateReturnedStatus ? undefined : candidateBadge;
+  // Channel obligations without a captured result stay in the lane heading.
+  // They are not additional reviews and must not consume result-pill capacity.
   // Never attach a new operation's state to an unrelated earlier completion.
   // Aggregate pending work may belong to an older run. Keep it separate from
   // every captured result unless that result's own retained fields establish it.
   const currentStatus = !running && (waiting || badge)
     ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
-  // Only the exact returned result can date this adjudication indicator.
-  // Aggregate pending counts may instead refer to an older, unloaded run;
-  // never borrow the latest attempt preparation or a clean result timestamp.
-  const adjudicationStart = badge?.text === 'Needs adjudication' && returned &&
-    (partialCLIResult(returned) ? (returned.retained_undecided ?? 0) > 0 : returned.complete && returned.attributable && !returned.finalized)
-    ? reviewStart(returned) : undefined;
-  const currentStart = badge?.activity?.startedAt || adjudicationStart?.value;
-  const slots = capacity - Number(!!running || !!currentStatus);
+  const slots = capacity - Number(!!running);
   const visiblePills = slots > 0 ? pills.slice(-slots) : [];
   const completedTotal = returned?.outcome === 'completed' ? currentTotal : total;
   return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title}
-    status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}</>}
+    status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. The previous snapshot remains displayed; refresh to retry.">Update failed</span>}{currentStatus && <span className="review-pill-status review-lane-current-state" aria-label={`${channel} current review state`}>{currentStatus}</span>}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
     metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">
     <ReviewProgressView value={progress} />
-    {visiblePills.length > 0 || running || currentStatus ? <div className="review-round-pills review-recent-rounds">
+    {visiblePills.length > 0 || running ? <div className="review-round-pills review-recent-rounds">
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
-      {currentStatus && <ReviewRoundPillDisplay found="?" accepted="?" routed="?" className="review-pill-current" title={`Current channel state; no completed review counts are implied.${adjudicationStart ? ` ${adjudicationStart.label} ${time(adjudicationStart.value)}.` : ''}`} label={`${channel} current review state`} status={currentStatus}>
-        {currentStart ? <RelativeTime value={currentStart} /> : <span className="review-pill-age" aria-hidden="true">—</span>}
-      </ReviewRoundPillDisplay>}
       {running && <RunningReviewPill key={running.attempt_id} evidence={running} channel={channel} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
     {(failed || !loading && !completed.length && returned?.outcome !== 'completed' && total > 0 && !notice) && <p className="review-lane-empty">Round history could not be loaded.</p>}

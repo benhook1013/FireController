@@ -7,13 +7,15 @@ import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewAttemptSummary, ReviewRunSummary } from './types';
 import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 
+const sizing = vi.hoisted(() => ({ capacity: 6 }));
+vi.mock('./review-pill-capacity', () => ({ useReviewPillCapacity: () => ({ ref: { current: null }, capacity: sizing.capacity, measured: true }) }));
 const archive = vi.hoisted(() => ({ items: [] as ReviewRunSummary[], hasMore: false, busy: false, error: undefined }));
 vi.mock('./review-archive', async original => ({ ...await original<typeof import('./review-archive')>(), ReviewArchive: class { snapshot = () => archive; subscribe = () => () => {}; } }));
 const head='a'.repeat(40), stamp='2026-11-15T05:34:45Z';
 const completed: ReviewRunSummary={id:'run',source:'native-executor',source_run_id:'evidence',pull_number:78,channel:'cli',head_sha:head,reviewer:'coderabbit',scope:'admitted comparison',coverage_limits:[],outcome:'completed',complete:true,attributable:true,finalized:true,found:2,accepted:1,routed:0,fixed:1,started_at:stamp,finished_at:'2026-11-15T05:42:08Z'};
 const attempt: ReviewAttemptSummary={source_attempt_id:`review_attempt_${'a'.repeat(32)}`,channel:'cli',head_sha:head,state:'active',started_at:stamp,finished_at:'',duration_seconds:0,source_run_id:'evidence',trigger_id:'',provider_review_id:''};
 const progress:ReviewRoundProgress={channel:'cli',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:7,taper:2,used:1,dry:0,tapered:false,pending:0,pending_execution:0,pending_adjudication:0};
-afterEach(()=>{archive.items=[];});
+afterEach(()=>{archive.items=[];sizing.capacity=6;});
 function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], channelProgress?:ReviewRoundProgress, position?:{text:string;description?:string}){
  archive.items=runs;
  const client=new QueryClient(); const session={api:{reviewRuns:vi.fn()},controller:new AbortController()} as unknown as Session;
@@ -48,7 +50,8 @@ describe('three-line review state pills',()=>{
   expect(html).toContain('0 runs');
   expect(html).not.toContain('review-pill-running');
   const compact=markup([{...partial,retained_undecided:undefined}],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
-  expect(compact).toContain('Partial · Adjudication unknown');
+  expect(compact).toContain('review-pill-status">Partial</span>');
+  expect(compact).not.toContain('Adjudication unknown');
   expect(compact).not.toContain('Partial · Needs adjudication');
  });
  it('never lets a stale completion replace an active attempt with matching source identity',()=>{
@@ -57,12 +60,13 @@ describe('three-line review state pills',()=>{
   expect(html).toContain('aria-label="cli current review state"');
   expect(html).not.toContain('>Closed</span>');
  });
- it('puts waiting and uncertain states inside independent unknown-count pills',()=>{
+ it('keeps waiting and uncertain states as lane text without invented review pills',()=>{
   const wait=markup([],[],{...progress,wait:{paused:true}});
-  expect(wait).toMatch(/review-pill-status[\s\S]*?Paused/u);expect(wait).toContain('<strong>?/?/?</strong>');
+  expect(wait).toMatch(/review-pill-status[\s\S]*?Paused/u);expect(wait).not.toContain('<strong>?/?/?</strong>');
+  expect(wait).toContain('review-lane-current-state');
   const uncertain=markup([completed],[{...attempt,state:'uncertain'}],progress);
   expect(uncertain).toMatch(/review-pill-status[\s\S]*?Needs agent attention/u);
-  expect(uncertain).not.toContain('<h4>CLI CodeRabbit<span');
+  expect(uncertain).toContain('review-lane-current-state');
  });
 });
 
@@ -84,22 +88,24 @@ describe('adjudication indicator age', () => {
  it.each(['cli', 'hosted'] as const)('uses the exact returned %s review start, not preparation or finish', channel => {
   const run = {...completed, channel, finalized:false, display_start_at:'2026-11-15T05:35:00Z'};
   const html=markup([run],[{...attempt,channel,state:'completed',finished_at:run.finished_at}],{...progress,channel,pending:1,pending_adjudication:1});
-  const indicator=html.split(`aria-label="${channel} current review state"`)[1].split('</div>')[0];
+  expect(html).not.toContain(`aria-label="${channel} current review state"`);
+  const indicator=html.split(`aria-label="Open ${channel} run evidence:`)[1].split('</a>')[0];
   expect(indicator).toContain('Needs adjudication');
   expect(indicator).toContain('dateTime="2026-11-15T05:35:00Z"');
   expect(indicator).not.toContain(`dateTime="${stamp}"`);
   expect(indicator).not.toContain(`dateTime="${run.finished_at}"`);
  });
- it('dates retained partial adjudication from its matching run', () => {
+ it('keeps the retained partial start on its real review, not the lane indicator', () => {
   const run={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,retained_undecided:1};
   const html=markup([run],[{...attempt,state:'failed',finished_at:run.finished_at}],{...progress,retained_adjudication_pending:true});
-  expect(html.split('aria-label="cli current review state"')[1]).toContain(`dateTime="${stamp}"`);
+  expect(html.split('aria-label="cli current review state"')[1].split('</h4>')[0]).not.toContain('<time');
+  expect(html.split('aria-label="Open cli run evidence:')[1]).toContain(`dateTime="${stamp}"`);
  });
  it.each(['different-run', 'different-head', 'settled', 'active'])('does not invent an adjudication start for %s', scenario => {
   const run={...completed,finalized:scenario==='settled'};
   const a: ReviewAttemptSummary={...attempt,state:scenario==='active'?'active':'completed',finished_at:scenario==='active'?'':run.finished_at,source_run_id:scenario==='different-run'?'unrelated':run.source_run_id,head_sha:scenario==='different-head'?'b'.repeat(40):head};
   const html=markup([run],[a],{...progress,pending:1,pending_adjudication:1});
-  const indicator=html.split('aria-label="cli current review state"')[1];
+  const indicator=html.split('aria-label="cli current review state"')[1]?.split('</h4>')[0];
   if(scenario==='active') expect(indicator).not.toContain('Needs adjudication');
   else expect(indicator).not.toContain('<time');
  });
@@ -117,14 +123,20 @@ describe('complete persisted current-state mapping in both review lanes',()=>{
     ['Cap reached',{used:7}],
     ['Closed',{tapered:true}],
    ];
-   it.each(cases)(`${channel} current %s remains inside its pill with completed=${withCompleted}`, (label, changes)=>{
+   it.each(cases)(`${channel} current %s uses the correct lane presentation with completed=${withCompleted}`, (label, changes)=>{
     const runs=withCompleted?[{...completed,channel}]:[];
     const attempts=withCompleted?[{...attempt,channel,state:'completed' as const,finished_at:completed.finished_at}]:[];
     const html=markup(runs,attempts,{...progress,channel,...changes});
     const current=html.split(`aria-label="${channel} current review state"`)[1]?.split('</span></div>')[0];
-    expect(current).toBeDefined();
-    expect(current).toContain('review-pill-status');
-    expect(current).toContain(label);
+    if (label === 'Closed' || label === 'Cap reached') {
+     expect(current).toBeUndefined();
+     expect(html).toContain('No reviews remaining');
+    } else {
+     expect(current).toBeDefined();
+     expect(html).toContain('review-lane-current-state');
+     expect(current).not.toContain('<strong>?/?/?</strong>');
+     expect(current).toContain(label);
+    }
     if(withCompleted) expect(html).toContain('review-pill-status">Finished');
    });
   }
@@ -153,9 +165,47 @@ it.each(['cli','hosted'] as const)('keeps persisted results and dependency holds
   for (const runs of [[],[{...completed,channel}]]) {
    const html=markup(runs,[],{...progress,channel},{text:label});
    const lane=html.split(`aria-label="${channel} current review state"`)[1];
-   expect(lane).toContain('review-pill-status');
+   expect(html).toContain('review-lane-current-state');
+   expect(lane).not.toContain('<strong>?/?/?</strong>');
    expect(lane).toContain(label);
    expect(html).not.toContain('review-pull-facts');
   }
  }
+});
+
+
+describe('terminal channel state stays in lane progress', () => {
+ it.each([{closed:true},{used:7},{tapered:true,dry:2}])('does not add a redundant terminal pill: %j', terminal => {
+  const html=markup([completed],[],{...progress,...terminal});
+  expect(html).toContain('No reviews remaining');
+  expect(html).not.toContain('aria-label="cli current review state"');
+  expect(html).not.toMatch(/>Closed<|>Cap reached</u);
+  expect(html).toMatch(/review-pill-status">Finished<\/span><time/u);
+ });
+ it('preserves actionable pending adjudication despite closed rounds', () => {
+  const html=markup([completed],[],{...progress,closed:true,pending:1,pending_adjudication:1});
+  expect(html).toContain('aria-label="cli current review state"');
+  expect(html).toContain('Needs adjudication');
+ });
+});
+
+it('retains aggregate adjudication indicator when more than the visible returned run is pending', () => {
+ const run={...completed,finalized:false};
+ const html=markup([run],[{...attempt,state:'completed',finished_at:run.finished_at}],{...progress,pending:2,pending_adjudication:2});
+ expect(html).toContain('aria-label="cli current review state"');
+ expect(html).toContain('review-pill-status">Needs adjudication');
+});
+
+
+describe('lane state never displaces actual review history', () => {
+ it.each([1, 2, 4, 6, 8, 12])('preserves all %i measured slots for real captures', capacity => {
+  sizing.capacity=capacity;
+  const runs=Array.from({length:12}, (_,i)=>({...completed,id:`run-${i}`,source_run_id:`source-${i}`}));
+  for (const state of [{wait:{paused:true}}, {closed:true}, {used:7}, {pending:1,pending_adjudication:1}]) {
+   const html=markup(runs,[],{...progress,...state});
+   expect([...html.matchAll(/aria-label="Open cli run /gu)]).toHaveLength(capacity);
+   expect(html).not.toContain('review-pill-current');
+   expect(html).not.toContain('<strong>?/?/?</strong>');
+  }
+ });
 });
