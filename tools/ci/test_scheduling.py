@@ -77,7 +77,7 @@ def inventory(text):
         'Select development checks': 6, 'Source and browser checks': 2,
         'Packaged qualification': 3, 'Container runtime': 8,
         'Native smoke (windows-latest)': 4, 'Native smoke (macos-latest)': 5,
-        'validate': 2, 'Publish tested container': 7,
+        'validate': 19, 'Publish tested container': 7,
     }
     race_order = [
         'backup-0', 'reviewexec-0', 'reviews-0', 'reviewruntime-0', 'rest-0',
@@ -88,6 +88,8 @@ def inventory(text):
     ]
     expected_lanes.update({f'Go race ({name})': index % 20
                            for index, name in enumerate(race_order)})
+    expected_lanes['Go race (backup-5)'] = 4
+    assert all(family == 'validate' for _, lane, family in result if lane == 19)
     assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
 
@@ -235,7 +237,7 @@ class DevelopmentSchedulingTests(unittest.TestCase):
         self.assertIn('          sha256sum --check firecontroller-image.tar.sha256', self.text)
 
     def test_inventory_refuses_uncounted_jobs_and_altered_lock(self):
-        for changed in [self.text.replace('slot: 19', 'slot: 20'),
+        for changed in [self.text.replace('group: firecontroller-ci-slot-19', 'group: firecontroller-ci-slot-20'),
                         self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
                         self.text.replace('shard: backup-0\n            slot: 0', 'shard: backup-0\n            slot: 19', 1),
                         self.text.replace('queue: max', 'queue: single', 1),
@@ -248,6 +250,44 @@ class DevelopmentSchedulingTests(unittest.TestCase):
                         self.text.replace('        shard:', '        extra: [a, b]\n        shard:', 1)]:
             with self.assertRaises(AssertionError):
                 inventory(changed)
+
+    def test_ready_gate_has_reserved_capacity_without_raising_limit(self):
+        scheduler = Scheduler()
+        for lane in range(19):
+            scheduler.offer(Job('other', f'long-{lane}', lane, 100))
+        gate_lane = next(lane for name, lane, _ in self.jobs if name == 'validate')
+        scheduler.offer(Job('ready', 'validate', gate_lane))
+        self.assertEqual(len(scheduler.active), 20)
+        self.assertEqual(scheduler.intervals[-1][0], 0)
+        self.assertEqual(scheduler.step(), [Job('ready', 'validate', gate_lane)])
+        self.assertEqual(len(scheduler.active), 19)
+        self.assertFalse(scheduler.rejected)
+
+    def test_prior_slot_owner_delays_reserved_gate_until_drain(self):
+        # Already-admitted lane-compatible runs keep their old assignments.
+        # In the previous inventory backup-5 occupied the now-reserved lane.
+        scheduler = Scheduler()
+        old_backup = Job('old-compatible', 'Go race (backup-5)', 19, 100)
+        scheduler.offer(old_backup)
+        for lane in range(19):
+            scheduler.offer(Job('other-compatible', f'long-{lane}', lane, 100))
+        gate_lane = next(lane for name, lane, _ in self.jobs if name == 'validate')
+        ready_gate = Job('new-ready', 'validate', gate_lane)
+        scheduler.offer(ready_gate)
+        self.assertEqual(scheduler.active[19][0], old_backup)
+        self.assertEqual(list(scheduler.pending[19]), [ready_gate])
+        self.assertFalse(any(job == ready_gate for _, _, job in scheduler.intervals))
+        self.assertEqual(len(scheduler.active), 20)
+        completed = scheduler.step()
+        self.assertIn(old_backup, completed)
+        self.assertEqual(len(completed), 20)
+        self.assertEqual(scheduler.active[19][0], ready_gate)
+        self.assertEqual(next(start for start, _, job in scheduler.intervals
+                              if job == ready_gate), 100)
+        self.assertEqual(scheduler.step(), [ready_gate])
+        self.assertFalse(scheduler.active)
+        self.assertFalse(scheduler.rejected)
+        self.assertLessEqual(max(map(len, scheduler.snapshots)), 20)
 
     def test_latest_arrival_supersedes_only_the_same_pr_or_push_ref(self):
         admission = WorkflowAdmission()
@@ -272,11 +312,11 @@ class DevelopmentSchedulingTests(unittest.TestCase):
         self.assertEqual(list(admission.active.values()), [119])
         self.assertEqual(admission.cancelled, list(range(119)))
 
-    def test_single_full_run_uses_twenty_after_selector(self):
+    def test_single_full_run_uses_nineteen_non_gate_lanes(self):
         s = Scheduler()
         run = DevelopmentRun(s, self.jobs, 'develop')
         self.finish(s, [run])
-        self.assertEqual(max(map(len, s.snapshots)), 20)
+        self.assertEqual(max(map(len, s.snapshots)), 19)
 
     def test_website_only_dag_preserves_six_jobs_and_skips_only_race_native(self):
         s = Scheduler()
@@ -310,7 +350,8 @@ class DevelopmentSchedulingTests(unittest.TestCase):
                                 for snapshot in s.snapshots), name)
         progressed = {job.lane for start, _, job in s.intervals
                       if job.run == 'develop-B' and start < 100}
-        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
+        gate_lane = next(lane for _, lane, family in self.jobs if family == 'validate')
+        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane, gate_lane})
 
     def test_slow_tail_follows_reassigned_inventory_lanes(self):
         self.jobs = [(name, (lane + 7) % 20, family) for name, lane, family in self.jobs]
@@ -349,7 +390,7 @@ class DevelopmentSchedulingTests(unittest.TestCase):
         s = Scheduler()
         run = DevelopmentRun(s, self.jobs, 'future')
         self.finish(s, [run])
-        self.assertEqual(max(map(len, s.snapshots)) + 20, 40)
+        self.assertEqual(max(map(len, s.snapshots)) + 20, 39)
         self.assertIn(WORKFLOW_SUPERSESSION, self.text)
 
 
