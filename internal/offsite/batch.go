@@ -104,6 +104,15 @@ func pathsOverlap(a, b string) bool {
 }
 
 func PushBatch(ctx context.Context, path string) (BatchResult, error) {
+	return PushBatchWithLockWait(ctx, path, 0)
+}
+
+// PushBatchWithLockWait optionally waits for batch custody before starting any
+// preparation or transfer. It does not retry a transfer or extend caller deadlines.
+func PushBatchWithLockWait(ctx context.Context, path string, wait time.Duration) (BatchResult, error) {
+	if wait < 0 || wait > 2*time.Minute {
+		return BatchResult{}, failure("offsite_configuration_invalid")
+	}
 	var b BatchConfig
 	if !absolute(path) {
 		return BatchResult{}, failure("offsite_configuration_invalid")
@@ -127,14 +136,17 @@ func PushBatch(ctx context.Context, path string) (BatchResult, error) {
 		}
 		configs[i] = c
 	}
-	return pushBatch(ctx, b, configs, nil)
+	return pushBatchWithLockWait(ctx, b, configs, nil, wait)
 }
 func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports []transport) (BatchResult, error) {
+	return pushBatchWithLockWait(ctx, b, configs, transports, 0)
+}
+func pushBatchWithLockWait(ctx context.Context, b BatchConfig, configs []Config, transports []transport, wait time.Duration) (BatchResult, error) {
 	var result BatchResult
 	if ctx == nil || ctx.Err() != nil {
 		return result, failure("offsite_cancelled")
 	}
-	if len(configs) == 0 || len(configs) > 8 || len(configs) != len(b.Configs) || !absolute(b.StateDir) || b.MinFreeBytes <= 0 || b.MinFreeBytes > maxBundleBytes {
+	if wait < 0 || wait > 2*time.Minute || len(configs) == 0 || len(configs) > 8 || len(configs) != len(b.Configs) || !absolute(b.StateDir) || b.MinFreeBytes <= 0 || b.MinFreeBytes > maxBundleBytes {
 		return result, failure("offsite_configuration_invalid")
 	}
 	for i, c := range configs {
@@ -191,8 +203,32 @@ func pushBatch(ctx context.Context, b BatchConfig, configs []Config, transports 
 		return result, failure("offsite_storage_unavailable")
 	}
 	defer f.Close()
-	if lock(f) != nil {
-		return result, failure("offsite_busy")
+	if wait == 0 {
+		if lock(f) != nil {
+			return result, failure("offsite_busy")
+		}
+	} else {
+		admission, stop := context.WithTimeout(ctx, wait)
+		releaseBatch, err := backupphase.Acquire(admission, lockPath)
+		stop()
+		if err != nil {
+			if ctx.Err() != nil {
+				return result, failure("offsite_cancelled")
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return result, failure("offsite_admission_busy")
+			}
+			return result, failure("offsite_storage_unavailable")
+		}
+		// The first opened descriptor binds this attempt to the original batch
+		// inode, including the interval before Acquire observed its own path.
+		opened, openedErr := f.Stat()
+		current, currentErr := os.Lstat(lockPath)
+		if openedErr != nil || currentErr != nil || !os.SameFile(opened, current) {
+			releaseBatch()
+			return result, failure("offsite_storage_unavailable")
+		}
+		defer releaseBatch()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 24*time.Hour)
 	defer cancel()

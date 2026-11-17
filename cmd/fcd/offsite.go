@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"strings"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/backuphealth"
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/offsite"
 )
 
@@ -18,6 +20,10 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	config := flags.String("config", "", "private offsite configuration")
 	var id, destination, healthFile, healthLabel string
 	var healthMaxAge time.Duration
+	var batchLockWait time.Duration
+	if command == "backup-push-batch" {
+		flags.DurationVar(&batchLockWait, "batch-lock-wait", 0, "bounded wait for batch custody, at most 2m; no transfer retry")
+	}
 	if command == "backup-offsite-status" {
 		flags.StringVar(&healthFile, "health-file", "", "optional private redacted status output")
 		flags.StringVar(&healthLabel, "health-label", "Offsite backup", "plain display label, maximum 80 bytes")
@@ -48,7 +54,7 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 			}
 		}
 	}
-	if flags.Parse(args) != nil || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && !offsite.ValidFetchTarget(id, destination) {
+	if flags.Parse(args) != nil || batchLockWait < 0 || batchLockWait > 2*time.Minute || flags.NArg() != 0 || *config == "" || command == "backup-fetch" && !offsite.ValidFetchTarget(id, destination) {
 		return invalid()
 	}
 	if (seen["health-file"] || seen["health-label"] || seen["health-max-age"]) && healthFile == "" {
@@ -61,7 +67,7 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	var err error
 	switch command {
 	case "backup-push-batch":
-		value, err = offsite.PushBatch(ctx, *config)
+		value, err = offsite.PushBatchWithLockWait(ctx, *config, batchLockWait)
 	case "backup-push":
 		value, err = offsite.Push(ctx, *config)
 	case "backup-fetch":
@@ -91,6 +97,10 @@ func runOffsiteCommand(ctx context.Context, command string, args []string, stdou
 	}
 	if operationErr != nil {
 		diagnosticError(stderr, operationErr)
+		var failure *core.Error
+		if command == "backup-push-batch" && batchLockWait > 0 && errors.As(operationErr, &failure) && failure.Code == "offsite_admission_busy" {
+			return 75 // Only pre-transfer batch admission expiry is temporary.
+		}
 		return 3
 	}
 	return 0
