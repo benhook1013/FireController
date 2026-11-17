@@ -95,7 +95,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   const priorSourceWait = stopped && attempt.reason === sourceRateLimitWait;
   if ((githubHold || priorSourceWait) && (progress?.pending_execution ?? 0) > 0) return { text: 'Queued' };
   if ((progress?.pending_execution ?? 0) > 0) return {
-    text: stopped && !settled ? 'Retry pending' : 'Pending',
+    text: 'Queued',
     cause: undefined,
     description: stopped && !settled ? `A review request is pending after the stopped attempt. This does not establish that a provider review has started. ${diagnostic}` : undefined,
   };
@@ -112,10 +112,12 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   if (stopped && !settled && !priorSourceWait) {
     if (githubHold) return { text: 'Needs agent attention', kind: 'attention', cause: githubRateLimit, description: 'See Attempts in review history.' };
     // A known admission hold is more useful than a generic process alert.
-    if (attempt.state === 'held' && attempt.reason === 'predecessor_unfinished') return { text: 'Dependency pending', cause: reviewAttemptCause(attempt), description: `Predecessor work holds this attempt. No retry is confirmed. ${diagnostic}` };
+    if (attempt.state === 'held' && attempt.reason === 'predecessor_unfinished') return { text: 'Dependency hold', cause: reviewAttemptCause(attempt), description: `Predecessor work holds this attempt. No retry is confirmed. ${diagnostic}` };
     return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The review attempt stopped. This is a process issue, not a PR review verdict. ${progress ? 'No pending recovery is recorded.' : 'Current recovery status is unavailable.'} ${diagnostic}` };
   }
   if (attempt?.state === 'unknown') return { text: 'Status unknown', kind: 'attention', cause: reviewAttemptCause(attempt), description: diagnostic };
+  if (progress?.configured && !progress.maximum_unbounded && progress.used >= progress.maximum) return { text: 'Cap reached', description: 'The configured round cap is reached; this channel cannot start another review under the current grant.' };
+  if (progress?.configured && progress.tapered) return { text: 'Closed', description: 'The configured dry-round taper is satisfied; no further review is selected under this grant.' };
   if (position) return position;
   if (attempt?.state === 'cancelled') return { text: 'Attempt cancelled', kind: 'history', description: diagnostic };
   return undefined;

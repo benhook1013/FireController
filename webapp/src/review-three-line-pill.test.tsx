@@ -14,10 +14,10 @@ const completed: ReviewRunSummary={id:'run',source:'native-executor',source_run_
 const attempt: ReviewAttemptSummary={source_attempt_id:`review_attempt_${'a'.repeat(32)}`,channel:'cli',head_sha:head,state:'active',started_at:stamp,finished_at:'',duration_seconds:0,source_run_id:'evidence',trigger_id:'',provider_review_id:''};
 const progress:ReviewRoundProgress={channel:'cli',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:7,taper:2,used:1,dry:0,tapered:false,pending:0,pending_execution:0,pending_adjudication:0};
 afterEach(()=>{archive.items=[];});
-function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], channelProgress?:ReviewRoundProgress){
+function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], channelProgress?:ReviewRoundProgress, position?:{text:string;description?:string}){
  archive.items=runs;
  const client=new QueryClient(); const session={api:{reviewRuns:vi.fn()},controller:new AbortController()} as unknown as Session;
- try{return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['fixture'],home:'/projects/project',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView number={78} snapshot="snapshot" head={head} attempts={attempts} recentRuns={runs} expected={runs.length} channelTotals={{cli:runs.filter(x=>x.complete).length,hosted:0,manual:0,subagent:0}} progress={channelProgress?{pull_number:78,channels:[channelProgress]} as ReviewProgressItem:undefined}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);}finally{client.clear();}
+ try{return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['fixture'],home:'/projects/project',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView positions={position?{cli:position,hosted:position}:undefined} number={78} snapshot="snapshot" head={head} attempts={attempts} recentRuns={runs} expected={runs.length} channelTotals={{cli:runs.filter(x=>x.complete && x.channel==='cli').length,hosted:runs.filter(x=>x.complete && x.channel==='hosted').length,manual:0,subagent:0}} progress={channelProgress?{pull_number:78,channels:[channelProgress]} as ReviewProgressItem:undefined}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);}finally{client.clear();}
 }
 describe('three-line review state pills',()=>{
  it('shows counts, each captured result status, then age',()=>{
@@ -103,4 +103,59 @@ describe('adjudication indicator age', () => {
   if(scenario==='active') expect(indicator).not.toContain('Needs adjudication');
   else expect(indicator).not.toContain('<time');
  });
+});
+
+
+describe('complete persisted current-state mapping in both review lanes',()=>{
+ for (const channel of ['cli','hosted'] as const) {
+  for (const withCompleted of [false,true]) {
+   const cases: [string, Partial<ReviewRoundProgress>][] = [
+    ['Queued',{pending:1,pending_execution:1}],
+    ['Needs adjudication',{pending:1,pending_adjudication:1}],
+    ['Fixes pending',{fixes_pending:true}],
+    ['Closed',{closed:true}],
+    ['Cap reached',{used:7}],
+    ['Closed',{tapered:true}],
+   ];
+   it.each(cases)(`${channel} current %s remains inside its pill with completed=${withCompleted}`, (label, changes)=>{
+    const runs=withCompleted?[{...completed,channel}]:[];
+    const attempts=withCompleted?[{...attempt,channel,state:'completed' as const,finished_at:completed.finished_at}]:[];
+    const html=markup(runs,attempts,{...progress,channel,...changes});
+    const current=html.split(`aria-label="${channel} current review state"`)[1]?.split('</span></div>')[0];
+    expect(current).toBeDefined();
+    expect(current).toContain('review-pill-status');
+    expect(current).toContain(label);
+    if(withCompleted) expect(html).toContain('review-pill-status">Finished');
+   });
+  }
+  it(`${channel} retains real execution ahead of stale completed/capped state`,()=>{
+   const active={...attempt,channel,trigger_id:channel==='hosted'?'42':''};
+   const base={attempt_id:active.source_attempt_id,head_sha:head,observed_at:stamp};
+   const activity_evidence=channel==='cli'?{...base,kind:'cli_process_spawned' as const,process_started_at:stamp}:{...base,kind:'hosted_processing_observed' as const,trigger_id:'42',comment_updated_at:stamp,source_comment_id:42,provider_run_id:'11111111-2222-4333-8444-555555555555'};
+   const html=markup([{...completed,channel}],[active],{...progress,channel,closed:true,used:7,activity_evidence});
+   expect(html).toContain('review-pill-running');
+   expect(html).toContain('review-pill-status">Running');
+   expect(html).not.toContain(`aria-label="${channel} current review state"`);
+  });
+  it(`${channel} shows its retained provider wait despite older completed results`,()=>{
+   const wait={paused:false,baseline_attempt_id:attempt.source_attempt_id,retry_not_before:'2099-01-01T00:00:00Z'};
+   const html=markup([{...completed,channel}],[{...attempt,channel,state:'completed',finished_at:completed.finished_at}],{...progress,channel,wait});
+   expect(html).toContain(`aria-label="${channel} current review state"`);
+   expect(html).toContain(channel==='cli'?'Quota wait':'Cooldown');
+   expect(html).toContain('review-pill-status">Finished');
+  });
+ }
+});
+
+
+it.each(['cli','hosted'] as const)('keeps persisted results and dependency holds inside %s pills, not PR facts',channel=>{
+ for (const label of ['Results pending','Dependency hold']) {
+  for (const runs of [[],[{...completed,channel}]]) {
+   const html=markup(runs,[],{...progress,channel},{text:label});
+   const lane=html.split(`aria-label="${channel} current review state"`)[1];
+   expect(lane).toContain('review-pill-status');
+   expect(lane).toContain(label);
+   expect(html).not.toContain('review-pull-facts');
+  }
+ }
 });

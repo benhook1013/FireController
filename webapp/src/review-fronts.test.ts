@@ -168,3 +168,14 @@ describe('independent queued priority during source failure',()=>{
     api.close();
   });
 });
+
+
+it.each(['hosted','cli'] as const)('shows stored queue position within idle later %s lanes without claiming admission',channel=>{
+ const v=value();v.channels=[{...front(channel,2),queued_priority:priority(2)}];
+ expect(reviewChannelPosition(pull(4),snapshot,channel,v)).toMatchObject({text:'Queued',description:expect.stringContaining('have not been verified')});
+ expect(reviewChannelPosition(pull(4),'stale',channel,v)).toBeUndefined();
+ v.channels[0].queued_priority=undefined;
+ expect(reviewChannelPosition(pull(4),snapshot,channel,v)).toBeUndefined();
+ v.channels=[{...front(channel,2),state:'held',reason:'predecessor_unfinished'}];
+ expect(reviewChannelPosition(pull(2),snapshot,channel,v)?.text).toBe('Dependency hold');
+});

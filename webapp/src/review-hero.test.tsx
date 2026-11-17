@@ -123,7 +123,8 @@ describe('merge-head recent review rounds', () => {
     archive.items = Array.from({length:8}, (_, index) => 8-index).flatMap(index => [run(`h${index}`, 'hosted'), run(`c${index}`, 'cli')]);
     archive.hasMore = false;
     const html = markup(false);
-    expect(links(html)).toEqual(['h3','h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
+    expect(links(html)).toEqual(['h4','h5','h6','h7','h8','c3','c4','c5','c6','c7','c8']);
+    expect(html).toContain('aria-label="hosted current review state"'); // Taper closure occupies a real pill slot.
     expect(html).toContain('8 runs</span>'); expect(html).not.toContain(' · recent'); expect(html).not.toContain('Load more');
   });
   it('uses exact supplied channel totals independently of the fetched preview', () => {

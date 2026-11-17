@@ -20,9 +20,9 @@ describe('attempt activity is separate from a PR review verdict', () => {
     expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: undefined, pending_adjudication: undefined })).toMatchObject({ text: 'Pending' });
   });
   it('uses explicit execution and adjudication stages instead of the older failure', () => {
-    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Retry pending' });
+    expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Queued' });
     expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_adjudication: 1 })).toEqual({ text: 'Needs adjudication' });
-    expect(reviewAttemptStatus(undefined, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Pending' });
+    expect(reviewAttemptStatus(undefined, { ...progress, pending: 1, pending_execution: 1 })).toMatchObject({ text: 'Queued' });
   });
   it('defers to actual provider waits or pause without claiming a running retry', () => {
     for (const paused of [false, true]) expect(reviewAttemptStatus(attempt, { ...progress, pending: 1, pending_execution: 1, wait: { paused, baseline_attempt_id: `review_attempt_${'a'.repeat(32)}`, retry_not_before: '2026-11-02T00:00:00Z' } })).toBeUndefined();
@@ -40,8 +40,8 @@ describe('attempt activity is separate from a PR review verdict', () => {
   });
   it('explains a stopped dependency attempt without inventing an automatic retry', () => {
     const result = reviewAttemptStatus({ ...attempt, state: 'held', reason: 'predecessor_unfinished' }, progress);
-    expect(result?.text).toBe('Dependency pending'); expect(result?.description).toContain('No retry is confirmed');
-    expect(reviewAttemptStatus({ ...attempt, state: 'held', reason: 'predecessor_unfinished' }, { ...progress, pending: 1, pending_execution: 1 })?.text).toBe('Retry pending');
+    expect(result?.text).toBe('Dependency hold'); expect(result?.description).toContain('No retry is confirmed');
+    expect(reviewAttemptStatus({ ...attempt, state: 'held', reason: 'predecessor_unfinished' }, { ...progress, pending: 1, pending_execution: 1 })?.text).toBe('Queued');
   });
   it('keeps merged/closed history quiet and closed grants separate from unfinished activity', () => {
     expect(reviewAttemptStatus(attempt, progress, { text: 'Up next' }, true)).toMatchObject({ text: 'Past attempt', kind: 'history' });
@@ -117,7 +117,7 @@ describe('cancelled queued waits do not become current process attention', () =>
   });
   it('keeps actual waiting, newer execution, adjudication and closure ahead of cancelled history', () => {
     expect(reviewAttemptStatus(held, { ...current, wait: { paused: true } })).toBeUndefined();
-    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_execution: 1 })?.text).toBe('Retry pending');
+    expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_execution: 1 })?.text).toBe('Queued');
     expect(reviewAttemptStatus(held, { ...current, pending: 1, pending_adjudication: 1 })?.text).toBe('Needs adjudication');
     expect(reviewAttemptStatus({ ...held, state: 'active', finished_at: '' }, current)?.text).toBe('Reviewing');
     expect(reviewAttemptStatus(held, { ...current, closed: true })?.text).toBe('Closed');
@@ -162,7 +162,7 @@ it('keeps a settled partial CLI attempt in history and shows only the current qu
   expect(reviewAttemptStatus(settled, progress)).toBeUndefined();
   expect(reviewAttemptStatus(settled, progress, { text: 'Up next' })).toEqual({ text: 'Up next' });
   expect(reviewAttemptStatus(settled, progress, undefined, true)).toBeUndefined();
-  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Pending', cause: undefined, description: undefined });
+  expect(reviewAttemptStatus(settled, { ...progress, pending: 1, pending_execution: 1 })).toEqual({ text: 'Queued', cause: undefined, description: undefined });
   expect(reviewAttemptCause(settled)).toBe('The CLI review ended without full coverage');
 });
 
@@ -192,4 +192,16 @@ it('shows retained partial decisions independently of completed-round occupancy'
   }
   expect(reviewAttemptStatus(attempt,{...partial,retained_adjudication_pending:false,fixes_pending:true})?.text).toBe('Fixes pending');
   expect(partial.pending).toBe(0); expect(partial.used).toBe(0);
+});
+
+
+it.each(['cli','hosted'] as const)('retains exact grant semantics and unresolved diagnostics for %s caps',channel=>{
+ const completed={...attempt,channel,state:'completed' as const};
+ expect(reviewAttemptStatus(completed,{...progress,channel,used:7})?.text).toBe('Cap reached');
+ expect(reviewAttemptStatus(completed,{...progress,channel,maximum_unbounded:true,maximum:0})?.text).not.toBe('Cap reached');
+ expect(reviewAttemptStatus(completed,{...progress,channel,configured:false,maximum:0})?.text).not.toBe('Cap reached');
+ for(const grant of [{used:7},{tapered:true}]) {
+  expect(reviewAttemptStatus({...attempt,channel},{...progress,channel,...grant})?.text).toBe('Needs agent attention');
+  expect(reviewAttemptStatus({...attempt,channel,state:'uncertain'},{...progress,channel,...grant})?.text).toBe('Needs agent attention');
+ }
 });

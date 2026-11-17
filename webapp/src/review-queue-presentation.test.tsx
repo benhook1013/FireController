@@ -103,11 +103,11 @@ describe('truthful stored review presentation', () => {
     expect(stopped).toContain('title="Review eligibility changed before start');
     expect(stopped).not.toContain('>Review eligibility changed before start<');
     const retry = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={{ ...rounds, channels: [{ ...rounds.channels[0], pending: 1, pending_execution: 1 }] }} />);
-    expect(retry).toContain('>Retry pending</span>'); expect(retry).not.toContain('>Needs agent attention</span>'); expect(retry).toContain('6 runs');
+    expect(retry).toContain('>Queued</span>'); expect(retry).not.toContain('>Needs agent attention</span>'); expect(retry).toContain('6 runs');
     const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={rounds} />);
-    expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Needs agent attention</span>'); expect(historical).not.toContain('>Retry pending</span>');
+    expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Needs agent attention</span>'); expect(historical).not.toContain('>Queued</span>');
     const held = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, state: 'held', reason: 'predecessor_unfinished' }] }} snapshot="snapshot" progress={rounds} />);
-    expect(held).toContain('>Dependency pending</span>'); expect(held).toContain('title="Waiting for earlier PR work'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
+    expect(held).toContain('>Dependency hold</span>'); expect(held).toContain('title="Waiting for earlier PR work'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
   });
 
   it('renders Fixes pending from the current native hold while keeping adjudication distinct', () => {
@@ -138,7 +138,7 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('held (hosted_allowance_cooldown)');
     expect(html).not.toContain('>Needs agent attention</span>');
     expect(html).not.toContain('>Reviewing</span>');
-    expect(html).not.toContain('>Retry pending</span>');
+    expect(html).not.toContain('>Queued</span>');
     const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={progress} />);
     expect(historical).toContain('>Past attempt</span>');
     expect(historical).toContain('held (hosted_allowance_cooldown)');
@@ -306,7 +306,8 @@ describe('truthful stored review presentation', () => {
     expect(rows[1].match(/>Review front<\/span>/gu)).toHaveLength(1);
     expect(rows[1]).toContain('review-pull-facts"><span class="badge review-position-front"');
     expect(rows[1]).toContain('>Draft</span>');
-    expect(rows[2].match(/>Queued<\/span>/gu)).toHaveLength(1);
+    expect(rows[2].match(/>Queued<\/span>/gu)).toHaveLength(2); // PR-wide position plus independent channel pill.
+    expect(rows[2]).toContain('aria-label="hosted current review state"');
     for (const row of rows) expect(row.slice(0, row.indexOf('review-pull-facts'))).not.toContain('review-position-');
     expect(html).not.toContain('>Open</span>');
     const closed = markup(<ReviewPullFacts pull={pull(1, 'closed')} status={{ kind: 'front', text: 'Review front', description: '' }} />);

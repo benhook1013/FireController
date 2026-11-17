@@ -29,7 +29,16 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
     if (rounds?.configured && (rounds.closed || rounds.tapered || !rounds.maximum_unbounded && rounds.used >= rounds.maximum)) return undefined;
     return {text:front.state === 'unknown' ? 'Source unverified' : front.reason === 'reviews_paused' ? 'Paused' : front.reason === 'restore_recovery_held' ? 'Held' : 'Queue position',description:`First remaining ${channel === 'hosted' ? 'Hosted' : 'CLI'} position under local queue and round controls. ${front.state === 'unknown' ? 'Source verification unavailable' : 'Review dispatch held'}${front.reason ? ` (${front.reason.replaceAll('_',' ')})` : ''}; this does not authorize a review.`};
   }
-  if (!front || front.pull_number !== pull.number || front.head_sha !== pull.head_sha || front.base_sha !== pull.base_sha || front.base_ref !== pull.base_ref) return undefined;
+  if (!front) return undefined;
+  if (front.pull_number !== pull.number) {
+    const priority = front.queued_priority;
+    const ahead = priority ? fronts.queue.indexOf(priority.pull_number) : -1;
+    const here = fronts.queue.indexOf(pull.number);
+    // Stored order establishes only queue position, never source admission.
+    if (ahead >= 0 && here > ahead) return {text:'Queued',description:'Behind the first remaining PR in this channel. Source and admission have not been verified.'};
+    return undefined;
+  }
+  if (front.head_sha !== pull.head_sha || front.base_sha !== pull.base_sha || front.base_ref !== pull.base_ref) return undefined;
   if (front.state === 'held' && !['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) {
     const held = new Map<string, ReviewChannelPosition>([
       ['source_obligations_pending', {text:'Carried work',description:'Unresolved work carried over at cutover holds new reviews. Read the carried work in Review details.'}],
@@ -38,7 +47,7 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
       ['external_hosted_pending', {text:'Manual results pending',description:'Settle the captured manual Hosted results before starting another Hosted review.'}],
       ['review_evidence_pending', {text:'Results pending',description:'Review capture or adjudication is still pending before another review; accepted findings may also need fixes.'}],
       ['review_fixes_pending', reviewFixesPending],
-      ['predecessor_unfinished', {text:'Dependency pending',description:'This PR depends on unfinished predecessor work.'}],
+      ['predecessor_unfinished', {text:'Dependency hold',description:'This PR depends on unfinished predecessor work.'}],
     ]);
     return held.get(front.reason ?? '') ?? {text:'Held',description:'The stored admission check holds new reviews. Check review details before requesting another review.'};
   }
