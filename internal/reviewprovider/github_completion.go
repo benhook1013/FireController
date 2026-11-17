@@ -15,6 +15,8 @@ type githubCompletionCount struct {
 	Completed         int   `json:"completed"`
 	ReadFailed        int   `json:"read_failed"`
 	TimedOut          int   `json:"timed_out"`
+	CallerDeadline    int   `json:"caller_deadline"`
+	TransportTimeout  int   `json:"transport_timeout"`
 	Canceled          int   `json:"canceled"`
 	BodyFailed        int   `json:"body_failed"`
 	DurationMillis    int64 `json:"duration_millis"`
@@ -48,6 +50,14 @@ func (q *GitHubQuota) observeReadCompletion(ctx context.Context, now time.Time, 
 		if errors.As(err, &failure) {
 			if failure.Status == http.StatusRequestTimeout {
 				row.TimedOut++
+				// Classify only the safe identity captured at the failure boundary.
+				// Caller deadline does not identify which enclosing budget expired;
+				// transport timeout does not identify network vs HTTP client timer.
+				if errors.Is(failure.cause, context.DeadlineExceeded) {
+					row.CallerDeadline++
+				} else if failure.transport {
+					row.TransportTimeout++
+				}
 			}
 			if errors.Is(failure.cause, context.Canceled) {
 				row.Canceled++
