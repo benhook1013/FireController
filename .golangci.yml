@@ -1,0 +1,38 @@
+version: "2"
+
+run:
+  build-tags: [packaged_smoke]
+  tests: true
+
+# Preserve CodeRabbit's documented assertive profile when supplying a config.
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - bodyclose
+    - sqlclosecheck
+    - durationcheck
+    - nilerr
+    - rowserrcheck
+    - makezero
+    - noctx
+    - fatcontext
+    - errcheck
+    - copyloopvar
+    - spancheck
+    - reassign
+    - ineffassign
+    - unused
+    - gosec
+    - unconvert
+    - wastedassign
+    - errchkjson
+    - errorlint
+    - forcetypeassert
+    - misspell
+    - predeclared
+    - loggercheck
+    - zerologlint
+    - protogetter
+    - contextcheck

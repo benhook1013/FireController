@@ -1,0 +1,17 @@
+[Unit]
+Description=Bounded enrolled FireController artifact retention
+ConditionPathExists=/etc/firecontroller/artifact-retention.json
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/firecontroller/tools/deploy/artifact_schedule.py --config /etc/firecontroller/artifact-retention.json --lock-file /var/lib/firecontroller-artifact-state/lease --results /var/lib/firecontroller-artifact-state/results
+TimeoutStartSec=120
+KillMode=control-group
+MemoryMax=128M
+CPUQuota=25%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+# Host /proc and mount namespace are required for conservative reference inventory.

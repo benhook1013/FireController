@@ -1,0 +1,30 @@
+# Build context is an allowlist, not a copy of an operator's workspace.
+**
+!Dockerfile
+!.dockerignore
+!go.mod
+!go.sum
+!LICENSE
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+
+# Keep private/local content excluded even beneath an allowed source directory.
+**/.git
+**/.git/**
+**/.local
+**/.local/**
+**/node_modules
+**/node_modules/**
+**/profiles*.json
+**/*.token
+**/*.pem
+**/*.key
+**/review-captures
+**/review-captures/**
+**/hosted-review-captures
+**/hosted-review-captures/**
+**/review-workspaces
+**/review-workspaces/**
+**/firecontroller.sqlite*

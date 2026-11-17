@@ -1,0 +1,1120 @@
+package reviewprovider
+
+import (
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// HostedFindingInventory describes supported source inventory only. Complete
+// grants no coverage, adjudication, allowance, readiness or merge credit.
+type HostedFindingInventory struct {
+	Publication    HostedPublication
+	Complete       bool
+	Reason         string
+	Findings       []HostedFinding
+	CoverageLimits []string
+}
+
+type HostedFinding struct {
+	SourceKey, Fingerprint, Kind, Title, Detail, Severity, Path, Side string
+	ReviewID, CommentID                                               int64
+	StartLine, EndLine                                                *int64
+}
+
+var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`)
+var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
+var findingAdditionalHeader = regexp.MustCompile(`^<summary>(?:🔇|` + standingPicture + `) Additional comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
+var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
+var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
+var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
+var findingOutsideSummary = regexp.MustCompile(`^<summary>(?:<em>(?:` + standingPicture + ` )?([^<>]+)</em>|<strong>(?:` + standingPicture + ` )?([^<>]+)</strong>) · .+ · <code>[^<>]+</code></summary><blockquote>$`)
+
+// A decorative icon changes no metadata identity. Recognize only the observed
+// closed picture/img envelope and exact label; never fetch the image or treat
+// other labelled blocks as review metadata.
+var findingPromptIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix review comments</summary>$`)
+var findingReviewInfoIcon = regexp.MustCompile(`^<summary>` + standingPicture + ` Review info</summary>$`)
+var findingPathLocation = regexp.MustCompile("^`([^`]+):([0-9]+)(?:-([0-9]+))?`$")
+var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
+
+// Bold titles may contain literal asterisks inside closed inline-code spans.
+// Asterisks outside code and unbalanced delimiters cannot supply title metadata.
+var findingTitle = regexp.MustCompile("^\\*\\*((?:[^*`\\r\\n]|`[^`\\r\\n]+`)+)\\*\\*$")
+var findingHTML = regexp.MustCompile(`</?(?:details|blockquote)>`)
+var findingPre = regexp.MustCompile(`(?i)</?pre(?:[ \t/>]|$)`)
+var findingQuotedHTML = regexp.MustCompile(`(?i)</?blockquote(?:[ \t][^<>]*)?>`)
+var findingConfirmation = regexp.MustCompile(`^✅ Confirmed as addressed by @[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+
+type findingLine struct {
+	start, end, next, quote int
+	text                    string
+	hidden                  bool
+}
+
+// findingLines interprets quoting without changing source byte offsets. Hidden
+// examples never supply markers, titles, severity or HTML structural boundaries.
+func findingLines(body string) ([]findingLine, bool) {
+	var lines []findingLine
+	var fence byte
+	fenceLength, fenceQuote, pre := 0, 0, 0
+	comment := false
+	for offset := 0; offset < len(body); {
+		end := strings.IndexByte(body[offset:], '\n')
+		next := len(body)
+		if end < 0 {
+			end = len(body)
+		} else {
+			end += offset
+			next = end + 1
+		}
+		text := strings.TrimSuffix(body[offset:end], "\r")
+		quote := 0
+		for {
+			trimmed := strings.TrimLeft(text, " ")
+			if len(text)-len(trimmed) > 3 || !strings.HasPrefix(trimmed, ">") {
+				break
+			}
+			quote++
+			text = strings.TrimPrefix(trimmed[1:], " ")
+		}
+		l := findingLine{start: offset, end: end, next: next, quote: quote, text: strings.TrimSpace(text)}
+		trimmed := strings.TrimLeft(text, " ")
+		indent := len(text) - len(trimmed)
+		preText := trimmed
+		if pre == 0 {
+			preText = findingPreStructuralText(trimmed)
+		}
+		if quote > 1 {
+			l.hidden = true
+		} else if fence != 0 {
+			l.hidden = true
+			n := 0
+			for n < len(trimmed) && trimmed[n] == fence {
+				n++
+			}
+			if quote == fenceQuote && indent <= 3 && n >= fenceLength && strings.TrimSpace(trimmed[n:]) == "" {
+				fence = 0
+			}
+		} else if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+			l.hidden = true
+		} else if pre > 0 || findingPre.MatchString(preText) {
+			l.hidden = true
+			for _, tag := range findingPre.FindAllString(preText, -1) {
+				if strings.HasPrefix(tag, "</") {
+					if pre > 0 {
+						pre--
+					}
+				} else {
+					pre++
+				}
+			}
+		} else if comment {
+			l.hidden = true
+			if strings.Contains(trimmed, "-->") {
+				comment = false
+			}
+		} else if strings.Contains(trimmed, "<!--") && !strings.HasPrefix(trimmed, "<!-- cr-comment") && !publicationMarker.MatchString(trimmed) {
+			l.hidden = true
+			comment = !strings.Contains(trimmed[strings.Index(trimmed, "<!--")+4:], "-->")
+		} else if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			n := 0
+			for n < len(trimmed) && trimmed[n] == trimmed[0] {
+				n++
+			}
+			if n >= 3 {
+				fence, fenceLength, fenceQuote = trimmed[0], n, quote
+				l.hidden = true
+			}
+		}
+		lines = append(lines, l)
+		offset = next
+	}
+	return lines, fence == 0 && pre == 0 && !comment
+}
+
+type findingDecoder struct {
+	inventory *HostedFindingInventory
+	seen      map[string]bool
+}
+
+func (d *findingDecoder) fail(reason string) {
+	d.inventory.Complete = false
+	if d.inventory.Reason == "" {
+		d.inventory.Reason = reason
+	}
+}
+
+func (d *findingDecoder) add(body string, start int, line findingLine, f HostedFinding) {
+	match := findingMarker.FindStringSubmatch(line.text)
+	if match == nil {
+		d.fail("finding_fingerprint_invalid")
+		return
+	}
+	f.Fingerprint = match[1]
+	d.record(body, start, line.end, f)
+}
+
+func (d *findingDecoder) record(body string, start, end int, f HostedFinding) {
+	if start < 0 || end < start || end > len(body) {
+		d.fail("finding_format_unsupported")
+		return
+	}
+	if d.seen[f.Fingerprint] {
+		d.fail("finding_fingerprint_repeated")
+		return
+	}
+	d.seen[f.Fingerprint] = true
+	if f.Kind == "inline" {
+		f.SourceKey = fmt.Sprintf("hosted-comment:%d:%s", f.CommentID, f.Fingerprint)
+	} else {
+		f.SourceKey = fmt.Sprintf("hosted-review:%d:%s:%s", f.ReviewID, f.Kind, f.Fingerprint)
+	}
+	if f.Title == "" {
+		f.Title = f.SourceKey
+	}
+	if len(f.Title) > 500 {
+		d.fail("finding_title_limit")
+		return
+	}
+	if end-start > 16<<10 {
+		d.fail("finding_detail_limit")
+		return
+	}
+	if len(d.inventory.Findings) >= 100 {
+		d.fail("finding_inventory_limit")
+		return
+	}
+	f.Detail = body[start:end]
+	if f.Severity == "" {
+		f.Severity = "unknown"
+	}
+	f.StartLine = copyPublicationLine(f.StartLine)
+	f.EndLine = copyPublicationLine(f.EndLine)
+	d.inventory.Findings = append(d.inventory.Findings, f)
+}
+
+var findingPictureSeverity = regexp.MustCompile(`^` + standingPicture + ` (Trivial|Minor|Major|Critical)$`)
+
+func findingSeverity(text string) string {
+	text = strings.TrimSpace(text)
+	if match := findingPictureSeverity.FindStringSubmatch(text); match != nil {
+		text = match[1]
+	}
+	for _, prefix := range []string{"🔵 ", "🟡 ", "🟠 ", "🔴 "} {
+		text = strings.TrimPrefix(text, prefix)
+	}
+	switch text {
+	case "Trivial":
+		return "info"
+	case "Minor":
+		return "low"
+	case "Major":
+		return "high"
+	case "Critical":
+		return "critical"
+	}
+	return ""
+}
+
+type findingFields struct {
+	title, severity, path string
+	start, end            *int64
+	severityConflict      bool
+}
+
+func (f *findingFields) severityValue(value string) {
+	if value == "" {
+		return
+	}
+	if f.severity != "" && f.severity != value {
+		f.severityConflict = true
+	}
+	f.severity = value
+}
+
+func (f *findingFields) metadata(text string) (valid, explicitSeverity bool) {
+	separator := " | "
+	if strings.Contains(text, " · ") {
+		if strings.Contains(text, separator) {
+			return false, false
+		}
+		separator = " · "
+	}
+	parts := strings.Split(text, separator)
+	for i, p := range parts {
+		switch {
+		case len(p) >= 4 && strings.HasPrefix(p, "**") && strings.HasSuffix(p, "**"):
+			parts[i] = p[2 : len(p)-2]
+		case len(p) >= 2 && strings.HasPrefix(p, "_") && strings.HasSuffix(p, "_"):
+			parts[i] = p[1 : len(p)-1]
+		default:
+			return false, false
+		}
+	}
+	for _, p := range parts {
+		value := findingSeverity(p)
+		f.severityValue(value)
+		explicitSeverity = explicitSeverity || value != ""
+	}
+	return true, explicitSeverity
+}
+
+func (f *findingFields) observe(text string) {
+	if m := findingTitle.FindStringSubmatch(text); m != nil && f.title == "" {
+		f.title = m[1]
+	}
+	f.metadata(text)
+}
+
+func (f findingFields) apply(result *HostedFinding) {
+	result.Title, result.Severity = f.title, f.severity
+	if f.severityConflict {
+		result.Severity = "unknown"
+	}
+}
+
+func findingLocation(first, last string) (*int64, *int64, bool) {
+	a, e := strconv.ParseInt(first, 10, 64)
+	if e != nil || a < 1 || a > 2147483647 {
+		return nil, nil, false
+	}
+	if last == "" {
+		last = first
+	}
+	b, e := strconv.ParseInt(last, 10, 64)
+	if e != nil || b < a || b > 2147483647 {
+		return nil, nil, false
+	}
+	return &a, &b, true
+}
+
+func findingSourceMetadata(text string) bool {
+	return text == "" || (strings.HasPrefix(text, "_Source: ") || strings.HasPrefix(text, "_Sources: ")) && strings.HasSuffix(text, "_")
+}
+
+// An edited provider acknowledgement is metadata only. Require the complete
+// known wrapper and bounded handle; neither its actor nor its claim creates a
+// local disposition, fix proof or another source finding.
+func findingConfirmationEnd(lines []findingLine, start int) (int, bool) {
+	if lines[start].quote != 0 || lines[start].text != "<!-- This is an auto-generated reply by CodeRabbit -->" {
+		return start, false
+	}
+	i := start + 1
+	for i < len(lines) && lines[i].text == "" {
+		i++
+	}
+	if i >= len(lines) || lines[i].quote != 0 || lines[i].hidden || !findingConfirmation.MatchString(lines[i].text) {
+		return start, false
+	}
+	i++
+	for i < len(lines) && lines[i].text == "" {
+		i++
+	}
+	if i >= len(lines) || lines[i].quote != 0 || lines[i].text != "<!-- This is an auto-generated comment by CodeRabbit -->" {
+		return start, false
+	}
+	return i, true
+}
+
+func findingTags(text string, details, quotes *int) {
+	if !strings.HasPrefix(text, "<") {
+		return
+	}
+	for _, tag := range findingHTML.FindAllString(text, -1) {
+		depth := details
+		if strings.Contains(tag, "blockquote") {
+			depth = quotes
+		}
+		if strings.HasPrefix(tag, "</") {
+			*depth--
+		} else {
+			*depth++
+		}
+	}
+}
+
+// findingBlock identifies the matching explicit details scope. A same-level
+// marker in an unknown scope remains unsupported, never silently discarded.
+func findingBlock(lines []findingLine, start, quote int) (int, bool) {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if l.quote > quote {
+			continue
+		}
+		if l.quote != quote {
+			return i, false
+		}
+		unused := 0
+		findingTags(l.text, &depth, &unused)
+		if depth == 0 {
+			return i, true
+		}
+		if depth < 0 {
+			return i, false
+		}
+	}
+	return len(lines) - 1, false
+}
+
+func findingKnownNested(text string) bool {
+	return text == "<summary>🤖 Prompt for AI Agents</summary>" || text == "<summary>Proposed wording</summary>" || text == "<summary>Suggested change</summary>" || text == "<summary>Example</summary>"
+}
+
+func findingNestedHeader(lines []findingLine, start, end int) string {
+	if position := strings.Index(lines[start].text, "<summary>"); position >= 0 {
+		return lines[start].text[position:]
+	}
+	return nextFindingText(lines, start+1, end)
+}
+
+// The provider may group several separately fingerprinted findings in one
+// GitHub comment. Preserve the ordinary root-count contract; a larger declared
+// count is proven only by the complete existing inline decoder, never by raw
+// marker occurrences, prompt examples or summary findings.
+func hostedInlineCountMatches(roots []ReviewComment, declared int) bool {
+	if len(roots) == declared {
+		return true
+	}
+	if len(roots) == 0 || len(roots) > declared {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	for _, root := range roots {
+		decoder.inline(root)
+	}
+	return inventory.Complete && len(inventory.Findings) == declared
+}
+
+func (d *findingDecoder) inline(root ReviewComment) {
+	lines, sound := findingLines(root.Body)
+	if !sound {
+		d.fail("finding_format_unsupported")
+	}
+	fields := findingFields{}
+	start := 0
+	markers := 0
+	after := false
+	pending := false
+	blockquotes := 0
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if after && !pending {
+			if end, ok := findingConfirmationEnd(lines, i); ok {
+				i = end
+				start = lines[end].next
+				continue
+			}
+		}
+		if l.hidden || l.quote != 0 {
+			continue
+		}
+		if findingQuotedHTML.MatchString(l.text) || blockquotes > 0 {
+			for _, tag := range findingQuotedHTML.FindAllString(l.text, -1) {
+				if strings.HasPrefix(tag, "</") {
+					blockquotes--
+				} else {
+					blockquotes++
+				}
+			}
+			if blockquotes < 0 {
+				d.fail("finding_format_unsupported")
+			}
+			continue
+		}
+		if strings.HasPrefix(l.text, "<details>") {
+			end, ok := findingBlock(lines, i, 0)
+			if !ok {
+				d.fail("finding_format_unsupported")
+				break
+			}
+			// Nested prompts are retained as raw detail, but their examples do not
+			// supply source markers or other authoritative fields.
+			for j := i + 1; j < end; j++ {
+				if !lines[j].hidden && lines[j].quote == 0 && strings.Contains(lines[j].text, "cr-comment") && !findingKnownNested(findingNestedHeader(lines, i, end)) {
+					d.fail("finding_format_unsupported")
+				}
+			}
+			if after && !pending {
+				start = l.start
+				pending = true
+			}
+			i = end
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(l.text), "<details") {
+			d.fail("finding_format_unsupported")
+		}
+		if strings.Contains(l.text, "cr-comment") {
+			f := HostedFinding{Kind: "inline", ReviewID: root.ReviewID, CommentID: root.ID, Path: root.Path, Side: root.Side}
+			if root.OriginalStartLine != nil || root.OriginalLine != nil {
+				f.StartLine, f.EndLine = root.OriginalStartLine, root.OriginalLine
+			} else {
+				f.StartLine, f.EndLine = root.StartLine, root.Line
+			}
+			fields.apply(&f)
+			d.add(root.Body, start, l, f)
+			markers++
+			fields = findingFields{}
+			after = true
+			pending = false
+			start = l.next
+			continue
+		}
+		if after && !pending {
+			if findingSourceMetadata(l.text) {
+				start = l.next
+				continue
+			}
+			start = l.start
+			pending = true
+		}
+		fields.observe(l.text)
+	}
+	if blockquotes != 0 {
+		d.fail("finding_format_unsupported")
+	}
+	if markers == 0 {
+		d.fail("finding_marker_missing")
+	} else if pending {
+		d.fail("finding_trailer_unsupported")
+	}
+}
+
+func nextFindingText(lines []findingLine, start, end int) string {
+	for i := start; i < end; i++ {
+		if !lines[i].hidden && lines[i].text != "" {
+			return lines[i].text
+		}
+	}
+	return ""
+}
+
+func findingCount(text string) (int, bool) {
+	n, err := strconv.ParseInt(text, 10, 32)
+	return int(n), err == nil && n >= 0 && n <= 100
+}
+
+// outsideItem owns one quoted details/blockquote item. Nested prompts remain in
+// Detail but cannot create extra atomic findings or replace the full title/path.
+func (d *findingDecoder) outsideItem(body string, lines []findingLine, start, end int, reviewID int64) int {
+	fields := findingFields{}
+	depth, quotes := 0, 0
+	markers := 0
+	closed := false
+	knownNested := false
+	summary := false
+	for i := start; i <= end; i++ {
+		l := lines[i]
+		if l.hidden || l.quote != 1 {
+			continue
+		}
+		if depth == 1 && quotes == 0 && findingOutsideSummary.MatchString(l.text) {
+			summary = true
+			match := findingOutsideSummary.FindStringSubmatch(l.text)
+			fields.severityValue(findingSeverity(match[1] + match[2]))
+		}
+		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
+			knownNested = findingKnownNested(l.text)
+		}
+		if strings.Contains(l.text, "cr-comment") {
+			if depth == 1 && quotes == 1 {
+				if closed {
+					d.fail("finding_format_unsupported")
+				}
+				if !summary || fields.path == "" || fields.title == "" {
+					d.fail("finding_format_unsupported")
+				}
+				f := HostedFinding{Kind: "outside_diff", ReviewID: reviewID, Path: fields.path, StartLine: fields.start, EndLine: fields.end}
+				fields.apply(&f)
+				d.add(body, lines[start].start, l, f)
+				markers++
+				closed = true
+			} else if !knownNested {
+				d.fail("finding_format_unsupported")
+			}
+		}
+		if depth == 1 && quotes == 1 && !strings.HasPrefix(l.text, "<") {
+			if closed && !findingSourceMetadata(l.text) {
+				d.fail("finding_trailer_unsupported")
+			}
+			if !closed {
+				if m := findingPathLocation.FindStringSubmatch(l.text); m != nil {
+					a, b, ok := findingLocation(m[2], m[3])
+					if !ok || !validRepoPath(m[1]) || fields.path != "" {
+						d.fail("finding_location_invalid")
+					} else {
+						fields.path, fields.start, fields.end = m[1], a, b
+					}
+				}
+				fields.observe(l.text)
+			}
+		}
+		if closed && depth == 1 && l.text == "<details>" {
+			d.fail("finding_trailer_unsupported")
+		}
+		findingTags(l.text, &depth, &quotes)
+		if depth <= 1 {
+			knownNested = false
+		}
+		if depth < 0 || quotes < 0 {
+			d.fail("finding_format_unsupported")
+		}
+	}
+	if !summary || markers != 1 || depth != 0 || quotes != 0 {
+		d.fail("finding_format_unsupported")
+	}
+	return markers
+}
+
+func (d *findingDecoder) outside(body string, lines []findingLine, header int, reviewID int64) int {
+	m := findingOutsideHeader.FindStringSubmatch(lines[header].text)
+	expected, ok := findingCount(m[1])
+	if !ok {
+		d.fail("finding_inventory_limit")
+	}
+	count := 0
+	i := header + 1
+	for ; i < len(lines); i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if l.quote != 1 {
+			break
+		}
+		if l.text != "<details>" {
+			d.fail("summary_format_unsupported")
+			continue
+		}
+		end, sound := findingBlock(lines, i, 1)
+		if !sound {
+			d.fail("summary_format_unsupported")
+			return end
+		}
+		count += d.outsideItem(body, lines, i, end, reviewID)
+		i = end
+	}
+	if count != expected {
+		d.fail("finding_count_mismatch")
+	}
+	return i - 1
+}
+
+func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start, end int, reviewID int64, kind string) int {
+	fields := findingFields{}
+	depth, quotes := 0, 0
+	count, expected := 0, -1
+	path := ""
+	var headerStart, headerEnd *int64
+	itemStart := -1
+	knownNested := false
+	finishAdditional := func(before int) {
+		end := before - 1
+		for end >= start && (lines[end].text == "" || lines[end].hidden && (lines[end].text == "</dd>" || lines[end].text == "</dl>")) {
+			end--
+		}
+		if end < start || itemStart < 0 || fields.title == "" || path == "" {
+			d.fail("finding_format_unsupported")
+			itemStart = -1
+			return
+		}
+		f := HostedFinding{Kind: kind, ReviewID: reviewID, Path: path, StartLine: fields.start, EndLine: fields.end}
+		fields.apply(&f)
+		d.additional(body, itemStart, lines[end].end, f)
+		count++
+		itemStart = -1
+	}
+	for i := start; i <= end; i++ {
+		l := lines[i]
+		if l.hidden || l.quote != 0 {
+			continue
+		}
+		if depth == 1 && quotes == 0 {
+			if m := findingGroupHeader.FindStringSubmatch(l.text); m != nil && kind == "duplicate" {
+				path = m[1]
+				var ok bool
+				expected, ok = findingCount(m[2])
+				if !ok || !validRepoPath(path) {
+					d.fail("finding_location_invalid")
+				}
+				if !validRepoPath(path) {
+					path = ""
+				}
+			}
+			if m := findingAdditionalGroup.FindStringSubmatch(l.text); m != nil && kind == "additional" {
+				path = m[1]
+				var countOK, rangeOK bool
+				expected, countOK = findingCount(m[4])
+				headerStart, headerEnd, rangeOK = findingLocation(m[2], m[3])
+				if !countOK || !rangeOK || !validRepoPath(path) {
+					d.fail("finding_location_invalid")
+				}
+			}
+		}
+		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
+			knownNested = findingKnownNested(l.text)
+		}
+		if depth == 1 && quotes == 1 {
+			if kind == "additional" && itemStart >= 0 && strings.HasPrefix(l.text, "</blockquote>") {
+				finishAdditional(i)
+			}
+			if m := findingRange.FindStringSubmatch(l.text); m != nil {
+				if itemStart >= 0 {
+					if kind == "additional" {
+						finishAdditional(i)
+					} else {
+						d.fail("finding_marker_missing")
+					}
+				}
+				a, b, ok := findingLocation(m[1], m[2])
+				if !ok {
+					d.fail("finding_location_invalid")
+				}
+				if kind == "additional" && (headerStart == nil || headerEnd == nil || a == nil || b == nil || *a < *headerStart || *b > *headerEnd) {
+					d.fail("finding_location_invalid")
+				}
+				fields = findingFields{path: path, start: a, end: b}
+				fields.metadata(m[3])
+				itemStart = l.start
+			} else if strings.Contains(l.text, "cr-comment") {
+				if kind == "additional" {
+					if !findingMarker.MatchString(l.text) || itemStart < 0 {
+						d.fail("finding_fingerprint_invalid")
+					}
+					continue
+				}
+				if itemStart < 0 {
+					d.fail("finding_format_unsupported")
+				} else {
+					if fields.title == "" || path == "" {
+						d.fail("finding_format_unsupported")
+					}
+					f := HostedFinding{Kind: kind, ReviewID: reviewID, Path: path, StartLine: fields.start, EndLine: fields.end}
+					fields.apply(&f)
+					d.add(body, itemStart, l, f)
+					count++
+					itemStart = -1
+				}
+			} else if itemStart >= 0 {
+				fields.observe(l.text)
+			} else if !findingSourceMetadata(l.text) && !strings.HasPrefix(l.text, "</") {
+				d.fail("finding_trailer_unsupported")
+			}
+		} else if strings.Contains(l.text, "cr-comment") && !knownNested {
+			d.fail("finding_format_unsupported")
+		}
+		findingTags(l.text, &depth, &quotes)
+		if depth <= 1 {
+			knownNested = false
+		}
+		if depth < 0 || quotes < 0 {
+			d.fail("finding_format_unsupported")
+		}
+	}
+	if expected < 0 || expected != count {
+		d.fail("finding_count_mismatch")
+	}
+	if itemStart >= 0 {
+		d.fail("finding_marker_missing")
+	}
+	if depth != 0 || quotes != 0 {
+		d.fail("summary_format_unsupported")
+	}
+	return count
+}
+
+func (d *findingDecoder) groupedSummary(body string, lines []findingLine, start, end int, reviewID int64, kind string, header *regexp.Regexp) {
+	count, expected := 0, -1
+	for i := start + 1; i < end; i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if m := header.FindStringSubmatch(l.text); m != nil && expected < 0 {
+			var ok bool
+			expected, ok = findingCount(m[1])
+			if !ok {
+				d.fail("finding_inventory_limit")
+			}
+			continue
+		}
+		if l.text == "<details>" && l.quote == 0 {
+			groupEnd, ok := findingBlock(lines, i, 0)
+			if !ok || groupEnd >= end {
+				d.fail("summary_format_unsupported")
+				return
+			}
+			count += d.groupedFindings(body, lines, i, groupEnd, reviewID, kind)
+			i = groupEnd
+			continue
+		}
+		d.fail("summary_format_unsupported")
+	}
+	if expected < 0 || expected != count {
+		d.fail("finding_count_mismatch")
+	}
+}
+
+// The observed follow-up format places each positive outside-diff finding in
+// its own unquoted block, without a category or inline-root count. Its badge,
+// explicit severity/title/range, source link and fingerprint jointly identify
+// the item; absence of this inventory can never establish a clean review.
+const findingFollowupOutsideBadge = `<sub><picture><source media="(prefers-color-scheme: dark)" srcset="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/contrast-v2/outside-diff-dark.svg" /><source media="(prefers-color-scheme: light)" srcset="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/outside-diff.svg" /><img width="120" height="16" alt="Outside diff" src="https://storage.googleapis.com/coderabbit_public_assets/review-finding-badges-v1/outside-diff.svg" /></picture></sub>`
+
+var findingFollowupOutsideSummary = regexp.MustCompile(`^<summary>` + regexp.QuoteMeta(findingFollowupOutsideBadge) + ` ([^<>\r\n]+)</summary><blockquote>$`)
+var findingFollowupSource = regexp.MustCompile(`^\[Open the source location\]\(https://github\.com/([A-Za-z0-9_-]{1,100})/([A-Za-z0-9_.-]{1,100})/blob/([a-f0-9]{40})/([^?#)]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?\)$`)
+
+func (d *findingDecoder) followupOutside(body string, lines []findingLine, start, end int, review HostedReview) {
+	fields := findingFields{}
+	depth, quotes, markers := 0, 0, 0
+	summaryTitle := ""
+	metadata, title, closed, knownNested := false, false, false, false
+	for i := start; i <= end; i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if l.quote != 0 {
+			d.fail("finding_format_unsupported")
+			continue
+		}
+		if depth == 1 && quotes == 0 {
+			if m := findingFollowupOutsideSummary.FindStringSubmatch(l.text); m != nil && summaryTitle == "" {
+				summaryTitle = m[1]
+			} else {
+				d.fail("finding_format_unsupported")
+			}
+		}
+		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
+			knownNested = findingKnownNested(l.text) || l.text == "<summary>📝 Proposed wording</summary>"
+			if !knownNested {
+				d.fail("finding_format_unsupported")
+			}
+		}
+		if strings.Contains(l.text, "cr-comment") {
+			if depth == 1 && quotes == 1 && !closed && metadata && title && fields.path != "" && summaryTitle == fields.title && !fields.severityConflict {
+				finding := HostedFinding{Kind: "outside_diff", ReviewID: review.ID, Path: fields.path, StartLine: fields.start, EndLine: fields.end}
+				fields.apply(&finding)
+				d.add(body, lines[start].start, l, finding)
+				markers++
+				closed = true
+			} else if !knownNested {
+				d.fail("finding_format_unsupported")
+			}
+		} else if depth == 1 && quotes == 1 && !strings.HasPrefix(l.text, "<") {
+			if closed {
+				if !findingSourceMetadata(l.text) {
+					d.fail("finding_trailer_unsupported")
+				}
+			} else if m := findingRange.FindStringSubmatch(l.text); m != nil {
+				first, last, valid := findingLocation(m[1], m[2])
+				validMetadata, explicitSeverity := fields.metadata(m[3])
+				if metadata || !valid || !validMetadata || !explicitSeverity {
+					d.fail("finding_format_unsupported")
+				}
+				fields.start, fields.end = first, last
+				metadata = true
+			} else if m := findingTitle.FindStringSubmatch(l.text); m != nil {
+				if !metadata || title || m[1] != summaryTitle {
+					d.fail("finding_format_unsupported")
+				}
+				fields.title = m[1]
+				title = true
+			} else if strings.HasPrefix(l.text, "[Open the source location]") {
+				m := findingFollowupSource.FindStringSubmatch(l.text)
+				if m == nil || !metadata || fields.path != "" {
+					d.fail("finding_location_invalid")
+				} else {
+					path, err := url.PathUnescape(m[4])
+					first, last, valid := findingLocation(m[5], m[6])
+					if err != nil || !validRepoPath(path) || m[2] == "." || m[2] == ".." || m[3] != review.HeadSHA || !valid || fields.start == nil || fields.end == nil || *first != *fields.start || *last != *fields.end {
+						d.fail("finding_location_invalid")
+					} else {
+						fields.path = path
+					}
+				}
+			}
+		}
+		if closed && depth == 1 && l.text == "<details>" {
+			d.fail("finding_trailer_unsupported")
+		}
+		findingTags(l.text, &depth, &quotes)
+		if depth <= 1 {
+			knownNested = false
+		}
+		if depth < 0 || quotes < 0 {
+			d.fail("finding_format_unsupported")
+		}
+	}
+	if summaryTitle == "" || !metadata || !title || markers != 1 || depth != 0 || quotes != 0 {
+		d.fail("finding_format_unsupported")
+	}
+}
+
+func (d *findingDecoder) summary(review HostedReview, selected bool) {
+	if !selected && !strings.Contains(review.Body, "cr-comment") && !strings.Contains(review.Body, "Outside diff range comments") && !strings.Contains(review.Body, "Duplicate comments") && !strings.Contains(review.Body, "Additional comments") {
+		return
+	}
+	lines, sound := findingLines(review.Body)
+	if !sound {
+		d.fail("summary_format_unsupported")
+	}
+	followup, followupItems := false, 0
+	currentPrompt, headingClose := false, -1
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if l.hidden || l.text == "" {
+			continue
+		}
+		if selected && l.quote == 0 {
+			if i == headingClose {
+				continue
+			}
+			if l.text == "<h6>" && headingClose == -1 {
+				if start, end, ok := currentReviewInfoHeading(lines, i); ok {
+					headingClose, i = end, start-1
+					continue
+				}
+			}
+		}
+		if l.quote == 0 && l.text == "## Follow-up Comments" {
+			if followup {
+				d.fail("summary_format_unsupported")
+			}
+			followup = true
+			continue
+		}
+		if l.quote == 1 && findingOutsideHeader.MatchString(l.text) {
+			i = d.outside(review.Body, lines, i, review.ID)
+			continue
+		}
+		if l.quote == 0 && l.text == "<details>" {
+			end, ok := findingBlock(lines, i, 0)
+			if !ok {
+				d.fail("summary_format_unsupported")
+				return
+			}
+			header := nextFindingText(lines, i+1, end)
+			if followup && findingFollowupOutsideSummary.MatchString(header) {
+				d.followupOutside(review.Body, lines, i, end, review)
+				followupItems++
+			} else if findingDuplicateHeader.MatchString(header) {
+				d.groupedSummary(review.Body, lines, i, end, review.ID, "duplicate", findingDuplicateHeader)
+			} else if findingAdditionalHeader.MatchString(header) {
+				projected, ok := findingAdditionalLayout(lines, i, end)
+				if !ok {
+					d.fail("summary_format_unsupported")
+				} else {
+					d.groupedSummary(review.Body, projected, i, end, review.ID, "additional", findingAdditionalHeader)
+				}
+			} else {
+				reviewInfo := header == "<summary>ℹ️ Review info</summary>" || findingReviewInfoIcon.MatchString(header)
+				if reviewInfo {
+					d.reviewInfoCoverage(review.Body, lines, i, end)
+				}
+				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || reviewInfo
+				if selected && currentSubmittedPrompt.MatchString(header) {
+					p := submittedReviewParser{lines: lines, at: i}
+					known = !currentPrompt && p.currentPrompt(review.Body) && p.at == end+1 && p.take("<h6>", false)
+					currentPrompt = currentPrompt || known
+				}
+				if !known && selected {
+					d.fail("summary_format_unsupported")
+				}
+				for j := i + 1; j < end; j++ {
+					if !lines[j].hidden && strings.Contains(lines[j].text, "cr-comment") {
+						d.fail("finding_format_unsupported")
+					}
+				}
+			}
+			i = end
+			continue
+		}
+		if strings.Contains(l.text, "cr-comment") {
+			d.fail("finding_format_unsupported")
+			continue
+		}
+		if strings.Contains(l.text, "Outside diff range comments") || strings.Contains(l.text, "Duplicate comments") || strings.Contains(l.text, "Additional comments") {
+			d.fail("summary_format_unsupported")
+			continue
+		}
+		if !selected {
+			continue
+		} // Markerless status/chatter remains retained, not a new batch.
+		if publicationMarker.MatchString(l.text) || publicationActionable.MatchString(l.text) || l.text == "---" || l.quote == 1 && (l.text == "[!CAUTION]" || strings.HasPrefix(l.text, "Some comments are outside the diff")) || strings.HasPrefix(l.text, "- [ ] <!-- {\"checkboxId\":") {
+			continue
+		}
+		d.fail("summary_format_unsupported")
+	}
+	if followup && followupItems == 0 {
+		d.fail("summary_format_unsupported")
+	}
+}
+
+// publicationSummaryOnly proves a nonempty summary-only inventory when the
+// inline-root count is omitted. Additional and outside-diff categories use the
+// same strict decoder as final extraction; duplicate-only or empty summaries
+// cannot establish this proof. It never rewrites bodies or invents findings.
+func publicationSummaryOnly(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 || len(publication.Roots) != 0 || !publicationCountAbsent(publication) {
+		return false
+	}
+	primary := publication.Batches[0]
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	decoder.summary(primary, true)
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, review := range publication.EligibleReviews {
+		if review.ID != primary.ID {
+			decoder.summary(review, false)
+		}
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	for _, finding := range inventory.Findings {
+		if finding.Kind != "outside_diff" && finding.Kind != "additional" {
+			return false
+		}
+	}
+	return true
+}
+
+// A malformed or contradictory visible count is not an omitted count.
+func publicationCountAbsent(publication HostedPublication) bool {
+	for _, review := range publication.EligibleReviews {
+		for _, line := range publicationVisibleLines(review.Body) {
+			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// publicationInlineInventory permits only a positive, fully decoded attached
+// inventory when the one selected batch truly omits numeric count metadata.
+// Final extraction still reuses the same decoder and all source bindings.
+func publicationInlineInventory(publication HostedPublication) bool {
+	if len(publication.Batches) != 1 || len(publication.Roots) == 0 || !publicationCountAbsent(publication) {
+		return false
+	}
+	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
+	decoder := findingDecoder{inventory: &inventory, seen: map[string]bool{}}
+	for _, root := range publication.Roots {
+		decoder.inline(root)
+	}
+	if !inventory.Complete || len(inventory.Findings) == 0 {
+		return false
+	}
+	primary := publication.Batches[0].ID
+	for _, review := range publication.EligibleReviews {
+		decoder.summary(review, review.ID == primary)
+	}
+	return inventory.Complete && len(inventory.Findings) > 0
+}
+
+// ExtractHostedFindings re-establishes attribution before decoding. Unsupported
+// inventory remains explicitly incomplete with bounded extracted pieces and the
+// original publication retained; it never fabricates aggregate placeholder rows.
+func ExtractHostedFindings(snapshot HostedPublicationSnapshot, intent HostedTriggerIntent, postingActor, providerActor Author, earliestPosting time.Time) (HostedFindingInventory, error) {
+	publication, err := ResolveHostedPublication(snapshot, intent, postingActor, providerActor, earliestPosting)
+	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
+	if err != nil {
+		result.Reason = "publication_unavailable"
+		return result, err
+	}
+	return decodeHostedFindings(publication), nil
+}
+
+// decodeHostedFindings shares only inventory decoding; callers establish source
+// attribution independently. It performs no request/attempt or coverage action.
+func decodeHostedFindings(publication HostedPublication) HostedFindingInventory {
+	result := HostedFindingInventory{Publication: publication, Findings: []HostedFinding{}}
+	if publication.State != "attributed" {
+		result.Reason = publication.Reason
+		return result
+	}
+	if publication.StandingZero != nil {
+		result.Complete = validStandingZero(publication.StandingZero) && len(publication.Batches) == 0 && len(publication.Roots) == 0 && len(publication.EligibleReviews) == 0
+		result.Reason = "standing_zero_inventory_attributed"
+		return result
+	}
+	result.Complete = true
+	decoder := findingDecoder{inventory: &result, seen: map[string]bool{}}
+	for _, root := range publication.Roots {
+		decoder.inline(root)
+	}
+	selected := map[int64]bool{}
+	for _, batch := range publication.Batches {
+		selected[batch.ID] = true
+	}
+	for _, review := range publication.EligibleReviews {
+		decoder.summary(review, selected[review.ID])
+	}
+	if result.Complete {
+		result.Reason = "finding_inventory_complete"
+	}
+	return result
+}
+
+// Inline code is literal text, not an HTML pre opener. This projection is used
+// only for pre tags: original lines, finding offsets and count evidence stay intact.
+// Unmatched delimiters remain untouched rather than hiding unproven structure.
+func findingPreStructuralText(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] != '`' {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && text[i] == '`' {
+			i++
+		}
+		width := i - start
+		// Backslash-escaped delimiters are literal, not a proven code-span boundary.
+		slashes := 0
+		for k := start - 1; k >= 0 && text[k] == '\\'; k-- {
+			slashes++
+		}
+		if slashes%2 != 0 {
+			out.WriteString(text[start:i])
+			continue
+		}
+		end := -1
+		for j := i; j < len(text); {
+			if text[j] != '`' {
+				j++
+				continue
+			}
+			a := j
+			for j < len(text) && text[j] == '`' {
+				j++
+			}
+			if j-a == width {
+				end = j
+				break
+			}
+		}
+		if end < 0 {
+			out.WriteString(text[start:])
+			break
+		}
+		out.WriteByte(' ')
+		i = end
+	}
+	return out.String()
+}

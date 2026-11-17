@@ -1,0 +1,25 @@
+[Unit]
+Description=Serial verified FireController offsite destinations with shared preparation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Replace the independent destination timers only after they are drained.
+# All state/spool directories must permit hardlinks on one filesystem.
+User=firecontroller
+Group=firecontroller
+UMask=0077
+ExecStart=/usr/local/lib/firecontroller/fcd backup-push-batch --config /etc/firecontroller/offsite-batch.json
+# Three destinations with 15m individual limits, plus process shutdown margin.
+TimeoutStartSec=46m
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/var/lib/firecontroller/managed-backups
+ReadWritePaths=/var/lib/firecontroller-offsite
