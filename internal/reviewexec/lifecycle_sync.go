@@ -102,19 +102,21 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
-	sharing         lifecycleSharingTelemetry
-	readers         map[string]TargetReader
-	watches         map[ciWatchKey]*ciWatchEntry
-	watchers        map[*ciWatchSubscription]bool
-	watchPrincipals map[string]int
-	watchTurn       bool
-	startedAt       time.Time
-	claim           chan struct{}
-	mu              sync.Mutex
-	lanes           [2]lifecycleLaneSchedule
-	due             map[lifecycleKey]lifecycleDue
-	accounts        map[string]lifecycleAccount
-	options         LifecycleSyncOptions
+	sharing          lifecycleSharingTelemetry
+	shadowNext       time.Time
+	demandShadowNext time.Time
+	readers          map[string]TargetReader
+	watches          map[ciWatchKey]*ciWatchEntry
+	watchers         map[*ciWatchSubscription]bool
+	watchPrincipals  map[string]int
+	watchTurn        bool
+	startedAt        time.Time
+	claim            chan struct{}
+	mu               sync.Mutex
+	lanes            [2]lifecycleLaneSchedule
+	due              map[lifecycleKey]lifecycleDue
+	accounts         map[string]lifecycleAccount
+	options          LifecycleSyncOptions
 }
 type lifecycleTarget struct {
 	cohortOwned        bool

@@ -44,6 +44,10 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 			s.holdStoredState(target.project, target.number, target.lane, target.wakeComparison, result)
 			result = nil
 		}
+		// Diagnostics must follow all result and protective-hold decisions:
+		// their bounded wait may expire the parent context.
+		s.observeCadenceShadow()
+		e.observeCadenceDemand(ctx, s)
 	}()
 	// Recheck selected configuration before provider work. A pause-only change
 	// is intentionally harmless; changing repository, enrollment or capability holds.
