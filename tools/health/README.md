@@ -118,3 +118,62 @@ A post-link fsync error can leave the complete output present; reconcile it rath
 than assume no output. No runtime installer, CI activation, service change or
 rollback qualification is included. Adapter unit tests stub native packaging;
 they do not establish a new clean-binary end-to-end release qualification.
+
+
+### Unchanged fixed-path CLI qualification
+
+`test_fixed_path_qualification.py` additionally runs the extracted publisher as a
+real CLI with its unchanged fixed paths. Run only with root `unshare -m -n`, an
+empty environment, and both `FC_HEALTH_OFFLINE=1` and
+`FC_HEALTH_FIXED_PATHS=1`. It refuses the initial mount namespace, makes mounts
+private, and mounts a small disposable tmpfs over `/var/lib` inside that namespace.
+Synthetic private provider configs/ledgers and report directories then occupy
+the exact production-shaped paths without accessing host data. No publisher
+constants, subprocesses or ownership operations are mocked. The separate pinned
+reader is extracted from the built bundle; correct publication and wrong-pin
+refusal preserve source inputs and prior reports.
+
+This passed in 3.000 seconds under isolated Python. It qualifies fixed-path CLI
+behavior, not a target-host systemd unit, timer, runtime-library package, rollback
+or production namespace. The namespace and tmpfs disappear when the test exits.
+
+
+### Candidate service override (not installed)
+
+`service_override.render(<absolute qualified bundle directory>)` emits only an
+ExecStart reset and replacement. It preserves the separate exact historical
+reader and selects the isolated Python flags qualified above. It rejects path
+whitespace, traversal, systemd specifiers and variable syntax rather than relying
+on shell quoting. It does not read files, grant custody or qualify the supplied
+directory. No unit/timer/security settings are installed or changed.
+
+The observed service is oneshot, root:root, umask0077, timeout45s, with PrivateTmp,
+ProtectHome, ProtectSystem=strict and NoNewPrivileges. A static systemd-analyze
+fixture accepts the override with those settings. Existing ReadWritePaths,
+ReadOnlyPaths, InaccessiblePaths and every other unit/drop-in property remain
+the installer's obligation to preserve and qualify; the fixture is not a full
+unit clone. In particular the observed path lists explicitly name OneDrive/S3,
+not Google. No inference of equivalent credential isolation is made for Google.
+
+Actual target service startup/namespace and timeout behavior, input provenance,
+atomic switch and rollback remain unqualified. Retaining the old unit/reader
+bytes is not itself proof a rollback is safe.
+
+
+### Disposable local systemd execution proof
+
+`test_service_qualification.py` is explicitly opt-in (`FC_HEALTH_SERVICE=1`
+and `FC_HEALTH_OFFLINE=1`) and root-only. It builds and extracts the pinned
+companion, then runs its unchanged publisher CLI through disposable, collected
+local systemd oneshot units. A synthetic directory is bind-mounted as `/var/lib`
+only inside each unit's mount namespace; no host mount or existing unit is changed.
+The test uses root ownership, umask0077, 45-second timeout, PrivateTmp, ProtectHome,
+ProtectSystem=strict and NoNewPrivileges, plus PrivateNetwork for this fixture.
+Only synthetic report/staging paths are writable. Success publishes three exact
+reports; a wrong reader pin fails while preserving reports and source inputs.
+Both units must be unloaded after execution. This passed in 3.092 seconds.
+
+This qualifies a local synthetic systemd execution context, not an exact clone of
+all node path restrictions, target-host runtime provenance, live timer behavior,
+atomic deployment switching or rollback. The target's full inaccessible/read-only
+path graph and its Google discrepancy remain unresolved.
