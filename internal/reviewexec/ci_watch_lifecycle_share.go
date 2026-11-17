@@ -10,6 +10,11 @@ import (
 // generation minimum; optional workflow demand never joins this narrower read.
 // Cancellation of a subscriber cannot cancel the independent lifecycle work.
 func (e *Engine) beginLifecycleCIShare(ctx context.Context, target lifecycleTarget, s *lifecycleSchedule) *ciWatchClaim {
+	// Prepared batch evidence predates this admission point. Never credit it
+	// to a watch selected now; that watch retains its own fresh collection.
+	if target.ciPreparedBatch {
+		return nil
+	}
 	if target.lane != lifecycleEnrichment || target.comparison.state != "open" {
 		return nil
 	}

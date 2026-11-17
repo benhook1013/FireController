@@ -19,7 +19,9 @@ import (
 // worker instructions. Clock and wait injection make cadence proof deterministic.
 type LifecycleSyncOptions struct {
 	// CadenceShadow explicitly enables aggregate diagnostics; it never changes cadence.
-	CadenceShadow                                            bool
+	CadenceShadow bool
+	// BatchCIWitnesses is opt-in; no daemon configuration enables it by default.
+	BatchCIWitnesses                                         bool
 	Now                                                      func() time.Time
 	Wait                                                     func(context.Context, time.Duration) error
 	OpenInterval, ClosedInterval, MergedInterval, CIInterval time.Duration
@@ -34,6 +36,7 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 	if len(options) == 1 {
 		o := options[0]
 		c.CadenceShadow = o.CadenceShadow
+		c.BatchCIWitnesses = o.BatchCIWitnesses
 		if o.Now != nil {
 			c.Now = o.Now
 		}
@@ -123,6 +126,7 @@ type lifecycleSchedule struct {
 }
 type lifecycleTarget struct {
 	cohortOwned        bool
+	ciPreparedBatch    bool
 	prepared           *lifecyclePrepared
 	cohort             *reviewprovider.CIGateCohort
 	watch              *ciWatchClaim

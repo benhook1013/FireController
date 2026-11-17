@@ -59,6 +59,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
 	cadenceShadow := flags.Bool("lifecycle-cadence-shadow", false, "enable bounded aggregate lifecycle diagnostics; does not change observation cadence")
+	batchCIWitnesses := flags.Bool("lifecycle-ci-batching", false, "batch same-phase CI witnesses for existing periodic cohorts; preserves polling cadence")
 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
 	backupInterval := flags.Duration("backup-interval", 0, "managed backup interval, 1m through 720h")
@@ -275,7 +276,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
 	var reviewDone <-chan error
 	if !recovery.ProvidersHeld {
-		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow})
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchCIWitnesses: *batchCIWitnesses})
 	}
 	defer func() {
 		cancelReviews()

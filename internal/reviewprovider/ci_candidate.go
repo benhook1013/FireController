@@ -3,9 +3,6 @@ package reviewprovider
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -111,112 +108,32 @@ func (g *GitHub) pullCICandidate(ctx context.Context, repository string, reposit
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	defer func() { result.ObservedAt = time.Now().UTC() }()
-	result = CICandidate{State: "unproven", Reason: "ci_target_changed", Repository: repository, RepositoryID: repositoryID, PullNumber: number, HeadSHA: expectedHead}
+	p := newCICandidatePhases(repository, repositoryID, number, expectedHead)
 	budget := &actionsBudget{}
 	path := "/repos/" + repository + "/pulls/" + strconv.FormatInt(number, 10)
 	var first githubCIPull
-	if _, err = g.actionsRead(ctx, path, nil, budget, &first); err != nil {
-		return result, err
+	_, readErr := g.actionsRead(ctx, path, nil, budget, &first)
+	p.acceptFirst(first, readErr)
+	if p.phase == ciCandidateBefore {
+		branch, matches, readErr := g.readCICandidateBranch(ctx, repository, p.first.Pull.Base.Ref, budget)
+		p.acceptBefore(branch, matches, readErr)
 	}
-	if !validCIPull(first, number) {
-		return result, invalidResponse(false, http.StatusOK)
-	}
-	if first.Pull.Base.Repo.ID != repositoryID || !strings.EqualFold(first.Pull.Base.Repo.FullName, repository) || first.Pull.State != "open" || first.Pull.Merged || first.Pull.Head.SHA != expectedHead {
-		return result, nil
-	}
-	result.Repository = first.Pull.Base.Repo.FullName
-	result.BaseSHA, result.BaseRef = first.Pull.Base.SHA, first.Pull.Base.Ref
-	result.Reason, result.MergeState = "ci_merge_pending", "pending"
-	mergeVerified := false
-	mergeBaseParent := ""
-	var mismatch *CIMergeBaseMismatch
-	if first.Mergeable != nil {
-		if !*first.Mergeable {
-			result.MergeState, result.Reason = "conflicting", ""
-		} else {
-			if first.MergeCommitSHA == nil || *first.MergeCommitSHA == first.Pull.Head.SHA || *first.MergeCommitSHA == first.Pull.Base.SHA {
-				return result, invalidResponse(false, http.StatusOK)
-			}
-			result.MergeState, result.Reason = "unproven", "ci_merge_identity_unproven"
-			branchPath := "/repos/" + repository + "/branches/" + url.PathEscape(first.Pull.Base.Ref)
-			readBranch := func() (githubCIBranch, bool, error) {
-				var branch githubCIBranch
-				if _, readErr := g.actionsRead(ctx, branchPath, nil, budget, &branch); readErr != nil {
-					var missing *Error
-					if errors.As(readErr, &missing) && missing.Code == "provider_not_found" && missing.Status == http.StatusNotFound {
-						return branch, false, nil
-					}
-					return branch, false, readErr
-				}
-				if !lowerCISHA(branch.Commit.SHA) {
-					return branch, false, invalidResponse(false, http.StatusOK)
-				}
-				return branch, branch.Name == first.Pull.Base.Ref, nil
-			}
-			before, branchMatches, branchErr := readBranch()
-			if branchErr != nil {
-				return result, branchErr
-			}
-			if !branchMatches {
-				return result, nil
-			}
-			merge, reused := commits[*first.MergeCommitSHA]
-			if !reused {
-				if _, err = g.actionsRead(ctx, "/repos/"+repository+"/git/commits/"+*first.MergeCommitSHA, nil, budget, &merge); err != nil {
-					return result, err
-				}
-			}
-			if !lowerCISHA(merge.SHA) {
-				return result, invalidResponse(false, http.StatusOK)
-			}
-			for _, parent := range merge.Parents {
-				if !lowerCISHA(parent.SHA) {
-					return result, invalidResponse(false, http.StatusOK)
-				}
-			}
-			if commits != nil && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA {
-				commits[merge.SHA] = merge
-			}
-			after, branchMatches, branchErr := readBranch()
-			if branchErr != nil {
-				return result, branchErr
-			}
-			mergeBaseParent = before.Commit.SHA
-			mergeVerified = branchMatches && after.Commit.SHA == before.Commit.SHA && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA && ((merge.Parents[0].SHA == mergeBaseParent && merge.Parents[1].SHA == first.Pull.Head.SHA) || (merge.Parents[1].SHA == mergeBaseParent && merge.Parents[0].SHA == first.Pull.Head.SHA))
-			result.MergeState, result.Reason = "unproven", "ci_merge_identity_unproven"
-			if !mergeVerified && branchMatches && after.Commit.SHA == before.Commit.SHA && merge.SHA == *first.MergeCommitSHA && len(merge.Parents) == 2 && merge.Parents[0].SHA != merge.Parents[1].SHA && (merge.Parents[0].SHA == first.Pull.Head.SHA || merge.Parents[1].SHA == first.Pull.Head.SHA) {
-				// The head and merge object are attributable, but their other
-				// parent differs from the independently observed live base tip.
-				// Matching the cached PR base.sha is not sufficient proof.
-				result.Reason = "ci_merge_base_mismatch"
-				parent := merge.Parents[0].SHA
-				if parent == first.Pull.Head.SHA {
-					parent = merge.Parents[1].SHA
-				}
-				mismatch = &CIMergeBaseMismatch{PRBaseSHA: first.Pull.Base.SHA, LiveBaseSHA: before.Commit.SHA, MergeSHA: merge.SHA, MergeBaseParentSHA: parent}
-			}
+	if p.phase == ciCandidateObject {
+		merge, reused := commits[*p.first.MergeCommitSHA]
+		var readErr error
+		if !reused {
+			_, readErr = g.actionsRead(ctx, "/repos/"+repository+"/git/commits/"+*p.first.MergeCommitSHA, nil, budget, &merge)
 		}
+		p.acceptObject(merge, readErr, commits)
 	}
-	var final githubCIPull
-	if _, err = g.actionsRead(ctx, path, nil, budget, &final); err != nil {
-		return result, err
+	if p.phase == ciCandidateAfter {
+		branch, matches, readErr := g.readCICandidateBranch(ctx, repository, p.first.Pull.Base.Ref, budget)
+		p.acceptAfter(branch, matches, readErr)
 	}
-	if !validCIPull(final, number) {
-		return result, invalidResponse(false, http.StatusOK)
+	if p.phase == ciCandidateFinal {
+		var final githubCIPull
+		_, readErr := g.actionsRead(ctx, path, nil, budget, &final)
+		p.acceptFinal(ctx, final, readErr)
 	}
-	if !sameCIPull(first, final) {
-		result.Reason = "ci_candidate_changed"
-		return result, nil
-	}
-	if ctx.Err() != nil {
-		return result, providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
-	}
-	if mergeVerified {
-		result.State, result.Reason, result.MergeState, result.MergeSHA, result.MergeBaseParentSHA = "complete", "", "verified", *first.MergeCommitSHA, mergeBaseParent
-	} else if result.MergeState == "conflicting" {
-		result.State = "complete"
-	} else if result.Reason == "ci_merge_base_mismatch" {
-		result.MergeBaseMismatch = mismatch
-	}
-	return result, nil
+	return p.result, p.err
 }

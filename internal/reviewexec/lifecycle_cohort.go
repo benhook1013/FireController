@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -100,9 +101,26 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 		cohort, err := factory.NewCIGateCohort(bounded, members, gate)
 		if err == nil {
 			defer cohort.Close()
+			batch := s.options.BatchCIWitnesses && !lifecycleCohortHasSubscribers(s, targets)
+			if batch {
+				batchCtx := reviewprovider.WithGitHubCaller(bounded, "lifecycle_enrichment_periodic")
+				if err := cohort.PrepareBatched(batchCtx); err != nil {
+					var accountFailure *reviewprovider.CIBatchAccountFailure
+					if errors.As(err, &accountFailure) {
+						// The batch stops before publication. Apply its account-wide
+						// backoff without assigning a partner's failure to this PR.
+						s.mu.Lock()
+						s.finishAccountLocked(targets[0], accountFailure.Unwrap(), s.options.Now())
+						s.mu.Unlock()
+						return nil
+					}
+					return err
+				}
+			}
 			cohortCtx = bounded
 			for i := range targets {
 				targets[i].cohort = cohort
+				targets[i].ciPreparedBatch = batch
 			}
 		}
 	}
@@ -118,4 +136,23 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 		}
 	}
 	return nil
+}
+
+// Prefer the existing fresh lifecycle/watch sharing path for already subscribed
+// targets. This is only an optimization refusal; it grants no watch authority.
+// A new subscriber after this snapshot still requires post-registration reads.
+func lifecycleCohortHasSubscribers(s *lifecycleSchedule, targets []lifecycleTarget) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, entry := range s.watches {
+		if entry == nil || len(entry.owners) == 0 {
+			continue
+		}
+		for _, target := range targets {
+			if key.binding.project == target.project && key.number == target.number {
+				return true
+			}
+		}
+	}
+	return false
 }

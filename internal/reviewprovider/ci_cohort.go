@@ -2,6 +2,7 @@ package reviewprovider
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 )
@@ -23,6 +24,8 @@ type CIGateCohort struct {
 	initial    *RequiredCheckAuthority
 	initialErr error
 	started    time.Time
+	ordered    []CITarget
+	batched    map[CITarget]ciObservationCohortResult
 }
 
 // NewCIGateCohort enrolls all members before I/O and starts one bounded lifetime.
@@ -43,7 +46,7 @@ func (g *GitHub) NewCIGateCohort(ctx context.Context, targets []CITarget, gateRe
 		members[t] = false
 	}
 	bounded, cancel := context.WithTimeout(ctx, CIObservationTimeout)
-	return &CIGateCohort{g: g, ctx: bounded, cancel: cancel, gate: gateRef, members: members}, nil
+	return &CIGateCohort{g: g, ctx: bounded, cancel: cancel, gate: gateRef, members: members, ordered: slices.Clone(targets)}, nil
 }
 
 func (c *CIGateCohort) Close() {
@@ -73,6 +76,13 @@ func (c *CIGateCohort) ObserveCIGate(ctx context.Context, target CITarget, gateR
 	}
 	if readCtx.Err() != nil {
 		return CIObservation{}, providerError("provider_unavailable", "The provider request was canceled.", 0, 0, false)
+	}
+	if c.batched != nil {
+		row, exists := c.batched[target]
+		if !exists {
+			return CIObservation{}, invalidSelector()
+		}
+		return row.Observation, row.Err
 	}
 	if c.started.IsZero() {
 		c.started = time.Now().UTC()

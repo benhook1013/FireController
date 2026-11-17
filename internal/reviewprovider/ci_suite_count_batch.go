@@ -81,7 +81,7 @@ func (g *GitHub) ciSuiteCountsBatch(ctx context.Context, repository string, head
 	}
 	parts := strings.Split(repository, "/")
 	body, _ := json.Marshal(map[string]any{"query": ciSuiteCountBatchQuery, "variables": map[string]string{"owner": parts[0], "repo": parts[1], "h0": heads[0], "h1": heads[1]}})
-	data, headers, status, err := g.pullReviewPage(ctx, body)
+	data, headers, status, err := g.suiteCountPage(ctx, body)
 	if err != nil {
 		return fail(err)
 	}
@@ -107,6 +107,7 @@ func (g *GitHub) ciSuiteCountsBatch(ctx context.Context, repository string, head
 				}
 			}
 			if failure := ciSuiteBatchPrimaryLimit(headers); failure != nil {
+				g.quota.observeSuiteGraphQLPrimary(ctx, http.StatusOK, failure.RetryTiming)
 				return fail(failure)
 			}
 			// Unsupported secondary/body-only limits remain unclassified;

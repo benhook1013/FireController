@@ -49,15 +49,18 @@ func (g *GitHub) ciResultsPair(ctx context.Context, repository string, heads [2]
 				continue
 			}
 			out[i] = ciResultsPairResult{Err: before[i].Err}
+			noteCIBatchFailure(ctx, out[i].Err)
 			if out[i].Err != nil {
 				continue
 			}
 			path := "/repos/" + repository + "/commits/" + heads[i]
 			checks[i], out[i].Err = g.ciChecks(ctx, path+"/check-runs", heads[i], budgets[i])
+			noteCIBatchFailure(ctx, out[i].Err)
 			if out[i].Err != nil {
 				continue
 			}
 			statuses[i], out[i].Err = g.ciStatuses(ctx, path+"/statuses", budgets[i])
+			noteCIBatchFailure(ctx, out[i].Err)
 			survivors[i] = out[i].Err == nil
 		}
 		after := g.ciResultsPairCounts(ctx, repository, heads, budgets, survivors)
@@ -68,6 +71,7 @@ func (g *GitHub) ciResultsPair(ctx context.Context, repository string, heads [2]
 			}
 			if survivors[i] {
 				out[i].Err = after[i].Err
+				noteCIBatchFailure(ctx, out[i].Err)
 				if out[i].Err == nil {
 					distinct := map[int64]bool{}
 					for _, c := range checks[i] {
@@ -91,6 +95,11 @@ func (g *GitHub) ciResultsPair(ctx context.Context, repository string, heads [2]
 				} else {
 					out[i].Err = providerError("provider_observation_changed", "CI result counts changed during collection.", http.StatusOK, 0, false)
 				}
+			}
+		}
+		for i := range out {
+			if !errors.Is(out[i].Err, errCIInventoryChanged) {
+				noteCIBatchFailure(ctx, out[i].Err)
 			}
 		}
 		if !retry[0] && !retry[1] {
