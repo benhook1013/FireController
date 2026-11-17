@@ -1,0 +1,11 @@
+{
+  "installation_ready": false,
+  "publisher_sha256": "d7b097884fef19d102b69485d92d35c355f3e3fddd6d080793a0a79e24eb32b7",
+  "observed_publisher": "/var/lib/firecontroller/operator-offsite-v1/releases/9530c8a8660be56a5dbcae0952c4b053b430e352/publish-backup-health.py",
+  "interpreter": "/usr/bin/python3",
+  "helper": "/var/lib/firecontroller/operator-offsite-v1/releases/0bcc2ac13377c6344fafe3ead1483904e08accbe/fcd",
+  "helper_sha256": "987f8f1ad5c77c573b4f0d7de9bff15328085e406deae6246a04fc21e987596c",
+  "config_root": "/var/lib/firecontroller/operator-offsite-v1",
+  "staging": "/var/lib/firecontroller/operator-health-staging",
+  "reports": "/var/lib/firecontroller/operator-health"
+}
