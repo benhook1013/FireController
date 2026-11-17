@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -76,6 +77,12 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 	target, _ := url.Parse("http://" + daemon.address)
 	var targetMu sync.RWMutex
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// Own upstream connections instead of leaking them into the process-global
+	// transport across daemon generations. A canceled browser request can leave
+	// a dialed-but-unused connection waiting for its first HTTP header.
+	transport := &http.Transport{Proxy: nil}
+	proxy.Transport = transport
+	t.Cleanup(transport.CloseIdleConnections)
 	proxy.FlushInterval = -1
 	proxy.Director = func(r *http.Request) {
 		targetMu.RLock()
@@ -233,6 +240,7 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 		t.Fatal("CLI fix lost frozen counts")
 	}
 	before := report
+	transport.CloseIdleConnections()
 	daemon.stop(t)
 	daemon = startDaemon(t, ctx, binaries["fcd"], data, env)
 	if daemon.instance != bootstrap.instance {
@@ -277,6 +285,7 @@ func TestPackagedSubagentReportsSmoke(t *testing.T) {
 		t.Fatal("unexpected write/provider/profile change", reportWrites.Load(), forbiddenWrites.Load(), external.Load())
 	}
 	runSubagentReportBrowser(t, ctx, private, env, gateway.URL, project, credential, recorded.ID, browserDeny.URL)
+	transport.CloseIdleConnections()
 	daemon.stop(t)
 	if reportWrites.Load() != 8 || sessionWrites.Load() != 1 || forbiddenWrites.Load() != 0 || external.Load() != 0 {
 		t.Fatal("browser changed review/provider state")
@@ -401,5 +410,77 @@ func runSubagentReportBrowser(t *testing.T, ctx context.Context, private string,
 	}
 	if len(lines) != 2 || json.Unmarshal(lines[1], &result) != nil || result.State != "PASS" || result.Errors != 0 || result.External != 0 || result.Writes != 0 || result.Rows != 3 {
 		t.Fatal("browser safe render result invalid")
+	}
+}
+
+// A canceled proxy request may finish before its dial, leaving a connection
+// that never sent headers. Closing the fixture's owned idle pool releases it
+// before the daemon's bounded graceful shutdown; no timeout is extended.
+func TestSubagentProxyCanceledDialCleanup(t *testing.T) {
+	connected, release := make(chan struct{}), make(chan struct{})
+	closed := make(chan struct{}, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("canceled request reached handler")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	server.Start()
+	defer server.Close()
+	var releaseOnce sync.Once
+	releaseDial := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseDial()
+	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		close(connected)
+		<-release
+		return conn, nil
+	}}
+	defer transport.CloseIdleConnections()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	done := make(chan error, 1)
+	go func() {
+		response, err := transport.RoundTrip(req)
+		if response != nil {
+			response.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-connected:
+	case <-time.After(time.Second):
+		t.Fatal("dial did not connect")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled request succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled caller did not return")
+	}
+	// closeIdle also marks an in-progress dial for closure when it returns.
+	transport.CloseIdleConnections()
+	releaseDial()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("owned canceled dial remained open")
+	}
+	shutdownCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := server.Config.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
 	}
 }
