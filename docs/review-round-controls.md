@@ -171,7 +171,6 @@ Real creation, inspection and inactive restore retain selected and pending selec
 
 The browser requests the read-only `rounds/progress?view=stages` projection. It retains total pending reservations and separately shows `pending_execution` (awaiting a review result) and `pending_adjudication` (completed retained results awaiting source-count finalization). Their sum equals pending; a completed review is not described as in flight merely because it is unadjudicated. Fix completion remains a separate finding obligation. The browser also sends `X-FC-Review-Fix-Status: v1` to show `fixes_pending` on that PR and channel when its pending native results are finalized and accepted fixes remain. The original response remains available without the browser opt-in.
 
-
 ### Source retry timing diagnostics
 
 The stage progress read can include `include_source_retry=true&include_source_retry_timing=true` to expose the validated retained source retry's `timing_state`. `proven` means the scheduling floor has provider-backed timing evidence; `conservative` means the configured local fifteen-minute fallback, not a known provider reset. The separate timing opt-in requires `view=stages` and `include_source_retry=true`. Without it, existing response shapes remain unchanged. This read neither dispatches provider work nor changes retry state and does not expose credential groups or provider response content. Absence of a retained retry is not evidence that a historical operation hit, or did not hit, a provider limit.
