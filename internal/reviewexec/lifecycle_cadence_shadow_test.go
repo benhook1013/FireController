@@ -81,3 +81,21 @@ func TestCadenceShadowWatchOverflowIsExplicit(t *testing.T) {
 		t.Fatalf("%+v", x)
 	}
 }
+
+func TestCadenceShadowDisabledHasNoSideEffects(t *testing.T) {
+	s := &lifecycleSchedule{options: LifecycleSyncOptions{Now: func() time.Time { t.Fatal("disabled diagnostic read clock"); return time.Time{} }}}
+	var engine *Engine // Disabled diagnostics must not reach the local database.
+	s.observeCadenceShadow()
+	engine.observeCadenceDemand(t.Context(), s)
+	if !s.shadowNext.IsZero() || !s.demandShadowNext.IsZero() {
+		t.Fatal("disabled diagnostic changed throttle")
+	}
+	options, err := lifecycleOptions(nil)
+	if err != nil || options.CadenceShadow {
+		t.Fatal("diagnostic enabled by default")
+	}
+	options, err = lifecycleOptions([]LifecycleSyncOptions{{CadenceShadow: true}})
+	if err != nil || !options.CadenceShadow {
+		t.Fatal("explicit opt-in lost")
+	}
+}

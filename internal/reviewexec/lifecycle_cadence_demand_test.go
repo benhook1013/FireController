@@ -93,6 +93,7 @@ func TestCadenceDemandHookCannotChangeObservationResult(t *testing.T) {
 	f, s, _ := lifecycleFixture(t)
 	// Missing optional selection domain makes diagnostics unknown, not an error
 	// returned to the caller or an authority to dispatch/provider-read.
+	s.options.CadenceShadow = true
 	f.e.observeCadenceDemand(t.Context(), s)
 	next := s.demandShadowNext
 	if next.IsZero() {
@@ -112,6 +113,7 @@ func TestCadenceDemandHookCannotChangeObservationResult(t *testing.T) {
 
 func TestCadenceDemandCannotSkipStoredStateHold(t *testing.T) {
 	f, s, clock := lifecycleFixture(t)
+	s.options.CadenceShadow = true
 	reader := externalReader(externalSnapshot(0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
 	target, err := f.e.claimLifecycle(t.Context(), map[string]TargetReader{"test-capability": reader}, s)
 	if err != nil || target == nil {

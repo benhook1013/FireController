@@ -83,6 +83,9 @@ func logCadenceShadow(s *cadenceShadow) {
 
 // Runs only after ordinary observation result/hold handling is finalized.
 func (s *lifecycleSchedule) observeCadenceShadow() {
+	if !s.options.CadenceShadow {
+		return
+	}
 	now := s.options.Now()
 	s.mu.Lock()
 	snapshot := s.cadenceShadowLocked(now)

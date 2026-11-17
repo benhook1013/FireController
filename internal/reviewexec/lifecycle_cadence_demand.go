@@ -108,7 +108,7 @@ func (s *lifecycleSchedule) joinCadenceDemandLocked(d cadenceDemand) cadenceDema
 // Best-effort once/minute after ordinary collection. The 100ms read budget is
 // isolated from observation results; no provider work or scheduling writes.
 func (e *Engine) observeCadenceDemand(ctx context.Context, s *lifecycleSchedule) {
-	if ctx.Err() != nil {
+	if !s.options.CadenceShadow || ctx.Err() != nil {
 		return
 	}
 	now := s.options.Now()
