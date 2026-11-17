@@ -12,6 +12,8 @@ import (
 // CISuiteQualification contains only bounded read evidence, never a credential,
 // repository selector, provider body or a required-CI/merge verdict.
 type CISuiteQualification struct {
+	// Bucket is the existing random process-local quota label, not an account identity.
+	Bucket   string   `json:"bucket,omitempty"`
 	State    string   `json:"state"`
 	Before   [2]int64 `json:"before"`
 	Batched  [2]int64 `json:"batched"`
@@ -79,6 +81,9 @@ func qualifyCISuiteBatch(ctx context.Context, g *GitHub, repository string, head
 	result.State = "refused"
 	if ctx == nil || g == nil || g.httpClient == nil || !validBaseURL(g.baseURL) || !validRepositorySelector(repository) || !lowerCISHA(heads[0]) || !lowerCISHA(heads[1]) || heads[0] == heads[1] {
 		return result, invalidSelector()
+	}
+	if g.quota != nil {
+		result.Bucket = g.quota.bucket
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

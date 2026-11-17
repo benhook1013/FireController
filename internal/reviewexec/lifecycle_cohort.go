@@ -35,7 +35,7 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
 	var qualification *reviewprovider.CISuiteQualification
 	defer func() {
 		if qualification != nil {
-			slog.Info("ci_batch_qualification", "state", qualification.State, "transport_calls", qualification.Requests)
+			slog.Info("ci_batch_qualification", "bucket", qualification.Bucket, "state", qualification.State, "transport_calls", qualification.Requests)
 		}
 	}()
 

@@ -124,7 +124,25 @@ func TestSuiteQualificationPreservesLiveReadGateAndQuota(t *testing.T) {
 	g.readGate = func(context.Context) error { gateCalls++; return errors.New("read admission refused") }
 	originalClient := g.httpClient
 	got, err := qualifyCISuiteBatch(t.Context(), g, "owner/repo", [2]string{ciHead, strings.Repeat("d", 40)})
-	if err == nil || calls != 0 || gateCalls != 1 || got.Requests != 0 || g.quota != q || g.httpClient != originalClient {
+	if err == nil || calls != 0 || gateCalls != 1 || got.Requests != 0 || g.quota != q || got.Bucket != q.bucket || got.Bucket == "" || g.httpClient != originalClient {
 		t.Fatalf("admission bypassed or live adapter mutated: %+v calls=%d gates=%d err=%v", got, calls, gateCalls, err)
+	}
+}
+
+func TestSuiteQualificationBucketIsExistingProcessLabelNotCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "unexpected", 500) }))
+	defer server.Close()
+	g := testGitHub(server, "PRIVATE_CREDENTIAL_SENTINEL")
+	g.quota = NewGitHubQuota()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	got, _ := qualifyCISuiteBatch(ctx, g, "owner/repo", [2]string{ciHead, strings.Repeat("d", 40)})
+	encoded, _ := json.Marshal(got)
+	if got.Bucket != g.quota.bucket || len(got.Bucket) != 16 || strings.Contains(string(encoded), "PRIVATE_CREDENTIAL") || strings.Contains(string(encoded), "owner/repo") || strings.Contains(string(encoded), ciHead) {
+		t.Fatalf("unsafe or missing correlation: %s", encoded)
+	}
+	other := NewGitHubQuota()
+	if got.Bucket == other.bucket {
+		t.Fatal("process labels unexpectedly reused")
 	}
 }
