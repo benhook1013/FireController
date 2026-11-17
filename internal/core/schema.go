@@ -1,0 +1,125 @@
+package core
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strconv"
+	"time"
+)
+
+// DefaultSchemaMigrationTimeout bounds each startup domain migration, which can
+// rewrite retained history before serving. Live writes retain a separate budget.
+const DefaultSchemaMigrationTimeout = 30 * time.Second
+
+// ValidateSchemaMigrationTimeout lets operators reject invalid configuration
+// before filesystem access. Each domain gets its own positive, bounded budget.
+func ValidateSchemaMigrationTimeout(timeout time.Duration) error {
+	if timeout <= 0 || timeout > 24*time.Hour {
+		return Fail("configuration_invalid", "Use a positive --schema-migration-timeout of at most 24h.", 500)
+	}
+	return nil
+}
+
+// EnsureSchema applies ordered, repository-owned domain migrations at exclusive
+// startup, before serving. Each statement group advances one schema version.
+// Previously unversioned domains begin at version zero. Never use client input.
+func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[]string) error {
+	return s.EnsureSchemaWithBackfill(ctx, domain, migrations, nil)
+}
+
+// EnsureSchemaWithBackfill applies the same exclusive startup migrations as
+// EnsureSchema, then runs backfill on that connection before committing. The
+// callback runs only when at least one migration is required and shares the
+// migration deadline and atomic rollback, including schema version metadata.
+// Work must honor the context and use bounded batches, with no filesystem, network or
+// provider calls, and must not commit or roll back the connection itself.
+func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) error {
+	return s.EnsureSchemaWithCompatibility(ctx, domain, migrations, nil, backfill)
+}
+
+// EnsureSchemaWithCompatibility runs a repository-owned predecessor check before
+// pending migrations, inside the same exclusive transaction and deadline. The
+// callback receives the retained numeric version and may repair only recognized
+// historical layouts. It must not change version metadata, commit, roll back,
+// or perform external I/O. It also runs for current versions to reject ambiguous
+// layouts rather than silently treating their version stamp as sufficient proof.
+func (s *Store) EnsureSchemaWithCompatibility(ctx context.Context, domain string, migrations [][]string, compatibility func(context.Context, *sql.Conn, int) error, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
+	if domain == "" || len(migrations) == 0 {
+		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.schemaMigrationTimeout)
+	defer cancel()
+	select {
+	case s.admission <- struct{}{}:
+		defer func() { <-s.admission }()
+	case <-ctx.Done():
+		return storageError(ctx.Err())
+	}
+	conn, err := s.writer.Conn(ctx)
+	if err != nil {
+		return storageError(err)
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
+		return storageError(err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK")
+			// Admission and lock contention retain the ordinary overload error.
+			// Once exclusive startup work began, an expired deadline instead
+			// needs operator investigation before another startup attempt.
+			if resultErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				message := "Startup schema migration exceeded its deadline and was rolled back; operator investigation is required before restarting."
+				if rollbackErr != nil {
+					message = "Startup schema migration exceeded its deadline and rollback could not be confirmed; operator investigation is required before restarting."
+				}
+				resultErr = Fail("schema_migration_timeout", message, 500)
+			}
+		}
+	}()
+	key := "schema:" + domain
+	var raw string
+	version := 0
+	err = conn.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", key).Scan(&raw)
+	if err == nil {
+		version, err = strconv.Atoi(raw)
+		if err != nil || version < 1 || strconv.Itoa(version) != raw {
+			return Fail("schema_invalid", "Domain schema version metadata is invalid.", 500)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return storageError(err)
+	}
+	if version > len(migrations) {
+		return Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
+	}
+	if compatibility != nil {
+		if err = compatibility(ctx, conn, version); err != nil {
+			return err
+		}
+	}
+	needsBackfill := version < len(migrations)
+	for _, migration := range migrations[version:] {
+		for _, statement := range migration {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return storageError(err)
+			}
+		}
+		version++
+		if _, err = conn.ExecContext(ctx, "INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, strconv.Itoa(version)); err != nil {
+			return storageError(err)
+		}
+	}
+	if needsBackfill && backfill != nil {
+		if err = backfill(ctx, conn); err != nil {
+			return storageError(err)
+		}
+	}
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return storageError(err)
+	}
+	committed = true
+	return nil
+}

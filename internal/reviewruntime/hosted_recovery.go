@@ -1,0 +1,257 @@
+package reviewruntime
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+)
+
+// HostedRecoveryReader deliberately excludes posting and allowance methods.
+// Recovery observes an already admitted action; it cannot start another review.
+type HostedRecoveryReader interface {
+	Repository(context.Context, int64) (reviewprovider.Repository, error)
+	ObserveHosted(context.Context, string, int64) (reviewprovider.HostedPublicationSnapshot, error)
+}
+
+// RecoveredHosted reports one bounded recovery pass, not policy sufficiency or
+// finalization. Pending findings remain pending after execution completes.
+type RecoveredHosted struct {
+	State            string `json:"state"`
+	Reason           string `json:"reason"`
+	EvidenceID       string `json:"evidence_id,omitempty"`
+	TriggerCommentID int64  `json:"trigger_comment_id,omitempty"`
+}
+
+// RecoverHosted observes exactly one retained attempt through its original
+// operator capability. It journals source before adoption, publishes complete
+// evidence before settlement, and can resume those local steps after failure.
+// The caller owns scheduling; this function does not poll, repost or spend.
+func RecoverHosted(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author) (RecoveredHosted, error) {
+	return observeHostedAttempt(ctx, reader, captures, engine, project, attemptID, capabilityID, postingActor, providerActor, true)
+}
+
+// A live driver leaves terminal settlement to its supervising journal owner.
+// Restart recovery uses the identical observation and publication path, then
+// settles itself because no live supervisor owns that interrupted dispatch.
+func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, captures *HostedCaptureStore, engine *reviewexec.Engine, project, attemptID, capabilityID string, postingActor, providerActor reviewprovider.Author, settle bool) (result RecoveredHosted, failure error) {
+	if ctx == nil || reader == nil || captures == nil || engine == nil {
+		return RecoveredHosted{}, core.Fail("validation_failed", "Use the configured hosted recovery capability.", 400)
+	}
+	ctx, cancel := context.WithTimeout(reviewprovider.WithGitHubCaller(ctx, "hosted_recovery"), 20*time.Second)
+	defer cancel()
+	bound, err := engine.ReadHostedRecovery(ctx, project, attemptID, capabilityID)
+	if err != nil {
+		return RecoveredHosted{}, err
+	}
+	attempt := bound.Attempt
+	result = RecoveredHosted{State: attempt.State, Reason: "observation_pending", EvidenceID: bound.EvidenceID}
+	if attempt.State == "completed" {
+		result.Reason = "already_completed"
+		return result, nil
+	}
+	if attempt.State == "rate_limited" || attempt.State == "failed" && (bound.Operation.Reason == "hosted_review_skipped" || bound.Operation.Reason == reviewexec.HostedFinishedIncompleteReason) {
+		result.Reason = bound.Operation.Reason
+		return result, nil
+	}
+	check := engine.BeginHostedObserver(capabilityID, project, attempt.OperationID, attempt.ID)
+	var sourceAt time.Time
+	defer func() {
+		reason := hostedRecoveryObserverReason(result.Reason, failure)
+		engine.FinishHostedObserver(check, time.Now().UTC(), sourceAt, reason, hostedObserverFailure(reason, failure))
+		if failure == nil && (result.State == "completed" || result.State == "rate_limited" || result.State == "failed") {
+			engine.ForgetHostedObserver(check)
+		}
+	}()
+	if !settle && attempt.State != "active" {
+		result.Reason = "trigger_recording_pending"
+		return result, core.Fail("review_conflict", "The live hosted trigger has not been recorded by its supervisor.", 409)
+	}
+	finish := func(evidenceID string) (RecoveredHosted, error) {
+		result.EvidenceID = evidenceID
+		if _, err := engine.PublishEvidence(ctx, project, evidenceID, nil); err != nil {
+			var failure *core.Error
+			if !errors.As(err, &failure) || failure.Code != "review_projection_missing" {
+				result.Reason = "publication_pending"
+				return result, err
+			}
+			// Current metadata may have been explicitly retired since dispatch.
+			// The immutable ledger still proves execution; do not invent PR facts
+			// or retain its reservation solely to populate the browser projection.
+		}
+		if !settle {
+			result.State, result.Reason = "completed", "hosted_evidence_observed"
+			return result, nil
+		}
+		next, err := engine.Advance(ctx, project, attempt.ID, attempt.Revision, "completed", "hosted_evidence_recovered", attempt.ExternalID)
+		if err != nil {
+			result.Reason = "settlement_pending"
+			return result, err
+		}
+		result.State, result.Reason = next.State, "hosted_evidence_recovered"
+		return result, nil
+	}
+	// A retained final capture is authoritative. Do not collect a new artifact
+	// that could conflict with the single final slot after a lost local response.
+	if bound.EvidenceID != "" {
+		return finish(bound.EvidenceID)
+	}
+	observations, err := engine.ReadHostedObservations(ctx, project, attempt.ID)
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
+	anchor := *attempt.Anchor
+	intent := reviewprovider.HostedTriggerIntent{OperationID: attempt.OperationID, AttemptID: attempt.ID, HeadSHA: anchor.CandidateSHA}
+	finishedUnproven := attempt.State == "uncertain" && bound.Operation.Reason == "hosted_finished_inventory_unproven"
+	// A decoder repair can make the latest original source complete. Prove it
+	// before fetching mutable provider summaries that may have been edited since
+	// the actual review. Never search past a newer incomplete or invalid record.
+	if finishedUnproven && len(observations) > 0 && observations[len(observations)-1].Input.Kind == "" {
+		in := observations[len(observations)-1].Input
+		record, err := captures.Read(ctx, attempt.ID, CaptureReference{ID: in.CaptureID, SHA256: in.CaptureSHA256, Bytes: in.CaptureBytes})
+		if err != nil {
+			result.Reason = "observation_unavailable"
+			return result, err
+		}
+		if record.RepositoryID != anchor.RepositoryID || record.Repository != anchor.Repository || record.PullNumber != anchor.PullNumber || record.Intent != intent || !record.EarliestPosting.Equal(bound.EarliestPosting) || record.PostingActor.ID != postingActor.ID || record.PostingActor.Kind != postingActor.Kind || record.ProviderActor.ID != providerActor.ID || record.ProviderActor.Kind != providerActor.Kind || in.StartedAt != record.StartedAt.Format(time.RFC3339Nano) || in.FinishedAt != record.FinishedAt.Format(time.RFC3339Nano) || in.ObservedAt != record.Snapshot.ObservedAt.Format(time.RFC3339Nano) {
+			result.Reason = "observation_unavailable"
+			return result, captureError("capture_unavailable")
+		}
+		trigger, err := reviewprovider.RecoverHostedTrigger(record.Snapshot.IssueComments, record.Snapshot.Complete, intent, record.PostingActor, record.EarliestPosting, record.Snapshot.ObservedAt)
+		if err != nil {
+			result.Reason = "observation_unavailable"
+			return result, err
+		}
+		if trigger.State == "adopted" {
+			if attempt.ExternalID != strconv.FormatInt(trigger.CommentID, 10) {
+				result.Reason = "trigger_identity_changed"
+				return result, nil
+			}
+			captured, err := RetainHosted(ctx, captures, engine, attempt, record)
+			if err != nil {
+				result.Reason = captured.Reason
+				return result, err
+			}
+			if captured.Complete {
+				result.TriggerCommentID, sourceAt = trigger.CommentID, record.Snapshot.ObservedAt
+				return finish(captured.Receipt.ID)
+			}
+		}
+	}
+	// A full journal cannot retain another response. Stop before external reads
+	// or artifact creation; an existing final capture above still settles offline.
+	if len(observations) >= 200 {
+		result.State, result.Reason = "uncertain", "hosted_observation_capacity"
+		if settle && attempt.State != "uncertain" {
+			_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, attempt.ExternalID)
+		}
+		return result, err
+	}
+	repository, err := reader.Repository(ctx, anchor.RepositoryID)
+	if err != nil {
+		result.Reason = "source_unavailable"
+		return result, err
+	}
+	if repository.ID != anchor.RepositoryID {
+		result.Reason = "repository_changed"
+		return result, nil
+	}
+	started := time.Now().UTC()
+	snapshot, err := reader.ObserveHosted(ctx, repository.FullName, anchor.PullNumber)
+	finished := time.Now().UTC()
+	if err != nil || !snapshot.Complete {
+		result.Reason = "observation_incomplete"
+		return result, err
+	}
+	record := HostedCaptureRecord{RepositoryID: anchor.RepositoryID, Repository: anchor.Repository, PullNumber: anchor.PullNumber, Intent: intent, PostingActor: postingActor, ProviderActor: providerActor, EarliestPosting: bound.EarliestPosting, StartedAt: started, FinishedAt: finished, Snapshot: snapshot}
+	// Reuse immutable raw source when only our collection timestamps changed.
+	// A healthy wait must not spend the finite journal on identical responses.
+	record, err = reuseHostedCompletionObservation(ctx, captures, attempt, observations, record)
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
+	_, retained, err := retainHostedObservation(ctx, captures, engine, attempt, record)
+	if err != nil {
+		result.Reason = "observation_unavailable"
+		return result, err
+	}
+	// Claim fresh source only after its capture and journal references validate.
+	// Reused immutable source still proves a fresh check, not provider activity.
+	sourceAt = snapshot.ObservedAt
+	trigger, err := reviewprovider.RecoverHostedTrigger(retained.Snapshot.IssueComments, true, intent, retained.PostingActor, retained.EarliestPosting, retained.Snapshot.ObservedAt)
+	if err != nil || trigger.State != "adopted" {
+		result.Reason = trigger.Reason
+		return result, err
+	}
+	result.TriggerCommentID = trigger.CommentID
+	externalID := strconv.FormatInt(trigger.CommentID, 10)
+	if attempt.ExternalID != "" && attempt.ExternalID != externalID {
+		result.Reason = "trigger_identity_changed"
+		return result, nil
+	}
+	// A finished reply or attributed publication with unproven inventory is
+	// already attached to this exact trigger. Keep observing without bouncing its
+	// durable uncertainty to active on every pass; later supported evidence can
+	// complete it from uncertain.
+	if attempt.State == "posting" || attempt.State == "uncertain" && !finishedUnproven {
+		attempt, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "active", "trigger_recovered", externalID)
+		if err != nil {
+			result.Reason = "trigger_recording_pending"
+			return result, err
+		}
+		result.State = attempt.State
+	}
+	captured, err := RetainHosted(ctx, captures, engine, attempt, retained)
+	if err != nil || !captured.Complete {
+		result.Reason = captured.Reason
+		if err == nil && captured.rejectionState != "" {
+			result.State = captured.rejectionState
+			if settle {
+				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, result.State, result.Reason, externalID)
+			}
+			return result, err
+		}
+		if err == nil && (captured.Reason == "hosted_finished_inventory_unproven" || captured.publicationFinished) {
+			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
+			if settle && !finishedUnproven {
+				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, externalID)
+			} else if settle && finishedUnproven && captured.Reason == "hosted_finished_inventory_unproven" {
+				// A fresh, complete collection has again proved the original
+				// provider command finished. Missing inventory remains incomplete,
+				// but cannot occupy the repository lane indefinitely.
+				_, err = engine.ReleaseFinishedHosted(ctx, project, attempt.ID, attempt.Revision, reviewexec.HostedIncompleteCapture{
+					CaptureID: captured.Capture.ID, SHA256: captured.Capture.SHA256, Bytes: captured.Capture.Bytes,
+				})
+				var refusal *core.Error
+				if errors.As(err, &refusal) && refusal.Code == "hosted_incomplete_grace" {
+					err = nil
+				} else if err == nil {
+					result.State, result.Reason = "failed", reviewexec.HostedFinishedIncompleteReason
+				}
+			}
+		}
+		return result, err
+	}
+	return finish(captured.Receipt.ID)
+}
+
+// Diagnostic classification does not change execution or retry semantics.
+func hostedRecoveryObserverReason(reason string, failure error) string {
+	if reason == "" && failure != nil {
+		return "observation_unavailable"
+	}
+	return reason
+}
+
+func hostedObserverFailure(reason string, failure error) error {
+	if failure == nil && reason == "observation_incomplete" {
+		return &reviewprovider.Error{Code: "provider_invalid_response"}
+	}
+	return failure
+}

@@ -1,0 +1,846 @@
+package client
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/benhook1013/FireController/internal/profile"
+	"github.com/benhook1013/FireController/internal/strictjson"
+)
+
+const maxResponseBytes = 4 << 20
+const requestTimeout = 5 * time.Second
+const bootstrapTimeout = 2 * requestTimeout
+
+// SourceRefreshBudget returns the total budget for an already validated source
+// wait preference. Argument validation remains with the command or request.
+func SourceRefreshBudget(waitSeconds int) time.Duration {
+	return providerWaitBudget(waitSeconds)
+}
+
+type Client struct {
+	identity              profile.Context
+	sessionID             string
+	base                  *url.URL
+	token, credentialFile string
+	http                  *http.Client
+	transport             *http.Transport
+	borrowedTransport     bool
+	waitTransports        *waitTransportCache
+}
+
+func New(ctx context.Context, binding profile.Binding) (*Client, error) {
+	return newClient(ctx, binding, nil)
+}
+
+func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool) (*Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, contextError(err)
+	}
+	base, err := url.Parse(binding.Context.ServerURL)
+	identity := binding.Context
+	if err != nil || !safeURL(base, binding.Context.ServerURL) || !cleanText(identity.Profile, 256) || !validID(identity.InstanceID) || !validID(identity.ProjectID) || !validID(identity.WorkerID) || binding.CredentialFile == "" {
+		return nil, fail("binding_invalid", "The service profile must contain a safe URL and explicit bounded identities.", "Correct the selected private profile.", 0)
+	}
+	token, err := readCredential(binding.CredentialFile)
+	if err != nil {
+		return nil, err
+	}
+	var transport *http.Transport
+	var sessionID string
+	waitTransports := &waitTransportCache{}
+	if pool == nil {
+		sessionID, err = newConnectionID()
+		if err != nil {
+			return nil, err
+		}
+		transport = newTransport()
+	} else {
+		transport, sessionID, waitTransports, err = pool.borrow()
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, waitTransports: waitTransports, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var instance struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err = c.verifyInstance(ctx, &instance); err != nil {
+		c.Close()
+		// Only the identity read was sent, never the caller's selected write.
+		var failure *Error
+		if errors.As(err, &failure) {
+			copy := *failure
+			copy.Message = "Service identity verification failed; the requested operation was not sent. " + failure.Message
+			copy.Action = failure.Action + " Then retry the original operation. For writes, retain the exact request, idempotency key and binding. This attempt sent no write; an earlier uncertain attempt may still need same-key recovery."
+			if transientIdentityFailure(failure) && ctx.Err() == nil {
+				copy.Message = "The service is temporarily unavailable; this attempt did not send the selected operation."
+				copy.Action = "Retry the selected operation when the service is available, retaining its original request, idempotency key and binding. For any earlier uncertain write, recover that write using its exact same request body, idempotency key and binding; this failed identity check does not establish its outcome."
+				if failure.Code == "connection_failed" {
+					copy.Message = "The service connection failed after bounded retries; this attempt did not send the selected operation."
+					copy.Action = "Check the configured service address, TLS and transport. " + copy.Action
+				}
+			}
+			err = &copy
+		}
+		return nil, err
+	}
+	if instance.InstanceID != identity.InstanceID {
+		c.Close()
+		return nil, fail("instance_mismatch", "The service instance does not match the selected profile.", "Verify the service and explicitly update the private profile if its identity changed.", 409)
+	}
+	return c, nil
+}
+
+// Only this bootstrap GET may be repeated. The selected operation has not been
+// dispatched; every attempt retains the same credential and instance pin.
+func (c *Client) verifyInstance(ctx context.Context, instance any) error {
+	return c.verifyInstanceWithWait(ctx, instance, waitIdentityRetry)
+}
+
+// The private wait seam keeps bounded retry/cancellation tests deterministic.
+func (c *Client) verifyInstanceWithWait(ctx context.Context, instance any, wait func(context.Context, time.Duration) error) error {
+	ctx, cancel := context.WithTimeout(ctx, bootstrapTimeout)
+	defer cancel()
+	delay := 250 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		// Keep the authenticated connection for the selected operation. A slow
+		// first dial/TLS handshake may use the remaining bootstrap budget rather
+		// than being abandoned at the ordinary operation's five-second limit.
+		err := c.requestWithTimeout(ctx, http.MethodGet, []string{"api", "v1", "instance"}, nil, false, "", nil, http.StatusOK, false, instance, maxResponseBytes, decodeResponse, nil, bootstrapTimeout)
+		var failure *Error
+		if err == nil || !errors.As(err, &failure) || !transientIdentityFailure(failure) {
+			return err
+		}
+		// Cancellation can arrive after a transient response was classified.
+		// Preserve its cause even when this was the final allowed attempt.
+		if err := ctx.Err(); err != nil {
+			return contextError(err)
+		}
+		if attempt >= 6 {
+			return err
+		}
+		if err := wait(ctx, delay); err != nil {
+			return contextError(err)
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+func transientIdentityFailure(failure *Error) bool {
+	if failure.Status == 401 || failure.Status == 403 || failure.Status == 404 {
+		return false
+	}
+	switch failure.Code {
+	case "unauthorized", "forbidden", "not_found", "instance_mismatch", "invalid_response", "redirect_rejected", "tls_verification_failed":
+		return false
+	}
+	return failure.Code == "connection_failed" || failure.Code == "deadline_exceeded" || failure.Status == 502 || failure.Status == 503 || failure.Status == 504
+}
+
+// Certificate verification failures are terminal for reads, not reconnectable outages.
+// Keep mutation outcome handling separate: a transport error is not proof that
+// an earlier attempt of the caller's original write did not execute.
+func tlsVerificationFailure(err error) bool {
+	var certificate *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var roots x509.SystemRootsError
+	return errors.As(err, &certificate) || errors.As(err, &authority) || errors.As(err, &hostname) || errors.As(err, &invalid) || errors.As(err, &roots)
+}
+
+func waitIdentityRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func newConnectionID() (string, error) {
+	var session [16]byte
+	if _, err := rand.Read(session[:]); err != nil {
+		return "", fail("client_unavailable", "A client connection identity could not be created.", "Retry client setup.", 0)
+	}
+	return hex.EncodeToString(session[:]), nil
+}
+
+func (c *Client) Close() {
+	if !c.borrowedTransport {
+		c.transport.CloseIdleConnections()
+		c.waitTransports.close()
+	}
+}
+func (c *Client) Identity() profile.Context { return c.identity }
+
+func fail(code, message, action string, status int) *Error {
+	return &Error{Code: code, Message: message, Action: action, Status: status}
+}
+func invalidResponse() *Error {
+	return fail("invalid_response", "The service returned an invalid or oversized JSON response.", "Compare MCP context.client_source_revision with the installed bound CLI context.client_source_revision. Updating a launcher does not replace a running MCP process; reconnect an older session through its host. If revisions match, report the resource ID and this error to the controller owner. Do not request another provider review to repair a read.", 0)
+}
+func validation() *Error {
+	return fail("validation_failed", "The read requires valid bounded identities, filters and pagination options.", "Use explicit resource IDs and a limit from 1 to 100.", 400)
+}
+func contextError(err error) *Error {
+	if errors.Is(err, context.Canceled) {
+		return fail("canceled", "The service read was canceled.", "Retry the read when needed; no mutation was requested.", 0)
+	}
+	return fail("deadline_exceeded", "The service read deadline expired.", "Check the service connection and retry the read when needed.", 0)
+}
+
+// Transport and enclosing-context timers can expire in either order. Keep
+// timeout classification stable without waiting for another timer to fire.
+func requestContextError(ctx context.Context, err error) error {
+	if canceled := ctx.Err(); canceled != nil {
+		return canceled
+	}
+	var timed net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timed) && timed.Timeout() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func mutationContextError(err error, operation string, unknown bool) *Error {
+	code := "deadline_exceeded"
+	message := "The " + operation + " request deadline expired."
+	if errors.Is(err, context.Canceled) {
+		code = "canceled"
+		message = "The " + operation + " request was canceled."
+	}
+	result := fail(code, message, mutationAction(), 0)
+	result.OutcomeUnknown = unknown
+	return result
+}
+
+func mutationAction() string {
+	return "Check the service, then retry with the exact same idempotency key, request body and selected binding."
+}
+
+func unknownMutation(code, message string, status int) *Error {
+	result := fail(code, message, mutationAction(), status)
+	result.OutcomeUnknown = true
+	return result
+}
+
+func unknownRequest(code, operation, reason string, status int) *Error {
+	return unknownMutation(code, "The "+operation+" "+reason+"; its outcome is unknown.", status)
+}
+
+func requestOperation(method string, segments []string) string {
+	if len(segments) < 5 {
+		return "service mutation"
+	}
+	resource := segments[4:]
+	if method == http.MethodPost && len(resource) == 4 && resource[0] == "reviews" && resource[1] == "external-hosted" && resource[3] == "settlement" {
+		return "Hosted settlement"
+	}
+	if len(resource) == 1 && resource[0] == "jobs" {
+		return "job creation"
+	}
+	if len(resource) == 2 && resource[0] == "jobs" && method == http.MethodPatch {
+		return "job update"
+	}
+	if len(resource) == 1 && resource[0] == "messages" {
+		return "message send"
+	}
+	if len(resource) == 3 && resource[0] == "messages" {
+		if resource[2] == "seen" {
+			return "message seen update"
+		}
+		if resource[2] == "ack" {
+			return "message acknowledgment"
+		}
+	}
+	return "service mutation"
+}
+
+func cleanText(value string, max int) bool {
+	return value != "" && len(value) <= max && value == strings.TrimSpace(value) && utf8.ValidString(value)
+}
+func validID(value string) bool {
+	if !cleanText(value, 128) || value == "." || value == ".." || strings.ContainsAny(value, "/\\%?#") {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidID admits a bounded resource identity without normalization. Transports
+// use the same guard before loading credentials or constructing a client.
+func ValidID(value string) bool { return validID(value) }
+func safeURL(u *url.URL, raw string) bool {
+	if u == nil || !cleanText(raw, 4096) || strings.Contains(raw, "#") || u.Hostname() == "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || net.ParseIP(u.Hostname()).IsLoopback())
+}
+
+func readCredential(path string) (string, error) {
+	invalid := fail("credential_invalid", "The credential must be a private regular file containing one bounded bearer token.", "Use an owner-private credential file referenced by the selected profile.", 0)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fail("credential_unreadable", "The referenced credential file is unavailable.", "Check the private credential reference and its read permissions.", 0)
+	}
+	if !privateFile(info) {
+		return "", invalid
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fail("credential_unreadable", "The referenced credential file could not be opened.", "Check the private credential reference and its read permissions.", 0)
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !privateFile(info) {
+		return "", invalid
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(data) > 4096 {
+		return "", invalid
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" || len(token) > 256 {
+		return "", invalid
+	}
+	for _, r := range token {
+		if r < 33 || r > 126 {
+			return "", invalid
+		}
+	}
+	return token, nil
+}
+func privateFile(info os.FileInfo) bool {
+	return info.Mode().IsRegular() && info.Size() <= 4096 && (runtime.GOOS == "windows" || info.Mode().Perm()&0077 == 0)
+}
+
+func (c *Client) get(ctx context.Context, segments []string, query url.Values, scoped bool, dst any) error {
+	return c.request(ctx, http.MethodGet, segments, query, scoped, "", nil, http.StatusOK, false, dst)
+}
+
+func (c *Client) request(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any) error {
+	return c.requestBounded(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxResponseBytes, decodeResponse)
+}
+
+func decodeResponse(data []byte, dst any) error {
+	if err := strictjson.Decode(data, dst); err != nil {
+		return err
+	}
+	if !completeShape(data, dst) {
+		return strictjson.ErrSyntax
+	}
+	return nil
+}
+
+func (c *Client) requestBounded(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error) error {
+	return c.requestBoundedOptions(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, nil)
+}
+
+// sourceWaitOptions is shared by explicit bounded provider waits. Each domain
+// validates its own limit before transport; ordinary request budgets and shared
+// transport state remain unchanged.
+type sourceWaitOptions struct {
+	reviewWatch        bool // Recognize only the old router's exact plain 404 for this read.
+	deploymentDraining *bool
+	queuedCause        *string
+	queuedReservation  **queuedReservation
+	reviewBlockers     bool
+	operationEvidence  bool
+	operationWait      bool
+	hostedQuery        bool
+	hostedObserver     bool
+	sourceRefusalV4    bool
+	ciWatchChange      bool
+	ciWorkflowDetails  bool
+	seconds            int
+	status             *int
+	budget             time.Duration // Optional domain-owned budget; zero preserves existing waits.
+}
+
+func (c *Client) requestBoundedOptions(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions) error {
+	return c.requestWithTimeout(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, wait, requestTimeout)
+}
+
+func (c *Client) requestWithTimeout(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration) error {
+	return c.requestWithCapabilities(ctx, method, segments, query, scoped, key, body, expectedStatus, mutation, dst, maxBytes, decode, wait, timeout, false)
+}
+
+func (c *Client) requestWithCapabilities(ctx context.Context, method string, segments []string, query url.Values, scoped bool, key string, body []byte, expectedStatus int, mutation bool, dst any, maxBytes int, decode func([]byte, any) error, wait *sourceWaitOptions, timeout time.Duration, ciAssessmentFacts bool) error {
+	operation := requestOperation(method, segments)
+	if err := ctx.Err(); err != nil {
+		if mutation {
+			return mutationContextError(err, operation, false)
+		}
+		return contextError(err)
+	}
+	u := *c.base
+	escaped := strings.TrimRight(u.EscapedPath(), "/")
+	for _, segment := range segments {
+		escaped += "/" + url.PathEscape(segment)
+	}
+	u.Path, _ = url.PathUnescape(escaped)
+	u.RawPath = escaped
+	u.RawQuery = query.Encode()
+	if wait != nil {
+		if parent, ok := ctx.Deadline(); mutation && ok && wait.seconds > 0 {
+			// Bootstrap shares the caller budget. Leave an ordinary response
+			// margin so committed work can return its original pending receipt.
+			fit := int(max(0, time.Until(parent)-requestTimeout) / time.Second)
+			if fit < wait.seconds {
+				reduced := *wait
+				reduced.seconds = fit
+				wait = &reduced
+			}
+		}
+		timeout = providerWaitBudget(wait.seconds)
+		if wait.budget > 0 {
+			timeout = wait.budget
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	r, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return validation()
+	}
+	if method == http.MethodGet && inboxOriginPath(segments) {
+		r.Header.Set("X-FC-Inbox-Origin", "controller-v1")
+	}
+	if mutation {
+		// Go's transport can replay requests carrying Idempotency-Key when
+		// GetBody is available. Only the caller may retry after an uncertain
+		// outcome, so keep the body single-shot.
+		r.GetBody = nil
+	}
+	r.Header.Set("Accept", "application/json")
+	r.Header.Set("Authorization", "Bearer "+c.token)
+	r.Header.Set("X-FC-Instance", c.identity.InstanceID)
+	// Assessment facts are optional retained data, not a wait or watch handshake.
+	if ciAssessmentFacts {
+		r.Header.Set("X-FC-CI-Watch", "change-v3")
+	}
+	if wait != nil {
+		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
+		if wait.ciWatchChange {
+			r.Header.Set("X-FC-CI-Watch", "change-v3")
+		}
+		if wait.ciWorkflowDetails {
+			r.Header.Set("X-FC-CI-Workflow-Details", "3")
+		}
+
+		if wait.reviewBlockers {
+			r.Header.Set("X-FC-Review-Blockers", "true")
+		}
+		if wait.sourceRefusalV4 {
+			r.Header.Set("X-FC-Source-Refusal", "v4")
+		}
+		if wait.operationWait {
+			r.Header.Set("X-FC-Operation-Wait", "7")
+		}
+		if wait.hostedQuery {
+			r.Header.Set("X-FC-Hosted-Query", "2")
+		}
+		if wait.hostedObserver && method == http.MethodGet {
+			r.Header.Set("X-FC-Hosted-Observer", "1")
+		}
+		if wait.operationEvidence {
+			r.Header.Set("X-FC-Operation-Evidence", "true")
+			r.Header.Set("X-FC-Source-Refusal", "v4")
+		}
+	}
+	if len(body) != 0 {
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if mutation {
+		r.Header.Set("Idempotency-Key", key)
+	}
+	if scoped {
+		r.Header.Set("X-FC-Worker", c.identity.WorkerID)
+		r.Header.Set("X-FC-Session", c.sessionID)
+	}
+	if err := ctx.Err(); err != nil {
+		if mutation {
+			return mutationContextError(err, operation, false)
+		}
+		return contextError(err)
+	}
+	httpClient := c.http
+	if wait != nil || timeout > requestTimeout {
+		ownedClient := *c.http
+		ownedClient.Timeout = timeout
+		if wait != nil && timeout > requestTimeout {
+			var cache *waitTransportCache
+			if !mutation {
+				cache = c.waitTransports
+			}
+			waitTransport, release := cache.lease(c.transport, timeout)
+			defer release()
+			ownedClient.Transport = waitTransport
+		}
+		httpClient = &ownedClient
+	}
+	response, err := httpClient.Do(r)
+	if err != nil {
+		if cause := requestContextError(ctx, err); cause != nil {
+			if mutation {
+				return mutationContextError(cause, operation, true)
+			}
+			return contextError(cause)
+		}
+		if mutation {
+			return unknownRequest("connection_failed", operation, "request connection failed", 0)
+		}
+		if tlsVerificationFailure(err) {
+			return fail("tls_verification_failed", "The service certificate could not be verified.", "Check the configured service address, TLS and transport before retrying.", 0)
+		}
+		return fail("connection_failed", "The service connection failed.", "Check the configured service address and transport.", 0)
+	}
+	defer response.Body.Close()
+	if wait != nil && wait.queuedCause != nil {
+		*wait.queuedCause = recognizedQueuedCause(response.Header.Get("X-FC-Review-Queued"))
+		if wait.queuedReservation != nil {
+			*wait.queuedReservation = readQueuedReservation(response.Header, *wait.queuedCause)
+		}
+	}
+	if wait != nil && wait.deploymentDraining != nil {
+		*wait.deploymentDraining = response.Header.Get("X-FC-Deployment-Draining") == "true"
+	}
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		if mutation {
+			return unknownRequest("redirect_rejected", operation, "request was redirected", response.StatusCode)
+		}
+		return fail("redirect_rejected", "The service attempted an unsupported redirect.", "Configure the final service address; credentials are not forwarded through redirects.", response.StatusCode)
+	}
+	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if wait != nil && wait.reviewWatch && response.StatusCode == http.StatusNotFound && err == nil && media == "text/plain" && response.Header.Get("Content-Encoding") == "" {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 64))
+		if readErr == nil && string(body) == "404 page not found\n" {
+			return fail("unsupported_operation", "Review watch is unavailable at this service route.", "Use matching deployed server and client releases; reconnect an older MCP session after installation. No review watch is active. Existing reviews operations and reviews operation reads remain available.", http.StatusNotFound)
+		}
+		return invalidResponse()
+	}
+	if err != nil || media != "application/json" || response.Header.Get("Content-Encoding") != "" {
+		if response.StatusCode >= 500 && response.StatusCode < 600 {
+			if mutation {
+				return unknownRequest("service_unavailable", operation, "returned a service error", response.StatusCode)
+			}
+			return fail("service_unavailable", "The service returned an HTTP server error.", "Check the service and retry the read when it is available.", response.StatusCode)
+		}
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response was invalid", response.StatusCode)
+		}
+		return invalidResponse()
+	}
+	responseLimit := maxBytes
+	success := response.StatusCode == expectedStatus || wait != nil && response.StatusCode == http.StatusOK
+	if !success && responseLimit > 64<<10 {
+		responseLimit = 64 << 10
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
+	if err != nil {
+		if cause := requestContextError(ctx, err); cause != nil {
+			if mutation {
+				return mutationContextError(cause, operation, true)
+			}
+			return contextError(cause)
+		}
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response could not be read", response.StatusCode)
+		}
+		return invalidResponse()
+	}
+	if len(data) > responseLimit {
+		if mutation {
+			return unknownRequest("invalid_response", operation, "response was oversized", response.StatusCode)
+		}
+		return invalidResponse()
+	}
+	if !success {
+		if mutation && response.StatusCode >= 400 && response.StatusCode < 600 {
+			if refusal, valid := c.serviceError(data, response.StatusCode); valid {
+				if wait != nil && sourceResponseOutcomeUnknown(data) {
+					refusal.OutcomeUnknown = true
+					refusal.Action = mutationAction()
+				}
+				if response.StatusCode >= 500 {
+					refusal.Message = "The " + operation + " returned a service error; its outcome is unknown."
+					refusal.Action = mutationAction()
+					refusal.OutcomeUnknown = true
+				}
+				return refusal
+			}
+		}
+		if mutation {
+			return unknownRequest("unexpected_status", operation, "returned an unexpected status", response.StatusCode)
+		}
+		failure, _ := c.serviceError(data, response.StatusCode)
+		return failure
+	}
+	if wait != nil {
+		*wait.status = response.StatusCode
+	}
+	if wait != nil && wait.ciWatchChange && (len(response.Header.Values("X-FC-CI-Watch")) != 1 || response.Header.Get("X-FC-CI-Watch") != "change-v3") {
+		return fail("unsupported_operation", "The service did not acknowledge CI watch change-v3.", "Use matching deployed server and client releases; deploy the backend before installing this client. Passed-result rearming is unconfirmed. No automatic retry or fallback was attempted.", response.StatusCode)
+	}
+	if decode(data, dst) != nil || c.hasSensitive(dst) {
+		if mutation {
+			return unknownRequest("invalid_response", operation, "receipt was invalid", response.StatusCode)
+		}
+		return invalidResponse()
+	}
+	return nil
+}
+
+type serviceFailure struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Details any    `json:"details,omitempty"`
+	} `json:"error"`
+	RequestID string `json:"request_id"`
+}
+
+func (c *Client) serviceError(data []byte, status int) (*Error, bool) {
+	var value serviceFailure
+	if len(data) > 64<<10 || strictjson.Decode(data, &value) != nil || !completeShape(data, &value) || !safeCode(value.Error.Code) || len(value.Error.Message) > 512 || !validID(value.RequestID) {
+		return invalidResponse(), false
+	}
+	details, err := json.Marshal(value.Error.Details)
+	if err != nil || c.hasSensitive(&value) {
+		return invalidResponse(), false
+	}
+	// Three groups of twenty 128-byte identities can exceed the ordinary
+	// detail budget. Allow only the validated blocker shape in a 48 KiB
+	// envelope, including worst-case six-byte JSON escapes per identity byte.
+	if len(details) > 4096 && (value.Error.Code != "worker_retirement_blocked" || len(details) > 48<<10 || safeWorkerRetirementBlockers(value.Error.Details) == nil) {
+		return invalidResponse(), false
+	}
+	result := fail(value.Error.Code, "The service refused this scoped request.", "Check the selected instance, project, worker and current access.", status)
+	result.RequestID = value.RequestID
+	if result.Code == "controller_message_one_way" && status == http.StatusConflict {
+		result.Message = "Controller notifications are one-way."
+		result.Action = "Read or acknowledge the notification normally; use a new worker-to-worker message for any follow-up. Do not reply to the Controller conversation or change sender identity."
+	}
+
+	result.Details = c.safeDetails(value.Error.Details, result.Code)
+	if result.Code == "review_busy" && status != http.StatusConflict {
+		result.Details = nil
+	}
+	if status == http.StatusConflict && result.Code == "review_conflict" {
+		reviewConflictDiagnostic(result)
+	}
+	if status == http.StatusServiceUnavailable && result.Code == "overloaded" {
+		result.Message = "The controller temporarily could not complete this request."
+		result.Action = "Retry this same read after a short delay, retaining its resource ID. Report persistent failures with request_id."
+		if details, ok := result.Details.(map[string]any); ok && details["reason"] == "result_wait_lifetime" {
+			result.Message = "The controller ended this temporary wait during shutdown."
+			result.Action = "When the controller is available, reattach the same wait with the original operation ID or CI PR/head/base pins. Interrupted waiting does not mean CI failed. Preserve the original request and any key."
+		}
+	}
+	if result.Code == "overloaded" || result.Code == "storage_unavailable" {
+		if details, ok := result.Details.(map[string]any); ok {
+			switch details["reason"] {
+			case "ci_watch_scope_read":
+				result.Message = "The controller could not complete the CI watch's scoped authentication read."
+			case "ci_watch_binding_read":
+				result.Message = "The controller could not complete a fresh CI watch source-binding read."
+			case "ci_watch_capacity":
+				result.Message = "The controller's bounded CI watch capacity is occupied."
+			case "ci_watch_observer_unavailable":
+				result.Message = "The configured CI observer is unavailable."
+			case "ci_watch_canceled":
+				result.Message = "The CI watch request context ended at the controller; no CI result was returned."
+			}
+			if ciWatchRefusalReason(details["reason"]) {
+				result.Action = "If still needed when the controller is available, retry this same bounded CI read with the original PR/head/base pins. This does not establish CI failure or a changed comparison. Keep request_id and reason for persistent failures."
+				if details["reason"] == "ci_watch_capacity" {
+					result.Action = "Let existing watches complete before starting one later bounded read with the same PR/head/base pins if still needed; avoid repeatedly rearming. No CI failure or comparison change was established."
+				} else if details["reason"] == "ci_watch_canceled" {
+					result.Action = "If waiting is still needed, start one new bounded CI read with the same PR/head/base pins. This does not identify who ended the request or establish CI failure."
+				}
+			}
+		}
+	}
+	if result.Code == "review_inflight" && status == http.StatusConflict {
+		result.Message = "This PR and channel already have a pending review request; no new request was accepted."
+		result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations) and retain the original request. Do not submit another key to bypass it."
+		if details, ok := result.Details.(map[string]any); ok && details["operation_id"] != nil {
+			result.Action = "Read and retain the operation in details.operation_id with review_operation_read (CLI: reviews operation). Cancel only with queued-only review_operation_control when cancellation is intended; issued work must follow its original recovery path. Do not submit another key to bypass it."
+		}
+	}
+	if status == http.StatusConflict {
+		switch result.Code {
+		case "review_busy":
+			result.Message = "Existing review work is pending; this request was not accepted."
+			result.Action = "Inspect existing work with review_operations_list (CLI: reviews operations), or read its original accepted receipt. Do not replace or cancel pending work."
+			if details, ok := result.Details.(map[string]any); ok {
+				id := details["selection_id"].(string)
+				result.Message = "A review selection in this channel is already pending; this start was not accepted."
+				result.Action = "Read the existing selection with review_selection_read selection_id=" + id + " (CLI: reviews run-read --selection-id " + id + "). Optional bounded waiting follows its original operation when available. This refusal accepted no new start; do not replace or cancel pending work."
+			}
+		case "external_hosted_pending":
+			hint := externalHostedPendingDiagnostic()
+			result.Message, result.Action = hint.Explanation, hint.NextAction
+		case "review_round_capacity":
+			result.Message = "No unreserved review capacity is available for this PR/channel; existing work may already occupy the remaining allocation."
+			result.Action = "Use review_operations_list filtered by pull_number and channel (CLI: reviews operations --pr NUMBER --channel CHANNEL) to find existing queued, active or completed-unfinalized work, then read its original operation. Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) separately for configured limits and completed counts. Do not submit duplicate reviews, cancel existing work or change grants automatically."
+		case "review_round_closed":
+			result.Message = "This PR review channel is explicitly closed."
+			result.Action = "Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) and finish any existing evidence/finding obligations. Reopening requires an authorized deliberate grant; do not retry the review request or reset taper automatically."
+		case "review_round_complete":
+			result.Message = "This PR review channel has reached its configured discovery stop."
+			result.Action = "Read review_rounds_read (CLI: reviews rounds read --pr NUMBER --channel CHANNEL) to distinguish maximum usage from taper completion, and collect unfinished results with review_operations_list. More reviews require an authorized deliberate additional grant; changed commits do not reset earned progress."
+		case "review_round_changed":
+			result.Message = "This review request is bound to a different round allocation."
+			result.Action = "Read the original review operation and current review_rounds_read controls (CLI: reviews rounds read --pr NUMBER --channel CHANNEL). Preserve the original identity and resolve its actual stop before requesting replacement work; do not duplicate active reviews or reset taper."
+		case "worker_retirement_blocked":
+			result.Message = "The worker still owns unfinished work or unacknowledged messages."
+			result.Action = "Read workers retirement WORKER_ID (MCP worker_retirement_read) for blockers. Reassign or finish jobs, reassign or resolve pending direct/assigned-job notes, and explicitly acknowledge messages before retrying retirement with a new key. Nothing is reassigned or acknowledged automatically."
+		case "worker_retired":
+			result.Message = "This worker is retired."
+			result.Action = "Select an active worker for new assignments or messages; retained historical records remain readable."
+		case "reviews_ci_unavailable":
+			result.Message = "No completed retained source observation with CI is available for this PR."
+			result.Action = "For current CI checking, use wait_for_ci (CLI: reviews ci-wait) with the current PR/head/base pins; it returns required-check details using the final merge branch's gate without a separate source refresh. ci-assess only reads retained selected-base CI. If that assessment is intended, collect an already-pending CI-enabled refresh with review_source_refresh_read (CLI: reviews source-operation), or request review_source_refresh with include_ci:true (CLI: reviews source-refresh --ci) and current configuration/head, then assess after it completes. This read did not contact GitHub or start a review; credentials need no change."
+		case "reviews_source_unavailable":
+			result.Message = "No completed stored source observation is available for this PR."
+			result.Action = "Collect any already-pending original refresh with review_source_refresh_read (CLI: reviews source-operation). Otherwise request review_source_refresh (CLI: reviews source-refresh) using the current configuration/head, then collect its result. Reassess after the refresh completes. Assessment only reads stored data; it does not refresh GitHub or start a review. Do not change credentials or submit duplicate refreshes."
+		case "revision_conflict", "checklist_revision_conflict", "job_workstream_revision_conflict", "note_revision_conflict", "primary_job_revision_conflict", "project_presentation_revision_conflict", "publication_revision_conflict", "review_attempt_revision_conflict", "review_round_revision_conflict", "summary_revision_conflict", "worker_pause_revision_conflict", "review_configuration_revision_conflict":
+			result.Message = "The record changed since the selected revision."
+			result.Action = "Read the current record, preserve concurrent edits, and reapply only the intended change with its current revision and a new idempotency key."
+		}
+	}
+	if result.Code == "review_configuration_revision_conflict" {
+		result.Message = "The review execution configuration changed since the supplied revision."
+		result.Action = "Read review_execution_read (CLI: reviews execution), verify the current configuration, then submit the intended request using its current revision and a new idempotency key. No work was queued by this refusal; do not change credentials."
+	}
+	if result.Code == "reviews_readiness_unavailable" {
+		result.Message = "No completed source refresh with readiness is available for this PR."
+		result.Action = "Read the last source-refresh operation. If held, resolve its reason first; then refresh the current comparison with include_readiness and assess the completed result. Do not change credentials after a successful identity check."
+	}
+	if result.Code == "review_result_unsettled" {
+		result.Message = "The complete captured result awaits settlement of its original review attempt."
+		result.Action = "Read the original review operation and retained evidence. Resolve its local settlement hold before retrying finalization; contact the controller owner if it persists. Do not rerun the provider review or change credentials."
+	}
+	if result.Code == "instance_mismatch" {
+		result.Message = "The service instance does not match the selected profile."
+		result.Action = "Verify the service and explicitly update the private profile if its identity changed."
+	}
+	return result, true
+}
+
+func safeCode(value string) bool {
+	if len(value) < 1 || len(value) > 64 {
+		return false
+	}
+	for i, r := range value {
+		if r >= 'a' && r <= 'z' || i > 0 && (r >= '0' && r <= '9' || r == '_') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+func (c *Client) sensitive(value string) bool {
+	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
+}
+func (c *Client) safeDetails(value any, code string) any {
+	if code == "review_busy" {
+		object, ok := value.(map[string]any)
+		if !ok || len(object) != 3 {
+			return nil
+		}
+		id, idOK := object["selection_id"].(string)
+		channel, channelOK := object["channel"].(string)
+		state, stateOK := object["state"].(string)
+		if !idOK || ValidateReviewRunSelectionID(id) != nil || c.sensitive(id) || !channelOK || !oneReviewOf(channel, "cli", "hosted") || !stateOK || !oneReviewOf(state, "queued", "selecting") {
+			return nil
+		}
+		return map[string]any{"selection_id": id, "channel": channel, "state": state}
+	}
+	if code == "external_hosted_pending" {
+		return safeExternalHostedPendingDetails(value)
+	}
+	if code == "worker_retirement_blocked" {
+		return safeWorkerRetirementBlockers(value)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]any)
+	if code == "credential_permissions_changed" {
+		for key, item := range safeCredentialPermissionDetails(object) {
+			result[key] = item
+		}
+	}
+	if code == "review_conflict" {
+		for key, item := range safeReviewConflictDetails(object) {
+			result[key] = item
+		}
+	}
+	for key, item := range object {
+		switch key {
+		case "reason":
+			if reason, ok := item.(string); ok && (code == "overloaded" && reason == "result_wait_lifetime" || (code == "overloaded" || code == "storage_unavailable") && ciWatchRefusalReason(reason)) {
+				result[key] = reason
+			}
+		case "operation_id":
+			if id, ok := item.(string); ok && (code == "review_queue_operation_pending" || code == "review_inflight") && ValidateReviewOperationID(id) == nil && !c.sensitive(id) {
+				result[key] = id
+			}
+		case "current_revision":
+			if n, ok := item.(float64); ok && (n >= 1 || n == 0 && (code == "primary_job_revision_conflict" || code == "checklist_revision_conflict" || code == "worker_pause_revision_conflict" || code == "job_workstream_revision_conflict" || code == "project_presentation_revision_conflict")) && n == float64(int64(n)) && n < 1<<53 {
+				result[key] = int64(n)
+			}
+		case "project_id":
+			if id, ok := item.(string); ok && validID(id) && !c.sensitive(id) {
+				result[key] = id
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// Required DTO fields cannot silently become zero values. Optional cursor and
+// reply fields carry omitempty tags; all JSON validation stays bounded upstream.
+
+// Only static CI-watch refusal stages cross this diagnostic boundary.
+func ciWatchRefusalReason(value any) bool {
+	switch value {
+	case "ci_watch_scope_read", "ci_watch_binding_read", "ci_watch_capacity", "ci_watch_observer_unavailable", "ci_watch_canceled":
+		return true
+	}
+	return false
+}

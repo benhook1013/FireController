@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly bounded enrolled artifact check
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+Unit=firecontroller-artifact-retention.service
+
+[Install]
+WantedBy=timers.target
