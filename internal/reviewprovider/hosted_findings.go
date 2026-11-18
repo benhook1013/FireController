@@ -870,9 +870,18 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 	}
 	followup, followupItems := false, 0
 	currentPrompt, headingClose := false, -1
+	marker, marked, malformed := publicationBatchMarker(review.Body)
+	continuation := selected && marked && !malformed && marker.ordinal > 1
+	visible := 0
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if l.hidden || l.text == "" {
+			continue
+		}
+		visible++
+		// Only an attributed continuation batch may carry this exact leading
+		// decoration. It supplies no finding, count, or publication authority.
+		if continuation && visible == 1 && l.quote == 0 && l.text == "**Review continued from previous batch...**" {
 			continue
 		}
 		if selected && l.quote == 0 {
