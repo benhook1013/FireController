@@ -8,7 +8,7 @@ import (
 
 func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management", "malformed-state"} {
+		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management", "malformed-state", "malformed-scheduling"} {
 			t.Run(channel+"/"+change, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				f.e.publishAttempt = publishAttemptTransition
@@ -34,7 +34,7 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 				if change == "explicit-pause" || change == "automatic-pause" {
 					reason = "pull_scheduling_paused"
 				}
-				if change == "malformed-state" {
+				if change == "malformed-state" || change == "malformed-scheduling" {
 					reason = "automatic_scheduling_unavailable"
 				}
 				var preparedAttempt Attempt
@@ -62,6 +62,8 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 						admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 					case "lost-management":
 						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					case "malformed-scheduling":
+						admissionSQL(t, f, `UPDATE review_scheduling SET updated_at=? WHERE project_id=?`, "not-a-timestamp", attemptProject)
 					case "malformed-state":
 						admissionSQL(t, f, `UPDATE review_execution_config SET body_json='{' WHERE project_id=?`, attemptProject)
 					}
@@ -75,6 +77,21 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 					t.Fatal("late control refusal became a worker failure", err)
 				}
 				after := roundOperation(t, f, id)
+				if change == "malformed-state" {
+					// Damaged retained configuration is not a proven scheduling-only
+					// refusal: preserve the unused preparation for explicit recovery.
+					if after.State != "preparing" || after.AttemptID != preparedAttempt.ID || after.ActorID != before.ActorID || after.WorkerID != before.WorkerID || after.HeadSHA != before.HeadSHA || after.ConfigurationRevision != before.ConfigurationRevision || after.Channel != before.Channel || driver.prepares.Load() != 1 || driver.calls.Load() != 0 {
+						t.Fatal("damaged configuration discarded preparation or dispatched", before, after)
+					}
+					if attribution != snapshotTable(t, f, "review_automatic_selections") || waits != snapshotTable(t, f, "review_operation_waits") || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 1 {
+						t.Fatal("damaged configuration changed retained work or reservation")
+					}
+					var state, anchor, intent, external string
+					if err := f.store.DB().QueryRow(`SELECT state,anchor_json,intent,external_id FROM review_execution_attempts WHERE id=?`, preparedAttempt.ID).Scan(&state, &anchor, &intent, &external); err != nil || state != "preparing" || anchor != "null" || intent != "" || external != "" {
+						t.Fatal("damaged configuration recorded dispatch intent", state, anchor, intent, external, err)
+					}
+					return
+				}
 				if after.State != "queued" || after.Reason != reason || after.AttemptID != "" || after.ActorID != before.ActorID || after.WorkerID != before.WorkerID || after.HeadSHA != before.HeadSHA || after.ConfigurationRevision != before.ConfigurationRevision || after.Channel != before.Channel || driver.prepares.Load() != 1 || driver.calls.Load() != 0 {
 					t.Fatal("late refusal lost the request or dispatched", before, after)
 				}

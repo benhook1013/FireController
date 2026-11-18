@@ -673,16 +673,17 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
+			// Preserve the unused preparation and reservation on damaged retained
+			// history, without stopping unrelated candidates. Configuration damage
+			// also carries the broader project-local tag, so classify it first.
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+				continue
+			}
 			if automaticProjectRefused(err) {
 				// Only proven scheduling-local corruption releases this unused preparation.
 				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
 					return err
 				}
-				continue
-			}
-			// Preserve the unused preparation and reservation on damaged retained
-			// history, without stopping unrelated candidates.
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
