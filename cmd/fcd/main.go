@@ -63,7 +63,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
-	cliParallel := flags.Int("review-cli-parallel", 3, "most CLI reviews one provider account may run at once (1-16); the observed allowance can lower it")
+	cliParallel := flags.Int("review-cli-parallel", 2, "most CLI reviews one provider account may run at once (1-16); the observed allowance can lower it")
 	queueSortingWrites := flags.Bool("queue-sorting-writes", false, "allow project sorting writes only after compatible backup and rollback readers are qualified")
 	cadenceShadow := flags.Bool("lifecycle-cadence-shadow", false, "enable bounded aggregate lifecycle diagnostics; does not change observation cadence")
 	batchMetadata := flags.Bool("lifecycle-metadata-batching", false, "pair naturally due source metadata reads; preserves polling cadence and CI authority")
