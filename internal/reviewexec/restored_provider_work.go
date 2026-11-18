@@ -238,6 +238,15 @@ func abandonRestoredAttempts(ctx context.Context, tx *sql.Tx, at time.Time, summ
 		if !restoredOperationValid(o) || a.ID != o.AttemptID || a.ProjectID != o.ProjectID || a.OperationID != o.ID || a.State != o.State || a.Revision < 1 || a.Revision >= math.MaxInt64-1 || o.Revision <= a.Revision || !hostedObservationID(a.ID, "review_attempt_") || !identifier.MatchString(a.Provider) || !identifier.MatchString(a.Account) || (a.ExternalID != "" && !identifier.MatchString(a.ExternalID)) {
 			return restoredWorkInvalid()
 		}
+		var prior int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_attempts WHERE operation_id=? AND id<>?`, o.ID, a.ID).Scan(&prior); err != nil {
+			return err
+		}
+		if prior != 0 {
+			if err := validateOperationWaitHistory(ctx, tx, o); err != nil {
+				return err
+			}
+		}
 		stamp, err := attemptRecordingStamp(ctx, tx, o, &a, at)
 		if err != nil {
 			return err

@@ -143,6 +143,9 @@ func (e *Engine) recordHostedAllowance(ctx context.Context, project, attemptID s
 			if !hostedAllowanceBinding(retained, attempt, operation, query) {
 				return hostedAllowanceUnavailable()
 			}
+			if retained.Input.Observation.State == "cooldown_observed" {
+				return validateCooldownReference(ctx, tx, attempt, operation, query, retained.Input)
+			}
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {

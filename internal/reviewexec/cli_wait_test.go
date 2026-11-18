@@ -260,15 +260,24 @@ func TestCLIWaitPauseResumeCancelNeverDispatchesOrReopensHistory(t *testing.T) {
 				if err != nil || claim.ID != "" {
 					t.Fatal("paused direct claim", claim, err)
 				}
+				if paused := cliWaitRead(t, f, o.ID); paused.Wait == nil || !paused.Wait.Paused {
+					t.Fatal("pause did not retain paused wait", paused)
+				}
 				timerControl(t, f, o.ID, "resume", "cli-wait-resume")
 				resumed := cliWaitRead(t, f, o.ID)
-				if resumed.Wait == nil || resumed.Wait.RetryNotBefore != o.Wait.RetryNotBefore || resumed.Wait.BaselineAttemptID != a.ID {
+				if resumed.Wait == nil || resumed.Wait.Paused || resumed.Wait.RetryNotBefore != o.Wait.RetryNotBefore || resumed.Wait.BaselineAttemptID != a.ID {
 					t.Fatal("resume changed retained timer/pin", resumed)
 				}
 				priorityPending(t, f, o.ID)
 			}
 			assertCLIWaitNoCredit(t, f)
 			assertCLIWaitSnapshot(t, f)
+			if action == "pause" {
+				claimed, err := f.e.StartAttempt(t.Context(), attemptProject, o.ID)
+				if err != nil || claimed.ID == "" {
+					t.Fatal("resumed due wait cannot be claimed", claimed, err)
+				}
+			}
 		})
 	}
 }
@@ -773,6 +782,20 @@ func (q cliRetryFailureQuery) QueryRowContext(ctx context.Context, query string,
 		return q.EvidenceQuery.QueryRowContext(ctx, `SELECT * FROM missing_cli_retry_history`)
 	}
 	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
+}
+
+// Both selector shapes must receive the same injected failure: Hosted reads
+// a set of tied candidates, while CLI reads one candidate row.
+func (q cliRetryFailureQuery) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, q.match) {
+		if q.cancel {
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			return q.EvidenceQuery.QueryContext(canceled, query, args...)
+		}
+		return q.EvidenceQuery.QueryContext(ctx, `SELECT * FROM missing_cli_retry_history`)
+	}
+	return q.EvidenceQuery.QueryContext(ctx, query, args...)
 }
 
 type cliExhaustionCountQuery struct {

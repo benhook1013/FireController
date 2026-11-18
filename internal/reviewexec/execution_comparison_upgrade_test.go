@@ -39,10 +39,16 @@ func TestExecutionEightUpgradePreservesCurrentComparisonTriggers(t *testing.T) {
 	if after := snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "review_execution_evidence") + snapshotTable(t, f, "review_comparison_proofs"); before != after {
 		t.Fatal("upgrade changed retained source/proof")
 	}
-	admissionSQL(t, f, `UPDATE review_execution_attempts SET revision=revision WHERE id=?`, a.ID)
-	if n := attemptCount(t, f.store, `SELECT count(*) FROM review_comparison_proofs WHERE state='dirty'`); n != 1 {
-		t.Fatal("attempt mutation did not invalidate proof", n)
+	assertProof := func(want string) {
+		t.Helper()
+		var state string
+		if err := f.store.DB().QueryRow("SELECT state FROM review_comparison_proofs WHERE operation_id=?", a.OperationID).Scan(&state); err != nil || state != want {
+			t.Fatal("unexpected proof state", state, want, err)
+		}
 	}
+	assertProof("ready")
+	admissionSQL(t, f, `UPDATE review_execution_attempts SET revision=revision WHERE id=?`, a.ID)
+	assertProof("dirty")
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal("restart", err)
 	}

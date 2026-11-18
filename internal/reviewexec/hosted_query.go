@@ -184,7 +184,7 @@ func (e *Engine) ReadHostedAllowanceQuery(ctx context.Context, project, attemptI
 		if err != nil {
 			return err
 		}
-		o, err := readOperation(ctx, tx, project, a.OperationID)
+		o, err := readOperationIdentity(ctx, tx, project, a.OperationID)
 		if err != nil {
 			return err
 		}
@@ -226,6 +226,9 @@ func (e *Engine) ConfirmHostedAllowanceQuery(ctx context.Context, project, attem
 			}
 			result = prior
 			return nil
+		}
+		if o.AttemptID != a.ID {
+			return conflict()
 		}
 		prior.Revision = 2
 		owned := comment
