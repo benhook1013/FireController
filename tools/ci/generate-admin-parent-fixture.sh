@@ -7,12 +7,22 @@ output=${1:?Supply a new absolute fixture destination}
 case "$output" in /*) ;; *) echo "Fixture destination must be absolute" >&2; exit 1;; esac
 [[ ! -e "$output" ]] || { echo "Fixture destination already exists" >&2; exit 1; }
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+created_output=false
+cleanup() {
+  status=$?
+  rm -rf "$work"
+  if (( status != 0 )) && [[ "$created_output" == true ]]; then
+    rm -rf -- "$output"
+  fi
+  return "$status"
+}
+trap cleanup EXIT
 mkdir "$work/parent"
 git -C "$root" archive "$parent" | tar -x -C "$work/parent"
 mkdir "$work/parent/tools/admin-parent-fixture"
 cp "$root/tools/ci/admin-parent-fixture.go.txt" "$work/parent/tools/admin-parent-fixture/main.go"
 mkdir -m 700 "$output"
+created_output=true
 (cd "$work/parent" && GOWORK=off go run ./tools/admin-parent-fixture "$work/source" "$output")
 # The predecessor closes/checkpoints SQLite before preserving its source.
 mv "$work/source" "$output/source"

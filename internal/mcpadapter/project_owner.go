@@ -152,7 +152,7 @@ func ownerManagementDefinitions() []definition {
 	}
 	strEnum := func(values ...string) map[string]any { return map[string]any{"type": "string", "enum": values} }
 	channels := map[string]any{"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": strEnum("cli", "hosted")}
-	permissions := map[string]any{"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": strEnum("read", "write", "manage")}
+	permissions := map[string]any{"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": strEnum("read", "write", "manage"), "contains": strEnum("read", "manage")}
 	key := text(128)
 	key["minLength"] = 1
 	revision := integer(0, math.MaxInt64-1)

@@ -105,7 +105,7 @@ func parseMutation(command, operation string, args []string) (*mutationInvocatio
 		}
 		if !assigned {
 			i++
-			if i >= len(args) {
+			if i >= len(args) || (call.operation == "inbox ack" && strings.HasPrefix(args[i], "-")) {
 				return nil, false
 			}
 			value = args[i]

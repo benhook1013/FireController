@@ -66,7 +66,7 @@ func (c *Client) WorkersWithRetired(ctx context.Context, options PageOptions, in
 		return Page[Worker]{}, invalidResponse()
 	}
 	for _, item := range value.Items {
-		if !validID(item.ID) || item.ProjectID != c.identity.ProjectID || !cleanText(item.Name, 200) {
+		if !validID(item.ID) || item.ProjectID != c.identity.ProjectID || !cleanText(item.Name, 200) || (!includeRetired && item.Retired) {
 			return Page[Worker]{}, invalidResponse()
 		}
 	}

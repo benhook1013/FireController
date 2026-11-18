@@ -70,6 +70,11 @@ func TestExistingManagementOfficialSDKNativePublicationAndCurrentAuthority(t *te
 	setAdministrator(false)
 	diagnosticResult(t, call(t, session, "publication_apply", apply), "forbidden", false)
 	setAdministrator(true)
+	var unchanged client.PublicationConfiguration
+	decodeResult(t, call(t, session, "publication_configuration_read", map[string]any{}), &unchanged)
+	if unchanged.Enabled || unchanged.Revision != 0 {
+		t.Fatal("denied publication changed configuration", unchanged)
+	}
 	var published client.PublicationReceipt
 	decodeResult(t, call(t, session, "publication_apply", apply), &published)
 	if published.Revision != 1 {
