@@ -167,7 +167,7 @@ func TestLifecycleSyncPausedNoopHeadCloseMergeAndReopen(t *testing.T) {
 	if lifecycleTick(t, f, s, r) {
 		t.Fatal("closed poll too frequent")
 	}
-	clock.Add(4 * time.Minute)
+	clock.Add(59 * time.Minute) // closed pull requests poll hourly
 	pull.State = "open"
 	r.ci = nil
 	if !lifecycleTick(t, f, s, r) || lifecycleRead(t, f).State != "open" {

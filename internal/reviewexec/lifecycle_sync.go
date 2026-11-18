@@ -25,21 +25,30 @@ type LifecycleSyncOptions struct {
 	// QualifyMetadataPair admits one natural diagnostic per account; never publishes probe facts.
 	QualifyMetadataPair bool
 	// BatchCIWitnesses is opt-in; no daemon configuration enables it by default.
-	BatchCIWitnesses                                         bool
-	QualifyCIBatching                                        bool
-	Now                                                      func() time.Time
-	Wait                                                     func(context.Context, time.Duration) error
+	BatchCIWitnesses  bool
+	QualifyCIBatching bool
+	Now               func() time.Time
+	Wait              func(context.Context, time.Duration) error
+	// WebhookHints means signed GitHub webhooks wake the metadata and CI lanes, so
+	// periodic polling of open pull requests is only a slow fallback.
+	WebhookHints                                             bool
 	OpenInterval, ClosedInterval, MergedInterval, CIInterval time.Duration
 	ScanInterval                                             time.Duration
 }
 
 func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, error) {
-	c := LifecycleSyncOptions{Now: time.Now, Wait: lifecycleWait, OpenInterval: time.Minute, ClosedInterval: 5 * time.Minute, MergedInterval: 6 * time.Hour, CIInterval: 5 * time.Minute, ScanInterval: time.Second}
+	// Merged pull requests are terminal and closed ones rarely reopen; webhook
+	// hints still wake either lane, so periodic polling of them is nearly off.
+	c := LifecycleSyncOptions{Now: time.Now, Wait: lifecycleWait, OpenInterval: time.Minute, ClosedInterval: time.Hour, MergedInterval: 30 * 24 * time.Hour, CIInterval: 5 * time.Minute, ScanInterval: time.Second}
 	if len(options) > 1 {
 		return c, invalid()
 	}
 	if len(options) == 1 {
 		o := options[0]
+		if o.WebhookHints {
+			c.WebhookHints = true
+			c.OpenInterval, c.CIInterval = webhookFallbackOpenInterval, webhookFallbackCIInterval
+		}
 		c.CadenceShadow = o.CadenceShadow
 		c.BatchMetadata = o.BatchMetadata
 		c.QualifyMetadataPair = o.QualifyMetadataPair
@@ -71,6 +80,11 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
 	}
 	return c, nil
 }
+
+const (
+	webhookFallbackOpenInterval = 10 * time.Minute
+	webhookFallbackCIInterval   = 15 * time.Minute
+)
 
 func lifecycleWait(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)

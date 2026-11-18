@@ -245,7 +245,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
 	var reviewDone <-chan error
 	if !recovery.ProvidersHeld {
-		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchMetadata: *batchMetadata, QualifyMetadataPair: *qualifyMetadataPair, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching})
+		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{WebhookHints: len(webhookSecret) > 0, CadenceShadow: *cadenceShadow, BatchMetadata: *batchMetadata, QualifyMetadataPair: *qualifyMetadataPair, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching})
 	}
 	defer func() {
 		cancelReviews()
