@@ -51,7 +51,7 @@ func newTrackingKey() string {
 }
 
 func splitList(v string) []string {
-	var out []string
+	out := []string{}
 	for _, part := range strings.Split(v, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)

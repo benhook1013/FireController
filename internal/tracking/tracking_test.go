@@ -340,3 +340,42 @@ func TestBatchIsAtomicAndReapplyable(t *testing.T) {
 	}
 	f.code(f.call("GET", f.base()+"/items/Q", f.reader, nil), 404, "not_found")
 }
+
+func TestReviewRegressions(t *testing.T) {
+	f := setup(t)
+	put := func(key, parent string) {
+		t.Helper()
+		item := map[string]any{"title": key}
+		if parent != "" {
+			item["parent"] = parent
+		}
+		f.receipt(f.call("PUT", f.base()+"/items/"+key, f.writer, map[string]any{"item": item}), 1, "created")
+	}
+	// Two 20-deep chains: moving one under the other would exceed 32 levels.
+	for i := 0; i < 20; i++ {
+		pa, pb := "", ""
+		if i > 0 {
+			pa, pb = "A"+strconv.Itoa(i-1), "B"+strconv.Itoa(i-1)
+		}
+		put("A"+strconv.Itoa(i), pa)
+		put("B"+strconv.Itoa(i), pb)
+	}
+	f.code(f.call("PATCH", f.base()+"/items/B0", f.writer, map[string]any{"changes": map[string]any{"parent": "A19"}}), 400, "validation_failed")
+	// Descendants stay writable regardless of depth checks on unchanged parents.
+	f.receipt(f.call("PATCH", f.base()+"/items/B19", f.writer, map[string]any{"changes": map[string]any{"status": "done"}}), 2, "updated")
+
+	// Swapping 10 labels for 10 others in one change respects the final count only.
+	var old, fresh []string
+	for i := 0; i < 10; i++ {
+		old, fresh = append(old, "old"+strconv.Itoa(i)), append(fresh, "new"+strconv.Itoa(i))
+	}
+	f.receipt(f.call("PATCH", f.base()+"/items/A0", f.writer, map[string]any{"changes": map[string]any{"labels": old}}), 2, "updated")
+	f.receipt(f.call("PATCH", f.base()+"/items/A0", f.writer, map[string]any{"changes": map[string]any{"add_labels": fresh, "remove_labels": old}}), 3, "updated")
+
+	// A create-only retry of the identical declaration converges.
+	decl := map[string]any{"expected_revision": 0, "item": map[string]any{"title": "Once"}}
+	f.receipt(f.call("PUT", f.base()+"/items/ONCE", f.writer, decl), 1, "created")
+	f.receipt(f.call("PUT", f.base()+"/items/ONCE", f.writer, decl), 1, "unchanged")
+	f.code(f.call("PUT", f.base()+"/items/ONCE", f.writer, map[string]any{"expected_revision": 0, "item": map[string]any{"title": "Different"}}), 409, "revision_conflict")
+	f.snapshot()
+}

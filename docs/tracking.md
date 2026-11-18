@@ -25,11 +25,11 @@ A **link** is a typed edge from an item: `{type, ref, role, label}`. Types are `
 | `pr` | `NUMBER`, `#NUMBER` or `owner/name#NUMBER` | Syntax only; stored as `owner/name#NUMBER`, with bare numbers using the project repository |
 | `url` | Absolute `http`/`https` URL with a host and no credentials | Syntax only |
 
-Keys match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` and are unique per project and record kind. Labels match `[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}`, are de-duplicated and stored sorted. A milestone or parent must exist before an item names it. Parent chains cannot form a cycle and are limited to 32 levels. Records are never deleted: close a milestone, or set an item to `dropped`.
+Keys match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` and are unique per project and record kind. Labels match `[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}`, are de-duplicated and stored sorted. A milestone or parent must exist before an item names it. Parent chains cannot form a cycle and are limited to 32 levels. Each stored record, links included, is at most 32 KiB of canonical JSON. Records are never deleted: close a milestone, or set an item to `dropped`.
 
 ## Writes
 
-Every write is keyed by the record key, so a declaration is an upsert and repeating it converges on the same state. A write that changes nothing returns outcome `unchanged` without adding history. A change adds one immutable history revision, the matching link-index rows and a `tracking.*` event in the same transaction.
+Every write is keyed by the record key, so a declaration is an upsert and repeating it converges on the same state. A write that changes nothing returns outcome `unchanged` without adding history; this includes a create-only (`expected_revision: 0`) declaration identical to the existing record, so a lost create can be retried safely. A change adds one immutable history revision, the matching link-index rows and a `tracking.*` event in the same transaction.
 
 The revision guard is optional. `expected_revision` omitted means last-write-wins with full history; `0` means create only; `N` requires the current revision `N`. A stale guard returns `revision_conflict` (HTTP 409) with `details.current_revision`. Title and description changes through a partial update need the guard, because they are prose that a concurrent writer may be editing. Status, milestone, parent, label, position and link changes do not.
 

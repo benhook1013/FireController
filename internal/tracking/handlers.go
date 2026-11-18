@@ -298,9 +298,11 @@ func patchItem(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, invalid("expected_revision on a change is a current revision of at least 1."))
 			return
 		}
-		if _, err := normalizeLabels(append(append([]string{}, p.Changes.AddLabels...), p.Changes.RemoveLabels...)); err != nil {
-			core.WriteError(w, err)
-			return
+		for _, l := range append(append([]string{}, p.Changes.AddLabels...), p.Changes.RemoveLabels...) {
+			if !labelPattern.MatchString(l) {
+				core.WriteError(w, invalid("Labels are 1-64 characters of letters, digits and ._:/+- starting with a letter or digit."))
+				return
+			}
 		}
 		mutate(store, w, r, scope, "tracking.items.patch", key, p, func(ctx context.Context, tx *sql.Tx) (any, error) {
 			current, exists, err := readItem(ctx, tx, scope.ProjectID, key)
@@ -791,7 +793,7 @@ func listMilestones(store *core.Store) http.HandlerFunc {
 				args = append(args, state)
 			}
 			// Milestones are few by design; the bounded list needs no cursor.
-			rows, err := tx.QueryContext(ctx, query+` ORDER BY key LIMIT 201`, args...)
+			rows, err := tx.QueryContext(ctx, query+` ORDER BY COALESCE(json_extract(record_json,'$.position'),0),key LIMIT 201`, args...)
 			if err != nil {
 				return err
 			}

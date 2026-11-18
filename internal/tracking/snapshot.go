@@ -143,6 +143,20 @@ func validateItems(ctx context.Context, tx *sql.Tx) error {
 			return unavailable()
 		}
 	}
+	// Normal writes cannot create these, but a restored store must not carry a
+	// parent cycle, an over-deep tree or an item link to a missing item.
+	for _, k := range all {
+		if err := checkParent(ctx, tx, k.project, "\x00snapshot", k.key); err != nil {
+			return unavailable()
+		}
+	}
+	var dangling int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tracking_item_links l WHERE l.target_type='item' AND NOT EXISTS(SELECT 1 FROM tracking_items i WHERE i.project_id=l.project_id AND i.key=l.target_ref)`).Scan(&dangling); err != nil {
+		return err
+	}
+	if dangling != 0 {
+		return unavailable()
+	}
 	var orphans int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tracking_item_links l WHERE NOT EXISTS(SELECT 1 FROM tracking_items i WHERE i.project_id=l.project_id AND i.key=l.item_key)`).Scan(&orphans); err != nil {
 		return err

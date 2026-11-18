@@ -167,7 +167,7 @@ func recordExists(ctx context.Context, tx *sql.Tx, table, project, id string) (b
 
 // checkTargets validates milestone, parent and every link target against the
 // store, normalizing link refs and order in place.
-func checkTargets(ctx context.Context, tx *sql.Tx, project, key string, f *ItemFields, repository string) error {
+func checkTargets(ctx context.Context, tx *sql.Tx, project, key string, f *ItemFields, repository string, parentChanged bool) error {
 	if f.Milestone != "" {
 		if _, ok, err := readMilestone(ctx, tx, project, f.Milestone); err != nil {
 			return err
@@ -175,7 +175,7 @@ func checkTargets(ctx context.Context, tx *sql.Tx, project, key string, f *ItemF
 			return invalid("Milestone " + f.Milestone + " does not exist in this project; create it first.")
 		}
 	}
-	if f.Parent != "" {
+	if f.Parent != "" && parentChanged {
 		if err := checkParent(ctx, tx, project, key, f.Parent); err != nil {
 			return err
 		}
@@ -202,9 +202,15 @@ func checkTargets(ctx context.Context, tx *sql.Tx, project, key string, f *ItemF
 	return nil
 }
 
+// checkParent refuses cycles and keeps the whole tree within maxParentDepth:
+// the new parent's ancestors plus the moved item's own subtree height.
 func checkParent(ctx context.Context, tx *sql.Tx, project, key, parent string) error {
+	var height int
+	if err := tx.QueryRowContext(ctx, `WITH RECURSIVE sub(key,depth) AS (SELECT ?,0 UNION ALL SELECT i.key,sub.depth+1 FROM tracking_items i JOIN sub ON i.project_id=? AND i.parent_key=sub.key WHERE sub.depth<=?) SELECT max(depth) FROM sub`, key, project, maxParentDepth).Scan(&height); err != nil {
+		return err
+	}
 	current := parent
-	for depth := 0; ; depth++ {
+	for depth := height; ; depth++ {
 		if current == key {
 			return invalid("An item cannot be its own ancestor.")
 		}
@@ -270,9 +276,6 @@ func applyItem(ctx context.Context, tx *sql.Tx, scope core.Scope, repository, ke
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err = guard(expected, exists, current.Revision); err != nil {
-		return Receipt{}, err
-	}
 	if keepLinks {
 		f.Links = []Link{}
 		if exists {
@@ -282,10 +285,18 @@ func applyItem(ctx context.Context, tx *sql.Tx, scope core.Scope, repository, ke
 	if f, err = normalizeItem(f); err != nil {
 		return Receipt{}, err
 	}
-	if err = checkTargets(ctx, tx, scope.ProjectID, key, &f, repository); err != nil {
+	if err = checkTargets(ctx, tx, scope.ProjectID, key, &f, repository, !exists || current.Parent != f.Parent); err != nil {
 		return Receipt{}, err
 	}
-	if exists && sameJSON(itemFields(current), f) {
+	// A create-only retry of an identical declaration converges instead of
+	// conflicting, so a lost response can be retried with a fresh key.
+	same := exists && sameJSON(itemFields(current), f)
+	if !(same && expected != nil && *expected == 0) {
+		if err = guard(expected, exists, current.Revision); err != nil {
+			return Receipt{}, err
+		}
+	}
+	if same {
 		return Receipt{Kind: "item", Key: key, Revision: current.Revision, Outcome: "unchanged"}, nil
 	}
 	at := stamp()
@@ -308,13 +319,16 @@ func applyMilestone(ctx context.Context, tx *sql.Tx, scope core.Scope, key strin
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err = guard(expected, exists, current.Revision); err != nil {
-		return Receipt{}, err
-	}
 	if f, err = normalizeMilestone(f); err != nil {
 		return Receipt{}, err
 	}
-	if exists && milestoneFields(current) == f {
+	same := exists && milestoneFields(current) == f
+	if !(same && expected != nil && *expected == 0) {
+		if err = guard(expected, exists, current.Revision); err != nil {
+			return Receipt{}, err
+		}
+	}
+	if same {
 		return Receipt{Kind: "milestone", Key: key, Revision: current.Revision, Outcome: "unchanged"}, nil
 	}
 	at := stamp()

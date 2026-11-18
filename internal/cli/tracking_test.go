@@ -69,6 +69,8 @@ func TestTrackingCommandsActualAPI(t *testing.T) {
 	}
 	receipt(invoke(0, "items", "unlink", "GR-2.1", "pr:3427"), 5, "updated")
 	receipt(invoke(0, "milestones", "set", "v1", "--state", "closed"), 2, "updated")
+	receipt(invoke(0, "items", "set", "GR", "--labels", ""), 1, "unchanged")
+	receipt(invoke(0, "items", "create", "GR", "--title", "Grid", "--milestone", "v1"), 1, "unchanged")
 
 	batch := filepath.Join(t.TempDir(), "batch.json")
 	doc := `{"milestones":[{"key":"v2","milestone":{"title":"Second"}}],"items":[{"key":"X","item":{"title":"X","milestone":"v2","status":"deferred","revisit_when":"after v1"}}]}`
