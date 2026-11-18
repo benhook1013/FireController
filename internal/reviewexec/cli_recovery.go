@@ -29,6 +29,23 @@ func (e *Engine) RecoverRetainedCLI(ctx context.Context, capabilityID string) er
 	defer cancel()
 	var attempt Attempt
 	var evidenceID string
+	// Rotate past each examined result so one damaged attempt cannot hold back
+	// other PRs' recovery.
+	e.retainedCLIMu.Lock()
+	after := e.retainedCLICursor[capabilityID]
+	e.retainedCLIMu.Unlock()
+	examined, reset := "", false
+	defer func() {
+		if examined == "" && !reset {
+			return // a transient failure keeps the rotation where it was
+		}
+		e.retainedCLIMu.Lock()
+		if e.retainedCLICursor == nil {
+			e.retainedCLICursor = map[string]string{}
+		}
+		e.retainedCLICursor[capabilityID] = examined
+		e.retainedCLIMu.Unlock()
+	}()
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		// Select one validated-complete result; incomplete ended attempts must not
 		// starve another original result now that capacity and evidence differ.
@@ -38,7 +55,7 @@ JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AN
 JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 JOIN review_execution_evidence v ON v.attempt_id=a.id
 WHERE o.channel='cli' AND o.state='uncertain' AND json_valid(v.body_json) AND json_extract(v.body_json,'$.capture.review.Complete')=1 AND json_extract(v.body_json,'$.capture.review.Outcome')='completed' AND a.provider=? AND a.account=? AND o.capability_fingerprint=?
-AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? ORDER BY a.id LIMIT 1`, capability.Provider, capability.Account, capability.Fingerprint, capabilityID)
+AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? ORDER BY a.id>? DESC,a.id LIMIT 1`, capability.Provider, capability.Account, capability.Fingerprint, capabilityID, after)
 		if err != nil {
 			return err
 		}
@@ -55,12 +72,14 @@ AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? OR
 		err = rows.Err()
 		rows.Close()
 		if err != nil || len(candidates) == 0 {
+			reset = err == nil
 			return err
 		}
 		if len(candidates) != 1 {
 			return adjudicationStorageError()
 		}
 		c := candidates[0]
+		examined = c.id
 		a, err := readAttempt(ctx, tx, c.project, c.id)
 		if err != nil {
 			return err

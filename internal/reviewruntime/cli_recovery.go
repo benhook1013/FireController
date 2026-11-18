@@ -33,22 +33,28 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 			settleErr := d.settleRestartedCLI(ctx)
 			rawErr := errors.Join(settleErr, d.recoverRawCLI(ctx))
 			// A malformed ended result must not stop another complete result.
-			err := errors.Join(rawErr, d.engine.RecoverRetainedCLI(ctx, d.capability.ID))
+			// Recover several retained results per pass; one damaged attempt
+			// only adds an error while the rotation reaches the others.
+			var retainedErr error
+			for range 16 {
+				if ctx.Err() != nil {
+					break
+				}
+				retainedErr = errors.Join(retainedErr, d.engine.RecoverRetainedCLI(ctx, d.capability.ID))
+			}
+			err := errors.Join(rawErr, retainedErr)
 			if ctx.Err() != nil {
 				done <- nil
 				return
 			}
 			delay := 15 * time.Second
 			if err != nil {
-				var failure *core.Error
-				if rawErr == nil && !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &failure) || failure.Code != "overloaded" && failure.Code != "review_conflict") {
-					done <- err
-					return
-				}
+				// Keep recovering other PRs; a damaged attempt only slows the loop.
+				slog.WarnContext(ctx, "Retained CLI recovery pass failed; retrying with backoff", "error_code", recoveryCode(err))
 				if backoff == 0 {
 					backoff = 30 * time.Second
 				} else {
-					backoff = min(backoff*2, 5*time.Minute)
+					backoff = min(backoff*2, time.Minute)
 				}
 				delay = backoff
 			} else {
@@ -71,12 +77,13 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 func (d *CLIDriver) recoverRawCLI(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	attempts, err := d.engine.PendingCLICaptureRecoveries(ctx, d.capability.ID, d.rawRecoveryCursor)
+	attempts, last, err := d.engine.PendingCLICaptureRecoveryPage(ctx, d.capability.ID, d.rawRecoveryCursor)
 	if err != nil {
 		return err
 	}
 	if len(attempts) == 0 {
-		d.rawRecoveryCursor = ""
+		// Move past skipped damaged rows; restart only after a truly empty page.
+		d.rawRecoveryCursor = last
 		return nil
 	}
 	var failures []error
@@ -145,4 +152,15 @@ func (d *CLIDriver) settleRestartedCLI(ctx context.Context) error {
 		slog.InfoContext(ctx, "Settled a CLI review interrupted by a restart", "attempt_id", a.AttemptID)
 	}
 	return errors.Join(failures...)
+}
+
+func recoveryCode(err error) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	return "unknown"
 }

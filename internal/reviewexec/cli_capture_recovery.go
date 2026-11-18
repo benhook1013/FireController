@@ -21,15 +21,21 @@ func (e *Engine) PendingCLICaptureRecovery(ctx context.Context, capabilityID str
 // PendingCLICaptureRecoveries reads one bounded keyset page. Runtime rotates the
 // cursor after every candidate, so an unrecoverable capture cannot starve others.
 func (e *Engine) PendingCLICaptureRecoveries(ctx context.Context, capabilityID, after string) ([]Attempt, error) {
+	result, _, err := e.PendingCLICaptureRecoveryPage(ctx, capabilityID, after)
+	return result, err
+}
+
+// PendingCLICaptureRecoveryPage also returns the last examined attempt ID, so
+// the caller's cursor moves past damaged rows that were skipped.
+func (e *Engine) PendingCLICaptureRecoveryPage(ctx context.Context, capabilityID, after string) (result []Attempt, last string, err error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(capabilityID) {
-		return nil, invalid()
+		return nil, "", invalid()
 	}
 	capability, ok := e.capabilities[capabilityID]
 	if !ok || !slices.Contains(capability.Channels, "cli") {
-		return nil, conflict()
+		return nil, "", conflict()
 	}
-	var result []Attempt
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	err = e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT a.project_id,a.id,c.body_json
 FROM review_operations o
 JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id AND a.state=o.state
@@ -58,6 +64,7 @@ AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? AN
 			return err
 		}
 		for _, c := range candidates {
+			last = c.id
 			a, err := readAttempt(ctx, tx, c.project, c.id)
 			if err != nil {
 				return err
@@ -68,7 +75,7 @@ AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? AN
 			}
 			var configuration Configuration
 			if len(c.configuration) > 32<<10 || json.Unmarshal([]byte(c.configuration), &configuration) != nil || validateConfigurationShape(configuration) != nil || encoded(configuration) != c.configuration || *configuration.ExpectedRevision != o.ConfigurationRevision-1 || configuration.CapabilityID != capabilityID || configuration.Paused || !slices.Contains(configuration.Channels, "cli") || !slices.Contains(configuration.Queue, o.PullNumber) || a.Revision < 3 || a.Anchor == nil || !validEvidenceAnchor(*a.Anchor) || a.Anchor.PullNumber != o.PullNumber || a.Anchor.CandidateSHA != o.HeadSHA || a.ExternalID != "" {
-				return adjudicationStorageError()
+				continue // one damaged attempt must not stop other PRs' recovery
 			}
 			var repositoryID int64
 			if err = tx.QueryRowContext(ctx, "SELECT github_repository_id FROM projects WHERE id=?", c.project).Scan(&repositoryID); err != nil {
@@ -79,11 +86,11 @@ AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? AN
 				return err
 			}
 			if repositoryID != a.Anchor.RepositoryID || !reserved {
-				return adjudicationStorageError()
+				continue // one damaged attempt must not stop other PRs' recovery
 			}
 			result = append(result, a)
 		}
 		return nil
 	})
-	return result, err
+	return result, last, err
 }

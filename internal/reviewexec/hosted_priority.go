@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-// earlierQueuedReviewIntent preserves project queue priority even while the
-// earlier request's timer is not due. It reserves no provider capacity. Both
+// earlierQueuedReviewIntent preserves project queue priority. An earlier
+// request yields while its own PR cannot start: a source retry, an unresolved
+// attempt, or a CLI wait (the account-wide CLI hold is enforced separately).
+// Hosted cooldowns keep priority because they reflect the provider account.
+// It reserves no provider capacity. Both
 // scheduler selection and the serialized attempt claim use this same snapshot
 // check; allow_out_of_order concerns dependencies, not scheduling priority.
 func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64) (*Operation, error) {
@@ -19,6 +23,9 @@ func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Op
 	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
 		return nil, nil
 	}
+	// An earlier PR that cannot start now (its own wait, retry, pause or
+	// unresolved attempt) must not hold later PRs back: PRs are independent.
+	now := e.sampleExecutionTime().UTC().Format(time.RFC3339Nano)
 	queue, err := json.Marshal(c.Queue)
 	if err != nil {
 		return nil, err
@@ -26,8 +33,10 @@ func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Op
 	rows, err := tx.QueryContext(ctx, `SELECT o.id FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number AND q.key<?
 WHERE o.project_id=? AND o.channel=? AND o.state='queued' AND o.reason<>'cli_draft_wait'
-AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
-ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Channel)
+AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (o.channel='cli' AND w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
+AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.id AND julianday(sr.retry_not_before)>julianday(?))
+AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r JOIN projects p ON p.id=o.project_id WHERE r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
+ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Channel, now, now)
 	if err != nil {
 		return nil, err
 	}

@@ -148,6 +148,8 @@ type Engine struct {
 	hostedAccountNext          map[hostedAccountKey]time.Time
 	schedulingNow              func() time.Time
 	configurationFailureMu     sync.Mutex
+	retainedCLIMu              sync.Mutex
+	retainedCLICursor          map[string]string
 	configurationFailureNext   map[string]time.Time
 	deploymentMu               sync.Mutex
 	deploymentDraining         bool
