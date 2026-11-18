@@ -278,20 +278,13 @@ func operationFlagColumns(ctx context.Context, q EvidenceQuery) (string, string,
 }
 
 func (e *Engine) ReadOperation(ctx context.Context, scope core.Scope, id string) (Operation, error) {
-	return e.readOperationResponse(ctx, scope, id, true)
-}
-
-func (e *Engine) readOperationResponse(ctx context.Context, scope core.Scope, id string, allowance bool) (Operation, error) {
 	if !identifier.MatchString(id) {
 		return Operation{}, invalid()
 	}
 	var o Operation
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		o, err = readOperationBase(ctx, tx, scope.ProjectID, id)
-		if err == nil && allowance {
-			o.Allowance, err = readHeldAllowance(ctx, tx, o)
-		}
+		o, err = readOperation(ctx, tx, scope.ProjectID, id)
 		o.Wait = currentOperationWait(o)
 		return err
 	})

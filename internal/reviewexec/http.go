@@ -130,7 +130,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			writeOperationWaitError(w, core.Fail("storage_unavailable", "The retained review receipt is unavailable.", 500))
 			return
 		}
-		operation, terminal, waitErr := e.waitOperationResponse(r.Context(), scope, queued.ID, wait, r.Header.Get(operationWaitHeader) == "3")
+		operation, terminal, waitErr := e.WaitOperation(r.Context(), scope, queued.ID, wait)
 		if waitErr != nil {
 			if detached, detachErr := e.acceptedWaitDetached(r.Context(), scope, waitErr); detached {
 				core.WriteJSON(w, http.StatusAccepted, receipt)
@@ -141,7 +141,7 @@ func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 			var failure *core.Error
 			if errors.As(waitErr, &failure) && failure.Code == "overloaded" {
 				if details, ok := failure.Details.(map[string]string); ok && details["reason"] == "operation_wait_capacity" {
-					operation, waitErr = e.readOperationResponse(r.Context(), scope, queued.ID, r.Header.Get(operationWaitHeader) == "3")
+					operation, waitErr = e.ReadOperation(r.Context(), scope, queued.ID)
 					terminal = waitErr == nil && !operationPending(operation.State)
 				}
 			}
@@ -187,7 +187,7 @@ func (e *Engine) readOperationHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(wait))
-	operation, _, err := e.waitOperationResponse(r.Context(), scope, operationID, wait, r.Header.Get(operationWaitHeader) == "3")
+	operation, _, err := e.WaitOperation(r.Context(), scope, operationID, wait)
 	if err != nil {
 		core.WriteError(w, err)
 		return

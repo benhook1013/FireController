@@ -144,27 +144,28 @@ func TestRetainedConfigurationStorageAndPredecessor(t *testing.T) {
 	}
 }
 
-func TestRetainedHeldOperationHTTPDoesNotLoadUnrequestedAllowance(t *testing.T) {
-	f, a, in := cliAllowanceFixture(t)
-	if err := f.e.RecordCLIAllowance(t.Context(), attemptProject, a.ID, 1, in); err != nil {
-		t.Fatal(err)
-	}
+func TestRetainedHeldOperationHTTPValidatesPresentAllowance(t *testing.T) {
+	f, a, _ := cliAllowanceFixture(t)
 	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, 1, "held", "allowance_exhausted", ""); err != nil {
 		t.Fatal(err)
 	}
-	admissionSQL(t, f, "UPDATE review_cli_preflight SET body_json='{' WHERE attempt_id=?", a.ID)
-	for _, version := range []string{"", "1", "2", "3"} {
-		r := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, nil)
-		r.Header.Set("Authorization", "Bearer "+f.reader)
-		r.Header.Set(operationWaitHeader, version)
-		w := httptest.NewRecorder()
-		f.handler.ServeHTTP(w, r)
-		if version == "3" {
-			if w.Code == http.StatusOK {
-				t.Fatal("negotiated corruption hidden")
+	for _, present := range []bool{false, true} {
+		if present {
+			admissionSQL(t, f, "INSERT INTO review_cli_preflight(project_id,attempt_id,body_json) VALUES(?,?,?)", attemptProject, a.ID, "{")
+		}
+		for _, version := range []string{"", "1", "2", "3"} {
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, nil)
+			r.Header.Set("Authorization", "Bearer "+f.reader)
+			r.Header.Set(operationWaitHeader, version)
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			want := http.StatusOK
+			if present {
+				want = http.StatusInternalServerError
 			}
-		} else if w.Code != http.StatusOK {
-			t.Fatal("legacy held read failed", version, w.Code, w.Body.String())
+			if w.Code != want {
+				t.Fatal("optional absence versus corrupt present facts", present, version, w.Code, w.Body.String())
+			}
 		}
 	}
 }
