@@ -135,6 +135,7 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 		return err
 	}
 	defer rows.Close()
+	var cancelled []string
 	var first string
 	var earliest time.Time
 	tied := false
@@ -144,6 +145,10 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 		var attemptState string
 		if err := rows.Scan(&id, &stamp, &state, &retainedReason, &attemptState); err != nil {
 			return err
+		}
+		if attemptState == "cancelled" {
+			cancelled = append(cancelled, id)
+			continue
 		}
 		if !state.Valid || !retainedReason.Valid || state.String != "held" || attemptState != "held" {
 			return waitUnavailable()
@@ -166,6 +171,12 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	rows.Close()
+	for _, id := range cancelled {
+		if err := validateUnqueriedRetryHistory(ctx, q, o, id, baseline); err != nil {
+			return err
+		}
 	}
 	if tied || first == "" || first != baseline {
 		return waitUnavailable()
