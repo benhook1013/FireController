@@ -233,7 +233,7 @@ def main(argv=None):
     p.add_argument("--assets", type=Path, help="browser asset binding JSON from deploy.py")
     p.add_argument("--drain-seconds", type=int, default=600)
     p.add_argument("--lock-wait", type=int, default=1200, help="seconds to wait for a running backup")
-    p.add_argument("--memory-limit", default="1Gi", help="controller container memory limit, applied with the image")
+    p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with the image")
     a = p.parse_args(argv)
     if not SHA.fullmatch(a.source) or not HEX64.fullmatch(a.fcd_sha256) or not re.fullmatch(r"localhost/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", a.image):
         p.error("source, fcd hash or image reference is malformed")

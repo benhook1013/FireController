@@ -60,7 +60,7 @@ def main(argv=None):
     p.add_argument("--host", default=HOST)
     p.add_argument("--dry-run", action="store_true", help="build and extract only; touch nothing remote")
     p.add_argument("--drain-seconds", type=int, default=600)
-    p.add_argument("--memory-limit", default="1Gi", help="controller container memory limit, applied with every rollout")
+    p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with every rollout")
     a = p.parse_args(argv)
 
     source = require_clean_develop()
