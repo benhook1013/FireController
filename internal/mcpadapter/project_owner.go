@@ -158,7 +158,11 @@ func ownerManagementDefinitions() []definition {
 	revision := integer(0, math.MaxInt64-1)
 	var defs []definition
 	add := func(name, desc string, props map[string]any, required ...string) {
-		defs = append(defs, definition{name, desc, map[string]any{"type": "object", "additionalProperties": false, "properties": props, "required": required}})
+		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": props}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		defs = append(defs, definition{name, desc, schema})
 	}
 	add("review_policy_read", "Read this project's current configured review requirements, policy revision and attribution. No source refresh or provider action.", map[string]any{})
 	roundBounds := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"minimum": integer(0, 1000), "maximum": integer(1, 1000)}, "required": []string{"minimum", "maximum"}}

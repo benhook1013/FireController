@@ -69,13 +69,20 @@ func TestExecutionIndexVersionsRequireWaitSchemaClassification(t *testing.T) {
 			if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
 				t.Fatal(err)
 			}
-			if version == "3" {
-				if _, err := store.DB().Exec(`DROP INDEX review_operations_draft_probe; UPDATE metadata SET value='3' WHERE key='schema:review_execution_indexes'`); err != nil {
+			// Remove the v9-only wait table rather than merely rewinding its marker.
+			if _, err := store.DB().Exec(`DROP TABLE review_operation_waits; DROP INDEX review_operations_draft_probe; UPDATE metadata SET value='8' WHERE key='schema:review_execution'; UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := validateSchema(t.Context(), store.DB(), false); err != nil {
+				t.Fatal("v8 baseline", err)
+			}
+			if _, err := store.DB().Exec(`UPDATE metadata SET value=? WHERE key='schema:review_execution_indexes'`, version); err != nil {
+				t.Fatal(err)
+			}
+			if version == "4" {
+				if _, err := store.DB().Exec(`CREATE INDEX review_operations_draft_probe ON review_operations(id) WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait'`); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if _, err := store.DB().Exec(`UPDATE metadata SET value='8' WHERE key='schema:review_execution'`); err != nil {
-				t.Fatal(err)
 			}
 			_, err := validateSchema(t.Context(), store.DB(), false)
 			backupCode(t, err, "backup_invalid")
@@ -88,6 +95,9 @@ func TestDraftProbeIndexBackupRejectsMissingOrChangedSchema(t *testing.T) {
 		`DROP INDEX review_operations_draft_probe`,
 		`DROP INDEX review_operations_draft_probe; CREATE INDEX review_operations_draft_probe ON review_operations(id) WHERE state='queued' AND channel='hosted' AND reason='cli_draft_wait'`,
 		`UPDATE metadata SET value='5' WHERE key='schema:review_execution_indexes'`,
+		`UPDATE metadata SET value='1' WHERE key='schema:review_execution_indexes'`,
+		`UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`,
+		`UPDATE metadata SET value='3' WHERE key='schema:review_execution_indexes'`,
 	} {
 		t.Run(mutation, func(t *testing.T) {
 			store, _ := historyInventoryFixture(t)

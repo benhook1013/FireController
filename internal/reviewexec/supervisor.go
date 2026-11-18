@@ -140,9 +140,22 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 
 type pendingScanPosition struct{ createdAt, id string }
 
-func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
+// Transaction rollback caused by this scan's own deadline is not a storage
+// outage. Preserve unrelated failures even if the deadline happens concurrently.
+func pendingScanError(ctx context.Context, err error) error {
+	if ctx.Err() != nil && (errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operations []Operation, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	// SQL may report ErrTxDone after the scan deadline rolls back its transaction.
+	defer func() {
+		resultErr = pendingScanError(ctx, resultErr)
+	}()
 	// Snapshot candidates and reservations together, without entering writer
 	// admission. StartAttempt still rechecks reservations transactionally.
 	tx, err := e.store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -361,7 +374,10 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 			continue
 		}
 		if filterErr != nil {
-			if !errors.Is(filterErr, context.DeadlineExceeded) {
+			filterErr = pendingScanError(ctx, filterErr)
+			if errors.Is(filterErr, context.DeadlineExceeded) {
+				advance(before)
+			} else {
 				advance(cursor)
 			}
 			if len(out) != 0 && errors.Is(filterErr, context.DeadlineExceeded) {
@@ -382,7 +398,10 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 		o, err := readCandidate(project, operation)
 		if err != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
+			err = pendingScanError(ctx, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				advance(before)
+			} else {
 				advance(cursor) // Never rotate past an operational storage failure.
 			}
 			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
@@ -399,6 +418,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Oper
 		}
 	}
 	if err := rows.Err(); err != nil {
+		err = pendingScanError(ctx, err)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			advance(cursor)
 		}
@@ -583,7 +603,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return nil
 			}
-			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var failure *core.Error
@@ -653,12 +673,16 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
-			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
-				// Only proven retained project corruption is local. No intent
-				// was admitted; retain the queued identity for a repaired read.
+			if automaticProjectRefused(err) {
+				// Only proven scheduling-local corruption releases this unused preparation.
 				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
 					return err
 				}
+				continue
+			}
+			// Preserve the unused preparation and reservation on damaged retained
+			// history, without stopping unrelated candidates.
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error

@@ -179,7 +179,11 @@ func checkBundleFiles(ctx context.Context, root string, expected map[string]bool
 				}
 				for _, child := range batch {
 					count++
-					if count > maxArtifacts || checkContext(ctx) != nil {
+					if checkContext(ctx) != nil {
+						f.Close()
+						return unavailable()
+					}
+					if count > maxArtifacts {
 						f.Close()
 						return invalid()
 					}
@@ -636,6 +640,15 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions["review_execution_indexes"] < 4 {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE name='review_operations_draft_probe'`).Scan(&count); err != nil || count != 0 {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, invalid()
+		}
+	}
 	if versions["review_execution_indexes"] >= 4 {
 		var definition string
 		const canonical = `CREATE INDEX review_operations_draft_probe ON review_operations(id) WHERE state='queued' AND channel='cli' AND reason='cli_draft_wait'`
@@ -799,6 +812,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				return nil, invalid()
 			}
 			if name == "review_operations" && (col == "allow_out_of_order" || col == "override_file_limit") && !reviewOrderColumn(kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
+			if name == "review_execution_reservations" && notnull != 1 {
 				columnRows.Close()
 				return nil, invalid()
 			}

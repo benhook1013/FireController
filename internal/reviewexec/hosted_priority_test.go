@@ -64,6 +64,15 @@ func priorityPending(t *testing.T, f *attemptFixture, want ...string) {
 	}
 }
 
+func TestHostedSelectionIsolatesRepositoryReservation(t *testing.T) {
+	f := newAttemptFixture(t)
+	f.configure(t, attemptProject, "test-capability", 0, false)
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "busy-other-repo", "hosted", 2, 1))
+	fresh := f.enqueue(t, attemptProject, "fresh-other-repo", "hosted", 2, 1)
+	priorityPending(t, f, fresh.ID)
+}
+
 func TestHostedPriorityCooldownAndAtomicClaims(t *testing.T) {
 	f := newAttemptFixture(t)
 	f.configure(t, attemptProject, "test-capability", 0, false)

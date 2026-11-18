@@ -86,7 +86,7 @@ func (e *Engine) recordCLIAllowance(ctx context.Context, project, attemptID stri
 		err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_cli_preflight WHERE project_id=? AND attempt_id=?`, project, attemptID).Scan(&body)
 		if err == nil {
 			var retained cliAllowanceRecord
-			if len(body) > 8192 || strictjson.Decode([]byte(body), &retained) != nil || retained.ProjectID != project || retained.AttemptID != attemptID || !identifier.MatchString(retained.OperationID) || !identifier.MatchString(retained.ActorID) || retained.WorkerID != "" && !identifier.MatchString(retained.WorkerID) || retained.AttemptRevision != 1 || retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !identifier.MatchString(retained.Provider) || !identifier.MatchString(retained.Account) || !validCLIAllowanceObservation(retained.Observation) {
+			if len(body) > 8192 || strictjson.Decode([]byte(body), &retained) != nil || encoded(retained) != body || retained.ProjectID != project || retained.AttemptID != attemptID || !identifier.MatchString(retained.OperationID) || !identifier.MatchString(retained.ActorID) || retained.WorkerID != "" && !identifier.MatchString(retained.WorkerID) || retained.AttemptRevision != 1 || retained.ConfigurationRevision < 1 || retained.PolicyRevision < 1 || !hash.MatchString(retained.CapabilityFingerprint) || !identifier.MatchString(retained.Provider) || !identifier.MatchString(retained.Account) || !validCLIAllowanceObservation(retained.Observation) {
 				return core.Fail("storage_unavailable", "Stored CLI allowance observation is unavailable.", 500)
 			}
 			if retained.AttemptRevision != expectedRevision || retained.Observation != input {

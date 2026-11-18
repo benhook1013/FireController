@@ -31,6 +31,13 @@ func (q *cooldownQueryRecorder) QueryRowContext(ctx context.Context, query strin
 	return q.DB.QueryRowContext(ctx, query, args...)
 }
 
+func (q *cooldownQueryRecorder) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, "FROM review_execution_attempts a") {
+		q.selector = query
+	}
+	return q.DB.QueryContext(ctx, query, args...)
+}
+
 func cooldownQueryDB(t *testing.T) *sql.DB {
 	t.Helper()
 	cooldownProofRegister.Do(func() {
@@ -129,6 +136,7 @@ func TestLatestHostedCooldownQueryTieSemantics(t *testing.T) {
 	for _, test := range []struct{ name, bodyA, bodyZ, want string }{
 		{"deadline wins despite ID", proof("2026-01-02T00:00:02Z"), proof("2026-01-02T00:00:01Z"), "a-tied"},
 		{"equal deadline uses ID", proof("2026-01-02T00:00:02Z"), proof("2026-01-02T00:00:02Z"), "z-tied"},
+		{"SQL date without RFC3339 wins", proof("2026-01-02 00:00:01"), proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"malformed wins", `{`, proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"missing proof wins", "absent", proof("2026-01-02T00:00:02Z"), "a-tied"},
 		{"oversized wins", strings.Repeat("x", 16385), proof("2026-01-02T00:00:02Z"), "a-tied"},

@@ -56,6 +56,7 @@ func TestOperationListIndexFreshAndExistingDatabase(t *testing.T) {
 					t.Fatal("page reads lack ordered index", plan, err)
 				}
 			}
+			assertRetryIndexesRestored(t, f)
 			var version string
 			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution_indexes'`).Scan(&version); err != nil || version != "4" {
 				t.Fatal("index migration missing", version, err)
