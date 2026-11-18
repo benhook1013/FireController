@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -203,5 +204,66 @@ func TestUnifiedProgressSnapshotRejectsMalformedJobKeyBeforePaging(t *testing.T)
 	defer tx.Rollback()
 	if err := ValidateProgressSnapshot(t.Context(), tx); err == nil {
 		t.Fatal("malformed empty job key was skipped by maintenance paging")
+	}
+}
+
+func TestJobsV8ToV9PreservesAuthoredProgressAndHistory(t *testing.T) {
+	s := oldProgressStore(t)
+	seedLegacyCheckpoint(t, s, "legacy-checkpoint", "legacy summary", "legacy next", "legacy blocker", "2026-01-01T00:00:02Z")
+	if err := s.EnsureSchemaWithBackfill(t.Context(), "jobs", schemaMigrations()[:8], migrateProgress); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		err := storeProgress(ctx, tx, job{ProjectID: "project_old", ID: "job_old", Revision: 4}, progress{Summary: "New authored progress, not legacy replay", Next: "new action", Blocker: "new blocker", Evidence: []string{"new-evidence"}}, "job_progress_authored", "modern-actor", "", "2026-01-01T00:00:05Z")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() map[string]string {
+		out := progressSourceRows(t, s)
+		for _, table := range []string{"job_progress", "job_progress_history"} {
+			rows, err := s.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			columns, _ := rows.Columns()
+			var records [][]any
+			for rows.Next() {
+				values := make([]any, len(columns))
+				targets := make([]any, len(values))
+				for i := range values {
+					targets[i] = &values[i]
+				}
+				if err := rows.Scan(targets...); err != nil {
+					t.Fatal(err)
+				}
+				records = append(records, values)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+			body, _ := json.Marshal(records)
+			out[table] = string(body)
+		}
+		return out
+	}
+	before := snapshot()
+	for i := 0; i < 2; i++ {
+		if err := EnsureSchema(t.Context(), s); err != nil {
+			t.Fatal("populated v8 upgrade/restart failed", err)
+		}
+		if !reflect.DeepEqual(before, snapshot()) {
+			t.Fatal("upgrade rewrote authored progress/history or legacy source")
+		}
+		validateProgressStore(t, s)
+	}
+	var version string
+	if err := s.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:jobs'`).Scan(&version); err != nil || version != "9" {
+		t.Fatal(version, err)
+	}
+	var blockers int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM job_blockers`).Scan(&blockers); err != nil || blockers != 0 {
+		t.Fatal("v9 schema missing", blockers, err)
 	}
 }

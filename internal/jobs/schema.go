@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -9,7 +10,19 @@ import (
 // EnsureSchema installs the jobs tables during exclusive startup, before the
 // API begins serving requests. Runtime handlers never perform schema changes.
 func EnsureSchema(ctx context.Context, store *core.Store) error {
-	return store.EnsureSchemaWithBackfill(ctx, "jobs", schemaMigrations(), migrateProgress)
+	// Conversion belongs only to the migration introducing unified progress (v8).
+	// Capture the retained version inside the same exclusive transaction; later
+	// migrations must not replay legacy archives over already-authored progress.
+	convertLegacy := false
+	return store.EnsureSchemaWithCompatibility(ctx, "jobs", schemaMigrations(), func(_ context.Context, _ *sql.Conn, version int) error {
+		convertLegacy = version < 8
+		return nil
+	}, func(ctx context.Context, conn *sql.Conn) error {
+		if !convertLegacy {
+			return nil
+		}
+		return migrateProgress(ctx, conn)
+	})
 }
 
 func schemaMigrations() [][]string {
