@@ -62,7 +62,7 @@ class RecoveryWindowTests(unittest.TestCase):
 
 
 class RolloutSequenceTests(unittest.TestCase):
-    def exercise(self, forced=False, preflight_failure=False, replace_failure=False):
+    def exercise(self, forced=False, preflight_failure=False, replace_failure=False, memory=None):
         image = "ghcr.io/example/controller@sha256:" + "a" * 64
         revision = "b" * 40
         original = {"metadata": {"resourceVersion": "7"}, "spec": {
@@ -108,6 +108,7 @@ class RolloutSequenceTests(unittest.TestCase):
                 self.assertEqual(changed["spec"]["template"]["metadata"]["annotations"]["firecontroller.dev/source-commit"], revision)
                 self.assertNotIn("firecontroller.dev/binary-sha256", changed["spec"]["template"]["metadata"]["annotations"])
                 self.assertRegex(changed["spec"]["template"]["metadata"]["annotations"]["firecontroller.dev/rollout-id"], r"^[0-9a-f]{32}$")
+                self.assertEqual(changed["spec"]["template"]["spec"]["containers"][0].get("resources", {}).get("limits", {}).get("memory"), memory)
                 current = changed
                 state["draining"] = False
                 return subprocess.CompletedProcess(command, int(replace_failure), "")
@@ -116,7 +117,7 @@ class RolloutSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             credential = Path(directory) / "admin.token"
             credential.write_text("fixture-administrator")
-            argv = ["kubernetes.py", "--image", image, "--source-revision", revision, "--url", "https://controller.example", "--instance-id", "instance-fixture", "--credential-file", str(credential), "--drain-seconds", "0"]
+            argv = ["kubernetes.py", "--image", image, "--source-revision", revision, "--url", "https://controller.example", "--instance-id", "instance-fixture", "--credential-file", str(credential), "--drain-seconds", "0"] + (["--memory-limit", memory] if memory else [])
             output = io.StringIO()
             with mock.patch("sys.argv", argv), mock.patch.object(deployment.subprocess, "run", side_effect=run), mock.patch.object(deployment.urllib.request, "build_opener", return_value=Opener()), contextlib.redirect_stdout(output):
                 if preflight_failure or replace_failure:
@@ -131,6 +132,9 @@ class RolloutSequenceTests(unittest.TestCase):
     def test_same_digest_rollout_preserves_private_bindings_and_reports_deadline(self):
         self.exercise()
         self.exercise(forced=True)
+
+    def test_memory_limit_is_applied_with_the_image(self):
+        self.exercise(memory="1Gi")
 
     def test_failed_image_check_never_drains_and_removes_its_owned_pod(self):
         actions, http = self.exercise(preflight_failure=True)

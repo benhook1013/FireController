@@ -87,7 +87,10 @@ def main():
     p.add_argument("--context")
     p.add_argument("--drain-seconds", type=int, default=DEFAULT_DRAIN_SECONDS)
     p.add_argument("--kubectl", nargs="+", default=["kubectl"], help="Command prefix, for example --kubectl k3s kubectl")
+    p.add_argument("--memory-limit", help="Controller container memory limit to apply with the image, for example 1Gi")
     args = p.parse_args()
+    if args.memory_limit is not None and not re.fullmatch(r"[1-9][0-9]{0,5}(Mi|Gi)", args.memory_limit):
+        p.error("memory limit must look like 512Mi or 1Gi")
     if not re.fullmatch(r"[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}", args.image) or not re.fullmatch(r"[0-9a-f]{40}", args.source_revision) or not 0 <= args.drain_seconds <= 3600:
         p.error("use an immutable image digest and a drain window from 0 through 3600 seconds")
     origin = urllib.parse.urlsplit(args.url)
@@ -177,6 +180,8 @@ def main():
             if c["name"] == args.container:
                 c["image"] = args.image
                 c["imagePullPolicy"] = "IfNotPresent"
+                if args.memory_limit:
+                    c.setdefault("resources", {}).setdefault("limits", {})["memory"] = args.memory_limit
         annotations = deployment["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})
         annotations["firecontroller.dev/source-commit"] = args.source_revision
         annotations["firecontroller.dev/image-reference"] = args.image

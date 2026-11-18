@@ -233,6 +233,7 @@ def main(argv=None):
     p.add_argument("--assets", type=Path, help="browser asset binding JSON from deploy.py")
     p.add_argument("--drain-seconds", type=int, default=600)
     p.add_argument("--lock-wait", type=int, default=1200, help="seconds to wait for a running backup")
+    p.add_argument("--memory-limit", default="1Gi", help="controller container memory limit, applied with the image")
     a = p.parse_args(argv)
     if not SHA.fullmatch(a.source) or not HEX64.fullmatch(a.fcd_sha256) or not re.fullmatch(r"localhost/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", a.image):
         p.error("source, fcd hash or image reference is malformed")
@@ -261,7 +262,7 @@ def main(argv=None):
         instance = INSTANCE_FILE.read_text().strip()
         rollout = subprocess.run([sys.executable, "-I", str(HERE / "kubernetes.py"), "--image", a.image, "--source-revision", a.source,
                                   "--url", URL, "--instance-id", instance, "--credential-file", str(CREDENTIAL),
-                                  "--drain-seconds", str(a.drain_seconds), "--kubectl", "k3s", "kubectl"],
+                                  "--drain-seconds", str(a.drain_seconds), "--memory-limit", a.memory_limit, "--kubectl", "k3s", "kubectl"],
                                  capture_output=True, text=True, timeout=a.drain_seconds + 600)
         if rollout.returncode != 0:
             log("rollout_failed", stderr=rollout.stderr[-600:], rollback_image=old_image, rollback_snapshot=str(snap))

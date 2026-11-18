@@ -60,6 +60,7 @@ def main(argv=None):
     p.add_argument("--host", default=HOST)
     p.add_argument("--dry-run", action="store_true", help="build and extract only; touch nothing remote")
     p.add_argument("--drain-seconds", type=int, default=600)
+    p.add_argument("--memory-limit", default="1Gi", help="controller container memory limit, applied with every rollout")
     a = p.parse_args(argv)
 
     source = require_clean_develop()
@@ -106,7 +107,7 @@ def main(argv=None):
 
         host_cmd = ["python3", "-I", remote + "/deploy_host.py", "--source", source, "--image", image,
                     "--fcd", remote + "/fcd", "--fcd-sha256", fcd_sha, "--assets", remote + "/assets.json",
-                    "--drain-seconds", str(a.drain_seconds)]
+                    "--drain-seconds", str(a.drain_seconds), "--memory-limit", a.memory_limit]
         code = subprocess.run(ssh + [" ".join(shlex.quote(x) for x in host_cmd)]).returncode
         if code == 0:
             # Keep this and the previous deploy bundle; drop older ones.
