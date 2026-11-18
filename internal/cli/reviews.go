@@ -16,11 +16,6 @@ func parseReview(call invocation, args []string) (invocation, bool) {
 		call.reviewOperationControl, ok = parseReviewOperationControl(args)
 		return call, ok
 	}
-	if call.subcommand == "scheduling" {
-		var ok bool
-		call.reviewScheduling, ok = parseReviewScheduling(args)
-		return call, ok
-	}
 	if call.subcommand == "ci-wait" {
 		var ok bool
 		call.ciWatch, ok = parseCIWatch(args)
@@ -163,9 +158,6 @@ func reviewID(value, prefix string) bool {
 }
 
 func executeReview(ctx context.Context, service *client.Client, call invocation) (any, error) {
-	if call.reviewScheduling != nil {
-		return executeReviewScheduling(ctx, service, call.reviewScheduling)
-	}
 	if call.ciWatch != nil {
 		value, err := service.WatchCI(ctx, call.ciWatch.targets, call.ciWatch.seconds)
 		return client.AgentCIWatch(value), err
