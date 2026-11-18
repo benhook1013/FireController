@@ -272,3 +272,44 @@ it('does not celebrate frozen zero acceptance after a current acceptance becomes
  expect(markup([pending])).not.toContain('review-pill-zero');
  expect(markup([{...zero,current_accepted:undefined,current_pending_fixes:undefined}])).not.toContain('review-pill-zero');
 });
+
+it('preserves a proven uncertain review as one partial pill with its original start and tap details',()=>{
+ const start='2026-11-15T05:35:10Z';
+ const signal={attempt_id:attempt.source_attempt_id,head_sha:head,observed_at:start,kind:'cli_process_spawned' as const,process_started_at:start};
+ const uncertain={...attempt,state:'uncertain' as const,source_run_id:'',reason:'capture_retention_failed'};
+ const html=markup([],[uncertain],{...progress,closed:true,activity_evidence:signal});
+ expect(html).toMatch(/<strong>\?\/\?\/\?<\/strong><span class="review-pill-status">Needs attention<\/span><time[^>]*dateTime="2026-11-15T05:35:10Z"/u);
+ expect(html).toContain('review-pill-partial');
+ expect(html).toContain('popoverTarget='); expect(html).toContain('popover="auto"');
+ expect(html).toContain('The review result could not be retained');
+ expect(html).not.toContain('aria-label="cli current review state"');
+ expect(html).not.toContain('review-pill-running'); expect(html).toContain('0 runs');
+ expect(html).not.toContain(`dateTime="${stamp}"`);
+ for(const wrong of [{...signal,attempt_id:'review_attempt_other'}, {...signal,head_sha:'f'.repeat(40)}]){
+  expect(markup([],[uncertain],{...progress,activity_evidence:wrong})).not.toContain('review-pill-partial');
+ }
+ expect(markup([],[uncertain],progress)).not.toContain('review-pill-partial');
+});
+
+it('keeps hosted uncertain evidence matched to its trigger and replaces it with its exact result',()=>{
+ const signal={attempt_id:attempt.source_attempt_id,head_sha:head,observed_at:stamp,kind:'hosted_processing_observed' as const,comment_updated_at:stamp,source_comment_id:12,provider_run_id:'11111111-2222-4333-8444-555555555555',trigger_id:'42'};
+ const uncertain={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
+ const current={...progress,channel:'hosted' as const,activity_evidence:signal};
+ const html=markup([],[uncertain],current);
+ expect(html).toContain('review-pill-partial'); expect(html).toContain('Needs attention');
+ expect(html).not.toContain('aria-label="hosted current review state"');
+ expect(markup([],[{...uncertain,trigger_id:'43'}],current)).not.toContain('review-pill-partial');
+ const returned=markup([{...completed,channel:'hosted'}],[{...uncertain,source_run_id:completed.source_run_id}],current);
+ expect(returned).not.toContain('review-pill-partial'); expect(returned).toContain('<strong>2/1/0</strong>');
+});
+
+it('shows proven finished Hosted capture without inventing a start or treating trigger-only attempts as reviews',()=>{
+ const proven={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
+ const html=markup([],[proven]);
+ expect(html).toContain('review-pill-partial'); expect(html).toContain('Needs attention'); expect(html).toContain('Start time unknown');
+ expect(html).not.toContain('<time'); expect(html).not.toContain('aria-label="hosted current review state"');
+ for(const change of [{trigger_id:''},{trigger_id:'0'},{trigger_id:'00'},{trigger_id:'invalid'},{state:'posting' as const},{reason:'provider_outcome_unknown'},{channel:'cli' as const}]){
+  expect(markup([],[{...proven,...change}])).not.toContain('review-pill-partial');
+ }
+ expect(markup([{...completed,channel:'hosted'}],[{...proven,source_run_id:completed.source_run_id}])).not.toContain('review-pill-partial');
+});

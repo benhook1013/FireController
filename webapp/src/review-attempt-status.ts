@@ -16,7 +16,7 @@ export interface ReviewAttemptStatus {
 function activeAttemptStatus(attempt: ReviewAttemptSummary, progress?: ReviewRoundProgress): ReviewAttemptStatus {
   const startedAt = attempt.started_at && Number.isFinite(Date.parse(attempt.started_at)) ? attempt.started_at : '';
   const candidate = progress?.activity_evidence;
-  const evidence = attempt.state === 'active' && progress?.channel === attempt.channel && validActivityEvidence(candidate, attempt.channel) && candidate.attempt_id === attempt.source_attempt_id && candidate.head_sha === attempt.head_sha && (!startedAt || Date.parse(candidate.observed_at) >= Date.parse(startedAt)) && (candidate.kind !== 'hosted_processing_observed' || candidate.trigger_id === attempt.trigger_id) ? candidate : undefined;
+  const evidence = ['active', 'uncertain'].includes(attempt.state) && progress?.channel === attempt.channel && validActivityEvidence(candidate, attempt.channel) && candidate.attempt_id === attempt.source_attempt_id && candidate.head_sha === attempt.head_sha && (!startedAt || Date.parse(candidate.observed_at) >= Date.parse(startedAt)) && (candidate.kind !== 'hosted_processing_observed' || candidate.trigger_id === attempt.trigger_id) ? candidate : undefined;
   const explanation = evidence?.kind === 'cli_process_spawned'
     ? 'Waiting for the CLI result.'
     : evidence?.kind === 'hosted_processing_observed'
@@ -84,7 +84,10 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   }
   // An unconfirmed provider outcome must be reconciled, even when another
   // request or a closed grant exists. Do not present it as safe to retry.
-  if (attempt?.state === 'uncertain') return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
+  if (attempt?.state === 'uncertain') {
+    const activity = activeAttemptStatus(attempt, progress).activity;
+    return { ...(activity?.evidence ? { activity } : {}), text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
+  }
   if (progress?.retained_adjudication_pending && !(attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state))) return { text: 'Needs adjudication', description: 'Retained partial findings need decisions. No completed review round is claimed.' };
   if (progress?.wait && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
   if (attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state)) {

@@ -97,7 +97,7 @@ func (e *Engine) RecordActivityEvidence(ctx context.Context, project, attemptID 
 
 func readActivityEvidence(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*ActivityEvidence, error) {
 	var body, attemptID, head, external string
-	err := tx.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(e.body_json AS BLOB))<=2048 THEN e.body_json ELSE NULL END,a.id,o.head_sha,a.external_id FROM review_operations o JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id JOIN review_activity_evidence e ON e.attempt_id=a.id AND e.project_id=o.project_id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state='active' AND a.state='active' ORDER BY o.created_at DESC,o.id DESC LIMIT 1`, project, number, channel).Scan(&body, &attemptID, &head, &external)
+	err := tx.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(e.body_json AS BLOB))<=2048 THEN e.body_json ELSE NULL END,a.id,o.head_sha,a.external_id FROM review_operations o JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id JOIN review_activity_evidence e ON e.attempt_id=a.id AND e.project_id=o.project_id WHERE o.project_id=? AND o.pull_number=? AND o.channel=? AND o.state IN ('active','uncertain') AND a.state=o.state ORDER BY o.created_at DESC,o.id DESC LIMIT 1`, project, number, channel).Scan(&body, &attemptID, &head, &external)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

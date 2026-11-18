@@ -129,3 +129,32 @@ func TestActivityEvidenceHTTPOptInIsClosed(t *testing.T) {
 		t.Fatal("foreign project evidence accessible", w.Code)
 	}
 }
+
+func TestActivityEvidenceSurvivesUncertainCaptureWithoutChangingStart(t *testing.T) {
+	f := roundFixture(t)
+	a := f.start(t, attemptProject, f.enqueue(t, attemptProject, "uncertain-evidence", "cli", 2, 1))
+	a, err := f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, attemptAnchor(attemptProject, 2), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	f.handler = mux
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	v := ActivityEvidence{AttemptID: a.ID, HeadSHA: strings.Repeat("a", 40), Kind: "cli_process_spawned", ObservedAt: at, ProcessStartedAt: at}
+	if err := f.e.RecordActivityEvidence(t.Context(), attemptProject, a.ID, v); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "uncertain", "capture_retention_failed", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := progressStageChannel(t, f, "view=stages&include_activity_evidence=true", 1)
+	raw, _ := json.Marshal(got["activity_evidence"])
+	var read ActivityEvidence
+	if json.Unmarshal(raw, &read) != nil || read != v {
+		t.Fatal("uncertain review lost original provider start", string(raw))
+	}
+	if got := progressStageChannel(t, f, "view=stages", 1); got["activity_evidence"] != nil {
+		t.Fatal("evidence leaked without opt-in")
+	}
+}

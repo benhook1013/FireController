@@ -88,3 +88,5 @@
 .review-pill-status .badge{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:0;padding:0;letter-spacing:normal;text-transform:none;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .review-pill-status .review-channel-position{margin:0}
 .review-pill-current{border-style:dashed}
+
+.review-attention-detail{max-width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 32px);box-sizing:border-box;overflow:auto;padding:16px;border:1px solid var(--fc-surface_border,#c8c7c4);border-radius:5px;background:var(--fc-surface_background,#f7f6f3);color:var(--fc-surface_text,#242832);font-size:.875rem;line-height:1.5;overflow-wrap:anywhere}
