@@ -54,6 +54,8 @@ func handlerFS(files fs.FS) http.Handler {
 			name, contentType = "index.html", "text/html; charset=utf-8"
 		} else if path == "/third-party-licenses.txt" {
 			name, contentType = "third-party-licenses.txt", "text/plain; charset=utf-8"
+		} else if path == "/assets/site.webmanifest" {
+			name, contentType = "assets/site.webmanifest", "application/manifest+json"
 		} else if strings.HasPrefix(path, "/assets/") {
 			name = strings.TrimPrefix(path, "/")
 			contentType = assetType(name)
