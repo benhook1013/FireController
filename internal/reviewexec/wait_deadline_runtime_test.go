@@ -216,6 +216,14 @@ func TestWaitDeadlineRuntimePreservesLookupErrors(t *testing.T) {
 			for _, match := range []string{"FROM review_execution_attempts a", "SELECT created_at FROM review_execution_transitions"} {
 				for _, canceled := range []bool{false, true} {
 					q := cliRetryFailureQuery{EvidenceQuery: f.store.DB(), match: match, cancel: canceled}
+					if match == "FROM review_execution_attempts a" {
+						// Exercise the selector directly as well: the full read
+						// also checks baseline chronology through this table.
+						selected, selectErr := latestCooldownAttempt(t.Context(), q, o)
+						if selected.ID != "" || selectErr == nil || isWaitUnavailable(selectErr) || canceled && !errors.Is(selectErr, context.Canceled) || !canceled && !strings.Contains(selectErr.Error(), "missing_cli_retry_history") {
+							t.Error("latest selector concealed operational failure", canceled, selected, selectErr)
+						}
+					}
 					wait, err := readOperationWait(t.Context(), q, o)
 					if wait != nil || err == nil || isWaitUnavailable(err) || canceled && !errors.Is(err, context.Canceled) || !canceled && !strings.Contains(err.Error(), "missing_cli_retry_history") {
 						t.Error("latest deadline proof concealed an operational lookup failure", match, canceled, wait, err)

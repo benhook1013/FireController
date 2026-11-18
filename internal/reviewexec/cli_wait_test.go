@@ -494,6 +494,20 @@ func (q cliRetryFailureQuery) QueryRowContext(ctx context.Context, query string,
 	return q.EvidenceQuery.QueryRowContext(ctx, query, args...)
 }
 
+// Both selector shapes must receive the same injected failure: Hosted reads
+// a set of tied candidates, while CLI reads one candidate row.
+func (q cliRetryFailureQuery) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, q.match) {
+		if q.cancel {
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			return q.EvidenceQuery.QueryContext(canceled, query, args...)
+		}
+		return q.EvidenceQuery.QueryContext(ctx, `SELECT * FROM missing_cli_retry_history`)
+	}
+	return q.EvidenceQuery.QueryContext(ctx, query, args...)
+}
+
 type cliExhaustionCountQuery struct {
 	EvidenceQuery
 	t        *testing.T
