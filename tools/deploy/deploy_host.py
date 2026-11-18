@@ -199,6 +199,31 @@ def verify_assets(binding_path):
     return verify_live(binding, binding["source"], fetch("/"), fetch)
 
 
+def prune_after_deploy(keep_images, releases=HELPER_RELEASES, dropins=None, keep_recent=2):
+    """Remove FireController images and helper binaries no longer in use.
+
+    Keeps the given image digests (current and previous), helper releases named
+    by any FireController systemd unit or drop-in, and the newest `keep_recent`.
+    """
+    removed_images = 0
+    listing = subprocess.run(["k3s", "ctr", "-n", "k8s.io", "images", "ls"], check=True, capture_output=True, text=True, timeout=60).stdout
+    for line in listing.splitlines()[1:]:
+        cols = line.split()
+        if len(cols) >= 3 and cols[0].startswith("localhost/firecontroller") and cols[2] not in keep_images:
+            subprocess.run(["k3s", "ctr", "-n", "k8s.io", "images", "rm", cols[0]], capture_output=True, timeout=60)
+            removed_images += 1
+    referenced = set()
+    units = list(Path("/etc/systemd/system").glob("firecontroller-*.service")) + list(Path("/etc/systemd/system").glob("firecontroller-*.service.d/*.conf"))
+    for unit in (dropins if dropins is not None else units):
+        referenced |= set(re.findall(r"/releases/([0-9a-f]{40})/", Path(unit).read_text()))
+    dirs = sorted((d for d in releases.iterdir() if d.is_dir() and not d.is_symlink()), key=lambda d: d.stat().st_mtime)
+    keep = referenced | {d.name for d in dirs[-keep_recent:]}
+    removed_releases = [d.name for d in dirs if d.name not in keep]
+    for name in removed_releases:
+        shutil.rmtree(releases / name)
+    return {"images_removed": removed_images, "helper_releases_removed": len(removed_releases)}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", required=True)
@@ -245,6 +270,10 @@ def main(argv=None):
         checked = verify(a.source, a.image)
         assets = verify_assets(a.assets)
         log("verified", source=a.source, image=a.image, assets=assets, **checked)
+        try:
+            log("pruned", **prune_after_deploy({a.image.split("@", 1)[1], old_image.split("@", 1)[1]}))
+        except (OSError, subprocess.SubprocessError) as e:
+            log("prune_skipped", error=str(e)[:200])  # the deploy itself already succeeded
     return 0
 
 

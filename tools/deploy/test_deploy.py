@@ -96,3 +96,24 @@ class Digest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Prune(unittest.TestCase):
+    def test_keeps_referenced_and_recent_helper_releases(self):
+        import os, time
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            releases = d / "releases"
+            names = [c * 40 for c in "abcde"]
+            for i, n in enumerate(names):
+                (releases / n).mkdir(parents=True)
+                os.utime(releases / n, (time.time() - 100 + i, time.time() - 100 + i))
+            unit = d / "60.conf"
+            unit.write_text("ExecStart=/x/releases/" + names[0] + "/fcd backup-push-batch\n")
+            listing = mock.Mock(stdout="REF TYPE DIGEST\nlocalhost/firecontroller@sha256:1 t sha256:1\nlocalhost/firecontroller@sha256:2 t sha256:2\ndocker.io/x t sha256:3\n")
+            with mock.patch.object(h.subprocess, "run", return_value=listing) as run:
+                out = h.prune_after_deploy({"sha256:1"}, releases, [unit])
+            self.assertEqual(out, {"images_removed": 1, "helper_releases_removed": 2})
+            self.assertEqual(sorted(p.name for p in releases.iterdir()), sorted([names[0], names[3], names[4]]))
+            self.assertIn(["k3s", "ctr", "-n", "k8s.io", "images", "rm", "localhost/firecontroller@sha256:2"], [c.args[0] for c in run.call_args_list])
