@@ -46,6 +46,12 @@ func policyAdmissionConflict() error {
 }
 
 func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operation Operation) (ExecutionContext, error) {
+	return e.executionContext(ctx, tx, operation, false)
+}
+
+// A cooldown is retained negative evidence, not admission. Project pause may
+// delay its retry without discarding it; all other authority checks still apply.
+func (e *Engine) executionContext(ctx context.Context, tx *sql.Tx, operation Operation, retainCooldown bool) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
 	if err := requireSourceObligationsClear(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
 		return ExecutionContext{}, err
@@ -54,7 +60,16 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	if err != nil {
 		return ExecutionContext{}, err
 	}
-	if configuration.Paused || revision != operation.ConfigurationRevision || e.validateConfiguration(configuration) != nil || !slices.Contains(configuration.Queue, operation.PullNumber) || !slices.Contains(configuration.Channels, operation.Channel) {
+	if retainCooldown {
+		// Only ignore the current pause bit. The history validator still checks
+		// every revision and rejects source or capability changes across pauses.
+		configuration.Paused = false
+	}
+	compatible, err := compatibleQueuedConfiguration(ctx, tx, operation, configuration, revision)
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	if !compatible || e.validateConfiguration(configuration) != nil || !slices.Contains(configuration.Queue, operation.PullNumber) || !slices.Contains(configuration.Channels, operation.Channel) {
 		return ExecutionContext{}, conflict()
 	}
 	capability := e.capabilities[configuration.CapabilityID]
@@ -85,7 +100,11 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 	if err != nil {
 		return ExecutionContext{}, err
 	}
-	result.Configuration, result.Policy = configuration, policy
+	original, err := sourceConfiguration(ctx, tx, operation.ProjectID, operation.ConfigurationRevision)
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	result.Configuration, result.Policy = original, policy
 	return result, nil
 }
 
@@ -209,13 +228,30 @@ func verifyPredecessors(ctx context.Context, tx *sql.Tx, project string, current
 		}
 		return nil
 	}
-	if !slices.Contains(current.Configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
+	// Resolve source with the retained configuration, but require every actual
+	// ancestor to remain enrolled in this final action's current snapshot.
+	configuration, revision, err := readConfiguration(ctx, tx, project)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(configuration.Queue, current.Operation.PullNumber) || len(predecessors) > 100 {
+		return invalid()
+	}
+	parents := []int64{target.ParentPullNumber}
+	for _, plan := range predecessors {
+		parents = append(parents, plan.Pull.Number)
+	}
+	compatible, err := compatibleQueuedConfiguration(ctx, tx, current.Operation, configuration, revision, parents...)
+	if err != nil {
+		return err
+	}
+	if !compatible {
 		return invalid()
 	}
 	number, head, branch := target.ParentPullNumber, target.ParentSHA, target.BaseRef
 	seen := map[int64]bool{current.Operation.PullNumber: true}
 	for _, plan := range predecessors {
-		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head || plan.Pull.HeadRef != branch {
+		if number == 0 || seen[number] || !slices.Contains(current.Configuration.Queue, number) || !slices.Contains(configuration.Queue, number) || plan.Pull.Number != number || plan.Pull.HeadSHA != head || plan.Pull.HeadRef != branch {
 			return invalid()
 		}
 		seen[number] = true

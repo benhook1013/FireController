@@ -103,7 +103,7 @@ func hostedObservationQueryBinding(ctx context.Context, tx *sql.Tx, a Attempt, o
 }
 
 func hostedObservationUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored hosted observation is unavailable.", 500)
+	return newStoredUnavailable(storedHostedObservation, "Stored hosted observation is unavailable.")
 }
 
 // decodeHostedObservation checks the canonical body against every indexed fact;
@@ -149,21 +149,33 @@ func (e *Engine) recordHostedObservationAt(ctx context.Context, project, attempt
 		if err != nil {
 			return err
 		}
-		o, err := readOperation(ctx, tx, project, a.OperationID)
+		o, err := readOperationIdentity(ctx, tx, project, a.OperationID)
 		if err != nil {
 			return err
 		}
 		if err := hostedObservationQueryBinding(ctx, tx, a, o, owned); err != nil {
 			return err
 		}
-		var id, rowProject, rowAttempt, rowOperation, body string
-		var position, bytes int64
-		err = tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_bytes,body_json FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, attemptID, owned.CaptureSHA256).Scan(&id, &rowProject, &rowAttempt, &rowOperation, &position, &bytes, &body)
+		var id, rowProject, rowAttempt, rowOperation string
+		var body sql.NullString
+		var rawPosition, rawBytes any
+		err = tx.QueryRowContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_bytes,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=? THEN body_json END FROM review_hosted_observations WHERE attempt_id=? AND capture_sha256=?`, hostedObservationInputLimit+2048, attemptID, owned.CaptureSHA256).Scan(&id, &rowProject, &rowAttempt, &rowOperation, &rawPosition, &rawBytes, &body)
 		if err == nil {
+			position, positionOK := rawPosition.(int64)
+			bytes, bytesOK := rawBytes.(int64)
+			if !body.Valid || !positionOK || !bytesOK {
+				return hostedObservationUnavailable()
+			}
 			if rowProject != project || rowAttempt != attemptID || rowOperation != o.ID {
 				return hostedObservationUnavailable()
 			}
-			prior, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, owned.CaptureSHA256, bytes, a, o)
+			// Exact replay uses proven historical ownership without permitting new
+			// writes for an attempt detached by cooldown scheduling.
+			historical, err := historicalCooldownOperation(ctx, tx, o, a)
+			if err != nil {
+				return err
+			}
+			prior, err := decodeHostedObservation(body.String, id, project, attemptID, o.ID, position, owned.CaptureSHA256, bytes, a, historical)
 			if err != nil {
 				return err
 			}
@@ -174,6 +186,10 @@ func (e *Engine) recordHostedObservationAt(ctx context.Context, project, attempt
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		o, err = readOperation(ctx, tx, project, a.OperationID)
+		if err != nil {
 			return err
 		}
 		// Fresh ingestion is clock-bounded; an exact retained replay above
@@ -255,25 +271,34 @@ func (e *Engine) ReadHostedObservations(ctx context.Context, project, attemptID 
 		if err != nil {
 			return err
 		}
-		o, err := readOperation(ctx, tx, project, a.OperationID)
+		o, err := readOperationIdentity(ctx, tx, project, a.OperationID)
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,body_json FROM review_hosted_observations WHERE project_id=? AND attempt_id=? ORDER BY position LIMIT 201`, project, attemptID)
+		o, err = historicalCooldownOperation(ctx, tx, o, a)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id,project_id,attempt_id,operation_id,position,capture_sha256,capture_bytes,
+			CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=? THEN body_json END
+			FROM review_hosted_observations WHERE project_id=? AND attempt_id=? ORDER BY position LIMIT 201`, hostedObservationInputLimit+2048, project, attemptID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, rowProject, rowAttempt, operation, checksum, body string
-			var position, bytes int64
-			if err = rows.Scan(&id, &rowProject, &rowAttempt, &operation, &position, &checksum, &bytes, &body); err != nil {
+			var id, rowProject, rowAttempt, operation, checksum string
+			var body sql.NullString
+			var rawPosition, rawBytes any
+			if err = rows.Scan(&id, &rowProject, &rowAttempt, &operation, &rawPosition, &checksum, &rawBytes, &body); err != nil {
 				return err
 			}
-			if len(records) >= hostedObservationLimit || rowProject != project || rowAttempt != attemptID || operation != o.ID || position != int64(len(records)+1) {
+			position, positionOK := rawPosition.(int64)
+			bytes, bytesOK := rawBytes.(int64)
+			if !positionOK || !bytesOK || !body.Valid || len(records) >= hostedObservationLimit || rowProject != project || rowAttempt != attemptID || operation != o.ID || position != int64(len(records)+1) {
 				return hostedObservationUnavailable()
 			}
-			record, err := decodeHostedObservation(body, id, project, attemptID, o.ID, position, checksum, bytes, a, o)
+			record, err := decodeHostedObservation(body.String, id, project, attemptID, o.ID, position, checksum, bytes, a, o)
 			if err != nil {
 				return err
 			}
