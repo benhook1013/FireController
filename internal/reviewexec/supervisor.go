@@ -344,6 +344,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 		}
 	}
 	if err := rows.Err(); err != nil {
+		err = pendingScanError(ctx, err)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			advance(cursor)
 		}
