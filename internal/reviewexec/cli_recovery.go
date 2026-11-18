@@ -30,15 +30,15 @@ func (e *Engine) RecoverRetainedCLI(ctx context.Context, capabilityID string) er
 	var attempt Attempt
 	var evidenceID string
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		// The account reservation admits at most one issued CLI attempt. Select
-		// only its original capability; a replaced installation cannot adopt it.
+		// Select one validated-complete result; incomplete ended attempts must not
+		// starve another original result now that capacity and evidence differ.
 		rows, err := tx.QueryContext(ctx, `SELECT a.project_id,a.id,c.body_json
 FROM review_operations o
 JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id AND a.state=o.state
 JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
 JOIN review_execution_evidence v ON v.attempt_id=a.id
-WHERE o.channel='cli' AND o.state='uncertain' AND a.provider=? AND a.account=? AND o.capability_fingerprint=?
-AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? LIMIT 2`, capability.Provider, capability.Account, capability.Fingerprint, capabilityID)
+WHERE o.channel='cli' AND o.state='uncertain' AND json_valid(v.body_json) AND json_extract(v.body_json,'$.capture.review.Complete')=1 AND json_extract(v.body_json,'$.capture.review.Outcome')='completed' AND a.provider=? AND a.account=? AND o.capability_fingerprint=?
+AND json_valid(c.body_json) AND json_extract(c.body_json,'$.capability_id')=? ORDER BY a.id LIMIT 1`, capability.Provider, capability.Account, capability.Fingerprint, capabilityID)
 		if err != nil {
 			return err
 		}

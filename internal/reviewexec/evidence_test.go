@@ -373,16 +373,18 @@ func TestCLIEvidenceValidationIsBoundedAndAtomic(t *testing.T) {
 		"too_many_files":       func(x *ReviewEvidenceInput) { x.Review.ReviewedFiles = make([]string, 10001) },
 		"too_many_findings":    func(x *ReviewEvidenceInput) { x.Review.Findings = make([]reviewprovider.ParsedFinding, 101) },
 		"title_empty":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = " \n" },
-		"title_large":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = strings.Repeat("é", 251) },
-		"title_utf8":           func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = "raw\xff" },
-		"detail_large":         func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = strings.Repeat("x", 16<<10+1) },
-		"detail_utf8":          func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\xff" },
-		"detail_control":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\x00" },
-		"severity":             func(x *ReviewEvidenceInput) { x.Review.Findings[0].Severity = "urgent" },
-		"negative_start":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].StartLine = -1 },
-		"negative_end":         func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = -1 },
-		"reversed_lines":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = 1 },
-		"anchor_utf8":          func(x *ReviewEvidenceInput) { x.ExpectedAnchor.BaseRef = "raw\xff" },
+		"title_large": func(x *ReviewEvidenceInput) {
+			x.Review.Findings[0].Title = strings.Repeat("é", reviewprovider.MaxFindingTitleBytes/2+1)
+		},
+		"title_utf8":     func(x *ReviewEvidenceInput) { x.Review.Findings[0].Title = "raw\xff" },
+		"detail_large":   func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = strings.Repeat("x", 16<<10+1) },
+		"detail_utf8":    func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\xff" },
+		"detail_control": func(x *ReviewEvidenceInput) { x.Review.Findings[0].Detail = "raw\x00" },
+		"severity":       func(x *ReviewEvidenceInput) { x.Review.Findings[0].Severity = "urgent" },
+		"negative_start": func(x *ReviewEvidenceInput) { x.Review.Findings[0].StartLine = -1 },
+		"negative_end":   func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = -1 },
+		"reversed_lines": func(x *ReviewEvidenceInput) { x.Review.Findings[0].EndLine = 1 },
+		"anchor_utf8":    func(x *ReviewEvidenceInput) { x.ExpectedAnchor.BaseRef = "raw\xff" },
 		"total_bytes": func(x *ReviewEvidenceInput) {
 			x.Review.Findings = make([]reviewprovider.ParsedFinding, 100)
 			for i := range x.Review.Findings {

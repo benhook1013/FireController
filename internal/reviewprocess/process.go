@@ -78,6 +78,8 @@ type Capture struct {
 	Stderr   []byte
 	ExitCode int
 	Started  bool
+	// Exited proves Wait returned and cleanup of the owned process group succeeded.
+	Exited bool
 }
 
 type Runner struct {
@@ -331,7 +333,7 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 			code = -1
 		}
 	}
-	capture := Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: code, Started: started}
+	capture := Capture{Stdout: out.Bytes(), Stderr: stderr.Bytes(), ExitCode: code, Started: started, Exited: command.ProcessState != nil && (cleanupErr == nil || errors.Is(cleanupErr, os.ErrProcessDone))}
 	if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) || out.overflow || stderr.overflow || commandCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) || err != nil && code < 0 {
 		return runResult{capture: capture, err: errOutputOrProcess}
 	}

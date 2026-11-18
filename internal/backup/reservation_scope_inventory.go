@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 )
 
 // These guards preserve the reservation policy through backup and inactive
 // restore. Uniqueness must remain account-wide for CLI and repository-scoped
 // for Hosted, alongside the exact-target and attempt identities.
-func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
+func validateReservationScopeSchema(ctx context.Context, db sqlReader, version int) error {
 	type index struct {
 		name, origin string
 		partial      int
@@ -86,9 +87,36 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader) error {
 				return err
 			}
 			expected := "CREATE UNIQUE INDEX " + x.name + " ON review_execution_reservations(" + strings.ReplaceAll(want, " ", ",") + ") WHERE action_class='" + identity + "'"
+			if version >= 11 && identity == "cli" {
+				expected += " AND execution_ended_at=''"
+			}
 			if !definition.Valid || strings.Join(strings.Fields(definition.String), " ") != expected {
 				return invalid()
 			}
+		}
+	}
+	if version >= 11 {
+		var typ, def string
+		var required int
+		if err := db.QueryRowContext(ctx, `SELECT type,"notnull",dflt_value FROM pragma_table_info('review_execution_reservations') WHERE name='execution_ended_at'`).Scan(&typ, &required, &def); err != nil || typ != "TEXT" || required != 1 || def != "''" {
+			return invalid()
+		}
+		rows, err := db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(r.execution_ended_at AS BLOB))<=64 THEN r.execution_ended_at END,r.action_class,a.state FROM review_execution_reservations r JOIN review_execution_attempts a ON a.id=r.attempt_id WHERE r.execution_ended_at<>''`)
+		if err != nil {
+			return invalid()
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var at, channel, state string
+			if rows.Scan(&at, &channel, &state) != nil || channel != "cli" || (state != "active" && state != "uncertain") {
+				return invalid()
+			}
+			if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
+				return invalid()
+			}
+		}
+		if rows.Err() != nil {
+			return invalid()
 		}
 	}
 	return nil

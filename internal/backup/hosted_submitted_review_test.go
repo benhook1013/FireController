@@ -201,7 +201,7 @@ UPDATE review_execution_evidence SET body_json=?,fingerprint=? WHERE id=?;
 	for _, artifact := range m.Artifacts {
 		refs[artifact.Path] = artifact
 	}
-	if err := validateEvidenceReferences(t.Context(), db, refs); err == nil {
+	if err := validateEvidenceReferences(t.Context(), db, refs, 6); err == nil {
 		db.Close()
 		t.Fatal("mixed-shape fixture passed immutable capture validation")
 	}

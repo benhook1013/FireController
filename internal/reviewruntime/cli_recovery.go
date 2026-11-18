@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
 // StartCLIRecovery owns local verification, publication and settlement of
@@ -29,10 +30,8 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 				return
 			}
 			rawErr := d.recoverRawCLI(ctx)
-			err := rawErr
-			if err == nil {
-				err = d.engine.RecoverRetainedCLI(ctx, d.capability.ID)
-			}
+			// A malformed ended result must not stop another complete result.
+			err := errors.Join(rawErr, d.engine.RecoverRetainedCLI(ctx, d.capability.ID))
 			if ctx.Err() != nil {
 				done <- nil
 				return
@@ -70,19 +69,40 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 func (d *CLIDriver) recoverRawCLI(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	a, err := d.engine.PendingCLICaptureRecovery(ctx, d.capability.ID)
-	if err != nil || a == nil {
+	attempts, err := d.engine.PendingCLICaptureRecoveries(ctx, d.capability.ID, d.rawRecoveryCursor)
+	if err != nil {
 		return err
 	}
+	if len(attempts) == 0 {
+		d.rawRecoveryCursor = ""
+		return nil
+	}
+	var failures []error
+	for _, a := range attempts {
+		if ctx.Err() != nil {
+			return errors.Join(append(failures, ctx.Err())...)
+		}
+		d.rawRecoveryCursor = a.ID
+		if err := d.recoverOneRawCLI(ctx, a); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (d *CLIDriver) recoverOneRawCLI(ctx context.Context, a reviewexec.Attempt) error {
 	record, _, err := d.captures.Read(ctx, a.ID)
 	if err != nil {
 		return err
 	}
+ if record.Capture.Started && record.Capture.Exited {
+  if err:=d.engine.RecordCLIProcessExit(ctx,a.ProjectID,a.ID,record.FinishedAt);err!=nil{return err}
+ }
 	anchor := *a.Anchor
 	w, err := d.manager.Open(ctx, a.ID, anchor.CandidateSHA, anchor.BaseSHA, anchor.MergeBaseSHA, anchor.PatchSHA256, anchor.Repository)
 	if err != nil {
 		return err
 	}
-	_, err = RetainCLI(ctx, d.captures, d.engine, d.manager, *a, w, record.Capture, record.StartedAt, record.FinishedAt)
+	_, err = RetainCLI(ctx, d.captures, d.engine, d.manager, a, w, record.Capture, record.StartedAt, record.FinishedAt)
 	return err
 }

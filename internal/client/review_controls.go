@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"math"
 	"net/http"
 	"strconv"
@@ -78,16 +79,22 @@ type ReviewEvidenceCapture struct {
 	ReviewedFiles    []string                 `json:"reviewed_files"`
 	Findings         []ReviewEvidenceFinding  `json:"findings"`
 }
+type ReviewEvidenceRecovery struct {
+	PriorFingerprint string `json:"prior_fingerprint"`
+	RecoveredAt      string `json:"recovered_at"`
+	Reason           string `json:"reason"`
+}
 type ReviewEvidence struct {
-	Channel               string                `json:"channel"`
-	ID                    string                `json:"id"`
-	ProjectID             string                `json:"project_id"`
-	AttemptID             string                `json:"attempt_id"`
-	OperationID           string                `json:"operation_id"`
-	CapabilityFingerprint string                `json:"capability_fingerprint"`
-	Anchor                ReviewAnchor          `json:"anchor"`
-	Capture               ReviewEvidenceCapture `json:"capture"`
-	RecordedAt            string                `json:"recorded_at"`
+	Recovery              *ReviewEvidenceRecovery `json:"recovery,omitempty"`
+	Channel               string                  `json:"channel"`
+	ID                    string                  `json:"id"`
+	ProjectID             string                  `json:"project_id"`
+	AttemptID             string                  `json:"attempt_id"`
+	OperationID           string                  `json:"operation_id"`
+	CapabilityFingerprint string                  `json:"capability_fingerprint"`
+	Anchor                ReviewAnchor            `json:"anchor"`
+	Capture               ReviewEvidenceCapture   `json:"capture"`
+	RecordedAt            string                  `json:"recorded_at"`
 }
 type ReviewCounts struct {
 	Found    int64 `json:"found"`
@@ -217,6 +224,11 @@ func (c *Client) ReviewEvidence(ctx context.Context, id string) (ReviewEvidence,
 	if err := c.requestBounded(ctx, http.MethodGet, c.projectPath("reviews", "evidence", id), nil, true, "", nil, http.StatusOK, false, &value, 4<<20, decodeReviewResponse); err != nil {
 		return ReviewEvidence{}, err
 	}
+	if recovery := value.Recovery; recovery != nil {
+		if value.Channel != "cli" || !controlHex(recovery.PriorFingerprint, 64) || !controlTime(recovery.RecoveredAt) || recovery.Reason != "cli_capture_reparsed" {
+			return ReviewEvidence{}, invalidResponse()
+		}
+	}
 	r := value.Capture
 	captureLimit := int64(24 << 20)
 	if value.Channel == "hosted" {
@@ -248,7 +260,7 @@ func (c *Client) ReviewEvidence(ctx context.Context, id string) (ReviewEvidence,
 		if value.Channel == "cli" && f.Source != nil {
 			return ReviewEvidence{}, invalidResponse()
 		}
-		if f.Finding != int64(i) || !controlText(f.Title, 500, true) || !controlText(f.Detail, 16<<10, false) || !oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") || f.Path != "" && !controlPath(f.Path) || f.StartLine < 0 || f.EndLine < 0 || f.StartLine != 0 && f.EndLine != 0 && f.EndLine < f.StartLine {
+		if f.Finding != int64(i) || !controlText(f.Title, reviewprovider.MaxFindingTitleBytes, true) || !controlText(f.Detail, 16<<10, false) || !oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") || f.Path != "" && !controlPath(f.Path) || f.StartLine < 0 || f.EndLine < 0 || f.StartLine != 0 && f.EndLine != 0 && f.EndLine < f.StartLine {
 			return ReviewEvidence{}, invalidResponse()
 		}
 	}

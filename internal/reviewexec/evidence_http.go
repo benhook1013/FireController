@@ -12,15 +12,16 @@ var evidenceHTTPID = regexp.MustCompile(`^review_evidence_[0-9a-f]{32}$`)
 // The HTTP representation keeps provider parser implementation fields private
 // and exposes each source finding's immutable zero-based index explicitly.
 type evidenceResponse struct {
-	ID                    string          `json:"id"`
-	Channel               string          `json:"channel"`
-	ProjectID             string          `json:"project_id"`
-	AttemptID             string          `json:"attempt_id"`
-	OperationID           string          `json:"operation_id"`
-	CapabilityFingerprint string          `json:"capability_fingerprint"`
-	Anchor                Anchor          `json:"anchor"`
-	Capture               captureResponse `json:"capture"`
-	RecordedAt            string          `json:"recorded_at"`
+	Recovery              *EvidenceRecovery `json:"recovery,omitempty"`
+	ID                    string            `json:"id"`
+	Channel               string            `json:"channel"`
+	ProjectID             string            `json:"project_id"`
+	AttemptID             string            `json:"attempt_id"`
+	OperationID           string            `json:"operation_id"`
+	CapabilityFingerprint string            `json:"capability_fingerprint"`
+	Anchor                Anchor            `json:"anchor"`
+	Capture               captureResponse   `json:"capture"`
+	RecordedAt            string            `json:"recorded_at"`
 }
 
 type hostedPublicationResponse struct {
@@ -102,7 +103,7 @@ func publicEvidence(value ReviewEvidence) evidenceResponse {
 	}
 	return evidenceResponse{
 		ID: value.ID, Channel: channel, ProjectID: value.ProjectID, AttemptID: value.AttemptID, OperationID: value.OperationID,
-		CapabilityFingerprint: value.CapabilityFingerprint, Anchor: value.Anchor, RecordedAt: value.RecordedAt,
+		CapabilityFingerprint: value.CapabilityFingerprint, Anchor: value.Anchor, RecordedAt: value.RecordedAt, Recovery: value.Recovery,
 		Capture: captureResponse{Hosted: hosted, CaptureID: capture.CaptureID, CaptureSHA256: capture.CaptureSHA256, CaptureBytes: capture.CaptureBytes,
 			StartedAt: capture.StartedAt, FinishedAt: capture.FinishedAt, Outcome: capture.Review.Outcome,
 			Complete: capture.Review.Complete, ReportedFindings: capture.Review.ReportedFindings, ReviewedFiles: files, Findings: findings},

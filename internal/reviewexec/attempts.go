@@ -218,7 +218,7 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			}
 		}
 		var busy int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND (action_class='cli' OR repository_id=?)) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND execution_ended_at='' AND (action_class='cli' OR repository_id=?)) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
 			return err
 		}
 		if busy != 0 {

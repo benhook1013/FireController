@@ -240,7 +240,7 @@ func TestCLIReviewFindingAndFileBounds(t *testing.T) {
 		complete["reviewedFiles"] = []string{path}
 		requireCLIInvalid(t, cliJSONLines(t, cliContextEvent(), complete), 0, syntheticCLIContext)
 	}
-	for key, value := range map[string]any{"title": strings.Repeat("x", 501), "comment": strings.Repeat("🔥", (16<<10)/4+1), "startLine": 6, "severity": "bad\x00level"} {
+	for key, value := range map[string]any{"title": strings.Repeat("x", MaxFindingTitleBytes+1), "comment": strings.Repeat("🔥", (16<<10)/4+1), "startLine": 6, "severity": "bad\x00level"} {
 		finding := cliFindingEvent()
 		finding[key] = value
 		requireCLIInvalid(t, cliJSONLines(t, finding), 0, syntheticCLIContext)

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"strconv"
 	"time"
@@ -173,7 +174,7 @@ func (c *Client) ReviewFindingRoute(ctx context.Context, id string) (ReviewRoute
 }
 
 func validRouteSourceFinding(f ReviewEvidenceFinding) bool {
-	return controlText(f.Title, 500, true) && controlText(f.Detail, 16<<10, false) && oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") && (f.Path == "" || controlPath(f.Path)) && f.StartLine >= 0 && f.EndLine >= 0 && (f.StartLine == 0 || f.EndLine == 0 || f.EndLine >= f.StartLine)
+	return controlText(f.Title, reviewprovider.MaxFindingTitleBytes, true) && controlText(f.Detail, 16<<10, false) && oneReviewOf(f.Severity, "info", "low", "medium", "high", "critical", "unknown") && (f.Path == "" || controlPath(f.Path)) && f.StartLine >= 0 && f.EndLine >= 0 && (f.StartLine == 0 || f.EndLine == 0 || f.EndLine >= f.StartLine)
 }
 func validFindingRoute(r ReviewFindingRoute) bool {
 	if ValidateReviewRouteID(r.ID) != nil || !(r.TargetPullNumber == 0 || validPullNumber(r.TargetPullNumber)) || r.Revision < 1 || !oneReviewOf(r.State, "active", "superseded") || !oneReviewOf(r.Disposition, "unadjudicated", "accepted", "rejected") || !controlText(r.Reason, 2048, false) || !controlText(r.ProofNote, 2048, false) {

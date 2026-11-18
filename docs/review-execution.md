@@ -636,3 +636,17 @@ operation-side predecessor reference. Missing lineage cannot turn an automatic
 successor into an explicit request. Backup inspection validates this linkage,
 negative budgets, physical schema and foreign keys; restore preserves historical
 generations rather than inventing fresh approval or repeating provider actions.
+
+### Recovering an invalid CLI interpretation
+
+Raw CLI captures remain immutable. Finding titles are retained verbatim up to the shared 4 KiB UTF-8 byte bound; finding counts, detail limits, capture limits and the 2 MiB evidence budget remain bounded independently. An over-bound or malformed capture is not completed coverage.
+
+A trusted runtime recovery pass may reparse an original `capture_invalid` CLI capture after parser support improves. This path never invokes the provider. It requires the same retained bytes, digest, timestamps, capability, admitted comparison and reserved original attempt, plus a valid completed result and full changed-file coverage. The prior interpretation must be the exact empty uncertain fallback, with no adjudication, routes, checkpoint, applicability or round-credit records. Other partial results remain outside this recovery path.
+
+Recovery archives the exact prior evidence JSON and fingerprint in an immutable recovery ledger, then transactionally updates the current derived interpretation with explicit recovery provenance. Any published empty native run receives a new history version; old snapshots retain their original content. The same evidence identity continues to identify the same raw capture, with the recovery metadata distinguishing its corrected interpretation. No original source bytes, existing decisions or history are overwritten. The normal retained-result completion path then releases the original reservation without reissuing a review. This does not adjudicate findings, finalize a round or grant review credit; recovered findings still require ordinary decisions and fixes.
+
+A restart between interpretation recovery and completion resumes from the retained complete evidence. Exact replay adds no archive, history version or credit. Stale state, mismatched source, any prior decision or an audit/publication failure fails closed transactionally. Backup and restore include and validate the immutable recovery ledger. This narrow repair does not redesign capacity handling for other uncertain attempts or authorize automatic retries after process exit.
+
+### CLI execution capacity versus unresolved results
+
+A native CLI reservation guards two independent things: one live process per provider account and one unresolved attempt per PR. After the trusted runner has waited for its child and successfully cleaned up its owned process group, the runtime records `execution_ended_at` on the reservation before interpreting or publishing the capture. The timestamp releases account execution capacity regardless of the result's uncertainty reason, without removing the PR reservation or changing its review state, findings, credit or adjudication. Another PR may then use the ordinary single-process slot; the original PR remains blocked from launching a duplicate until its result is settled. Unknown liveness retains capacity. The persisted proof survives supervisor restart; a restart timestamp alone is not proof for historical attempts without a bound process/container identity.

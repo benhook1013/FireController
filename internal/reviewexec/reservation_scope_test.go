@@ -98,7 +98,7 @@ func reservationScopeRestoreV9(t *testing.T, f *attemptFixture) {
 	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		for _, statement := range []string{
 			`CREATE TABLE old_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`,
-			`INSERT INTO old_reservations SELECT * FROM review_execution_reservations`,
+			`INSERT INTO old_reservations SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations`,
 			`DROP TABLE review_execution_reservations`,
 			`ALTER TABLE old_reservations RENAME TO review_execution_reservations`,
 			`UPDATE metadata SET value='9' WHERE key='schema:review_execution'`,
@@ -142,7 +142,15 @@ func TestReservationScopeMigrationPreservesActiveAndQueued(t *testing.T) {
 	snapshot := func() map[string]string {
 		result := map[string]string{}
 		for _, table := range tables {
-			result[table] = snapshotTable(t, f, table)
+			if table == "review_execution_reservations" {
+				var value string
+				if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(body,''),'') FROM (SELECT json_array(provider,repository_id,pull_number,action_class,account,attempt_id) body FROM review_execution_reservations ORDER BY attempt_id)`).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				result[table] = value
+			} else {
+				result[table] = snapshotTable(t, f, table)
+			}
 		}
 		return result
 	}
@@ -169,7 +177,7 @@ func TestReservationScopeMigrationPreservesActiveAndQueued(t *testing.T) {
 	if err = EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "10" {
+	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "11" {
 		t.Fatal(version, err)
 	}
 	if !reflect.DeepEqual(before, snapshot()) {

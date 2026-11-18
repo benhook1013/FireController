@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -423,7 +424,7 @@ func validReviewFinding(value ReviewFinding) bool {
 	if value.Route != nil && (value.Disposition != "routed" || !validFindingRoute(*value.Route)) {
 		return false
 	}
-	if !cleanReviewText(value.SourceFindingID, 256, true) || !cleanReviewText(value.Title, 500, true) || !cleanReviewText(value.Detail, 16<<10, false) ||
+	if !cleanReviewText(value.SourceFindingID, 256, true) || !cleanReviewText(value.Title, reviewprovider.MaxFindingTitleBytes, true) || !cleanReviewText(value.Detail, 16<<10, false) ||
 		!oneReviewOf(value.Severity, "info", "low", "medium", "high", "critical", "unknown") || !oneReviewOf(value.Disposition, "unadjudicated", "accepted", "routed", "rejected") ||
 		!cleanReviewText(value.DecisionReason, 2<<10, false) || !cleanReviewText(value.Actor, 128, false) || !validReviewSHA(value.FixSHA) || !cleanReviewText(value.ProofNote, 2<<10, false) {
 		return false

@@ -11,7 +11,7 @@ import (
 func TestReservationScopeBackupRestoreAndPhysicalGuards(t *testing.T) {
 	f := newRestoreFixture(t)
 	var version int
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != 10 {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != 11 {
 		t.Fatalf("reservation schema not current: %d %v", version, err)
 	}
 	before := backupRows(t, f.store.DB())
@@ -137,5 +137,16 @@ func TestWaitPhysicalGuardsRejectRehashedBundles(t *testing.T) {
 				t.Fatal("rejection changed retained bundle data")
 			}
 		})
+	}
+}
+
+func TestPriorReservationScopeV10RemainsInspectable(t *testing.T) {
+	f := newRestoreFixture(t)
+	if _, err := f.store.DB().Exec(`DROP INDEX review_reservations_cli_account; ALTER TABLE review_execution_reservations DROP COLUMN execution_ended_at; CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'; UPDATE metadata SET value='10' WHERE key='schema:review_execution'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -32,6 +32,10 @@ type NativePublication struct {
 // or IDs and adds only this native update. It performs no external work or
 // administrator import, and never exposes raw captures through queue reads.
 func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePublication) (Receipt, error) {
+	return publishNative(ctx, tx, scope, p, nil)
+}
+
+func publishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePublication, recovering *RunInput) (Receipt, error) {
 	if len(p.Pull.Runs) != 0 || len(p.Pull.Attempts) != 0 || p.Attempt == nil && p.Run == nil {
 		return Receipt{}, validationError("Publish one selected native attempt or run without replacing history.")
 	}
@@ -96,7 +100,16 @@ func PublishNative(ctx context.Context, tx *sql.Tx, scope core.Scope, p NativePu
 		return Receipt{}, err
 	}
 	if p.Run != nil {
-		if err = appendNativeRun(ctx, tx, write, pull.Number, pull.Runs[0]); err != nil {
+		if recovering != nil {
+			var order int
+			if err = tx.QueryRowContext(ctx, `SELECT run_order FROM review_current_runs WHERE project_id=? AND pull_number=? AND id=?`, scope.ProjectID, pull.Number, runOpaqueID(scope.ProjectID, nativeSource, p.Run.SourceRunID)).Scan(&order); err != nil {
+				return Receipt{}, err
+			}
+			err = write.run(ctx, tx, nativeSource, pull.Number, order, pull.Runs[0])
+		} else {
+			err = appendNativeRun(ctx, tx, write, pull.Number, pull.Runs[0])
+		}
+		if err != nil {
 			return Receipt{}, err
 		}
 	}

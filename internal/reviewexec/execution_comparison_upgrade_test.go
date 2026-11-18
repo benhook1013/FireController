@@ -10,7 +10,7 @@ func TestExecutionEightUpgradePreservesCurrentComparisonTriggers(t *testing.T) {
 	restorePreCooldownAttemptSchema(t, f)
 	for _, statement := range []string{
 		`CREATE TABLE old_reservations(provider TEXT NOT NULL,repository_id INTEGER NOT NULL,pull_number INTEGER NOT NULL,action_class TEXT NOT NULL,account TEXT NOT NULL,attempt_id TEXT NOT NULL UNIQUE REFERENCES review_execution_attempts(id),PRIMARY KEY(provider,repository_id,pull_number,action_class),UNIQUE(provider,account,action_class))`,
-		`INSERT INTO old_reservations SELECT * FROM review_execution_reservations`,
+		`INSERT INTO old_reservations SELECT provider,repository_id,pull_number,action_class,account,attempt_id FROM review_execution_reservations`,
 		`DROP TABLE review_execution_reservations`,
 		`ALTER TABLE old_reservations RENAME TO review_execution_reservations`,
 		`UPDATE metadata SET value='8' WHERE key='schema:review_execution'`,

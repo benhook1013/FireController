@@ -69,6 +69,9 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 	input := reviewexec.ReviewEvidenceInput{CaptureID: reference.ID, CaptureSHA256: reference.SHA256, CaptureBytes: reference.Bytes, StartedAt: retained.StartedAt.Format(time.RFC3339Nano), FinishedAt: retained.FinishedAt.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: review}
 	receipt, err := engine.RecordReviewEvidence(ctx, attempt.ProjectID, attempt.ID, input)
 	var failure *core.Error
+	if review.Complete && errors.As(err, &failure) && failure.Code == "review_conflict" {
+		receipt, err = engine.RecoverInvalidCLIProjection(ctx, attempt.ProjectID, attempt.ID, attempt.Revision, input)
+	}
 	if errors.As(err, &failure) && failure.Code == "validation_failed" {
 		// The raw artifact remains authoritative when parsed projection fields
 		// exceed the ledger's stricter text or aggregate bounds. Retry only this

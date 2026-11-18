@@ -21,6 +21,8 @@ import (
 // CLIDriver composes one trusted operator capability. Runtime ownership of its
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
+ rawRecoveryCursor string // owned by the single local recovery worker
+
 	workspaceMaintenance func(context.Context) error
 	store                *core.Store
 	engine               *reviewexec.Engine
@@ -277,6 +279,13 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	capture, executionErr := d.review(context.WithValue(ctx, cliStartCallbackKey{}, onStart), prepared.workspace)
 	finished := time.Now().UTC()
+	if capture.Started && capture.Exited {
+		exitCtx, exitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := d.engine.RecordCLIProcessExit(exitCtx, operation.ProjectID, attempt.ID, finished); err != nil {
+			slog.WarnContext(exitCtx, "CLI process exited but execution capacity release could not be retained", "attempt_id", attempt.ID)
+		}
+		exitCancel()
+	}
 	possibleStart := capture.Started
 	var processFailure *reviewprocess.Error
 	if errors.As(executionErr, &processFailure) && processFailure.OutcomeUnknown {

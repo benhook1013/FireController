@@ -673,7 +673,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		}
 	}
 	var providerBusy bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations r JOIN projects p ON p.id=? WHERE r.provider=? AND r.account=? AND r.action_class=? AND (?='cli' OR r.repository_id=p.github_repository_id))`, project, capability.Provider, capability.Account, channel, channel).Scan(&providerBusy); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_execution_reservations r JOIN projects p ON p.id=? WHERE r.provider=? AND r.account=? AND r.action_class=? AND r.execution_ended_at='' AND (?='cli' OR r.repository_id=p.github_repository_id))`, project, capability.Provider, capability.Account, channel, channel).Scan(&providerBusy); err != nil {
 		return nil, err
 	}
 	if providerBusy {

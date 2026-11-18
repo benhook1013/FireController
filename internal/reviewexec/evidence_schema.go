@@ -15,7 +15,7 @@ func EnsureEvidenceSchema(ctx context.Context, store *core.Store) error {
 		`CREATE INDEX review_hosted_observation_attempt ON review_hosted_observations(project_id,attempt_id,position)`,
 	}, ExternalHostedEvidenceIndexSQL(), []string{
 		`CREATE TABLE review_activity_evidence(attempt_id TEXT PRIMARY KEY REFERENCES review_execution_attempts(id),project_id TEXT NOT NULL REFERENCES projects(id),body_json TEXT NOT NULL CHECK(length(CAST(body_json AS BLOB))<=2048))`,
-	})
+	}, CLIEvidenceRecoverySchemaSQL())
 }
 
 // ExternalHostedEvidenceIndexSQL supports passive exact-identity lookup without
@@ -25,4 +25,11 @@ func ExternalHostedEvidenceIndexSQL() []string {
 		`CREATE INDEX review_evidence_hosted_publication ON review_execution_evidence(project_id,json_extract(body_json,'$.capture.hosted.publication_id'));`,
 		`CREATE INDEX review_evidence_hosted_run ON review_execution_evidence(project_id,coalesce(json_extract(body_json,'$.capture.hosted.submitted_review.provider_run_id'),json_extract(body_json,'$.capture.hosted.standing_summary.provider_run_id')));`,
 	}
+}
+
+// CLIEvidenceRecoverySchemaSQL is the canonical immutable interpretation archive.
+func CLIEvidenceRecoverySchemaSQL() []string {
+	return []string{`CREATE TABLE review_cli_evidence_recovery(evidence_id TEXT PRIMARY KEY REFERENCES review_execution_evidence(id),project_id TEXT NOT NULL REFERENCES projects(id),original_body_json TEXT NOT NULL,original_fingerprint TEXT NOT NULL,recovered_fingerprint TEXT NOT NULL,recovered_at TEXT NOT NULL)`,
+		`CREATE TRIGGER review_cli_recovery_retain BEFORE DELETE ON review_cli_evidence_recovery BEGIN SELECT RAISE(ABORT,'retain CLI recovery evidence'); END`,
+		`CREATE TRIGGER review_cli_recovery_immutable BEFORE UPDATE ON review_cli_evidence_recovery BEGIN SELECT RAISE(ABORT,'retain CLI recovery evidence'); END`}
 }

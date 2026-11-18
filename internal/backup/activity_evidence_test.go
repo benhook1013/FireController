@@ -10,11 +10,16 @@ import (
 )
 
 func TestActivityEvidenceSchemaBackupCompatibility(t *testing.T) {
-	for _, version := range []string{"4", "5"} {
+	for _, version := range []string{"4", "5", "6"} {
 		t.Run(version, func(t *testing.T) {
 			store, dir := historyInventoryFixture(t)
 			if err := reviewexec.EnsureSchema(t.Context(), store); err != nil {
 				t.Fatal(err)
+			}
+			if version != "6" {
+				if _, err := store.DB().Exec(`DROP TABLE review_cli_evidence_recovery; UPDATE metadata SET value='5' WHERE key='schema:review_evidence'`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if version == "4" {
 				if err := store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {

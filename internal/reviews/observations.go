@@ -15,6 +15,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/publicsite"
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -128,9 +129,13 @@ func validateObservationContent(queue []PullInput, retirements []RetiredPull, re
 			if err := validateRunTimes(*run); err != nil {
 				return err
 			}
+			titleLimit := 500
+			if run.Channel == "cli" {
+				titleLimit = reviewprovider.MaxFindingTitleBytes
+			}
 			seenFindings := make(map[string]struct{}, len(run.Findings))
 			for _, finding := range run.Findings {
-				if !validText(finding.SourceFindingID, 256, true) || !validText(finding.Title, 500, true) ||
+				if !validText(finding.SourceFindingID, 256, true) || !validText(finding.Title, titleLimit, true) ||
 					!validText(finding.Detail, 16<<10, false) || !oneOf(finding.Severity, "info", "low", "medium", "high", "critical", "unknown") ||
 					!oneOf(finding.Disposition, "unadjudicated", "accepted", "routed", "rejected") ||
 					!validText(finding.DecisionReason, 2<<10, false) || !validText(finding.Actor, 128, false) ||

@@ -55,6 +55,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`ALTER TABLE review_execution_reservations_next RENAME TO review_execution_reservations`,
 		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'`,
 		`CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='hosted'`,
+	}, {
+		`ALTER TABLE review_execution_reservations ADD COLUMN execution_ended_at TEXT NOT NULL DEFAULT ''`,
+		`DROP INDEX review_reservations_cli_account`,
+		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli' AND execution_ended_at=''`,
 	}}, backfillExecutionSchema); err != nil {
 		return err
 	}

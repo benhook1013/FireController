@@ -34,7 +34,14 @@ type ReviewEvidenceInput struct {
 	Hosted         *HostedEvidenceMetadata     `json:"hosted,omitempty"`
 }
 
+type EvidenceRecovery struct {
+	PriorFingerprint string `json:"prior_fingerprint"`
+	RecoveredAt      string `json:"recovered_at"`
+	Reason           string `json:"reason"`
+}
+
 type ReviewEvidence struct {
+	Recovery              *EvidenceRecovery   `json:"recovery,omitempty"`
 	ID                    string              `json:"id"`
 	ProjectID             string              `json:"project_id"`
 	AttemptID             string              `json:"attempt_id"`
@@ -117,8 +124,12 @@ func validateReviewEvidence(in ReviewEvidenceInput) error {
 		}
 		seen[path] = true
 	}
+	titleLimit := 500
+	if in.Hosted == nil {
+		titleLimit = reviewprovider.MaxFindingTitleBytes
+	}
 	for _, f := range r.Findings {
-		if !safeText(f.Title, 500) || strings.TrimSpace(f.Title) == "" || !safeText(f.Detail, 16<<10) || f.Path != "" && !validEvidencePath(f.Path) || f.StartLine < 0 || f.EndLine < 0 || f.StartLine != 0 && f.EndLine != 0 && f.EndLine < f.StartLine {
+		if !safeText(f.Title, titleLimit) || strings.TrimSpace(f.Title) == "" || !safeText(f.Detail, 16<<10) || f.Path != "" && !validEvidencePath(f.Path) || f.StartLine < 0 || f.EndLine < 0 || f.StartLine != 0 && f.EndLine != 0 && f.EndLine < f.StartLine {
 			return invalid()
 		}
 		switch f.Severity {

@@ -56,6 +56,7 @@ type captureWire struct {
 	Stderr   string `json:"stderr"`
 	ExitCode int    `json:"exit_code"`
 	Started  bool   `json:"started"`
+	Exited   bool   `json:"exited,omitempty"`
 }
 
 // NewCaptureStore pins existing ancestor aliases to one canonical private root.
@@ -133,8 +134,12 @@ func (s *CaptureStore) Save(ctx context.Context, attemptID string, record Captur
 		return empty, captureError("capture_unavailable")
 	}
 	capture := record.Capture
-	wire := captureWire{base64.StdEncoding.EncodeToString(capture.Stdout), base64.StdEncoding.EncodeToString(capture.Stderr), capture.ExitCode, capture.Started}
-	data, err := json.Marshal(captureEnvelope{Version: 2, AttemptID: attemptID, StartedAt: record.StartedAt.UTC().Format(time.RFC3339Nano), FinishedAt: record.FinishedAt.UTC().Format(time.RFC3339Nano), Capture: wire})
+	wire := captureWire{base64.StdEncoding.EncodeToString(capture.Stdout), base64.StdEncoding.EncodeToString(capture.Stderr), capture.ExitCode, capture.Started, capture.Exited}
+	version := 2
+	if capture.Exited {
+		version = 3
+	}
+	data, err := json.Marshal(captureEnvelope{Version: version, AttemptID: attemptID, StartedAt: record.StartedAt.UTC().Format(time.RFC3339Nano), FinishedAt: record.FinishedAt.UTC().Format(time.RFC3339Nano), Capture: wire})
 	if err != nil || len(data) > maxCaptureFile {
 		return empty, captureError("validation_failed")
 	}
@@ -231,7 +236,7 @@ func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byt
 	}
 	data, _, err := readPrivateFile(path, maxCaptureFile)
 	var envelope captureEnvelope
-	if err != nil || strictjson.Decode(data, &envelope) != nil || envelope.Version != 2 || envelope.AttemptID != attemptID || !requiredNonNullObject(data, "version", "attempt_id", "started_at", "finished_at", "capture") {
+	if err != nil || strictjson.Decode(data, &envelope) != nil || (envelope.Version != 2 && envelope.Version != 3) || envelope.AttemptID != attemptID || !requiredNonNullObject(data, "version", "attempt_id", "started_at", "finished_at", "capture") {
 		return nil, empty, captureError("capture_unavailable")
 	}
 	var root map[string]json.RawMessage
@@ -239,9 +244,12 @@ func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byt
 	if !requiredNonNullObject(root["capture"], "stdout", "stderr", "exit_code", "started") {
 		return nil, empty, captureError("capture_unavailable")
 	}
+	if envelope.Version == 2 && envelope.Capture.Exited || envelope.Version == 3 && (!requiredNonNullObject(root["capture"], "exited") || !envelope.Capture.Exited) {
+		return nil, empty, captureError("capture_unavailable")
+	}
 	stdout, outErr := base64.StdEncoding.Strict().DecodeString(envelope.Capture.Stdout)
 	stderr, errErr := base64.StdEncoding.Strict().DecodeString(envelope.Capture.Stderr)
-	capture := reviewprocess.Capture{Stdout: stdout, Stderr: stderr, ExitCode: envelope.Capture.ExitCode, Started: envelope.Capture.Started}
+	capture := reviewprocess.Capture{Stdout: stdout, Stderr: stderr, ExitCode: envelope.Capture.ExitCode, Started: envelope.Capture.Started, Exited: envelope.Capture.Exited}
 	start, startErr := time.Parse(time.RFC3339Nano, envelope.StartedAt)
 	finish, finishErr := time.Parse(time.RFC3339Nano, envelope.FinishedAt)
 	if outErr != nil || errErr != nil || !validCapture(capture) || startErr != nil || finishErr != nil || !validCaptureTiming(start, finish) || envelope.StartedAt != start.UTC().Format(time.RFC3339Nano) || envelope.FinishedAt != finish.UTC().Format(time.RFC3339Nano) || ctx.Err() != nil || captureDirectories(s.root, false) != nil {
@@ -260,7 +268,7 @@ func validCaptureTiming(start, finish time.Time) bool {
 }
 
 func validCapture(c reviewprocess.Capture) bool {
-	return len(c.Stdout) <= maxCaptureStdout && len(c.Stderr) <= maxCaptureStderr && c.ExitCode >= -1 && int64(c.ExitCode) <= 0xffffffff
+	return (!c.Exited || c.Started) && len(c.Stdout) <= maxCaptureStdout && len(c.Stderr) <= maxCaptureStderr && c.ExitCode >= -1 && int64(c.ExitCode) <= 0xffffffff
 }
 
 func captureReference(data []byte) CaptureReference {

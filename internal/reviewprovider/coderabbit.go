@@ -39,6 +39,9 @@ const (
 	CLIIdentityTimeoutLimit = "CodeRabbit provider identity verification timed out."
 )
 
+// MaxFindingTitleBytes retains full provider titles under a bounded shared budget.
+const MaxFindingTitleBytes = 4 << 10
+
 const (
 	cliCaptureMax       = 16 << 20
 	cliLineMax          = 256 << 10
@@ -136,7 +139,7 @@ func ParseCLIReview(capture []byte, exitCode int, expected CLIContext) (ParsedRe
 			if contexts == 0 {
 				findingsBeforeContext = true
 			}
-			if _, exists := fields["comment"]; !exists || !cliProse(text["title"], 500, true) || !cliProse(text["comment"], 16<<10, false) || !cliProse(text["severity"], cliLineMax, false) || !cliPortablePath(text["fileName"], true) || numbers["endLine"] != 0 && numbers["startLine"] > numbers["endLine"] {
+			if _, exists := fields["comment"]; !exists || !cliProse(text["title"], MaxFindingTitleBytes, true) || !cliProse(text["comment"], 16<<10, false) || !cliProse(text["severity"], cliLineMax, false) || !cliPortablePath(text["fileName"], true) || numbers["endLine"] != 0 && numbers["startLine"] > numbers["endLine"] {
 				return invalid()
 			}
 			result.Findings = append(result.Findings, ParsedFinding{Title: text["title"], Detail: text["comment"], Severity: cliSeverity(text["severity"]), Path: text["fileName"], StartLine: numbers["startLine"], EndLine: numbers["endLine"]})

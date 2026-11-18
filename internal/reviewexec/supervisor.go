@@ -188,7 +188,7 @@ AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
 AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.id AND julianday(sr.retry_not_before)>julianday(?))
 AND (li.not_before IS NULL OR li.not_before='' OR julianday(li.not_before) IS NULL OR julianday(li.not_before)<=julianday(?))
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND r.execution_ended_at='' AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
 	`
 	var ids []pendingSchedulingCandidate

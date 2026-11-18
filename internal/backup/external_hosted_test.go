@@ -114,7 +114,7 @@ func TestExternalHostedAuthenticSchemaTenBackupRemainsSupported(t *testing.T) {
 
 func TestExternalHostedEvidenceThreeBackupRemainsSupported(t *testing.T) {
 	f := externalHostedInventoryFixture(t)
-	if _, err := f.store.DB().Exec(`DROP TABLE review_activity_evidence; DROP INDEX review_evidence_hosted_publication; DROP INDEX review_evidence_hosted_run; UPDATE metadata SET value='3' WHERE key='schema:review_evidence'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE review_cli_evidence_recovery; DROP TABLE review_activity_evidence; DROP INDEX review_evidence_hosted_publication; DROP INDEX review_evidence_hosted_run; UPDATE metadata SET value='3' WHERE key='schema:review_evidence'`); err != nil {
 		t.Fatal(err)
 	}
 	before := backupRows(t, f.store.DB())

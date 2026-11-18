@@ -686,3 +686,28 @@ func TestReviewStandingZeroRejectsSubmittedReviewVariantWire(t *testing.T) {
 	}
 	assertStandingControlInvalid(t, standingControlJSON(t, value))
 }
+
+func TestRecoveredCLIEvidenceLongTitleAndProvenance(t *testing.T) {
+	value := sampleControlEvidence()
+	value.Capture.Findings[0].Title = strings.Repeat("title", 123)
+	value.Recovery = &client.ReviewEvidenceRecovery{PriorFingerprint: strings.Repeat("b", 64), RecoveredAt: value.RecordedAt, Reason: "cli_capture_reparsed"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(value)
+	}))
+	defer srv.Close()
+	c := newClient(t, srv)
+	defer c.Close()
+	got, err := c.ReviewEvidence(context.Background(), controlEvidenceID)
+	if err != nil || got.Recovery == nil || got.Capture.Findings[0].Title != value.Capture.Findings[0].Title {
+		t.Fatal(got, err)
+	}
+	value.Recovery.Reason = "untrusted"
+	if _, err = c.ReviewEvidence(context.Background(), controlEvidenceID); err == nil {
+		t.Fatal("bad provenance accepted")
+	}
+}
