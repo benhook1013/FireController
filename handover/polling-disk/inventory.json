@@ -1,0 +1,17 @@
+{
+  "api-conditional-compression": "4a52bb08d6e95d1b4bef5e60b6514626c24ffd2f",
+  "api-request-audit": "bc3c8c7f930a98e1fdf746e099a16f329976866e",
+  "ci-identity-proof": "9d7589f525119d2cc2b54bb142b61af77464fe90",
+  "cache-custody": "ad8b76caef6e5445b52d2b8ba5fcb4082e4bd3e9",
+  "install-predecessor": "44b46bfb61d8ec49b10e4d5ea9ea5ecc1be57326",
+  "deployment-duplicate-retention": "69d976a10be06359584a19c441018d88226c4980",
+  "install-6989": "7c74a0c2e7b4d465ecb4709f02adc2f66c9c7284",
+  "backup-lock-admission": "1c7f65fcd94cf6a10e066bb5e4f51ff40c8a8b0f",
+  "capture-compression": "7c3842f1c991a9c6e2684dc12850ffdff526d57f",
+  "cache-duplicates": "7e4512fc6beec538ed77f01b37af202c7b5fd0b4",
+  "failed-equivalent": "9f0d8457910b3805fe19c4cdeddb576fda153d24",
+  "vendor-cache-custody": "c6ee282264c6ee2c88b338c75479f5b3a14fa6e5",
+  "cloud-retention-helper": "d3d64f85a5612d22546a5f2087c01972e6692384",
+  "cloud-capture-custody": "d3929ed2ce2286a5f6974053e810be037059307b",
+  "cloud-sqlite-attribution": "3d2e06478f978b87f7a4381edfb774444f6bb690"
+}
