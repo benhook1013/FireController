@@ -1,9 +1,14 @@
 package server_test
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -187,8 +192,35 @@ func TestProjectManagerPermissionEditRollbackAndReplayAuthorization(t *testing.T
 		t.Fatal(err)
 	}
 	require(t, request(f.handler, "PUT", path, manager, "retry-role-after-rollback", "", body), 200)
+	req := httptest.NewRequest("PUT", path, nil)
+	req.SetPathValue("project_id", p)
+	req.Header.Set("Authorization", "Bearer "+manager)
+	captured, err := f.store.AdminScope(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := core.Mutation{Operation: "test.management-replay", Target: id, Key: "captured-management", Request: map[string]string{"value": "same"}}
+	calls := 0
+	effect := func(context.Context, *sql.Tx) (any, error) {
+		calls++
+		return map[string]string{"outcome": "changed"}, nil
+	}
+	first, err := f.store.Mutate(t.Context(), captured, mutation, effect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := f.store.Mutate(t.Context(), captured, mutation, effect)
+	if err != nil || !bytes.Equal(first, replay) || calls != 1 {
+		t.Fatal("authorized receipt did not replay", err, calls)
+	}
 	if _, err := f.store.DB().Exec(`UPDATE grants SET can_manage=0 WHERE credential_id=?`, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	require(t, request(f.handler, "PUT", path, manager, "retry-role-after-rollback", "", body), 403)
+	replay, err = f.store.Mutate(t.Context(), captured, mutation, effect)
+	var failure *core.Error
+	if !errors.As(err, &failure) || failure.Code != "forbidden" || len(replay) != 0 || calls != 1 {
+		t.Fatal("captured manager scope bypassed replay reauthorization", err, string(replay), calls)
+	}
+
 }

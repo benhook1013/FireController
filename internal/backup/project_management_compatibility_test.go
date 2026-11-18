@@ -16,7 +16,13 @@ func TestProjectManagementRealParentBundleRemainsInactive(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(provenance)) != "383ce8c0bc4505dd89cf5cdec7fb2da1d7e556c8" {
 		t.Fatal("fixture must come from pinned predecessor", err)
 	}
-	matches, err := filepath.Glob(filepath.Join(root, "backup_*"))
+	entries, err := os.ReadDir(root)
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "backup_") {
+			matches = append(matches, filepath.Join(root, entry.Name()))
+		}
+	}
 	if err != nil || len(matches) != 1 {
 		t.Fatal("parent bundle missing", err)
 	}
@@ -57,13 +63,11 @@ func TestProjectManagementBackupRejectsResealedAuthorityCorruption(t *testing.T)
 			f := newRestoreFixture(t)
 			bundle := restoreBundle(t, f)
 			mutateBundleSQL(t, bundle.Path, statement)
-			if _, err := Inspect(t.Context(), bundle.Path); err == nil {
-				t.Fatal("corrupt management accepted")
-			}
+			_, err := Inspect(t.Context(), bundle.Path)
+			backupCode(t, err, "backup_invalid")
 			dest := filepath.Join(t.TempDir(), "must-not-exist")
-			if _, err := Restore(t.Context(), bundle.Path, dest); err == nil {
-				t.Fatal("corrupt management restored")
-			}
+			_, err = Restore(t.Context(), bundle.Path, dest)
+			backupCode(t, err, "backup_invalid")
 			if _, err := os.Stat(dest); !os.IsNotExist(err) {
 				t.Fatal("target written before validation", err)
 			}

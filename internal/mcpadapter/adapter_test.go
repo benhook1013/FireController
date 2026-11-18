@@ -286,8 +286,26 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_operation_control" || tool.Name == "review_policy_configure" || tool.Name == "review_execution_configure" || tool.Name == "worker_retire" || tool.Name == "project_credential_update" || tool.Name == "project_credential_revoke" || tool.Name == "presentation_replace" || tool.Name == "publication_apply" || tool.Name == "publication_unpublish" || tool.Name == "review_import_apply" || tool.Name == "review_transfer_apply" || tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
-					t.Fatal("untruthful operation annotation")
+				if a == nil {
+					t.Fatalf("%s: missing annotations", tool.Name)
+				}
+				if a.ReadOnlyHint != !writes[tool.Name] {
+					t.Errorf("%s readOnlyHint: want %v, got %v", tool.Name, !writes[tool.Name], a.ReadOnlyHint)
+				}
+				if !a.IdempotentHint {
+					t.Errorf("%s idempotentHint: want true, got false", tool.Name)
+				}
+				wantDestructive := tool.Name == "review_operation_control" || tool.Name == "review_policy_configure" || tool.Name == "review_execution_configure" || tool.Name == "worker_retire" || tool.Name == "project_credential_update" || tool.Name == "project_credential_revoke" || tool.Name == "presentation_replace" || tool.Name == "publication_apply" || tool.Name == "publication_unpublish" || tool.Name == "review_import_apply" || tool.Name == "review_transfer_apply" || tool.Name == "review_round_adoption_apply" || tool.Name == "review_obligations_import_apply" || tool.Name == "review_obligation_retarget" || tool.Name == "review_obligation_resolve" || tool.Name == "review_rounds_configure" || tool.Name == "review_queue_edit" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_edit" || tool.Name == "job_checklist_replace" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix"
+				if a.DestructiveHint == nil {
+					t.Errorf("%s destructiveHint: want %v, got nil", tool.Name, wantDestructive)
+				} else if *a.DestructiveHint != wantDestructive {
+					t.Errorf("%s destructiveHint: want %v, got %v", tool.Name, wantDestructive, *a.DestructiveHint)
+				}
+				wantOpen := tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover"
+				if a.OpenWorldHint == nil {
+					t.Errorf("%s openWorldHint: want %v, got nil", tool.Name, wantOpen)
+				} else if *a.OpenWorldHint != wantOpen {
+					t.Errorf("%s openWorldHint: want %v, got %v", tool.Name, wantOpen, *a.OpenWorldHint)
 				}
 				data, _ := json.Marshal(tool.InputSchema)
 				if strings.Contains(string(data), "profile") || strings.Contains(string(data), "project_id") {
