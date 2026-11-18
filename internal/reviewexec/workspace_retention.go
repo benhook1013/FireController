@@ -25,14 +25,14 @@ func (e *Engine) WorkspaceDisposable(ctx context.Context, capabilityID, attemptI
 	defer tx.Rollback()
 	var stamp, created, updated string
 	var revision int64
-	err = tx.QueryRowContext(ctx, `SELECT t.created_at,o.created_at,o.updated_at,a.revision
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(t.created_at,''),o.created_at,o.updated_at,a.revision
  FROM review_execution_attempts a
  JOIN review_operations o ON o.id=a.operation_id AND o.project_id=a.project_id
  JOIN review_execution_config c ON c.project_id=o.project_id AND c.revision=o.configuration_revision
- JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision AND t.state=a.state
+ LEFT JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision AND t.state=a.state
  WHERE a.id=? AND a.provider=? AND a.account=? AND o.channel IN ('cli','hosted')
  AND a.state IN ('completed','held','failed','cancelled','rate_limited')
- AND ((o.attempt_id=a.id AND o.state=a.state)
+ AND (t.attempt_id IS NULL OR (o.attempt_id=a.id AND o.state=a.state)
  OR (((o.channel='hosted' AND t.reason='hosted_allowance_cooldown') OR (o.channel='cli' AND t.reason='allowance_exhausted')) AND a.state='held' AND a.anchor_json='null' AND a.intent='' AND a.external_id=''
  AND EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.baseline_attempt_id IS NOT NULL))
  OR (o.channel='cli' AND t.reason='cli_draft_wait' AND a.state='held' AND a.anchor_json='null' AND a.intent='' AND a.external_id=''))

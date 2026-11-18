@@ -41,11 +41,41 @@ func latestCooldownAttempt(ctx context.Context, q EvidenceQuery, o Operation) (A
 		), latest AS MATERIALIZED (
 			SELECT id FROM cooldowns WHERE recorded_at=(SELECT MAX(recorded_at) FROM cooldowns)
 		)
-		SELECT a.id FROM latest a LEFT JOIN review_hosted_preflight p ON p.attempt_id=a.id
-		ORDER BY (` + deadline + ") IS NULL DESC,rtrim(" + deadline + ",'Z') DESC,a.id DESC LIMIT 1"
+		SELECT a.id,` + deadline + ` FROM latest a LEFT JOIN review_hosted_preflight p ON p.attempt_id=a.id ORDER BY a.id DESC`
 	}
 	var id string
-	err := q.QueryRowContext(ctx, query, o.ID, o.AttemptID, reason).Scan(&id)
+	var err error
+	if o.Channel == "hosted" {
+		rows, queryErr := q.QueryContext(ctx, query, o.ID, o.AttemptID, reason)
+		if queryErr != nil {
+			return Attempt{}, queryErr
+		}
+		var greatest time.Time
+		invalidSelected := false
+		for rows.Next() {
+			var candidate string
+			var raw sql.NullString
+			if err = rows.Scan(&candidate, &raw); err != nil {
+				rows.Close()
+				return Attempt{}, err
+			}
+			due, valid := hostedObservationTime(raw.String)
+			if !raw.Valid || !valid {
+				if !invalidSelected {
+					id, invalidSelected = candidate, true
+				}
+			} else if !invalidSelected && (id == "" || due.After(greatest)) {
+				id, greatest = candidate, due
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err == nil && id == "" {
+			err = sql.ErrNoRows
+		}
+	} else {
+		err = q.QueryRowContext(ctx, query, o.ID, o.AttemptID, reason).Scan(&id)
+	}
 	if err != nil {
 		return Attempt{}, waitDependencyError(err)
 	}
@@ -87,4 +117,58 @@ func retainedCooldownDeadline(ctx context.Context, q EvidenceQuery, o Operation,
 		return time.Time{}, waitUnavailable()
 	}
 	return record.Input.Observation.RetryNotBefore, nil
+}
+
+// First-cooldown identity comes from the retained preparation chronology, never
+// a random ID or provider deadline. Equal first timestamps cannot establish an
+// immutable first comparison and are refused rather than guessed.
+func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, baseline string) error {
+	reason := "hosted_allowance_cooldown"
+	if o.Channel == "cli" {
+		reason = "allowance_exhausted"
+	}
+	rows, err := q.QueryContext(ctx, `SELECT a.id,p.created_at,t.state,t.reason,a.state FROM review_execution_attempts a
+ LEFT JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.revision=a.revision
+ LEFT JOIN review_execution_transitions p ON p.attempt_id=a.id AND p.revision=1 AND p.state='preparing'
+ WHERE a.operation_id=? AND a.id<>?`, o.ID, o.AttemptID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var first string
+	var earliest time.Time
+	tied := false
+	for rows.Next() {
+		var id string
+		var stamp, state, retainedReason sql.NullString
+		var attemptState string
+		if err := rows.Scan(&id, &stamp, &state, &retainedReason, &attemptState); err != nil {
+			return err
+		}
+		if !state.Valid || !retainedReason.Valid || state.String != "held" || attemptState != "held" {
+			return waitUnavailable()
+		}
+		if o.Channel == "cli" && retainedReason.String == cliDraftWait {
+			continue
+		}
+		if retainedReason.String != reason {
+			return waitUnavailable()
+		}
+		at, ok := attemptRecordedTime(stamp.String)
+		if !stamp.Valid || !ok {
+			return waitUnavailable()
+		}
+		if first == "" || at.Before(earliest) {
+			first, earliest, tied = id, at, false
+		} else if at.Equal(earliest) {
+			tied = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if tied || first == "" || first != baseline {
+		return waitUnavailable()
+	}
+	return nil
 }

@@ -99,7 +99,17 @@ func (e *Engine) scheduleCLICooldown(ctx context.Context, tx *sql.Tx, project, a
 	if record.Observation.Remaining != 0 {
 		return Attempt{}, waitUnavailable()
 	}
-	at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleExecutionTime())
+	now := e.sampleExecutionTime()
+	if o.Wait != nil && o.Wait.BaselineAttemptID != "" {
+		previousDue, ok := hostedObservationTime(o.Wait.RetryNotBefore)
+		if !ok {
+			return Attempt{}, waitUnavailable()
+		}
+		if now.Before(previousDue) {
+			now = previousDue
+		}
+	}
+	at, err := attemptRecordingStamp(ctx, tx, o, &a, now)
 	if err != nil {
 		return Attempt{}, err
 	}

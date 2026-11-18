@@ -64,7 +64,7 @@ func TestWaitRuntimeRejectsCanonicalDeadlineMismatch(t *testing.T) {
 
 func TestWaitRuntimeBindsLatestCooldown(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
-		damages := []string{"old-deadline", "latest-proof"}
+		damages := []string{"old-deadline", "latest-proof", "later-baseline", "ambiguous-first", "missing-first-transition"}
 		if channel == "hosted" {
 			damages = append(damages, "equal-ended-old-deadline", "equal-ended-latest-proof")
 		}
@@ -118,7 +118,14 @@ func TestWaitRuntimeBindsLatestCooldown(t *testing.T) {
 						t.Fatal("fixture did not retain equal cooldown transition times", firstEnded, latestEnded, err)
 					}
 				}
-				if strings.HasSuffix(damage, "old-deadline") {
+				if damage == "later-baseline" {
+					admissionSQL(t, f, `UPDATE review_operation_waits SET baseline_attempt_id=? WHERE operation_id=?`, next.ID, o.ID)
+				} else if damage == "missing-first-transition" {
+					admissionSQL(t, f, `UPDATE review_operation_waits SET baseline_attempt_id=? WHERE operation_id=?`, next.ID, o.ID)
+					admissionSQL(t, f, `DELETE FROM review_execution_transitions WHERE attempt_id=? AND revision=2`, first.ID)
+				} else if damage == "ambiguous-first" {
+					admissionSQL(t, f, `UPDATE review_execution_transitions SET created_at=(SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND revision=1) WHERE attempt_id=? AND revision=1`, first.ID, next.ID)
+				} else if strings.HasSuffix(damage, "old-deadline") {
 					admissionSQL(t, f, `UPDATE review_operation_waits SET retry_not_before=? WHERE operation_id=?`, firstDue.Format(time.RFC3339Nano), o.ID)
 
 				} else {
