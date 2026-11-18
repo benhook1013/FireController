@@ -313,3 +313,21 @@ it('shows proven finished Hosted capture without inventing a start or treating t
  }
  expect(markup([{...completed,channel:'hosted'}],[{...proven,source_run_id:completed.source_run_id}])).not.toContain('review-pill-partial');
 });
+
+it('prefers a clearly estimated matched request submission over unknown time, never preparation',()=>{
+ const proven={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
+ const submitted='2026-11-15T05:35:10Z';
+ const submission={attempt_id:proven.source_attempt_id,head_sha:head,trigger_id:'42',submitted_at:submitted};
+ const current={...progress,channel:'hosted' as const,submission_evidence:submission};
+ const html=markup([],[proven],current);
+ expect(html).toContain('Estimated start (request submission acknowledged)');
+ expect(html).toContain(`dateTime="${submitted}"`); expect(html).toContain('review-pill-age">~ ');
+ expect(html).not.toContain(`dateTime="${stamp}"`); expect(html).not.toContain('Start time unknown');
+ for(const change of [{attempt_id:'review_attempt_'+'f'.repeat(32)},{head_sha:'f'.repeat(40)},{trigger_id:'43'},{submitted_at:'invalid'}]){
+  const rejected=markup([],[proven],{...current,submission_evidence:{...submission,...change}});
+  expect(rejected).toContain('Start time unknown'); expect(rejected).not.toContain('<time');
+ }
+ const signal={attempt_id:proven.source_attempt_id,head_sha:head,observed_at:'2026-11-15T05:36:00Z',kind:'hosted_processing_observed' as const,comment_updated_at:submitted,source_comment_id:12,provider_run_id:'11111111-2222-4333-8444-555555555555',trigger_id:'42'};
+ const observed=markup([],[proven],{...current,activity_evidence:signal});
+ expect(observed).toContain(`dateTime="${signal.observed_at}"`); expect(observed).not.toContain('Estimated start');
+});

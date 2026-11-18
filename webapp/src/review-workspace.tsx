@@ -1,4 +1,5 @@
 import { recentMergedDisplayOrder, recentMergedDisplayDistances } from './review-merged-order';
+import { validSubmissionEvidence } from './review-progress';
 import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
 import { ReviewAttemptBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
@@ -423,15 +424,16 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const description = `${reviewRoundCountText(run.found, accepted, routed)} (found / accepted / routed). ${partial ? "Partial review" : reviewLabel(run.outcome)}. ${start ? `${start.label} ${time(start.value)}` : 'Start time unknown'}.${run.finished_at ? ` Finished ${time(run.finished_at)}.` : ''}${warnings ? ` ${warnings}.` : ''} ${run.current_pending_fixes === undefined ? 'Current fix inventory unavailable.' : `${run.current_accepted} currently accepted; ${run.current_pending_fixes} fixes pending.`}`;
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} status={reviewRunPillStatus(run)} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0 && run.current_accepted === 0 && run.current_pending_fixes === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{start ? <RelativeTime value={start.value} label={start.label} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
-function RunningReviewPill({ evidence, attemptID, channel, attention }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string }) {
+function RunningReviewPill({ evidence, attemptID, channel, attention, submittedAt }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string; submittedAt?: string }) {
   const cli = evidence?.kind === 'cli_process_spawned';
-  const date = evidence ? (evidence.kind === 'cli_process_spawned' ? evidence.process_started_at : evidence.observed_at) : undefined;
-  const timing = !date ? 'Start time unknown' : cli ? `CLI started ${time(date)}` : `Assumed start (CodeRabbit activity seen) ${time(date)}`;
+  const date = evidence ? (evidence.kind === 'cli_process_spawned' ? evidence.process_started_at : evidence.observed_at) : submittedAt;
+  const estimated = !evidence && !!submittedAt;
+  const timing = !date ? 'Start time unknown' : estimated ? `Estimated start (request submission acknowledged) ${time(date)}` : cli ? `CLI started ${time(date)}` : `Assumed start (CodeRabbit activity seen) ${time(date)}`;
   const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'partial review. ' + attention : 'review running.'} Counts pending. ${timing}.`;
   const instanceID = useId();
   const detailID = `review-attention-${attemptID}-${instanceID}`;
   return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : "review-pill-running"} status={attention ? "Needs attention" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
-    {date ? <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
+    {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal }: {
@@ -456,6 +458,10 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   // attempt journal/preparation time when no provider-start signal survives.
   const finishedUncaptured = !historical && !returned && !progress?.activity_evidence && attempt?.channel === 'hosted' &&
     attempt.state === 'uncertain' && attempt.reason === 'hosted_finished_inventory_unproven' && /^[1-9]\d*$/.test(attempt.trigger_id);
+  const submission = progress?.submission_evidence;
+  const submittedAt = finishedUncaptured && submission && validSubmissionEvidence(submission) &&
+    submission.attempt_id === attempt?.source_attempt_id && submission.head_sha === attempt.head_sha && submission.trigger_id === attempt.trigger_id
+    ? submission.submitted_at : undefined;
   const attemptPill = !!running || finishedUncaptured;
   // Terminal round controls already appear in the lane progress summary.
   // Keep actionable waits and unfinished work, not a duplicate unknown-count pill.
@@ -497,7 +503,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     <ReviewProgressView value={progress} />
     {visiblePills.length > 0 || attemptPill ? <div className="review-round-pills review-recent-rounds">
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
-      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} channel={channel} attention={status?.kind === 'attention' ? [status.cause, status.description].filter(Boolean).join('. ') : undefined} />}
+      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} submittedAt={submittedAt} channel={channel} attention={status?.kind === 'attention' ? [status.cause, status.description].filter(Boolean).join('. ') : undefined} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
     {(failed || !loading && !completed.length && returned?.outcome !== 'completed' && total > 0 && !notice) && <p className="review-lane-empty">Round history could not be loaded.</p>}
     {notice}

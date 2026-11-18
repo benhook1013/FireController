@@ -138,3 +138,38 @@ func decodeActivityEvidence(body string, v *ActivityEvidence) bool {
 	canonical, err := json.Marshal(v)
 	return err == nil && string(canonical) == body
 }
+
+// SubmissionEvidence is the acknowledgement of a successfully posted request,
+// not provider execution. Recovery timestamps are deliberately excluded.
+type SubmissionEvidence struct {
+	AttemptID   string `json:"attempt_id"`
+	HeadSHA     string `json:"head_sha"`
+	TriggerID   string `json:"trigger_id"`
+	SubmittedAt string `json:"submitted_at"`
+}
+
+func readSubmissionEvidence(ctx context.Context, tx *sql.Tx, project string, number int64, channel string) (*SubmissionEvidence, error) {
+	if channel != "hosted" {
+		return nil, nil
+	}
+	var v SubmissionEvidence
+	err := tx.QueryRowContext(ctx, `SELECT a.id,o.head_sha,a.external_id,t.created_at
+ FROM review_operations o JOIN review_execution_attempts a ON a.id=o.attempt_id AND a.operation_id=o.id AND a.project_id=o.project_id
+ JOIN review_execution_transitions t ON t.attempt_id=a.id AND t.state='active' AND t.reason='trigger_recorded' AND t.external_id=a.external_id
+ WHERE o.project_id=? AND o.pull_number=? AND o.channel='hosted' AND o.state='uncertain' AND a.state='uncertain'
+ ORDER BY o.created_at DESC,o.id DESC,t.revision ASC LIMIT 1`, project, number).Scan(&v.AttemptID, &v.HeadSHA, &v.TriggerID, &v.SubmittedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := hostedObservationTime(v.SubmittedAt); !ok {
+		return nil, nil
+	}
+	id, err := strconv.ParseInt(v.TriggerID, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != v.TriggerID || !identifier.MatchString(v.AttemptID) || !sha.MatchString(v.HeadSHA) {
+		return nil, nil
+	}
+	return &v, nil
+}

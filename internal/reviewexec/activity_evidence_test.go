@@ -158,3 +158,40 @@ func TestActivityEvidenceSurvivesUncertainCaptureWithoutChangingStart(t *testing
 		t.Fatal("evidence leaked without opt-in")
 	}
 }
+
+func TestSubmissionEstimateUsesOnlyMatchedAcknowledgedTrigger(t *testing.T) {
+	f, a, _, _ := incompleteHostedFixture(t)
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var at string
+	if err := tx.QueryRow(`SELECT created_at FROM review_execution_transitions WHERE attempt_id=? AND state='active' AND reason='trigger_recorded'`, a.ID).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted")
+	if err != nil || got == nil || got.AttemptID != a.ID || got.TriggerID != "101" || got.SubmittedAt != at {
+		t.Fatalf("lost submission acknowledgement: %+v %v", got, err)
+	}
+	for _, channel := range []string{"cli", "manual"} {
+		if other, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, channel); err != nil || other != nil {
+			t.Fatal("foreign channel estimate", other, err)
+		}
+	}
+	if other, err := readSubmissionEvidence(t.Context(), tx, otherAttemptProject, 2, "hosted"); err != nil || other != nil {
+		t.Fatal("foreign project estimate", other, err)
+	}
+	if _, err := tx.Exec(`UPDATE review_execution_transitions SET reason='trigger_recovered' WHERE attempt_id=? AND reason='trigger_recorded'`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted"); err != nil || got != nil {
+		t.Fatal("recovery time used as submission", got, err)
+	}
+	if _, err := tx.Exec(`UPDATE review_execution_transitions SET reason='trigger_recorded',external_id='999' WHERE attempt_id=? AND reason='trigger_recovered'`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted"); err != nil || got != nil {
+		t.Fatal("unrelated trigger used as submission", got, err)
+	}
+}
