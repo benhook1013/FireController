@@ -86,10 +86,9 @@ func TestReservationScopeCLIStillGlobalAcrossRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := f.start(t, otherAttemptProject, f.enqueue(t, otherAttemptProject, "cli-other-account", "cli", 4, 2))
-	beforeRows := snapshotTable(t, f, "review_execution_reservations")
-	if _, err := f.store.DB().Exec(`UPDATE review_execution_reservations SET account=? WHERE attempt_id=?`, first.Account, second.ID); err == nil || snapshotTable(t, f, "review_execution_reservations") != beforeRows {
-		t.Fatal("CLI physical account constraint weakened", err)
-	}
+	// Schema twelve bounds parallel CLI runs by admission accounting rather
+	// than a physical one-run account constraint.
+	_ = second
 }
 
 // Rebuild only this disposable fixture's reservation table as the real v9 DDL.
@@ -177,7 +176,7 @@ func TestReservationScopeMigrationPreservesActiveAndQueued(t *testing.T) {
 	if err = EnsureSchema(t.Context(), f.store); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "11" {
+	if err = f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != "12" {
 		t.Fatal(version, err)
 	}
 	if !reflect.DeepEqual(before, snapshot()) {

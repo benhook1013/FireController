@@ -129,6 +129,7 @@ type Engine struct {
 	actionsDiagnosticProject   string
 	queueSortingWrites         bool
 	restartEndsCLI             bool
+	cliParallelLimit           int64
 	decisionOmissions          decisionOmissionBuffer
 	runSourceBudget            time.Duration
 	hostedRetainedDecoder      HostedRetainedDecoder

@@ -63,6 +63,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
+	cliParallel := flags.Int("review-cli-parallel", 3, "most CLI reviews one provider account may run at once (1-16); the observed allowance can lower it")
 	queueSortingWrites := flags.Bool("queue-sorting-writes", false, "allow project sorting writes only after compatible backup and rollback readers are qualified")
 	cadenceShadow := flags.Bool("lifecycle-cadence-shadow", false, "enable bounded aggregate lifecycle diagnostics; does not change observation cadence")
 	batchMetadata := flags.Bool("lifecycle-metadata-batching", false, "pair naturally due source metadata reads; preserves polling cadence and CI authority")
@@ -87,6 +88,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	if flags.NArg() != 0 || *dataDir == "" || !loopback(*listen) {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
+		return 2
+	}
+	if *cliParallel < 1 || *cliParallel > 16 {
+		diagnostic(stderr, "configuration_invalid", "Use a --review-cli-parallel value from 1 through 16.")
 		return 2
 	}
 	migrationTimeout, parseErr := time.ParseDuration(*schemaMigrationTimeout)
@@ -194,7 +199,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	resultWaitLifetime, cancelOperationWaits := context.WithCancel(ctx)
 	defer cancelOperationWaits()
-	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog, reviewexec.WithResultWaitLifetime(resultWaitLifetime), reviewexec.WithQueueSortingWrites(*queueSortingWrites))
+	execution, drivers, err := buildReviewExecution(store, *dataDir, catalog, reviewexec.WithResultWaitLifetime(resultWaitLifetime), reviewexec.WithQueueSortingWrites(*queueSortingWrites), reviewexec.WithCLIParallelLimit(*cliParallel))
 	if err != nil {
 		diagnosticError(stderr, err)
 		return 3

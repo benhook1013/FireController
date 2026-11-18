@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -88,7 +89,8 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver) error {
 	defer cancelWork()
 	failures := make(chan error, 1)
 	var workers sync.WaitGroup
-	for range 2 {
+	// One slot for Hosted and draft probes plus one per parallel CLI run.
+	for range 1 + e.cliLimit() {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -156,7 +158,23 @@ func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bo
 	args := make([]any, 0, 6*len(e.capabilities)+3)
 	type accountKey struct{ provider, account string }
 	quotaHeld := make(map[accountKey]bool)
+	// Visit CLI-capable capabilities first so each account's cached hold
+	// includes CLI capacity regardless of map order.
+	ordered := make([]Capability, 0, len(e.capabilities))
 	for _, capability := range e.capabilities {
+		ordered = append(ordered, capability)
+	}
+	slices.SortFunc(ordered, func(a, b Capability) int {
+		ac, bc := slices.Contains(a.Channels, "cli"), slices.Contains(b.Channels, "cli")
+		if ac != bc {
+			if ac {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	for _, capability := range ordered {
 		key := accountKey{capability.Provider, capability.Account}
 		held, checked := quotaHeld[key]
 		if !checked {
@@ -165,6 +183,13 @@ func (e *Engine) pendingSchedulingCandidates(ctx context.Context, probeDrafts bo
 				return nil, err
 			}
 			held = err != nil || now.Before(due)
+			if !held && slices.Contains(capability.Channels, "cli") {
+				free, err := e.cliAccountFree(ctx, tx, capability.Provider, capability.Account)
+				if err != nil && !isWaitUnavailable(err) {
+					return nil, err
+				}
+				held = err != nil || free <= 0
+			}
 			quotaHeld[key] = held
 		}
 		args = append(args, capability.ID, capability.Provider, capability.Account, capability.Fingerprint, e.sourceReadGroups[capability.ID], held)
@@ -188,7 +213,7 @@ AND NOT EXISTS (SELECT 1 FROM source_limited WHERE source_group=i.source_group)
 AND NOT EXISTS (SELECT 1 FROM review_source_retries sr WHERE sr.operation_id=o.id AND julianday(sr.retry_not_before)>julianday(?))
 AND (li.not_before IS NULL OR li.not_before='' OR julianday(li.not_before) IS NULL OR julianday(li.not_before)<=julianday(?))
 AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
-	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND r.execution_ended_at='' AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
+	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND r.execution_ended_at='' AND o.channel='hosted' AND r.repository_id=p.github_repository_id)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.repository_id=p.github_repository_id AND r.pull_number=o.pull_number AND r.action_class=o.channel)
 	`
 	var ids []pendingSchedulingCandidate
@@ -565,7 +590,7 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
 			var refusal *core.Error
-			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {
+			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed" || refusal.Code == CLICapacityBusyReason) {
 				// Admit recorded no intent. Release only this unused attempt and
 				// retain the queued operation's original identity and wait state.
 				return e.finishPreparation(a, "held", refusal.Code)

@@ -54,7 +54,7 @@ func AbandonRestoredProviderWork(ctx context.Context, tx *sql.Tx, instanceID str
 			return result, restoredWorkInvalid()
 		}
 	}
-	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "9", "10", "11")
+	execution, err := restoredDomain(ctx, tx, "review_execution", "review_operations", "9", "10", "11", "12")
 	if err != nil {
 		return result, err
 	}

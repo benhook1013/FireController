@@ -33,7 +33,8 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader, version i
 	if err != nil {
 		return err
 	}
-	if len(indexes) != 4 {
+	// Schema twelve drops the one-live-CLI-run account guard.
+	if want := 4 - min(1, max(0, version-11)); len(indexes) != want {
 		return invalid()
 	}
 	seen := map[string]bool{}
@@ -44,7 +45,7 @@ func validateReservationScopeSchema(ctx context.Context, db sqlReader, version i
 			want, identity = "provider repository_id pull_number action_class", "target"
 		case x.origin == "u" && x.partial == 0:
 			want, identity = "attempt_id", "attempt"
-		case x.origin == "c" && x.partial == 1 && x.name == "review_reservations_cli_account":
+		case x.origin == "c" && x.partial == 1 && x.name == "review_reservations_cli_account" && version < 12:
 			want, identity = "provider account action_class", "cli"
 		case x.origin == "c" && x.partial == 1 && x.name == "review_reservations_hosted_account_repository":
 			want, identity = "provider account repository_id action_class", "hosted"

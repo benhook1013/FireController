@@ -218,8 +218,17 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			}
 		}
 		var busy int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND execution_ended_at='' AND (action_class='cli' OR repository_id=?)) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE provider=? AND action_class=? AND ((account=? AND execution_ended_at='' AND action_class='hosted' AND repository_id=?) OR (repository_id=? AND pull_number=?))`, capability.Provider, o.Channel, capability.Account, repositoryID, repositoryID, o.PullNumber).Scan(&busy); err != nil {
 			return err
+		}
+		if busy == 0 && o.Channel == "cli" {
+			free, err := e.cliAccountFree(ctx, tx, capability.Provider, capability.Account)
+			if err != nil {
+				return err
+			}
+			if free <= 0 {
+				busy = 1
+			}
 		}
 		if busy != 0 {
 			return core.Fail("review_busy", "A review reservation is already occupied; no external action was started.", 409)
@@ -347,6 +356,11 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		if _, err := admitRoundControl(ctx, tx, o); err != nil {
 			return err
 		}
+		if o.Channel == "cli" {
+			if err := e.requireCLIAdmissionCapacity(ctx, tx, o, a); err != nil {
+				return err
+			}
+		}
 		state := "active"
 		if o.Channel == "hosted" {
 			state = "posting"
@@ -468,7 +482,7 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 			return err
 		}
 		operationState, operationAttempt := state, o.AttemptID
-		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed"
+		retainQueued := o.Channel == "cli" && (reason == cliDraftWait || reason == CLICapacityBusyReason) || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed"
 		if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
 			operationState, operationAttempt = "queued", ""
 		}

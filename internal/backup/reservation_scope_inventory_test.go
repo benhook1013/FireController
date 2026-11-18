@@ -11,7 +11,7 @@ import (
 func TestReservationScopeBackupRestoreAndPhysicalGuards(t *testing.T) {
 	f := newRestoreFixture(t)
 	var version int
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != 11 {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_execution'`).Scan(&version); err != nil || version != 12 {
 		t.Fatalf("reservation schema not current: %d %v", version, err)
 	}
 	before := backupRows(t, f.store.DB())
@@ -35,7 +35,7 @@ func TestReservationScopeBackupRestoreAndPhysicalGuards(t *testing.T) {
 		}
 	}
 	for name, statement := range map[string]string{
-		"missing cli guard":     `DROP INDEX review_reservations_cli_account`,
+		"single cli run guard":  `CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli' AND execution_ended_at=''`,
 		"global hosted guard":   `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,action_class) WHERE action_class='hosted'`,
 		"disabled hosted guard": `DROP INDEX review_reservations_hosted_account_repository; CREATE UNIQUE INDEX review_reservations_hosted_account_repository ON review_execution_reservations(provider,account,repository_id,action_class) WHERE action_class='unused'`,
 	} {
@@ -142,7 +142,7 @@ func TestWaitPhysicalGuardsRejectRehashedBundles(t *testing.T) {
 
 func TestPriorReservationScopeV10RemainsInspectable(t *testing.T) {
 	f := newRestoreFixture(t)
-	if _, err := f.store.DB().Exec(`DROP INDEX review_reservations_cli_account; ALTER TABLE review_execution_reservations DROP COLUMN execution_ended_at; CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'; UPDATE metadata SET value='10' WHERE key='schema:review_execution'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP INDEX review_reservations_cli_live; ALTER TABLE review_execution_reservations DROP COLUMN execution_ended_at; CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli'; UPDATE metadata SET value='10' WHERE key='schema:review_execution'`); err != nil {
 		t.Fatal(err)
 	}
 	bundle := restoreBundle(t, f)

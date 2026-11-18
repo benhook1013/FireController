@@ -87,10 +87,13 @@ type Runner struct {
 	executable      string
 	env             []string
 	mu              sync.Mutex
-	permit          *usagePermit
-	usageGeneration uint64
+	permits         map[workspaceKey]*usagePermit
+	usageGeneration map[workspaceKey]uint64
 	usageTimeout    time.Duration
 	now             func() time.Time
+	home            string // configured HOME, the source of login files
+	homeRoot        string // private parent of per-run homes, when isolated
+	homeMu          sync.Mutex
 }
 
 type usagePermit struct {
@@ -145,7 +148,8 @@ func New(manager *reviewworkspace.Manager, executable string, authenticationEnvi
 		env = append(env, key+"="+value)
 	}
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", "LANG=C.UTF-8", "NO_COLOR=1")
-	runner := &Runner{manager: manager, executable: resolved, env: env, now: time.Now, usageTimeout: usageTimeout}
+	home := authenticationEnvironment["HOME"]
+	runner := &Runner{home: home, manager: manager, executable: resolved, env: env, now: time.Now, usageTimeout: usageTimeout, permits: map[workspaceKey]*usagePermit{}, usageGeneration: map[workspaceKey]uint64{}}
 	for _, option := range options {
 		if option == nil {
 			return nil, processError("configuration_invalid", false)
@@ -165,11 +169,27 @@ func processError(code string, unknown bool) error {
 // repository. An explicit provider lookup failure gets one retry within the same
 // deadline. Every call replaces any old one-use permit, including failed checks.
 func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace, expectedRepository, expectedOrganization string) (Usage, error) {
+	// Permits and the latest-query fence are per workspace, so parallel
+	// reviews of different attempts never invalidate each other's permit.
+	key := keyFor(workspace)
 	r.mu.Lock()
-	r.usageGeneration++
-	generation := r.usageGeneration
-	r.permit = nil
+	for other, permit := range r.permits {
+		if r.now().Sub(permit.issued) > permitLifetime {
+			delete(r.permits, other)
+			delete(r.usageGeneration, other)
+		}
+	}
+	r.usageGeneration[key]++
+	generation := r.usageGeneration[key]
+	delete(r.permits, key)
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.permits[key] == nil && r.usageGeneration[key] == generation {
+			delete(r.usageGeneration, key)
+		}
+		r.mu.Unlock()
+	}()
 	if ctx == nil || ctx.Err() != nil || !validRepository(expectedRepository) || !validSelector(expectedOrganization) || workspace.RepositoryCanonical != expectedRepository {
 		return Usage{}, processError("usage_unavailable", false)
 	}
@@ -212,7 +232,7 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if generation != r.usageGeneration || ctx.Err() != nil {
+	if generation != r.usageGeneration[key] || ctx.Err() != nil {
 		return Usage{}, processError("usage_unavailable", false)
 	}
 	// Negative allowance is retained by callers too, so it must share the
@@ -220,7 +240,7 @@ func (r *Runner) Usage(ctx context.Context, workspace reviewworkspace.Workspace,
 	if usage.Remaining == 0 {
 		return usage, processError("rate_limited", false)
 	}
-	r.permit = &usagePermit{workspace: keyFor(workspace), issued: r.now()}
+	r.permits[key] = &usagePermit{workspace: key, issued: r.now()}
 	return usage, nil
 }
 
@@ -268,14 +288,13 @@ func (r *Runner) ReviewWithStart(ctx context.Context, workspace reviewworkspace.
 	}
 	key := keyFor(workspace)
 	r.mu.Lock()
-	permit := r.permit
+	permit := r.permits[key]
+	delete(r.permits, key)
+	delete(r.usageGeneration, key)
+	r.mu.Unlock()
 	if permit == nil || permit.workspace != key || r.now().Before(permit.issued) || r.now().Sub(permit.issued) > permitLifetime {
-		r.permit = nil
-		r.mu.Unlock()
 		return Capture{}, processError("permit_required", false)
 	}
-	r.permit = nil
-	r.mu.Unlock()
 	commandCtx, cancel := context.WithTimeout(ctx, reviewTimeout)
 	defer cancel()
 	if commandCtx.Err() != nil {
@@ -304,7 +323,13 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 	defer cancel()
 	command := exec.CommandContext(commandCtx, r.executable, args...)
 	command.Dir = directory
-	command.Env = append([]string(nil), r.env...)
+	env, releaseHome, err := r.prepareHome()
+	if err != nil {
+		return runResult{capture: Capture{ExitCode: -1}, err: err}
+	}
+	clean := false
+	defer func() { releaseHome(clean) }()
+	command.Env = env
 	command.WaitDelay = time.Second
 	cleanup, err := configureOwnedProcess(command)
 	if err != nil {
@@ -337,6 +362,7 @@ func (r *Runner) run(ctx context.Context, directory string, args []string, stdou
 	if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) || out.overflow || stderr.overflow || commandCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) || err != nil && code < 0 {
 		return runResult{capture: capture, err: errOutputOrProcess}
 	}
+	clean = capture.Exited
 	return runResult{capture: capture}
 }
 

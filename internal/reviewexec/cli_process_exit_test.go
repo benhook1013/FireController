@@ -43,9 +43,9 @@ func TestCLIExitedUncertainRetainsPRButFreesAccount(t *testing.T) {
 				t.Fatal("independent PR still blocked", pending, err)
 			}
 			second := f.start(t, otherAttemptProject, queued)
-			// The physical constraint still admits only one live process account-wide.
-			if _, err = f.store.DB().Exec(`UPDATE review_execution_reservations SET execution_ended_at='' WHERE attempt_id=?`, a.ID); err == nil {
-				t.Fatal("two live execution slots admitted")
+			// Admission accounting, not a physical constraint, now bounds live runs.
+			if free, err := f.e.cliAccountFree(t.Context(), f.store.DB(), a.Provider, a.Account); err != nil || free != 0 {
+				t.Fatal("default limit admitted a second live run", free, err)
 			}
 			if second.ID == a.ID {
 				t.Fatal("attempt reused")

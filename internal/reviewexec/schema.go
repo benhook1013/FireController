@@ -59,6 +59,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		`ALTER TABLE review_execution_reservations ADD COLUMN execution_ended_at TEXT NOT NULL DEFAULT ''`,
 		`DROP INDEX review_reservations_cli_account`,
 		`CREATE UNIQUE INDEX review_reservations_cli_account ON review_execution_reservations(provider,account,action_class) WHERE action_class='cli' AND execution_ended_at=''`,
+	}, {
+		// Parallel CLI runs are bounded by admission accounting, not one slot.
+		`DROP INDEX review_reservations_cli_account`,
+		`CREATE INDEX review_reservations_cli_live ON review_execution_reservations(provider,account) WHERE action_class='cli' AND execution_ended_at=''`,
 	}}, backfillExecutionSchema); err != nil {
 		return err
 	}

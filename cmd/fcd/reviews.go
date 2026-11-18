@@ -92,6 +92,9 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 			if capability.CLIAllowanceTimeoutSeconds != 0 {
 				processOptions = append(processOptions, reviewprocess.WithUsageTimeout(time.Duration(capability.CLIAllowanceTimeoutSeconds)*time.Second))
 			}
+			if capability.AuthenticationEnvironment["HOME"] != "" {
+				processOptions = append(processOptions, reviewprocess.WithIsolatedHomes(filepath.Join(root, "review-cli-homes", capability.ID)))
+			}
 			runner, err := reviewprocess.New(manager, capability.CLIExecutable, capability.AuthenticationEnvironment, processOptions...)
 			if err != nil {
 				return nil, nil, err

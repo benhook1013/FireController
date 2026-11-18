@@ -842,7 +842,7 @@ func TestZeroUsageVerifiesSourceBeforeExposingFacts(t *testing.T) {
 		t.Fatal("changed workspace exposed trusted exhausted facts", got, err)
 	}
 	r.mu.Lock()
-	permit := r.permit
+	permit := r.permits[keyFor(f.workspace)]
 	r.mu.Unlock()
 	if permit != nil {
 		t.Fatal("zero observation issued permit")
