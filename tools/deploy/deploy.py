@@ -12,6 +12,7 @@ image, and verifies the live service. No per-release operation files.
 """
 import argparse
 import json
+import os
 import hashlib
 from pathlib import Path
 import re
@@ -64,8 +65,11 @@ def main(argv=None):
     source = require_clean_develop()
     tag = "localhost/firecontroller:" + source
     print("building", tag, flush=True)
-    run(["docker", "build", "-q", "-t", tag, "--label", "org.opencontainers.image.revision=" + source,
-         "--label", "org.opencontainers.image.source=https://github.com/benhook1013/FireController", str(REPO)], stdout=subprocess.DEVNULL)
+    # Base images are public; an empty client config avoids host credential helpers.
+    with tempfile.TemporaryDirectory(prefix="fc-docker-config-") as config:
+        run(["docker", "build", "-q", "-t", tag, "--label", "org.opencontainers.image.revision=" + source,
+             "--label", "org.opencontainers.image.source=https://github.com/benhook1013/FireController", str(REPO)],
+            stdout=subprocess.DEVNULL, env={**os.environ, "DOCKER_CONFIG": config})
 
     sys.path.insert(0, str(HERE))
     from browser_asset_binding import source_binding
