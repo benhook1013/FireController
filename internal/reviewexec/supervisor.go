@@ -149,9 +149,15 @@ func pendingScanError(ctx context.Context, err error) error {
 	return err
 }
 
-func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operations []Operation, resultErr error) {
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	return e.scanPendingForWorker(ctx, probeDrafts, 256)
+}
+
+// scanPendingForWorker separates bounded batch traversal from the worker budget.
+// Callers supply the snapshot deadline and maximum ordinary candidates.
+func (e *Engine) scanPendingForWorker(ctx context.Context, probeDrafts bool, batchLimit int) (operations []Operation, resultErr error) {
 	// SQL may report ErrTxDone after the scan deadline rolls back its transaction.
 	defer func() {
 		resultErr = pendingScanError(ctx, resultErr)
@@ -347,7 +353,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 	defer rows.Close()
 	// Apply the dispatch bound after filtering known waits and unavailable
 	// accounts. The read transaction supplies the overall scan deadline.
-	limit := len(out) + 256
+	limit := len(out) + batchLimit
 	position := cursor
 	var firstReturned *pendingScanPosition
 	resumeReturned := func() {

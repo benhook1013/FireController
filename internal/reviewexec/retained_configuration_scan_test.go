@@ -166,14 +166,15 @@ func TestPendingScanDoesNotSkipReturnedBatch(t *testing.T) {
 		t.Run(fmt.Sprint(probe), func(t *testing.T) {
 			f := supervisorFixture(t)
 			seed := f.enqueue(t, attemptProject, "batch-seed", "cli", 2, 1)
-			for i := range 260 {
+			for i := range 2 {
 				admissionSQL(t, f, `INSERT INTO review_operations (id,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision) SELECT ?,project_id,actor_id,worker_id,configuration_revision,pull_number,channel,head_sha,state,revision,reason,attempt_id,created_at,updated_at,capability_fingerprint,policy_revision FROM review_operations WHERE id=?`, fmt.Sprintf("batch-%03d", i), seed.ID)
 			}
-			first, err := f.e.pendingForWorker(t.Context(), probe)
-			// A deadline may produce a partial batch. This regression needs two
-			// candidates to prove processing preserves the unprocessed remainder,
-			// not a full batch whose size depends on runner throughput.
-			if err != nil || len(first) < 2 || len(first) > 256 {
+			// Force a full batch with an unreturned successor without relying on
+			// hundreds of SQLite reads fitting within the worker throughput budget.
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			first, err := f.e.scanPendingForWorker(ctx, probe, 2)
+			if err != nil || len(first) != 2 {
 				t.Fatal(len(first), err)
 			}
 			var seen []string
