@@ -2,6 +2,7 @@ package reviewruntime
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -46,5 +47,31 @@ func TestHostedDriverRetriesAllowancePersistenceWithoutProviderReplay(t *testing
 				t.Fatalf("provider replay queries=%d reviews=%d histories=%d", f.provider.queries, f.provider.reviews, f.provider.histories)
 			}
 		})
+	}
+}
+
+func TestHostedAllowanceRetentionPreservesCancellation(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, a, c := f.startHosted(t)
+	if _, err := f.store.DB().Exec(`CREATE TRIGGER reject_hosted_allowance BEFORE INSERT ON review_hosted_preflight BEGIN SELECT RAISE(ABORT,'synthetic storage interruption'); END`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	waits := 0
+	f.hosted.wait = func(waitCtx context.Context, d time.Duration) error {
+		waits++
+		if d != 200*time.Millisecond {
+			t.Fatal("unexpected retry delay", d)
+		}
+		cancel()
+		return waitCtx.Err()
+	}
+	_, err := f.hosted.Prepare(ctx, op, c, a)
+	if !errors.Is(err, context.Canceled) || waits != 1 {
+		t.Fatal("retention cancellation relabeled", err, waits)
+	}
+	if f.provider.queries != 1 || f.provider.reviews != 0 {
+		t.Fatal("cancellation replayed provider actions", f.provider.queries, f.provider.reviews)
 	}
 }

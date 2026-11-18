@@ -195,15 +195,24 @@ func TestCLIWaitPauseResumeCancelNeverDispatchesOrReopensHistory(t *testing.T) {
 				if err != nil || claim.ID != "" {
 					t.Fatal("paused direct claim", claim, err)
 				}
+				if paused := cliWaitRead(t, f, o.ID); paused.Wait == nil || !paused.Wait.Paused {
+					t.Fatal("pause did not retain paused wait", paused)
+				}
 				timerControl(t, f, o.ID, "resume", "cli-wait-resume")
 				resumed := cliWaitRead(t, f, o.ID)
-				if resumed.Wait == nil || resumed.Wait.RetryNotBefore != o.Wait.RetryNotBefore || resumed.Wait.BaselineAttemptID != a.ID {
+				if resumed.Wait == nil || resumed.Wait.Paused || resumed.Wait.RetryNotBefore != o.Wait.RetryNotBefore || resumed.Wait.BaselineAttemptID != a.ID {
 					t.Fatal("resume changed retained timer/pin", resumed)
 				}
 				priorityPending(t, f)
 			}
 			assertCLIWaitNoCredit(t, f)
 			assertCLIWaitSnapshot(t, f)
+			if action == "pause" {
+				claimed, err := f.e.StartAttempt(t.Context(), attemptProject, o.ID)
+				if err != nil || claimed.ID == "" {
+					t.Fatal("resumed due wait cannot be claimed", claimed, err)
+				}
+			}
 		})
 	}
 }
