@@ -551,6 +551,19 @@ describe('Api stored review workspace', () => {
     }
   });
 
+  it('counts typed operational proof without inventing a fix commit', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const operational_proof = { digest: 'a'.repeat(64), note: 'Verified setting readback.', actor_id: 'principal_writer', recorded_at: '2026-10-15T11:15:00Z' };
+    const finding = { ...reviewFinding, fix_sha: '', proof_note: '', resolved_at: '', operational_proof };
+    for (const [candidate, valid] of [[finding, true], [{ ...finding, fix_sha: 'b'.repeat(40) }, false], [{ ...finding, operational_proof: { ...operational_proof, digest: 'bad' } }, false], [{ ...finding, disposition: 'rejected' }, false]] as const) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewDetail, findings: [candidate] })));
+      if (valid) expect((await client.reviewRun(reviewRun.id)).findings[0].operational_proof).toEqual(operational_proof);
+      else await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+  });
+
   it('rejects a resolved accepted finding without its effective fix SHA', async () => {
     setupLocation();
     const client = api();

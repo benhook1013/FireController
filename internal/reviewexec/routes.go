@@ -328,7 +328,7 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 			return nil, invalid()
 		}
 		f := &state.Findings[request.Finding]
-		if f.FixSHA != "" {
+		if f.FixSHA != "" || f.OperationalProof != nil {
 			return nil, conflict()
 		}
 		at := e.routeStamp("")

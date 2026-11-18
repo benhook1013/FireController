@@ -34,15 +34,19 @@ func readRunDetail(ctx context.Context, tx *sql.Tx, meta snapshotMeta, runID str
 	if err := strictStoredJSON(limits, &response.Run.CoverageLimits); err != nil {
 		return response, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json,operational_proof_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, meta.ProjectID, meta.SnapshotID, pullNum, runID)
 	if err != nil {
 		return response, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var finding Finding
-		var routeJSON string
-		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON); err != nil {
+		var routeJSON, operationalProofJSON string
+		if err := rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON, &operationalProofJSON); err != nil {
+			return response, err
+		}
+		finding.OperationalProof, err = decodeOperationalProof(operationalProofJSON, finding.Disposition, finding.FixSHA, finding.ProofNote, finding.ResolvedAt)
+		if err != nil {
 			return response, err
 		}
 		finding.Route, err = decodeFindingRoute(routeJSON, int64(pullNum))
@@ -91,6 +95,7 @@ func preflightNativeAdjudicationDetail(ctx context.Context, tx *sql.Tx, project,
 		}
 		finding.Disposition, finding.DecisionReason = update.Disposition, update.DecisionReason
 		finding.Actor, finding.DecidedAt = update.Actor, update.DecidedAt
+		finding.OperationalProof = update.OperationalProof
 		finding.FixSHA, finding.ProofNote, finding.ResolvedAt = update.FixSHA, update.ProofNote, update.ResolvedAt
 		finding.Route = update.Route
 	}

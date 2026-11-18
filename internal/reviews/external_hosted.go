@@ -76,7 +76,7 @@ func PublishExternalHosted(ctx context.Context, tx *sql.Tx, scope core.Scope, re
 			return Receipt{}, false, validationError("External hosted results require original provider identity, head and finish without adjudication credit.")
 		}
 		for _, f := range run.Findings {
-			if f.Disposition != "unadjudicated" || f.DecisionReason != "" || f.Actor != "" || f.DecidedAt != "" || f.FixSHA != "" || f.ProofNote != "" || f.ResolvedAt != "" || f.Route != nil {
+			if f.Disposition != "unadjudicated" || f.DecisionReason != "" || f.Actor != "" || f.DecidedAt != "" || f.FixSHA != "" || f.ProofNote != "" || f.ResolvedAt != "" || f.Route != nil || f.OperationalProof != nil {
 				return Receipt{}, false, validationError("External discovery cannot supply local finding decisions, routes or fixes.")
 			}
 		}

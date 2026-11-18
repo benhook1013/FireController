@@ -5,6 +5,26 @@ import "strings"
 // HistorySchemaSQL returns independent canonical physical definitions for
 // migration and read-only backup inspection.
 func HistorySchemaSQL() []string {
+	out := HistorySchemaSQLV12()
+	for i, statement := range out {
+		if strings.HasPrefix(statement, "CREATE TABLE review_finding_versions ") {
+			out[i] = strings.Replace(statement, ",\n PRIMARY KEY", ", "+operationalProofColumn+",\n PRIMARY KEY", 1)
+		}
+	}
+	return out
+}
+
+const operationalProofColumn = "operational_proof_json TEXT NOT NULL DEFAULT 'null'"
+
+func operationalProofMigrationSQL() []string {
+	return []string{
+		"ALTER TABLE review_finding_versions ADD COLUMN " + operationalProofColumn,
+		"DROP VIEW review_findings",
+		HistoryReadViewSQL()["review_findings"],
+	}
+}
+
+func HistorySchemaSQLV12() []string {
 	out := HistorySchemaSQLV10()
 	out[0] = strings.Replace(out[0], " metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512),", " metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (length(CAST(metadata_json AS BLOB)) <= 512), delivery_selected INTEGER NOT NULL DEFAULT 1 CHECK (delivery_selected IN (0,1)),", 1)
 	return out

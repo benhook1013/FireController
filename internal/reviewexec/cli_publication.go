@@ -171,7 +171,7 @@ func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt A
 		} else if decision.Disposition == "routed" {
 			run.Routed++
 		}
-		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: projectionFindingID(evidence.ID, int64(i)), Title: source.Title, Detail: source.Detail, Severity: source.Severity, Disposition: decision.Disposition, DecisionReason: decision.Reason, Actor: decision.ActorID, DecidedAt: decision.DecidedAt, FixSHA: decision.FixSHA, ProofNote: decision.ProofNote, ResolvedAt: decision.FixedAt})
+		run.Findings = append(run.Findings, reviews.Finding{SourceFindingID: projectionFindingID(evidence.ID, int64(i)), Title: source.Title, Detail: source.Detail, Severity: source.Severity, Disposition: decision.Disposition, DecisionReason: decision.Reason, Actor: decision.ActorID, DecidedAt: decision.DecidedAt, OperationalProof: decision.OperationalProof, FixSHA: decision.FixSHA, ProofNote: decision.ProofNote, ResolvedAt: decision.FixedAt})
 	}
 	if state.Finalized {
 		counts := state.FrozenCounts
@@ -213,17 +213,21 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 		return reviews.Receipt{}, false, publicationConflict()
 	}
 	actual.Findings = []reviews.Finding{}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, project, receipt.ID, number, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,title,detail,severity,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json,operational_proof_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND pull_number=? AND run_id=? ORDER BY position LIMIT 101`, project, receipt.ID, number, runID)
 	if err != nil {
 		return reviews.Receipt{}, false, err
 	}
 	for rows.Next() {
 		var finding reviews.Finding
-		var routeJSON string
-		if err = rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON); err != nil {
+		var routeJSON, operationalJSON string
+		if err = rows.Scan(&finding.SourceFindingID, &finding.Title, &finding.Detail, &finding.Severity, &finding.Disposition, &finding.DecisionReason, &finding.Actor, &finding.DecidedAt, &finding.FixSHA, &finding.ProofNote, &finding.ResolvedAt, &routeJSON, &operationalJSON); err != nil {
 			break
 		}
 		if len(routeJSON) > 32<<10 || json.Unmarshal([]byte(routeJSON), &finding.Route) != nil || encoded(finding.Route) != routeJSON {
+			err = publicationConflict()
+			break
+		}
+		if len(operationalJSON) > 16<<10 || json.Unmarshal([]byte(operationalJSON), &finding.OperationalProof) != nil || encoded(finding.OperationalProof) != operationalJSON {
 			err = publicationConflict()
 			break
 		}
@@ -238,7 +242,7 @@ func publicationReplay(ctx context.Context, tx *sql.Tx, project string, number i
 	}
 	var expectedFixed int64
 	for _, finding := range expected.Findings {
-		if finding.Disposition == "accepted" && finding.FixSHA != "" {
+		if finding.Disposition == "accepted" && (finding.FixSHA != "" || finding.OperationalProof != nil) {
 			expectedFixed++
 		}
 	}

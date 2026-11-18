@@ -19,6 +19,7 @@ export function CompactReviewFinding({ finding }: { finding: ReviewFinding }) {
   const severity = finding.display_severity ?? finding.severity;
   const severityLabel = { critical: 'Critical', high: 'Major', medium: 'Minor', low: 'Minor', info: 'Trivial', unknown: 'Severity unknown' }[severity];
   const route = finding.route;
+  const operational = finding.operational_proof;
   const commit = route?.fix_sha ?? finding.fix_sha;
   const proof = route?.proof_note ?? finding.proof_note;
   const resolved = route?.fixed_at ?? finding.resolved_at;
@@ -38,7 +39,7 @@ export function CompactReviewFinding({ finding }: { finding: ReviewFinding }) {
       <EditorialMarkdown compact>{finding.decision_reason || 'No decision reason recorded.'}</EditorialMarkdown>
       <dl><div><dt>Decision actor</dt><dd>{finding.actor || 'Unknown'}</dd></div><div><dt>Decision time</dt><dd>{finding.decided_at ? <RelativeTime value={finding.decided_at} /> : 'Unknown'}</dd></div></dl>
       {route && <section><h5>{route.target_pull_number === 0 ? 'Unassigned finding' : repository ? <a href={`${repository}/pull/${route.target_pull_number}`} target="_blank" rel="noopener noreferrer">Receiving PR #{route.target_pull_number}</a> : `Receiving PR #${route.target_pull_number}`}</h5><p>{label(route.disposition)} · {label(route.state)}</p><EditorialMarkdown compact>{route.reason || 'Awaiting receiving decision.'}</EditorialMarkdown><dl><div><dt>Receiving actor</dt><dd>{route.actor || 'Unknown'}</dd></div><div><dt>Receiving decision time</dt><dd>{route.decided_at ? <RelativeTime value={route.decided_at} /> : 'Unknown'}</dd></div></dl></section>}
-      <section><h5>{route ? 'Receiving fix proof' : 'Fix proof'}</h5>{commit ? (repository ? <a href={`${repository}/commit/${commit}`} target="_blank" rel="noopener noreferrer"><code>{commit}</code> ↗</a> : <code>{commit}</code>) : <p>{route?.disposition === 'rejected' ? 'Receiving finding rejected; no fix claimed.' : 'No fix commit recorded.'}</p>}<EditorialMarkdown compact>{proof || 'No proof note recorded.'}</EditorialMarkdown><p>{resolved ? <>Resolved: <RelativeTime value={resolved} /></> : 'Resolution time unknown'}</p></section>
+      {operational ? <section><h5>Operational verification</h5><p>{operational.note}</p><dl><div><dt>Recorded by</dt><dd>{operational.actor_id}</dd></div><div><dt>Recorded</dt><dd><RelativeTime value={operational.recorded_at} /></dd></div><div><dt>Evidence digest</dt><dd><code>{operational.digest}</code></dd></div></dl></section> : <section><h5>{route ? 'Receiving fix proof' : 'Fix proof'}</h5>{commit ? (repository ? <a href={`${repository}/commit/${commit}`} target="_blank" rel="noopener noreferrer"><code>{commit}</code> ↗</a> : <code>{commit}</code>) : <p>{route?.disposition === 'rejected' ? 'Receiving finding rejected; no fix claimed.' : 'No fix commit recorded.'}</p>}<EditorialMarkdown compact>{proof || 'No proof note recorded.'}</EditorialMarkdown><p>{resolved ? <>Resolved: <RelativeTime value={resolved} /></> : 'Resolution time unknown'}</p></section>}
     </details>
     <details className="review-finding-disclosure review-finding-raw">
       <summary>Original source fields</summary>

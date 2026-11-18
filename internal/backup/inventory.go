@@ -234,7 +234,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 9, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 12, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 6, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 9, "inbox": 2, "review_notifications": 1, "reviews": 13, "review_policy": 2, "review_execution": 12, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 6, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -818,6 +818,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		if name == "review_attempt_versions" && versions["reviews"] >= 8 {
 			columns += " reason"
 		}
+		if name == "review_finding_versions" && versions["reviews"] >= 13 {
+			columns += " operational_proof_json"
+		}
 		if name == "review_pull_versions" && versions["reviews"] >= 11 {
 			columns += " metadata_json delivery_selected"
 		}
@@ -1147,6 +1150,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		{5, reviews.ValidateCurrentSummaries},
 		{6, reviews.ValidateCurrentRunOrder},
 		{8, reviews.ValidateAttemptReasonsHistory},
+		{13, reviews.ValidateOperationalProofHistory},
 		{7, reviews.ValidatePullMetadataHistory},
 	} {
 		if versions["reviews"] < check.since {
@@ -1561,6 +1565,9 @@ func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) 
 			expected = reviews.HistoryReadViewSQLV10()
 		}
 		if reviewVersion >= 11 {
+			expected = reviews.HistoryReadViewSQLV12()
+		}
+		if reviewVersion >= 13 {
 			expected = reviews.HistoryReadViewSQL()
 		}
 	}
@@ -1603,6 +1610,9 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 		definitions = reviews.HistorySchemaSQLV10()
 	}
 	if version >= 11 {
+		definitions = reviews.HistorySchemaSQLV12()
+	}
+	if version >= 13 {
 		definitions = reviews.HistorySchemaSQL()
 	}
 	expectedTables, expectedObjects := 13, 22

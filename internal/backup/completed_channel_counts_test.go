@@ -24,6 +24,12 @@ func TestCompletedChannelCountsBackupLegacyElevenAndTwelve(t *testing.T) {
 			failed.CoverageLimits = []string{"The synthetic provider command failed before producing findings"}
 			zero := int64(0)
 			f.request(t, http.MethodPost, "/api/v1/projects/"+f.project+"/reviews/observations", reviews.ObservationRequest{ExpectedRevision: &zero, RepositoryID: 991, Source: "completed-count-backup-proof", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Queue: []reviews.PullInput{{Number: 7, Title: "Retained failed and completed clean reviews", State: "open", HeadSHA: clean.HeadSHA, BaseRef: "main", BaseSHA: strings.Repeat("b", 40), CIState: "pending", Mergeability: "unknown", Complete: true, Runs: []reviews.RunInput{failed, clean}}}})
+			removeOperationalProofForLegacyFixture(t, f.store)
+			if version == "12" {
+				if _, err := f.store.DB().Exec("UPDATE metadata SET value='12' WHERE key='schema:reviews'"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			wantCLI := 1
 			if version == "11" {
 				// Twelve changes only these derived values. Reproduce the prior
@@ -68,7 +74,7 @@ func TestCompletedChannelCountsBackupLegacyElevenAndTwelve(t *testing.T) {
 			if err := reviews.EnsureSchema(t.Context(), upgraded); err != nil {
 				t.Fatal("restored derived cache migration", err)
 			}
-			assertCompletedBackupCounts(t, upgraded.DB(), "12", 1)
+			assertCompletedBackupCounts(t, upgraded.DB(), "13", 1)
 			if err := reviews.ValidateCurrentSummaries(t.Context(), upgraded.DB()); err != nil {
 				t.Fatal(err)
 			}

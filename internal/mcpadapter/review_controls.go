@@ -27,7 +27,7 @@ func invalidReviewArguments(err error) error {
 
 func reviewControlTool(name string) bool {
 	switch name {
-	case "review_policy_assess", "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request", "review_source_refresh", "review_source_refresh_read", "review_source_policy_assess", "review_source_ci_assess", "review_source_readiness", "review_finding_route", "review_route_read", "review_routes_list", "review_route_decide", "review_route_fix":
+	case "review_policy_assess", "review_evidence_read", "review_adjudication_read", "review_finding_decide", "review_finding_fix", "review_finding_operational_fix", "review_source_finalize", "review_execution_read", "review_operation_read", "review_request", "review_source_refresh", "review_source_refresh_read", "review_source_policy_assess", "review_source_ci_assess", "review_source_readiness", "review_finding_route", "review_route_read", "review_routes_list", "review_route_decide", "review_route_fix":
 		return true
 	}
 	return false
@@ -267,6 +267,23 @@ func reviewControlArguments(name string, data json.RawMessage) (arguments, error
 		if client.ValidateReviewDecisionRequest(args.reviewDecision) != nil {
 			return args, invalidArguments()
 		}
+	case "review_finding_operational_fix":
+		var in struct {
+			ID             string  `json:"evidence_id"`
+			Key            string  `json:"idempotency_key"`
+			Revision       *int64  `json:"expected_revision"`
+			Finding        *int64  `json:"finding"`
+			ExpectedDigest *string `json:"expected_digest"`
+			ProofNote      string  `json:"proof_note"`
+		}
+		if strictjson.Decode(data, &in) != nil || in.Revision == nil || in.Finding == nil || in.ExpectedDigest == nil {
+			return args, invalidArguments()
+		}
+		args.id, args.key = in.ID, in.Key
+		args.reviewOperationalFix = client.ReviewOperationalFixRequest{ExpectedRevision: *in.Revision, Finding: *in.Finding, ExpectedDigest: *in.ExpectedDigest, ProofNote: in.ProofNote}
+		if client.ValidateReviewOperationalFixRequest(args.reviewOperationalFix) != nil {
+			return args, invalidArguments()
+		}
 	case "review_finding_fix":
 		var in struct {
 			ID          string  `json:"evidence_id"`
@@ -328,6 +345,7 @@ func reviewControlDefinitions() []definition {
 		{"review_evidence_read", "Explicitly read full native immutable review evidence and parsed finding text, bounded to 4 MiB. No raw capture, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_adjudication_read", "Explicitly read current native finding decisions and fix proof without finding text, provider refresh or execution.", schema(map[string]any{"evidence_id": id}, "evidence_id")},
 		{"review_finding_decide", "Record or correct a native finding decision using an explicit key, revision and zero-based index; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "disposition": map[string]any{"type": "string", "enum": []string{"accepted", "rejected"}}, "reason": text, "expected_route_revision": routeRevision}, "evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason")},
+		{"review_finding_operational_fix", "Record verified non-code remediation for an accepted finding. Use an empty expected digest for the first proof or the retained digest for correction. No provider work. Do not include credentials.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "expected_digest": map[string]any{"type": "string", "maxLength": 64, "pattern": "^(|[a-f0-9]{64})$"}, "proof_note": text}, "evidence_id", "idempotency_key", "expected_revision", "finding", "expected_digest", "proof_note")},
 		{"review_finding_fix", "Record or correct accepted-finding fix proof with an explicit key, revision, zero-based index and expected current fix SHA; retain audit history and return a compact receipt. No provider work or automatic retry.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision, "finding": finding, "expected_sha": map[string]any{"type": "string", "maxLength": 40, "pattern": "^(|[a-f0-9]{40})$", "description": expectedFixSHADescription}, "fix_sha": map[string]any{"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[a-f0-9]{40}$", "description": "Full 40-character lowercase hexadecimal fix commit SHA; abbreviations are rejected."}, "proof_note": text}, "evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "fix_sha", "proof_note")},
 		{"review_source_finalize", "Finalize eligible native source counts and atomically queue the GitHub summary; no separate publish call or wait for fixes. Return a compact receipt without waiting for provider I/O or requesting another review.", schema(map[string]any{"evidence_id": id, "idempotency_key": key, "expected_revision": revision}, "evidence_id", "idempotency_key", "expected_revision")},
 	}

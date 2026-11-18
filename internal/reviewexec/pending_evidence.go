@@ -118,7 +118,7 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 							v.Reason = "finding_undecided"
 							undecided = true
 						case "accepted":
-							if finding.FixSHA == "" {
+							if finding.FixSHA == "" && finding.OperationalProof == nil {
 								v.Reason = "fix_pending"
 							}
 						}

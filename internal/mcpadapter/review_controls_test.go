@@ -384,6 +384,41 @@ func TestReviewControlsStdioReadsDecisionsFixFinalizationAndExactRetry(t *testin
 	}
 }
 
+func TestReviewOperationalFixStdioBoundProof(t *testing.T) {
+	f, handler, evidenceID := reviewControlsFixture(t)
+	var writes atomic.Int64
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/operational-fixes") {
+			writes.Add(1)
+			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("X-FC-Instance") != f.store.InstanceID() || r.Header.Get("X-FC-Worker") != f.sender || r.Header.Get("Idempotency-Key") != "operational-fix" {
+				t.Error("lost bound actor or replay key")
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer service.Close()
+	session := reviewControlsStdio(t, reviewControlsProfile(t, f, service.URL), "chosen")
+	var receipt client.ReviewControlReceipt
+	decodeResult(t, call(t, session, "review_finding_decide", map[string]any{"evidence_id": evidenceID, "idempotency_key": "accept-for-proof", "expected_revision": 0, "finding": 0, "disposition": "accepted", "reason": "source evidence"}), &receipt)
+	args := map[string]any{"evidence_id": evidenceID, "idempotency_key": "operational-fix", "expected_revision": 1, "finding": 0, "expected_digest": "", "proof_note": "Verified external setting"}
+	args["actor_id"] = "principal_injected"
+	diagnosticResult(t, call(t, session, "review_finding_operational_fix", args), "invalid_arguments", false)
+	if writes.Load() != 0 {
+		t.Fatal("client-supplied attribution forwarded")
+	}
+	delete(args, "actor_id")
+	decodeResult(t, call(t, session, "review_finding_operational_fix", args), &receipt)
+	if receipt.ID != evidenceID || receipt.Revision != 2 || receipt.State != "operational_fix_recorded" || writes.Load() != 1 {
+		t.Fatalf("unexpected operational receipt: %+v", receipt)
+	}
+	var state client.ReviewAdjudication
+	decodeResult(t, call(t, session, "review_adjudication_read", map[string]any{"evidence_id": evidenceID}), &state)
+	proof := state.Findings[0].OperationalProof
+	if proof == nil || proof.ActorID != state.Findings[0].ActorID || proof.Note != "Verified external setting" || state.Findings[0].FixSHA != "" {
+		t.Fatalf("incorrect proof readback: %+v", state)
+	}
+}
+
 func TestReviewControlsArgumentsRejectBeforeCredentialAndHTTP(t *testing.T) {
 	var requests atomic.Int64
 	service := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))

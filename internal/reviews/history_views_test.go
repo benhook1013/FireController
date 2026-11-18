@@ -74,7 +74,7 @@ func historyViewsAttemptBody(index int, completed bool) []any {
 }
 func historyViewsFinding(t *testing.T, tx *sql.Tx, project, id string, revision int64, proof string) {
 	t.Helper()
-	_, err := tx.ExecContext(t.Context(), `INSERT INTO review_finding_versions VALUES(?,?,?,123,0,'finding-one','Retained title','Private retained finding body','medium','accepted','Confirmed','Builder','2026-10-01T00:01:00Z',?,?,'2026-10-01T00:01:00Z','null')`, project, id, revision, strings.Repeat("c", 40), proof)
+	_, err := tx.ExecContext(t.Context(), `INSERT INTO review_finding_versions VALUES(?,?,?,123,0,'finding-one','Retained title','Private retained finding body','medium','accepted','Confirmed','Builder','2026-10-01T00:01:00Z',?,?,'2026-10-01T00:01:00Z','null','null')`, project, id, revision, strings.Repeat("c", 40), proof)
 	if err != nil {
 		t.Fatal(err)
 	}

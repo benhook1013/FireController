@@ -161,19 +161,20 @@ type ReviewAttempt struct {
 }
 
 type ReviewFinding struct {
-	DisplaySeverity string              `json:"display_severity,omitempty"`
-	Route           *ReviewFindingRoute `json:"route,omitempty"`
-	SourceFindingID string              `json:"source_finding_id"`
-	Title           string              `json:"title"`
-	Detail          string              `json:"detail"`
-	Severity        string              `json:"severity"`
-	Disposition     string              `json:"disposition"`
-	DecisionReason  string              `json:"decision_reason"`
-	Actor           string              `json:"actor"`
-	DecidedAt       string              `json:"decided_at"`
-	FixSHA          string              `json:"fix_sha"`
-	ProofNote       string              `json:"proof_note"`
-	ResolvedAt      string              `json:"resolved_at"`
+	OperationalProof *ReviewOperationalProof `json:"operational_proof,omitempty"`
+	DisplaySeverity  string                  `json:"display_severity,omitempty"`
+	Route            *ReviewFindingRoute     `json:"route,omitempty"`
+	SourceFindingID  string                  `json:"source_finding_id"`
+	Title            string                  `json:"title"`
+	Detail           string                  `json:"detail"`
+	Severity         string                  `json:"severity"`
+	Disposition      string                  `json:"disposition"`
+	DecisionReason   string                  `json:"decision_reason"`
+	Actor            string                  `json:"actor"`
+	DecidedAt        string                  `json:"decided_at"`
+	FixSHA           string                  `json:"fix_sha"`
+	ProofNote        string                  `json:"proof_note"`
+	ResolvedAt       string                  `json:"resolved_at"`
 }
 
 // ReviewQueue returns the compact, ordered review queue from one stored snapshot.
@@ -294,7 +295,7 @@ func (c *Client) ReviewRun(ctx context.Context, id, snapshot string) (ReviewRunD
 			return ReviewRunDetail{}, invalidResponse()
 		}
 		seen[finding.SourceFindingID] = struct{}{}
-		if finding.FixSHA != "" {
+		if finding.FixSHA != "" || finding.OperationalProof != nil {
 			fixed++
 		}
 	}
@@ -421,6 +422,9 @@ func validReviewAttemptReason(state, reason string) bool {
 }
 
 func validReviewFinding(value ReviewFinding) bool {
+	if value.OperationalProof != nil && (value.Disposition != "accepted" || value.FixSHA != "" || value.ProofNote != "" || value.ResolvedAt != "" || !validReviewOperationalProof(value.OperationalProof)) {
+		return false
+	}
 	if value.Route != nil && (value.Disposition != "routed" || !validFindingRoute(*value.Route)) {
 		return false
 	}

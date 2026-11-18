@@ -57,15 +57,16 @@ func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope
 			return err
 		}
 		input.Findings = append(input.Findings, reviews.NativeFindingUpdate{
-			Route:           route,
-			SourceFindingID: projectionFindingID(state.EvidenceID, finding.Finding),
-			Disposition:     finding.Disposition,
-			DecisionReason:  finding.Reason,
-			Actor:           finding.ActorID,
-			DecidedAt:       finding.DecidedAt,
-			FixSHA:          finding.FixSHA,
-			ProofNote:       finding.ProofNote,
-			ResolvedAt:      finding.FixedAt,
+			Route:            route,
+			OperationalProof: finding.OperationalProof,
+			SourceFindingID:  projectionFindingID(state.EvidenceID, finding.Finding),
+			Disposition:      finding.Disposition,
+			DecisionReason:   finding.Reason,
+			Actor:            finding.ActorID,
+			DecidedAt:        finding.DecidedAt,
+			FixSHA:           finding.FixSHA,
+			ProofNote:        finding.ProofNote,
+			ResolvedAt:       finding.FixedAt,
 		})
 	}
 	_, _, err := reviews.UpdateNativeAdjudication(ctx, tx, scope, input)

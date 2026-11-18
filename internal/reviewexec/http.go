@@ -72,6 +72,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/decisions/batch", e.decideEvidenceBatchHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/fixes/batch", e.fixEvidenceBatchHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/fixes", e.fixEvidenceHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/operational-fixes", e.operationalFixEvidenceHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/finalization", e.finalizeEvidenceHTTP)
 }
 

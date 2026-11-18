@@ -24,8 +24,11 @@ func lineageFixture(t *testing.T, lineage string) *apiFixture {
 		migrations = append(migrations, ExternalHostedSchemaSQL())
 	case "integrated11":
 		migrations = append(migrations, ExternalHostedSchemaSQL(), deliverySelectionMigrationSQL())
-	case "integrated12":
+	case "integrated12", "integrated13":
 		migrations = append(migrations, ExternalHostedSchemaSQL(), deliverySelectionMigrationSQL(), completedChannelRunCountsMigrationSQL())
+		if lineage == "integrated13" {
+			migrations = append(migrations, operationalProofMigrationSQL())
+		}
 	default:
 		t.Fatal("unknown fixture lineage")
 	}
@@ -49,11 +52,11 @@ func lineageFixture(t *testing.T, lineage string) *apiFixture {
 }
 
 func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
-	for _, lineage := range []string{"main10", "slice11", "integrated10", "integrated11", "integrated12"} {
+	for _, lineage := range []string{"main10", "slice11", "integrated10", "integrated11", "integrated12", "integrated13"} {
 		t.Run(lineage, func(t *testing.T) {
 			f := lineageFixture(t, lineage)
 			wantUnselected := 0
-			if lineage == "integrated11" || lineage == "integrated12" {
+			if lineage == "integrated11" || lineage == "integrated12" || lineage == "integrated13" {
 				if _, err := f.store.DB().Exec(`UPDATE review_pull_versions SET delivery_selected=0 WHERE rowid=(SELECT min(rowid) FROM review_pull_versions)`); err != nil {
 					t.Fatal(err)
 				}
@@ -66,7 +69,7 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 				}
 				wantFrontiers = 1
 			}
-			if lineage == "integrated12" {
+			if lineage == "integrated13" {
 				if err := EnsureNotificationSchema(t.Context(), f.store); err != nil {
 					t.Fatal(err)
 				}
@@ -81,8 +84,8 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 			if err := EnsureSchema(t.Context(), f.store); err != nil {
 				t.Fatal(err)
 			}
-			if lineage == "integrated12" && currentDigest != historyMigrationDatabaseDigest(t, f) {
-				t.Fatal("current integrated-v12 startup was not an exact no-op")
+			if lineage == "integrated13" && currentDigest != historyMigrationDatabaseDigest(t, f) {
+				t.Fatal("current integrated-v13 startup was not an exact no-op")
 			}
 			if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {
 				t.Fatal("retained data changed")
@@ -92,7 +95,7 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 				t.Fatal("retained metadata bodies changed", err)
 			}
 			var version string
-			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
 				t.Fatal(version, err)
 			}
 			var selected int

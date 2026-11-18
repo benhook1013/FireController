@@ -149,6 +149,9 @@ func validateObservationContent(queue []PullInput, retirements []RetiredPull, re
 				if finding.Route != nil && (finding.Disposition != "routed" || !validFindingRoute(finding.Route, pull.Number, false)) {
 					return validationError("A finding route must retain bounded receiving identity, disposition and proof.")
 				}
+				if finding.OperationalProof != nil {
+					return validationError("Operational proof must be recorded through native adjudication.")
+				}
 				if ((finding.FixSHA != "" || finding.ProofNote != "") && finding.Disposition != "accepted") || (finding.ResolvedAt != "" && finding.FixSHA == "") {
 					return validationError("Fix evidence must belong to an accepted finding and include its fix SHA.")
 				}
@@ -548,7 +551,7 @@ func validateFinalizedFindings(ctx context.Context, q HistoryQuery, projectID st
 func summarizeRun(projectID, source string, pullNumber int64, run RunInput) RunSummary {
 	fixed := int64(0)
 	for _, finding := range run.Findings {
-		if finding.FixSHA != "" {
+		if finding.FixSHA != "" || finding.OperationalProof != nil {
 			fixed++
 		}
 	}

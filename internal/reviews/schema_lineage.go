@@ -12,7 +12,7 @@ import (
 // Versions 10 and 11 were assigned independently by the released main/review
 // slices and the integrated development lineage. Recognize their exact physical
 // prerequisites before interpreting pending version numbers. Never rewind the
-// stamp or rewrite retained review bodies; ordinary migrations converge at 12.
+// stamp or rewrite retained review bodies; ordinary migrations converge at 13.
 func reconcileReviewSchemaLineage(ctx context.Context, conn *sql.Conn, version int) error {
 	if version < 10 {
 		return nil
@@ -77,7 +77,7 @@ func reconcileReviewSchemaLineage(ctx context.Context, conn *sql.Conn, version i
 		if oldPull {
 			repair = deliverySelectionMigrationSQL()
 		} // review slice v11: discovery, no Delivery.
-	case 12:
+	case 12, 13:
 		if !frontier || !selectedPull {
 			return incompatible()
 		}

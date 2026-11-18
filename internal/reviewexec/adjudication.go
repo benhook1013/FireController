@@ -10,6 +10,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 type FindingDecisionRequest struct {
@@ -39,15 +40,16 @@ type FindingCounts struct {
 }
 
 type FindingDecision struct {
-	Finding     int64  `json:"finding"`
-	Disposition string `json:"disposition"`
-	Reason      string `json:"reason"`
-	ActorID     string `json:"actor_id"`
-	DecidedAt   string `json:"decided_at"`
-	FixSHA      string `json:"fix_sha"`
-	ProofNote   string `json:"proof_note"`
-	FixedAt     string `json:"fixed_at"`
-	RouteID     string `json:"route_id,omitempty"`
+	OperationalProof *reviews.OperationalProof `json:"operational_proof,omitempty"`
+	Finding          int64                     `json:"finding"`
+	Disposition      string                    `json:"disposition"`
+	Reason           string                    `json:"reason"`
+	ActorID          string                    `json:"actor_id"`
+	DecidedAt        string                    `json:"decided_at"`
+	FixSHA           string                    `json:"fix_sha"`
+	ProofNote        string                    `json:"proof_note"`
+	FixedAt          string                    `json:"fixed_at"`
+	RouteID          string                    `json:"route_id,omitempty"`
 }
 
 // ReviewAdjudication contains dispositions and proof references, not finding text.
@@ -99,6 +101,9 @@ func loadReviewAdjudication(ctx context.Context, tx EvidenceQuery, project, id s
 		state.Findings = []FindingDecision{}
 	}
 	for i, finding := range state.Findings {
+		if !validOperationalDecision(finding) {
+			return evidence, state, adjudicationStorageError()
+		}
 		if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" && finding.Disposition != "accepted" && finding.Disposition != "rejected" && finding.Disposition != "routed" || !safeText(finding.Reason, 2048) || !safeText(finding.ProofNote, 2048) {
 			return evidence, state, adjudicationStorageError()
 		}
@@ -168,7 +173,11 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 	if _, err = tx.ExecContext(ctx, `INSERT INTO review_adjudication_changes(evidence_id,revision,project_id,actor_id,kind,finding_index,input_json,created_at) VALUES(?,?,?,?,?,?,?,?)`, state.EvidenceID, state.Revision, scope.ProjectID, scope.PrincipalID, kind, finding, encoded(request), at); err != nil {
 		return nil, err
 	}
-	if err = core.AppendEvent(ctx, tx, scope, "review.evidence."+kind, state.EvidenceID, state.Revision, struct {
+	eventKind := kind
+	if eventKind == "operational_fix_recorded" {
+		eventKind = "fix_recorded"
+	}
+	if err = core.AppendEvent(ctx, tx, scope, "review.evidence."+eventKind, state.EvidenceID, state.Revision, struct {
 		Finding int64 `json:"finding"`
 	}{finding}); err != nil {
 		return nil, err
@@ -316,7 +325,7 @@ func (e *Engine) applyFindingDecision(ctx context.Context, tx *sql.Tx, scope cor
 		return "", invalid()
 	}
 	f := &state.Findings[request.Finding]
-	if request.Disposition == "rejected" && f.FixSHA != "" {
+	if request.Disposition == "rejected" && (f.FixSHA != "" || f.OperationalProof != nil) {
 		return "", conflict()
 	}
 	var at string
@@ -347,6 +356,9 @@ func applyFindingFix(state *ReviewAdjudication, request FindingFixRequest) (stri
 	f := &state.Findings[request.Finding]
 	if f.Disposition != "accepted" {
 		return "", findingFixGuardConflict(state.Revision, *f, "finding_not_accepted")
+	}
+	if f.OperationalProof != nil {
+		return "", conflict()
 	}
 	if f.FixSHA != *request.ExpectedSHA {
 		return "", findingFixGuardConflict(state.Revision, *f, "fix_sha_conflict")

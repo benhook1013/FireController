@@ -277,6 +277,45 @@ func TestReviewControlsInputAdmissionAndUnknownReceipts(t *testing.T) {
 	}
 }
 
+func TestReviewOperationalFixWire(t *testing.T) {
+	var calls atomic.Int64
+	at := "2026-10-15T00:00:00Z"
+	digest := strings.Repeat("a", 64)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		calls.Add(1)
+		if r.Method == http.MethodGet {
+			write(w, 200, client.ReviewAdjudication{EvidenceID: controlEvidenceID, Revision: 2, Findings: []client.ReviewFindingDecision{{Disposition: "accepted", Reason: "confirmed", ActorID: "principal_writer", DecidedAt: at, OperationalProof: &client.ReviewOperationalProof{Digest: digest, Note: "verified", ActorID: "principal_writer", RecordedAt: at}}}})
+			return
+		}
+		var req client.ReviewOperationalFixRequest
+		if !strings.HasSuffix(r.URL.Path, "/"+controlEvidenceID+"/operational-fixes") || json.NewDecoder(r.Body).Decode(&req) != nil || req.ExpectedRevision != 1 || req.ExpectedDigest != "" || req.ProofNote != "verified" {
+			t.Error("unexpected operational fix wire")
+		}
+		write(w, 200, client.ReviewControlReceipt{ID: controlEvidenceID, State: "operational_fix_recorded", Revision: 2})
+	}))
+	defer srv.Close()
+	c := newClient(t, srv)
+	ctx := context.Background()
+	req := client.ReviewOperationalFixRequest{ExpectedRevision: 1, ExpectedDigest: "not-a-digest", ProofNote: "verified"}
+	_, err := c.RecordReviewOperationalFix(ctx, "operational", controlEvidenceID, req)
+	checkError(t, err, "validation_failed")
+	if calls.Load() != 0 {
+		t.Fatal("invalid request reached server")
+	}
+	req.ExpectedDigest = ""
+	if got, err := c.RecordReviewOperationalFix(ctx, "operational", controlEvidenceID, req); err != nil || got.Revision != 2 {
+		t.Fatalf("operational receipt: %+v %v", got, err)
+	}
+	got, err := c.ReviewAdjudication(ctx, controlEvidenceID)
+	if err != nil || got.Findings[0].OperationalProof == nil || got.Findings[0].OperationalProof.Digest != digest || got.Findings[0].FixSHA != "" {
+		t.Fatalf("operational proof read: %+v %v", got, err)
+	}
+}
+
 func TestReviewControlsStreamingErrorBoundAndLargerSuccess(t *testing.T) {
 	var completed atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

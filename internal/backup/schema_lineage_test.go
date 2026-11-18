@@ -1,12 +1,29 @@
 package backup
 
 import (
+	"github.com/benhook1013/FireController/internal/core"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/benhook1013/FireController/internal/reviews"
 )
+
+func removeOperationalProofForLegacyFixture(t *testing.T, store *core.Store) {
+	t.Helper()
+	var columns int
+	if err := store.DB().QueryRow("SELECT count(*) FROM pragma_table_info('review_finding_versions') WHERE name='operational_proof_json'").Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if columns == 0 {
+		return
+	}
+	for _, stmt := range []string{`DROP VIEW review_findings`, `ALTER TABLE review_finding_versions DROP COLUMN operational_proof_json`, reviews.HistoryReadViewSQLV12()["review_findings"]} {
+		if _, err := store.DB().Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestReviewLineageUpgradesProduceCanonicalRestorableBackups(t *testing.T) {
 	for _, lineage := range []string{"fresh", "main10", "slice11", "integrated10", "integrated11", "integrated12"} {
@@ -26,8 +43,13 @@ func TestReviewLineageUpgradesProduceCanonicalRestorableBackups(t *testing.T) {
 			switch lineage {
 			case "main10", "integrated10":
 				statements = append(statements, `UPDATE metadata SET value='10' WHERE key='schema:reviews'`)
+			case "integrated12":
+				statements = append(statements, `UPDATE metadata SET value='12' WHERE key='schema:reviews'`)
 			case "slice11", "integrated11":
 				statements = append(statements, `UPDATE metadata SET value='11' WHERE key='schema:reviews'`)
+			}
+			if lineage != "fresh" {
+				removeOperationalProofForLegacyFixture(t, store)
 			}
 			for _, q := range statements {
 				if _, err := store.DB().Exec(q); err != nil {
@@ -38,7 +60,7 @@ func TestReviewLineageUpgradesProduceCanonicalRestorableBackups(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), store.DB(), false)
-			if err != nil || versions["reviews"] != 12 {
+			if err != nil || versions["reviews"] != 13 {
 				t.Fatal("upgraded schema failed independent inventory", versions, err)
 			}
 			original := backupRows(t, store.DB())

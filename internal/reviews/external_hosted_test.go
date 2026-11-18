@@ -280,7 +280,7 @@ func TestExternalHostedSchemaNineMigrationAndIdentityIndex(t *testing.T) {
 		t.Fatal("v9 migration altered current snapshot")
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
 		t.Fatal(version, err)
 	}
 	externalInit(t, f)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -199,6 +200,24 @@ func TestCurrentSummaryFailedPublicationPreservesCachesCurrentAndWire(t *testing
 func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *testing.T) {
 	f, snapshots, id, _ := historyMigrationLegacyFixture(t)
 	historyMigrationApply(t, f)
+	// Current handler expects the additive v13 field; legacy wire had no proof.
+	// A NULL-JSON alias lets it exercise old retained rows without adding storage.
+	var objectType string
+	if err := f.store.DB().QueryRow("SELECT type FROM sqlite_schema WHERE name='review_findings'").Scan(&objectType); err != nil {
+		t.Fatal(err)
+	}
+	if objectType == "table" {
+		if _, err := f.store.DB().Exec("ALTER TABLE review_findings ADD COLUMN " + operationalProofColumn); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		legacyFindingView := HistoryReadViewSQLV12()["review_findings"]
+		compatibleFindingView := strings.Replace(legacyFindingView, "f.route_json FROM", "f.route_json,'null' AS operational_proof_json FROM", 1)
+		if _, err := f.store.DB().Exec("DROP VIEW review_findings; " + compatibleFindingView); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	var queue QueueResponse
 	nativeRead(t, f, "/queue?limit=1", &queue)
 	if queue.Cursor == "" {
@@ -216,7 +235,7 @@ func TestCurrentSummaryVersionFourBackfillPreservesHistoricalWireAndCursors(t *t
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
 		t.Fatal("current-summary schema not installed", version, err)
 	}
 	for i, route := range routes {

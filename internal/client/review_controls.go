@@ -101,16 +101,28 @@ type ReviewCounts struct {
 	Accepted int64 `json:"accepted"`
 	Routed   int64 `json:"routed"`
 }
+type ReviewOperationalProof struct {
+	Digest     string `json:"digest"`
+	Note       string `json:"note"`
+	ActorID    string `json:"actor_id"`
+	RecordedAt string `json:"recorded_at"`
+}
+
+func validReviewOperationalProof(p *ReviewOperationalProof) bool {
+	return p != nil && controlHex(p.Digest, 64) && controlText(p.Note, 2048, true) && validID(p.ActorID) && controlTime(p.RecordedAt)
+}
+
 type ReviewFindingDecision struct {
-	RouteID     string `json:"route_id,omitempty"`
-	Finding     int64  `json:"finding"`
-	Disposition string `json:"disposition"`
-	Reason      string `json:"reason"`
-	ActorID     string `json:"actor_id"`
-	DecidedAt   string `json:"decided_at"`
-	FixSHA      string `json:"fix_sha"`
-	ProofNote   string `json:"proof_note"`
-	FixedAt     string `json:"fixed_at"`
+	OperationalProof *ReviewOperationalProof `json:"operational_proof,omitempty"`
+	RouteID          string                  `json:"route_id,omitempty"`
+	Finding          int64                   `json:"finding"`
+	Disposition      string                  `json:"disposition"`
+	Reason           string                  `json:"reason"`
+	ActorID          string                  `json:"actor_id"`
+	DecidedAt        string                  `json:"decided_at"`
+	FixSHA           string                  `json:"fix_sha"`
+	ProofNote        string                  `json:"proof_note"`
+	FixedAt          string                  `json:"fixed_at"`
 }
 type ReviewAdjudication struct {
 	EvidenceID   string                  `json:"evidence_id"`
@@ -138,6 +150,20 @@ type ReviewFixRequest struct {
 	FixSHA           string `json:"fix_sha"`
 	ProofNote        string `json:"proof_note"`
 }
+type ReviewOperationalFixRequest struct {
+	ExpectedRevision int64  `json:"expected_revision"`
+	Finding          int64  `json:"finding"`
+	ExpectedDigest   string `json:"expected_digest"`
+	ProofNote        string `json:"proof_note"`
+}
+
+func ValidateReviewOperationalFixRequest(r ReviewOperationalFixRequest) error {
+	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || r.ExpectedDigest != "" && !controlHex(r.ExpectedDigest, 64) || !controlText(r.ProofNote, 2048, true) {
+		return mutationValidation()
+	}
+	return nil
+}
+
 type ReviewFinalizeRequest struct {
 	ExpectedRevision int64 `json:"expected_revision"`
 }
@@ -349,6 +375,9 @@ func (c *Client) ReviewAdjudication(ctx context.Context, id string) (ReviewAdjud
 		} else if value.Revision == 0 || !controlText(f.Reason, 2048, true) || !validID(f.ActorID) || !controlTime(f.DecidedAt) {
 			return ReviewAdjudication{}, invalidResponse()
 		}
+		if f.OperationalProof != nil && (f.Disposition != "accepted" || f.FixSHA != "" || f.ProofNote != "" || f.FixedAt != "" || !validReviewOperationalProof(f.OperationalProof)) {
+			return ReviewAdjudication{}, invalidResponse()
+		}
 		if f.FixSHA == "" {
 			if f.ProofNote != "" || f.FixedAt != "" {
 				return ReviewAdjudication{}, invalidResponse()
@@ -403,6 +432,13 @@ func (c *Client) RecordReviewFix(ctx context.Context, key, id string, request Re
 	}
 	return c.reviewControl(ctx, key, id, "fixes", "fix_recorded", request.ExpectedRevision, request)
 }
+func (c *Client) RecordReviewOperationalFix(ctx context.Context, key, id string, request ReviewOperationalFixRequest) (ReviewControlReceipt, error) {
+	if err := ValidateReviewOperationalFixRequest(request); err != nil {
+		return ReviewControlReceipt{}, err
+	}
+	return c.reviewControl(ctx, key, id, "operational-fixes", "operational_fix_recorded", request.ExpectedRevision, request)
+}
+
 func (c *Client) FinalizeReviewSource(ctx context.Context, key, id string, request ReviewFinalizeRequest) (ReviewControlReceipt, error) {
 	if err := ValidateReviewFinalizeRequest(request); err != nil {
 		return ReviewControlReceipt{}, err
