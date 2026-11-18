@@ -131,7 +131,15 @@ func (s *CLIExhaustionStore) LoadCLIExhaustion(ctx context.Context, id string) (
 	if err != nil {
 		return empty, false, err
 	}
-	if !privateRegular(info) || !captureMode(info, 0600) || info.Size() > MaxCLIExhaustionArtifactBytes {
+	if !privateRegular(info) || info.Size() > MaxCLIExhaustionArtifactBytes {
+		return empty, false, captureError("validation_failed")
+	}
+	if !captureMode(info, 0600) {
+		// Lost owner permissions are an unavailable source, not proof that
+		// this otherwise private regular artifact is malformed.
+		if info.Mode().Perm() & ^os.FileMode(0600) == 0 && info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) == 0 {
+			return empty, false, captureError("capture_unavailable")
+		}
 		return empty, false, captureError("validation_failed")
 	}
 	data, _, err := readPrivateFile(path, MaxCLIExhaustionArtifactBytes)

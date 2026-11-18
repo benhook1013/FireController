@@ -76,7 +76,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	}
 	var firstDeadline, lastDeadline, baselineDeadline time.Time
 	foundCurrent := o.AttemptID == ""
-	foundDraft := o.Reason == cliDraftWait
+	foundDraft := false
 	for _, id := range ids {
 		a, err := readAttempt(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -87,6 +87,12 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 				return waitUnavailable()
 			}
 			foundCurrent = true
+			continue
+		}
+		if a.State == "cancelled" && hasBaseline {
+			if err := validateUnqueriedRetryHistory(ctx, tx, o, a.ID, o.Wait.BaselineAttemptID); err != nil {
+				return err
+			}
 			continue
 		}
 		_, draft, err := historicalCLIDraftOperation(ctx, tx, o, a)
@@ -102,6 +108,9 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 		}
 		if !hasBaseline {
 			return waitUnavailable()
+		}
+		if err := validateUnusedCooldownJournal(ctx, tx, a); err != nil {
+			return err
 		}
 		historical, err := historicalCooldownOperation(ctx, tx, o, a)
 		if err != nil {
@@ -167,7 +176,53 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	if !foundCurrent || o.Wait == nil && !foundDraft {
 		return waitUnavailable()
 	}
+	if hasBaseline {
+		if err := validateFirstCooldown(ctx, tx, o, o.Wait.BaselineAttemptID); err != nil {
+			return err
+		}
+	}
 	if hasBaseline && (baselineDeadline.IsZero() || !baselineDeadline.Equal(firstDeadline) || lastDeadline.UTC().Format(time.RFC3339Nano) != o.Wait.RetryNotBefore) {
+		return waitUnavailable()
+	}
+	return nil
+}
+
+// Detached quota preparations have precisely the unused preparation and hold
+// transitions; restore must not validate only their surviving last row.
+func validateUnusedCooldownJournal(ctx context.Context, q EvidenceQuery, a Attempt) error {
+	if a.Revision != 2 {
+		return waitUnavailable()
+	}
+	rows, err := q.QueryContext(ctx, `SELECT revision,state,reason,external_id,created_at FROM review_execution_transitions WHERE attempt_id=? ORDER BY revision`, a.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	expected := int64(1)
+	var previous time.Time
+	for rows.Next() {
+		var rev int64
+		var state, reason, external, stamp string
+		if err := rows.Scan(&rev, &state, &reason, &external, &stamp); err != nil {
+			return err
+		}
+		at, ok := attemptRecordedTime(stamp)
+		if rev != expected || expected > 2 || external != "" || !ok || at.Before(previous) {
+			return waitUnavailable()
+		}
+		if expected == 1 && (state != "preparing" || reason != "preparing") {
+			return waitUnavailable()
+		}
+		if expected == 2 && (state != "held" || (reason != "hosted_allowance_cooldown" && reason != "allowance_exhausted")) {
+			return waitUnavailable()
+		}
+		previous = at
+		expected++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if expected != 3 {
 		return waitUnavailable()
 	}
 	return nil

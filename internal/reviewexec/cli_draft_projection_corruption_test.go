@@ -17,7 +17,11 @@ func TestCLIDraftProjectionCorruptOptionalAllowance(t *testing.T) {
 			}
 			body := any("{")
 			if corruption == "blob" {
-				body = []byte("{}")
+				var validBody string
+				if err := f.store.DB().QueryRow("SELECT body_json FROM review_cli_preflight WHERE attempt_id=?", a.ID).Scan(&validBody); err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(validBody)
 			}
 			if corruption == "oversized" {
 				body = strings.Repeat("x", 8193)

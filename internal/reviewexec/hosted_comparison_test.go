@@ -221,9 +221,7 @@ func TestComparisonVersionFourUpgradePreservesJournal(t *testing.T) {
 	admissionSQL(t, f, `DROP TABLE review_hosted_allowance_queries`)
 	admissionSQL(t, f, `DROP INDEX review_operations_completed_comparison`)
 	admissionSQL(t, f, `CREATE INDEX review_operations_cli_admission ON review_operations(project_id,pull_number,channel,state,id)`)
-	restorePreCooldownAttemptSchema(t, f)
-	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN override_file_limit`)
-	admissionSQL(t, f, `ALTER TABLE review_operations DROP COLUMN allow_out_of_order`)
+	restorePreSelectionExecutionSchema(t, f)
 	admissionSQL(t, f, `UPDATE metadata SET value='1' WHERE key='schema:review_comparison'`)
 	admissionSQL(t, f, `UPDATE metadata SET value='4' WHERE key='schema:review_execution'`)
 	if err := EnsureSchema(t.Context(), f.store); err != nil {
