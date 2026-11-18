@@ -1,0 +1,226 @@
+diff --git a/cmd/fcd/main.go b/cmd/fcd/main.go
+index f0aee1f5..552fd201 100644
+--- a/cmd/fcd/main.go
++++ b/cmd/fcd/main.go
+@@ -63,6 +63,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
+ 	batchMetadata := flags.Bool("lifecycle-metadata-batching", false, "pair naturally due source metadata reads; preserves polling cadence and CI authority")
+ 	batchCIWitnesses := flags.Bool("lifecycle-ci-batching", false, "batch same-phase CI witnesses for existing periodic cohorts; preserves polling cadence")
+ 	qualifyMetadataPair := flags.Bool("lifecycle-metadata-qualification", false, "one bounded natural-cohort metadata compatibility diagnostic per account; does not enable metadata batching")
++	qualifyCIIdentityPair := flags.Bool("lifecycle-ci-identity-qualification", false, "one bounded natural-cohort CI identity diagnostic per account; no candidate publication")
+ 	qualifyCIBatching := flags.Bool("lifecycle-ci-batching-qualification", false, "one bounded natural-cohort compatibility diagnostic per account; does not enable batching")
+ 	reviewCatalog := flags.String("review-catalog", "", "optional private native CLI capability catalog")
+ 	backupDestination := flags.String("backup-destination", "", "explicit managed backup root")
+@@ -280,7 +281,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
+ 	reviewCtx, cancelReviews := context.WithCancel(ctx)
+ 	var reviewDone <-chan error
+ 	if !recovery.ProvidersHeld {
+-		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchMetadata: *batchMetadata, QualifyMetadataPair: *qualifyMetadataPair, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching})
++		reviewDone, err = startReviewWorkers(reviewCtx, execution, drivers, stderr, reviewexec.LifecycleSyncOptions{CadenceShadow: *cadenceShadow, BatchMetadata: *batchMetadata, QualifyMetadataPair: *qualifyMetadataPair, BatchCIWitnesses: *batchCIWitnesses, QualifyCIBatching: *qualifyCIBatching, QualifyCIIdentityPair: *qualifyCIIdentityPair})
+ 	}
+ 	defer func() {
+ 		cancelReviews()
+diff --git a/docs/github-observation.md b/docs/github-observation.md
+index f7150fae..49d0e42f 100644
+--- a/docs/github-observation.md
++++ b/docs/github-observation.md
+@@ -157,3 +157,7 @@ The diagnostic shadow is disabled by default. Operators may explicitly enable
+ absent, neither shadow logging nor the extra local demand reads run; the native
+ daemon retains its existing clean-output contract. The flag does not activate
+ adaptive cadence or grant dispatch authority.
++
++### CI identity differential diagnostic
++
++The default-off `--lifecycle-ci-identity-qualification` option admits at most one diagnostic per account per process inside an already-admitted, unchanged, naturally due two-PR CI cohort. Existing watches and individual hints retain their ordinary path. The diagnostic compares two REST candidate identities before and after one GraphQL pair using the same bound credentials, read admission and shared quota, with five transport calls and a fifteen-second aggregate bound. Only stable open, unmerged, mergeable test-merge identities can match; null, unsupported or moving identities remain inconclusive. Probe errors follow normal account cooldown while the outer reservation remains held. Diagnostic facts never replace ordinary source plans, candidate witnesses or CI publication. Existing CI witness batching can remain enabled independently. The diagnostic adds calls for qualification and does not itself reduce requests or establish live compatibility or savings.
+diff --git a/internal/reviewexec/lifecycle_cohort.go b/internal/reviewexec/lifecycle_cohort.go
+index ff31659e..ebfc8f3c 100644
+--- a/internal/reviewexec/lifecycle_cohort.go
++++ b/internal/reviewexec/lifecycle_cohort.go
+@@ -140,6 +140,9 @@ func (e *Engine) observeLifecycleCohort(ctx context.Context, first lifecycleTarg
+ 					return nil
+ 				}
+ 			}
++			if !qualifyLifecycleCIIdentity(bounded, s, targets) {
++				return nil
++			}
+ 			batch := s.options.BatchCIWitnesses && !lifecycleCohortHasSubscribers(s, targets)
+ 			if s.options.BatchCIWitnesses {
+ 				s.batching.record(s.options.Now(), batchEligible)
+diff --git a/internal/reviewexec/lifecycle_sync.go b/internal/reviewexec/lifecycle_sync.go
+index ec4fbc35..1551e138 100644
+--- a/internal/reviewexec/lifecycle_sync.go
++++ b/internal/reviewexec/lifecycle_sync.go
+@@ -24,6 +24,8 @@ type LifecycleSyncOptions struct {
+ 	BatchMetadata bool
+ 	// QualifyMetadataPair admits one natural diagnostic per account; never publishes probe facts.
+ 	QualifyMetadataPair bool
++	// QualifyCIIdentityPair is a diagnostic only; it never supplies CI facts.
++	QualifyCIIdentityPair bool
+ 	// BatchCIWitnesses is opt-in; no daemon configuration enables it by default.
+ 	BatchCIWitnesses                                         bool
+ 	QualifyCIBatching                                        bool
+@@ -48,6 +50,7 @@ func lifecycleOptions(options []LifecycleSyncOptions) (LifecycleSyncOptions, err
+ 		}
+ 		c.BatchCIWitnesses = o.BatchCIWitnesses
+ 		c.QualifyCIBatching = o.QualifyCIBatching
++		c.QualifyCIIdentityPair = o.QualifyCIIdentityPair
+ 		if c.BatchCIWitnesses && c.QualifyCIBatching {
+ 			return c, invalid()
+ 		}
+@@ -124,6 +127,7 @@ type lifecycleLaneSchedule struct {
+ type lifecycleSchedule struct {
+ 	qualificationClaimed         map[string]bool
+ 	metadataQualificationClaimed map[string]bool
++	identityQualificationClaimed map[string]bool
+ 	sharing                      lifecycleSharingTelemetry
+ 	batching                     lifecycleBatchTelemetry
+ 	shadowNext                   time.Time
+diff --git a/internal/reviewruntime/external_hosted.go b/internal/reviewruntime/external_hosted.go
+index 969284b9..0e64ab34 100644
+--- a/internal/reviewruntime/external_hosted.go
++++ b/internal/reviewruntime/external_hosted.go
+@@ -155,3 +155,19 @@ func (r *hostedArchiveSource) QualifyMetadataPair(ctx context.Context, id int64,
+ 	}
+ 	return reviewprovider.MetadataPairQualification{State: "refused"}, reviewprovider.ErrCombinedPullUnsupported
+ }
++
++// Identity qualification uses the same bound provider as ordinary CI reads.
++func (r *hostedArchiveSource) SupportsCIIdentityQualification() bool {
++	_, ok := r.provider.(interface {
++		QualifyCIIdentityPair(context.Context, int64, string, [2]int64) (reviewprovider.CIIdentityPairQualification, error)
++	})
++	return ok
++}
++func (r *hostedArchiveSource) QualifyCIIdentityPair(ctx context.Context, id int64, repository string, numbers [2]int64) (reviewprovider.CIIdentityPairQualification, error) {
++	if reader, ok := r.provider.(interface {
++		QualifyCIIdentityPair(context.Context, int64, string, [2]int64) (reviewprovider.CIIdentityPairQualification, error)
++	}); ok {
++		return reader.QualifyCIIdentityPair(ctx, id, repository, numbers)
++	}
++	return reviewprovider.CIIdentityPairQualification{State: "refused"}, reviewprovider.ErrCombinedPullUnsupported
++}
+diff --git a/internal/reviewexec/lifecycle_identity_qualification.go b/internal/reviewexec/lifecycle_identity_qualification.go
+new file mode 100644
+index 00000000..de8ef778
+--- /dev/null
++++ b/internal/reviewexec/lifecycle_identity_qualification.go
+@@ -0,0 +1,49 @@
++package reviewexec
++
++import (
++	"context"
++	"github.com/benhook1013/FireController/internal/reviewprovider"
++	"log/slog"
++)
++
++type ciIdentityQualifier interface {
++	QualifyCIIdentityPair(context.Context, int64, string, [2]int64) (reviewprovider.CIIdentityPairQualification, error)
++}
++
++// Called only after natural-cohort admission/binding/preparation. The outer
++// cohort retains its reservation; diagnostics never replace prepared evidence.
++func qualifyLifecycleCIIdentity(ctx context.Context, s *lifecycleSchedule, targets []lifecycleTarget) bool {
++	if !s.options.QualifyCIIdentityPair || len(targets) != 2 || lifecycleCohortHasSubscribers(s, targets) {
++		return true
++	}
++	first := targets[0]
++	q, ok := first.reader.(ciIdentityQualifier)
++	if !ok {
++		return true
++	}
++	if support, known := first.reader.(interface{ SupportsCIIdentityQualification() bool }); known && !support.SupportsCIIdentityQualification() {
++		return true
++	}
++	if !first.cohortOwned || !targets[1].cohortOwned {
++		return true
++	}
++	s.mu.Lock()
++	if s.identityQualificationClaimed == nil {
++		s.identityQualificationClaimed = map[string]bool{}
++	}
++	if s.identityQualificationClaimed[first.account] || s.options.Now().Before(s.accounts[first.account].until) {
++		s.mu.Unlock()
++		return true
++	}
++	s.identityQualificationClaimed[first.account] = true
++	s.mu.Unlock()
++	result, err := q.QualifyCIIdentityPair(reviewprovider.WithGitHubCaller(ctx, "lifecycle_enrichment_periodic"), first.repository, first.repositoryName, [2]int64{first.number, targets[1].number})
++	slog.Info("ci_identity_qualification", "bucket", result.Bucket, "state", result.State, "transport_calls", result.Requests)
++	if err != nil {
++		s.mu.Lock()
++		s.finishAccountLocked(first, err, s.options.Now())
++		s.mu.Unlock()
++		return false
++	}
++	return ctx.Err() == nil
++}
+diff --git a/internal/reviewexec/lifecycle_identity_qualification_test.go b/internal/reviewexec/lifecycle_identity_qualification_test.go
+new file mode 100644
+index 00000000..5ee53750
+--- /dev/null
++++ b/internal/reviewexec/lifecycle_identity_qualification_test.go
+@@ -0,0 +1,65 @@
++package reviewexec
++
++import (
++	"context"
++	"github.com/benhook1013/FireController/internal/reviewprovider"
++	"testing"
++)
++
++type identityQualificationReader struct {
++	*sourceCITestReader
++	calls int
++	err   error
++	hook  func()
++}
++
++func (r *identityQualificationReader) QualifyCIIdentityPair(context.Context, int64, string, [2]int64) (reviewprovider.CIIdentityPairQualification, error) {
++	r.calls++
++	if r.hook != nil {
++		r.hook()
++	}
++	return reviewprovider.CIIdentityPairQualification{State: "matched", Requests: 5}, r.err
++}
++func TestLifecycleCIIdentityQualificationReservation(t *testing.T) {
++	for _, mode := range []string{"matched", "disabled", "limit", "watch", "unowned"} {
++		t.Run(mode, func(t *testing.T) {
++			_, s, clock := lifecycleFixture(t)
++			s.options.QualifyCIIdentityPair = mode != "disabled"
++			r := &identityQualificationReader{sourceCITestReader: &sourceCITestReader{}}
++			if mode == "limit" {
++				r.err = &reviewprovider.Error{Code: "provider_rate_limited", RetryAfterSeconds: 17}
++			}
++			first := lifecycleTarget{reader: r, project: attemptProject, account: "fixture", lane: lifecycleEnrichment, number: 2, repository: 801, repositoryName: "owner/repo", cohortOwned: mode != "unowned"}
++			second := first
++			second.number = 4
++			s.lanes[lifecycleEnrichment].projects[first.project] = true
++			s.lanes[lifecycleEnrichment].accounts[first.account] = true
++			if mode == "watch" {
++				s.watches = map[ciWatchKey]*ciWatchEntry{{binding: ciWatchBinding{project: first.project}, number: 2}: {owners: map[*ciWatchSubscription]bool{&ciWatchSubscription{}: true}}}
++			}
++			r.hook = func() {
++				if !s.lanes[lifecycleEnrichment].accounts[first.account] {
++					t.Fatal("reservation lost during read")
++				}
++			}
++			ok := qualifyLifecycleCIIdentity(t.Context(), s, []lifecycleTarget{first, second})
++			want := 1
++			if mode == "disabled" || mode == "watch" || mode == "unowned" {
++				want = 0
++			}
++			if r.calls != want || ok == (mode == "limit") {
++				t.Fatal(r.calls, ok)
++			}
++			if !s.lanes[lifecycleEnrichment].accounts[first.account] {
++				t.Fatal("probe released outer reservation")
++			}
++			if mode == "limit" && !s.accounts[first.account].until.After(clock.Now()) {
++				t.Fatal("cooldown missing")
++			}
++			qualifyLifecycleCIIdentity(t.Context(), s, []lifecycleTarget{first, second})
++			if r.calls != want {
++				t.Fatal("probe repeated")
++			}
++		})
++	}
++}

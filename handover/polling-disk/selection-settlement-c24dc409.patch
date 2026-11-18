@@ -1,0 +1,148 @@
+From c24dc40940cfe8055debb6da11e18e627122d4b8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 18 Nov 2026 11:25:24 +1300
+Subject: [PATCH] Diagnose slow selection settlement with bounded phase timings
+
+---
+ .../run_selection_settlement_timing.go        | 46 +++++++++++++++
+ .../run_selection_settlement_timing_test.go   | 56 +++++++++++++++++++
+ internal/reviewexec/run_selection_worker.go   |  9 ++-
+ 3 files changed, 110 insertions(+), 1 deletion(-)
+ create mode 100644 internal/reviewexec/run_selection_settlement_timing.go
+ create mode 100644 internal/reviewexec/run_selection_settlement_timing_test.go
+
+diff --git a/internal/reviewexec/run_selection_settlement_timing.go b/internal/reviewexec/run_selection_settlement_timing.go
+new file mode 100644
+index 00000000..0d4d8e02
+--- /dev/null
++++ b/internal/reviewexec/run_selection_settlement_timing.go
+@@ -0,0 +1,46 @@
++package reviewexec
++
++import (
++	"context"
++	"errors"
++	"github.com/benhook1013/FireController/internal/core"
++	"log/slog"
++	"time"
++)
++
++// Fixed local diagnostics. Before-callback includes admission and BeginTx;
++// after-callback includes commit/rollback and notifications, not only SQL locks.
++// Outside-write includes retry pauses and final history/notification work.
++// No provider facts, SQL statements or arbitrary errors are logged.
++type selectionSettlementTiming struct {
++	started                                                  time.Time
++	attempts, entered, overloaded                            int
++	attemptTime, beforeCallback, callbackTime, afterCallback time.Duration
++}
++
++func (t *selectionSettlementTiming) attempt(start, entered, exited, end time.Time, err error) {
++	t.attempts++
++	t.attemptTime += end.Sub(start)
++	var failure *core.Error
++	if errors.As(err, &failure) && failure.Code == "overloaded" {
++		t.overloaded++
++	}
++	if entered.IsZero() {
++		t.beforeCallback += end.Sub(start)
++		return
++	}
++	t.entered++
++	t.beforeCallback += entered.Sub(start)
++	t.callbackTime += exited.Sub(entered)
++	t.afterCallback += end.Sub(exited)
++}
++func (t *selectionSettlementTiming) log(ctx context.Context, r Run, end time.Time) {
++	total := end.Sub(t.started)
++	if total < 10*time.Second {
++		return
++	}
++	slog.WarnContext(ctx, "Review selection settlement was slow", "project_id", r.ProjectID, "selection_id", r.ID, "channel", r.Channel,
++		"duration_ms", total.Milliseconds(), "write_attempts", t.attempts, "callbacks_entered", t.entered, "overloaded_attempts", t.overloaded,
++		"before_callback_ms", t.beforeCallback.Milliseconds(), "callback_ms", t.callbackTime.Milliseconds(), "after_callback_ms", t.afterCallback.Milliseconds(),
++		"outside_write_ms", max(int64(0), (total-t.attemptTime).Milliseconds()))
++}
+diff --git a/internal/reviewexec/run_selection_settlement_timing_test.go b/internal/reviewexec/run_selection_settlement_timing_test.go
+new file mode 100644
+index 00000000..b0f2dd72
+--- /dev/null
++++ b/internal/reviewexec/run_selection_settlement_timing_test.go
+@@ -0,0 +1,56 @@
++package reviewexec
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"github.com/benhook1013/FireController/internal/core"
++	"log/slog"
++	"testing"
++	"time"
++)
++
++func TestSelectionSettlementTimingPartitionsAttempts(t *testing.T) {
++	base := time.Unix(100, 0)
++	at := func(ms int) time.Time { return base.Add(time.Duration(ms) * time.Millisecond) }
++	s := selectionSettlementTiming{started: base}
++	s.attempt(at(0), time.Time{}, time.Time{}, at(2000), fmt.Errorf("wrapped: %w", core.Fail("overloaded", "private", 503)))
++	s.attempt(at(2100), at(2400), at(2800), at(3000), nil)
++	if s.attempts != 2 || s.entered != 1 || s.overloaded != 1 || s.attemptTime != 2900*time.Millisecond || s.beforeCallback != 2300*time.Millisecond || s.callbackTime != 400*time.Millisecond || s.afterCallback != 200*time.Millisecond {
++		t.Fatalf("bad accounting: %+v", s)
++	}
++	if s.beforeCallback+s.callbackTime+s.afterCallback != s.attemptTime {
++		t.Fatal("phase totals differ")
++	}
++}
++
++func TestSelectionSettlementTimingQuietThresholdAndSafeFields(t *testing.T) {
++	var out bytes.Buffer
++	old := slog.Default()
++	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
++	defer slog.SetDefault(old)
++	base := time.Unix(100, 0)
++	s := selectionSettlementTiming{started: base}
++	r := Run{ProjectID: "project", ID: "selection", Channel: "cli"}
++	s.log(context.Background(), r, base.Add(10*time.Second-time.Nanosecond))
++	if out.Len() != 0 {
++		t.Fatal("ordinary settlement logged")
++	}
++	s.log(context.Background(), r, base.Add(10*time.Second))
++	var got map[string]any
++	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
++		t.Fatal(err)
++	}
++	for _, key := range []string{"duration_ms", "write_attempts", "callbacks_entered", "overloaded_attempts", "before_callback_ms", "callback_ms", "after_callback_ms", "outside_write_ms"} {
++		if _, ok := got[key]; !ok {
++			t.Fatalf("missing %s", key)
++		}
++	}
++	if got["duration_ms"] != float64(10000) || got["outside_write_ms"] != float64(10000) {
++		t.Fatal(got)
++	}
++	if len(got) != 14 {
++		t.Fatalf("unexpected diagnostic fields: %v", got)
++	}
++}
+diff --git a/internal/reviewexec/run_selection_worker.go b/internal/reviewexec/run_selection_worker.go
+index eed390d8..e611ed70 100644
+--- a/internal/reviewexec/run_selection_worker.go
++++ b/internal/reviewexec/run_selection_worker.go
+@@ -798,8 +798,15 @@ func (e *Engine) holdRunLocalRefusal(ctx context.Context, expected Run) (bool, e
+ 
+ // finishRunChoice validates and records a source selection in one local write.
+ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadataPins map[int64]reviews.SourceMetadataPin, choice runChoice) (bool, error) {
+-	err := retryRunSelectionLocal(ctx, func() error {
++	timing := selectionSettlementTiming{started: time.Now()}
++	defer func() { timing.log(ctx, r, time.Now()) }()
++	err := retryRunSelectionLocal(ctx, func() (attemptErr error) {
++		attemptStarted := time.Now()
++		var callbackStarted, callbackFinished time.Time
++		defer func() { timing.attempt(attemptStarted, callbackStarted, callbackFinished, time.Now(), attemptErr) }()
+ 		return e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) (resultErr error) {
++			callbackStarted = time.Now()
++			defer func() { callbackFinished = time.Now() }()
+ 			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
+ 			if err != nil {
+ 				return err
