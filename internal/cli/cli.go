@@ -586,7 +586,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		default:
 			if !assigned {
 				i++
-				if i >= len(operationArgs) {
+				if i >= len(operationArgs) || (call.command == "inbox" && call.subcommand == "list" && flag == "--worker" && strings.HasPrefix(operationArgs[i], "-")) {
 					return call, false
 				}
 				value = operationArgs[i]

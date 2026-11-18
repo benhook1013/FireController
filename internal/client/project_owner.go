@@ -7,6 +7,7 @@ import (
 	"github.com/benhook1013/FireController/internal/strictjson"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -260,8 +261,8 @@ func (c *Client) UpdateProjectCredential(ctx context.Context, key, id string, r 
 	if err := c.mutate(ctx, http.MethodPut, c.projectPath("credentials", id), key, r, http.StatusOK, &v); err != nil {
 		return v, projectCredentialError(err, id)
 	}
-	want := strings.Join(normalizedPermissions(r.Permissions), ",")
-	if v.ID != id || v.ProjectID != c.identity.ProjectID || !oneReviewOf(v.Outcome, "updated", "unchanged") || strings.Join(v.Permissions, ",") != want {
+	want := normalizedPermissions(r.Permissions)
+	if v.ID != id || v.ProjectID != c.identity.ProjectID || !oneReviewOf(v.Outcome, "updated", "unchanged") || !slices.Equal(v.Permissions, want) {
 		return ProjectCredentialUpdateReceipt{}, unknownMutation("invalid_response", "The access update receipt was invalid; preserve original credential ID, permissions and key.", 200)
 	}
 	return v, nil

@@ -13,7 +13,13 @@ func TestWorkerRetirementCoreOnlyStartupAndHistoricalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = store.Close() }()
+	firstStore := store
+	closed := false
+	defer func() {
+		if !closed {
+			_ = firstStore.Close()
+		}
+	}()
 	err = store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO projects(id,name,github_repository_id,repository) VALUES('project','Project',1,'owner/repo'); INSERT INTO workers(project_id,id,name) VALUES('project','worker','Worker')`); err != nil {
 			return err
@@ -30,10 +36,12 @@ func TestWorkerRetirementCoreOnlyStartupAndHistoricalIdentity(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	closed = true
 	store, err = Open(t.Context(), dir)
 	if err != nil {
 		t.Fatal("retirement schema did not survive ordinary startup", err)
 	}
+	defer store.Close()
 	tx, err := store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)

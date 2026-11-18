@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -67,12 +69,16 @@ func TestProjectOwnerSDKManagementAndSelectedWorker(t *testing.T) {
 		t.Fatal("private token fixture")
 	}
 	var lose atomic.Bool
+	var originalWorker client.WorkerCreateReceipt
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/workers") && lose.Swap(false) {
 			rec := httptest.NewRecorder()
 			f.handler.ServeHTTP(rec, r)
 			if rec.Code != 200 {
 				t.Error(rec.Code, rec.Body.String())
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &originalWorker); err != nil {
+				t.Error(err)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(rec.Code)
@@ -112,7 +118,7 @@ func TestProjectOwnerSDKManagementAndSelectedWorker(t *testing.T) {
 	diagnosticResult(t, call(t, session, "worker_create", create), "invalid_response", true)
 	var worker client.WorkerCreateReceipt
 	decodeResult(t, call(t, session, "worker_create", create), &worker)
-	if worker.Outcome != "created" {
+	if worker.Outcome != "created" || !reflect.DeepEqual(worker, originalWorker) {
 		t.Fatal(worker)
 	}
 	for i := 0; i < 2; i++ {
@@ -133,7 +139,8 @@ func TestProjectOwnerSDKManagementAndSelectedWorker(t *testing.T) {
 		t.Fatal(update)
 	}
 	stale := diagnosticResult(t, call(t, session, "project_credential_update", map[string]any{"credential_id": grant.ID, "expected_permissions": []string{"read"}, "permissions": []string{"manage"}, "idempotency_key": "stale-update"}), "credential_permissions_changed", false)
-	if !strings.Contains(stale.Action, "returned current_permissions") {
+	details, ok := stale.Details.(map[string]any)
+	if !strings.Contains(stale.Action, "returned current_permissions") || !ok || !reflect.DeepEqual(details["current_permissions"], []any{"read", "write", "manage"}) {
 		t.Fatal(stale)
 	}
 	var revoke client.ProjectCredentialReceipt
@@ -160,5 +167,37 @@ func TestProjectOwnerSDKInvalidBeforeCredentials(t *testing.T) {
 		{"project_credential_revoke", `{"credential_id":"bad/id","idempotency_key":"x"}`},
 	} {
 		diagnosticResult(t, call(t, session, v.name, json.RawMessage(v.raw)), "invalid_arguments", false)
+	}
+}
+
+func TestInboxAcknowledgementOwnRecipientFormsReplay(t *testing.T) {
+	for _, explicitFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicitFirst), func(t *testing.T) {
+			f := mutationFixture(t)
+			service := httptest.NewServer(f.handler)
+			defer service.Close()
+			sender := connect(t, f.adapter(t, service.URL, f.sender), "")
+			recipient := connect(t, f.adapter(t, service.URL, f.recipient), "")
+			var message client.MessageReceipt
+			decodeResult(t, call(t, sender, "inbox_send", map[string]any{"idempotency_key": "send", "recipient_worker_id": f.recipient, "body": "ack forms"}), &message)
+			args := map[string]any{"idempotency_key": "ack", "message_id": message.ID}
+			if explicitFirst {
+				args["worker_id"] = f.recipient
+			}
+			var first, replay client.MessageReceipt
+			decodeResult(t, call(t, recipient, "inbox_ack", args), &first)
+			if explicitFirst {
+				delete(args, "worker_id")
+			} else {
+				args["worker_id"] = f.recipient
+			}
+			decodeResult(t, call(t, recipient, "inbox_ack", args), &replay)
+			if first != replay {
+				t.Fatalf("equivalent forms changed receipt: %v != %v", first, replay)
+			}
+			args["worker_id"] = f.sender
+			// Another recipient remains a distinct, unauthorized request, not a receipt replay.
+			diagnosticResult(t, call(t, recipient, "inbox_ack", args), "forbidden", false)
+		})
 	}
 }

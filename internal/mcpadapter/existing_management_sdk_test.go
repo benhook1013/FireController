@@ -105,8 +105,16 @@ func TestPresentationReplacementRevisionGuardStaysLocal(t *testing.T) {
 		if r.Method != "PUT" || r.URL.Path != "/api/v1/projects/project-one/presentation" || r.Header.Get("Idempotency-Key") != "chosen" || r.Header.Get("X-FC-Worker") != "worker-one" {
 			t.Error("presentation request identity changed")
 		}
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if string(raw["expected_revision"]) != "0" {
+			t.Errorf("expected explicit JSON revision 0, got %s", raw["expected_revision"])
+		}
 		var body client.ReplacePresentationRequest
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.ExpectedRevision != 0 || body.Presentation.Name != "Selected" {
+		encoded, _ := json.Marshal(raw)
+		if json.Unmarshal(encoded, &body) != nil || body.ExpectedRevision != 0 || body.Presentation.Name != "Selected" {
 			t.Error("explicit zero revision was not preserved")
 		}
 		core.WriteError(w, core.Fail("forbidden", "Project management is required.", http.StatusForbidden))

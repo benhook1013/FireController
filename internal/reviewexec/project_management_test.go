@@ -39,3 +39,29 @@ func TestProjectManagerConfiguresPolicyAndExecutionWithReplayReauthorization(t *
 	_, err = f.e.ConfigurePolicy(t.Context(), scope, "owner-policy", policy)
 	attemptCode(t, err, "forbidden")
 }
+
+func TestProjectManagerStaleCapabilityBindingReturnsRevisionConflict(t *testing.T) {
+	f := newAttemptFixtureWithPolicy(t, false)
+	if _, err := f.store.DB().Exec("UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'"); err != nil {
+		t.Fatal(err)
+	}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	admin := f.scope(t, attemptProject, f.admin, true)
+	f.e.capabilities["other-account"] = Capability{ID: "other-account", Channels: []string{"cli"}}
+	revision := int64(0)
+	config := Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli"}}
+	if _, err := f.e.Configure(t.Context(), admin, "initial-bind", config); err != nil {
+		t.Fatal(err)
+	}
+	revision = 1
+	changed := config
+	changed.CapabilityID = "other-account"
+	if _, err := f.e.Configure(t.Context(), admin, "operator-rebind", changed); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.e.Configure(t.Context(), scope, "stale-manager", config)
+	attemptCode(t, err, "review_conflict")
+	revision = 2
+	_, err = f.e.Configure(t.Context(), scope, "current-manager-rebind", config)
+	attemptCode(t, err, "operator_capability_binding_required")
+}

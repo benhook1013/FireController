@@ -160,6 +160,15 @@ func TestProjectOwnerCLICredentialFileBoundsPreserveHashAndReceipt(t *testing.T)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
 				r.Body = io.NopCloser(bytes.NewReader(body))
+				if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/credentials") {
+					var grant map[string]json.RawMessage
+					var digest string
+					var permissions []string
+					sum := sha256.Sum256([]byte(tc.token))
+					if r.URL.RawQuery != "" || json.Unmarshal(body, &grant) != nil || len(grant) != 2 || json.Unmarshal(grant["token_sha256"], &digest) != nil || digest != hex.EncodeToString(sum[:]) || json.Unmarshal(grant["permissions"], &permissions) != nil || !slices.Equal(permissions, []string{"read"}) {
+						t.Error("grant must contain only exact digest and permissions without query")
+					}
+				}
 				if bytes.Contains(body, []byte(tc.token)) || strings.Contains(r.URL.RawQuery, tc.token) {
 					leaked.Store(true)
 				}
@@ -272,5 +281,29 @@ func TestManagementGroupHelpIsStructuredAndLocal(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestProjectOwnerReceiptOutputFailurePreservesRequestValues(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "receipt-recovery")
+	worker := f.worker(t, project, "Owner")
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"owner": {project, worker}})
+	tokenFile := filepath.Join(t.TempDir(), "original.token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("x", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--profiles-file", profiles, "--profile", "owner", "credentials", "grant", "--credential-file", tokenFile, "--permission", "read", "--key", "original-grant"}
+	var diagnostic bytes.Buffer
+	code := cli.RunContext(t.Context(), args, nil, failedMutationOutput{}, &diagnostic)
+	if code != cli.ExitConfig || !strings.Contains(diagnostic.String(), "output_failed") || !strings.Contains(diagnostic.String(), "original request values") || !strings.Contains(diagnostic.String(), "original file contents") || !strings.Contains(diagnostic.String(), "--token-sha256") {
+		t.Fatal(code, diagnostic.String())
+	}
+	sum := sha256.Sum256([]byte(strings.Repeat("x", 32)))
+	code, out, stderr := mutationInvoke(t, profiles, "owner", "credentials", "grant", "--token-sha256", hex.EncodeToString(sum[:]), "--permission", "read", "--key", "original-grant")
+	if code != cli.ExitSuccess || out == "" || stderr != "" {
+		t.Fatal(code, out, stderr)
 	}
 }

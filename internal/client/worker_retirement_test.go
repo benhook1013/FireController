@@ -137,8 +137,12 @@ func TestWorkerArchiveAndSelectedAcknowledgementPreserveDefaultWire(t *testing.T
 		}
 		b, _ := io.ReadAll(r.Body)
 		want := "{}"
-		if r.Header.Get("Idempotency-Key") == "selected" {
+		switch r.Header.Get("Idempotency-Key") {
+		case "selected":
 			want = `{"worker_id":"worker-target"}`
+		case "default":
+		default:
+			t.Error("missing or unexpected ACK key")
 		}
 		if string(b) != want || r.URL.Path != "/api/v1/projects/project-one/messages/message-one/ack" {
 			t.Error("ACK body/binding", string(b))

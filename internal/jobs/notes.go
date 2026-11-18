@@ -159,13 +159,12 @@ func readNote(ctx context.Context, tx *sql.Tx, project, id string) (note, error)
 }
 func checkNoteTargets(ctx context.Context, tx *sql.Tx, n note) error {
 	if n.WorkerID != "" {
-		if err := primaryWorker(ctx, tx, n.ProjectID, n.WorkerID); err != nil {
-			return err
-		}
+		check := primaryWorker
 		if n.Status == "pending" {
-			if err := core.CheckActiveWorker(ctx, tx, n.ProjectID, n.WorkerID); err != nil {
-				return err
-			}
+			check = activePrimaryWorker
+		}
+		if err := check(ctx, tx, n.ProjectID, n.WorkerID); err != nil {
+			return err
 		}
 	}
 	if n.JobID != "" {
