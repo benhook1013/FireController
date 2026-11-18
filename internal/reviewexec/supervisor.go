@@ -149,9 +149,15 @@ func pendingScanError(ctx context.Context, err error) error {
 	return err
 }
 
-func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operations []Operation, resultErr error) {
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	return e.scanPendingForWorker(ctx, probeDrafts, 256)
+}
+
+// scanPendingForWorker separates bounded batch traversal from the worker budget.
+// Callers supply the snapshot deadline and maximum ordinary candidates.
+func (e *Engine) scanPendingForWorker(ctx context.Context, probeDrafts bool, batchLimit int) (operations []Operation, resultErr error) {
 	// SQL may report ErrTxDone after the scan deadline rolls back its transaction.
 	defer func() {
 		resultErr = pendingScanError(ctx, resultErr)
@@ -347,7 +353,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 	defer rows.Close()
 	// Apply the dispatch bound after filtering known waits and unavailable
 	// accounts. The read transaction supplies the overall scan deadline.
-	limit := len(out) + 256
+	limit := len(out) + batchLimit
 	position := cursor
 	var firstReturned *pendingScanPosition
 	resumeReturned := func() {
@@ -673,16 +679,17 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
+			// Preserve the unused preparation and reservation on damaged retained
+			// history, without stopping unrelated candidates. Configuration damage
+			// also carries the broader project-local tag, so classify it first.
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+				continue
+			}
 			if automaticProjectRefused(err) {
 				// Only proven scheduling-local corruption releases this unused preparation.
 				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
 					return err
 				}
-				continue
-			}
-			// Preserve the unused preparation and reservation on damaged retained
-			// history, without stopping unrelated candidates.
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
