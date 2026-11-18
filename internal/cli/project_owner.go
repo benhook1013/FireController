@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,9 @@ func prepareOwnerManagement(ctx context.Context, in *ownerManagementInvocation) 
 	}
 	if in.credentialFile != "" {
 		rawToken, err := readOwnerPrivateJSON(ctx, in.credentialFile)
+		if err != nil && ctx.Err() != nil {
+			return err
+		}
 		if err != nil || len(rawToken) > 4096 {
 			return bad()
 		}
@@ -171,6 +175,9 @@ func prepareOwnerManagement(ctx context.Context, in *ownerManagementInvocation) 
 		return nil
 	}
 	body, err := readOwnerPrivateJSON(ctx, in.file)
+	if errors.Is(err, errInvalidOwnerPrivateJSONFile) {
+		return bad()
+	}
 	if err != nil {
 		return err
 	}
@@ -229,7 +236,7 @@ func executeOwnerManagement(ctx, parent context.Context, c *client.Client, in *o
 		}
 	}
 	if err != nil {
-		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The management receipt could not be written.", Action: "Retain the original exact arguments, selected project and idempotency key for recovery.", OutcomeUnknown: true})
+		return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The management receipt could not be written.", Action: "Retain the original request values, idempotency key and selected binding for recovery. Preserve original file contents; for credential grants, the original digest can be reused with --token-sha256.", OutcomeUnknown: true})
 	}
 	return ExitSuccess
 }

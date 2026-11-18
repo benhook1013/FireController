@@ -220,6 +220,8 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	if replay != retired {
 		t.Fatal("restart changed retirement receipt")
 	}
+	writerProfile := profile("writer-restarted", readerFile)
+	cli(writerProfile, "writer-restarted", "workers", "create", "--name", "Writer control", "--key", "writer-control")
 	// Reader/writer cannot administer even though its ordinary write grant is live.
 	payload := strings.NewReader(`{"expected_permissions":["read","write"],"permissions":["manage"]}`)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, "http://"+daemon.address+"/api/v1/projects/"+project+"/credentials/"+grant.ID, payload)
