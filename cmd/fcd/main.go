@@ -24,6 +24,7 @@ import (
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
@@ -190,6 +191,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = opvars.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = inbox.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -247,6 +252,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}))
 	projectmap.Register(mux, store)
 	presentation.Register(mux, store)
+	opvars.Register(mux, store)
 	inbox.Register(mux, store)
 	coordimport.Register(mux, store)
 	reviews.Register(mux, store, execution.ObservationHealth)

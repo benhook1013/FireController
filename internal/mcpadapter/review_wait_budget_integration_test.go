@@ -53,6 +53,10 @@ func TestReviewWaitSDKFitsAfterSetupAndPreservesErrors(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": "instance-one"})
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/vars") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"variables": []any{}})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/pause") {
 			ordinary.Add(1)
 			if r.Header.Get("Prefer") != "" {

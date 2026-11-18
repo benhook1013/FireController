@@ -21,6 +21,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/server"
 )
 
@@ -624,6 +625,9 @@ func setupServiceFixture(t *testing.T) *serviceFixture {
 	if err := inbox.EnsureSchema(ctx, store); err != nil {
 		t.Fatal(err)
 	}
+	if err := opvars.EnsureSchema(ctx, store); err != nil {
+		t.Fatal(err)
+	}
 	adminBytes, err := os.ReadFile(filepath.Join(dataDir, "bootstrap-admin.token"))
 	if err != nil {
 		t.Fatal(err)
@@ -637,6 +641,7 @@ func setupServiceFixture(t *testing.T) *serviceFixture {
 	mux.Handle("/", base)
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
+	opvars.Register(mux, store)
 	f.handler = mux
 	return f
 }
@@ -775,7 +780,7 @@ func TestReadOnlyServiceCommandsUseBoundProfileAndPublicAPIs(t *testing.T) {
 	}
 
 	doctor := decodeSuccess("doctor")
-	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 10 || doctor["client_source_revision"] == nil {
+	if doctor["verified"] != true || doctor["profile"] != "alpha" || doctor["project_id"] != alphaProject || doctor["worker_id"] != alphaOverseer || len(doctor) != 11 || doctor["client_source_revision"] == nil {
 		t.Fatalf("doctor output is not the configured verified identity: %v", doctor)
 	}
 	workers := decodeSuccess("workers", "list", "--limit", "1")

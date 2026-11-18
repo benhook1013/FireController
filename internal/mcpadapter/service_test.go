@@ -257,7 +257,7 @@ func TestAllToolsReadRealScopedAPIWithoutProvidersOrMutations(t *testing.T) {
 	if providers.Load() != providerBefore {
 		t.Fatal("normal MCP use performed provider work")
 	}
-	if reads.Load() != 32 {
+	if reads.Load() != 33 {
 		t.Fatalf("unexpected handshake/read count or retry: %d", reads.Load())
 	}
 }

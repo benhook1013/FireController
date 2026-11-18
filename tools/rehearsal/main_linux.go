@@ -15,6 +15,7 @@ import (
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
@@ -106,7 +107,7 @@ func same(a, b map[string]tableProof) bool {
 	return true
 }
 func schemas(ctx context.Context, s *core.Store) error {
-	for _, f := range []func(context.Context, *core.Store) error{backup.StartupGuard, jobs.EnsureSchema, projectmap.EnsureSchema, presentation.EnsureSchema, inbox.EnsureSchema, coordimport.EnsureSchema, reviews.EnsureSchema, publicsite.EnsureSchema, reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema, reviewexec.SeedNotificationFollowers, backup.EnsureManagedSchema, historycollect.EnsureSchema} {
+	for _, f := range []func(context.Context, *core.Store) error{backup.StartupGuard, jobs.EnsureSchema, projectmap.EnsureSchema, presentation.EnsureSchema, opvars.EnsureSchema, inbox.EnsureSchema, coordimport.EnsureSchema, reviews.EnsureSchema, publicsite.EnsureSchema, reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema, reviewexec.SeedNotificationFollowers, backup.EnsureManagedSchema, historycollect.EnsureSchema} {
 		if e := f(ctx, s); e != nil {
 			return e
 		}

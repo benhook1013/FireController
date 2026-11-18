@@ -101,6 +101,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, reviewSchedulingDefinitions()...)
 	definitions = append(definitions, operationListDefinition(), reviewWatchDefinition())
 	definitions = append(definitions, jobStatusDefinitions()...)
+	definitions = append(definitions, varReadDefinition())
 	definitions = append(definitions, reviewBatchDefinitions()...)
 	definitions = append(definitions, externalHostedSettlementDefinition())
 	definitions = append(definitions, subagentDefinitions()...)
@@ -190,8 +191,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 							profile.Context
 							Verified bool `json:"verified"`
 							buildinfo.Connection
-							WorkerPause client.WorkerPause `json:"worker_pause"`
-						}{service.Identity(), true, buildinfo.ConnectionInfo(Version), pause}
+							WorkerPause       client.WorkerPause `json:"worker_pause"`
+							OperatorVariables *map[string]string `json:"operator_variables,omitempty"`
+						}{service.Identity(), true, buildinfo.ConnectionInfo(Version), pause, service.DoctorOperatorVariables(ctx)}
 					}
 				case "review_queue_add", "review_queue_move", "review_queue_remove":
 					value, err = service.ChangeReviewQueue(ctx, strings.TrimPrefix(tool.name, "review_queue_"), args.key, args.queueChange)
@@ -333,6 +335,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value, err = service.SetJobSummary(ctx, args.key, args.id, args.summary)
 				case "job_status_read":
 					value, err = runJobStatus(ctx, service, args)
+				case "var_read":
+					value, err = runVarRead(ctx, service, args)
 				case "job_read":
 					value, err = service.Job(ctx, args.id)
 				case "job_revision_read":

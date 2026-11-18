@@ -16,7 +16,7 @@ import (
 func TestDoctorPauseSDKStdioUsesCurrentStateWithoutExtraRead(t *testing.T) {
 	f := mutationFixture(t)
 	pausePath := "/api/v1/projects/" + f.project + "/workers/" + f.sender + "/pause"
-	var instances, pauses, unexpected atomic.Int64
+	var instances, pauses, vars, unexpected atomic.Int64
 	var fault atomic.Int32
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -35,6 +35,8 @@ func TestDoctorPauseSDKStdioUsesCurrentStateWithoutExtraRead(t *testing.T) {
 				jsonResponse(w, client.WorkerPause{WorkerID: "wrong-worker"})
 				return
 			}
+		case "/api/v1/projects/" + f.project + "/vars":
+			vars.Add(1)
 		default:
 			unexpected.Add(1)
 		}
@@ -81,6 +83,7 @@ func TestDoctorPauseSDKStdioUsesCurrentStateWithoutExtraRead(t *testing.T) {
 		before := snapshot()
 		instances.Store(0)
 		pauses.Store(0)
+		vars.Store(0)
 		result := call(t, session, "doctor", map[string]any{})
 		var raw map[string]json.RawMessage
 		decodeResult(t, result, &raw)
@@ -91,7 +94,7 @@ func TestDoctorPauseSDKStdioUsesCurrentStateWithoutExtraRead(t *testing.T) {
 		}
 		decodeResult(t, result, &got)
 		var pauseFields map[string]json.RawMessage
-		if !got.Verified || got.WorkerID != f.sender || got.WorkerPause != want || len(raw) != 10 || json.Unmarshal(raw["worker_pause"], &pauseFields) != nil || len(pauseFields) != 4 {
+		if !got.Verified || got.WorkerID != f.sender || got.WorkerPause != want || len(raw) != 11 || string(raw["operator_variables"]) != "{}" || json.Unmarshal(raw["worker_pause"], &pauseFields) != nil || len(pauseFields) != 4 {
 			t.Fatalf("doctor state %d lost required fields: %v", i, result.StructuredContent)
 		}
 		for _, field := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id", "verified", "client_version", "client_source_revision", "client_source_state"} {
@@ -99,7 +102,7 @@ func TestDoctorPauseSDKStdioUsesCurrentStateWithoutExtraRead(t *testing.T) {
 				t.Fatalf("original doctor field %s missing", field)
 			}
 		}
-		if instances.Load() != 1 || pauses.Load() != 1 || unexpected.Load() != 0 || snapshot() != before {
+		if instances.Load() != 1 || pauses.Load() != 1 || vars.Load() != 1 || unexpected.Load() != 0 || snapshot() != before {
 			t.Fatal("SDK doctor added reads or changed durable pause/history/receipts/events")
 		}
 	}

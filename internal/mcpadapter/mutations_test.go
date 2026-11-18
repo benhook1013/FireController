@@ -21,6 +21,7 @@ import (
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
 	"github.com/benhook1013/FireController/internal/mcpadapter"
+	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/server"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -45,6 +46,9 @@ func mutationFixture(t *testing.T) *mutationAPI {
 	if err = jobs.EnsureSchema(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
+	if err = opvars.EnsureSchema(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
 	if err = inbox.EnsureSchema(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +58,7 @@ func mutationFixture(t *testing.T) *mutationAPI {
 	}))
 	jobs.Register(mux, store)
 	inbox.Register(mux, store)
+	opvars.Register(mux, store)
 	f.handler = mux
 	data, err := os.ReadFile(filepath.Join(dir, "bootstrap-admin.token"))
 	if err != nil {

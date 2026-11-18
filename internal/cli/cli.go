@@ -72,6 +72,7 @@ type invocation struct {
 	notes                 *noteInvocation
 	projectMap            *projectMapInvocation
 	presentation          *presentationInvocation
+	vars                  *varsInvocation
 	publication           *publicationInvocation
 	helpOperation         string
 	argumentDiagnostic    *diagnostic
@@ -297,6 +298,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if call.presentation != nil {
 		return executePresentation(requestCtx, ctx, service, call.presentation, stdout, stderr)
 	}
+	if call.vars != nil {
+		return executeVars(requestCtx, ctx, service, call.vars, stdout, stderr)
+	}
 	if call.subagentReview != nil {
 		return executeSubagentReview(requestCtx, ctx, service, call.subagentReview, stdout, stderr)
 	}
@@ -379,8 +383,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 			profile.Context
 			Verified bool `json:"verified"`
 			buildinfo.Connection
-			WorkerPause client.WorkerPause `json:"worker_pause"`
-		}{identity, true, buildinfo.ConnectionInfo(Version), pause}
+			WorkerPause       client.WorkerPause `json:"worker_pause"`
+			OperatorVariables *map[string]string `json:"operator_variables,omitempty"`
+		}{identity, true, buildinfo.ConnectionInfo(Version), pause, service.DoctorOperatorVariables(requestCtx)}
 	case call.command == "reviews":
 		value, err = executeReview(requestCtx, service, call)
 	case call.command == "workers" && call.subcommand == "pause-state":
@@ -477,7 +482,7 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "--help" || call.command == "-h" {
 		call.command = "help"
 	}
-	if len(remaining) == 2 && ((call.command == "reviews" || call.command == "jobs" || call.command == "workers" || call.command == "credentials" || call.command == "inbox" || call.command == "notes") && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && (remaining[1] == "reviews" || remaining[1] == "jobs" || remaining[1] == "workers" || remaining[1] == "credentials" || remaining[1] == "inbox" || remaining[1] == "notes")) {
+	if len(remaining) == 2 && ((call.command == "reviews" || call.command == "jobs" || call.command == "workers" || call.command == "credentials" || call.command == "inbox" || call.command == "notes" || call.command == "vars") && (remaining[1] == "help" || remaining[1] == "--help") || remaining[0] == "help" && (remaining[1] == "reviews" || remaining[1] == "jobs" || remaining[1] == "workers" || remaining[1] == "credentials" || remaining[1] == "inbox" || remaining[1] == "notes" || remaining[1] == "vars")) {
 		group := call.command
 		if group == "help" {
 			group = remaining[1]
@@ -510,7 +515,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "publication" && call.command != "history" && call.command != "import" && call.command != "credentials" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "vars" && call.command != "publication" && call.command != "history" && call.command != "import" && call.command != "credentials" || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
@@ -546,6 +551,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "publication" {
 		var ok bool
 		call.publication, ok = parsePublication(call.subcommand, operationArgs)
+		return call, ok
+	}
+	if call.command == "vars" {
+		var ok bool
+		call.vars, ok = parseVars(call.subcommand, operationArgs)
 		return call, ok
 	}
 	if call.command == "presentation" {

@@ -20,7 +20,7 @@ func TestDoctorReturnsCurrentPauseWithOneDomainRead(t *testing.T) {
 	worker := f.worker(t, project, "Builder")
 	const readToken = "synthetic-doctor-read-token"
 	f.grant(t, project, readToken)
-	var instances, pauses, unexpected atomic.Int64
+	var instances, pauses, vars, unexpected atomic.Int64
 	var fault atomic.Int32
 	pausePath := "/api/v1/projects/" + project + "/workers/" + worker + "/pause"
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +42,8 @@ func TestDoctorReturnsCurrentPauseWithOneDomainRead(t *testing.T) {
 				json.NewEncoder(w).Encode(client.WorkerPause{WorkerID: "wrong-worker"})
 				return
 			}
+		case "/api/v1/projects/" + project + "/vars":
+			vars.Add(1)
 		default:
 			unexpected.Add(1)
 		}
@@ -75,6 +77,7 @@ func TestDoctorReturnsCurrentPauseWithOneDomainRead(t *testing.T) {
 		before := snapshot()
 		instances.Store(0)
 		pauses.Store(0)
+		vars.Store(0)
 		code, out, stderr := mutationInvoke(t, profilesPath, "builder", "doctor")
 		var raw map[string]json.RawMessage
 		var got struct {
@@ -86,7 +89,7 @@ func TestDoctorReturnsCurrentPauseWithOneDomainRead(t *testing.T) {
 			t.Fatalf("doctor state %d: %d %s %s", i, code, out, stderr)
 		}
 		var pauseFields map[string]json.RawMessage
-		if len(raw) != 10 || json.Unmarshal(raw["worker_pause"], &pauseFields) != nil || len(pauseFields) != 4 {
+		if len(raw) != 11 || string(raw["operator_variables"]) != "{}" || json.Unmarshal(raw["worker_pause"], &pauseFields) != nil || len(pauseFields) != 4 {
 			t.Fatalf("required fields absent: %s", out)
 		}
 		for _, field := range []string{"profile", "server_url", "instance_id", "project_id", "worker_id", "verified", "client_version", "client_source_revision", "client_source_state"} {
@@ -94,7 +97,7 @@ func TestDoctorReturnsCurrentPauseWithOneDomainRead(t *testing.T) {
 				t.Fatalf("original doctor field %s missing", field)
 			}
 		}
-		if instances.Load() != 1 || pauses.Load() != 1 || unexpected.Load() != 0 || snapshot() != before {
+		if instances.Load() != 1 || pauses.Load() != 1 || vars.Load() != 1 || unexpected.Load() != 0 || snapshot() != before {
 			t.Fatal("doctor added reads or changed durable pause/history/receipts/events")
 		}
 	}

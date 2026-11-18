@@ -20,6 +20,7 @@ import (
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
@@ -232,7 +233,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -277,6 +278,7 @@ var tables = map[string]tableVersion{
 	"managed_backup_publication_holds":  {"managed_backup_publications", 1, "bundle_id destination source_instance_id manifest_sha256 summary_json"},
 	"project_presentations":             {"project_presentation", 1, "project_id revision state_json"},
 	"project_presentation_history":      {"project_presentation", 1, "project_id revision actor_id state_json created_at"},
+	"operator_variable_history":         {"operator_variables", 1, "project_id key revision value actor_id created_at"},
 	"project_map_entries":               {"project_map", 1, "project_id id kind title state archived revision state_json"},
 	"project_map_entry_history":         {"project_map", 1, "project_id entry_id revision actor_id state_json created_at"},
 	"job_workstreams":                   {"project_map", 1, "project_id job_id revision workstream_id workstream_title"},
@@ -428,6 +430,29 @@ func projectMapColumn(table, column, kind string, notnull, pk int, defaultValue 
 		return false
 	}
 	return kind == expectedKind && notnull == expectedNull && pk == expectedPK
+}
+
+// operatorVariableColumn pins the append-only history layout; value alone is
+// nullable because a NULL revision records an unset.
+func operatorVariableColumn(column, kind string, notnull, pk int, defaultValue any) bool {
+	if defaultValue != nil {
+		return false
+	}
+	expectedKind, expectedNotNull, expectedPK := "TEXT", 1, 0
+	switch column {
+	case "project_id":
+		expectedPK = 1
+	case "key":
+		expectedPK = 2
+	case "revision":
+		expectedKind, expectedPK = "INTEGER", 3
+	case "value":
+		expectedNotNull = 0
+	case "actor_id", "created_at":
+	default:
+		return false
+	}
+	return kind == expectedKind && notnull == expectedNotNull && pk == expectedPK
 }
 
 func presentationColumn(table, column, kind string, notnull, pk int, defaultValue any) bool {
@@ -870,6 +895,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
+			if spec.domain == "operator_variables" && !operatorVariableColumn(col, kind, notnull, pk, defaultValue) {
+				columnRows.Close()
+				return nil, invalid()
+			}
 			if spec.domain == "public_site" && !publicSiteColumn(name, col, kind, notnull, pk, defaultValue) {
 				columnRows.Close()
 				return nil, invalid()
@@ -1150,6 +1179,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["project_presentation"] > 0 {
 		if err = presentation.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions["operator_variables"] > 0 {
+		if err = opvars.ValidateSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}

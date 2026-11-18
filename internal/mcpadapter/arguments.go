@@ -151,6 +151,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 	if name == "job_status_read" {
 		return jobStatusArguments(data)
 	}
+	if name == "var_read" {
+		return varReadArguments(data)
+	}
 	if name == "review_operation_read" {
 		input, err := operationStatusArguments(data)
 		if err != nil {
@@ -431,7 +434,7 @@ func toolDefinitions() []definition {
 	return append([]definition{
 		{"presentation_read", "Read the bound project appearance and metadata watermark explicitly. No ordinary job or inbox call includes settings; no provider work or mutation.", schema(map[string]any{})},
 		{"context", "Inspect the immutable local profile and running client source revision/state; no service verification or credential read.", schema(map[string]any{})},
-		{"doctor", "Verify the configured instance/project/worker and return current worker_pause (revision, paused and private reason), plus running client source revision/state. No provider work or pause changes.", schema(map[string]any{})},
+		{"doctor", "Verify the configured instance/project/worker and return current worker_pause (revision, paused and private reason), effective operator_variables (key to value) and running client source revision/state. No provider work or pause changes.", schema(map[string]any{})},
 		{"workers_list", "Read one compact active-worker page in the bound project. include_retired=true explicitly includes active and retired workers; reuse cursors only within that view.", schema(map[string]any{"limit": limit, "cursor": cursor, "include_retired": map[string]any{"type": "boolean", "default": false}})},
 		{"jobs_list", "Read one compact job page with explicit optional worker/status filters.", schema(map[string]any{"limit": limit, "cursor": cursor, "worker_id": id, "status": statusFilter})},
 		{"jobs_assigned", "Read one compact assigned-job page, default open (active, blocked, parked). Explicit status:all includes completed history; no primary/resume-context claim.", schema(map[string]any{"limit": limit, "cursor": cursor, "status": map[string]any{"type": "string", "enum": []string{"open", "active", "blocked", "parked", "completed", "all"}, "default": "open", "description": "Defaults to open; all explicitly includes completed jobs."}})},

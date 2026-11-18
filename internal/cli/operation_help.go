@@ -509,6 +509,12 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Semantics = []string{"Discover pending incoming messages with inbox list, or capture its event_cursor with inbox snapshot before a bounded inbox wait. Use inbox sent and delivery to inspect outgoing handoffs.", "Read selected bodies and conversation pages explicitly. Reads never mark messages seen or acknowledged; those changes require explicit keyed commands.", "All help is local; no profile, credential, file or network reads."}
 		out.Example = "<bound launcher> inbox list --help"
 		out.Documentation = "docs/message-events.md"
+	case "vars help":
+		out.Usage = "<bound launcher> vars list | get KEY | set KEY VALUE | unset KEY | history KEY"
+		out.Optional = []string{"--project (set/unset/history: the bound project's override instead of the instance-wide value)", "--expect-revision N (set/unset)", "--key IDEMPOTENCY_KEY (set/unset; generated when omitted)", "--limit N --cursor CURSOR (history)"}
+		out.Semantics = []string{"Operator variables are opaque strings that FireController stores and never interprets. A project override replaces the instance-wide value for that project.", "Any project credential reads; set and unset require administration, and instance-wide writes require an instance administrator. doctor includes the effective values.", "Keys: 1-64 bytes of a-z, 0-9, _ . - starting with a letter or digit. Values: 1-240 UTF-8 bytes. At most 32 set keys per scope.", "All help is local; no profile, credential, file or network reads."}
+		out.Example = "<bound launcher> vars set provider_mode codex-low"
+		out.Documentation = "docs/operator-variables.md"
 	case "notes help":
 		out.Usage = "<bound launcher> notes help"
 		out.Optional = []string{"notes list --help", "notes read --help", "notes add --help", "notes update --help", "notes history NOTE_ID [--limit N] [--cursor CURSOR]", "notes revision --help"}

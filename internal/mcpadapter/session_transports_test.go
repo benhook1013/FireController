@@ -38,6 +38,8 @@ func TestSessionTransportReuseFreshAuthorityIsolationAndCleanup(t *testing.T) {
 		} else if r.URL.Path == "/api/v1/projects/project-one/workers/worker-one/pause" {
 			pauses.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{"worker_id": "worker-one", "revision": 0, "paused": false, "reason": ""})
+		} else if r.URL.Path == "/api/v1/projects/project-one/vars" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"variables": []any{}})
 		} else {
 			t.Errorf("unexpected doctor read %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

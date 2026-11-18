@@ -38,7 +38,8 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `review_following_update` | Required pull_number, expected_revision, following and idempotency_key; own worker follow/mute, with persistent explicit opt-out and no ownership or queue change. |
 | `context` | No fields; configured local identity plus running client source revision/state, without service verification. |
 | `presentation_read` | Explicit bound-project appearance snapshot and project-metadata watermark; no provider work or mutation. |
-| `doctor` | No fields; verified instance/project/worker identity plus running client source revision/state. |
+| `doctor` | No fields; verified instance/project/worker identity, current worker pause, effective [operator variables](operator-variables.md) as `operator_variables` and running client source revision/state. |
+| `var_read` | Optional key; without it every effective [operator variable](operator-variables.md), with it one key's effective value and its instance and project entries. Read-only. |
 | `workers_list` | Optional limit/cursor; one compact worker page. |
 | `worker_pause_read` | Optional worker_id in the bound project; defaults to the acting worker. Reads explicit pause, reason and independent revision without switching identity. |
 | `worker_pause_history` | Optional same-project worker_id/limit/cursor; one explicit newest-first pause-history page. Worker selection does not change the actor. |
