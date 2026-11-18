@@ -113,6 +113,18 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	var owner client.ProjectCredentialReceipt
 	decode(t, cli(adminProfile, "admin", "credentials", "grant", "--credential-file", managerFile, "--permission", "manage", "--key", "grant-manager"), &owner)
 	managerProfile := profile("manager", managerFile)
+	// Scheduling configuration is independent of execution configuration and keeps
+	// exact control identities across native CLI/MCP and restart.
+	var scheduling client.ReviewScheduling
+	decode(t, cli(managerProfile, "manager", "reviews", "scheduling"), &scheduling)
+	if scheduling.Revision != 0 || scheduling.AutomaticHosted || scheduling.AutomaticCLI {
+		t.Fatal("new scheduling is not off", scheduling)
+	}
+	configured := cli(managerProfile, "manager", "reviews", "scheduling", "configure", "--automatic-hosted", "false", "--automatic-cli", "false", "--expect-revision", "0", "--key", "scheduling-off")
+	if !bytes.Equal(configured, cli(managerProfile, "manager", "reviews", "scheduling", "configure", "--automatic-hosted", "false", "--automatic-cli", "false", "--expect-revision", "0", "--key", "scheduling-off")) {
+		t.Fatal("scheduling exact replay changed")
+	}
+
 	var grant client.ProjectCredentialReceipt
 	decode(t, cli(managerProfile, "manager", "credentials", "grant", "--credential-file", readerFile, "--permission", "read", "--key", "grant-reader"), &grant)
 	permissionFile := filepath.Join(private, "permissions.json")
@@ -155,6 +167,13 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 		t.Fatal("missing MCP text")
 		return nil
 	}
+
+	call("review_pull_scheduling_update", map[string]any{"pull_number": 42, "paused": true, "reason": "Synthetic scheduling hold", "expected_revision": 0, "idempotency_key": "scheduling-pause"})
+	var paused client.ReviewPullScheduling
+	decode(t, call("review_pull_scheduling_read", map[string]any{"pull_number": 42}), &paused)
+	if !paused.Paused || paused.Revision != 1 {
+		t.Fatal("MCP pause not retained", paused)
+	}
 	call("inbox_ack", map[string]any{"message_id": message.ID, "worker_id": target.ID, "idempotency_key": "peer-ack"})
 	var retired client.WorkerRetirementReceipt
 	decode(t, call("worker_retire", map[string]any{"worker_id": target.ID, "idempotency_key": "retire"}), &retired)
@@ -178,8 +197,26 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	daemon.stop(t)
 	daemon = startDaemon(t, ctx, filepath.Join(bin, "fcd"), data, env)
 	managerProfile = profile("manager-restarted", managerFile)
+	decode(t, cli(managerProfile, "manager-restarted", "reviews", "scheduling", "read", "--pr", "42"), &paused)
+	if !paused.Paused || paused.Revision != 1 || paused.Reason != "Synthetic scheduling hold" {
+		t.Fatal("restart changed paused scheduling control", paused)
+	}
+	cli(managerProfile, "manager-restarted", "reviews", "scheduling", "resume", "--pr", "42", "--expect-revision", "1", "--key", "scheduling-resume")
+	daemon.stop(t)
+	daemon = startDaemon(t, ctx, filepath.Join(bin, "fcd"), data, env)
+	managerProfile = profile("manager-resumed", managerFile)
+	var resumed client.ReviewPullScheduling
+	decode(t, cli(managerProfile, "manager-resumed", "reviews", "scheduling", "read", "--pr", "42"), &resumed)
+	if resumed.Paused || resumed.Revision != 2 || resumed.Reason != "" {
+		t.Fatal("restart changed scheduling control", resumed)
+	}
+	decode(t, cli(managerProfile, "manager-resumed", "reviews", "scheduling"), &scheduling)
+	if scheduling.Revision != 1 || scheduling.AutomaticHosted || scheduling.AutomaticCLI {
+		t.Fatal("restart changed default-off control", scheduling)
+	}
+
 	var replay client.WorkerRetirementReceipt
-	decode(t, cli(managerProfile, "manager-restarted", "workers", "retire", target.ID, "--key", "retire"), &replay)
+	decode(t, cli(managerProfile, "manager-resumed", "workers", "retire", target.ID, "--key", "retire"), &replay)
 	if replay != retired {
 		t.Fatal("restart changed retirement receipt")
 	}

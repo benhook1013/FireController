@@ -21,6 +21,12 @@ func draftReadinessDiagnostic() *ReviewOperationDiagnostic {
 }
 
 func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if reason == "automation_authorization_changed" {
+		return &ReviewOperationDiagnostic{"This selection stopped before it created a review operation because its scheduling authorization no longer applies.", "Read review_scheduling_read / reviews scheduling. A project manager can authorize future automatic selections through an active bound worker. The retained selection records the refusal."}
+	}
+	if hint := schedulingDiagnostic(reason); hint != nil {
+		return hint
+	}
 	if reason == "pull_draft" {
 		return draftReadinessDiagnostic()
 	}
@@ -45,6 +51,9 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	default:
 		return nil
 	}
+	if reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
+		return &ReviewOperationDiagnostic{explanation, "An explicit held selection is terminal and has no child operation; after addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. Its old key replays the hold. An eligible automatic selection may recover on its original identity after at least thirty seconds, subject to its retained retry budget, unchanged authorization and normal admission checks. Preserve the original selection while automatic recovery remains eligible; this diagnostic does not establish eligibility or promise an exact retry time. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed."}
+	}
 	return &ReviewOperationDiagnostic{explanation, "This held selection is terminal and has no child operation. After addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. The old key replays this hold. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed; normal front, source and provider checks still apply."}
 }
 
@@ -66,6 +75,14 @@ type ReviewOperationStatusOutput struct {
 }
 
 func retainedWaitDiagnostic(wait *ReviewOperationWait, channel, state, reason, queuedCause string) *ReviewOperationDiagnostic {
+	if state == "queued" {
+		if hint := schedulingDiagnostic(queuedCause); hint != nil {
+			return hint
+		}
+	}
+	if hint := agentReviewOperationDiagnostic(channel, state, reason); hint != nil {
+		return hint
+	}
 	if wait != nil {
 		if diagnostic := operationWaitDiagnostic(wait, channel); diagnostic != nil {
 			return diagnostic
@@ -110,6 +127,15 @@ func operationWaitDiagnostic(w *ReviewOperationWait, channel string) *ReviewOper
 	}
 	if w.RetryNotBefore != "" {
 		return &ReviewOperationDiagnostic{"The provider reported a cooldown. This same operation automatically rechecks admission and allowance at or after retry_not_before; the deadline is not a reserved start time or review completion." + scope, "Keep this request for automatic retry. For an authorized intent change, see queued-only review_operation_control cancellation (CLI reviews operation-control); respect the known cooldown because its timer is not transferred. Pause/resume cannot edit head or out-of-order intent." + candidates}
+	}
+	return nil
+}
+
+func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperationDiagnostic {
+	// Queued reasons can outlive a resumed pause; only the current queued cause
+	// can establish a scheduling hold. Held operations retain their own reason.
+	if state == "held" {
+		return schedulingDiagnostic(reason)
 	}
 	return nil
 }
