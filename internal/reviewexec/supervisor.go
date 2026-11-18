@@ -217,7 +217,7 @@ AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.projec
 		}
 	}
 	if err := read(` AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')
-		ORDER BY CASE WHEN o.channel='cli' AND lower(p.repository)='benhook1013/firemud' THEN 0 ELSE 1 END,COALESCE(li.intent_created_at,o.created_at),o.id LIMIT 256`, args); err != nil {
+		ORDER BY COALESCE(li.intent_created_at,o.created_at),o.id LIMIT 256`, args); err != nil {
 		return nil, err
 	}
 	return ids, nil
@@ -258,11 +258,6 @@ func (e *Engine) pendingCandidate(ctx context.Context, id pendingCandidateID) (O
 		if waiting, err := e.cancelledHostedCooldownPending(ctx, tx, o, c, e.sampleExecutionTime()); err != nil {
 			return o, false, err
 		} else if waiting {
-			return Operation{}, false, nil
-		}
-		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
-			return o, false, err
-		} else if preferred {
 			return Operation{}, false, nil
 		}
 		earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision)

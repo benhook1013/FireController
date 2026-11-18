@@ -220,60 +220,6 @@ func TestSchedulingCLIControlsAndCurrentHead(t *testing.T) {
 	}
 }
 
-func TestSchedulingCLIFireMUDPriorityChecksSharedAccount(t *testing.T) {
-	for _, mode := range []string{"competing", "paused", "other-account"} {
-		t.Run(mode, func(t *testing.T) {
-			f := schedulingFixture(t)
-			f.configure(t, otherAttemptProject, "test-capability", 0, false)
-			low := f.enqueue(t, attemptProject, "lower", "cli", 2, 1)
-			high := f.enqueue(t, otherAttemptProject, "higher", "cli", 2, 1)
-			admissionSQL(t, f, `UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?`, otherAttemptProject)
-			if mode == "paused" {
-				one := int64(0)
-				yes := true
-				_, err := f.e.ConfigurePullScheduling(t.Context(), f.scope(t, otherAttemptProject, f.admin, true), "pause", 2, PullSchedulingRequest{ExpectedRevision: &one, Paused: &yes})
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if mode == "other-account" {
-				f.configure(t, otherAttemptProject, "other-account", 1, false)
-			}
-			err := f.store.Read(t.Context(), f.scope(t, attemptProject, f.writer, false), func(ctx context.Context, tx *sql.Tx) error {
-				o, err := readOperation(ctx, tx, attemptProject, low.ID)
-				if err != nil {
-					return err
-				}
-				c, _, err := readConfiguration(ctx, tx, attemptProject)
-				if err != nil {
-					return err
-				}
-				preferred, err := f.e.preferredCLIQueued(ctx, tx, o, c)
-				if err != nil {
-					return err
-				}
-				if preferred != (mode == "competing") {
-					t.Fatalf("priority=%v mode=%s", preferred, mode)
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if mode == "competing" {
-				a, err := f.e.StartAttempt(t.Context(), attemptProject, low.ID)
-				if err != nil || a.ID != "" {
-					t.Fatal("lower priority claimed", a, err)
-				}
-				if op := cliWaitRead(t, f, low.ID); op.State != "queued" {
-					t.Fatal(op)
-				}
-				_ = high
-			}
-		})
-	}
-}
-
 func TestSchedulingCLIPublicationAndAdjudicationRemainRequired(t *testing.T) {
 	f, a, _ := cliPublicationFixture(t, 1, "completed")
 	admissionSQL(t, f, `INSERT INTO workers VALUES(?,'selection-worker','Selector')`, attemptProject)
@@ -397,33 +343,6 @@ func TestSchedulingCLIActualParentPauseDoesNotBlockChild(t *testing.T) {
 	}
 }
 
-func TestSchedulingCLIFireMUDSelectionBeforeCompetingClaim(t *testing.T) {
-	f := schedulingFixture(t)
-	f.configure(t, otherAttemptProject, "test-capability", 0, false)
-	admissionSQL(t, f, `UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?`, otherAttemptProject)
-	schedulingCLIEnable(t, f, 0, true)
-	zero := int64(0)
-	yes, no := true, false
-	_, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, otherAttemptProject, f.admin, "write"), "preferred-auto", SchedulingRequest{ExpectedRevision: &zero, AutomaticHosted: &no, AutomaticCLI: &yes})
-	if err != nil {
-		t.Fatal(err)
-	}
-	schedulingCLIGenerate(t, f, true)
-	var project, id string
-	if err = f.store.DB().QueryRow(`SELECT project_id,selection_id FROM review_automatic_selections`).Scan(&project, &id); err != nil || project != otherAttemptProject {
-		t.Fatal("selection did not prefer FireMUD", project, id, err)
-	}
-	low := f.enqueue(t, attemptProject, "competing-during-source", "cli", 2, 1)
-	if a, err := f.e.StartAttempt(t.Context(), attemptProject, low.ID); err != nil || a.ID != "" {
-		t.Fatal("claim raced preferred pending selection", a, err)
-	}
-	// Once the preferred selection is no longer eligible it cannot reserve a turn.
-	admissionSQL(t, f, `UPDATE review_scheduling SET automatic_cli=0 WHERE project_id=?`, otherAttemptProject)
-	if a, err := f.e.StartAttempt(t.Context(), attemptProject, low.ID); err != nil || a.ID == "" {
-		t.Fatal("withdrawn preferred selection blocked account", a, err)
-	}
-}
-
 func TestSchedulingCLIEarlierFrontWhileLaterIntentWaits(t *testing.T) {
 	f := schedulingFixture(t)
 	later := f.enqueue(t, attemptProject, "later-explicit", "cli", 4, 1)
@@ -496,50 +415,6 @@ func TestSchedulingOtherChannelChangeKeepsCancelledIntent(t *testing.T) {
 				// Reasserting the current settings deliberately rearms supplied channels.
 				configure(5, true, true)
 				generate(t, f, true)
-			})
-		}
-	}
-}
-
-func TestSchedulingPriorityIsolatesOffendingCandidate(t *testing.T) {
-	for _, state := range []string{"queued-operation", "queued-selection"} {
-		for _, fault := range []string{"scheduling", "pause", "configuration", "selection", "sql"} {
-			t.Run(state+"/"+fault, func(t *testing.T) {
-				f := schedulingFixtureWithQueue(t, []int64{2})
-				f.configure(t, otherAttemptProject, "test-capability", 0, false)
-				low := f.enqueue(t, otherAttemptProject, "healthy-low", "cli", 2, 1)
-				schedulingCLIEnable(t, f, 0, true)
-				schedulingCLIGenerate(t, f, true)
-				if state == "queued-operation" {
-					selectionNext(t, f, &refreshTestReader{})
-				}
-				r := schedulingLatest(t, f)
-				admissionSQL(t, f, `UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?`, attemptProject)
-				switch fault {
-				case "scheduling":
-					admissionSQL(t, f, `UPDATE review_scheduling SET updated_at='malformed' WHERE project_id=?`, attemptProject)
-				case "pause":
-					admissionSQL(t, f, `INSERT INTO review_pull_scheduling VALUES(?,2,1,0,'invalid','actor',?)`, attemptProject, stamp())
-				case "configuration":
-					admissionSQL(t, f, `UPDATE review_execution_config SET body_json='not-json' WHERE project_id=?`, attemptProject)
-				case "selection":
-					admissionSQL(t, f, `UPDATE review_selections SET updated_at='malformed' WHERE id=?`, r.ID)
-				case "sql":
-					admissionSQL(t, f, `ALTER TABLE review_scheduling RENAME TO unavailable_scheduling`)
-				}
-				a, err := f.e.StartAttempt(t.Context(), otherAttemptProject, low.ID)
-				if fault == "sql" {
-					if err == nil || automaticProjectRefused(err) || a.ID != "" {
-						t.Fatal("priority swallowed SQL error", a, err)
-					}
-					return
-				}
-				if err != nil || a.ID == "" || a.OperationID != low.ID {
-					t.Fatal("other project's damage blocked healthy claim", a, err)
-				}
-				if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE project_id=?`, attemptProject) != 0 {
-					t.Fatal("damaged preferred candidate claimed")
-				}
 			})
 		}
 	}
