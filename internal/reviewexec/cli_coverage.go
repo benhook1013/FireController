@@ -174,6 +174,9 @@ func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidenc
 	}
 	ready := complete && state.Finalized
 	for _, finding := range state.Findings {
+		if !validOperationalDecision(finding) {
+			return false, adjudicationStorageError()
+		}
 		if finding.Disposition != "routed" && finding.RouteID != "" {
 			return false, adjudicationStorageError()
 		}
@@ -200,6 +203,9 @@ func coverageProof(ctx context.Context, tx EvidenceQuery, evidence ReviewEvidenc
 			if requireReceivingFix {
 				ready = ready && resolved
 			}
+			continue
+		}
+		if finding.OperationalProof != nil {
 			continue
 		}
 		if finding.FixSHA == "" {

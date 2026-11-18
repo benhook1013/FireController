@@ -228,7 +228,7 @@ func validateOperationAttention(ctx context.Context, tx *sql.Tx, project, id str
 		return nil
 	}
 	for _, finding := range state.Findings {
-		if finding.Disposition == "accepted" && finding.FixSHA == "" {
+		if finding.Disposition == "accepted" && finding.FixSHA == "" && finding.OperationalProof == nil {
 			return nil
 		}
 	}

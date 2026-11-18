@@ -70,6 +70,32 @@ func TestReviewFixCLIIdentifiesMalformedCommitBeforeConnection(t *testing.T) {
 	}
 }
 
+func TestReviewOperationalFixCLIExactRequest(t *testing.T) {
+	f := setupServiceFixture(t)
+	project := f.project(t, "operational-fix-cli")
+	worker := f.worker(t, project, "Builder")
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/instance" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"instance_id": f.store.InstanceID()})
+			return
+		}
+		calls.Add(1)
+		var request map[string]json.RawMessage
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/"+cliEvidenceID+"/operational-fixes") || r.Header.Get("X-FC-Worker") != worker || r.Header.Get("Idempotency-Key") != "operational-key" || json.NewDecoder(r.Body).Decode(&request) != nil || len(request) != 4 || string(request["expected_revision"]) != "1" || string(request["finding"]) != "0" || string(request["expected_digest"]) != `""` || string(request["proof_note"]) != `"PRIVATE_PROOF"` {
+			t.Error("operational request lost explicit guard or profile binding")
+		}
+		_ = json.NewEncoder(w).Encode(client.ReviewControlReceipt{ID: cliEvidenceID, State: "operational_fix_recorded", Revision: 2})
+	}))
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"builder": {project, worker}})
+	receipt := mutationSuccess(t, profiles, "builder", "reviews", "operational-fix", cliEvidenceID, "--expect-revision", "1", "--finding", "0", "--expect-digest=", "--proof", "PRIVATE_PROOF", "--key", "operational-key")
+	if len(receipt) != 3 || strings.Contains(encodeString(receipt), "PRIVATE_PROOF") || calls.Load() != 1 {
+		t.Fatal("unexpected receipt or retry")
+	}
+}
+
 func TestReviewBatchCLISendsOneExplicitRequestAndCompactReceipt(t *testing.T) {
 	f := setupServiceFixture(t)
 	project := f.project(t, "batch-cli")

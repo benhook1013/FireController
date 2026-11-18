@@ -56,7 +56,7 @@ func historyPhysicalFixture(t *testing.T) *apiFixture {
 		if version == 3 {
 			pull = 2
 		}
-		historyPhysicalExec(t, f, `INSERT INTO review_finding_versions VALUES(?,'run-one',?,?,0,'finding-one','Title',?,'medium','accepted','','','','','','','null')`, f.project, version, pull, fmt.Sprintf("Detail at version %d", version))
+		historyPhysicalExec(t, f, `INSERT INTO review_finding_versions VALUES(?,'run-one',?,?,0,'finding-one','Title',?,'medium','accepted','','','','','','','null','null')`, f.project, version, pull, fmt.Sprintf("Detail at version %d", version))
 	}
 	return f
 }
@@ -94,7 +94,7 @@ func TestHistoryPhysicalSchemaExactVersionsAndHistoricalMembership(t *testing.T)
 	f := historyPhysicalFixture(t)
 	historyPhysicalMemberships(t, f)
 	var schema string
-	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "12" {
+	if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&schema); err != nil || schema != "13" {
 		t.Fatal("physical declarations changed legacy schema version", schema, err)
 	}
 	var tables int

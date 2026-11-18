@@ -133,6 +133,7 @@ func testAuthenticChannelCountSchemaBackup(t *testing.T, version int) {
 // derived columns too, not merely lower their version metadata.
 func removeChannelRunCountsForLegacyFixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	removeOperationalProofForLegacyFixture(t, store)
 	var selected int
 	if err := store.DB().QueryRow(`SELECT count(*) FROM pragma_table_info('review_pull_versions') WHERE name='delivery_selected'`).Scan(&selected); err != nil {
 		t.Fatal(err)

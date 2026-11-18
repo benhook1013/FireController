@@ -97,6 +97,12 @@ func historyReadView(name string, spec historyRecordSpec, columns []string) stri
 // HistoryReadViewSQL returns independent canonical definitions for startup and
 // read-only backup inspection. These are read views, never writable adapters.
 func HistoryReadViewSQL() map[string]string {
+	result := HistoryReadViewSQLV12()
+	result["review_findings"] = strings.Replace(result["review_findings"], "f.route_json FROM", "f.route_json,f.operational_proof_json FROM", 1)
+	return result
+}
+
+func HistoryReadViewSQLV12() map[string]string {
 	result := HistoryReadViewSQLV10()
 	columns := append([]string{"project_id", "snapshot_id", "position", "number"}, historyPullRecord.body...)
 	result["review_pulls"] = historyReadView("review_pulls", historyPullRecord, columns)

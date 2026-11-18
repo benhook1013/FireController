@@ -151,7 +151,7 @@ func TestChannelRunCountsSchemaEightMigrationAndRestart(t *testing.T) {
 			if err := EnsureSchema(t.Context(), f.store); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
 				t.Fatal("successful retry did not reach current schema", version, err)
 			}
 			var p PullResponse
@@ -313,6 +313,7 @@ func TestChannelRunCountsLegacyElevenValidationAndAtomicTwelveUpgrade(t *testing
 	retained := nativeSnapshotBytes(t, f, snapshot.ID)
 	// Twelve has no DDL changes. Reproduce an eleven image with its original
 	// all-outcome derived counters, without editing any retained source record.
+	removeOperationalProofForLegacyFixture(t, f.store)
 	if _, err := f.store.DB().Exec("UPDATE metadata SET value='11' WHERE key='schema:reviews'"); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestChannelRunCountsLegacyElevenValidationAndAtomicTwelveUpgrade(t *testing
 		t.Fatal(err)
 	}
 	var version string
-	if err := f.store.DB().QueryRow("SELECT value FROM metadata WHERE key='schema:reviews'").Scan(&version); err != nil || version != "12" {
+	if err := f.store.DB().QueryRow("SELECT value FROM metadata WHERE key='schema:reviews'").Scan(&version); err != nil || version != "13" {
 		t.Fatal("semantic version not advanced", version, err)
 	}
 	got := assertCurrentSummaryReduction(t, f, 1)

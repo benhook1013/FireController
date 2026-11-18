@@ -25,10 +25,17 @@ Each write requires project write permission, an explicit `Idempotency-Key`, and
 | Relative POST path | Required JSON fields | Receipt state |
 | --- | --- | --- |
 | `/decisions` | `expected_revision`, `finding`, `disposition`, `reason` | `adjudicated` |
+| `/operational-fixes` | `expected_revision`, `finding`, `expected_digest`, `proof_note` | `operational_fix_recorded` |
 | `/fixes` | `expected_revision`, `finding`, `expected_sha`, `fix_sha`, `proof_note` | `fix_recorded` |
 | `/finalization` | `expected_revision` | `finalized` |
 
 Fields are explicit and non-null, including finding zero and an empty `expected_sha` for the first fix reference. Unknown fields and query parameters are rejected. Disposition is `accepted` or `rejected`; [finding routes](review-routes.md) separately create a routed disposition with receiving authority. Replacing an existing routed decision also requires its `expected_route_revision` guard. Reasons and proof notes are bounded to 2048 UTF-8 bytes and follow the ledger's safe-text rules. Commit references are lowercase 40-character SHAs. For a first fix, `expected_sha` is `""` and `fix_sha` names the new fix commit. For a correction, `expected_sha` equals the finding's currently recorded `fix_sha`, while `fix_sha` names its replacement. `expected_sha` is not the current PR head or original reviewed SHA. It guards the current effective fix reference; it does not cause a provider lookup or independently verify that a commit proves the finding fixed.
+
+Operational proof is for verified settings-only or other non-code remediation, never an alternative to supplying the real commit for a code change. The finding stays accepted and the server records `operational_proof` with a SHA-256 digest of the proof note, authenticated actor, and recording time. The digest is a comparison guard, not a commit identity or an independent verification. Use explicit empty `expected_digest` for the first proof, or the retained digest to correct it. It cannot coexist with commit fix fields. Do not include credentials or secret values. Existing routes and code-fix batches retain their commit proof contracts.
+
+Use `fc reviews operational-fix EVIDENCE_ID --key KEY --expect-revision N --finding INDEX --expect-digest= --proof 'Verified operational remediation'` or MCP `review_finding_operational_fix`.
+
+Clients that strictly decode finding responses must be upgraded before recording the first operational proof: older CLI/MCP and browser code cannot faithfully display a fixed finding without a commit. Deploy matching service and browser assets, refresh bound clients, and verify both adjudication and run-detail reads before writing proof. Existing findings without operational proof retain their original wire shape.
 
 Known adjudication guard refusals retain HTTP 409 / `review_conflict` and identify `reason`, `field` and `current_revision`. A `fix_sha_conflict` or `finding_not_accepted` additionally identifies the zero-based `finding`, its `current_fix_sha` and `current_disposition`; `adjudication_revision_conflict` identifies the revision guard. These facts are selected from the authorized current record and exclude proof text and finding narratives. Clients explain the matching guard without suggesting credential changes. A failed atomic batch changes no item; read current state and use a new key for a corrected request. Unknown mutation outcomes still require their exact original key/body.
 

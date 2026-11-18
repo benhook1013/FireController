@@ -136,6 +136,8 @@ func TestTransferNativeRetainedExactBodiesSurviveOmission(t *testing.T) {
 			changed := transferNativeCloneRun(t, run)
 			if field.Name == "Route" {
 				changed.Findings[0].Route.ProofNote += " imported"
+			} else if field.Name == "OperationalProof" {
+				changed.Findings[0].OperationalProof = &OperationalProof{}
 			} else {
 				transferNativeChangeScalar(t, reflect.ValueOf(&changed.Findings[0]).Elem().Field(i))
 			}

@@ -347,6 +347,10 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		for _, flag := range []string{"--finding", "--disposition", "--reason"} {
 			allowed[flag] = true
 		}
+	case "operational-fix":
+		for _, flag := range []string{"--finding", "--expect-digest", "--proof"} {
+			allowed[flag] = true
+		}
 	case "fix":
 		for _, flag := range []string{"--finding", "--expect-sha", "--fix-sha", "--proof"} {
 			allowed[flag] = true
@@ -425,7 +429,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	}
 	var finding int64
-	if operation == "decide" || operation == "fix" || operation == "route-create" {
+	if operation == "decide" || operation == "fix" || operation == "operational-fix" || operation == "route-create" {
 		finding, err = strconv.ParseInt(values["--finding"], 10, 64)
 		if err != nil || finding < 0 || finding >= 100 || strconv.FormatInt(finding, 10) != values["--finding"] {
 			return nil, false
@@ -436,6 +440,11 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	case "decide":
 		call.reviewDecision = client.ReviewDecisionRequest{ExpectedRouteRevision: routeRevision, ExpectedRevision: revision, Finding: finding, Disposition: values["--disposition"], Reason: values["--reason"]}
 		if client.ValidateReviewDecisionRequest(call.reviewDecision) != nil {
+			return nil, false
+		}
+	case "operational-fix":
+		call.reviewOperationalFix = client.ReviewOperationalFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedDigest: values["--expect-digest"], ProofNote: values["--proof"]}
+		if client.ValidateReviewOperationalFixRequest(call.reviewOperationalFix) != nil {
 			return nil, false
 		}
 	case "fix":

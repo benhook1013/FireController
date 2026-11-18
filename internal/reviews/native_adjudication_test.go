@@ -3,7 +3,9 @@ package reviews
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -438,5 +440,43 @@ func TestNativeAdjudicationGrowthCallerFailureAndExactMutationReplay(t *testing.
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestNativeOperationalProofProjectionAndRetention(t *testing.T) {
+	f, input, _ := nativeAdjudicationFixture(t)
+	decideNativeFinding(&input.Findings[0], "accepted")
+	decideNativeFinding(&input.Findings[1], "rejected")
+	note := "Verified external settings change without a code commit."
+	hash := sha256.Sum256([]byte(note))
+	p := &OperationalProof{Digest: hex.EncodeToString(hash[:]), Note: note, ActorID: "authenticated-operator", RecordedAt: "2026-01-01T00:05:00Z"}
+	input.Findings[0].OperationalProof = p
+	first, changed, err := applyNativeAdjudication(f, input)
+	if err != nil || !changed {
+		t.Fatal("operational proof was not recorded", err)
+	}
+	var runs RunsResponse
+	nativeRead(t, f, "/pulls/1/runs", &runs)
+	if len(runs.Items) != 2 || runs.Items[0].Source != nativeSource || runs.Items[0].Fixed != 1 {
+		t.Fatal("operational proof was not counted as fixed", runs)
+	}
+	var detail RunDetailResponse
+	nativeRead(t, f, "/runs/"+runs.Items[0].ID+"?snapshot="+first.ID, &detail)
+	if !reflect.DeepEqual(detail.Findings[0].OperationalProof, p) || detail.Findings[0].FixSHA != "" {
+		t.Fatal("native projection lost proof or invented SHA", detail.Findings[0])
+	}
+	input.Findings[0].OperationalProof = nil
+	if _, changed, err := applyNativeAdjudication(f, input); err == nil || changed {
+		t.Fatal("existing operational proof was removed")
+	}
+	input.Findings[0].OperationalProof = p
+	input.Findings[0].FixSHA = strings.Repeat("f", 40)
+	if _, changed, err := applyNativeAdjudication(f, input); err == nil || changed {
+		t.Fatal("combined code and operational proof accepted")
+	}
+	input.Findings[0].FixSHA = ""
+	p.Digest = strings.Repeat("0", 64)
+	if _, changed, err := applyNativeAdjudication(f, input); err == nil || changed {
+		t.Fatal("invalid operational proof digest accepted")
 	}
 }

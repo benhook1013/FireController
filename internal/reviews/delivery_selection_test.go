@@ -9,8 +9,18 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
+func removeOperationalProofForLegacyFixture(t *testing.T, store *core.Store) {
+	t.Helper()
+	for _, statement := range []string{`DROP VIEW review_findings`, `ALTER TABLE review_finding_versions DROP COLUMN operational_proof_json`, HistoryReadViewSQLV12()["review_findings"]} {
+		if _, err := store.DB().Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func removeDeliverySelectionForLegacyFixture(t *testing.T, store *core.Store) {
 	t.Helper()
+	removeOperationalProofForLegacyFixture(t, store)
 	for _, statement := range []string{`DROP VIEW review_pulls`, `ALTER TABLE review_pull_versions DROP COLUMN delivery_selected`, HistoryReadViewSQLV10()["review_pulls"]} {
 		if _, err := store.DB().Exec(statement); err != nil {
 			t.Fatal(err)

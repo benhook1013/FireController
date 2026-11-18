@@ -28,6 +28,7 @@ type NativeAdjudication struct {
 type NativeCounts struct{ Found, Accepted, Routed int64 }
 
 type NativeFindingUpdate struct {
+	OperationalProof                                               *OperationalProof `json:"operational_proof,omitempty"`
 	Route                                                          *FindingRoute
 	SourceFindingID, Disposition, DecisionReason, Actor, DecidedAt string
 	FixSHA, ProofNote, ResolvedAt                                  string
@@ -72,7 +73,12 @@ func validateNativeAdjudication(input NativeAdjudication) (map[string]NativeFind
 		} else if strings.TrimSpace(finding.DecisionReason) == "" || strings.TrimSpace(finding.Actor) == "" || !nativeAdjudicationTime(finding.DecidedAt) {
 			return nil, counts, 0, validationError("Native decisions require a reason, actor and timestamp.")
 		}
-		if finding.FixSHA == "" {
+		if finding.OperationalProof != nil {
+			if finding.Disposition != "accepted" || finding.FixSHA != "" || finding.ProofNote != "" || finding.ResolvedAt != "" || !ValidOperationalProof(finding.OperationalProof) {
+				return nil, counts, 0, validationError("Native operational proof requires an accepted finding and valid exclusive operational evidence.")
+			}
+			fixed++
+		} else if finding.FixSHA == "" {
 			if finding.ProofNote != "" || finding.ResolvedAt != "" {
 				return nil, counts, 0, validationError("Native proof requires its exact fix SHA.")
 			}
@@ -122,7 +128,7 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 		return Receipt{}, false, err
 	}
 	current := Receipt{ID: previous, Revision: revision, Outcome: "observed"}
-	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND run_id=? ORDER BY position`, scope.ProjectID, previous, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json,operational_proof_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND run_id=? ORDER BY position`, scope.ProjectID, previous, runID)
 	if err != nil {
 		return Receipt{}, false, err
 	}
@@ -130,8 +136,12 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	changed := finalized != input.Finalized || oldFixed != fixed
 	for rows.Next() {
 		var before NativeFindingUpdate
-		var routeJSON string
-		if err = rows.Scan(&before.SourceFindingID, &before.Disposition, &before.DecisionReason, &before.Actor, &before.DecidedAt, &before.FixSHA, &before.ProofNote, &before.ResolvedAt, &routeJSON); err != nil {
+		var routeJSON, operationalProofJSON string
+		if err = rows.Scan(&before.SourceFindingID, &before.Disposition, &before.DecisionReason, &before.Actor, &before.DecidedAt, &before.FixSHA, &before.ProofNote, &before.ResolvedAt, &routeJSON, &operationalProofJSON); err != nil {
+			break
+		}
+		before.OperationalProof, err = decodeOperationalProof(operationalProofJSON, before.Disposition, before.FixSHA, before.ProofNote, before.ResolvedAt)
+		if err != nil {
 			break
 		}
 		before.Route, err = decodeFindingRoute(routeJSON, number)
@@ -139,7 +149,7 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 			break
 		}
 		next, exists := updates[before.SourceFindingID]
-		if !exists || before.FixSHA != "" && (next.Disposition != "accepted" || next.FixSHA == "") || len(ordered) >= maxRunFindings {
+		if !exists || before.FixSHA != "" && (next.Disposition != "accepted" || next.FixSHA == "") || before.OperationalProof != nil && (next.Disposition != "accepted" || next.OperationalProof == nil) || len(ordered) >= maxRunFindings {
 			err = nativeAdjudicationConflict()
 			break
 		}
@@ -208,6 +218,7 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 		finding := &run.Findings[i]
 		update := updates[finding.SourceFindingID]
 		finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt = update.Disposition, update.DecisionReason, update.Actor, update.DecidedAt
+		finding.OperationalProof = update.OperationalProof
 		finding.FixSHA, finding.ProofNote, finding.ResolvedAt, finding.Route = update.FixSHA, update.ProofNote, update.ResolvedAt, update.Route
 	}
 	var order int

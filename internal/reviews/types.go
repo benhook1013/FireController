@@ -90,18 +90,19 @@ type FindingRoute struct {
 }
 
 type Finding struct {
-	Route           *FindingRoute `json:"route,omitempty"`
-	SourceFindingID string        `json:"source_finding_id"`
-	Title           string        `json:"title"`
-	Detail          string        `json:"detail"`
-	Severity        string        `json:"severity"`
-	Disposition     string        `json:"disposition"`
-	DecisionReason  string        `json:"decision_reason"`
-	Actor           string        `json:"actor"`
-	DecidedAt       string        `json:"decided_at"`
-	FixSHA          string        `json:"fix_sha"`
-	ProofNote       string        `json:"proof_note"`
-	ResolvedAt      string        `json:"resolved_at"`
+	OperationalProof *OperationalProof `json:"operational_proof,omitempty"`
+	Route            *FindingRoute     `json:"route,omitempty"`
+	SourceFindingID  string            `json:"source_finding_id"`
+	Title            string            `json:"title"`
+	Detail           string            `json:"detail"`
+	Severity         string            `json:"severity"`
+	Disposition      string            `json:"disposition"`
+	DecisionReason   string            `json:"decision_reason"`
+	Actor            string            `json:"actor"`
+	DecidedAt        string            `json:"decided_at"`
+	FixSHA           string            `json:"fix_sha"`
+	ProofNote        string            `json:"proof_note"`
+	ResolvedAt       string            `json:"resolved_at"`
 }
 
 type Receipt struct {

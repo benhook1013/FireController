@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -35,8 +36,8 @@ func historyInventoryFixture(t *testing.T) (*core.Store, string) {
 		t.Fatal(err)
 	}
 	var version string
-	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "12" {
-		t.Fatal("owning startup must install reviews v12", version, err)
+	if err = store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
+		t.Fatal("owning startup must install reviews v13", version, err)
 	}
 	return store, dir
 }
@@ -45,7 +46,7 @@ func TestHistoryInventoryV6CanonicalEmptySchemaIsReadOnly(t *testing.T) {
 	store, dir := historyInventoryFixture(t)
 	before := backupRows(t, store.DB())
 	versions, err := validateSchema(t.Context(), store.DB(), false)
-	if err != nil || versions["reviews"] != 12 {
+	if err != nil || versions["reviews"] != 13 {
 		t.Fatal("canonical v6 refused", versions, err)
 	}
 	// The five/six-column groups are checked independently of exact DDL too.
@@ -97,7 +98,7 @@ func TestHistoryInventoryV6RehashedSchemaViewsAndIndexesRefused(t *testing.T) {
 		{"wrong-run-order-index", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order ASC) WHERE outcome='completed' AND finalized=1`},
 		{"wrong-run-order-predicate", `DROP INDEX review_current_run_order_eligible; CREATE INDEX review_current_run_order_eligible ON review_current_run_order(project_id,pull_number,channel,run_order DESC) WHERE outcome='completed'`},
 		{"wrong-version", `UPDATE metadata SET value='3' WHERE key='schema:reviews'`},
-		{"future-version", `UPDATE metadata SET value='13' WHERE key='schema:reviews'`},
+		{"future-version", `UPDATE metadata SET value='14' WHERE key='schema:reviews'`},
 	}
 	for _, test := range []struct{ name, table, old, new string }{
 		{"missing-order-check", "review_current_pulls", "CHECK (position >= 0)", "CHECK (position >= -1)"},
@@ -363,10 +364,12 @@ func TestHistoryInventoryV6MixedHistoryReadsAndAdjudicationSurviveRestore(t *tes
 	oldNativeRoute := "/runs/" + nativeID + "?snapshot=" + beforeDecision.ID
 	oldNative := read(f.handler, f.store, f.token, oldNativeRoute, 200)
 	var afterDecision reviews.Receipt
+	note := "Verified hosted configuration update, no code commit."
+	operational := &reviews.OperationalProof{Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(note))), Note: note, ActorID: f.principal, RecordedAt: "2026-01-01T00:06:00Z"}
 	err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		var changed bool
 		var err error
-		afterDecision, changed, err = reviews.UpdateNativeAdjudication(ctx, tx, scope, reviews.NativeAdjudication{SourceRunID: native.SourceRunID, Finalized: true, FrozenCounts: &reviews.NativeCounts{Found: 1, Accepted: 1}, Findings: []reviews.NativeFindingUpdate{{SourceFindingID: "shared-finding", Disposition: "accepted", DecisionReason: "Native final decision", Actor: "Native adjudicator", DecidedAt: "2026-01-01T00:05:00Z", FixSHA: strings.Repeat("e", 40), ProofNote: "Native proof remains exact", ResolvedAt: "2026-01-01T00:06:00Z"}}})
+		afterDecision, changed, err = reviews.UpdateNativeAdjudication(ctx, tx, scope, reviews.NativeAdjudication{SourceRunID: native.SourceRunID, Finalized: true, FrozenCounts: &reviews.NativeCounts{Found: 1, Accepted: 1}, Findings: []reviews.NativeFindingUpdate{{SourceFindingID: "shared-finding", Disposition: "accepted", DecisionReason: "Native final decision", Actor: "Native adjudicator", DecidedAt: "2026-01-01T00:05:00Z", OperationalProof: operational}}})
 		if err == nil && !changed {
 			t.Fatal("native adjudication did not append a version")
 		}
@@ -388,7 +391,7 @@ func TestHistoryInventoryV6MixedHistoryReadsAndAdjudicationSurviveRestore(t *tes
 	}
 	var latest reviews.RunDetailResponse
 	decode(responses["/runs/"+nativeID], &latest)
-	if !latest.Run.Finalized || latest.Run.Fixed != 1 || latest.Findings[0].Detail != "NATIVE_IMMUTABLE_TEXT" || latest.Findings[0].ProofNote != "Native proof remains exact" {
+	if !latest.Run.Finalized || latest.Run.Fixed != 1 || latest.Findings[0].Detail != "NATIVE_IMMUTABLE_TEXT" || latest.Findings[0].FixSHA != "" || !reflect.DeepEqual(latest.Findings[0].OperationalProof, operational) {
 		t.Fatal("adjudicated proof missing")
 	}
 	var indexedRuns, eligibleRuns int
@@ -546,6 +549,7 @@ func TestHistoryInventoryV4ThroughV9RemainSupportedWithoutFutureMetadata(t *test
 	for _, version := range []int{4, 5, 6, 7, 8, 9} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f := historyInventoryRunOrderFixture(t)
+			removeOperationalProofForLegacyFixture(t, f.store)
 			if version < 9 {
 				removeChannelRunCountsForLegacyFixture(t, f.store)
 			} else {
@@ -667,7 +671,7 @@ func TestHistoryInventoryV6RehashedCurrentRunOrderDamageRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			versions, err := validateSchema(t.Context(), db, false)
-			if err != nil || versions["reviews"] != 12 {
+			if err != nil || versions["reviews"] != 13 {
 				t.Fatal("logical fixture changed canonical physical layout", versions, err)
 			}
 			fk, err := db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)

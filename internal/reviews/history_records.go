@@ -10,10 +10,10 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-var historyFindingColumns = []string{"position", "source_finding_id", "title", "detail", "severity", "disposition", "decision_reason", "actor", "decided_at", "fix_sha", "proof_note", "resolved_at", "route_json"}
+var historyFindingColumns = []string{"position", "source_finding_id", "title", "detail", "severity", "disposition", "decision_reason", "actor", "decided_at", "fix_sha", "proof_note", "resolved_at", "route_json", "operational_proof_json"}
 
 func historyFindingValues(position int, finding Finding) []any {
-	return []any{int64(position), finding.SourceFindingID, finding.Title, finding.Detail, finding.Severity, finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route)}
+	return []any{int64(position), finding.SourceFindingID, finding.Title, finding.Detail, finding.Severity, finding.Disposition, finding.DecisionReason, finding.Actor, finding.DecidedAt, finding.FixSHA, finding.ProofNote, finding.ResolvedAt, mustJSON(finding.Route), mustJSON(finding.OperationalProof)}
 }
 
 // A run and its bounded detail share one immutable version. Comparing detail

@@ -38,7 +38,7 @@ func RecoverNativeCLIProjection(ctx context.Context, tx *sql.Tx, scope core.Scop
 		return conflict()
 	}
 	for _, f := range after.Findings {
-		if f.Disposition != "unadjudicated" || f.DecisionReason != "" || f.Actor != "" || f.DecidedAt != "" || f.FixSHA != "" || f.ProofNote != "" || f.ResolvedAt != "" || f.Route != nil {
+		if f.Disposition != "unadjudicated" || f.DecisionReason != "" || f.Actor != "" || f.DecidedAt != "" || f.FixSHA != "" || f.ProofNote != "" || f.ResolvedAt != "" || f.Route != nil || f.OperationalProof != nil {
 			return conflict()
 		}
 	}

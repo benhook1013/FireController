@@ -69,6 +69,15 @@ describe('compact review finding', () => {
     expect(html).toContain('synthetic-route');
   });
 
+  it('shows operational verification without a commit link', () => {
+    const html = renderFinding({ ...finding, fix_sha: '', proof_note: '', resolved_at: '', operational_proof: { digest: 'b'.repeat(64), note: 'Verified <setting> is absent.', actor_id: 'principal_writer', recorded_at: '2026-10-24T03:00:00Z' } });
+    expect(html).toContain('Operational verification');
+    expect(html).toContain('Verified &lt;setting&gt; is absent.');
+    expect(html).toContain('principal_writer');
+    expect(html).not.toContain('/commit/');
+    expect(html).not.toContain('No fix commit recorded');
+  });
+
   it('never activates provider HTML or fetches images, including in the original-source disclosure', () => {
     const value = { ...finding, title: '<script>title</script>', detail: '<picture><source srcset="https://example.invalid/badge"><img src="https://example.invalid/x"></picture>\n\nRationale with `<img src="example">`.\n\n<script>alert(1)</script>\n\n![alt](https://example.invalid/other)', decision_reason: '[Unsafe](javascript:alert%281%29) <img src="https://example.invalid/decision">' };
     const html = renderFinding(value);

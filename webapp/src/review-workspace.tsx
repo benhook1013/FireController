@@ -121,7 +121,7 @@ export function findingDisplayFingerprint(finding: ReviewFinding): string {
   return JSON.stringify([finding.title, finding.detail, finding.severity, finding.disposition,
     finding.decision_reason, finding.actor, finding.decided_at,
     route ? [route.target_pull_number, route.disposition, route.state, route.reason, route.actor, route.decided_at] : null,
-    route?.fix_sha ?? finding.fix_sha, route?.proof_note ?? finding.proof_note, route?.fixed_at ?? finding.resolved_at]);
+    route?.fix_sha ?? finding.fix_sha, route?.proof_note ?? finding.proof_note, route?.fixed_at ?? finding.resolved_at, finding.operational_proof]);
 }
 function partialCLIResult(run: ReviewRunSummary): boolean {
   return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && run.found > 0;
