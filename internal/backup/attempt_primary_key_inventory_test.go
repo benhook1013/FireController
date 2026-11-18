@@ -51,6 +51,10 @@ func TestAttemptPrimaryKeyRejectsRehashedIdentitySubstitution(t *testing.T) {
 	if err := f.store.DB().QueryRow("SELECT sql FROM sqlite_schema WHERE name='review_execution_attempts'").Scan(&canonical); err != nil {
 		t.Fatal(err)
 	}
+	rebuilt := restoreModifiedBundle(t, bundle, "DROP TABLE review_execution_attempts; "+canonical+attached)
+	if _, err := Inspect(t.Context(), rebuilt); err != nil {
+		t.Fatal("rebuilt canonical baseline", err)
+	}
 	for _, mode := range []string{"integer-with-operation-unique", "blob-primary-key", "nocase-primary-key"} {
 		t.Run(mode, func(t *testing.T) {
 			altered := canonical
@@ -69,13 +73,11 @@ func TestAttemptPrimaryKeyRejectsRehashedIdentitySubstitution(t *testing.T) {
 			damaged := restoreModifiedBundle(t, bundle, "DROP TABLE review_execution_attempts; "+altered+attached)
 			before := restoreTree(t, damaged)
 
-			if _, err := Inspect(t.Context(), damaged); err == nil {
-				t.Error("Inspect accepted substituted attempt identity")
-			}
+			_, err := Inspect(t.Context(), damaged)
+			backupCode(t, err, "backup_invalid")
 			destination := filepath.Join(t.TempDir(), "inactive")
-			if _, err := Restore(t.Context(), damaged, destination); err == nil {
-				t.Error("Restore accepted substituted attempt identity")
-			}
+			_, err = Restore(t.Context(), damaged, destination)
+			backupCode(t, err, "backup_invalid")
 			if _, err := os.Stat(destination); !os.IsNotExist(err) {
 				t.Fatal("rejected restore created destination", err)
 			}

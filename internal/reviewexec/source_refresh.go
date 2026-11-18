@@ -302,11 +302,12 @@ func sameSourceConfiguration(a, b Configuration) bool {
 }
 func sourceConfiguration(ctx context.Context, tx *sql.Tx, project string, revision int64) (Configuration, error) {
 	var c Configuration
-	var body string
-	if err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=?`, project, revision).Scan(&body); err != nil {
+	var rawBody any
+	if err := tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=?`, project, revision).Scan(&rawBody); err != nil {
 		return c, err
 	}
-	if len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+	body, ok := rawBody.(string)
+	if !ok || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
 		return c, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 	}
 	return c, nil

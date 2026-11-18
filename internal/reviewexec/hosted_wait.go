@@ -104,6 +104,9 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 		if _, ok := hostedObservationTime(result.RetryNotBefore); !ok {
 			return nil, waitUnavailable()
 		}
+		if err := validateFirstCooldown(ctx, q, o, baseline.String); err != nil {
+			return nil, err
+		}
 		a, err := readAttempt(ctx, q, o.ProjectID, baseline.String)
 		if err != nil {
 			return nil, waitDependencyError(err)
@@ -362,6 +365,9 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		}
 		if o.State != "queued" || o.AttemptID != "" {
 			return nil, core.Fail("review_operation_started", "Only an undispatched queued review can be paused, resumed or cancelled; provider work is unchanged.", 409)
+		}
+		if err := rejectMissingRetryWait(ctx, tx, o); err != nil {
+			return nil, err
 		}
 		paused := input.Action == "pause"
 		state := "queued"
