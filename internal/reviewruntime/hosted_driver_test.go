@@ -259,7 +259,7 @@ func TestHostedDriverFinalGuardsPreventReviewPOST(t *testing.T) {
 				p.BaseSHA = strings.Repeat("9", 40)
 				f.provider.pulls[2] = p
 			case "configuration":
-				f.configure(t, "independent", []int64{2, 4})
+				f.configure(t, "stacked", []int64{2, 4})
 			case "policy":
 				one := int64(1)
 				_, err := f.engine.ConfigurePolicy(t.Context(), f.scope(t, f.admin, true), "pause-hosted", reviewexec.PolicyConfiguration{ExpectedRevision: &one, RequiredChannels: []string{"hosted"}, PausedChannels: []string{"hosted"}})
@@ -574,5 +574,28 @@ func TestHostedDriverInvalidPostReceiptNeverRecordsTrigger(t *testing.T) {
 				t.Fatal("invalid returned receipt gained trigger identity", mode, result, err, callbacks)
 			}
 		})
+	}
+}
+
+func TestHostedDriverFinalGuardPreservesHarmlessQueueSuffixChange(t *testing.T) {
+	f := newHostedDriverFixture(t)
+	op, a := f.prepareHosted(t)
+	f.configure(t, "independent", []int64{2, 4})
+	result, err := f.hosted.Dispatch(t.Context(), op, a, f.callback(t, &a))
+	if err != nil || result.State != "completed" || f.provider.reviews != 1 || f.provider.queries != 1 {
+		t.Fatal("harmless queue suffix edit changed original dispatch", result, err, f.provider.reviews, f.provider.queries)
+	}
+}
+
+func TestFoundationRetryComparisonRetainsRepositoryID(t *testing.T) {
+	baseline := reviewexec.Anchor{RepositoryID: 901, Repository: "owner/repo"}
+	current := baseline
+	current.Repository = "renamed/repo"
+	if !sameHostedRetryComparison(baseline, current) {
+		t.Fatal("stable repository rename rejected")
+	}
+	current.RepositoryID++
+	if sameHostedRetryComparison(baseline, current) {
+		t.Fatal("different repository identity accepted")
 	}
 }

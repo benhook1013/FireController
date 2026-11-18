@@ -284,3 +284,34 @@ func TestManagedRetentionVerifiesAllKeepersBeforePruning(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedRetentionRemovesCLIExhaustionBundle(t *testing.T) {
+	f, m := newManagedFixture(t, 1)
+	artifact, _ := backupCLIExhaustionArtifact(t, f)
+	if reports := runManaged(t, m, 1); len(reports) != 0 {
+		t.Fatal(reports)
+	}
+	first, err := ReadStatus(t.Context(), f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(first.LastSuccess.Path, artifact)); err != nil {
+		t.Fatal("missing retained exhaustion artifact", err)
+	}
+	if reports := runManaged(t, m, 1); len(reports) != 0 {
+		t.Fatal("retention failed", reports)
+	}
+	if _, err := os.Lstat(first.LastSuccess.Path); !os.IsNotExist(err) {
+		t.Fatal("old bundle remains", err)
+	}
+	latest, err := ReadStatus(t.Context(), f.dir)
+	if err != nil || latest.LastSuccess.ID == first.LastSuccess.ID {
+		t.Fatal("new bundle missing", latest, err)
+	}
+	if _, err := Inspect(t.Context(), latest.LastSuccess.Path); err != nil {
+		t.Fatal("new bundle invalid", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, artifact)); err != nil {
+		t.Fatal("live exhaustion source removed", err)
+	}
+}

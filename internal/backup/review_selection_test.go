@@ -246,7 +246,7 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 	before := backupRows(t, db)
 	schema := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
 	metadata := restoreRows(t, db, `SELECT key,value FROM metadata ORDER BY key`)
-	for domain, version := range map[string]string{"reviews": "11", "review_execution": "6", "review_policy": "1", "review_rounds": "5"} {
+	for domain, version := range map[string]string{"reviews": "11", "review_execution": "10", "review_policy": "1", "review_rounds": "5"} {
 		var got string
 		if err := db.QueryRow(`SELECT value FROM metadata WHERE key=?`, "schema:"+domain).Scan(&got); err != nil || got != version {
 			t.Fatal("parent domain changed", domain, got, err)

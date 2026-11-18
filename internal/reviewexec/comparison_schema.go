@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -62,8 +63,60 @@ func ComparisonSchemaSQL() []string {
 	return statements
 }
 
+// Rebuilding the attempts table in execution migration nine drops its three
+// dirty-proof triggers. A versioned repair also covers already-upgraded stores;
+// the migration backfill re-derives proofs that may have missed invalidation.
+func comparisonAttemptTriggerRepairSQL() []string {
+	var statements []string
+	const prefix = "CREATE TRIGGER review_comparison_dirty_review_execution_attempts_"
+	for _, statement := range ComparisonSchemaSQL() {
+		if strings.HasPrefix(statement, prefix) {
+			name := strings.Fields(statement)[2]
+			statements = append(statements, "DROP TRIGGER IF EXISTS "+name, statement)
+		}
+	}
+	return statements
+}
+
+func comparisonSchemaMigrations() [][]string {
+	return [][]string{ComparisonSchemaSQL(), comparisonAttemptTriggerRepairSQL()}
+}
+
+// Execution migrations can rebuild a table owned by comparison triggers. Refuse
+// unknown or damaged comparison authority before touching that shared schema.
+func retainedComparisonSchema(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (bool, error) {
+	// One statement gives both schema facts the same SQLite read snapshot,
+	// including when another startup commits the domain concurrently.
+	var marker sql.NullString
+	var installed bool
+	err := q.QueryRowContext(ctx, `SELECT (SELECT value FROM metadata WHERE key='schema:review_comparison'), EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_comparison_proofs')`).Scan(&marker, &installed)
+	if err != nil {
+		return false, core.NormalizeStorageError(err)
+	}
+	if !marker.Valid {
+		if installed {
+			return false, core.Fail("schema_invalid", "Retained comparison proof table is missing schema metadata.", 500)
+		}
+		return false, nil
+	}
+	raw := marker.String
+	version, err := strconv.Atoi(raw)
+	if err != nil || version < 1 || strconv.Itoa(version) != raw {
+		return false, core.Fail("schema_invalid", "Domain schema version metadata is invalid.", 500)
+	}
+	if version > len(comparisonSchemaMigrations()) {
+		return false, core.Fail("schema_unsupported", "A domain schema is newer than this service; use a compatible binary.", 500)
+	}
+	if !installed {
+		return false, core.Fail("schema_invalid", "Retained comparison schema is missing its proof table.", 500)
+	}
+	return true, nil
+}
+
 func ensureComparisonSchema(ctx context.Context, store *core.Store) error {
-	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", [][]string{ComparisonSchemaSQL()}, backfillComparisonProofs); err != nil {
+	if err := store.EnsureSchemaWithBackfill(ctx, "review_comparison", comparisonSchemaMigrations(), backfillComparisonProofs); err != nil {
 		return err
 	}
 	return nil

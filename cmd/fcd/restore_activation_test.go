@@ -181,11 +181,11 @@ func newActivationCommandFixture(t *testing.T) activationCommandFixture {
 	if _, err = e.EnqueueSourceRefresh(t.Context(), scope, "activation-source", reviewexec.SourceRefreshRequest{ExpectedConfigurationRevision: 1, PullNumber: 5, HeadSHA: strings.Repeat("a", 40)}); err != nil {
 		t.Fatal(err)
 	}
-	_ = enqueue(1, "cli")
 	preparing := enqueue(2, "cli")
 	if _, err = e.StartAttempt(t.Context(), project, preparing.ID); err != nil {
 		t.Fatal(err)
 	}
+	_ = enqueue(1, "cli")
 	// A second retained account permits a separate uncertain action while the
 	// original account still owns its preparing reservation.
 	if _, err = e.Configure(t.Context(), scope, "activation-config-next", reviewexec.Configuration{ExpectedRevision: &one, CapabilityID: "activation-cap-next", Mode: "independent", Queue: []int64{1, 2, 3, 4, 5}, Channels: []string{"cli", "hosted"}}); err != nil {

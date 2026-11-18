@@ -37,7 +37,7 @@ func (d *HostedDriver) recoveryLoop(ctx context.Context) (failure error) {
 	defer func() { d.engine.StopHostedObserver(lastCheck, failure) }()
 	wait := d.wait
 	if wait == nil {
-		wait = waitHosted
+		wait = waitPreparation
 	}
 	var backoff time.Duration
 	for {
