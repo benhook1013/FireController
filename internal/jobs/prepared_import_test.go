@@ -131,6 +131,7 @@ func TestPreparedJobInsertPreservesNativeReadsWithoutReplayEffects(t *testing.T)
 	decodeResponse(t, detail, &current)
 	delete(current, "checklist")
 	delete(current, "notes")
+	delete(current, "blocked_by")
 	if current["revision"] != float64(1) || current["title"] != item.Title || current["brief"] != item.Brief ||
 		current["created_at"] != item.CreatedAt || current["updated_at"] != item.UpdatedAt || current["worker_id"] != worker || current["status"] != item.Status {
 		t.Fatal("native detail did not preserve selected state")

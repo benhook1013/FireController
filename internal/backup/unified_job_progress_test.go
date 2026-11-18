@@ -74,7 +74,7 @@ func TestUnifiedJobProgressBackupRefusesResealedCorruption(t *testing.T) {
 
 func TestUnifiedJobProgressPredecessorBackupStaysUnmodified(t *testing.T) {
 	f := newRestoreFixture(t)
-	if _, err := f.store.DB().Exec(`DROP TABLE job_progress_history;DROP TABLE job_progress;UPDATE metadata SET value='7' WHERE key='schema:jobs'`); err != nil {
+	if _, err := f.store.DB().Exec(`DROP TABLE IF EXISTS job_blockers; DROP TABLE job_progress_history;DROP TABLE job_progress;UPDATE metadata SET value='7' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal(err)
 	}
 	bundle := restoreBundle(t, f)

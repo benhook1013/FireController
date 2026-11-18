@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,6 +119,7 @@ type editRequest struct {
 	Brief            *string        `json:"brief"`
 	WorkerID         *string        `json:"worker_id"`
 	Status           *string        `json:"status"`
+	BlockedBy        *[]string      `json:"blocked_by,omitempty"`
 }
 
 type receipt struct {
@@ -435,6 +437,33 @@ func editJob(store *core.Store, projection func(context.Context, *sql.Tx, string
 			if req.Status != nil {
 				next.Status = *req.Status
 			}
+			blockersChanged := false
+			var blockers []string
+			if req.BlockedBy != nil {
+				if blockers, err = normalizeBlockers(ctx, tx, scope.ProjectID, jobID, *req.BlockedBy); err != nil {
+					return nil, err
+				}
+				existing, err := readBlockers(ctx, tx, scope.ProjectID, jobID)
+				if err != nil {
+					return nil, err
+				}
+				blockersChanged = !slices.Equal(existing, blockers)
+				if blockersChanged {
+					if err := replaceBlockers(ctx, tx, scope.ProjectID, jobID, blockers); err != nil {
+						return nil, err
+					}
+				}
+			}
+			// An active job with an open blocker is shown as blocked.
+			if next.Status == "active" {
+				open, err := openBlockers(ctx, tx, scope.ProjectID, jobID)
+				if err != nil {
+					return nil, err
+				}
+				if open > 0 {
+					next.Status = "blocked"
+				}
+			}
 			if next.WorkerID != "" {
 				checkWorker := core.CheckWorker
 				if next.WorkerID != current.WorkerID || next.Status != "completed" {
@@ -444,7 +473,7 @@ func editJob(store *core.Store, projection func(context.Context, *sql.Tx, string
 					return nil, err
 				}
 			}
-			if next == current && reflect.DeepEqual(previousProgress, nextProgress) {
+			if next == current && !blockersChanged && reflect.DeepEqual(previousProgress, nextProgress) {
 				return receipt{ID: current.ID, Revision: current.Revision, Outcome: "unchanged"}, nil
 			}
 			if current.Revision == math.MaxInt64 {
@@ -486,6 +515,11 @@ func editJob(store *core.Store, projection func(context.Context, *sql.Tx, string
 			}
 			if err := appendAssignmentEvents(ctx, tx, scope, current.WorkerID, next); err != nil {
 				return nil, err
+			}
+			if current.Status != "completed" && next.Status == "completed" {
+				if err := releaseDependents(ctx, tx, scope, next.ID, projection); err != nil {
+					return nil, err
+				}
 			}
 			if (current.WorkerID != next.WorkerID || current.Status != next.Status) && projection != nil {
 				if err := projection(ctx, tx, scope.ProjectID, jobID); err != nil {
@@ -655,7 +689,7 @@ func validateEdit(req editRequest) error {
 	if req.ExpectedRevision < 1 {
 		return core.Fail("invalid_revision", "expected_revision must be at least 1", http.StatusBadRequest)
 	}
-	if req.Title == nil && req.Brief == nil && req.WorkerID == nil && req.Status == nil && req.Progress == nil {
+	if req.Title == nil && req.Brief == nil && req.WorkerID == nil && req.Status == nil && req.Progress == nil && req.BlockedBy == nil {
 		return core.Fail("empty_edit", "at least one editable field is required", http.StatusBadRequest)
 	}
 	if req.Title != nil && (*req.Title == "" || len(*req.Title) > maxTitle) {
