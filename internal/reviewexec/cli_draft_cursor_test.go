@@ -1,0 +1,107 @@
+package reviewexec
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
+)
+
+func TestCLIDraftProbeSelectionRotatesBeforeClaim(t *testing.T) {
+	now := time.Now()
+	e := &Engine{schedulingNow: func() time.Time { return now }}
+	operations := []Operation{
+		{ID: "review_operation_c", Channel: "cli", Reason: cliDraftWait},
+		{ID: "review_operation_a", Channel: "cli", Reason: cliDraftWait},
+		{ID: "review_operation_b", Channel: "cli", Reason: cliDraftWait},
+		{ID: "review_operation_0", Channel: "hosted", Reason: cliDraftWait},
+		{ID: "review_operation_1", Channel: "cli"},
+	}
+	for _, want := range []string{"review_operation_a", "review_operation_b", "review_operation_c", "review_operation_a"} {
+		if got := e.nextDraftProbe(operations); got != want {
+			t.Fatalf("selection without claim did not rotate: got %q, want %q", got, want)
+		}
+		if len(e.draftProbeNext) != 0 {
+			t.Fatal("selection acquired a read throttle")
+		}
+	}
+	e.draftProbeNext = map[string]time.Time{"review_operation_b": now.Add(cliDraftProbeInterval)}
+	if got := e.nextDraftProbe(operations); got != "review_operation_c" {
+		t.Fatal("selection ignored an existing throttle", got)
+	}
+	cursor := e.draftProbeCursor
+	if got := e.nextDraftProbe(nil); got != "" || e.draftProbeCursor != cursor {
+		t.Fatal("empty selection changed rotation", got, e.draftProbeCursor)
+	}
+}
+
+func TestCLIDraftProbeDamagedWaitDoesNotStarveOtherProject(t *testing.T) {
+	for _, damage := range []string{"revision gap", "malformed history"} {
+		t.Run(damage, func(t *testing.T) {
+			f := supervisorFixture(t)
+			f.configure(t, otherAttemptProject, "test-capability", 0, false)
+			first := f.enqueue(t, attemptProject, "draft-cursor-first", "cli", 2, 1)
+			second := f.enqueue(t, otherAttemptProject, "draft-cursor-second", "cli", 2, 1)
+			for _, owner := range [][2]string{{attemptProject, first.ID}, {otherAttemptProject, second.ID}} {
+				o, err := readOperation(t.Context(), f.store.DB(), owner[0], owner[1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.e.recordCLIDraftDecision(t.Context(), o, cliDraftWait); err != nil {
+					t.Fatal(err)
+				}
+			}
+			badID, healthyID, badProject := first.ID, second.ID, attemptProject
+			if second.ID < first.ID {
+				badID, healthyID, badProject = second.ID, first.ID, otherAttemptProject
+			}
+			for revision := int64(1); revision <= 2; revision++ {
+				c := Configuration{ExpectedRevision: &revision, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2, 4, 6}, Channels: []string{"cli", "hosted"}}
+				if revision == 2 {
+					c.Queue = append(c.Queue, 8)
+				}
+				if _, err := f.e.Configure(t.Context(), f.scope(t, badProject, f.admin, true), fmt.Sprintf("cursor-suffix-%d", revision), c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if damage == "revision gap" {
+				admissionSQL(t, f, `DELETE FROM review_execution_config WHERE project_id=? AND revision=2`, badProject)
+			} else {
+				admissionSQL(t, f, `UPDATE review_execution_config SET body_json='{' WHERE project_id=? AND revision=2`, badProject)
+			}
+			reader := &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+				return reviewprovider.Repository{}, errors.New("source unavailable")
+			}}
+			driver := &draftWaitDriver{reader: reader}
+			drivers := map[string]Driver{"test-capability": driver}
+			tables := []string{"review_operations", "review_execution_config", "review_execution_attempts", "review_operation_waits", "review_execution_transitions", "review_execution_reservations", "events", "receipts"}
+			before := make(map[string]string)
+			for _, table := range tables {
+				before[table] = snapshotTable(t, f, table)
+			}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal("damaged first wait stopped the pass", err)
+			}
+			if reader.calls.Load() != 0 || draftProbeClaimed(f.e, badID) {
+				t.Fatal("damaged wait reached a provider probe")
+			}
+			if err := f.e.processNext(t.Context(), drivers); err != nil {
+				t.Fatal("later healthy wait stopped the pass", err)
+			}
+			if reader.calls.Load() != 1 || !draftProbeClaimed(f.e, healthyID) || draftProbeClaimed(f.e, badID) {
+				t.Fatal("pre-claim damage starved another project's Draft probe", reader.calls.Load())
+			}
+			if driver.prepares.Load() != 0 || driver.calls.Load() != 0 {
+				t.Fatal("Draft selection authorized preparation or dispatch")
+			}
+			for _, table := range tables {
+				if before[table] != snapshotTable(t, f, table) {
+					t.Fatal("probe rotation changed retained history", table)
+				}
+			}
+		})
+	}
+}
