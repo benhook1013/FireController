@@ -595,10 +595,10 @@ func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
-		}
 		now := e.sampleAttemptTime()
+		if len(ids) == 0 {
+			return e.endRestartedCLIExecutions(ctx, tx, now)
+		}
 		for _, x := range ids {
 			if skipped[x.id] {
 				continue
@@ -690,13 +690,24 @@ func (e *Engine) recoverInterrupted(ctx context.Context, skipped map[string]bool
 			}
 			changed = append(changed, a.OperationID)
 		}
-		return nil
+		return e.endRestartedCLIExecutions(ctx, tx, now)
 	})
 	if err == nil {
 		for _, id := range changed {
 			e.notifyOperation(id)
 		}
 	}
+	return err
+}
+
+// endRestartedCLIExecutions records the restart as proof that every uncertain
+// CLI process of a previous instance ended. It frees account capacity only; the
+// PR reservation stays until the result is recovered or restart-settled.
+func (e *Engine) endRestartedCLIExecutions(ctx context.Context, tx *sql.Tx, now time.Time) error {
+	if !e.restartEndsCLI {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE review_execution_reservations SET execution_ended_at=? WHERE action_class='cli' AND execution_ended_at='' AND attempt_id IN (SELECT a.id FROM review_execution_attempts a JOIN review_operations o ON o.attempt_id=a.id AND o.id=a.operation_id WHERE a.state='uncertain' AND o.channel='cli')`, now.UTC().Format(time.RFC3339Nano))
 	return err
 }
 

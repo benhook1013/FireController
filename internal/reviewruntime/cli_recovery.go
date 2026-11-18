@@ -3,6 +3,7 @@ package reviewruntime
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -29,7 +30,8 @@ func (d *CLIDriver) StartCLIRecovery(ctx context.Context) (<-chan error, error) 
 				done <- nil
 				return
 			}
-			rawErr := d.recoverRawCLI(ctx)
+			settleErr := d.settleRestartedCLI(ctx)
+			rawErr := errors.Join(settleErr, d.recoverRawCLI(ctx))
 			// A malformed ended result must not stop another complete result.
 			err := errors.Join(rawErr, d.engine.RecoverRetainedCLI(ctx, d.capability.ID))
 			if ctx.Err() != nil {
@@ -95,9 +97,11 @@ func (d *CLIDriver) recoverOneRawCLI(ctx context.Context, a reviewexec.Attempt) 
 	if err != nil {
 		return err
 	}
- if record.Capture.Started && record.Capture.Exited {
-  if err:=d.engine.RecordCLIProcessExit(ctx,a.ProjectID,a.ID,record.FinishedAt);err!=nil{return err}
- }
+	if record.Capture.Started && record.Capture.Exited {
+		if err := d.engine.RecordCLIProcessExit(ctx, a.ProjectID, a.ID, record.FinishedAt); err != nil {
+			return err
+		}
+	}
 	anchor := *a.Anchor
 	w, err := d.manager.Open(ctx, a.ID, anchor.CandidateSHA, anchor.BaseSHA, anchor.MergeBaseSHA, anchor.PatchSHA256, anchor.Repository)
 	if err != nil {
@@ -105,4 +109,40 @@ func (d *CLIDriver) recoverOneRawCLI(ctx context.Context, a reviewexec.Attempt) 
 	}
 	_, err = RetainCLI(ctx, d.captures, d.engine, d.manager, a, w, record.Capture, record.StartedAt, record.FinishedAt)
 	return err
+}
+
+// A restart ended the process of these attempts. Settle each one whose raw
+// capture is either absent or already recorded as incomplete evidence; a
+// capture still awaiting recording is left for raw recovery first.
+func (d *CLIDriver) settleRestartedCLI(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	attempts, err := d.engine.RestartedCLIAttempts(ctx, d.capability.ID, d.restartCursor)
+	if err != nil {
+		return err
+	}
+	if len(attempts) == 0 {
+		d.restartCursor = ""
+		return nil
+	}
+	d.restartCursor = attempts[len(attempts)-1].AttemptID
+	var failures []error
+	for _, a := range attempts {
+		if !a.HasEvidence {
+			exists, err := d.captures.Exists(a.AttemptID)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if exists {
+				continue
+			}
+		}
+		if _, err := d.engine.SettleRestartedCLI(ctx, a); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		slog.InfoContext(ctx, "Settled a CLI review interrupted by a restart", "attempt_id", a.AttemptID)
+	}
+	return errors.Join(failures...)
 }

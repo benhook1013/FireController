@@ -22,6 +22,7 @@ import (
 // concrete manager, runner, engine and store is established by the caller.
 type CLIDriver struct {
  rawRecoveryCursor string // owned by the single local recovery worker
+	restartCursor     string // owned by the single local recovery worker
 
 	workspaceMaintenance func(context.Context) error
 	store                *core.Store

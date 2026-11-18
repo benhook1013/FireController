@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -44,6 +45,11 @@ func buildReviewExecution(store *core.Store, dataDir string, catalog reviewrunti
 		return nil, nil, err
 	}
 	options = append(options, reviewexec.WithCLIExhaustionRecovery(recoveryStore))
+	if os.Getpid() == 1 {
+		// As its PID namespace's init, this daemon's start proves the previous
+		// instance and every review process it spawned have ended.
+		options = append(options, reviewexec.WithRestartEndsCLIProcesses())
+	}
 	engine, err := reviewexec.New(store, capabilities, options...)
 	if err != nil {
 		return nil, nil, err

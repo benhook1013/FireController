@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -216,6 +217,25 @@ func (s *CaptureStore) Read(ctx context.Context, attemptID string) (CaptureRecor
 		return CaptureRecord{}, CaptureReference{}, captureError("capture_unavailable")
 	}
 	return capture, ref, nil
+}
+
+// Exists reports whether a raw capture file is present for an attempt. A
+// missing file is a definite false; any other filesystem state is an error.
+func (s *CaptureStore) Exists(attemptID string) (bool, error) {
+	if !validIdentifier(attemptID) {
+		return false, captureError("validation_failed")
+	}
+	if s == nil || captureDirectories(s.root, false) != nil {
+		return false, captureError("capture_unavailable")
+	}
+	_, err := os.Lstat(filepath.Join(s.root, attemptID+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, captureError("capture_unavailable")
+	}
+	return true, nil
 }
 
 func (s *CaptureStore) readCapture(ctx context.Context, attemptID string) ([]byte, CaptureRecord, error) {

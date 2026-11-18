@@ -128,6 +128,7 @@ type Engine struct {
 	actionsDiagnosticCurrent   *actionsDiagnosticRequest
 	actionsDiagnosticProject   string
 	queueSortingWrites         bool
+	restartEndsCLI             bool
 	decisionOmissions          decisionOmissionBuffer
 	runSourceBudget            time.Duration
 	hostedRetainedDecoder      HostedRetainedDecoder
@@ -192,6 +193,14 @@ type EngineOption func(*Engine)
 // has qualified the backup/restore and rollback reader generation. Default is off.
 func WithQueueSortingWrites(enabled bool) EngineOption {
 	return func(e *Engine) { e.queueSortingWrites = enabled }
+}
+
+// WithRestartEndsCLIProcesses declares that this daemon's start proves every
+// CLI process of a previous instance has ended, for example because the daemon
+// is the init process of its own PID namespace. Startup recovery then releases
+// interrupted CLI capacity and later settles results that cannot complete.
+func WithRestartEndsCLIProcesses() EngineOption {
+	return func(e *Engine) { e.restartEndsCLI = true }
 }
 
 // WithExecutionClock selects the trusted scheduling clock. Journal/provider
