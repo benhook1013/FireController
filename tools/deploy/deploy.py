@@ -100,6 +100,9 @@ def main(argv=None):
             raise SystemExit("docker save failed")
         digest = parse_digest(out(ssh + ["k3s ctr -n k8s.io images ls name==" + shlex.quote(tag)]), tag)
         image = "localhost/firecontroller@" + digest
+        # An imported OCI index gets no CRI repo digest from its tag alone; name
+        # the digest reference explicitly so the deployment can select it.
+        run(ssh + ["k3s ctr -n k8s.io images tag --force " + shlex.quote(tag) + " " + shlex.quote(image)], stdout=subprocess.DEVNULL)
 
         host_cmd = ["python3", "-I", remote + "/deploy_host.py", "--source", source, "--image", image,
                     "--fcd", remote + "/fcd", "--fcd-sha256", fcd_sha, "--assets", remote + "/assets.json",
