@@ -214,5 +214,16 @@ func schemaMigrations() [][]string {
  PRIMARY KEY (project_id,job_id,revision),
  FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE
 );`,
-		}, ProgressSchemaSQL()}
+		}, ProgressSchemaSQL(), {
+			`CREATE TABLE job_blockers (
+ project_id TEXT NOT NULL,
+ job_id TEXT NOT NULL,
+ blocker_job_id TEXT NOT NULL,
+ PRIMARY KEY (project_id,job_id,blocker_job_id),
+ CHECK (job_id <> blocker_job_id),
+ FOREIGN KEY (project_id,job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE,
+ FOREIGN KEY (project_id,blocker_job_id) REFERENCES jobs(project_id,id) ON DELETE CASCADE
+);`,
+			`CREATE INDEX job_blockers_project_blocker ON job_blockers(project_id,blocker_job_id);`,
+		}}
 }

@@ -66,7 +66,7 @@ func normalizeJobPatch(p UpdateJobRequest) (UpdateJobRequest, error) {
 	if p.ExpectedRevision < 1 || p.ExpectedRevision == math.MaxInt64 {
 		return p, fail("invalid_revision", "A positive writable job revision is required.", "Read the current job and supply its revision.", 400)
 	}
-	if p.Title == nil && p.Brief == nil && p.WorkerID == nil && p.Status == nil && p.Progress == nil {
+	if p.Title == nil && p.Brief == nil && p.WorkerID == nil && p.Status == nil && p.Progress == nil && p.BlockedBy == nil {
 		return p, mutationValidation()
 	}
 	if p.Title != nil {
@@ -85,6 +85,16 @@ func normalizeJobPatch(p UpdateJobRequest) (UpdateJobRequest, error) {
 			return p, mutationValidation()
 		}
 		p.WorkerID = &v
+	}
+	if p.BlockedBy != nil {
+		if len(*p.BlockedBy) > 20 {
+			return p, mutationValidation()
+		}
+		for _, id := range *p.BlockedBy {
+			if !validID(id) {
+				return p, mutationValidation()
+			}
+		}
 	}
 	if p.Status != nil && !validStatus(*p.Status) {
 		return p, mutationValidation()

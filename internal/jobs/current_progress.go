@@ -373,6 +373,7 @@ type currentJob struct {
 	Progress  progress           `json:"progress"`
 	Checklist remainingChecklist `json:"checklist"`
 	Notes     notePage           `json:"notes"`
+	BlockedBy []string           `json:"blocked_by"`
 }
 
 func readCurrentJob(ctx context.Context, tx *sql.Tx, store *core.Store, scope core.Scope, id string) (currentJob, error) {
@@ -384,6 +385,9 @@ func readCurrentJob(ctx context.Context, tx *sql.Tx, store *core.Store, scope co
 	}
 	if !validContextJob(result.job) {
 		return result, contextUnavailable()
+	}
+	if result.BlockedBy, err = readBlockers(ctx, tx, scope.ProjectID, id); err != nil {
+		return result, err
 	}
 	result.Progress, _, err = readProgress(ctx, tx, scope.ProjectID, id, result.Revision)
 	if err != nil {

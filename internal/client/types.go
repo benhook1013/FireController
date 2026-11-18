@@ -27,6 +27,8 @@ type UpdateJobRequest struct {
 	WorkerID         *string        `json:"worker_id,omitempty"`
 	Status           *string        `json:"status,omitempty"`
 	Progress         *ProgressPatch `json:"progress,omitempty"`
+	// BlockedBy replaces the job ids that block this job; an empty list clears it.
+	BlockedBy *[]string `json:"blocked_by,omitempty"`
 }
 
 type SendMessageRequest struct {
@@ -88,6 +90,8 @@ type Job struct {
 	Progress  Progress            `json:"progress"`
 	Checklist JobChecklistSummary `json:"checklist"`
 	Notes     Page[NoteSummary]   `json:"notes"`
+	// BlockedBy lists job ids this job waits on; absent from older servers.
+	BlockedBy []string `json:"blocked_by,omitempty"`
 }
 
 // JobState is immutable job history. Older source states may lack progress;
