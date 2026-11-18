@@ -83,6 +83,10 @@ func (e *Engine) acceptedWaitDetached(ctx context.Context, scope core.Scope, err
 }
 
 func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string, waitSeconds int) (Operation, bool, error) {
+	return e.waitOperationResponse(ctx, scope, id, waitSeconds, true)
+}
+
+func (e *Engine) waitOperationResponse(ctx context.Context, scope core.Scope, id string, waitSeconds int, allowance bool) (Operation, bool, error) {
 	if ctx == nil || e == nil || e.store == nil || !identifier.MatchString(id) || !identifier.MatchString(scope.PrincipalID) || waitSeconds < 0 || waitSeconds > 900 {
 		return Operation{}, false, invalid()
 	}
@@ -95,7 +99,7 @@ func (e *Engine) WaitOperation(ctx context.Context, scope core.Scope, id string,
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}
-		value, err := e.ReadOperation(waitCtx, scope, id)
+		value, err := e.readOperationResponse(waitCtx, scope, id, allowance)
 		if waitCtx.Err() != nil {
 			return Operation{}, canceled()
 		}

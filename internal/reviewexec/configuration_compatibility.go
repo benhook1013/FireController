@@ -33,7 +33,7 @@ func compatibleQueuedConfiguration(ctx context.Context, tx *sql.Tx, o Operation,
 		}
 		n, revisionOK := rawRevision.(int64)
 		body, bodyOK := rawBody.(string)
-		if !revisionOK || !bodyOK || n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
+		if !revisionOK || !bodyOK || n != expected || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil || c.ExpectedRevision == nil || *c.ExpectedRevision != n-1 {
 			return false, newStoredUnavailable(storedConfigurationHistory, "Stored source refresh is unavailable.")
 		}
 		expected++
