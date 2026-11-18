@@ -2,20 +2,22 @@
 
 ## Fast pre-v1 development
 
-This project's authorized pre-v1 iterations use locally built binaries copied to the serving node for quick development deployment. Full CI and container publication continue in the background; pending workflow artifacts are not a deployment gate. Investigate and report CI failures, and repair relevant regressions. Formal published releases follow the artifact path below.
+Pre-v1 development deploys the pushed `develop` commit with one fixed command, run from a checkout with SSH access to the serving node:
 
-Use proportionate focused checks and independent proof of the affected behavior before deploying. Record the exact clean source revision and hashes of the locally built `fc`, `fcd` and `fcmcp`; keep their matching guidance with the binaries. A launcher update preserves its original profile and worker binding and affects future processes, without restarting another agent's MCP session.
+```sh
+python3 tools/deploy/deploy.py            # deploy origin/develop
+python3 tools/deploy/deploy.py --dry-run  # build and check only
+```
 
-Group related ready changes into one rollout. Use client-only or separately installed helper updates when serving behavior and schema do not change, preserving the existing reader/report contracts and qualified binary hashes.
+[`deploy.py`](../tools/deploy/deploy.py) refuses a dirty checkout or one that is not at `origin/develop`. It builds the image from the repository [Dockerfile](../Dockerfile), extracts its `fcd`, records the embedded browser asset hashes, imports the image into the node's container runtime and runs [`deploy_host.py`](../tools/deploy/deploy_host.py) on the node. The host side runs the same steps every time:
 
-1. Copy the verified binaries and their manifest to the existing serving node. Assemble and retain an immutable local OCI image bound to that source revision and those hashes; do not select a mutable development tag or relabel a local digest as a registry digest.
-2. Reuse an unchanged qualified runtime base only while the Dockerfile and runtime dependency contract remain unchanged. A change to either requires building and qualifying that runtime again, including its actual container behavior.
-3. Before a schema-bearing server update, upgrade the separately installed offsite and backup-health helpers to schema-qualified binaries and verify their hashes, as required by [offsite backups](offsite-backups.md). Preserve private configuration, destinations and retention. Rehearse the migration on an isolated retained backup under the serving CPU and memory limits; an empty-data container preflight does not qualify a populated migration.
-4. Preflight the local image without live data or credential mounts. On K3s, pin the candidate in the node's container runtime through the drain and confirm its digest is still available to CRI immediately before replacement. Apply the existing deployment drain, single-writer replacement, health, original-instance and exact-source checks to the node-local image. Preserve the existing PVC, runtime bindings and project authority; deployment does not authorize live review requests.
-5. Proceed immediately when active dispatches reach zero. There is no additional quiet or cooldown period. Keep the existing maximum drain at **600 seconds (ten minutes)**, with the same deadline handling, termination grace and retained-result recovery described below.
-6. Verify health, exact source/image identity and reopened admission after replacement. Record the local image identity and checks so the deployed build remains inspectable while CI finishes.
+1. Take the deploy lock and the shared backup phase lock. Managed backups and the offsite batch wait for that lock, so a deploy never replaces the daemon mid-snapshot and there is no backup window to schedule around. A deploy waits up to twenty minutes for a running backup, then gives up without changing anything.
+2. Snapshot the live database with SQLite's online backup into `/var/lib/firecontroller/predeploy/`. This is the rollback point; the newest two are kept.
+3. Run `fcd migrate` from the new binary on a private copy of that snapshot and require a clean `quick_check`. This rehearses the exact migrations the daemon will run at startup, on real data, before anything live changes.
+4. Install the new `fcd` for the backup-health and offsite helpers and repoint their systemd drop-ins, so helpers always read the newest schema.
+5. Drain and replace the controller image with the [rollout helper](../tools/deploy/kubernetes.py), then verify the deployment, the running image digest, `/readyz` and the served browser assets.
 
-The registry rollout helper below retains its published-image contract. The local development handoff uses the same bounded safety checks with the node-local image; it does not require a registry pull or introduce another deployment framework. Neither path promises a fixed deployment duration. The protected-main publication and security review reminder remains required before official releases.
+If the rollout fails after replacement, the script reports the previous image and the snapshot path. Rolling back is selecting the previous image and, only when the new binary migrated the schema, restoring that snapshot. Full CI and container publication continue in the background; pending CI is not a deployment gate. Investigate and repair CI failures.
 
 ## Published artifacts
 

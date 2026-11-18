@@ -47,6 +47,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	if len(args) > 0 && (args[0] == "backup-installation-inspect" || args[0] == "backup-push-batch" || args[0] == "backup-push" || args[0] == "backup-fetch" || args[0] == "backup-offsite-status") {
 		return runOffsiteCommand(ctx, args[0], args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "migrate" {
+		return runMigrateCommand(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "restore-resume-providers" {
 		return runProviderResumptionCommand(ctx, args[1:], stdout, stderr)
 	}
@@ -180,57 +183,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 			return 3
 		}
 	}
-	if err = jobs.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = projectmap.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = tracking.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = presentation.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = opvars.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = inbox.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = coordimport.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = reviews.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = publicsite.EnsureSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	for _, ensure := range []func(context.Context, *core.Store) error{reviewexec.EnsureSchema, reviewexec.EnsureEvidenceSchema, reviewexec.EnsureAdjudicationSchema, reviewexec.EnsurePolicySchema} {
-		if err = ensure(ctx, store); err != nil {
-			diagnosticError(stderr, err)
-			return 3
-		}
-	}
-	if err = reviewexec.SeedNotificationFollowers(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = backup.EnsureManagedSchema(ctx, store); err != nil {
-		diagnosticError(stderr, err)
-		return 3
-	}
-	if err = historycollect.EnsureSchema(ctx, store); err != nil {
+	if err = ensureDaemonSchemas(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
 	}
