@@ -493,6 +493,7 @@ func TestInventoryCanonicalForeignKeysRemainSupportedAcrossOlderSchemas(t *testi
 				if test.version < 9 {
 					legacy = append(legacy,
 						`DROP TABLE review_operation_waits`,
+						`DROP INDEX review_operations_draft_probe`,
 						`DROP INDEX review_transitions_exhaustion_time`,
 						`DROP INDEX review_transitions_exhaustion_attempt`,
 						`UPDATE metadata SET value='2' WHERE key='schema:review_execution_indexes'`,
