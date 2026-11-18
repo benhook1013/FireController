@@ -37,6 +37,7 @@ type arguments struct {
 	roundControl               client.ConfigureReviewRoundControlRequest
 	notes                      *noteToolCall
 	projectMap                 *projectMapToolCall
+	tracking                   *trackingToolCall
 	reviewCheckpoint           client.ReviewCheckpointRequest
 	reviewCheckpointRecovery   client.ReviewCheckpointRecovery
 	limit                      int
@@ -94,6 +95,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	definitions = append(definitions, workerPauseDefinitions()...)
 	definitions = append(definitions, noteDefinitions()...)
 	definitions = append(definitions, projectMapDefinitions()...)
+	definitions = append(definitions, trackingDefinitions()...)
 	definitions = append(definitions, messageWaitDefinition())
 	definitions = append(definitions, ciWatchDefinition())
 	definitions = append(definitions, reviewActivityDefinition())
@@ -114,15 +116,17 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	updates := newClientUpdateNotice()
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := reviewSchedulingWrite(tool.name) || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := reviewSchedulingWrite(tool.name) || projectMapWrite(tool.name) || trackingWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := tool.name == "review_pull_scheduling_update" || tool.name == "review_scheduling_configure" || existingManagementExternal(tool.name) || checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh" || tool.name == "actions_liveness_read" || tool.name == "actions_run_read" || tool.name == "wait_for_ci"
-		destructive := reviewSchedulingWrite(tool.name) || existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == externalHostedSettlementTool || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := trackingWrite(tool.name) || reviewSchedulingWrite(tool.name) || existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == externalHostedSettlementTool || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (response *mcp.CallToolResult, protocolErr error) {
 			defer func() { updates.Apply(response) }()
 			var args arguments
 			var err error
 			if projectMapTool(tool.name) {
 				args, err = projectMapArguments(tool.name, request.Params.Arguments)
+			} else if trackingTool(tool.name) {
+				args, err = trackingArguments(tool.name, request.Params.Arguments)
 			} else if tool.name == "wait_for_messages" {
 				args, err = messageWaitArguments(request.Params.Arguments)
 			} else if noteTool(tool.name) {
@@ -154,6 +158,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			var value any
 			if existingManagementTool(tool.name) {
 				value, err = executeExistingManagement(ctx, service, args.existingManagement)
+			} else if trackingTool(tool.name) {
+				value, err = executeTrackingTool(ctx, service, args.tracking)
 			} else {
 				switch tool.name {
 				case externalHostedSettlementTool:

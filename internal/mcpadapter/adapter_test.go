@@ -203,6 +203,9 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			expected["inbox_message_read"], expected["job_checklist_item_update"] = true, true
 			expected["presentation_read"] = true
 			expected["var_read"] = true
+			for _, name := range []string{"milestone_list", "milestone_read", "milestone_upsert", "milestone_update", "item_list", "item_read", "item_upsert", "item_update", "item_links_change", "tracking_batch", "tracking_history", "tracking_revision_read"} {
+				expected[name] = true
+			}
 			for _, name := range []string{"map_entry_create", "map_entry_replace", "map_entry_update", "map_entry_list", "map_entry_read", "map_entry_history", "map_entry_revision_read", "job_workstream_read", "job_workstream_replace", "job_workstream_history"} {
 				expected[name] = true
 			}
@@ -242,6 +245,9 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 			writes["review_scheduling_configure"], writes["review_pull_scheduling_update"] = true, true
 			writes["note_create"], writes["note_update"] = true, true
 			writes["job_summary_set"] = true
+			for _, name := range []string{"item_upsert", "item_update", "item_links_change", "tracking_batch", "milestone_upsert", "milestone_update"} {
+				writes[name] = true
+			}
 			writes["job_update"], writes["job_checklist_replace"] = true, true
 			writes["review_request"], writes["review_source_refresh"] = true, true
 			writes["review_findings_decide"], writes["review_findings_fix"] = true, true
@@ -258,7 +264,7 @@ func TestDiscoveryAndLocalContextAcrossSDKProtocolVersions(t *testing.T) {
 				}
 				delete(expected, tool.Name)
 				a := tool.Annotations
-				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (managementDiscoveryContract[tool.Name].destructive || tool.Name == "review_scheduling_configure" || tool.Name == "review_pull_scheduling_update" || tool.Name == "review_queue_move" || tool.Name == "review_queue_remove" || tool.Name == "review_subagent_update" || tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_findings_decide" || tool.Name == "review_findings_fix" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix") || a.OpenWorldHint == nil || *a.OpenWorldHint != (managementDiscoveryContract[tool.Name].external || tool.Name == "review_pull_scheduling_update" || tool.Name == "review_scheduling_configure" || tool.Name == "actions_liveness_read" || tool.Name == "actions_run_read" || tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
+				if a == nil || a.ReadOnlyHint == writes[tool.Name] || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != (managementDiscoveryContract[tool.Name].destructive || tool.Name == "review_scheduling_configure" || tool.Name == "review_pull_scheduling_update" || tool.Name == "review_queue_move" || tool.Name == "review_queue_remove" || tool.Name == "review_subagent_update" || tool.Name == "review_rounds_configure" || tool.Name == "worker_pause_replace" || tool.Name == "job_primary_replace" || tool.Name == "map_entry_replace" || tool.Name == "map_entry_update" || tool.Name == "job_workstream_replace" || tool.Name == "note_update" || tool.Name == "job_update" || tool.Name == "job_summary_set" || tool.Name == "job_checklist_replace" || tool.Name == "job_checklist_item_update" || tool.Name == "review_findings_decide" || tool.Name == "review_findings_fix" || tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_route" || tool.Name == "review_route_decide" || tool.Name == "review_route_fix" || writes[tool.Name] && strings.HasPrefix(tool.Name, "item_") || writes[tool.Name] && strings.HasPrefix(tool.Name, "milestone_") || tool.Name == "tracking_batch") || a.OpenWorldHint == nil || *a.OpenWorldHint != (managementDiscoveryContract[tool.Name].external || tool.Name == "review_pull_scheduling_update" || tool.Name == "review_scheduling_configure" || tool.Name == "actions_liveness_read" || tool.Name == "actions_run_read" || tool.Name == "wait_for_ci" || tool.Name == "review_start" || tool.Name == "review_request" || tool.Name == "review_source_refresh" || tool.Name == "review_checkpoint_publish" || tool.Name == "review_checkpoint_recover") {
 					t.Fatal("untruthful operation annotation")
 				}
 				data, _ := json.Marshal(tool.InputSchema)

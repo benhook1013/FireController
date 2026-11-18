@@ -53,6 +53,7 @@ Receipt keys include their originating instance. Startup upgrades base schema ve
 | `GET /api/v1/projects/{project_id}/workers` | Scoped bounded worker page, configured pins first then alphabetical name/ID order; see [worker ordering](project-presentation.md#worker-ordering). |
 | `GET /api/v1/projects/{project_id}/workers/{worker_id}` | Scoped worker detail. |
 | `GET/PUT /api/v1/projects/{project_id}/vars...` | [Operator variables](operator-variables.md): effective list, one key, guarded or last-write-wins administrator writes and per-scope history. |
+| `GET/PUT/PATCH/POST /api/v1/projects/{project_id}/tracking/...` | [Project tracking](tracking.md): milestones, items, typed links, batch declarations and per-record history, with an optional revision guard. |
 | `POST /api/v1/projects/{project_id}/workers/{worker_id}/rename` | Project management. Send `{expected_name,name}` with an idempotency key. The display name uses the same validation and project-wide uniqueness as worker creation. Returns `{id,name}`. A stale name or duplicate returns a conflict. The worker ID and its references are preserved. |
 | `POST /api/v1/projects/{project_id}/credentials` | Project manager or instance administrator sends `{token_sha256, permissions}`; returns credential/principal IDs and project ID. |
 | `PUT /api/v1/projects/{project_id}/credentials/{credential_id}` | Project manager or instance administrator changes an existing active project grant with `{expected_permissions, permissions}` and an explicit idempotency key, preserving its credential and principal. |

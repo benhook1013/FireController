@@ -28,6 +28,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/strictjson"
+	"github.com/benhook1013/FireController/internal/tracking"
 )
 
 const maxCLIExhaustionArtifactBytes int64 = reviewruntime.MaxCLIExhaustionArtifactBytes
@@ -233,7 +234,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 8, "inbox": 2, "review_notifications": 1, "reviews": 12, "review_policy": 2, "review_execution": 10, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 5, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -286,6 +287,11 @@ var tables = map[string]tableVersion{
 	"project_map_import_sources":        {"project_map", 2, "project_id source_key revision record_json"},
 	"project_map_import_history":        {"project_map", 2, "project_id source_key revision actor_id worker_id record_json created_at"},
 	"project_map_import_items":          {"project_map", 2, "project_id source_key item_key entry_id entry_revision source_revision"},
+	"tracking_milestones":               {"project_tracking", 1, "project_id key state revision record_json"},
+	"tracking_milestone_history":        {"project_tracking", 1, "project_id milestone_key revision actor_id record_json created_at"},
+	"tracking_items":                    {"project_tracking", 1, "project_id key status milestone_key parent_key position revision record_json"},
+	"tracking_item_history":             {"project_tracking", 1, "project_id item_key revision actor_id record_json created_at"},
+	"tracking_item_links":               {"project_tracking", 1, "project_id item_key target_type target_ref role"},
 
 	"notes":                      {"jobs", 6, "project_id id worker_id job_id phase kind body status status_reason revision created_at updated_at"},
 	"note_revisions":             {"jobs", 6, "project_id note_id revision worker_id job_id phase kind body status status_reason created_at updated_at actor_id actor_worker_id recorded_at"},
@@ -754,6 +760,14 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			return nil, err
 		}
 	}
+	if versions[tracking.Domain] > 0 {
+		if err = validateDomainPhysicalSchema(ctx, db, tracking.SchemaSQL(), tracking.TableNames()...); err != nil {
+			if contextErr := checkContext(ctx); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, err
+		}
+	}
 	for name := range actual {
 		if _, ok := tables[name]; !ok {
 			return nil, invalid()
@@ -1171,6 +1185,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 	}
 	if versions["project_map"] > 0 {
 		if err = projectmap.ValidateSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
+	if versions[tracking.Domain] > 0 {
+		if err = tracking.ValidateSnapshot(ctx, tx); err != nil {
 			if checkContext(ctx) != nil {
 				return unavailable()
 			}
@@ -1797,6 +1819,11 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"job_workstream_history":            {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE"), canonicalFK("project_map_entries", "project_id,workstream_id", "project_id,id", "NO ACTION")},
 	"project_map_import_sources":        {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"project_map_import_history":        {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE")},
+	"tracking_milestones":               {canonicalFK("projects", "project_id", "id", "CASCADE")},
+	"tracking_milestone_history":        {canonicalFK("tracking_milestones", "project_id,milestone_key", "project_id,key", "CASCADE")},
+	"tracking_items":                    {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("tracking_milestones", "project_id,milestone_key", "project_id,key", "NO ACTION"), canonicalFK("tracking_items", "project_id,parent_key", "project_id,key", "NO ACTION")},
+	"tracking_item_history":             {canonicalFK("tracking_items", "project_id,item_key", "project_id,key", "CASCADE")},
+	"tracking_item_links":               {canonicalFK("tracking_items", "project_id,item_key", "project_id,key", "CASCADE")},
 	"project_map_import_items":          {canonicalFK("project_map_import_sources", "project_id,source_key", "project_id,source_key", "CASCADE"), canonicalFK("project_map_entry_history", "project_id,entry_id,entry_revision", "project_id,entry_id,revision", "NO ACTION"), canonicalFK("project_map_import_history", "project_id,source_key,source_revision", "project_id,source_key,revision", "NO ACTION")},
 
 	"notes":                           {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION"), canonicalFK("jobs", "project_id,job_id", "project_id,id", "NO ACTION")},

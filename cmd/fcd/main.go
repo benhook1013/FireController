@@ -32,6 +32,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
 	"github.com/benhook1013/FireController/internal/server"
+	"github.com/benhook1013/FireController/internal/tracking"
 	"github.com/benhook1013/FireController/internal/webui"
 )
 
@@ -187,6 +188,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	if err = tracking.EnsureSchema(ctx, store); err != nil {
+		diagnosticError(stderr, err)
+		return 3
+	}
 	if err = presentation.EnsureSchema(ctx, store); err != nil {
 		diagnosticError(stderr, err)
 		return 3
@@ -251,6 +256,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
 	}))
 	projectmap.Register(mux, store)
+	tracking.Register(mux, store)
 	presentation.Register(mux, store)
 	opvars.Register(mux, store)
 	inbox.Register(mux, store)

@@ -630,6 +630,13 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 			out.Example = "<bound launcher> notes update NOTE_ID --expect-revision 2 --key reminder-consumed-1 --status consumed"
 		}
 		out.Documentation = "docs/notes.md"
+	case "items set", "items create", "items link", "items unlink", "items upsert", "milestones create", "milestones set":
+		out.Usage = "<bound launcher> " + operation + " ..."
+		out.Required = []string{"KEY (items/milestones key, e.g. v1 or GR-2.1)"}
+		out.Optional = []string{"--key KEY (generated when omitted)", "--expect-revision N (optional guard; required for --title/--description on set)"}
+		out.Semantics = []string{"Writes are keyed upserts or set changes: repeating one converges on the same state and returns outcome unchanged.", "items create KEY --title T [--status planned|active|blocked|deferred|done|dropped] [--milestone M] [--parent P] [--labels a,b]. items set KEY with any of --status, --milestone, --clear-milestone, --parent, --clear-parent, --labels, --add-labels, --remove-labels, --revisit-when, --position, --title, --description.", "items link|unlink KEY TYPE:REF [--role delivers|proof|blocks|related] [--label L]; types job, pr, route, note, item, url; pr:N uses the project repository. Unlink without --role removes every role.", "items upsert --file BATCH_JSON declares up to 20 milestones and 100 items atomically. milestones create KEY --title T [--target-date YYYY-MM-DD]; milestones set KEY --state open|closed."}
+		out.Example = "<bound launcher> items set GR-2.1 --status done"
+		out.Documentation = "docs/tracking.md"
 	case "map update":
 		out.Usage = "<bound launcher> map update ENTRY_ID --expect-revision N --file /absolute/changes.json --key KEY"
 		out.Required = []string{"ENTRY_ID", "--expect-revision N", "--file ABSOLUTE_PATH", "--key KEY"}

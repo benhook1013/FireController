@@ -68,6 +68,18 @@ The combined `job_update` body supports the API's 384 KiB encoded JSON limit, in
 | `job_workstream_read` | Required job_id; independent association revision and captured-at-association title. |
 | `job_workstream_replace` | Required idempotency_key/job_id/expected_revision/workstream_id; select a scoped active workstream or explicitly clear with empty text. |
 | `job_workstream_history` | Required job_id and optional limit/cursor; one compact captured-association history page. |
+| `milestone_list` | Optional state; every milestone with item counts by status. See [project tracking](tracking.md). |
+| `milestone_read` | Required key; one milestone with counts and up to 100 open items. |
+| `milestone_upsert` | Required key and milestone; optional expected_revision (0 creates only) and idempotency_key. Declares one milestone. |
+| `milestone_update` | Required key and changes; title/description changes need expected_revision. |
+| `item_list` | Optional milestone_key/parent/status/label/link/limit/cursor; compact item rows ordered by position then key. |
+| `item_read` | Required key; full item with links and direct children's counts by status. |
+| `item_upsert` | Required key and item; optional expected_revision and idempotency_key. Omitted links keep the current links. |
+| `item_update` | Required key and changes; cheap status/milestone/parent/label/position changes without a guard, title/description with expected_revision. |
+| `item_links_change` | Required key and add and/or remove; idempotent typed link set change. |
+| `tracking_batch` | Required document; up to 20 milestones and 100 items applied atomically, reapplying is a no-op. |
+| `tracking_history` | Required kind (items or milestones) and key; optional limit/cursor; newest-first revision summaries. |
+| `tracking_revision_read` | Required kind, key and revision; one captured revision with actor and time. |
 | `note_read` | Required note_id; one full current note. |
 | `note_list` | Optional worker_id/all_workers/direct_only/job_id/phase/kind/status/limit/cursor; compact notes for the bound worker and its currently assigned jobs by default. |
 | `note_history` | Required note_id and optional limit/cursor; one compact revision page. |

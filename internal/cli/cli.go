@@ -71,6 +71,7 @@ type invocation struct {
 	setup                 *profileSetupInvocation
 	notes                 *noteInvocation
 	projectMap            *projectMapInvocation
+	tracking              *trackingInvocation
 	presentation          *presentationInvocation
 	vars                  *varsInvocation
 	publication           *publicationInvocation
@@ -149,6 +150,11 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.projectMap != nil {
 		if err := prepareProjectMap(ctx, call.projectMap); err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+	}
+	if call.tracking != nil {
+		if err := prepareTracking(ctx, call.tracking); err != nil {
 			return reportClientError(stderr, err, ctx)
 		}
 	}
@@ -348,6 +354,19 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 		}
 		return emit(stdout, stderr, value)
 	}
+	if call.tracking != nil {
+		value, err := executeTracking(requestCtx, service, call.tracking)
+		if err != nil {
+			return reportClientError(stderr, err, ctx)
+		}
+		if call.tracking.write() {
+			if err = json.NewEncoder(stdout).Encode(value); err != nil {
+				return reportDetails(stderr, ExitConfig, diagnostic{Code: "output_failed", Message: "The tracking receipt could not be written.", Action: "Read the record to see its current state; tracking writes are keyed upserts, so repeating the change is safe.", OutcomeUnknown: true})
+			}
+			return ExitSuccess
+		}
+		return emit(stdout, stderr, value)
+	}
 	if call.notes != nil {
 		value, err := executeNotes(requestCtx, service, call.notes)
 		if err != nil {
@@ -515,7 +534,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.setup, ok = parseProfileSetup(call.subcommand, remaining[2:])
 		return call, ok && (!call.hasProfile || validSetupText(call.profile)) && (!call.hasProfilesFile || validSetupText(call.profilesFile))
 	}
-	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "vars" && call.command != "publication" && call.command != "history" && call.command != "import" && call.command != "credentials" || len(remaining) < 2 {
+	if call.command != "workers" && call.command != "jobs" && call.command != "inbox" && call.command != "reviews" && call.command != "notes" && call.command != "map" && call.command != "presentation" && call.command != "vars" && call.command != "publication" && call.command != "history" && call.command != "import" && call.command != "credentials" && !trackingCommand(call.command) || len(remaining) < 2 {
 		return call, false
 	}
 	call.subcommand = remaining[1]
@@ -610,6 +629,11 @@ func parseInvocation(args []string) (invocation, bool) {
 	if call.command == "notes" {
 		var ok bool
 		call.notes, ok = parseNotes(call.subcommand, operationArgs)
+		return call, ok
+	}
+	if trackingCommand(call.command) {
+		var ok bool
+		call.tracking, ok = parseTracking(call.command, call.subcommand, operationArgs)
 		return call, ok
 	}
 	if call.command == "jobs" && call.subcommand == "revision" {
