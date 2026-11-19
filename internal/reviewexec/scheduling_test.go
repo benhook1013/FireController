@@ -86,6 +86,12 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 		}
 	}
 	checkPullScheduling(call("GET", "pulls/2/scheduling", f.reader, "", ""), 0)
+	for _, path := range []string{"scheduling", "pulls/2/scheduling"} {
+		head := call("HEAD", path, f.reader, "", "")
+		if head.Code != http.StatusOK || !strings.HasPrefix(head.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("HEAD %s must use the read path: status=%d body=%s", path, head.Code, head.Body.String())
+		}
+	}
 	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
 		if w = call("POST", "scheduling", f.writer, core.NewID("key"), body); w.Code != 400 {
 			t.Fatal(w.Code, w.Body.String())

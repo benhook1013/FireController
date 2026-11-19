@@ -234,7 +234,11 @@ func TestSchedulingCLIFireMUDPriorityChecksSharedAccount(t *testing.T) {
 	for _, mode := range []string{"competing", "paused", "other-account"} {
 		t.Run(mode, func(t *testing.T) {
 			f := schedulingFixture(t)
-			f.configure(t, otherAttemptProject, "test-capability", 0, false)
+			capability := "test-capability"
+			if mode == "other-account" {
+				capability = "other-account"
+			}
+			f.configure(t, otherAttemptProject, capability, 0, false)
 			low := f.enqueue(t, attemptProject, "lower", "cli", 2, 1)
 			high := f.enqueue(t, otherAttemptProject, "higher", "cli", 2, 1)
 			admissionSQL(t, f, `UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?`, otherAttemptProject)
@@ -245,9 +249,6 @@ func TestSchedulingCLIFireMUDPriorityChecksSharedAccount(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			if mode == "other-account" {
-				f.configure(t, otherAttemptProject, "other-account", 1, false)
 			}
 			err := f.store.Read(t.Context(), f.scope(t, attemptProject, f.writer, false), func(ctx context.Context, tx *sql.Tx) error {
 				o, err := readOperation(ctx, tx, attemptProject, low.ID)

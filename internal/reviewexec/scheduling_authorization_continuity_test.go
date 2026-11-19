@@ -153,9 +153,12 @@ func TestRetainedAutomaticAuthorizationKeepsQuotaWaitIdentity(t *testing.T) {
 	}
 	original := cliWaitRead(t, f, r.OperationID)
 	due := cliWaitDue(t, original)
+	wait := snapshotTable(t, f, "review_operation_waits")
 	admissionSQL(t, f, `INSERT INTO workers VALUES(?,'replacement-worker','Replacement manager')`, attemptProject)
 	continuityConfigure(t, f, 1, true, true)
-	wait := snapshotTable(t, f, "review_operation_waits")
+	if wait != snapshotTable(t, f, "review_operation_waits") {
+		t.Fatal("authorizer update changed the retained wait")
+	}
 	if err := continuityGuard(t, f, r); err != nil {
 		t.Fatal(err)
 	}
