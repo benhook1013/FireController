@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,10 +77,20 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"paused_pulls":[],"project_id":"exec-project-one","revision":0,"automatic_cli":false,"automatic_hosted":false}` {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w = call("GET", "pulls/2/scheduling", f.reader, "", "")
-	var p PullScheduling
-	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Revision != 0 || p.Reason != "" {
-		t.Fatal(w.Code, w.Body.String())
+	checkPullScheduling := func(w *httptest.ResponseRecorder, revision int64) {
+		t.Helper()
+		var p PullScheduling
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &p) != nil ||
+			p.ProjectID != attemptProject || p.PullNumber != 2 || p.Paused || p.Revision != revision || p.Reason != "" {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	checkPullScheduling(call("GET", "pulls/2/scheduling", f.reader, "", ""), 0)
+	for _, path := range []string{"scheduling", "pulls/2/scheduling"} {
+		head := call("HEAD", path, f.reader, "", "")
+		if head.Code != http.StatusOK || !strings.HasPrefix(head.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("HEAD %s must use the read path: status=%d body=%s", path, head.Code, head.Body.String())
+		}
 	}
 	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
 		if w = call("POST", "scheduling", f.writer, core.NewID("key"), body); w.Code != 400 {
@@ -117,10 +128,7 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if w = call("POST", "pulls/2/scheduling", f.writer, "resume", `{"expected_revision":1,"paused":false,"reason":"discarded"}`); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w = call("GET", "pulls/2/scheduling", f.reader, "", "")
-	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Reason != "" || p.Revision != 2 {
-		t.Fatal(w.Body.String())
-	}
+	checkPullScheduling(call("GET", "pulls/2/scheduling", f.reader, "", ""), 2)
 	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
 	if w = call("POST", "scheduling", f.writer, "enable", `{"expected_revision":0,"automatic_hosted":true}`); w.Code != 403 {
 		t.Fatal("replay bypassed current management", w.Code)
@@ -1459,6 +1467,55 @@ func TestValidateSchedulingSnapshotAcceptsSupportedVersions(t *testing.T) {
 	}
 }
 
+func TestValidateSchedulingSnapshotRejectsStaleProjectProjection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	var actor, worker, credential, at string
+	err := f.store.DB().QueryRowContext(t.Context(), `SELECT actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, attemptProject).Scan(&actor, &worker, &credential, &at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulingEnable(t, f, 1, false)
+	// Retained events for another project or resource must not advance this
+	// projection's revision.
+	for _, identity := range [][2]string{{otherAttemptProject, attemptProject}, {attemptProject, otherAttemptProject}} {
+		admissionSQL(t, f, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
+			SELECT ?,event_type,?,revision+1,actor_id,payload_json,created_at FROM events
+			WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision=2`,
+			identity[0], identity[1], attemptProject, attemptProject)
+	}
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("healthy rev-2 projection rejected: %v", err)
+	}
+	// Reinstall only the older projection, while retaining both genuine
+	// scheduling events as they would exist after a stale snapshot restore.
+	admissionSQL(t, f, `UPDATE review_scheduling SET revision=1,automatic_hosted=1,actor_id=?,worker_id=?,credential_id=?,updated_at=? WHERE project_id=?`,
+		actor, worker, credential, at, attemptProject)
+	attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
+}
+
+func TestValidateSchedulingSnapshotRejectsMissingPausedPullProjection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingPause(t, f, 2, 0, true)
+	schedulingPause(t, f, 4, 0, true)
+	revision, resumed := int64(1), false
+	scope := selectionScope(t, f, attemptProject, f.writer, "write")
+	if _, err := f.e.ConfigurePullScheduling(t.Context(), scope, "resume-snapshot-control", 4, PullSchedulingRequest{
+		ExpectedRevision: &revision, Paused: &resumed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("healthy paused and resumed projections rejected: %v", err)
+	}
+	admissionSQL(t, f, `DELETE FROM review_pull_scheduling WHERE project_id=? AND pull_number=4`, attemptProject)
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("absent projection for a latest genuine resume refused: %v", err)
+	}
+	admissionSQL(t, f, `DELETE FROM review_pull_scheduling WHERE project_id=? AND pull_number=2`, attemptProject)
+	attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
+}
+
 func TestValidateSchedulingSnapshotRejectsMalformedAndFutureVersions(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1480,5 +1537,139 @@ func TestValidateSchedulingSnapshotRequiresPresentDomainMetadata(t *testing.T) {
 	admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_scheduling'`)
 	if err := validateSchedulingSnapshotForTest(t, f); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing optional domain metadata should not be mistaken for a schema version: %v", err)
+	}
+}
+
+func TestAutomaticAcceptanceOverloadRollsBackPartialSelection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+	var candidate *automaticProjectPlan
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		candidate, err = f.e.planAutomaticProject(ctx, tx, attemptProject, "hosted", readers)
+		return err
+	}); err != nil || candidate == nil {
+		t.Fatalf("could not prepare automatic selection: %v", err)
+	}
+	assertCounts := func(want int) {
+		t.Helper()
+		for _, query := range []string{
+			`SELECT count(*) FROM review_selections`,
+			`SELECT count(*) FROM review_automatic_selections`,
+			`SELECT count(*) FROM events WHERE event_type='review.selection_requested'`,
+		} {
+			var count int
+			if err := f.store.DB().QueryRowContext(t.Context(), query).Scan(&count); err != nil || count != want {
+				t.Fatalf("%s: count=%d want=%d err=%v", query, count, want, err)
+			}
+		}
+	}
+	conflict := func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error) {
+		return Receipt{}, core.Fail("review_busy", "Synthetic prewrite conflict.", 409)
+	}
+	if worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, conflict); worked || err != nil {
+		t.Fatalf("prewrite conflict was not benign: worked=%t err=%v", worked, err)
+	}
+	assertCounts(0)
+	// Exercise real writes, then inject a timeout-class failure at the enqueue
+	// boundary without relying on timing, an expired context or SQLite locks.
+	overloaded := core.Fail("overloaded", "Synthetic transient admission failure.", 503)
+	fault := func(ctx context.Context, tx *sql.Tx, scope core.Scope, req RunRequest) (Receipt, error) {
+		receipt, err := f.e.enqueueRunTx(ctx, tx, scope, req)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if receipt.ID == "" || ctx.Err() != nil {
+			t.Fatal("no live-transaction selection to roll back", receipt, ctx.Err())
+		}
+		return Receipt{}, overloaded
+	}
+	worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, fault)
+	assertCounts(0)
+	var refusal *core.Error
+	if worked || !errors.As(err, &refusal) || refusal.Code != "overloaded" {
+		t.Fatalf("transient overload was not propagated: worked=%t err=%v", worked, err)
+	}
+	if worked, err := f.e.acceptAutomaticProject(t.Context(), attemptProject, "hosted", readers, candidate); !worked || err != nil {
+		t.Fatalf("clean retry failed: worked=%t err=%v", worked, err)
+	}
+	assertCounts(1)
+}
+
+func TestSchedulingWaitSnapshotRequiresActualDraftProof(t *testing.T) {
+	f := schedulingFixture(t)
+	r := f.enqueue(t, attemptProject, "scheduling-only-cli", "cli", 2, 1)
+	a := f.start(t, attemptProject, r)
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "pull_scheduling_paused", ""); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIWaitSnapshot(t, f)
+	o := cliWaitRead(t, f, r.ID)
+	o.Reason = cliDraftWait
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return validateOperationWaitHistory(ctx, tx, o)
+	})
+	if err == nil {
+		t.Fatal("scheduling-only history was accepted as draft proof")
+	}
+}
+
+func TestAutomaticSelectionDoesNotSettleNewlyExposedQueueSuffix(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-queued-boundary", "hosted", 4, 1)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	before := schedulingLatest(t, f)
+
+	var readSix atomic.Bool
+	reader := &refreshTestReader{
+		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+			schedulingPause(t, f, 4, 0, true)
+			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+		},
+		pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+			if n == 6 {
+				readSix.Store(true)
+			}
+			return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "closed", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+		},
+	}
+	selectionNext(t, f, reader)
+	after := selectionRead(t, f, before.ID)
+	var basis string
+	if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, before.ID).Scan(&basis); err != nil {
+		t.Fatal(err)
+	}
+	if readSix.Load() || after.State != "held" || after.Reason != "selection_changed" || basis != "" {
+		t.Fatalf("unacquired suffix retired: readSix=%t state=%s reason=%s basis=%s", readSix.Load(), after.State, after.Reason, basis)
+	}
+	schedulingGenerate(t, f, true)
+	reader.repository = nil
+	selectionNext(t, f, reader)
+	if !readSix.Load() {
+		t.Fatal("fresh selection did not acquire newly exposed pull")
+	}
+}
+
+func TestAutomaticCLISelectionKeepsExistingSourceLimit(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-cli-queued-boundary", "cli", 4, 1)
+	schedulingCLIEnable(t, f, 0, true)
+	schedulingCLIGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	recovery0030Claim(t, f, r.ID)
+	r = selectionRead(t, f, r.ID)
+	var c Configuration
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		c, _, err = readConfiguration(ctx, tx, attemptProject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	choice, err := f.e.chooseRun(t.Context(), r, 801, c, &refreshTestReader{})
+	if err != nil || choice.automaticHostedQueueLimit != nil || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 {
+		t.Fatalf("CLI source remains limited to PR2, without a Hosted settlement pin: %+v err=%v", choice, err)
 	}
 }

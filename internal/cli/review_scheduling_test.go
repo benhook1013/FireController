@@ -84,14 +84,34 @@ func TestReviewSchedulingLeafHelpIsOffline(t *testing.T) {
 	if err := os.WriteFile(path, private, 0600); err != nil {
 		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	bound := filepath.Join(dir, "profiles.json")
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("test-local-profile-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := json.Marshal(map[string]any{"version": 1, "profiles": map[string]any{
+		"bound": map[string]string{"server_url": service.URL, "instance_id": "test-instance", "project_id": "test-project", "worker_id": "test-worker", "credential_file": token},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bound, profile, 0600); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(dir, "absent.json")
+	offline, cancel := context.WithCancel(t.Context())
+	cancel()
 	for _, leaf := range []string{"read", "configure", "pause", "resume"} {
 		for _, spelling := range [][]string{{"reviews", "scheduling", leaf, "--help"}, {"help", "reviews", "scheduling", leaf}} {
-			for _, profilePath := range []string{path, filepath.Join(t.TempDir(), "absent.json")} {
+			for _, profilePath := range []string{path, absent, bound} {
 				args := append([]string{"--profiles-file", profilePath, "--profile", "bound"}, spelling...)
-				ctx, cancel := context.WithCancel(t.Context())
-				cancel()
+				ctx := offline
+				if profilePath == bound {
+					ctx = t.Context()
+				}
 				var stdout, stderr bytes.Buffer
-				code := RunContext(ctx, args, map[string]string{"FC_SERVER": service.URL}, &stdout, &stderr)
+				code := RunContext(ctx, args, nil, &stdout, &stderr)
 				var help operationHelpResponse
 				if code != ExitSuccess || stderr.Len() != 0 || stdout.Len() > 2500 || json.Unmarshal(stdout.Bytes(), &help) != nil || !strings.HasPrefix(help.Usage, "<bound launcher> reviews scheduling "+leaf) || help.Documentation != "docs/review-scheduling.md" {
 					t.Fatalf("%v: code=%d stdout=%s stderr=%s", args, code, &stdout, &stderr)
@@ -110,6 +130,13 @@ func TestReviewSchedulingLeafHelpIsOffline(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Fatal("help contacted a server")
+	}
+	// A regular bound command must reach this listener, or zero help
+	// requests would not establish that help avoided the transport.
+	var ignoredOut, ignoredErr bytes.Buffer
+	RunContext(t.Context(), []string{"--profiles-file", bound, "--profile", "bound", "reviews", "scheduling", "read"}, nil, &ignoredOut, &ignoredErr)
+	if requests.Load() != 1 {
+		t.Fatalf("positive control did not reach the bound server: requests=%d diagnostic=%s", requests.Load(), &ignoredErr)
 	}
 	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, private) {
 		t.Fatal("help changed selected configuration", err)

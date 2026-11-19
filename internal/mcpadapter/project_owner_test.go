@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/benhook1013/FireController/internal/cli"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/profile"
@@ -198,6 +199,49 @@ func TestInboxAcknowledgementOwnRecipientFormsReplay(t *testing.T) {
 			args["worker_id"] = f.sender
 			// Another recipient remains a distinct, unauthorized request, not a receipt replay.
 			diagnosticResult(t, call(t, recipient, "inbox_ack", args), "forbidden", false)
+		})
+	}
+}
+
+func TestInboxAcknowledgementExplicitSelfReplaysAcrossAdapters(t *testing.T) {
+	for _, cliFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cli-first=%v", cliFirst), func(t *testing.T) {
+			f := mutationFixture(t)
+			service := httptest.NewServer(f.handler)
+			defer service.Close()
+			sender := connect(t, f.adapter(t, service.URL, f.sender), "")
+			recipient := connect(t, f.adapter(t, service.URL, f.recipient), "")
+			profilePath := profiles(t, map[string]profile.Context{"chosen": {
+				ServerURL: service.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.recipient,
+			}}, f.credential)
+
+			var message client.MessageReceipt
+			decodeResult(t, call(t, sender, "inbox_send", map[string]any{"idempotency_key": "send", "recipient_worker_id": f.recipient, "body": "cross-adapter ACK"}), &message)
+			mcpAck := func() (got client.MessageReceipt) {
+				decodeResult(t, call(t, recipient, "inbox_ack", map[string]any{"idempotency_key": "ack", "message_id": message.ID, "worker_id": f.recipient}), &got)
+				return got
+			}
+			cliAck := func() (got client.MessageReceipt) {
+				var out, diagnostic bytes.Buffer
+				args := []string{"--profiles-file", profilePath, "--profile", "chosen", "inbox", "ack", message.ID, "--worker", f.recipient, "--key", "ack"}
+				if code := cli.RunContext(t.Context(), args, nil, &out, &diagnostic); code != cli.ExitSuccess {
+					t.Fatalf("CLI ACK exited %d: %s", code, diagnostic.String())
+				}
+				if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+
+			var first, replay client.MessageReceipt
+			if cliFirst {
+				first, replay = cliAck(), mcpAck()
+			} else {
+				first, replay = mcpAck(), cliAck()
+			}
+			if first.Outcome != "acknowledged" || replay != first {
+				t.Fatalf("expected the original acknowledgement receipt on replay: first=%+v replay=%+v", first, replay)
+			}
 		})
 	}
 }

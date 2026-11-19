@@ -114,10 +114,15 @@ func (c *Client) MarkSeen(ctx context.Context, key, id string) (MessageReceipt, 
 }
 
 func (c *Client) Acknowledge(ctx context.Context, key, id string, selectedWorker ...string) (MessageReceipt, error) {
-	if _, err := c.selectedWorker(selectedWorker); err != nil {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
 		return MessageReceipt{}, err
 	}
-	return c.transition(ctx, key, id, "ack", selectedWorker...)
+	// Keep the default receipt identity for both omitted and explicit self selections.
+	if worker == c.identity.WorkerID {
+		return c.transition(ctx, key, id, "ack")
+	}
+	return c.transition(ctx, key, id, "ack", worker)
 }
 
 func (c *Client) transition(ctx context.Context, key, id, action string, selectedWorker ...string) (MessageReceipt, error) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,23 @@ func TestWorkerRetirementPeerAckFeedKeepsOriginalWireAndAudit(t *testing.T) {
 	}
 	message := retirementJSON(t, f, "POST", base+"/messages", f.admin, actor, map[string]any{"recipient_worker_id": target, "body": "Synthetic coordination"}, 201)["id"].(string)
 	retirementJSON(t, f, "POST", base+"/messages/"+message+"/ack", f.admin, actor, map[string]any{"worker_id": target}, 200)
+	query := url.Values{"cursor": {snapshot.EventCursor}, "limit": {"100"}}
+	wire := request(f.handler, http.MethodGet, base+"/message-events?"+query.Encode(), f.admin, "", target, "")
+	require(t, wire, http.StatusOK)
+	var wireEvents messageEventPage
+	if err := json.Unmarshal(wire.Body.Bytes(), &wireEvents); err != nil {
+		t.Fatal("decode raw feed", err)
+	}
+	if len(wireEvents.Items) != 2 || wireEvents.Items[1].Type != "message.acknowledged" || wireEvents.Items[1].ResourceID != message {
+		t.Fatal("exact acknowledgement missing from raw feed", wireEvents)
+	}
+	var ackPayload map[string]json.RawMessage
+	if err := json.Unmarshal(wireEvents.Items[1].Payload, &ackPayload); err != nil || ackPayload == nil {
+		t.Fatal("decode acknowledgement payload", err)
+	}
+	if _, present := ackPayload["actor_worker_id"]; present {
+		t.Fatal("public acknowledgement exposes durable actor worker")
+	}
 	events, err := recipient.MessageEvents(t.Context(), snapshot.EventCursor, 100, 0)
 	if err != nil {
 		t.Fatal("actual typed feed rejected on-behalf ACK", err)

@@ -160,9 +160,10 @@ func automaticSourceInitialRead(ctx context.Context, tx *sql.Tx, r Run) (bool, e
 	var count, distinct, first, last, invalid int64
 	err := tx.QueryRowContext(ctx, `SELECT count(*),count(DISTINCT revision),COALESCE(min(revision),0),COALESCE(max(revision),0),COALESCE(sum(
  CASE WHEN typeof(revision)='integer' AND json_valid(payload_json) THEN
-  CASE WHEN json_extract(payload_json,'$.state') IN ('queued','selecting') AND json_extract(payload_json,'$.reason')='' THEN 0 ELSE 1 END
+  CASE WHEN json_extract(payload_json,'$.state')=CASE WHEN revision%2=0 THEN 'selecting' ELSE 'queued' END
+  AND json_extract(payload_json,'$.reason')='' AND (revision<>? OR json_extract(payload_json,'$.state')=?) THEN 0 ELSE 1 END
  ELSE 1 END),0)
- FROM events WHERE project_id=? AND resource_id=? AND event_type='review.selection_updated' AND revision BETWEEN 2 AND ?`, r.ProjectID, r.ID, r.Revision).Scan(&count, &distinct, &first, &last, &invalid)
+ FROM events WHERE project_id=? AND resource_id=? AND event_type='review.selection_updated' AND revision BETWEEN 2 AND ?`, r.Revision, r.State, r.ProjectID, r.ID, r.Revision).Scan(&count, &distinct, &first, &last, &invalid)
 	if err != nil {
 		return false, err
 	}

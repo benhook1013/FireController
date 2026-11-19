@@ -74,7 +74,7 @@ def inventory(text):
     expected_lanes = {
         'Source and browser checks': 2, 'Packaged qualification': 3,
         'Native smoke (windows-latest)': 4, 'Native smoke (macos-latest)': 5,
-        'validate': 2,
+        'validate': 19,
     }
     race_order = [
         'backup-0', 'reviewexec-0', 'reviews-0', 'reviewruntime-0', 'rest-0',
@@ -85,8 +85,10 @@ def inventory(text):
     ]
     expected_lanes.update({f'Go race ({name})': index % 20
                            for index, name in enumerate(race_order)})
+    expected_lanes['Go race (reviewexec-5)'] = 4
     expected_lanes.update({f'Go race (reviewexec-{index+6})': lane
-                           for index, lane in enumerate([1, 6, 11, 14, 17, 19])})
+                           for index, lane in enumerate([1, 6, 11, 14, 17, 4])})
+    assert {family for _, lane, family in result if lane == 19} == {'validate'}
     assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
 
@@ -237,15 +239,18 @@ class SchedulingTests(unittest.TestCase):
 
     def test_guards_refuse_missing_lane_extra_jobs_and_revision_changes(self):
         mutations = [
-            self.text.replace('slot: 19', 'slot: 20'),
+            self.text.replace('group: firecontroller-ci-slot-19', 'group: firecontroller-ci-slot-20'),
             self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.ref', 'github.run_id'), 1),
             self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('github.event_name', 'github.run_id'), 1),
             self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
-            self.text.replace('            slot: 19', '            slot: 18', 1),
+            self.text.replace('shard: reviewexec-5\n            slot: 4',
+                              'shard: reviewexec-5\n            slot: 19', 1),
+            self.text.replace('shard: reviewexec-11\n            slot: 4',
+                              'shard: reviewexec-11\n            slot: 19', 1),
             self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
             self.text.replace('      queue: max', '      queue: single', 1),
             self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
-            self.text.replace('            slot: 19\n', ''),
+            self.text.replace('            slot: 18\n', ''),
             self.text.replace('    steps:\n', '    steps:\n      - with:\n          ref: main\n', 1),
             self.text.replace('    name: validate', '    name: renamed'),
             self.text.replace('      - develop\n', ''),
@@ -257,10 +262,10 @@ class SchedulingTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     inventory(changed)
 
-    def test_single_run_can_use_all_twenty(self):
+    def test_single_run_can_use_all_nineteen_non_gate_lanes(self):
         s = Scheduler()
         self.offer_run(s, 'PR-A')
-        self.assertEqual(len(s.active), 20)
+        self.assertEqual(len(s.active), 19)
         self.finish_runs(s, ['PR-A'])
 
     def test_interleaving_independent_pr_and_develop_runs_overlap_including_gate(self):
@@ -280,7 +285,7 @@ class SchedulingTests(unittest.TestCase):
                             and any(j.name.startswith('Go race') for j in snapshot)
                             for snapshot in s.snapshots))
 
-    def test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes(self):
+    def test_interleaving_slow_tail_preserves_other_non_gate_lanes(self):
         s = Scheduler()
         slow = 'Go race (backup-0)'
         slow_lanes = [lane for name, lane, _ in self.jobs if name == slow]
@@ -290,7 +295,8 @@ class SchedulingTests(unittest.TestCase):
         self.offer_run(s, 'PR-B')
         self.finish_runs(s, ['PR-A', 'PR-B'])
         progressed = {j.lane for start, _, j in s.intervals if j.run == 'PR-B' and start < 100}
-        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane})
+        gate_lane = next(lane for _, lane, family in self.jobs if family == 'validate')
+        self.assertEqual(progressed, {lane for _, lane, _ in self.jobs} - {slow_lane, gate_lane})
 
     def test_interleaving_many_runs_with_uneven_durations_stay_within_budget(self):
         s = Scheduler()
@@ -309,7 +315,7 @@ class SchedulingTests(unittest.TestCase):
     def test_slow_tail_follows_reassigned_inventory_lanes(self):
         self.jobs = [(name, (lane + 7) % 20, family)
                      for name, lane, family in self.jobs]
-        self.test_interleaving_slow_tail_does_not_hold_other_nineteen_lanes()
+        self.test_interleaving_slow_tail_preserves_other_non_gate_lanes()
 
     def test_affinity_explicitly_strands_spare_capacity(self):
         s = Scheduler()
@@ -330,6 +336,44 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(len(s.pending[0]), 100)
         # No queued work is displaced, but latest arrival is not guaranteed admission.
         self.assertEqual(s.pending[0][0].run, 'PR-0')
+
+    def test_ready_gate_has_reserved_capacity_without_raising_limit(self):
+        scheduler = Scheduler()
+        for lane in range(19):
+            scheduler.offer(Job('other', f'long-{lane}', lane, 100))
+        gate_lane = next(lane for name, lane, _ in self.jobs if name == 'validate')
+        scheduler.offer(Job('ready', 'validate', gate_lane))
+        self.assertEqual(len(scheduler.active), 20)
+        self.assertEqual(scheduler.intervals[-1][0], 0)
+        self.assertEqual(scheduler.step(), [Job('ready', 'validate', gate_lane)])
+        self.assertEqual(len(scheduler.active), 19)
+        self.assertFalse(scheduler.rejected)
+
+    def test_prior_slot_owner_delays_reserved_gate_until_drain(self):
+        # Already-admitted lane-compatible runs keep their old assignments.
+        # In the previous inventory reviewexec-5 occupied the now-reserved lane.
+        scheduler = Scheduler()
+        old_race = Job('old-compatible', 'Go race (reviewexec-5)', 19, 100)
+        scheduler.offer(old_race)
+        for lane in range(19):
+            scheduler.offer(Job('other-compatible', f'long-{lane}', lane, 100))
+        gate_lane = next(lane for name, lane, _ in self.jobs if name == 'validate')
+        ready_gate = Job('new-ready', 'validate', gate_lane)
+        scheduler.offer(ready_gate)
+        self.assertEqual(scheduler.active[19][0], old_race)
+        self.assertEqual(list(scheduler.pending[19]), [ready_gate])
+        self.assertFalse(any(job == ready_gate for _, _, job in scheduler.intervals))
+        self.assertEqual(len(scheduler.active), 20)
+        completed = scheduler.step()
+        self.assertIn(old_race, completed)
+        self.assertEqual(len(completed), 20)
+        self.assertEqual(scheduler.active[19][0], ready_gate)
+        self.assertEqual(next(start for start, _, job in scheduler.intervals
+                              if job == ready_gate), 100)
+        self.assertEqual(scheduler.step(), [ready_gate])
+        self.assertFalse(scheduler.active)
+        self.assertFalse(scheduler.rejected)
+        self.assertLessEqual(max(map(len, scheduler.snapshots)), 20)
 
     def test_latest_arrival_supersedes_only_the_same_pr_or_push_ref(self):
         admission = WorkflowAdmission()
@@ -362,7 +406,7 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(families, {'linux': 16, 'static': 1, 'qualification': 1, 'native-smoke': 2})
         self.assertEqual(len(legacy.pending_linux), 12)
         self.assertNotIn('validate', legacy.active)
-        self.assertEqual(len(s.active), 20)
+        self.assertEqual(len(s.active), 19)
         # Both admitted runs start at model time zero. Legacy jobs occupy real
         # modeled runner intervals but bypass the new run's shared lane budget.
         self.assertGreater(len(s.active) + len(legacy.active), 20)
@@ -373,7 +417,7 @@ class SchedulingTests(unittest.TestCase):
         intervals = s.intervals + legacy.intervals
         times = {start for start, _, _ in intervals}
         peak = max(sum(start <= now < end for start, end, _ in intervals) for now in times)
-        self.assertEqual(peak, 40)
+        self.assertEqual(peak, 39)
 
     def test_legacy_matrix_refills_and_validation_waits_for_every_family(self):
         # Long non-matrix work must not consume Linux matrix permits or let the

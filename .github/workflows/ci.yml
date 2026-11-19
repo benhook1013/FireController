@@ -96,7 +96,7 @@ jobs:
           - shard: backup-5
             slot: 18
           - shard: reviewexec-5
-            slot: 19
+            slot: 4
           - shard: backup-6
             slot: 0
           - shard: backup-7
@@ -112,7 +112,7 @@ jobs:
           - shard: reviewexec-10
             slot: 17
           - shard: reviewexec-11
-            slot: 19
+            slot: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -273,8 +273,9 @@ jobs:
 
   validate:
     name: validate
+    # Reserve one of the existing twenty lanes for ready final gates.
     concurrency:
-      group: firecontroller-ci-slot-2
+      group: firecontroller-ci-slot-19
       queue: max
       cancel-in-progress: false
     runs-on: ubuntu-latest

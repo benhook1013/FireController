@@ -556,6 +556,7 @@ func automaticChannelEnabled(s schedulingRecord, channel string) bool {
 // serialized writer and compare its identity before using ordinary acceptance
 // or retry CAS. Idle and permanently suppressed projects never take the writer.
 type automaticProjectPlan struct {
+	account    string
 	scheduling schedulingRecord
 	scope      core.Scope
 	basis      string
@@ -630,7 +631,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
 		return nil, err
 	}
-	plan := &automaticProjectPlan{scheduling: s, scope: scope, basis: basis}
+	plan := &automaticProjectPlan{account: automaticAccountKey(e.capabilities[c.CapabilityID]), scheduling: s, scope: scope, basis: basis}
 	if seen {
 		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
 		if err != nil || plan.retry == nil {
@@ -640,7 +641,17 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	return plan, nil
 }
 
+func automaticAccountKey(capability Capability) string {
+	return capability.Provider + "\x00" + capability.Account
+}
+
 func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (bool, error) {
+	return e.generateAutomaticProjectForAccount(ctx, project, channel, readers, "")
+}
+
+// A CLI pass nominates only under the account counted by its pre-read;
+// a changed account must be reconsidered by a fresh pass.
+func (e *Engine) generateAutomaticProjectForAccount(ctx context.Context, project, channel string, readers map[string]TargetReader, expectedAccount string) (bool, error) {
 	var candidate *automaticProjectPlan
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
@@ -650,20 +661,24 @@ func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel 
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	if err != nil || candidate == nil {
+	if err != nil || candidate == nil || expectedAccount != "" && candidate.account != expectedAccount {
 		return false, err
 	}
 	return e.acceptAutomaticProject(ctx, project, channel, readers, candidate)
 }
 
 func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan) (bool, error) {
+	return e.acceptAutomaticProjectWithEnqueue(ctx, project, channel, readers, candidate, e.enqueueRunTx)
+}
+
+func (e *Engine) acceptAutomaticProjectWithEnqueue(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan, enqueue func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error)) (bool, error) {
 	worked := false
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := e.planAutomaticProject(ctx, tx, project, channel, readers)
 		if err != nil || current == nil {
 			return err
 		}
-		if current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) {
+		if channel == "cli" && current.account != candidate.account || current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) {
 			return nil
 		}
 		if current.retry != nil {
@@ -673,10 +688,10 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
 		} else {
 			// Same ordinary acceptance path, fully reauthorized in this snapshot.
-			receipt, enqueueErr := e.enqueueRunTx(ctx, tx, current.scope, RunRequest{Channel: channel})
+			receipt, enqueueErr := enqueue(ctx, tx, current.scope, RunRequest{Channel: channel})
 			if enqueueErr != nil {
 				var failure *core.Error
-				if errors.As(enqueueErr, &failure) && (failure.Status == 409 || failure.Code == "overloaded") {
+				if errors.As(enqueueErr, &failure) && failure.Status == 409 {
 					return nil
 				}
 				return enqueueErr
