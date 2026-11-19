@@ -150,9 +150,17 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 const automaticCurrentRunsBasisQuery = `SELECT v.id,v.channel,v.head_sha,v.complete,v.finalized,v.found,v.accepted,v.routed,v.fixed FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_run_versions v ON v.project_id=m.project_id AND v.id=m.id AND v.version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? AND v.channel='hosted' AND v.outcome='completed' ORDER BY v.id LIMIT 10001`
 const automaticCurrentFindingsBasisQuery = `SELECT f.run_id,f.source_finding_id,f.disposition,f.fix_sha,f.proof_note,f.route_json FROM review_current_runs c JOIN review_run_memberships m ON m.project_id=c.project_id AND m.id=c.id AND m.start_revision=c.start_revision JOIN review_finding_versions f ON f.project_id=m.project_id AND f.run_id=m.id AND f.run_version_revision=m.version_revision WHERE c.project_id=? AND c.pull_number=? ORDER BY f.run_id,f.position LIMIT 10001`
 
+const automaticAdjudicationBasisQuery = `SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='hosted' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`
+const automaticTargetAdjudicationQuery = `SELECT a.evidence_id,a.revision FROM review_operations o CROSS JOIN review_execution_evidence e ON e.operation_id=o.id AND e.project_id=o.project_id CROSS JOIN review_adjudication_state a ON a.evidence_id=e.id AND a.project_id=e.project_id WHERE o.project_id=? AND o.pull_number=? AND (o.channel='hosted' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`
+
 // Query text remains part of the retained intent digest. Pin only physical join
-// order for current-reference reads; never replace the digest input with hints.
+// order for current-reference and adjudication reads; never replace the digest input.
 func automaticBasisQuery(query string, pinJoins bool) string {
+	for _, channel := range []string{"hosted", "cli"} {
+		if query == strings.ReplaceAll(automaticAdjudicationBasisQuery, "'hosted'", "'"+channel+"'") {
+			return strings.ReplaceAll(automaticTargetAdjudicationQuery, "'hosted'", "'"+channel+"'")
+		}
+	}
 	if pinJoins {
 		return strings.ReplaceAll(query, " JOIN ", " CROSS JOIN ")
 	}
@@ -249,7 +257,7 @@ func automaticPullBasisAtRevision(ctx context.Context, tx *sql.Tx, project strin
 		{`SELECT revision FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, []any{project}},
 		{`SELECT revision,paused,reason FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, []any{project, pull}},
 		{`SELECT epoch,grant_revision,closed,minimum,maximum,maximum_unbounded,used,dry,tapered FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel='` + channel + `'`, []any{project, pull}},
-		{`SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='` + channel + `' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`, []any{project, pull}},
+		{strings.ReplaceAll(automaticAdjudicationBasisQuery, "'hosted'", "'"+channel+"'"), []any{project, pull}},
 		{`SELECT id,revision,state,disposition,has_fix FROM review_finding_routes WHERE project_id=? AND (source_pull_number=? OR target_pull_number=?) ORDER BY id LIMIT 10001`, []any{project, pull, pull}},
 		{`SELECT o.id,o.revision,o.status FROM review_adoption_targets t JOIN review_adoption_obligations o ON o.id=t.obligation_id AND o.project_id=t.project_id WHERE t.project_id=? AND t.pull_number=? ORDER BY o.id LIMIT 10001`, []any{project, pull}},
 	}

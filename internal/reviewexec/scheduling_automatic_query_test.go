@@ -283,3 +283,94 @@ func TestAutomaticConcurrentProjectPlansAcceptOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticAdjudicationBasisUsesTargetFirstEquivalentRows(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, q := range []string{
+		`CREATE TABLE review_operations(id TEXT PRIMARY KEY,project_id TEXT,pull_number INTEGER,channel TEXT)`,
+		`CREATE INDEX review_round_operations_scope ON review_operations(project_id,pull_number,channel,id)`,
+		`CREATE TABLE review_execution_evidence(id TEXT PRIMARY KEY,project_id TEXT,operation_id TEXT,body_json TEXT)`,
+		`CREATE INDEX review_evidence_operation ON review_execution_evidence(project_id,operation_id,id)`,
+		`CREATE TABLE review_adjudication_state(evidence_id TEXT PRIMARY KEY,project_id TEXT,revision INTEGER)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, c := range []struct {
+		project        string
+		pull           int
+		lane, findings string
+	}{
+		{"p", 42, "hosted", "[]"}, {"p", 42, "cli", "[]"}, {"p", 42, "hosted", "[{}]"}, {"p", 42, "cli", "[{}]"}, {"p", 99, "hosted", "[{}]"}, {"other", 42, "hosted", "[{}]"},
+	} {
+		id := fmt.Sprintf("id%d", i)
+		for _, call := range []struct {
+			q    string
+			args []any
+		}{
+			{`INSERT INTO review_operations VALUES(?,?,?,?)`, []any{id, c.project, c.pull, c.lane}},
+			{`INSERT INTO review_execution_evidence VALUES(?,?,?,?)`, []any{id, c.project, id, `{"capture":{"review":{"Findings":` + c.findings + `}}}`}},
+			{`INSERT INTO review_adjudication_state VALUES(?,?,?)`, []any{id, c.project, i + 1}},
+		} {
+			if _, err := db.Exec(call.q, call.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	read := func(q string) []string {
+		t.Helper()
+		rows, err := db.Query(q, "p", 42)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := []string{}
+		for rows.Next() {
+			var id string
+			var rev int
+			if err := rows.Scan(&id, &rev); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, fmt.Sprintf("%s:%d", id, rev))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for _, lane := range []string{"hosted", "cli"} {
+		original := strings.ReplaceAll(automaticAdjudicationBasisQuery, "'hosted'", "'"+lane+"'")
+		physical := automaticBasisQuery(original, false)
+		want, got := read(original), read(physical)
+		if fmt.Sprint(got) != fmt.Sprint(want) || len(got) != 3 {
+			t.Fatal("changed rows/order/other-lane finding coverage", lane, want, got)
+		}
+		rows, err := db.Query("EXPLAIN QUERY PLAN "+physical, "p", 42)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, detail)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan[0], "SEARCH o USING COVERING INDEX") || !strings.Contains(plan[0], "project_id=? AND pull_number=?") {
+			t.Fatal("adjudication query did not start at target PR", plan)
+		}
+	}
+}
