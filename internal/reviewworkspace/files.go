@@ -20,12 +20,12 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
 	defer cancel()
-	if m.verify(ctx, w) != nil {
-		return nil, errVerification
+	if err := m.verify(ctx, w); err != nil {
+		return nil, err
 	}
 	var output bytes.Buffer
-	if m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--") != nil {
-		return nil, errVerification
+	if err := m.run(ctx, w.Directory, &output, changedFilesOutputLimit, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", w.MergeBaseSHA, w.CandidateSHA, "--"); err != nil {
+		return nil, err
 	}
 	data := output.Bytes()
 	if len(data) != 0 && data[len(data)-1] != 0 || bytes.Count(data, []byte{0}) > changedFilesCountLimit {
@@ -46,8 +46,8 @@ func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, erro
 		}
 	}
 	sort.Strings(paths)
-	if m.verify(ctx, w) != nil || ctx.Err() != nil {
-		return nil, errVerification
+	if err := m.verify(ctx, w); err != nil {
+		return nil, err
 	}
 	return paths, nil
 }

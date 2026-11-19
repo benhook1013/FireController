@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -180,20 +181,29 @@ func (s *HostedCaptureStore) Read(ctx context.Context, attemptID string, expecte
 	if !validIdentifier(attemptID) || !validHostedReference(expected) {
 		return empty, captureError("validation_failed")
 	}
-	if s == nil || captureDirectories(s.root, false) != nil {
+	if s == nil {
 		return empty, captureError("capture_unavailable")
+	}
+	if err := captureDirectories(s.root, false); err != nil {
+		return empty, hostedCaptureReadFailure(err)
 	}
 	path := filepath.Join(s.root, hostedCaptureFilename(attemptID, expected))
 	before, err := os.Lstat(path)
-	if err != nil || !privateRegular(before) || !captureMode(before, 0600) {
+	if err != nil {
+		return empty, hostedCaptureReadFailure(err)
+	}
+	if !privateRegular(before) || !captureMode(before, 0600) {
 		return empty, captureError("capture_unavailable")
 	}
 	data, _, err := readPrivateFile(path, maxHostedCaptureFile)
+	if err != nil {
+		return empty, hostedCaptureReadFailure(err)
+	}
 	var envelope hostedCaptureEnvelope
 	// Validate rejects duplicate/invalid Unicode JSON; canonical re-encoding below
 	// additionally rejects unknown, missing, null or case-aliased fields without
 	// treating time.Time's JSON strings as ordinary Go structs.
-	if err != nil || captureReference(data) != expected || strictjson.Validate(data) != nil || json.Unmarshal(data, &envelope) != nil || envelope.Version != 1 || envelope.AttemptID != attemptID || !validHostedCapture(attemptID, envelope.Record) {
+	if captureReference(data) != expected || strictjson.Validate(data) != nil || json.Unmarshal(data, &envelope) != nil || envelope.Version != 1 || envelope.AttemptID != attemptID || !validHostedCapture(attemptID, envelope.Record) {
 		return empty, captureError("capture_unavailable")
 	}
 	canonical, err := encodeHostedCapture(attemptID, envelope.Record)
@@ -201,8 +211,22 @@ func (s *HostedCaptureStore) Read(ctx context.Context, attemptID string, expecte
 		return empty, captureError("capture_unavailable")
 	}
 	after, err := os.Lstat(path)
-	if err != nil || !privateRegular(after) || !captureMode(after, 0600) || !os.SameFile(before, after) || captureDirectories(s.root, false) != nil || ctx.Err() != nil {
+	if err != nil {
+		return empty, hostedCaptureReadFailure(err)
+	}
+	if err := captureDirectories(s.root, false); err != nil {
+		return empty, hostedCaptureReadFailure(err)
+	}
+	if !privateRegular(after) || !captureMode(after, 0600) || !os.SameFile(before, after) || ctx.Err() != nil {
 		return empty, captureError("capture_unavailable")
 	}
 	return envelope.Record, nil
+}
+
+func hostedCaptureReadFailure(err error) error {
+	var fileError *os.PathError
+	if errors.As(err, &fileError) && !errors.Is(err, os.ErrNotExist) {
+		return core.Fail("storage_unavailable", "The retained Hosted capture could not be read.", 500)
+	}
+	return captureError("capture_unavailable")
 }

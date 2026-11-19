@@ -7,18 +7,21 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	Observer   *ReviewHostedObserverStatus `json:"observer,omitempty"`
-	ID         string                      `json:"id"`
-	PullNumber int64                       `json:"pull_number"`
-	Channel    string                      `json:"channel"`
-	State      string                      `json:"state"`
-	Revision   int64                       `json:"revision"`
-	Stage      string                      `json:"stage"`
-	Reason     string                      `json:"reason"`
-	AttemptID  string                      `json:"attempt_id"`
-	EvidenceID string                      `json:"evidence_id,omitempty"`
-	UpdatedAt  string                      `json:"updated_at"`
-	NextAction string                      `json:"next_action"`
+	queuedCause    string
+	Wait           *ReviewOperationWait        `json:"wait,omitempty"`
+	RetryNotBefore string                      `json:"retry_not_before,omitempty"`
+	Observer       *ReviewHostedObserverStatus `json:"observer,omitempty"`
+	ID             string                      `json:"id"`
+	PullNumber     int64                       `json:"pull_number"`
+	Channel        string                      `json:"channel"`
+	State          string                      `json:"state"`
+	Revision       int64                       `json:"revision"`
+	Stage          string                      `json:"stage"`
+	Reason         string                      `json:"reason"`
+	AttemptID      string                      `json:"attempt_id"`
+	EvidenceID     string                      `json:"evidence_id,omitempty"`
+	UpdatedAt      string                      `json:"updated_at"`
+	NextAction     string                      `json:"next_action"`
 }
 
 func (c *Client) ReviewOperationStatus(ctx context.Context, id string) (ReviewOperationStatus, error) {
@@ -32,7 +35,7 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	var status int
 	err := resumeResultWait(ctx, seconds, func(ctx context.Context, remaining int) error {
 		value = ReviewOperationStatus{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, hostedObserver: true})
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "operations", id, "status"), nil, true, "", nil, http.StatusOK, false, &value, 16<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, hostedObserver: true, operationWait: true, queuedCause: &value.queuedCause})
 	})
 	if err != nil {
 		return ReviewOperationStatus{}, reviewWaitTargetError(err, id)
@@ -43,6 +46,12 @@ func (c *Client) WaitReviewOperationStatus(ctx context.Context, id string, secon
 	return value, nil
 }
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
+	if !validReviewOperationWait(v.Wait, v.Channel, v.State, v.AttemptID) {
+		return false
+	}
+	if v.RetryNotBefore != "" && (v.Channel != "hosted" || v.State != "held" || v.Reason != "hosted_allowance_cooldown" || v.AttemptID == "" || !validAllowanceTime(v.RetryNotBefore)) {
+		return false
+	}
 	if !validReviewHostedObserver(v.Observer, v.Channel, v.State, v.AttemptID) {
 		return false
 	}
@@ -51,7 +60,7 @@ func validCompactOperationStatus(v ReviewOperationStatus) bool {
 	}
 	switch v.State {
 	case "queued":
-		return v.Stage == "queued" && v.NextAction == "wait"
+		return v.Stage == "queued" && (v.NextAction == "wait" || v.NextAction == "resume_or_cancel")
 	case "preparing":
 		return v.Stage == "preparing" && v.NextAction == "wait"
 	case "posting", "active":

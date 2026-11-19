@@ -15,13 +15,25 @@ func compactStatusFixture() client.ReviewOperationStatus {
 	return client.ReviewOperationStatus{ID: executionOperationID, PullNumber: 2, Channel: "hosted", State: "uncertain", Revision: 4, Stage: "capture_blocked", Reason: "hosted_finished_inventory_unproven", AttemptID: "review_attempt_" + strings.Repeat("b", 32), UpdatedAt: "2026-01-01T00:00:00Z", NextAction: "contact_controller_owner"}
 }
 func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
-	for _, mode := range []string{"valid", "ready", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize"} {
+	for _, mode := range []string{"valid", "queued", "paused", "bad_control_action", "ready", "unknown", "wrong_id", "missing_reason", "null_attempt", "extra_private", "provider_running", "fake_evidence", "bad_evidence", "wrong_stage", "unsafe_reason", "oversize"} {
 		t.Run(mode, func(t *testing.T) {
 			v := compactStatusFixture()
 			data, _ := json.Marshal(v)
 			var fields map[string]any
 			_ = json.Unmarshal(data, &fields)
 			switch mode {
+			case "queued", "paused", "bad_control_action":
+				fields["state"] = "queued"
+				fields["stage"] = "queued"
+				fields["attempt_id"] = ""
+				fields["reason"] = ""
+				fields["next_action"] = "wait"
+				if mode == "paused" {
+					fields["next_action"] = "resume_or_cancel"
+				}
+				if mode == "bad_control_action" {
+					fields["next_action"] = "resume_automatically"
+				}
 			case "ready":
 				fields["state"] = "completed"
 				fields["stage"] = "evidence_ready"
@@ -68,7 +80,7 @@ func TestReviewOperationStatusBoundWaitAndStrictResponse(t *testing.T) {
 			defer s.Close()
 			c := newClient(t, s)
 			got, err := c.WaitReviewOperationStatus(t.Context(), executionOperationID, 900)
-			if mode == "valid" || mode == "ready" || mode == "unknown" {
+			if mode == "valid" || mode == "ready" || mode == "unknown" || mode == "queued" || mode == "paused" {
 				if err != nil || got.ID != executionOperationID {
 					t.Fatal(got, err)
 				}
