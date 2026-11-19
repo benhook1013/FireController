@@ -666,6 +666,10 @@ func (e *Engine) generateAutomaticProjectForAccount(ctx context.Context, project
 }
 
 func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan) (bool, error) {
+	return e.acceptAutomaticProjectWithEnqueue(ctx, project, channel, readers, candidate, e.enqueueRunTx)
+}
+
+func (e *Engine) acceptAutomaticProjectWithEnqueue(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan, enqueue func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error)) (bool, error) {
 	worked := false
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		current, err := e.planAutomaticProject(ctx, tx, project, channel, readers)
@@ -682,10 +686,10 @@ func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel st
 			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
 		} else {
 			// Same ordinary acceptance path, fully reauthorized in this snapshot.
-			receipt, enqueueErr := e.enqueueRunTx(ctx, tx, current.scope, RunRequest{Channel: channel})
+			receipt, enqueueErr := enqueue(ctx, tx, current.scope, RunRequest{Channel: channel})
 			if enqueueErr != nil {
 				var failure *core.Error
-				if errors.As(enqueueErr, &failure) && (failure.Status == 409 || failure.Code == "overloaded") {
+				if errors.As(enqueueErr, &failure) && failure.Status == 409 {
 					return nil
 				}
 				return enqueueErr

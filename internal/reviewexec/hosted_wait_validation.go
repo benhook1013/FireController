@@ -77,7 +77,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	}
 	var firstDeadline, lastDeadline, baselineDeadline time.Time
 	foundCurrent := o.AttemptID == ""
-	foundDraft := false
+	foundDetached, foundDraft := false, false
 	for _, id := range ids {
 		a, err := readAttempt(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -96,15 +96,16 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			}
 			continue
 		}
-		_, draft, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
+		historicalUnused, unused, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return waitUnavailable()
 			}
 			return err
 		}
-		if draft {
-			foundDraft = true
+		if unused {
+			foundDetached = true
+			foundDraft = foundDraft || historicalUnused.Reason == cliDraftWait
 			continue
 		}
 		if !hasBaseline {
@@ -174,7 +175,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			return waitUnavailable()
 		}
 	}
-	if !foundCurrent || o.Wait == nil && !foundDraft {
+	if !foundCurrent || o.Wait == nil && !foundDetached || o.Reason == cliDraftWait && !foundDraft {
 		return waitUnavailable()
 	}
 	if hasBaseline {

@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1476,5 +1477,139 @@ func TestValidateSchedulingSnapshotRequiresPresentDomainMetadata(t *testing.T) {
 	admissionSQL(t, f, `DELETE FROM metadata WHERE key='schema:review_scheduling'`)
 	if err := validateSchedulingSnapshotForTest(t, f); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing optional domain metadata should not be mistaken for a schema version: %v", err)
+	}
+}
+
+func TestAutomaticAcceptanceOverloadRollsBackPartialSelection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+	var candidate *automaticProjectPlan
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		candidate, err = f.e.planAutomaticProject(ctx, tx, attemptProject, "hosted", readers)
+		return err
+	}); err != nil || candidate == nil {
+		t.Fatalf("could not prepare automatic selection: %v", err)
+	}
+	assertCounts := func(want int) {
+		t.Helper()
+		for _, query := range []string{
+			`SELECT count(*) FROM review_selections`,
+			`SELECT count(*) FROM review_automatic_selections`,
+			`SELECT count(*) FROM events WHERE event_type='review.selection_requested'`,
+		} {
+			var count int
+			if err := f.store.DB().QueryRowContext(t.Context(), query).Scan(&count); err != nil || count != want {
+				t.Fatalf("%s: count=%d want=%d err=%v", query, count, want, err)
+			}
+		}
+	}
+	conflict := func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error) {
+		return Receipt{}, core.Fail("review_busy", "Synthetic prewrite conflict.", 409)
+	}
+	if worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, conflict); worked || err != nil {
+		t.Fatalf("prewrite conflict was not benign: worked=%t err=%v", worked, err)
+	}
+	assertCounts(0)
+	// Exercise real writes, then inject a timeout-class failure at the enqueue
+	// boundary without relying on timing, an expired context or SQLite locks.
+	overloaded := core.Fail("overloaded", "Synthetic transient admission failure.", 503)
+	fault := func(ctx context.Context, tx *sql.Tx, scope core.Scope, req RunRequest) (Receipt, error) {
+		receipt, err := f.e.enqueueRunTx(ctx, tx, scope, req)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if receipt.ID == "" || ctx.Err() != nil {
+			t.Fatal("no live-transaction selection to roll back", receipt, ctx.Err())
+		}
+		return Receipt{}, overloaded
+	}
+	worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, fault)
+	assertCounts(0)
+	var refusal *core.Error
+	if worked || !errors.As(err, &refusal) || refusal.Code != "overloaded" {
+		t.Fatalf("transient overload was not propagated: worked=%t err=%v", worked, err)
+	}
+	if worked, err := f.e.acceptAutomaticProject(t.Context(), attemptProject, "hosted", readers, candidate); !worked || err != nil {
+		t.Fatalf("clean retry failed: worked=%t err=%v", worked, err)
+	}
+	assertCounts(1)
+}
+
+func TestSchedulingWaitSnapshotRequiresActualDraftProof(t *testing.T) {
+	f := schedulingFixture(t)
+	r := f.enqueue(t, attemptProject, "scheduling-only-cli", "cli", 2, 1)
+	a := f.start(t, attemptProject, r)
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "pull_scheduling_paused", ""); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIWaitSnapshot(t, f)
+	o := cliWaitRead(t, f, r.ID)
+	o.Reason = cliDraftWait
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return validateOperationWaitHistory(ctx, tx, o)
+	})
+	if err == nil {
+		t.Fatal("scheduling-only history was accepted as draft proof")
+	}
+}
+
+func TestAutomaticSelectionDoesNotSettleNewlyExposedQueueSuffix(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-queued-boundary", "hosted", 4, 1)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	before := schedulingLatest(t, f)
+
+	var readSix atomic.Bool
+	reader := &refreshTestReader{
+		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+			schedulingPause(t, f, 4, 0, true)
+			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+		},
+		pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+			if n == 6 {
+				readSix.Store(true)
+			}
+			return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "closed", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+		},
+	}
+	selectionNext(t, f, reader)
+	after := selectionRead(t, f, before.ID)
+	var basis string
+	if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, before.ID).Scan(&basis); err != nil {
+		t.Fatal(err)
+	}
+	if readSix.Load() || after.State != "held" || after.Reason != "selection_changed" || basis != "" {
+		t.Fatalf("unacquired suffix retired: readSix=%t state=%s reason=%s basis=%s", readSix.Load(), after.State, after.Reason, basis)
+	}
+	schedulingGenerate(t, f, true)
+	reader.repository = nil
+	selectionNext(t, f, reader)
+	if !readSix.Load() {
+		t.Fatal("fresh selection did not acquire newly exposed pull")
+	}
+}
+
+func TestAutomaticCLISelectionKeepsExistingSourceLimit(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-cli-queued-boundary", "cli", 4, 1)
+	schedulingCLIEnable(t, f, 0, true)
+	schedulingCLIGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	recovery0030Claim(t, f, r.ID)
+	r = selectionRead(t, f, r.ID)
+	var c Configuration
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		c, _, err = readConfiguration(ctx, tx, attemptProject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	choice, err := f.e.chooseRun(t.Context(), r, 801, c, &refreshTestReader{})
+	if err != nil || choice.automaticHostedQueueLimit != nil || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 {
+		t.Fatalf("CLI source remains limited to PR2, without a Hosted settlement pin: %+v err=%v", choice, err)
 	}
 }

@@ -155,3 +155,38 @@ func TestRecovery0030InitialReadRequiresCompleteTransitionEvidence(t *testing.T)
 		})
 	}
 }
+
+func TestRecovery0030InitialReadRequiresAlternationAndMatchingFinalState(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	recovery0030Claim(t, f, r.ID)
+	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	recovery0030Claim(t, f, r.ID)
+	r = selectionRead(t, f, r.ID)
+	assertInitial := func(run Run, want bool) {
+		t.Helper()
+		err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			got, err := automaticSourceInitialRead(ctx, tx, run)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				t.Errorf("transition proof=%t want=%t", got, want)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertInitial(r, true)
+	wrongFinal := r
+	wrongFinal.State = "queued"
+	assertInitial(wrongFinal, false)
+	admissionSQL(t, f, `UPDATE events SET payload_json='{"state":"queued","reason":""}' WHERE resource_id=? AND event_type='review.selection_updated' AND revision=2`, r.ID)
+	assertInitial(r, false)
+}
