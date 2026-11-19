@@ -60,11 +60,12 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 
 // runReads coalesces source identities only within one bounded selection phase.
 type runReads struct {
-	reader     TargetReader
-	repos      map[int64]reviewprovider.Repository
-	pulls      map[string]map[int64]reviewprovider.Pull
-	parents    map[string]reviewprovider.Pull
-	parentHint *runParentHint
+	reader             TargetReader
+	repos              map[int64]reviewprovider.Repository
+	pulls              map[string]map[int64]reviewprovider.Pull
+	parents            map[string]reviewprovider.Pull
+	parentHint         *runParentHint
+	parentMismatchRead bool
 }
 
 func (r *runReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
@@ -89,6 +90,18 @@ func (r *runReads) Pull(ctx context.Context, repo string, n int64) (reviewprovid
 		r.pulls[repo][n] = v
 	}
 	return v, err
+}
+
+func (r *runReads) RefreshParentMismatch(ctx context.Context, old SourcePlan) (SourcePlan, bool, error) {
+	if r.parentMismatchRead {
+		return old, false, nil
+	}
+	r.parentMismatchRead = true
+	fresh, verified, err := ReadParentMismatchRefresh(ctx, r.reader, old)
+	if verified {
+		r.pulls[old.Repository.FullName][old.Pull.Number] = fresh.Pull
+	}
+	return fresh, verified, err
 }
 
 type runPullResult struct {

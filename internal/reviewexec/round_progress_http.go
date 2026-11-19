@@ -72,7 +72,8 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 		stages: stages, queuePriority: r.Header.Get(operationWaitHeader) == "5",
 		activity: query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
 		sourceRetryTiming: query.Get("include_source_retry_timing") == "true",
-		fixes:             stages && r.Header.Get(reviewFixStatusHeader) == "v1",
+		fixes:             stages && (r.Header.Get(reviewFixStatusHeader) == "v1" || r.Header.Get(reviewFixStatusHeader) == "v2"),
+		incomingRoutes:    stages && r.Header.Get(reviewFixStatusHeader) == "v2",
 	})
 	if err != nil {
 		core.WriteError(w, err)

@@ -509,3 +509,75 @@ func TestResolveSourceObservationPreservesStackScopeAndAssertions(t *testing.T) 
 		t.Fatal("nil observation context made provider calls")
 	}
 }
+
+type refreshingSourceReader struct {
+	*sourceReader
+	attempted bool
+}
+
+func (r *refreshingSourceReader) RefreshParentMismatch(ctx context.Context, old reviewexec.SourcePlan) (reviewexec.SourcePlan, bool, error) {
+	if r.attempted {
+		return old, false, nil
+	}
+	r.attempted = true
+	return reviewexec.ReadParentMismatchRefresh(ctx, r.sourceReader, old)
+}
+
+func TestParentMismatchRefreshUsesOnlyFreshExactPair(t *testing.T) {
+	for _, variant := range []string{"aligned", "recovers", "persists", "changed-head", "changed-parent", "unavailable", "old-head-no-opt-in"} {
+		t.Run(variant, func(t *testing.T) {
+			raw, config, request := sourceFixture()
+			config.Mode = "stacked"
+			sourceBaseBranch(raw, 9, 1)
+			child := raw.pulls[9]
+			parent := reviewprovider.Pull{Number: 1, RepositoryID: 701, State: "open", HeadSHA: strings.Repeat("c", 40), BaseSHA: strings.Repeat("d", 40), HeadRef: child.BaseRef, BaseRef: "main", ChangedFiles: 1}
+			raw.pulls[1] = parent
+			if variant == "aligned" {
+				child.BaseSHA = parent.HeadSHA
+				raw.pulls[9] = child
+			}
+			var seenChild int
+			raw.onCall = func(_ context.Context, name string) error {
+				if name != "pull:owner/canonical#9" {
+					return nil
+				}
+				seenChild++
+				if seenChild != 2 {
+					return nil
+				}
+				switch variant {
+				case "recovers":
+					child.BaseSHA = parent.HeadSHA
+					raw.pulls[9] = child
+				case "changed-head":
+					child.HeadSHA = strings.Repeat("e", 40)
+					raw.pulls[9] = child
+				case "changed-parent":
+					parent.HeadSHA = strings.Repeat("f", 40)
+					child.BaseSHA = parent.HeadSHA
+					raw.pulls[9], raw.pulls[1] = child, parent
+				case "unavailable":
+					return errors.New("synthetic provider failure")
+				}
+				return nil
+			}
+			reader := &refreshingSourceReader{sourceReader: raw}
+			var boundary reviewexec.TargetReader = reader
+			if variant == "old-head-no-opt-in" {
+				boundary = raw
+			}
+			plan, err := reviewexec.ResolveSource(t.Context(), boundary, 701, config, request)
+			if variant == "aligned" || variant == "recovers" {
+				if err != nil || plan.Pull.BaseSHA != parent.HeadSHA || plan.ParentPullNumber != 1 {
+					t.Fatalf("exact comparison not recovered: %+v %v", plan, err)
+				}
+			} else if err == nil {
+				t.Fatal("unproven or changed comparison was accepted")
+			}
+			want := map[string]int{"aligned": 3, "recovers": 5, "persists": 5, "changed-head": 4, "changed-parent": 5, "unavailable": 4, "old-head-no-opt-in": 3}[variant]
+			if len(raw.calls) != want {
+				t.Fatalf("calls = %v, want %d", raw.calls, want)
+			}
+		})
+	}
+}

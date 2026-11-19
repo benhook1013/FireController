@@ -14,7 +14,7 @@ export interface JobSummary extends JobIdentity {progress_summary: string; block
 export interface JobProgress {summary: string; next: string; blocker: string; evidence: string[]}
 export interface JobProgressEntry {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; progress: JobProgress; created_at: string}
 export interface JobChecklistSummary {revision: number; remaining: ChecklistItem[]; completed: number; total: number}
-export interface Job extends JobIdentity {project_id: string; brief: string; created_at: string; updated_at: string; progress: JobProgress; checklist: JobChecklistSummary; notes: Page<NoteSummary>}
+export interface Job extends JobIdentity {project_id: string; brief: string; created_at: string; updated_at: string; progress: JobProgress; checklist: JobChecklistSummary; notes: Page<NoteSummary>; blocked_by?: string[]}
 export interface DeliveryWorker extends Worker {primary_job_id: string; paused: boolean; pause_reason: string; pause_reason_truncated: boolean}
 export interface DeliveryProgress {summary: string; next: string; blocker: string; summary_truncated: boolean; next_truncated: boolean; blocker_truncated: boolean}
 export interface DeliveryChecklist {revision: number; job_revision: number; total: number; done: number; created_at: string}

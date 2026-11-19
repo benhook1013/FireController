@@ -220,7 +220,11 @@ function validProgressPreview(value: Record<string, unknown>): boolean {
   return checkpointText(value.progress_summary, 240, false) && checkpointText(value.blocker, 240, false) && typeof value.progress_truncated === 'boolean' && typeof value.blocker_truncated === 'boolean' && (!value.progress_truncated || value.progress_summary !== '') && (!value.blocker_truncated || value.blocker !== '');
 }
 function validJob(value: unknown, projectId: string): value is Job {
-  if (!record(value) || !keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at', 'progress', 'checklist', 'notes']) || value.project_id !== projectId || !id(value.id) || !contentText(value.title, 240) || !contentText(value.brief, 32768, true) || !text(value.worker_id, 128, true) || typeof value.status !== 'string' || !jobStatuses.has(value.status) || !positive(value.revision) || !timestamp(value.created_at) || !timestamp(value.updated_at) || !validProgress(value.progress)) return false;
+  if (!record(value) || !keys(value, ['id', 'project_id', 'title', 'brief', 'worker_id', 'status', 'revision', 'created_at', 'updated_at', 'progress', 'checklist', 'notes'], ['blocked_by']) || value.project_id !== projectId || !id(value.id) || !contentText(value.title, 240) || !contentText(value.brief, 32768, true) || !text(value.worker_id, 128, true) || typeof value.status !== 'string' || !jobStatuses.has(value.status) || !positive(value.revision) || !timestamp(value.created_at) || !timestamp(value.updated_at) || !validProgress(value.progress)) return false;
+  if (Object.hasOwn(value, 'blocked_by')) {
+    const blockers = value.blocked_by;
+    if (!Array.isArray(blockers) || blockers.length > 20 || !blockers.every((blocker, index) => id(blocker) && blocker !== value.id && (index === 0 || blockers[index - 1] < blocker))) return false;
+  }
   const checklist = value.checklist;
   if (!record(checklist) || !keys(checklist, ['revision', 'remaining', 'completed', 'total']) || !nonnegative(checklist.revision) || !validChecklistItems(checklist.remaining) || checklist.remaining.some(item => item.done) || !nonnegative(checklist.completed) || !nonnegative(checklist.total) || checklist.total > 100 || checklist.remaining.length + checklist.completed !== checklist.total || checklist.revision === 0 && checklist.total !== 0) return false;
   if (!coordinationPage(value.notes, 5)) return false;
@@ -1360,7 +1364,7 @@ export class Api {
     if (inboxOriginReadPath(path, this.projectRoute(''))) headers.set('X-FC-Inbox-Origin', 'controller-v1');
     if (path.startsWith(this.projectRoute('reviews/'))) headers.set('X-FC-Review-Start', 'v1');
     if (path.startsWith(this.projectRoute('reviews/queue') + '?')) headers.set('X-FC-Queue-Topology', 'v1');
-    if (path.startsWith(this.projectRoute('reviews/rounds/progress') + '?')) headers.set('X-FC-Review-Fix-Status', 'v1');
+    if (path.startsWith(this.projectRoute('reviews/rounds/progress') + '?')) headers.set('X-FC-Review-Fix-Status', 'v2');
     return headers;
   }
   private headers(instanceId?: string, worker?: string): Headers {

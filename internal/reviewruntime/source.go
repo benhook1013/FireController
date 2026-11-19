@@ -83,10 +83,12 @@ func refreshAgedMaterializedSource(ctx context.Context, reader reviewexec.Target
 // Each phase has its own memoizer. Repeated stack-resolution reads within one
 // phase share facts, while Dispatch cannot reuse Prepare's provider observation.
 type sourceReads struct {
-	reader       reviewexec.TargetReader
-	repositories map[int64]reviewprovider.Repository
-	pulls        map[sourcePullKey]reviewprovider.Pull
-	parents      map[string]reviewprovider.Pull
+	reader             reviewexec.TargetReader
+	repositories       map[int64]reviewprovider.Repository
+	pulls              map[sourcePullKey]reviewprovider.Pull
+	parents            map[string]reviewprovider.Pull
+	parentMismatchRead bool
+	preparing          bool
 }
 type sourcePullKey struct {
 	repository string
@@ -96,6 +98,18 @@ type sourcePullKey struct {
 func newSourceReads(reader reviewexec.TargetReader) *sourceReads {
 	return &sourceReads{reader: reader, repositories: map[int64]reviewprovider.Repository{}, pulls: map[sourcePullKey]reviewprovider.Pull{}, parents: map[string]reviewprovider.Pull{}}
 }
+func (r *sourceReads) RefreshParentMismatch(ctx context.Context, old reviewexec.SourcePlan) (reviewexec.SourcePlan, bool, error) {
+	if !r.preparing || r.parentMismatchRead {
+		return old, false, nil
+	}
+	r.parentMismatchRead = true
+	fresh, verified, err := reviewexec.ReadParentMismatchRefresh(ctx, r.reader, old)
+	if verified {
+		r.pulls[sourcePullKey{old.Repository.FullName, old.Pull.Number}] = fresh.Pull
+	}
+	return fresh, verified, err
+}
+
 func (r *sourceReads) Repository(ctx context.Context, id int64) (reviewprovider.Repository, error) {
 	if value, ok := r.repositories[id]; ok {
 		return value, nil
@@ -141,6 +155,8 @@ func (r *sourceReads) ParentPull(ctx context.Context, repository, branch string)
 // preparation. A moved comparison is handed back before any allowance query or
 // provider write, never during Dispatch where exact run anchors remain strict.
 func resolvePreparingIntentSource(ctx context.Context, engine *reviewexec.Engine, reads *sourceReads, repositoryID int64, configuration reviewexec.Configuration, operation reviewexec.Operation) (reviewexec.SourcePlan, []reviewexec.SourcePlan, error) {
+	reads.preparing = true
+	defer func() { reads.preparing = false }()
 	request := operationRequest(operation)
 	plan, err := reviewexec.ResolveSource(ctx, reads, repositoryID, configuration, request)
 	if err != nil {

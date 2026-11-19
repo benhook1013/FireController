@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -44,8 +45,9 @@ type CancelledWait struct {
 }
 
 type RoundProgressItem struct {
-	PullNumber int64                  `json:"pull_number"`
-	Channels   []RoundProgressChannel `json:"channels"`
+	PullNumber            int64                  `json:"pull_number"`
+	Channels              []RoundProgressChannel `json:"channels"`
+	IncomingRoutesPending *int64                 `json:"incoming_routes_pending,omitempty"`
 }
 
 type RoundProgress struct {
@@ -81,7 +83,7 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 }
 
 type roundProgressView struct {
-	stages, queuePriority, activity, sourceRetry, sourceRetryTiming, fixes bool
+	stages, queuePriority, activity, sourceRetry, sourceRetryTiming, fixes, incomingRoutes bool
 }
 
 func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, view roundProgressView) (RoundProgress, error) {
@@ -91,8 +93,16 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 	numbers = append([]int64(nil), numbers...)
 	out := RoundProgress{ProjectID: scope.ProjectID, Items: make([]RoundProgressItem, 0, len(numbers))}
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
+		var incoming map[int64]*int64
+		if view.incomingRoutes {
+			var err error
+			incoming, err = readIncomingRouteProgress(ctx, tx, scope.ProjectID, numbers)
+			if err != nil {
+				return err
+			}
+		}
 		for _, number := range numbers {
-			item := RoundProgressItem{PullNumber: number, Channels: make([]RoundProgressChannel, 0, 2)}
+			item := RoundProgressItem{PullNumber: number, Channels: make([]RoundProgressChannel, 0, 2), IncomingRoutesPending: incoming[number]}
 			for _, channel := range []string{"hosted", "cli"} {
 				control, err := readRoundRecord(ctx, tx, scope.ProjectID, number, channel)
 				if err != nil {
@@ -171,6 +181,35 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 		return RoundProgress{}, err
 	}
 	return out, nil
+}
+
+// Match the receiving-policy projection in one bounded, indexed local read.
+// Do not turn an invalidated fact into a misleading zero.
+func readIncomingRouteProgress(ctx context.Context, tx *sql.Tx, project string, numbers []int64) (map[int64]*int64, error) {
+	body, err := json.Marshal(numbers)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT p.value,
+  (SELECT count(*) FROM review_route_policy_facts f WHERE f.project_id=? AND f.target_pull_number=p.value AND f.active=1 AND f.pending=1),
+  EXISTS(SELECT 1 FROM review_route_policy_invalidations i WHERE i.project_id=? AND i.target_pull_number=p.value)
+ FROM json_each(?) p`, project, project, string(body))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]*int64, len(numbers))
+	for rows.Next() {
+		var n, count int64
+		var dirty bool
+		if err := rows.Scan(&n, &count, &dirty); err != nil {
+			return nil, err
+		}
+		if !dirty && count >= 0 && count <= 1<<53-1 {
+			out[n] = &count
+		}
+	}
+	return out, rows.Err()
 }
 
 // Source-only waits need not have an allowance timer. Only read the retry

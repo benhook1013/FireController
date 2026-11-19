@@ -110,6 +110,19 @@ describe('truthful stored review presentation', () => {
     expect(held).toContain('>Dependency hold</span>'); expect(held).toContain('title="Waiting for earlier PR work'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
   });
 
+  it('shows unresolved incoming routes only on their open receiving queue row', () => {
+    const rounds: ReviewProgressItem = { pull_number: 2, channels: [
+      { channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 1, taper: 2, used: 1, dry: 0, tapered: false, pending: 0 },
+      { channel: 'cli', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 1, taper: 2, used: 1, dry: 0, tapered: false, pending: 0 },
+    ] };
+    const html = (count?: number, number = 2, state: 'open'|'merged' = 'open') =>
+      markup(<ReviewQueueRow pull={pull(number, state)} snapshot="snapshot" progress={{ ...rounds, incoming_routes_pending: count }} />);
+    expect(html(1)).toContain('>1 incoming routed finding</a>');
+    expect(html(2)).toContain('>2 incoming routed findings</a>');
+    expect(html(2)).toContain('No reviews remaining');
+    for (const out of [html(0), html(), html(2, 3), html(2, 2, 'merged')]) expect(out).not.toContain('incoming routed finding');
+  });
+
   it('renders Fixes pending from the current native hold while keeping adjudication distinct', () => {
     const v = fronts();
     v.channels = [{ ...v.channels[0], state: 'held', reason: 'review_fixes_pending' }];

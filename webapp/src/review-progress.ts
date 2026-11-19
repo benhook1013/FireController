@@ -21,7 +21,7 @@ export interface ReviewRoundProgress {
   submission_evidence?: ReviewSubmissionEvidence;
   source_retry?: ReviewSourceRetry;
 }
-export interface ReviewProgressItem { pull_number: number; channels: ReviewRoundProgress[] }
+export interface ReviewProgressItem { pull_number: number; channels: ReviewRoundProgress[]; incoming_routes_pending?: number }
 export interface ReviewProgress { project_id: string; evaluated_at: string; items: ReviewProgressItem[] }
 
 export function progressPulls(value: unknown): value is number[] {
@@ -70,7 +70,7 @@ export function validRoundProgress(value: unknown, channel: string): value is Re
 }
 export function validReviewProgress(value: unknown, project: string, pulls: number[]): value is ReviewProgress {
   if (!object(value) || !fields(value, ['project_id','evaluated_at','items']) || value.project_id !== project || !sessionExpiry(value.evaluated_at) || !Array.isArray(value.items) || value.items.length !== pulls.length) return false;
-  return value.items.every((item, index) => object(item) && fields(item, ['pull_number','channels']) && item.pull_number === pulls[index] && Array.isArray(item.channels) && item.channels.length === 2 && validRoundProgress(item.channels[0], 'hosted') && validRoundProgress(item.channels[1], 'cli'));
+  return value.items.every((item, index) => object(item) && fields(item, ['pull_number','channels', ...(Object.hasOwn(item, 'incoming_routes_pending') ? ['incoming_routes_pending'] : [])]) && (!Object.hasOwn(item, 'incoming_routes_pending') || natural(item.incoming_routes_pending)) && item.pull_number === pulls[index] && Array.isArray(item.channels) && item.channels.length === 2 && validRoundProgress(item.channels[0], 'hosted') && validRoundProgress(item.channels[1], 'cli'));
 }
 export function roundProgressState(c: ReviewRoundProgress): string {
   return roundProgressStopReason(c) ? 'No reviews remaining' : 'More rounds allowed';

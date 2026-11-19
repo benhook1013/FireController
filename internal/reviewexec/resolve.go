@@ -24,6 +24,50 @@ type ParentReader interface {
 	ParentPull(context.Context, string, string) (reviewprovider.Pull, error)
 }
 
+// ParentMismatchRefresher opts an observational phase into one bounded refresh.
+// Final action rechecks must use a reader without this opt-in.
+type ParentMismatchRefresher interface {
+	RefreshParentMismatch(context.Context, SourcePlan) (SourcePlan, bool, error)
+}
+
+// ReadParentMismatchRefresh reobserves only the child and its named parent.
+// A new parent binding belongs to a new phase, not previously read stack plans.
+func ReadParentMismatchRefresh(ctx context.Context, reader TargetReader, old SourcePlan) (SourcePlan, bool, error) {
+	parents, ok := reader.(ParentReader)
+	if !ok {
+		return old, false, nil
+	}
+	observed := stamp()
+	child, err := reader.Pull(ctx, old.Repository.FullName, old.Pull.Number)
+	if err != nil {
+		return old, false, err
+	}
+	if !sameTarget(child, old.Repository.ID, old.Pull.Number) || child.State != "open" ||
+		child.Merged || child.ChangedFiles < 1 || child.HeadSHA != old.Pull.HeadSHA ||
+		child.BaseRef != old.Pull.BaseRef || child.IsDraft != nil && *child.IsDraft {
+		return old, false, sourceHold("source_changed")
+	}
+	parent, err := parents.ParentPull(ctx, old.Repository.FullName, child.BaseRef)
+	if err != nil {
+		return old, false, err
+	}
+	if !sameTarget(parent, old.Repository.ID, old.ParentPullNumber) || parent.State != "open" ||
+		parent.Merged || parent.HeadRef != child.BaseRef || parent.HeadSHA != old.ParentSHA {
+		return old, false, sourceHold("source_changed")
+	}
+	if ctx.Err() != nil {
+		return old, false, sourceHold("observation_incomplete")
+	}
+	if child.BaseSHA != parent.HeadSHA {
+		if child.BaseSHA != old.Pull.BaseSHA {
+			return old, false, sourceHold("source_changed")
+		}
+		return old, false, nil
+	}
+	old.Pull, old.ObservedAt = child, observed
+	return old, true, nil
+}
+
 type SourcePlan struct {
 	Repository       reviewprovider.Repository
 	Pull             reviewprovider.Pull
@@ -125,6 +169,17 @@ func resolveSource(ctx context.Context, reader TargetReader, repositoryID int64,
 		return SourcePlan{}, sourceHold("default_base_changed")
 	}
 	if plan.ParentSHA != pull.BaseSHA {
+		if execution && plan.ParentPullNumber != 0 {
+			if refresh, ok := reader.(ParentMismatchRefresher); ok {
+				fresh, verified, err := refresh.RefreshParentMismatch(ctx, plan)
+				if err != nil {
+					return SourcePlan{}, err
+				}
+				if verified {
+					return fresh, nil
+				}
+			}
+		}
 		return SourcePlan{}, &core.Error{Code: "review_held", Message: "The selected parent and observed base differ.", Status: 409, Details: map[string]string{"reason": "parent_moved", "pull_number": strconv.FormatInt(pull.Number, 10), "parent_pull_number": strconv.FormatInt(plan.ParentPullNumber, 10), "observed_base_sha": pull.BaseSHA, "expected_parent_sha": plan.ParentSHA}}
 	}
 	if ctx.Err() != nil {

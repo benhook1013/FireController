@@ -795,6 +795,27 @@ describe('Api stored review workspace', () => {
 });
 
 describe('Api binding and bounded reads', () => {
+  it('accepts job details with native blocker IDs and older results without them', async () => {
+    setupLocation(); const client = api(); await connect(client);
+    for (const detail of [job, { ...job, blocked_by: [] }, { ...job, blocked_by: ['job_alpha', 'job_beta'] }]) {
+      vi.stubGlobal('fetch', vi.fn(async () => json(detail)));
+      await expect(client.job('job_one')).resolves.toEqual(detail);
+    }
+    client.close();
+  });
+  it.each([
+    { blocked_by: null }, { blocked_by: 'job_other' }, { blocked_by: ['job/other'] },
+    { blocked_by: ['job_one'] }, { blocked_by: ['job_other', 'job_other'] },
+    { blocked_by: ['job_beta', 'job_alpha'] },
+    { blocked_by: Array.from({ length: 21 }, (_, index) => 'job_' + String(index).padStart(2, '0')) },
+    { blocked_by: [], unknown_field: true },
+  ])('rejects invalid job detail fields %j', async change => {
+    setupLocation(); const client = api(); await connect(client);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ ...job, ...change })));
+    await expect(client.job('job_one')).rejects.toMatchObject({ code: 'invalid_response' });
+    client.close();
+  });
+
   it('verifies instance then project and binds every read to same origin, instance and selected worker', async () => {
     setupLocation();
     const client = api();
