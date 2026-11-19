@@ -1433,6 +1433,28 @@ func TestValidateSchedulingSnapshotRejectsStaleProjectProjection(t *testing.T) {
 	attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
 }
 
+func TestValidateSchedulingSnapshotRejectsMissingPausedPullProjection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingPause(t, f, 2, 0, true)
+	schedulingPause(t, f, 4, 0, true)
+	revision, resumed := int64(1), false
+	scope := selectionScope(t, f, attemptProject, f.writer, "write")
+	if _, err := f.e.ConfigurePullScheduling(t.Context(), scope, "resume-snapshot-control", 4, PullSchedulingRequest{
+		ExpectedRevision: &revision, Paused: &resumed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("healthy paused and resumed projections rejected: %v", err)
+	}
+	admissionSQL(t, f, `DELETE FROM review_pull_scheduling WHERE project_id=? AND pull_number=4`, attemptProject)
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("absent projection for a latest genuine resume refused: %v", err)
+	}
+	admissionSQL(t, f, `DELETE FROM review_pull_scheduling WHERE project_id=? AND pull_number=2`, attemptProject)
+	attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
+}
+
 func TestValidateSchedulingSnapshotRejectsMalformedAndFutureVersions(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
