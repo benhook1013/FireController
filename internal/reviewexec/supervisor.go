@@ -141,12 +141,33 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 type pendingScanPosition struct{ createdAt, id string }
 
 type pendingExhaustion struct {
-	before, timedOut pendingScanPosition
+	beforeTimedOut, timedOut pendingScanPosition
+}
+
+// Record the slow row only after retaining the prefix replay cursor. A Draft
+// probe does not advance the ordinary cursor and may be the only returned item.
+func retainPendingExhaustion(advance func(pendingScanPosition), cursor pendingScanPosition, firstOrdinary *pendingScanPosition, before, timedOut pendingScanPosition, receipt *pendingExhaustion) {
+	if firstOrdinary != nil {
+		cursor = *firstOrdinary
+	}
+	advance(cursor)
+	if receipt != nil {
+		*receipt = pendingExhaustion{before, timedOut}
+	}
+}
+
+// Expiry can surface as an empty, row-local unavailable classification. A
+// nonempty successful validation stays eligible for guarded admission.
+func pendingCandidateReadError(ctx context.Context, o Operation, err error, chargeEmptyExpiry bool) error {
+	if err == nil && o.ID == "" && chargeEmptyExpiry {
+		return ctx.Err()
+	}
+	return pendingScanError(ctx, err)
 }
 
 func (e *Engine) finishPendingBatch(worker int, receipt pendingExhaustion, examined, overloaded bool) {
 	if examined && !overloaded && receipt.timedOut != (pendingScanPosition{}) {
-		e.rewindTimedOutPendingCandidate(worker, receipt.before, receipt.timedOut)
+		e.rewindTimedOutPendingCandidate(worker, receipt.beforeTimedOut, receipt.timedOut)
 	}
 }
 
@@ -163,6 +184,12 @@ func (e *Engine) rewindTimedOutPendingCandidate(worker int, before, candidate pe
 	}
 	e.pendingScanTimeout[worker] = candidate
 	e.pendingScanCursor[worker] = before
+}
+
+func (e *Engine) pendingCandidateHasFreshRetry(worker int, candidate pendingScanPosition) bool {
+	e.pendingScanMu.Lock()
+	defer e.pendingScanMu.Unlock()
+	return e.pendingScanTimeout[worker] == candidate
 }
 
 // A completed candidate validation ends its timeout streak, including when
@@ -430,10 +457,7 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 				advance(cursor)
 			}
 			if len(out) != 0 && errors.Is(filterErr, context.DeadlineExceeded) {
-				resumeReturned()
-				if receipt != nil && firstReturned != nil {
-					*receipt = pendingExhaustion{*firstReturned, position}
-				}
+				retainPendingExhaustion(advance, cursor, firstReturned, before, position, receipt)
 				return out, nil
 			}
 			return nil, filterErr
@@ -450,14 +474,12 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 			}
 		}
 		o, err := readCandidate(project, operation)
-		if err == nil && ctx.Err() != nil && firstReturned != nil {
-			// A row-local unavailable classification can absorb the deadline.
-			// Preserve the existing no-prefix traversal; only a returned ordinary
-			// prefix needs the identity for the worker's exhaustion receipt.
-			err = ctx.Err()
-		}
-		if err != nil {
-			err = pendingScanError(ctx, err)
+		// Without a returned prefix, a known unavailable row may consume the
+		// budget while classifying its local failure. Keep traversal progress
+		// unless this exact row is already on its recorded fresh retry.
+		chargeEmptyExpiry := len(out) != 0 ||
+			(ctx.Err() != nil && e.pendingCandidateHasFreshRetry(worker, position))
+		if err = pendingCandidateReadError(ctx, o, err, chargeEmptyExpiry); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				if len(out) == 0 {
 					e.rewindTimedOutPendingCandidate(worker, before, position)
@@ -468,10 +490,7 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 				advance(cursor) // Never rotate past an operational storage failure.
 			}
 			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
-				resumeReturned()
-				if receipt != nil && firstReturned != nil {
-					*receipt = pendingExhaustion{*firstReturned, position}
-				}
+				retainPendingExhaustion(advance, cursor, firstReturned, before, position, receipt)
 				return out, nil
 			}
 			return nil, err
