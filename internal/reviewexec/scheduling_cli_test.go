@@ -203,15 +203,27 @@ func TestSchedulingCLIControlsAndCurrentHead(t *testing.T) {
 			if r.State != "selected" {
 				t.Fatal(r)
 			}
-			if kind == "stale-head" {
-				admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE id=?`, strings.Repeat("f", 40), r.OperationID)
+			// The execution admission guard, not automatic selection, owns the head check.
+			attempt, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
+			if err != nil || attempt.State != "preparing" {
+				t.Fatal("selected operation did not prepare", attempt, err)
 			}
-			// Normal execution gates, rather than automatic scheduling, still own final admission.
-			if kind == "stale-head" {
-				_, err := f.e.ExecutionContext(t.Context(), attemptProject, r.OperationID)
-				if err == nil {
-					t.Fatal("stale head admitted")
-				}
+			current, err := f.e.ExecutionContext(t.Context(), attemptProject, r.OperationID)
+			if err != nil {
+				t.Fatal("selected operation did not pass execution context", err)
+			}
+			matching := attemptAnchor(attemptProject, current.Operation.PullNumber)
+			matching.CandidateSHA = current.Operation.HeadSHA
+			stale := matching
+			stale.CandidateSHA = strings.Repeat("f", 40)
+			if stale.CandidateSHA == matching.CandidateSHA {
+				t.Fatal("fixture did not change candidate head")
+			}
+			_, err = f.e.Admit(t.Context(), attemptProject, attempt.ID, attempt.Revision, stale, "")
+			attemptCode(t, err, "review_conflict")
+			admitted, err := f.e.Admit(t.Context(), attemptProject, attempt.ID, attempt.Revision, matching, "")
+			if err != nil || admitted.State != "active" || admitted.Anchor == nil || *admitted.Anchor != matching {
+				t.Fatal("same attempt with matching head did not admit", admitted, err)
 			}
 			schedulingCLIGenerate(t, f, false)
 		})
