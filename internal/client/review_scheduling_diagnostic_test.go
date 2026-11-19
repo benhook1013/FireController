@@ -82,8 +82,12 @@ func TestQueuedSchedulingDiagnosticsUseCurrentCause(t *testing.T) {
 func TestHeldSchedulingDiagnosticsIgnoreQueuedCause(t *testing.T) {
 	for _, channel := range []string{"cli", "hosted"} {
 		for _, reason := range []string{"pull_scheduling_paused", "automation_authorization_changed", "automatic_intent_retained"} {
-			operation := ReviewOperation{State: "held", Channel: channel, Reason: reason, queuedCause: "cooldown"}
-			status := ReviewOperationStatus{State: "held", Stage: "held", Channel: channel, Reason: reason, queuedCause: "cooldown", NextAction: "read_diagnostics"}
+			competingCause := "automatic_intent_retained"
+			if reason == competingCause {
+				competingCause = "automation_authorization_changed"
+			}
+			operation := ReviewOperation{State: "held", Channel: channel, Reason: reason, queuedCause: competingCause}
+			status := ReviewOperationStatus{State: "held", Stage: "held", Channel: channel, Reason: reason, queuedCause: competingCause, NextAction: "read_diagnostics"}
 			full, compact := AgentReviewOperation(operation), AgentReviewOperationStatus(status)
 			if !reflect.DeepEqual(full.Diagnostic, schedulingDiagnostic(reason)) || !reflect.DeepEqual(compact.Diagnostic, full.Diagnostic) || !reflect.DeepEqual(full.ReviewOperation, operation) || !reflect.DeepEqual(compact.ReviewOperationStatus, status) {
 				t.Fatal("held scheduling guidance or retained facts changed", full, compact)
