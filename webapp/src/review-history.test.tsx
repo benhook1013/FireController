@@ -47,6 +47,18 @@ describe('per-PR inline retained review history', () => {
     expect(html).not.toContain('Private'); expect(html).not.toContain('review-history-findings"><');
     expect(html).not.toMatch(/Ready to merge|Round 1/u);
   });
+  it.each([
+    [true, 0, 'Finished'], [true, 2, 'Fixes pending'], [false, 0, 'Needs adjudication'],
+  ] as const)('places status before unchanged start age and duration (%s, %s)', (finalized, pending, status) => {
+    const value = { ...run('status-row'), finalized, current_accepted: 1, current_pending_fixes: pending };
+    const html = markup(<ReviewHistoryRow number={27} run={value} snapshot={snapshot} head="head" />);
+    const age = html.slice(html.indexOf('class="review-history-age"'), html.indexOf('class="review-history-counts"'));
+    expect(age).toContain(`>${status}</span> · <time`);
+    expect(age).toContain('dateTime="2026-10-18T00:00:00Z"');
+    expect(age).toContain('review-history-duration"> · 1m 0s');
+    expect(html).toContain('aria-describedby="review-history-findings-status-row-summary"');
+    expect(html).toContain('<div class="review-history-flags"></div>');
+  });
   it('interleaves channels in supplied chronology and numbers each channel across a partial newest prefix', () => {
     const items = [run('last'), run('hosted', 'hosted'), { ...run('previous'), source: 'producer-b', source_run_id: 'original-first' }, run('manual', 'manual')];
     const html = markup(<ReviewHistoryGroups number={27} runs={items} snapshot={snapshot} head="head" partial loading={false} failed={false} channelTotals={{hosted: 5, cli: 8, manual: 1, subagent: 0}} />);

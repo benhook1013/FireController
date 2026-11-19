@@ -61,6 +61,20 @@ async function connect(client: Api): Promise<void> {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+describe('retained CLI finding title bounds', () => {
+  it.each([
+    ['cli', 'x'.repeat(731), true], ['cli', 'é'.repeat(2048), true],
+    ['cli', 'x'.repeat(4097), false], ['cli', 'é'.repeat(2049), false],
+    ['hosted', 'x'.repeat(501), false], ['subagent', 'x'.repeat(501), false],
+    ['manual', 'x'.repeat(501), false], ['hosted', 'x'.repeat(500), true],
+  ] as const)('validates %s title byte budget (case %#)', async (channel, title, valid) => {
+    setupLocation(); const client = api(); await connect(client);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...reviewDetail, run: { ...reviewRun, channel }, findings: [{ ...reviewFinding, title }] })));
+    if (valid) expect((await client.reviewRun(reviewRun.id)).findings[0].title).toBe(title);
+    else await expect(client.reviewRun(reviewRun.id)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+});
+
 describe('retained merge timestamps', () => {
   it.each(['recent','merged'] as const)('normalizes timestamps in the %s live queue slice without changing position or observation selection', async view => {
     setupLocation(); const client=api(); await connect(client);
