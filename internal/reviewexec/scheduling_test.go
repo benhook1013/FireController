@@ -1478,3 +1478,60 @@ func TestValidateSchedulingSnapshotRequiresPresentDomainMetadata(t *testing.T) {
 		t.Fatalf("missing optional domain metadata should not be mistaken for a schema version: %v", err)
 	}
 }
+
+func TestAutomaticAcceptanceOverloadRollsBackPartialSelection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	readers := map[string]TargetReader{"test-capability": &refreshTestReader{}}
+	var candidate *automaticProjectPlan
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		candidate, err = f.e.planAutomaticProject(ctx, tx, attemptProject, "hosted", readers)
+		return err
+	}); err != nil || candidate == nil {
+		t.Fatalf("could not prepare automatic selection: %v", err)
+	}
+	assertCounts := func(want int) {
+		t.Helper()
+		for _, query := range []string{
+			`SELECT count(*) FROM review_selections`,
+			`SELECT count(*) FROM review_automatic_selections`,
+			`SELECT count(*) FROM events WHERE event_type='review.selection_requested'`,
+		} {
+			var count int
+			if err := f.store.DB().QueryRowContext(t.Context(), query).Scan(&count); err != nil || count != want {
+				t.Fatalf("%s: count=%d want=%d err=%v", query, count, want, err)
+			}
+		}
+	}
+	conflict := func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error) {
+		return Receipt{}, core.Fail("review_busy", "Synthetic prewrite conflict.", 409)
+	}
+	if worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, conflict); worked || err != nil {
+		t.Fatalf("prewrite conflict was not benign: worked=%t err=%v", worked, err)
+	}
+	assertCounts(0)
+	// Exercise real writes, then inject a timeout-class failure at the enqueue
+	// boundary without relying on timing, an expired context or SQLite locks.
+	overloaded := core.Fail("overloaded", "Synthetic transient admission failure.", 503)
+	fault := func(ctx context.Context, tx *sql.Tx, scope core.Scope, req RunRequest) (Receipt, error) {
+		receipt, err := f.e.enqueueRunTx(ctx, tx, scope, req)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if receipt.ID == "" || ctx.Err() != nil {
+			t.Fatal("no live-transaction selection to roll back", receipt, ctx.Err())
+		}
+		return Receipt{}, overloaded
+	}
+	worked, err := f.e.acceptAutomaticProjectWithEnqueue(t.Context(), attemptProject, "hosted", readers, candidate, fault)
+	assertCounts(0)
+	var refusal *core.Error
+	if worked || !errors.As(err, &refusal) || refusal.Code != "overloaded" {
+		t.Fatalf("transient overload was not propagated: worked=%t err=%v", worked, err)
+	}
+	if worked, err := f.e.acceptAutomaticProject(t.Context(), attemptProject, "hosted", readers, candidate); !worked || err != nil {
+		t.Fatalf("clean retry failed: worked=%t err=%v", worked, err)
+	}
+	assertCounts(1)
+}
