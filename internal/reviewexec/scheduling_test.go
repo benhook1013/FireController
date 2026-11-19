@@ -1535,3 +1535,21 @@ func TestAutomaticAcceptanceOverloadRollsBackPartialSelection(t *testing.T) {
 	}
 	assertCounts(1)
 }
+
+func TestSchedulingWaitSnapshotRequiresActualDraftProof(t *testing.T) {
+	f := schedulingFixture(t)
+	r := f.enqueue(t, attemptProject, "scheduling-only-cli", "cli", 2, 1)
+	a := f.start(t, attemptProject, r)
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "pull_scheduling_paused", ""); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIWaitSnapshot(t, f)
+	o := cliWaitRead(t, f, r.ID)
+	o.Reason = cliDraftWait
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return validateOperationWaitHistory(ctx, tx, o)
+	})
+	if err == nil {
+		t.Fatal("scheduling-only history was accepted as draft proof")
+	}
+}
