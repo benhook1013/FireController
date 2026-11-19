@@ -319,9 +319,6 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			case "inbox_seen":
 				value, err = service.MarkSeen(ctx, args.key, args.id)
 			case "inbox_ack":
-				if args.worker == binding.Context.WorkerID {
-					args.worker = ""
-				}
 				value, err = service.Acknowledge(ctx, args.key, args.id, args.worker)
 			}
 			if err != nil {
