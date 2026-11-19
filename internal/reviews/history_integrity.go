@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 // HistoryQuery is satisfied by standard SQL databases, connections and
@@ -35,6 +37,15 @@ func ValidateHistoryReferences(ctx context.Context, q HistoryQuery) error {
 // Startup migration reuses these exact checks inside its exclusive transaction.
 func historyReferenceQueries() []string {
 	queries := []string{
+		// Anchor snapshots may survive below the floor; the published window
+		// must be complete and the floor row itself must still exist.
+		`SELECT 1 FROM metadata m
+ LEFT JOIN review_workspace w ON m.key='` + core.ReviewHistoryFloorPrefix + `'||w.project_id
+ LEFT JOIN review_snapshots f ON f.project_id=w.project_id AND f.revision=CAST(m.value AS INTEGER)
+ WHERE m.key GLOB '` + core.ReviewHistoryFloorPrefix + `*'
+ AND (w.project_id IS NULL OR f.project_id IS NULL OR f.revision<1 OR f.revision>w.revision
+ OR CAST(f.revision AS TEXT)<>m.value OR
+ (SELECT count(*) FROM review_snapshots s WHERE s.project_id=w.project_id AND s.revision BETWEEN f.revision AND w.revision)<>w.revision-f.revision+1) LIMIT 1`,
 		`SELECT 1 FROM review_snapshots s LEFT JOIN review_workspace w ON w.project_id=s.project_id WHERE w.project_id IS NULL OR s.revision>w.revision LIMIT 1`,
 		`SELECT 1 FROM review_workspace w LEFT JOIN review_snapshots s ON s.project_id=w.project_id AND s.snapshot_id=w.snapshot_id WHERE s.project_id IS NULL OR s.revision!=w.revision LIMIT 1`,
 	}
@@ -60,7 +71,7 @@ func historyReferenceQueries() []string {
 	// parent interval. Aggregate equal revisions first: intervals are half-open,
 	// so adjacent parent versions cover a child without a gap at their boundary.
 	for _, table := range []string{"review_run_memberships", "review_attempt_memberships"} {
-		queries = append(queries, historyOwnerCoverageQuery(table))
+		queries = append(queries, historyOwnerCoverageQueryAtFloor(table, "COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key='"+core.ReviewHistoryFloorPrefix+"'||m.project_id),0)"))
 	}
 	return queries
 }
@@ -77,11 +88,21 @@ func historyIntervalOverlapQuery(table string, keys []string) string {
 }
 
 func historyOwnerCoverageQuery(table string) string {
-	return `WITH events AS (
- SELECT project_id,number AS pull_number,start_revision AS revision,1 AS parent_delta,0 AS child_delta FROM review_pull_memberships
- UNION ALL SELECT project_id,number,end_revision,-1,0 FROM review_pull_memberships WHERE end_revision IS NOT NULL
- UNION ALL SELECT project_id,pull_number,start_revision,0,1 FROM ` + table + `
- UNION ALL SELECT project_id,pull_number,end_revision,0,-1 FROM ` + table + ` WHERE end_revision IS NOT NULL
+	return historyOwnerCoverageQueryAtFloor(table, "0")
+}
+
+func historyOwnerCoverageQueryAtFloor(table, floor string) string {
+	return `WITH parents AS (
+ SELECT m.*,` + floor + ` AS floor FROM review_pull_memberships m
+ WHERE m.end_revision IS NULL OR m.end_revision>` + floor + `
+), dependents AS (
+ SELECT m.*,` + floor + ` AS floor FROM ` + table + ` m
+ WHERE m.end_revision IS NULL OR m.end_revision>` + floor + `
+), events AS (
+ SELECT project_id,number AS pull_number,max(start_revision,floor) AS revision,1 AS parent_delta,0 AS child_delta FROM parents
+ UNION ALL SELECT project_id,number,end_revision,-1,0 FROM parents WHERE end_revision IS NOT NULL
+ UNION ALL SELECT project_id,pull_number,max(start_revision,floor),0,1 FROM dependents
+ UNION ALL SELECT project_id,pull_number,end_revision,0,-1 FROM dependents WHERE end_revision IS NOT NULL
 ), boundaries AS (
  SELECT project_id,pull_number,revision,SUM(parent_delta) AS parent_delta,SUM(child_delta) AS child_delta
  FROM events GROUP BY project_id,pull_number,revision

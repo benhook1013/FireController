@@ -38,9 +38,13 @@ Session reads send exactly one `X-FC-Browser-Session` selector and its matching 
 
 `DELETE` on the same endpoint takes the selector header and exactly `{}`, with no bearer header, and expires only that selector's cookie. The response is `{"session_id":"<selected session>","logged_out":true}`. Clearing works for an expired or missing cookie and never revokes the original credential. POST and DELETE reject a supplied mismatched Origin or cross-site fetch metadata and do not enable cross-origin access. See [browser connection behavior](browser-guide.md#connect-and-navigate) for per-tab storage, reload and disconnect semantics.
 
+### Mutation keys and retries
+
 Every mutation requires one `Idempotency-Key` of at most 128 bytes. Retain the same key, normalized request and worker attribution when retrying an uncertain outcome. Exact replay returns the original receipt after checking current access; it does not report current resource state. Changed request or worker under that key conflicts. A new key creates a new mutation and enforces the current revision where required. Revoked credentials cannot replay old receipts.
 
-Receipt keys include their originating instance. Startup upgrades base schema version one to version two in one exclusive transaction, preserving existing receipt fingerprints and response bytes; retained restore metadata identifies the predecessor for supported inactive copies. Reads and writes use the current instance's receipt namespace. This does not activate an inactive restore or permit an adapter to relabel an old retry after rebind; [restore](backups.md#inactive-restore) owns that boundary.
+Receipt keys include their originating instance. The default receipt retention is 30 days from creation (not the last replay). Once a retention pass removes a receipt, reusing its key is a new request, subject to current authorization and revision checks. Before retrying an uncertain request beyond the horizon, verify whether its effect already happened; do not assume the service will deduplicate it.
+
+Startup upgrades older base schemas in one exclusive transaction, preserving receipt origins, fingerprints and response bytes. Version three timestamps existing receipts at migration, so they get the full horizon. Retained restore metadata identifies the predecessor for supported inactive copies. Reads and writes use the current instance's receipt namespace. This does not activate an inactive restore or permit an adapter to relabel an old retry after rebind; [restore](backups.md#inactive-restore) owns that boundary.
 
 ## Project and worker setup
 

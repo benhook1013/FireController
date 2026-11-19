@@ -119,11 +119,11 @@ func TestSharedProjectBackupRefusesResealedSemanticAndPhysicalCorruption(t *test
 	cases := []struct{ name, sql string }{
 		{"missing-handle", `DELETE FROM project_handles`},
 		{"handle-blob", `PRAGMA ignore_check_constraints=ON;UPDATE project_handles SET handle=CAST(handle AS BLOB);PRAGMA ignore_check_constraints=OFF`},
-		{"missing-summary-middle", `DELETE FROM job_summary_history WHERE revision=2`},
+		{"missing-summary-first", `DELETE FROM job_summary_history WHERE revision=1`},
 		{"missing-summary-latest", `DELETE FROM job_summary_history WHERE revision=4`},
 		{"missing-summary-current", `DELETE FROM job_summaries`},
 		{"divergent-current", `UPDATE job_summaries SET body='Different current prose'`},
-		{"unretained-source-job-revision", `UPDATE job_summaries SET job_revision=99;UPDATE job_summary_history SET job_revision=99 WHERE revision=4`},
+		{"future-source-job-revision", `UPDATE job_summaries SET job_revision=99;UPDATE job_summary_history SET job_revision=99 WHERE revision=4`},
 		{"invalid-historical-actor", `UPDATE job_summary_history SET actor_id='../other' WHERE revision=1`},
 		{"oversized-escaped-original", `UPDATE job_summary_history SET body=replace(hex(zeroblob(1001)),'0','<') WHERE revision=1`},
 		{"historical-body-blob", `UPDATE job_summary_history SET body=CAST(body AS BLOB) WHERE revision=1`},

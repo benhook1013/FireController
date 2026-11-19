@@ -28,6 +28,7 @@ import (
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
 	"github.com/benhook1013/FireController/internal/publicsite"
+	"github.com/benhook1013/FireController/internal/retention"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewruntime"
 	"github.com/benhook1013/FireController/internal/reviews"
@@ -78,6 +79,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	backupKeep := flags.Int("backup-keep", 0, "managed verified bundles to retain, 1 through 1000")
 	var backupHealthFiles server.BackupHealthFiles
 	flags.Var(&backupHealthFiles, "backup-offsite-health-file", "optional redacted offsite status file (repeatable, maximum eight)")
+	retentionInterval := flags.Duration("retention-interval", retention.DefaultInterval, "database history maintenance interval; 0 disables maintenance")
+	retentionDryRun := flags.Bool("retention-dry-run", false, "report eligible database history without pruning or incremental reclamation")
+	retentionReviewHistory := flags.Duration("retention-review-history", retention.DefaultHistory, "review history horizon (default 720h)")
+	retentionJobHistory := flags.Duration("retention-job-history", retention.DefaultHistory, "job and note history horizon (default 720h)")
+	retentionReceipts := flags.Duration("retention-receipts", retention.DefaultHistory, "idempotency receipt horizon (default 720h)")
+	retentionDiagnostics := flags.Duration("retention-diagnostics", retention.DefaultDiagnostics, "review diagnostic history horizon (default 336h)")
 	backupTimeout := flags.Duration("backup-timeout", 0, "managed attempt deadline, default 5m and maximum 24h")
 	schemaMigrationTimeout := flags.String("schema-migration-timeout", core.DefaultSchemaMigrationTimeout.String(), "startup deadline per domain schema including backfill, positive and at most 24h (does not change live write deadlines)")
 	if err := flags.Parse(args); err != nil {
@@ -92,6 +99,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	if *cliParallel < 1 || *cliParallel > 16 {
 		diagnostic(stderr, "configuration_invalid", "Use a --review-cli-parallel value from 1 through 16.")
+		return 2
+	}
+	retentionConfig := retention.Config{Interval: *retentionInterval, DryRun: *retentionDryRun, ReviewHistory: *retentionReviewHistory, JobHistory: *retentionJobHistory, Receipts: *retentionReceipts, Diagnostics: *retentionDiagnostics, PhaseLease: *backupPhaseLease}
+	if err := retentionConfig.Validate(); err != nil {
+		diagnosticError(stderr, err)
 		return 2
 	}
 	migrationTimeout, parseErr := time.ParseDuration(*schemaMigrationTimeout)
@@ -273,6 +285,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
+	var retentionDone <-chan struct{}
+	if !recovery.ProvidersHeld {
+		retentionDone = retention.Run(reviewCtx, store, retentionConfig, func(report retention.Report) {
+			_ = json.NewEncoder(stderr).Encode(struct {
+				Event string `json:"event"`
+				retention.Report
+			}{"retention_pass", report})
+		}, func(err error) {
+			diagnostic(stderr, "retention_unavailable", "Database retention could not acquire the configured backup phase lease.")
+		})
+	}
+	defer func() {
+		cancelReviews()
+		if retentionDone != nil {
+			select {
+			case <-retentionDone:
+			case <-time.After(12 * time.Second):
+				diagnostic(stderr, "shutdown_failed", "Database retention did not settle within the shutdown budget.")
+				exitCode = 3
+			}
+		}
+	}()
 	backupDone := startBackupWorker(reviewCtx, backupManager, schedule.Destination != "", func(err error) { diagnosticError(stderr, err) })
 	defer func() {
 		cancelReviews()

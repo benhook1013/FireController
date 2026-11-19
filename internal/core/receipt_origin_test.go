@@ -150,8 +150,12 @@ func TestReceiptOriginMigratesV1BytesAndInactiveProvenance(t *testing.T) {
 			if got := receiptRows(t, s.DB(), `SELECT DISTINCT instance_id FROM receipts`); !reflect.DeepEqual(got, [][]string{{origin}}) {
 				t.Fatal("predecessor receipts relabeled", got)
 			}
-			if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"2"}}) {
+			if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"3"}}) {
 				t.Fatal("base version not advanced")
+			}
+			stamps := receiptRows(t, s.DB(), `SELECT DISTINCT created_at FROM receipts`)
+			if len(stamps) != 1 || len(stamps[0][0]) != len(ReceiptTimestamp(time.Now())) {
+				t.Fatalf("existing v1 receipt timestamps not backfilled once: %v", stamps)
 			}
 			for i, q := range queries {
 				if !reflect.DeepEqual(receiptRows(t, s.DB(), q), unchanged[i]) {
@@ -167,7 +171,7 @@ func TestReceiptOriginMigratesV1BytesAndInactiveProvenance(t *testing.T) {
 				_, _, err := s.Replay(t.Context(), scope, mutation)
 				receiptCode(t, err, "unauthorized") // No credential is revived by migration.
 			}
-			// Reopening v2 never relabels rows, even with retained restore metadata.
+			// Reopening the current schema never relabels rows, even with retained restore metadata.
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -263,7 +267,7 @@ func TestReceiptOriginInvalidRestoreAndSQLFailureRollBack(t *testing.T) {
 		"malformed global key":  `UPDATE metadata SET value='bad' WHERE key='signing_key'`,
 		"missing global key":    `DELETE FROM metadata WHERE key='signing_key'`,
 		"copy SQL failure":      `ALTER TABLE receipts RENAME COLUMN response_json TO broken_response`,
-		"newer schema":          `PRAGMA user_version=3`,
+		"newer schema":          `PRAGMA user_version=4`,
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -303,7 +307,7 @@ func TestReceiptOriginInvalidRestoreAndSQLFailureRollBack(t *testing.T) {
 			}
 			version := "1"
 			if name == "newer schema" {
-				version = "3"
+				version = "4"
 			}
 			if got := receiptRows(t, db, `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{version}}) {
 				t.Fatal("failed migration advanced base version")

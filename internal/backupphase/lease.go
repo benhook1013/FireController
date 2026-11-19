@@ -14,10 +14,22 @@ import (
 
 var ErrInvalid = errors.New("invalid backup storage phase lease")
 
+// ErrBusy means a nonblocking acquisition found an existing lease holder.
+var ErrBusy = errors.New("backup storage phase lease is busy")
+
 // Acquire requires a preprovisioned, private regular file. It never creates,
 // removes or replaces the lock inode; recovery must retain this independent file.
 // Callers hold no provider or filesystem mutation locks while waiting.
 func Acquire(ctx context.Context, path string) (func(), error) {
+	return acquire(ctx, path, true)
+}
+
+// TryAcquire attempts the same guarded lease once without waiting.
+func TryAcquire(ctx context.Context, path string) (func(), error) {
+	return acquire(ctx, path, false)
+}
+
+func acquire(ctx context.Context, path string, block bool) (func(), error) {
 	if ctx == nil {
 		return nil, ErrInvalid
 	}
@@ -66,6 +78,10 @@ func Acquire(ctx context.Context, path string) (func(), error) {
 		} else if !busy(err) {
 			f.Close()
 			return nil, ErrInvalid
+		}
+		if !block {
+			f.Close()
+			return nil, ErrBusy
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {

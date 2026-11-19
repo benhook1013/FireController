@@ -678,7 +678,6 @@ func ValidateNotesSnapshot(ctx context.Context, tx *sql.Tx) error {
 		if err != nil {
 			return noteUnavailable()
 		}
-		var count int64
 		var previous noteRevision
 		for revisions.Next() {
 			entry, err := scanNoteRevision(revisions)
@@ -686,8 +685,7 @@ func ValidateNotesSnapshot(ctx context.Context, tx *sql.Tx) error {
 				revisions.Close()
 				return noteUnavailable()
 			}
-			count++
-			if entry.Revision != count || entry.CreatedAt != current.CreatedAt || count == 1 && (entry.Status != "pending" || entry.StatusReason != "" || entry.UpdatedAt != entry.CreatedAt) {
+			if entry.Revision <= previous.Revision || previous.Revision == 0 && entry.Revision != 1 || entry.CreatedAt != current.CreatedAt || entry.Revision == 1 && (entry.Status != "pending" || entry.StatusReason != "" || entry.UpdatedAt != entry.CreatedAt) {
 				revisions.Close()
 				return noteUnavailable()
 			}
@@ -695,7 +693,7 @@ func ValidateNotesSnapshot(ctx context.Context, tx *sql.Tx) error {
 		}
 		err = revisions.Err()
 		revisions.Close()
-		if err != nil || count != current.Revision || previous.note != current {
+		if err != nil || previous.note != current {
 			return noteUnavailable()
 		}
 	}

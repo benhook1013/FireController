@@ -19,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // OpenOption configures a store before it opens or creates any files.
 type OpenOption func(*storeOptions) error
@@ -200,9 +200,10 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 		if _, err = conn.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,1,0)", NewID("credential"), NewID("principal"), tokenHash(token)); err != nil {
 			return storageError(err)
 		}
-		if _, err = conn.ExecContext(ctx, "PRAGMA user_version=2"); err != nil {
+		if _, err = conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
 			return storageError(err)
 		}
+		version = schemaVersion
 	}
 	var key string
 	if err = conn.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='instance_id'").Scan(&s.instanceID); err != nil {
@@ -217,6 +218,11 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 	}
 	if version == 1 {
 		if err = migrateReceiptOrigins(ctx, conn, s.instanceID); err != nil {
+			return err
+		}
+	}
+	if version == 1 || version == 2 {
+		if err = migrateReceiptTimestamps(ctx, conn, time.Now()); err != nil {
 			return err
 		}
 	}
@@ -276,6 +282,21 @@ func migrateReceiptOrigins(ctx context.Context, conn *sql.Conn, instance string)
 		if _, err = conn.ExecContext(ctx, statement); err != nil {
 			return storageError(err)
 		}
+	}
+	return nil
+}
+
+// migrateReceiptTimestamps shares initialize's exclusive transaction with the
+// origin migration. Existing receipts all receive the same migration timestamp.
+func migrateReceiptTimestamps(ctx context.Context, conn *sql.Conn, migratedAt time.Time) error {
+	if _, err := conn.ExecContext(ctx, "ALTER TABLE receipts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"); err != nil {
+		return storageError(err)
+	}
+	if _, err := conn.ExecContext(ctx, "UPDATE receipts SET created_at=?", ReceiptTimestamp(migratedAt)); err != nil {
+		return storageError(err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
+		return storageError(err)
 	}
 	return nil
 }
@@ -361,7 +382,7 @@ var schema = []string{
 	`CREATE TABLE workers(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(project_id,id),UNIQUE(project_id,name))`,
 	`CREATE TABLE credentials(id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,token_sha256 TEXT NOT NULL UNIQUE,is_admin INTEGER NOT NULL CHECK(is_admin IN(0,1)),revoked INTEGER NOT NULL CHECK(revoked IN(0,1)))`,
 	`CREATE TABLE grants(credential_id TEXT NOT NULL REFERENCES credentials(id),project_id TEXT NOT NULL REFERENCES projects(id),can_read INTEGER NOT NULL CHECK(can_read IN(0,1)),can_write INTEGER NOT NULL CHECK(can_write IN(0,1)),PRIMARY KEY(credential_id,project_id))`,
-	`CREATE TABLE receipts(instance_id TEXT NOT NULL,principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,PRIMARY KEY(instance_id,principal_id,project_id,operation,target,key))`,
+	`CREATE TABLE receipts(instance_id TEXT NOT NULL,principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT '',PRIMARY KEY(instance_id,principal_id,project_id,operation,target,key))`,
 	`CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL REFERENCES projects(id),event_type TEXT NOT NULL,resource_id TEXT NOT NULL,revision INTEGER NOT NULL,actor_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL)`,
 	`CREATE INDEX events_project_sequence ON events(project_id,sequence)`,
 }

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/jobs"
 )
 
 // Frozen declarations from core/project_handles.go and jobs/schema.go. Like
@@ -46,6 +47,11 @@ func validateSharedProjectPhysicalSchema(ctx context.Context, db sqlReader, vers
 	definitions := map[string]string{}
 	if versions["project_handles"] > 0 {
 		definitions["project_handles"] = projectHandleDDL
+	}
+	if versions["jobs"] > 0 {
+		if err := jobs.ValidateHistorySnapshot(ctx, db); err != nil {
+			return invalid()
+		}
 	}
 	if versions["jobs"] >= 7 {
 		definitions["job_summaries"] = jobSummaryDDL
@@ -173,7 +179,9 @@ func validateJobSummaryRows(ctx context.Context, db sqlReader) error {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return invalid()
 	}
-	err = db.QueryRowContext(ctx, `SELECT 1 FROM job_summary_history h WHERE NOT EXISTS(SELECT 1 FROM job_summaries c WHERE c.project_id=h.project_id AND c.job_id=h.job_id) OR NOT EXISTS(SELECT 1 FROM job_history j WHERE j.project_id=h.project_id AND j.job_id=h.job_id AND j.revision=h.job_revision) OR NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=h.project_id AND j.id=h.job_id AND j.revision>=h.job_revision) LIMIT 1`).Scan(&bad)
+	// A historical source revision may have aged out of the job archive. Its
+	// owning job and valid source revision range must still hold.
+	err = db.QueryRowContext(ctx, `SELECT 1 FROM job_summary_history h WHERE NOT EXISTS(SELECT 1 FROM job_summaries c WHERE c.project_id=h.project_id AND c.job_id=h.job_id) OR NOT EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=h.project_id AND j.id=h.job_id AND j.revision>=h.job_revision) LIMIT 1`).Scan(&bad)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return invalid()
 	}
@@ -196,7 +204,7 @@ func validateJobSummaryRows(ctx context.Context, db sqlReader) error {
 			}
 			if table == "job_summary_history" {
 				if previous.project == row.project && previous.job == row.job {
-					if row.revision-1 != previous.revision {
+					if row.revision <= previous.revision {
 						rows.Close()
 						return invalid()
 					}

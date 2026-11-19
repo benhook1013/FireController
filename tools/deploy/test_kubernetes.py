@@ -14,6 +14,20 @@ deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
 
 
+class RetentionArgumentTests(unittest.TestCase):
+    def test_explicit_dry_run_and_enable_preserve_unrelated_args(self):
+        now = ["--data-dir", "/data", "--backup-phase-lease=/backup/phase.lock",
+               "--retention-dry-run=false", "-retention-dry-run=true", "--retention-interval=6h"]
+        expected = now[:3] + now[-1:]
+        self.assertEqual(deployment.retention_args(now, None), now)
+        self.assertEqual(deployment.retention_args(now, "dry-run"), expected + ["--retention-dry-run"])
+        self.assertEqual(deployment.retention_args(now, "enabled"), expected)
+        with self.assertRaises(ValueError):
+            deployment.retention_args(now, "unknown-mode")
+        with self.assertRaises(ValueError):
+            deployment.retention_args("--data-dir=/data", "dry-run")
+
+
 class DrainDeadlineTests(unittest.TestCase):
     def test_waits_only_until_local_dispatch_finishes(self):
         states = iter([1, 1, 0])

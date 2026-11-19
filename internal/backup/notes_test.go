@@ -103,7 +103,7 @@ func TestNotesBackupRejectsMalformedSchemaAndHistoricalState(t *testing.T) {
 		`ALTER TABLE notes ADD COLUMN extra TEXT`,
 		`UPDATE notes SET body=''`,
 		`UPDATE note_revisions SET status_reason='' WHERE status='dismissed'`,
-		`DELETE FROM note_revisions WHERE revision=2`,
+		`DELETE FROM note_revisions WHERE revision=1`,
 		`DELETE FROM note_revisions WHERE revision=4`,
 		`UPDATE note_revisions SET body='wrong latest current binding' WHERE revision=4`,
 		`UPDATE note_revisions SET created_at='bad' WHERE revision=1`,

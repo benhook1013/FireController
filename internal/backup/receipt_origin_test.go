@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -68,14 +69,22 @@ func receiptOriginSource(t *testing.T, version int) (*restoreFixture, *sql.DB) {
 }
 
 func TestReceiptOriginBackupVersionsInspectRestoreWithoutRelabeling(t *testing.T) {
-	for _, version := range []int{1, 2} {
+	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			f, db := receiptOriginSource(t, version)
-			if version == 2 {
+			if version >= 2 {
 				// Identical old mutation key dimensions may legitimately coexist
 				// under two originating installations. Preserve every byte.
 				response := " {\n \"literal\":\"<retained> & 雪\", \"revision\":0\n } "
-				_, err := db.Exec(`INSERT INTO receipts SELECT ?,principal_id,project_id,operation,target,key,fingerprint,? FROM receipts LIMIT 1`, core.NewID("instance"), response)
+				insert := `INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json`
+				selectArgs := `SELECT ?,principal_id,project_id,operation,target,key,fingerprint,?`
+				args := []any{core.NewID("instance"), response}
+				if version == 3 {
+					insert += ",created_at"
+					selectArgs += ",?"
+					args = append(args, core.ReceiptTimestamp(time.Unix(1_800_000_000, 123)))
+				}
+				_, err := db.Exec(insert+`) `+selectArgs+` FROM receipts LIMIT 1`, args...)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -134,7 +143,7 @@ func TestReceiptOriginBackupVersionsInspectRestoreWithoutRelabeling(t *testing.T
 			if err = copyDB.QueryRow(`SELECT count(*) FROM credentials WHERE revoked!=1`).Scan(&active); err != nil || active != 0 {
 				t.Fatal("restored access survived", err)
 			}
-			if version == 2 {
+			if version >= 2 {
 				var origins, relabeled int
 				if err = copyDB.QueryRow(`SELECT count(DISTINCT instance_id) FROM receipts`).Scan(&origins); err != nil || origins != 2 {
 					t.Fatal("mixed origins lost", err)
@@ -151,7 +160,7 @@ func TestReceiptOriginBackupVersionsInspectRestoreWithoutRelabeling(t *testing.T
 }
 
 func TestReceiptOriginInventoryRejectsWrongVersionedSchema(t *testing.T) {
-	for _, kind := range []string{"v2_missing_origin", "v1_unexpected_origin", "origin_not_in_pk", "origin_wrong_pk_order", "origin_nullable", "origin_wrong_type", "empty_origin"} {
+	for _, kind := range []string{"v3_missing_timestamp", "v3_wrong_timestamp_default", "v2_missing_origin", "v1_unexpected_origin", "origin_not_in_pk", "origin_wrong_pk_order", "origin_nullable", "origin_wrong_type", "empty_origin"} {
 		t.Run(kind, func(t *testing.T) {
 			f, db := receiptOriginSource(t, 1)
 			if err := db.Close(); err != nil {
@@ -181,6 +190,12 @@ func TestReceiptOriginInventoryRejectsWrongVersionedSchema(t *testing.T) {
 				}
 				if kind == "empty_origin" {
 					query += `; UPDATE receipts SET instance_id=''`
+				}
+				if kind == "v3_missing_timestamp" {
+					query += `; PRAGMA user_version=3`
+				}
+				if kind == "v3_wrong_timestamp_default" {
+					query += `; ALTER TABLE receipts ADD COLUMN created_at TEXT NOT NULL DEFAULT 'wrong'; PRAGMA user_version=3`
 				}
 				mutateBundleSQL(t, bundle.Path, query)
 			}

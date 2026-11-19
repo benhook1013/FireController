@@ -134,7 +134,7 @@ func historyMigrationLegacyFixture(t *testing.T) (*apiFixture, []string, string,
 	}
 	historyMigrationPull(t, tx, "migration-other", "other-2", 2, 500, 0, "producer-a", true, false)
 	historyMigrationExec(t, tx, `INSERT INTO review_workspace VALUES('migration-other',6,'other-6')`)
-	historyMigrationExec(t, tx, `INSERT INTO receipts VALUES(?,'migration-principal',?,'reviews.observe',?,'original-key','retained-fingerprint',?)`, f.store.InstanceID(), f.project, f.project, "{\"id\":\"legacy-nine\",\"revision\":9,\"outcome\":\"recorded\"}\n")
+	historyMigrationExec(t, tx, `INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,'migration-principal',?,'reviews.observe',?,'original-key','retained-fingerprint',?)`, f.store.InstanceID(), f.project, f.project, "{\"id\":\"legacy-nine\",\"revision\":9,\"outcome\":\"recorded\"}\n")
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}

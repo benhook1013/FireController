@@ -39,7 +39,7 @@ func ensureDaemonSchemas(ctx context.Context, store *core.Store) error {
 			return err
 		}
 	}
-	return nil
+	return store.EnsureIncrementalVacuum(ctx)
 }
 
 // runMigrateCommand migrates a data directory and exits without starting any

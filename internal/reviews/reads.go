@@ -467,7 +467,8 @@ func runDetail(store *core.Store) http.HandlerFunc {
 func selectSnapshot(ctx context.Context, tx *sql.Tx, projectID, requested string) (snapshotMeta, bool, error) {
 	if requested != "" {
 		var meta snapshotMeta
-		err := tx.QueryRowContext(ctx, `SELECT project_id,revision,snapshot_id,source,observed_at,recorded_at FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, projectID, requested).Scan(&meta.ProjectID, &meta.Revision, &meta.SnapshotID, &meta.Source, &meta.ObservedAt, &meta.RecordedAt)
+		err := tx.QueryRowContext(ctx, `SELECT project_id,revision,snapshot_id,source,observed_at,recorded_at FROM review_snapshots s WHERE s.project_id=? AND s.snapshot_id=?
+ AND s.revision>=COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key=?||s.project_id),0)`, projectID, requested, core.ReviewHistoryFloorPrefix).Scan(&meta.ProjectID, &meta.Revision, &meta.SnapshotID, &meta.Source, &meta.ObservedAt, &meta.RecordedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return snapshotMeta{}, false, nil
 		}

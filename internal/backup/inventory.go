@@ -596,7 +596,7 @@ func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
-	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version != 1 && version != 2) {
+	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 3) {
 		return nil, invalid()
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 129`)
@@ -651,6 +651,9 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		return nil, invalid()
 	}
 	if err = validateTriggers(ctx, db, versions["reviews"], versions["review_comparison"], versions["review_route_policy"], versions["review_adoption_obligations"], versions["review_applicability"], versions["review_evidence"]); err != nil {
+		return nil, err
+	}
+	if err = validateRetentionMetadata(ctx, db, versions["reviews"]); err != nil {
 		return nil, err
 	}
 	if err = validateHistoryViews(ctx, db, versions["reviews"]); err != nil {
@@ -836,9 +839,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		receiptPK := map[string]int{}
 		if name == "receipts" {
 			keys := []string{"principal_id", "project_id", "operation", "target", "key"}
-			if version == 2 {
+			if version >= 2 {
 				columns = "instance_id " + columns
 				keys = append([]string{"instance_id"}, keys...)
+			}
+			if version >= 3 {
+				columns += " created_at"
 			}
 			for i, key := range keys {
 				receiptPK[key] = i + 1
@@ -901,9 +907,15 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 				columnRows.Close()
 				return nil, invalid()
 			}
-			if name == "receipts" && (kind != "TEXT" || notnull != 1 || defaultValue != nil || pk != receiptPK[col]) {
-				columnRows.Close()
-				return nil, invalid()
+			if name == "receipts" {
+				var expectedDefault any
+				if col == "created_at" && version >= 3 {
+					expectedDefault = "''"
+				}
+				if kind != "TEXT" || notnull != 1 || defaultValue != expectedDefault || pk != receiptPK[col] {
+					columnRows.Close()
+					return nil, invalid()
+				}
 			}
 			if name == "restore_history" && !recoveryHistoryColumn(col, kind, notnull, pk, hidden, defaultValue) {
 				columnRows.Close()
@@ -1000,7 +1012,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			}
 		}
 	}
-	if version == 2 {
+	if version >= 2 {
 		var empty int
 		err = db.QueryRowContext(ctx, `SELECT 1 FROM receipts WHERE instance_id='' LIMIT 1`).Scan(&empty)
 		if !errors.Is(err, sql.ErrNoRows) {

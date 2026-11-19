@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// ReceiptTimestamp encodes UTC receipt ages for bytewise SQLite comparison.
+func ReceiptTimestamp(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
 func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(context.Context, *sql.Tx) (any, error)) (_ json.RawMessage, failure error) {
 	started, stage := time.Now(), "validation"
 	var admission time.Duration
@@ -95,7 +100,7 @@ func (s *Store) Mutate(ctx context.Context, scope Scope, m Mutation, fn func(con
 		return nil, Fail("internal_error", "The mutation receipt exceeds its bounded size.", 500)
 	}
 	stage = "store_receipt"
-	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json) VALUES(?,?,?,?,?,?,?,?)", s.instanceID, scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded)); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO receipts(instance_id,principal_id,project_id,operation,target,key,fingerprint,response_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)", s.instanceID, scope.PrincipalID, scope.ProjectID, m.Operation, m.Target, m.Key, fingerprint, string(encoded), ReceiptTimestamp(time.Now())); err != nil {
 		return nil, normalize(err)
 	}
 	if ctx.Err() != nil {

@@ -216,7 +216,7 @@ func TestActivationRefusalsDoNotMutateRestore(t *testing.T) {
 			case "unrevoked predecessor":
 				activationExec(t, f.dir, `UPDATE credentials SET revoked=0 WHERE is_admin=1`)
 			case "newer schema":
-				activationExec(t, f.dir, `PRAGMA user_version=3`)
+				activationExec(t, f.dir, `PRAGMA user_version=4`)
 			case "canceled":
 				c, cancel := context.WithCancel(ctx)
 				cancel()
@@ -339,8 +339,12 @@ func TestActivationMigratesV1ReceiptOriginsWithoutRewritingHistory(t *testing.T)
 		t.Fatal("v1 receipts lost")
 	}
 	for i, row := range after["receipts"] {
-		if row[0] != source.store.InstanceID() || !reflect.DeepEqual(row[1:], before["receipts"][i]) {
+		if len(row) != len(before["receipts"][i])+2 || row[0] != source.store.InstanceID() ||
+			!reflect.DeepEqual(row[1:len(row)-1], before["receipts"][i]) {
 			t.Fatal("v1 predecessor receipts relabeled or rewritten")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, row[len(row)-1].(string)); err != nil {
+			t.Fatalf("v1 predecessor receipt missing migration timestamp: %v", err)
 		}
 	}
 }

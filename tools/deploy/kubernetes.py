@@ -73,6 +73,19 @@ def wait_for_recovery(read_status, expected_instance, timeout=30, sleep=time.sle
         sleep(min(1, remaining))
 
 
+def retention_args(current, mode):
+    """Change only the selected daemon flag, preserving all other arguments."""
+    if mode is None:
+        return current
+    if not isinstance(current, list) or not all(isinstance(value, str) for value in current):
+        raise ValueError("invalid existing controller arguments")
+    if mode not in ("dry-run", "enabled"):
+        raise ValueError("invalid Controller retention mode")
+    args = [value for value in current
+            if value.split("=", 1)[0] not in ("--retention-dry-run", "-retention-dry-run")]
+    return args + (["--retention-dry-run"] if mode == "dry-run" else [])
+
+
 def main():
     artifact_lease_options()  # Refuse invalid enrollment before any rollout action.
     p = argparse.ArgumentParser(description=__doc__)
@@ -88,6 +101,7 @@ def main():
     p.add_argument("--drain-seconds", type=int, default=DEFAULT_DRAIN_SECONDS)
     p.add_argument("--kubectl", nargs="+", default=["kubectl"], help="Command prefix, for example --kubectl k3s kubectl")
     p.add_argument("--memory-limit", help="Controller container memory limit to apply with the image, for example 1Gi")
+    p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
     args = p.parse_args()
     if args.memory_limit is not None and not re.fullmatch(r"[1-9][0-9]{0,5}(Mi|Gi)", args.memory_limit):
         p.error("memory limit must look like 512Mi or 1Gi")
@@ -132,6 +146,8 @@ def main():
     containers = deployment["spec"]["template"]["spec"]["containers"]
     if sum(c["name"] == args.container for c in containers) != 1:
         p.error("selected controller container is unavailable")
+    selected = next(c for c in containers if c["name"] == args.container)
+    desired_retention_args = retention_args(selected.get("args", []), args.retention_mode)
     if api("GET", "/api/v1/instance").get("instance_id") != args.instance_id:
         p.error("unexpected service instance")
     api("GET", "/api/v1/operator/deployment-drain")  # Refuse unsupported old servers before changing anything.
@@ -182,6 +198,8 @@ def main():
                 c["imagePullPolicy"] = "IfNotPresent"
                 if args.memory_limit:
                     c.setdefault("resources", {}).setdefault("limits", {})["memory"] = args.memory_limit
+                if args.retention_mode is not None:
+                    c["args"] = desired_retention_args
         annotations = deployment["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})
         annotations["firecontroller.dev/source-commit"] = args.source_revision
         annotations["firecontroller.dev/image-reference"] = args.image
@@ -193,8 +211,11 @@ def main():
             raise RuntimeError("replacement refused; inspect this deployment before cancelling drain or retrying")
         command(["rollout", "status", "deployment/" + args.deployment, "--timeout=120s"], timeout=130)
         current = json.loads(command(["get", "deployment", args.deployment, "-o", "json"]))
-        if next(c["image"] for c in current["spec"]["template"]["spec"]["containers"] if c["name"] == args.container) != args.image:
+        installed = next(c for c in current["spec"]["template"]["spec"]["containers"] if c["name"] == args.container)
+        if installed["image"] != args.image:
             raise RuntimeError("selected image changed during rollout")
+        if args.retention_mode is not None and installed.get("args", []) != desired_retention_args:
+            raise RuntimeError("selected Controller arguments changed during rollout")
         wait_for_recovery(lambda: (api("GET", "/api/v1/instance"), api("GET", "/api/v1/operator/deployment-drain")), args.instance_id)
         print(json.dumps({"state": "deployed", "image": args.image, "drain_deadline_reached": forced}))
     finally:

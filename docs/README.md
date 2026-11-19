@@ -31,6 +31,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Browser guide](browser-guide.md): embedded UI, connection privacy and build/proof limits.
 - [Browser coordination views](browser-coordination.md): explicit note/history and worker pause/focus views over the existing read contracts.
 - [Development](development.md): implemented profile-bound CLI reads/mutations, build/check commands, and current proof limits.
+- [Database retention](database-retention.md): archived history windows, receipt expiry, bounded local maintenance and dry-run qualification.
 - [Managed backups](backups.md): verified local bundles, managed scheduling/retention and inactive restore, with activation limits.
 - [Operator artifact retention](../tools/deploy/artifact-retention.md): opt-in bounded cleanup of verified redundant local operation copies, with producer/consumer leases; separate from backup retention and not automatically installed.
 - [Offsite backups](offsite-backups.md): optional rclone transfer, independent retention, private connection setup and verified recovery.
