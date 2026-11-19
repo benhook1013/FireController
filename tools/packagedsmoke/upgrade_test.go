@@ -30,6 +30,10 @@ import (
 	"github.com/benhook1013/FireController/internal/server"
 )
 
+// jobsFourFixtureBaseVersion is the current base schema used by this fixture.
+// The historical reconstruction below changes only the jobs component.
+const jobsFourFixtureBaseVersion = 3
+
 // This reconstructs the supported add-only jobs4 schema, with other components
 // current. It proves packaged migration composition, not old-binary compatibility,
 // container mounts, or disaster Restore (which deliberately replaces identity).
@@ -139,20 +143,20 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	// Retain the exact source-form progress archive and accepted keyed actions.
 	// Remove the schema-eight projection plus later empty coordination tables
 	// to exercise the supported jobs-four upgrade boundary.
-	for _, table := range []string{"job_summary_history", "job_summaries", "note_revisions", "notes", "worker_pause_history", "worker_pause_state"} {
+	for _, table := range []string{"job_summary_history", "job_summaries", "note_revisions", "notes", "worker_pause_history", "worker_pause_state", "job_blockers"} {
 		var rows int
 		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`"`).Scan(&rows); err != nil || rows != 0 {
 			t.Fatalf("jobs4 fixture reconstruction requires empty %s", table)
 		}
 	}
-	if _, err = store.DB().ExecContext(ctx, `DROP TABLE job_progress_history;DROP TABLE job_progress;DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `DROP TABLE job_progress_history;DROP TABLE job_progress;DROP TABLE job_summary_history; DROP TABLE job_summaries; DROP TABLE note_revisions; DROP TABLE notes; DROP TABLE worker_pause_history; DROP TABLE worker_pause_state; DROP TABLE job_blockers; UPDATE metadata SET value='4' WHERE key='schema:jobs'`); err != nil {
 		t.Fatal("jobs4 fixture reconstruction failed")
 	}
 	if err = store.Close(); err != nil {
 		t.Fatal("stopped fixture did not close")
 	}
 	before := readUpgradeState(t, ctx, source)
-	if before.version != 2 || before.metadata["schema:jobs"] != "4" || before.counts["jobs"] != 1 || before.counts["job_history"] != 3 || before.counts["job_checkpoints"] != 1 || before.counts["inbox_messages"] != 1 || before.counts["receipts"] < 8 {
+	if before.version != jobsFourFixtureBaseVersion || before.metadata["schema:jobs"] != "4" || before.counts["jobs"] != 1 || before.counts["job_history"] != 3 || before.counts["job_checkpoints"] != 1 || before.counts["inbox_messages"] != 1 || before.counts["receipts"] < 8 {
 		t.Fatal("upgrade fixture lacks truthful retained state")
 	}
 	for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_reservations", "review_source_refreshes", "review_checkpoint_publications"} {
@@ -247,7 +251,7 @@ func TestPackagedUpgradeSmoke(t *testing.T) {
 	if external.Load() != 0 || !reflect.DeepEqual(bundleHashes, upgradeFileHashes(t, bundle.Path)) || binaryHash(t, filepath.Join(source, "firecontroller.sqlite")) != sourceHash {
 		t.Fatal("upgrade changed protected inputs or attempted external HTTP")
 	}
-	t.Logf("reconstructed jobs4 upgrade passed: total=%s retained_tables_including_sqlite_sequence=%d new_empty_tables=6 http=%d source_bundle_unchanged=true external_http=0 owned_processes=0; other components current, no predecessor-binary/container claim", time.Since(started).Round(time.Millisecond), len(before.tables), httpRequests)
+	t.Logf("reconstructed jobs4 upgrade passed: total=%s retained_tables_including_sqlite_sequence=%d new_empty_tables=7 http=%d source_bundle_unchanged=true external_http=0 owned_processes=0; other components current, no predecessor-binary/container claim", time.Since(started).Round(time.Millisecond), len(before.tables), httpRequests)
 }
 
 // Only fixed local error classifications are diagnostic output. Backup errors
@@ -391,11 +395,11 @@ func readUpgradeState(t *testing.T, ctx context.Context, data string) upgradeSta
 func assertJobsFourUpgrade(t *testing.T, before, after upgradeState) {
 	t.Helper()
 	expected := maps.Clone(before.metadata)
-	expected["schema:jobs"] = "8"
-	if before.version != 2 || after.version != 2 || !reflect.DeepEqual(expected, after.metadata) {
+	expected["schema:jobs"] = "9"
+	if before.version != jobsFourFixtureBaseVersion || after.version != jobsFourFixtureBaseVersion || !reflect.DeepEqual(expected, after.metadata) {
 		t.Fatal("upgrade changed undeclared metadata/base")
 	}
-	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions", "job_summaries", "job_summary_history", "job_progress", "job_progress_history"}
+	added := []string{"worker_pause_state", "worker_pause_history", "notes", "note_revisions", "job_summaries", "job_summary_history", "job_progress", "job_progress_history", "job_blockers"}
 	if len(after.tables) != len(before.tables)+len(added) {
 		t.Fatal("upgrade table inventory differs")
 	}
