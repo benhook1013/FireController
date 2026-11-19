@@ -669,6 +669,33 @@ describe('Api binding and bounded reads', () => {
     expect(new Headers(calls[6].init.headers).get('x-fc-worker')).toBe('worker_one');
   });
 
+  it('reads an exact historical worker without changing the active worker list', async () => {
+    setupLocation();
+    const client = api();
+    await connect(client);
+    const retired = { ...worker, retired: true };
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/workers/worker_one')) return json(retired);
+      if (url.endsWith('/workers')) return json({ items: [], has_more: false, cursor: '' });
+      throw new Error('unexpected request');
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(client.worker('worker_one')).resolves.toEqual(retired);
+    await expect(client.workers()).resolves.toMatchObject({ items: [] });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([{retired: 'true'}, {project_id: 'other'}, {id: 'worker_other'}])(
+    'rejects an invalid historical worker detail %j', async (changed) => {
+      setupLocation();
+      const client = api();
+      await connect(client);
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...worker, retired: true, ...changed })));
+      await expect(client.worker('worker_one')).rejects.toMatchObject({ code: 'invalid_response' });
+    },
+  );
+
   it('preserves valid Unicode and control content in job titles, briefs, message bodies, previews and snapshots', async () => {
     setupLocation();
     const client = api();

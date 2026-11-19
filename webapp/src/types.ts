@@ -1,7 +1,7 @@
 export interface PageOptions {limit?: number; cursor?: string}
 export interface Page<T> {items: T[]; cursor?: string; has_more: boolean}
 export interface Project {id: string; name: string; github_repository_id: number; repository: string}
-export interface Worker {id: string; project_id: string; name: string}
+export interface Worker {id: string; project_id: string; name: string; retired?: boolean}
 export interface JobSummary {id: string; title: string; worker_id: string; status: 'active'|'parked'|'blocked'|'completed'; revision: number}
 export interface Job extends JobSummary {project_id: string; brief: string; created_at: string; updated_at: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}
