@@ -197,9 +197,10 @@ func TestPackagedProjectManagementSmoke(t *testing.T) {
 	daemon.stop(t)
 	daemon = startDaemon(t, ctx, filepath.Join(bin, "fcd"), data, env)
 	managerProfile = profile("manager-restarted", managerFile)
-	decode(t, cli(managerProfile, "manager-restarted", "reviews", "scheduling", "read", "--pr", "42"), &paused)
-	if !paused.Paused || paused.Revision != 1 || paused.Reason != "Synthetic scheduling hold" {
-		t.Fatal("restart changed paused scheduling control", paused)
+	var restartedPause client.ReviewPullScheduling
+	decode(t, cli(managerProfile, "manager-restarted", "reviews", "scheduling", "read", "--pr", "42"), &restartedPause)
+	if !restartedPause.Paused || restartedPause.Revision != 1 || restartedPause.Reason != "Synthetic scheduling hold" {
+		t.Fatal("restart changed paused scheduling control", restartedPause)
 	}
 	cli(managerProfile, "manager-restarted", "reviews", "scheduling", "resume", "--pr", "42", "--expect-revision", "1", "--key", "scheduling-resume")
 	daemon.stop(t)
