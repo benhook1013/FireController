@@ -28,6 +28,11 @@ type HostedFinding struct {
 var findingMarker = regexp.MustCompile(`^<!-- cr-comment:v1:([a-f0-9]{24}) -->$`)
 var findingOutsideHeader = regexp.MustCompile(`^\*\*⚠️ Outside diff range comments \((0|[1-9][0-9]*)\)\*\*$`)
 var findingAdditionalHeader = regexp.MustCompile(`^<summary>(?:🔇|` + standingPicture + `) Additional comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
+
+// Minor groups retain provider fingerprints and explicit file/item counts.
+var findingMinorHeader = regexp.MustCompile(`^<summary>` + standingPicture + ` Minor comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
+var findingMinorPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt for AI Agents</summary>$`)
+var findingMinorGroup = regexp.MustCompile(`^<summary>([^<>]+): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
 var findingGroupHeader = regexp.MustCompile(`^<summary>([^<>]+) \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
@@ -639,6 +644,10 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 			continue
 		}
 		if depth == 1 && quotes == 0 {
+			if kind == "minor" && l.text != "" && !findingMinorGroup.MatchString(l.text) {
+				d.fail("summary_format_unsupported")
+			}
+
 			if m := findingGroupHeader.FindStringSubmatch(l.text); m != nil && kind == "duplicate" {
 				path = m[1]
 				var ok bool
@@ -647,6 +656,15 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 					d.fail("finding_location_invalid")
 				}
 				if !validRepoPath(path) {
+					path = ""
+				}
+			}
+			if m := findingMinorGroup.FindStringSubmatch(l.text); m != nil && kind == "minor" {
+				path = m[1]
+				var ok bool
+				expected, ok = findingCount(m[2])
+				if !ok || !validRepoPath(path) {
+					d.fail("finding_location_invalid")
 					path = ""
 				}
 			}
@@ -661,7 +679,10 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 			}
 		}
 		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
-			knownNested = findingKnownNested(l.text)
+			knownNested = findingKnownNested(l.text) || kind == "minor" && findingMinorPrompt.MatchString(l.text)
+			if kind == "minor" && !knownNested {
+				d.fail("summary_format_unsupported")
+			}
 		}
 		if depth == 1 && quotes == 1 {
 			if kind == "additional" && itemStart >= 0 && strings.HasPrefix(l.text, "</blockquote>") {
@@ -683,7 +704,10 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 					d.fail("finding_location_invalid")
 				}
 				fields = findingFields{path: path, start: a, end: b}
-				fields.metadata(m[3])
+				validMetadata, explicitSeverity := fields.metadata(m[3])
+				if kind == "minor" && (!validMetadata || !explicitSeverity) {
+					d.fail("finding_format_unsupported")
+				}
 				itemStart = l.start
 			} else if strings.Contains(l.text, "cr-comment") {
 				if kind == "additional" {
@@ -918,6 +942,13 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 				followupItems++
 			} else if findingDuplicateHeader.MatchString(header) {
 				d.groupedSummary(review.Body, lines, i, end, review.ID, "duplicate", findingDuplicateHeader)
+			} else if findingMinorHeader.MatchString(header) {
+				projected, ok := findingAdditionalLayout(lines, i, end)
+				if !ok {
+					d.fail("summary_format_unsupported")
+				} else {
+					d.groupedSummary(review.Body, projected, i, end, review.ID, "minor", findingMinorHeader)
+				}
 			} else if findingAdditionalHeader.MatchString(header) {
 				projected, ok := findingAdditionalLayout(lines, i, end)
 				if !ok {
