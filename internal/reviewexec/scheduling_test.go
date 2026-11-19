@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1551,5 +1552,64 @@ func TestSchedulingWaitSnapshotRequiresActualDraftProof(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("scheduling-only history was accepted as draft proof")
+	}
+}
+
+func TestAutomaticSelectionDoesNotSettleNewlyExposedQueueSuffix(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-queued-boundary", "hosted", 4, 1)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	before := schedulingLatest(t, f)
+
+	var readSix atomic.Bool
+	reader := &refreshTestReader{
+		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+			schedulingPause(t, f, 4, 0, true)
+			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+		},
+		pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+			if n == 6 {
+				readSix.Store(true)
+			}
+			return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "closed", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+		},
+	}
+	selectionNext(t, f, reader)
+	after := selectionRead(t, f, before.ID)
+	var basis string
+	if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, before.ID).Scan(&basis); err != nil {
+		t.Fatal(err)
+	}
+	if readSix.Load() || after.State != "held" || after.Reason != "selection_changed" || basis != "" {
+		t.Fatalf("unacquired suffix retired: readSix=%t state=%s reason=%s basis=%s", readSix.Load(), after.State, after.Reason, basis)
+	}
+	schedulingGenerate(t, f, true)
+	reader.repository = nil
+	selectionNext(t, f, reader)
+	if !readSix.Load() {
+		t.Fatal("fresh selection did not acquire newly exposed pull")
+	}
+}
+
+func TestAutomaticCLISelectionKeepsExistingSourceLimit(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-cli-queued-boundary", "cli", 4, 1)
+	schedulingCLIEnable(t, f, 0, true)
+	schedulingCLIGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	recovery0030Claim(t, f, r.ID)
+	r = selectionRead(t, f, r.ID)
+	var c Configuration
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		c, _, err = readConfiguration(ctx, tx, attemptProject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	choice, err := f.e.chooseRun(t.Context(), r, 801, c, &refreshTestReader{})
+	if err != nil || choice.automaticHostedQueueLimit != nil || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 {
+		t.Fatalf("CLI source remains limited to PR2, without a Hosted settlement pin: %+v err=%v", choice, err)
 	}
 }

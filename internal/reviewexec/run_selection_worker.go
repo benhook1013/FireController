@@ -163,11 +163,12 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
-	state, reason string
-	sourceReason  string
-	prefix        []SourcePlan
-	number        int64
-	head          string
+	state, reason             string
+	sourceReason              string
+	prefix                    []SourcePlan
+	number                    int64
+	head                      string
+	automaticHostedQueueLimit *int
 }
 
 // retryRunSelectionLocal retains completed source reads while only retrying
@@ -216,7 +217,9 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
 
-func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (runChoice, error) {
+func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
+	var automaticHostedQueueLimit *int
+	defer func() { result.automaticHostedQueueLimit = automaticHostedQueueLimit }()
 	// Bound source work before metadata lookahead. Local suppression still
 	// rechecks the live prefix at admission if queued work changes afterward.
 	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -233,6 +236,9 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		}
 		if limit < 0 || limit > len(c.Queue) {
 			return schedulingUnavailable()
+		}
+		if r.Channel == "hosted" {
+			automaticHostedQueueLimit = &limit
 		}
 		c.Queue = c.Queue[:limit]
 		return nil
@@ -680,6 +686,18 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
 			bindingValidated = true
+			if choice.automaticHostedQueueLimit != nil {
+				// The existing binding pins the configured queue. If its
+				// waiting boundary moved while reading source, do not settle
+				// the newly exposed suffix without an ordinary fresh read.
+				limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+				if err != nil {
+					return err
+				}
+				if limit > *choice.automaticHostedQueueLimit {
+					return updateRun(ctx, tx, current, "held", "selection_changed", "")
+				}
+			}
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err
 			}
