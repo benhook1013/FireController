@@ -1406,6 +1406,33 @@ func TestValidateSchedulingSnapshotAcceptsSupportedVersions(t *testing.T) {
 	}
 }
 
+func TestValidateSchedulingSnapshotRejectsStaleProjectProjection(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	var actor, worker, credential, at string
+	err := f.store.DB().QueryRowContext(t.Context(), `SELECT actor_id,worker_id,credential_id,updated_at FROM review_scheduling WHERE project_id=?`, attemptProject).Scan(&actor, &worker, &credential, &at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulingEnable(t, f, 1, false)
+	// Retained events for another project or resource must not advance this
+	// projection's revision.
+	for _, identity := range [][2]string{{otherAttemptProject, attemptProject}, {attemptProject, otherAttemptProject}} {
+		admissionSQL(t, f, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
+			SELECT ?,event_type,?,revision+1,actor_id,payload_json,created_at FROM events
+			WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision=2`,
+			identity[0], identity[1], attemptProject, attemptProject)
+	}
+	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
+		t.Fatalf("healthy rev-2 projection rejected: %v", err)
+	}
+	// Reinstall only the older projection, while retaining both genuine
+	// scheduling events as they would exist after a stale snapshot restore.
+	admissionSQL(t, f, `UPDATE review_scheduling SET revision=1,automatic_hosted=1,actor_id=?,worker_id=?,credential_id=?,updated_at=? WHERE project_id=?`,
+		actor, worker, credential, at, attemptProject)
+	attemptCode(t, validateSchedulingSnapshotForTest(t, f), "storage_unavailable")
+}
+
 func TestValidateSchedulingSnapshotRejectsMalformedAndFutureVersions(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

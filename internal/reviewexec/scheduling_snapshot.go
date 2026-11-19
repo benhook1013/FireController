@@ -61,6 +61,18 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if closeErr != nil {
 		return closeErr
 	}
+	// A retained projection cannot predate a matching scheduling event.
+	var ahead bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_scheduling s WHERE EXISTS(
+		SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.project_id
+		AND e.event_type='review.scheduling_updated' AND e.revision>s.revision))`).Scan(&ahead)
+	if err != nil {
+		return err
+	}
+	if ahead {
+		return schedulingUnavailable()
+	}
+
 	rows, err = tx.QueryContext(ctx, `SELECT project_id,pull_number,revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling`)
 	if err != nil {
 		return err
