@@ -229,6 +229,7 @@ func TestSchedulingBackupRefusesResealedShapeReferencesAndProvenance(t *testing.
 		{"missing-credential", `UPDATE review_automatic_selections SET credential_id='credential_missing'`},
 		{"wrong-target", `UPDATE review_automatic_selections SET pull_number=99`},
 		{"future-control-revision", `UPDATE review_automatic_selections SET scheduling_revision=99`},
+		{"missing-paused-projection", `DELETE FROM review_pull_scheduling WHERE paused=1`},
 		{"blob-pause-reason", `UPDATE review_pull_scheduling SET reason=CAST(reason AS BLOB)`},
 		{"blob-pause-actor", `UPDATE review_pull_scheduling SET actor_id=CAST(actor_id AS BLOB)`},
 		{"blob-pause-time", `UPDATE review_pull_scheduling SET updated_at=CAST(updated_at AS BLOB)`},
