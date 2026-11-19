@@ -450,9 +450,10 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 			}
 		}
 		o, err := readCandidate(project, operation)
-		if err == nil && ctx.Err() != nil {
-			// A row-local unavailable classification can absorb the SQL error
-			// while its snapshot expires. Attribute the deadline to this row.
+		if err == nil && ctx.Err() != nil && firstReturned != nil {
+			// A row-local unavailable classification can absorb the deadline.
+			// Preserve the existing no-prefix traversal; only a returned ordinary
+			// prefix needs the identity for the worker's exhaustion receipt.
 			err = ctx.Err()
 		}
 		if err != nil {
