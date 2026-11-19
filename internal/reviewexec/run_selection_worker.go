@@ -28,10 +28,12 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 		return errRunSourceBudget
 	}
 	started := time.Now()
-	sourceCtx, cancel := context.WithTimeout(ctx, b.remaining)
+	limit := min(b.remaining, 15*time.Second)
+	sourceCtx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	err := read(sourceCtx)
-	b.remaining -= time.Since(started)
+	elapsed := time.Since(started)
+	b.remaining -= elapsed
 	// A reader that returns success after its deadline still has no usable
 	// source result. Parent cancellation wins; check before canceling our own
 	// context, including elapsed exhaustion before timer delivery catches up.
@@ -40,12 +42,18 @@ func (b *runSourceBudget) read(ctx context.Context, read func(context.Context) e
 	}
 	if sourceCtx.Err() != nil {
 		if errors.Is(sourceCtx.Err(), context.DeadlineExceeded) {
-			return errRunSourceBudget
+			if b.remaining <= 0 {
+				return errRunSourceBudget
+			}
+			return context.DeadlineExceeded
 		}
 		return sourceCtx.Err()
 	}
 	if b.remaining <= 0 {
 		return errRunSourceBudget
+	}
+	if elapsed >= limit {
+		return context.DeadlineExceeded
 	}
 	return err
 }
@@ -267,7 +275,32 @@ func retryRunSelectionRead(ctx context.Context, local func() error) error {
 }
 
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
-	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
+	var automatic bool
+	err := retryRunSelectionRead(ctx, func() error {
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic)
+		})
+	})
+	if err != nil {
+		return runChoice{}, err
+	}
+	if !automatic || e.runSourceBudget != 15*time.Second {
+		return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
+	}
+	return e.chooseRunBounded(ctx, r, repo, c, reader, 45*time.Second)
+}
+
+func (e *Engine) chooseRunBounded(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, wall time.Duration) (runChoice, error) {
+	scanCtx, cancel := context.WithTimeout(ctx, wall)
+	defer cancel()
+	scanCtx = context.WithValue(scanCtx, queueCostBudgetKey{}, true)
+	choice, err := e.chooseRunWithSourceBudget(scanCtx, r, repo, c, reader, e.runSourceBudget)
+	if ctx.Err() == nil && errors.Is(scanCtx.Err(), context.DeadlineExceeded) {
+		choice.state, choice.reason, choice.sourceReason = "held", "selection_budget_exhausted", "selection_budget_exhausted"
+		choice.number, choice.head = 0, ""
+		return choice, nil
+	}
+	return choice, err
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
@@ -326,6 +359,17 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	})
 	if err != nil {
 		return runChoice{}, err
+	}
+	if adaptive, _ := ctx.Value(queueCostBudgetKey{}).(bool); adaptive {
+		fresh := 0
+		for _, number := range queue {
+			if _, retained := history[number]; !retained {
+				fresh++
+			}
+		}
+		allowance := selectionSourceAllowance(fresh)
+		source.remaining += allowance - sourceBudget
+		sourceBudget = allowance
 	}
 	windows := map[int64]runPullResult{}
 	// Probe an unknown region before speculating. Only a freshly verified
@@ -638,11 +682,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
 			// both selection workers or repeatedly reacquire provider facts.
-			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM review_selections s
- WHERE s.state='queued'
- AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
- AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity).Scan(&project, &id, &expected)
+			err := nextFairSelection(ctx, tx).Scan(&project, &id, &expected)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -664,6 +704,18 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 				return runUnavailable()
 			}
 			if r.State != "queued" || r.Revision != expected {
+				return nil
+			}
+			var nextProject, nextID string
+			var nextRevision int64
+			fairErr := nextFairSelection(ctx, tx).Scan(&nextProject, &nextID, &nextRevision)
+			if errors.Is(fairErr, sql.ErrNoRows) {
+				return nil
+			}
+			if fairErr != nil {
+				return fairErr
+			}
+			if nextProject != project || nextID != id || nextRevision != expected {
 				return nil
 			}
 			var reason string
@@ -1012,4 +1064,29 @@ func perPullSourceHold(reason string) bool {
 		return true
 	}
 	return false
+}
+
+// Selection fairness is separate from actual provider review concurrency. New
+// projects precede projects already scanning; otherwise enqueue/requeue order wins. A completed scan cannot
+// reclaim a slot ahead of an already queued competing project. Rechecking this same order inside the writer fences claim races.
+func nextFairSelection(ctx context.Context, tx *sql.Tx) *sql.Row {
+	return tx.QueryRowContext(ctx, `WITH eligible AS (
+ SELECT s.* FROM review_selections s WHERE s.state='queued'
+ AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
+ AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
+ ), manual AS (SELECT EXISTS(SELECT 1 FROM eligible e WHERE NOT EXISTS(SELECT 1 FROM review_automatic_selections a WHERE a.project_id=e.project_id AND a.selection_id=e.id)) AS waiting)
+ SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM eligible s CROSS JOIN manual
+ ORDER BY CASE WHEN manual.waiting THEN 0 ELSE EXISTS(SELECT 1 FROM review_selections a WHERE a.project_id=s.project_id AND a.state='selecting') END,
+ CASE WHEN manual.waiting THEN 0 ELSE julianday(s.updated_at) END,
+ CASE WHEN manual.waiting THEN '' ELSE s.updated_at END,
+ s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity)
+}
+
+type queueCostBudgetKey struct{}
+
+// Fresh identity plus its possible parent lookup normally costs 0.7–1s in
+// observed production. Count only non-retained members, keep the small-queue
+// allowance, and cap provider time independently of the 45s scan wall.
+func selectionSourceAllowance(fresh int) time.Duration {
+	return min(30*time.Second, max(15*time.Second, time.Duration(fresh)*time.Second))
 }

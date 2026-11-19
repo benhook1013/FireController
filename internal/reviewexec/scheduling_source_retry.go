@@ -20,7 +20,7 @@ func transientAutomaticSourceHold(r Run) bool {
 		return false
 	}
 	switch r.Reason {
-	case "source_budget_exhausted", "source_fetch_timeout", "source_provider_unavailable":
+	case "selection_budget_exhausted", "source_budget_exhausted", "source_fetch_timeout", "source_provider_unavailable":
 		return true
 	}
 	return false

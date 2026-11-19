@@ -222,6 +222,8 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	}
 	var explanation string
 	switch reason {
+	case "selection_budget_exhausted":
+		explanation = "Selection exhausted its total computation time before establishing the target; this does not identify provider quota exhaustion or a failed individual fetch."
 	case "source_budget_exhausted":
 		explanation = "Selection exhausted its source-acquisition budget before establishing the target; this is not provider quota exhaustion."
 	case "source_fetch_timeout":
@@ -241,7 +243,7 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	default:
 		return nil
 	}
-	if reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
+	if reason == "selection_budget_exhausted" || reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
 		return &ReviewOperationDiagnostic{explanation, "An explicit held selection is terminal and has no child operation; after addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. Its old key replays the hold. An eligible automatic selection may recover on its original identity after at least thirty seconds, subject to its retained retry budget, unchanged authorization and normal admission checks. Preserve the original selection while automatic recovery remains eligible; this diagnostic does not establish eligibility or promise an exact retry time. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed."}
 	}
 	return &ReviewOperationDiagnostic{explanation, "This held selection is terminal and has no child operation. After addressing the source issue, if the review remains authorized, use one fresh reviews start / review_start with a new key and current configuration. The old key replays this hold. Keep pending selections and selected child operations on their original identities. No round reset or extra grant is needed; normal front, source and provider checks still apply."}

@@ -109,13 +109,13 @@ func TestAutomaticSourceRetryBudgetSurvivesEngineRestart(t *testing.T) {
 	}
 }
 func TestAutomaticSourceRetryReasonAllowlist(t *testing.T) {
-	for _, reason := range []string{"source_budget_exhausted", "source_fetch_timeout", "source_provider_unavailable", "source_rate_limited", "source_unauthorized", "source_not_found", "source_response_invalid", "source_unavailable", "restore_abandoned", "selection_changed", "provider_unavailable", "cancelled", "source_reader_unavailable"} {
+	for _, reason := range []string{"selection_budget_exhausted", "source_budget_exhausted", "source_fetch_timeout", "source_provider_unavailable", "source_rate_limited", "source_unauthorized", "source_not_found", "source_response_invalid", "source_unavailable", "restore_abandoned", "selection_changed", "provider_unavailable", "cancelled", "source_reader_unavailable"} {
 		t.Run(reason, func(t *testing.T) {
 			f, r := sourceRetryFixture(t)
 			if _, err := f.store.DB().Exec(`UPDATE review_selections SET reason=? WHERE id=?`, reason, r.ID); err != nil {
 				t.Fatal(err)
 			}
-			want := reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable"
+			want := reason == "selection_budget_exhausted" || reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable"
 			if got := retrySourceDirect(t, f, r, time.Now().Add(time.Minute)); got != want {
 				t.Fatal(reason, got)
 			}

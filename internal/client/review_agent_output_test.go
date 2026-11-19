@@ -538,7 +538,7 @@ func TestAgentHostedTargetChangedKeepsOriginalFactsAndRequiresQualifiedNewIntent
 }
 
 func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
-	reasons := []string{"source_budget_exhausted", "source_fetch_timeout", "source_rate_limited", "source_unauthorized", "source_not_found", "source_response_invalid", "source_provider_unavailable", "source_unavailable", "PRIVATE_PROVIDER_DETAIL"}
+	reasons := []string{"selection_budget_exhausted", "source_budget_exhausted", "source_fetch_timeout", "source_rate_limited", "source_unauthorized", "source_not_found", "source_response_invalid", "source_provider_unavailable", "source_unavailable", "PRIVATE_PROVIDER_DETAIL"}
 	for _, reason := range reasons {
 		for _, state := range []string{"held", "queued", "selecting", "selected", "empty"} {
 			for _, child := range []bool{false, true} {
@@ -556,7 +556,7 @@ func TestAgentSelectionSourceHoldIsBoundedAndNeverReplacesChild(t *testing.T) {
 					continue
 				}
 				phrases := []string{"terminal and has no child", "After addressing", "if the review remains authorized", "new key and current configuration", "old key replays", "pending selections and selected child", "No round reset or extra grant"}
-				if reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
+				if reason == "selection_budget_exhausted" || reason == "source_budget_exhausted" || reason == "source_fetch_timeout" || reason == "source_provider_unavailable" {
 					phrases = []string{"An explicit held selection is terminal", "if the review remains authorized", "new key and current configuration", "old key replays", "eligible automatic selection may recover on its original identity", "after at least thirty seconds", "retained retry budget", "unchanged authorization", "Preserve the original selection", "does not establish eligibility or promise an exact retry time", "No round reset or extra grant"}
 				}
 				for _, phrase := range phrases {
