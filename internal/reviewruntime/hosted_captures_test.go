@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -445,5 +446,24 @@ func TestHostedCaptureEncodedAndObservationBudgets(t *testing.T) {
 	encoded, _ := json.Marshal(ref)
 	if bytes.Contains(encoded, []byte(root)) || bytes.Contains(encoded, []byte("synthetic-private-token")) {
 		t.Fatal("reference exposed private evidence")
+	}
+}
+
+func TestHostedCaptureReadFailureDistinguishesOperationalErrors(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{"missing", &os.PathError{Op: "open", Path: "private-capture-path-sentinel", Err: os.ErrNotExist}, false},
+		{"invalid shape", errors.New("file"), false},
+		{"operational", &os.PathError{Op: "open", Path: "private-capture-path-sentinel", Err: os.ErrPermission}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := hostedCaptureReadFailure(test.err)
+			if retryableHostedRetention(err) != test.retryable || strings.Contains(err.Error(), "private-capture-path-sentinel") {
+				t.Fatal("unexpected or sensitive read failure", err)
+			}
+		})
 	}
 }

@@ -89,6 +89,12 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			foundCurrent = true
 			continue
 		}
+		if a.State == "cancelled" && hasBaseline {
+			if err := validateUnqueriedRetryHistory(ctx, tx, o, a.ID, o.Wait.BaselineAttemptID); err != nil {
+				return err
+			}
+			continue
+		}
 		_, draft, err := historicalCLIDraftOperation(ctx, tx, o, a)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

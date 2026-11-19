@@ -452,3 +452,14 @@ func TestOversizedDiffIsRejectedWithoutTruncation(t *testing.T) {
 		t.Fatal("owned partial diagnostic state unexpectedly removed")
 	}
 }
+
+func TestVerifyDisconnectedPinnedHistoriesAreInvalid(t *testing.T) {
+	f := newFixture(t)
+	w := prepare(t, f, "disconnected")
+	tree := git(t, f.git, w.Directory, "rev-parse", "HEAD^{tree}")
+	w.BaseSHA = git(t, f.git, w.Directory, "commit-tree", tree, "-m", "disconnected root")
+	git(t, f.git, w.Directory, "update-ref", w.ComparisonRef, w.BaseSHA)
+	if err := f.manager.Verify(t.Context(), w); err == nil || reviewworkspace.IsOperationalError(err) {
+		t.Fatalf("disconnected pinned histories must be invalid, not recoverable: %v", err)
+	}
+}

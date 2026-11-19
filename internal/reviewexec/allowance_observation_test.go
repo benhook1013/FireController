@@ -13,6 +13,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviews"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,126 @@ func cooldownObservationFixture(t *testing.T) (*attemptFixture, Attempt, HostedA
 		t.Fatal(err)
 	}
 	return f, a, in
+}
+
+func TestHeldAllowanceSQLReadHTTPReplayAndValidation(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var err error
+			reason := "allowance_exhausted"
+			var input CLIAllowanceObservation
+			var hosted HostedAllowanceInput
+			if channel == "cli" {
+				f, a, input = cliAllowanceFixture(t)
+				input.Remaining, input.FullCapacityInMS = 0, 0
+				if err = f.e.RecordCLIAllowance(t.Context(), attemptProject, a.ID, 1, input); err == nil {
+					t.Fatal("zero observation accepted as positive preflight")
+				}
+				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, 1, input)
+			} else {
+				f, a, hosted = cooldownObservationFixture(t)
+				reason = "hosted_allowance_cooldown"
+				if err = f.e.RecordHostedAllowance(t.Context(), attemptProject, a.ID, 1, hosted); err == nil {
+					t.Fatal("cooldown accepted as positive preflight")
+				}
+				err = f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, 1, hosted)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := attemptState(t, f, a)
+			var before string
+			table := "review_cli_preflight"
+			if channel == "hosted" {
+				table = "review_hosted_preflight"
+			}
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM `+table+` WHERE attempt_id=?`, a.ID).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, nil)
+			r.Header.Set("Authorization", "Bearer "+f.reader)
+			r.Header.Set(operationWaitHeader, "3")
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatal("held HTTP read", w.Code, w.Body.String())
+			}
+			var op Operation
+			if err = json.Unmarshal(w.Body.Bytes(), &op); err != nil {
+				t.Fatal(err)
+			}
+			if op.Allowance == nil || op.State != "held" || op.Reason != reason {
+				t.Fatal("missing held observation", op)
+			}
+			if channel == "cli" {
+				v := op.Allowance
+				if v.Kind != "cli_exhausted" || v.Remaining == nil || *v.Remaining != 0 || v.Limit == nil || *v.Limit != input.Limit || v.FullCapacityInMS == nil || *v.FullCapacityInMS != 0 || v.RollingWindowMS == nil || v.RetryNotBefore != "" || !bytes.Contains(w.Body.Bytes(), []byte(`"full_capacity_in_ms":0`)) {
+					t.Fatal("lost known zeros or fabricated retry", v)
+				}
+				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, 1, input)
+			} else {
+				v := op.Allowance
+				if v.Kind != "hosted_cooldown" || v.RetryNotBefore != hosted.Observation.RetryNotBefore.Format(time.RFC3339Nano) || v.Remaining != nil || v.Limit != nil || v.FullCapacityInMS != nil || v.RollingWindowMS != nil {
+					t.Fatal("wrong cooldown projection", v)
+				}
+				err = f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, 1, hosted)
+				if _, err := f.e.ReadHostedAllowance(t.Context(), attemptProject, a.ID); err == nil {
+					t.Fatal("cooldown returned as positive allowance proof")
+				}
+			}
+			compactHTTP := statusHTTP(t, f, a.OperationID, "", "wait=0", "3")
+			var compact OperationStatus
+			if compactHTTP.Code != 200 || json.Unmarshal(compactHTTP.Body.Bytes(), &compact) != nil || compact.State != "held" || compact.Reason != reason || len(compactHTTP.Body.Bytes()) > 1024 {
+				t.Fatal("compact held status unavailable or expanded", compactHTTP.Code, compactHTTP.Body.String())
+			}
+			wantRetry := ""
+			if channel == "hosted" {
+				wantRetry = op.Allowance.RetryNotBefore
+			}
+			if compact.RetryNotBefore != wantRetry || strings.Contains(compactHTTP.Body.String(), `"allowance"`) || strings.Contains(compactHTTP.Body.String(), `"remaining"`) {
+				t.Fatal("compact cooldown lost deadline or loaded full allowance output", compactHTTP.Body.String())
+			}
+			if err != nil {
+				t.Fatal("immutable held replay", err)
+			}
+			if err := ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 6); err != nil {
+				t.Fatal("typed retained snapshot", err)
+			}
+			cliAllowanceReopen(t, f)
+			read, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), a.OperationID)
+			if err != nil || !reflect.DeepEqual(read.Allowance, op.Allowance) {
+				t.Fatal("restart lost allowance", read, err)
+			}
+			var after string
+			if err := f.store.DB().QueryRow(`SELECT body_json FROM `+table+` WHERE attempt_id=?`, a.ID).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != before || attemptState(t, f, a) != original {
+				t.Fatal("read/replay/restart rewrote source")
+			}
+			if w := f.request("GET", "/api/v1/projects/"+otherAttemptProject+"/reviews/operations/"+a.OperationID, f.other, "", ""); w.Code == 200 {
+				t.Fatal("foreign project exposed observation")
+			}
+			if _, err := f.store.DB().Exec(`UPDATE `+table+` SET body_json=body_json||' ' WHERE attempt_id=?`, a.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateAllowanceSnapshot(t.Context(), f.store.DB(), 6); err == nil {
+				t.Fatal("noncanonical retained body accepted")
+			}
+			if _, err := f.e.ReadOperation(t.Context(), f.scope(t, attemptProject, f.writer, false), a.OperationID); err == nil {
+				t.Fatal("corrupt optional fact silently accepted")
+			}
+			if channel == "hosted" && statusHTTP(t, f, a.OperationID, "", "").Code != 500 {
+				t.Fatal("compact read exposed an unvalidated deadline")
+			}
+		})
+	}
 }
 
 func TestHeldAllowanceLegacyMissingAndPositiveBytes(t *testing.T) {
@@ -415,6 +536,84 @@ func TestHeldAllowanceLegacyPolicyZeroWithoutFacts(t *testing.T) {
 			}
 			if w := f.request("GET", "/api/v1/projects/"+attemptProject+"/reviews/operations/"+a.OperationID, f.reader, "", ""); w.Code != 500 {
 				t.Fatal("present invalid facts were hidden", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHeldAllowanceHTTPNegotiationPreservesLegacyShapes(t *testing.T) {
+	for _, channel := range []string{"cli", "hosted"} {
+		t.Run(channel, func(t *testing.T) {
+			var f *attemptFixture
+			var a Attempt
+			var err error
+			reason, key := "allowance_exhausted", "allowance-request"
+			if channel == "cli" {
+				var in CLIAllowanceObservation
+				f, a, in = cliAllowanceFixture(t)
+				in.Remaining = 0
+				err = f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, 1, in)
+			} else {
+				var in HostedAllowanceInput
+				f, a, in = cooldownObservationFixture(t)
+				reason, key = "hosted_allowance_cooldown", "query-request"
+				err = f.e.RecordHostedCooldown(t.Context(), attemptProject, a.ID, 1, in)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", reason, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := attemptState(t, f, a)
+			counts := attemptCount(t, f.store, "SELECT count(*) FROM receipts")
+			body, err := json.Marshal(Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: channel, HeadSHA: strings.Repeat("a", 40)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, version := range []string{"", "1", "2", "3", "4", "unknown"} {
+				for _, kind := range []string{"full", "status", "enqueue-replay"} {
+					t.Run(version+"/"+kind, func(t *testing.T) {
+						path := "/api/v1/projects/" + attemptProject + "/reviews/operations/" + a.OperationID
+						method, token, payload := "GET", f.reader, ""
+						if kind == "status" {
+							path += "/status"
+						}
+						if kind == "enqueue-replay" {
+							method, token, payload, path = "POST", f.writer, string(body), "/api/v1/projects/"+attemptProject+"/reviews/requests"
+						}
+						r := httptest.NewRequest(method, path, strings.NewReader(payload))
+						r.Header.Set("Authorization", "Bearer "+token)
+						r.Header.Set("Prefer", "wait=1")
+						if version != "" {
+							r.Header.Set(operationWaitHeader, version)
+						}
+						if method == "POST" {
+							r.Header.Set("Idempotency-Key", key)
+						}
+						w := httptest.NewRecorder()
+						f.handler.ServeHTTP(w, r)
+						var fields map[string]json.RawMessage
+						if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &fields) != nil {
+							t.Fatal("held response", w.Code, w.Body.String())
+						}
+						_, allowance := fields["allowance"]
+						_, retry := fields["retry_not_before"]
+						wantAllowance := version == "3" && kind != "status"
+						wantRetry := version == "3" && kind == "status" && channel == "hosted"
+						if allowance != wantAllowance || retry != wantRetry {
+							t.Fatal("unnegotiated held fields or missing version3 facts", version, kind, w.Body.String())
+						}
+						if !strings.Contains(w.Header().Get("Vary"), operationWaitHeader) && !strings.Contains(strings.Join(w.Header().Values("Vary"), ","), operationWaitHeader) {
+							t.Fatal("missing negotiation cache boundary")
+						}
+					})
+				}
+			}
+			o, err := f.e.ReadOperation(t.Context(), operationReadScope(t, f), a.OperationID)
+			if err != nil || o.Allowance == nil || before != attemptState(t, f, a) || counts != attemptCount(t, f.store, "SELECT count(*) FROM receipts") {
+				t.Fatal("HTTP negotiation changed engine facts or replayed mutations", o, err)
 			}
 		})
 	}

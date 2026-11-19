@@ -19,6 +19,7 @@ import (
 const maxToolWaitSeconds = 50
 
 type arguments struct {
+	operationControl           client.ReviewOperationControl
 	ciWatchTargets             []client.CIWatchTarget
 	reviewRun                  client.ReviewRunRequest
 	reviewOperations           client.ReviewOperationsOptions
@@ -67,7 +68,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, reviewRunDefinitions()...)
-	definitions = append(definitions, operationListDefinition())
+	definitions = append(definitions, operationListDefinition(), operationControlDefinition())
 	definitions = append(definitions, roundControlDefinitions()...)
 	definitions = append(definitions, adoptionDefinitions()...)
 	definitions = append(definitions, queueEditDefinition())
@@ -82,9 +83,9 @@ func boundServer(binding profile.Binding) *mcp.Server {
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	for _, tool := range definitions {
 		known[tool.name] = true
-		write := adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
+		write := tool.name == "review_operation_control" || adoptionWrite(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || projectMapWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := tool.name == "wait_for_ci" || tool.name == "review_start" || checkpointWrite(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
-		destructive := adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
+		destructive := tool.name == "review_operation_control" || adoptionDestructive(tool.name) || tool.name == "review_rounds_configure" || tool.name == "review_queue_edit" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_edit" || tool.name == "job_checklist_replace" || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
@@ -182,6 +183,8 @@ func boundServer(binding profile.Binding) *mcp.Server {
 				var watch client.CIWatchResult
 				watch, err = service.WatchCI(ctx, args.ciWatchTargets, args.reviewSourceWait)
 				value = client.AgentCIWatch(watch)
+			case "review_operation_control":
+				value, err = service.ControlReviewOperation(ctx, args.key, args.id, args.operationControl)
 			case "review_operation_read":
 				value, err = executeOperationStatus(ctx, service, args.operationStatus)
 			case "review_request":
