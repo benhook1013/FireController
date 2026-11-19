@@ -45,7 +45,7 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 			}
 			capability, ok := e.capabilities[c.CapabilityID]
 			if ok {
-				account = capability.Provider + "\x00" + capability.Account
+				account = automaticAccountKey(capability)
 			}
 			return nil
 		})
@@ -55,10 +55,10 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 		if err != nil {
 			return generated, err
 		}
-		if selectedAccounts[account] {
+		if account == "" || selectedAccounts[account] {
 			continue
 		}
-		worked, err := e.generateAutomaticProject(ctx, project, "cli", readers)
+		worked, err := e.generateAutomaticProjectForAccount(ctx, project, "cli", readers, account)
 		if automaticProjectRefused(err) {
 			continue
 		}

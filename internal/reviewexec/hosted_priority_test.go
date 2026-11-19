@@ -249,6 +249,10 @@ func TestHostedCooldownQueuePriorityProjection(t *testing.T) {
 	if read("5").Items[0].Channels[0].Wait.QueueAheadPullNumber != 0 {
 		t.Fatal("paused earlier request reserved display priority")
 	}
+	timerControl(t, f, head.ID, "resume", "display-resume-head")
+	if read("5").Items[0].Channels[0].Wait.QueueAheadPullNumber != 2 {
+		t.Fatal("resuming the earlier request did not restore display priority")
+	}
 	timerControl(t, f, head.ID, "cancel", "display-cancel-head")
 	if read("5").Items[0].Channels[0].Wait.QueueAheadPullNumber != 0 {
 		t.Fatal("mere earlier queue row reserved display priority")

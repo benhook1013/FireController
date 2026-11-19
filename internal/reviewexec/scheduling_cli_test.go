@@ -203,15 +203,27 @@ func TestSchedulingCLIControlsAndCurrentHead(t *testing.T) {
 			if r.State != "selected" {
 				t.Fatal(r)
 			}
-			if kind == "stale-head" {
-				admissionSQL(t, f, `UPDATE review_operations SET head_sha=? WHERE id=?`, strings.Repeat("f", 40), r.OperationID)
+			// The execution admission guard, not automatic selection, owns the head check.
+			attempt, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
+			if err != nil || attempt.State != "preparing" {
+				t.Fatal("selected operation did not prepare", attempt, err)
 			}
-			// Normal execution gates, rather than automatic scheduling, still own final admission.
-			if kind == "stale-head" {
-				_, err := f.e.ExecutionContext(t.Context(), attemptProject, r.OperationID)
-				if err == nil {
-					t.Fatal("stale head admitted")
-				}
+			current, err := f.e.ExecutionContext(t.Context(), attemptProject, r.OperationID)
+			if err != nil {
+				t.Fatal("selected operation did not pass execution context", err)
+			}
+			matching := attemptAnchor(attemptProject, current.Operation.PullNumber)
+			matching.CandidateSHA = current.Operation.HeadSHA
+			stale := matching
+			stale.CandidateSHA = strings.Repeat("f", 40)
+			if stale.CandidateSHA == matching.CandidateSHA {
+				t.Fatal("fixture did not change candidate head")
+			}
+			_, err = f.e.Admit(t.Context(), attemptProject, attempt.ID, attempt.Revision, stale, "")
+			attemptCode(t, err, "review_conflict")
+			admitted, err := f.e.Admit(t.Context(), attemptProject, attempt.ID, attempt.Revision, matching, "")
+			if err != nil || admitted.State != "active" || admitted.Anchor == nil || *admitted.Anchor != matching {
+				t.Fatal("same attempt with matching head did not admit", admitted, err)
 			}
 			schedulingCLIGenerate(t, f, false)
 		})
@@ -571,5 +583,31 @@ func TestSchedulingChannelBasisRejectsInvalidCurrentHistory(t *testing.T) {
 				t.Fatal("invalid history classification", fault, err)
 			}
 		})
+	}
+}
+
+func TestAutomaticCLIAccountChangeWaitsForNextPass(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingCLIEnable(t, f, 0, true)
+	oldAccount := automaticAccountKey(f.e.capabilities["test-capability"])
+	newAccount := automaticAccountKey(f.e.capabilities["other-account"])
+	if oldAccount == newAccount {
+		t.Fatal("fixture needs distinct accounts")
+	}
+	readers := map[string]TargetReader{"test-capability": &refreshTestReader{}, "other-account": &refreshTestReader{}}
+	// Commit a capability change after the pass observes its account but before
+	// the generator acquires the planning snapshot.
+	f.configure(t, attemptProject, "other-account", 1, false)
+	if worked, err := f.e.generateAutomaticProjectForAccount(t.Context(), attemptProject, "cli", readers, oldAccount); err != nil || worked {
+		t.Fatal("selection accepted under a different account from this pass", worked, err)
+	}
+	if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != 0 {
+		t.Fatal("changed account left an attribution", got)
+	}
+	if worked, err := f.e.generateAutomaticProjectForAccount(t.Context(), attemptProject, "cli", readers, newAccount); err != nil || !worked {
+		t.Fatal("fresh pass did not select the newly bound account", worked, err)
+	}
+	if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != 1 {
+		t.Fatal("fresh account produced an unexpected attribution count", got)
 	}
 }
