@@ -291,7 +291,7 @@ func automaticDependencies(ctx context.Context, tx *sql.Tx, project string, pull
 
 func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string) ([]any, error) {
 	out := []any{}
-	frame, found, err := readFrontFrame(ctx, tx, project, channel)
+	frame, found, err := automaticDependencyFrame(ctx, tx, project, channel)
 	if err != nil || !found {
 		return out, err
 	}
@@ -366,7 +366,13 @@ func automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, project stri
 	// Head identities are explicitly retained-source facts in this planning phase.
 	// This does not perform source IO or claim admission freshness.
 	heads := map[int64]string{}
-	if frame, found, readErr := readFrontFrame(ctx, tx, project, channel); readErr == nil && found {
+	frame, found, readErr := readFrontFrame(ctx, tx, project, channel)
+	// This context never escapes this plan or its transaction. Writer admission
+	// constructs and validates a new frame when it repeats the plan.
+	if readErr == nil {
+		ctx = context.WithValue(ctx, automaticFrameKey{}, automaticFrameSnapshot{project, channel, frame, found, nil})
+	}
+	if readErr == nil && found {
 		for _, p := range frame.plans() {
 			heads[p.Pull.Number] = p.Pull.HeadSHA
 		}
@@ -825,6 +831,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (worked bool, resultErr error) {
 	trace := &decisionTrace{}
 	ctx = context.WithValue(ctx, decisionTraceKey{}, trace)
+	started, stage := time.Now(), "preflight"
 	defer func() {
 		if ctx.Err() != nil {
 			return
@@ -835,7 +842,8 @@ func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel 
 		}
 		if resultErr != nil {
 			outcome = "error"
-			reason = runReason(resultErr)
+			reason = automaticPlanErrorReason(resultErr)
+			slog.WarnContext(ctx, "automatic review planning failed", "project_id", project, "channel", channel, "stage", stage, "reason", reason, "candidate_count", len(trace.candidates), "elapsed_ms", time.Since(started).Milliseconds())
 		}
 		// A busy writer must not turn an idle scheduler pass into a work-stopping wait.
 		telemetryCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
@@ -862,6 +870,7 @@ func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel 
 	if err != nil || candidate == nil {
 		return false, err
 	}
+	stage = "acceptance"
 	return e.acceptAutomaticProject(ctx, project, channel, readers, candidate)
 }
 
