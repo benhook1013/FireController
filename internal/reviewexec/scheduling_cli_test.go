@@ -585,3 +585,29 @@ func TestSchedulingChannelBasisRejectsInvalidCurrentHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestAutomaticCLIAccountChangeWaitsForNextPass(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingCLIEnable(t, f, 0, true)
+	oldAccount := automaticAccountKey(f.e.capabilities["test-capability"])
+	newAccount := automaticAccountKey(f.e.capabilities["other-account"])
+	if oldAccount == newAccount {
+		t.Fatal("fixture needs distinct accounts")
+	}
+	readers := map[string]TargetReader{"test-capability": &refreshTestReader{}, "other-account": &refreshTestReader{}}
+	// Commit a capability change after the pass observes its account but before
+	// the generator acquires the planning snapshot.
+	f.configure(t, attemptProject, "other-account", 1, false)
+	if worked, err := f.e.generateAutomaticProjectForAccount(t.Context(), attemptProject, "cli", readers, oldAccount); err != nil || worked {
+		t.Fatal("selection accepted under a different account from this pass", worked, err)
+	}
+	if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != 0 {
+		t.Fatal("changed account left an attribution", got)
+	}
+	if worked, err := f.e.generateAutomaticProjectForAccount(t.Context(), attemptProject, "cli", readers, newAccount); err != nil || !worked {
+		t.Fatal("fresh pass did not select the newly bound account", worked, err)
+	}
+	if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections`); got != 1 {
+		t.Fatal("fresh account produced an unexpected attribution count", got)
+	}
+}
