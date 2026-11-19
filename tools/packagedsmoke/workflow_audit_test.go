@@ -55,7 +55,7 @@ func TestPackagedWorkflowAuditRepairs(t *testing.T) {
 			}
 		}
 	})
-	var external, requests, pauseReads atomic.Int64
+	var external, requests, pauseReads, doctorInstanceReads, doctorPauseReads, doctorVarsReads atomic.Int64
 	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		external.Add(1)
 		w.WriteHeader(http.StatusBadGateway)
@@ -115,6 +115,16 @@ func TestPackagedWorkflowAuditRepairs(t *testing.T) {
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pause") {
 			pauseReads.Add(1)
 		}
+		if r.Method == http.MethodGet {
+			switch r.URL.Path {
+			case "/api/v1/instance":
+				doctorInstanceReads.Add(1)
+			case "/api/v1/projects/" + project + "/workers/" + receiver + "/pause":
+				doctorPauseReads.Add(1)
+			case "/api/v1/projects/" + project + "/vars":
+				doctorVarsReads.Add(1)
+			}
+		}
 		proxy.ServeHTTP(w, r)
 	}))
 	t.Cleanup(func() { gateway.CloseClientConnections(); gateway.Close() })
@@ -147,19 +157,32 @@ func TestPackagedWorkflowAuditRepairs(t *testing.T) {
 	targetMu.Unlock()
 	transport.CloseIdleConnections()
 	type doctor struct {
-		Verified bool               `json:"verified"`
-		WorkerID string             `json:"worker_id"`
-		Pause    client.WorkerPause `json:"worker_pause"`
+		Verified          bool               `json:"verified"`
+		WorkerID          string             `json:"worker_id"`
+		Pause             client.WorkerPause `json:"worker_pause"`
+		OperatorVariables map[string]string  `json:"operator_variables"`
 	}
-	verifyDoctor := func(raw []byte, before int64) {
+	type doctorReads struct{ total, instance, pause, vars int64 }
+	readCounts := func() doctorReads {
+		return doctorReads{requests.Load(), doctorInstanceReads.Load(), doctorPauseReads.Load(), doctorVarsReads.Load()}
+	}
+	verifyDoctor := func(raw []byte, before doctorReads) {
 		t.Helper()
 		var value doctor
 		decode(t, raw, &value)
-		if !value.Verified || value.WorkerID != receiver || value.Pause.WorkerID != receiver || value.Pause.Revision != 1 || !value.Pause.Paused || value.Pause.Reason != pauseReason || requests.Load()-before != 2 {
-			t.Fatal("doctor lost retained pause or added another domain read")
+		if !value.Verified || value.WorkerID != receiver || value.Pause.WorkerID != receiver || value.Pause.Revision != 1 || !value.Pause.Paused || value.Pause.Reason != pauseReason {
+			t.Fatal("doctor lost retained pause")
+		}
+		if value.OperatorVariables == nil || len(value.OperatorVariables) != 0 {
+			t.Fatal("doctor did not report the empty effective operator variables")
+		}
+		after := readCounts()
+		if after.total-before.total != 3 || after.instance-before.instance != 1 ||
+			after.pause-before.pause != 1 || after.vars-before.vars != 1 {
+			t.Fatal("doctor did not perform exactly one instance, retained pause, and effective variables read")
 		}
 	}
-	beforeDoctor := requests.Load()
+	beforeDoctor := readCounts()
 	verifyDoctor(call("receiver", "doctor"), beforeDoctor)
 
 	connect := func(role string) (*mcp.ClientSession, func()) {
@@ -221,7 +244,7 @@ func TestPackagedWorkflowAuditRepairs(t *testing.T) {
 	}
 	receiverMCP, closeReceiver := connect("receiver")
 	senderMCP, closeSender := connect("sender")
-	beforeDoctor = requests.Load()
+	beforeDoctor = readCounts()
 	verifyDoctor(tool(receiverMCP, "doctor", nil), beforeDoctor)
 	// Resume is deliberate; discovery never silently clears a human pause.
 	call("receiver", "workers", "resume", "--expect-revision", "1", "--key", "workflow-resume")
