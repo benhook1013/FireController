@@ -320,3 +320,30 @@ func TestHostedStandingZeroRejectsSubmittedReviewVariant(t *testing.T) {
 		t.Fatal("standing zero-finding evidence accepted submitted-review metadata")
 	}
 }
+
+func TestHostedEvidenceMinorSourcesRemainStrict(t *testing.T) {
+	for _, bad := range []string{"", "comment", "review", "range", "key", "unknown"} {
+		t.Run(bad, func(t *testing.T) {
+			h, anchor, review := hostedEvidenceMetadataFixture()
+			source := &h.Sources[1]
+			source.Kind = "minor"
+			source.SourceKey = fmt.Sprintf("hosted-review:%d:minor:%s", source.ReviewID, source.Fingerprint)
+			switch bad {
+			case "comment":
+				source.CommentID = 42
+			case "review":
+				source.ReviewID = 999
+			case "range":
+				review.Findings[1].StartLine = 0
+			case "key":
+				source.SourceKey = strings.Replace(source.SourceKey, ":minor:", ":duplicate:", 1)
+			case "unknown":
+				source.Kind = "unknown"
+			}
+			err := validateHostedEvidenceMetadata(h, anchor, review)
+			if (err == nil) != (bad == "") {
+				t.Fatalf("bad=%q err=%v", bad, err)
+			}
+		})
+	}
+}
