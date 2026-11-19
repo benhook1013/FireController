@@ -28,8 +28,12 @@ func TestAutomaticSelectionDoesNotReadQueuedSuffix(t *testing.T) {
 		p.IsDraft = &isDraft
 		return p, nil
 	}}
-	if _, err = f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, time.Second); err != nil {
+	choice, err := f.e.chooseRunWithSourceBudget(t.Context(), r, 801, c, reader, time.Second)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 || choice.prefix[0].SourceReason != "pull_draft" {
+		t.Fatal("did not acquire the eligible draft PR 2 prefix", choice.prefix)
 	}
 	if suffix.Load() != 0 {
 		t.Fatal("read ineligible queued suffix", suffix.Load())

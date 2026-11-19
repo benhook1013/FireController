@@ -77,10 +77,20 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"paused_pulls":[],"project_id":"exec-project-one","revision":0,"automatic_cli":false,"automatic_hosted":false}` {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w = call("GET", "pulls/2/scheduling", f.reader, "", "")
-	var p PullScheduling
-	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Revision != 0 || p.Reason != "" {
-		t.Fatal(w.Code, w.Body.String())
+	checkPullScheduling := func(w *httptest.ResponseRecorder, revision int64) {
+		t.Helper()
+		var p PullScheduling
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &p) != nil ||
+			p.ProjectID != attemptProject || p.PullNumber != 2 || p.Paused || p.Revision != revision || p.Reason != "" {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	checkPullScheduling(call("GET", "pulls/2/scheduling", f.reader, "", ""), 0)
+	for _, path := range []string{"scheduling", "pulls/2/scheduling"} {
+		head := call("HEAD", path, f.reader, "", "")
+		if head.Code != http.StatusOK || !strings.HasPrefix(head.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("HEAD %s must use the read path: status=%d body=%s", path, head.Code, head.Body.String())
+		}
 	}
 	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
 		if w = call("POST", "scheduling", f.writer, core.NewID("key"), body); w.Code != 400 {
@@ -118,10 +128,7 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if w = call("POST", "pulls/2/scheduling", f.writer, "resume", `{"expected_revision":1,"paused":false,"reason":"discarded"}`); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w = call("GET", "pulls/2/scheduling", f.reader, "", "")
-	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Reason != "" || p.Revision != 2 {
-		t.Fatal(w.Body.String())
-	}
+	checkPullScheduling(call("GET", "pulls/2/scheduling", f.reader, "", ""), 2)
 	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
 	if w = call("POST", "scheduling", f.writer, "enable", `{"expected_revision":0,"automatic_hosted":true}`); w.Code != 403 {
 		t.Fatal("replay bypassed current management", w.Code)

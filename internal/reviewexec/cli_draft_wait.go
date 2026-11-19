@@ -98,7 +98,9 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		var refusal *core.Error
 		if errors.As(err, &refusal) {
 			if refusal.Code == "overloaded" {
-				return false, false, false, nil
+				// The worker still defers this row but must not acknowledge
+				// exhausted work when storage prevented the readiness read.
+				return false, false, false, err
 			}
 			if refusal.Status >= 400 && refusal.Status < 500 {
 				// Let the normal claim settle a local refusal. A draft wait

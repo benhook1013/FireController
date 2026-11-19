@@ -24,9 +24,14 @@ func deadlineRuntimeFixture(t *testing.T, channel string) (*attemptFixture, Atte
 
 func deadlineRuntimeState(t *testing.T, f *attemptFixture) string {
 	t.Helper()
+	return deadlineRuntimeStateThrough(t, f.store.DB())
+}
+
+func deadlineRuntimeStateThrough(t *testing.T, reader snapshotTableReader) string {
+	t.Helper()
 	var result strings.Builder
 	for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_transitions", "review_operation_waits", "review_cli_preflight", "review_hosted_preflight", "review_execution_reservations", "events", "receipts"} {
-		result.WriteString(snapshotTable(t, f, table))
+		result.WriteString(snapshotTableThrough(t, reader, table))
 	}
 	return result.String()
 }

@@ -27,7 +27,7 @@ func (e *Engine) schedulingHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		out, err := e.ReadScheduling(r.Context(), scope)
 		if err != nil {
 			core.WriteError(w, err)
@@ -73,7 +73,7 @@ func (e *Engine) pullSchedulingHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		out, err := e.ReadPullScheduling(r.Context(), scope, pull)
 		if err != nil {
 			core.WriteError(w, err)

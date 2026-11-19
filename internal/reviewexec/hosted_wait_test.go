@@ -78,7 +78,16 @@ func TestCooldownSchemaRetainsDependentRows(t *testing.T) {
 
 func snapshotTable(t *testing.T, f *attemptFixture, table string) string {
 	t.Helper()
-	rows, err := f.store.DB().Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+	return snapshotTableThrough(t, f.store.DB(), table)
+}
+
+type snapshotTableReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func snapshotTableThrough(t *testing.T, reader snapshotTableReader, table string) string {
+	t.Helper()
+	rows, err := reader.QueryContext(t.Context(), `SELECT * FROM `+table+` ORDER BY rowid`)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -48,8 +48,14 @@ func TestSchedulingHoldKeepsCooldownHistoryStrict(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					defer tx.Rollback()
 					err = ValidateOperationWaitsSnapshot(t.Context(), tx)
-					tx.Rollback()
+					if state != deadlineRuntimeStateThrough(t, tx) {
+						t.Fatal("validation wrote inside the retained-history transaction")
+					}
+					if rollbackErr := tx.Rollback(); rollbackErr != nil {
+						t.Fatal(rollbackErr)
+					}
 					if (err == nil) != (damage == "none") {
 						t.Fatal("snapshot history classification", err)
 					}
