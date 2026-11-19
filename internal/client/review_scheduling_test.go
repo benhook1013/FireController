@@ -351,14 +351,15 @@ func TestSchedulingOptionalCLIWireContract(t *testing.T) {
 			t.Fatalf("wrong optional CLI body: %s %v", encoded, err)
 		}
 	}
-	var response string
+	var response atomic.Value
+	response.Store("")
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/instance" {
 			handshake(w)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, response)
+		_, _ = io.WriteString(w, response.Load().(string))
 	}))
 	defer service.Close()
 	c := newClient(t, service)
@@ -372,7 +373,7 @@ func TestSchedulingOptionalCLIWireContract(t *testing.T) {
 		{`{"project_id":"project-one","revision":1,"automatic_hosted":false,"automatic_cli":true,"paused_pulls":[],"updated_at":"2026-11-01T00:00:00Z"}`, false, false},
 		{`{"project_id":"project-one","revision":1,"automatic_hosted":false,"automatic_cli":true,"paused_pulls":[],"updated_at":"2026-11-01T00:00:00Z","authorizing_worker_id":"worker-one"}`, true, true},
 	} {
-		response = tc.body
+		response.Store(tc.body)
 		value, err := c.ReviewScheduling(t.Context())
 		if (err == nil) != tc.valid || tc.valid && value.AutomaticCLI != tc.enabled {
 			t.Fatalf("wrong scheduling validation: %+v %v", value, err)
