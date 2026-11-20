@@ -1288,8 +1288,15 @@ func TestSupervisorRetriesStartupCLIExhaustionWithoutRestart(t *testing.T) {
 	}()
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		current, err := readOperation(t.Context(), f.store.DB(), attemptProject, o.ID)
+		// The supervisor atomically writes the operation and its wait.
+		// Read both from one snapshot, not across a concurrent commit.
+		tx, err := f.store.DB().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 		if err != nil {
+			t.Fatal(err)
+		}
+		current, readErr := readOperation(t.Context(), tx, attemptProject, o.ID)
+		closeErr := tx.Rollback()
+		if err := errors.Join(readErr, closeErr); err != nil {
 			t.Fatal(err)
 		}
 		if current.State == "queued" && current.Wait != nil {
