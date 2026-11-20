@@ -90,7 +90,7 @@ describe('adjudication indicator age', () => {
   const html=markup([run],[{...attempt,channel,state:'completed',finished_at:run.finished_at}],{...progress,channel,pending:1,pending_adjudication:1});
   expect(html).not.toContain(`aria-label="${channel} current review state"`);
   const indicator=html.split(`aria-label="Open ${channel} run evidence:`)[1].split('</a>')[0];
-  expect(indicator).toContain('Needs adjudication');
+  expect(indicator).toContain('<span class="review-pill-status">Adjudicating</span>');
   expect(indicator).toContain('dateTime="2026-11-15T05:35:00Z"');
   expect(indicator).not.toContain(`dateTime="${stamp}"`);
   expect(indicator).not.toContain(`dateTime="${run.finished_at}"`);
@@ -193,7 +193,8 @@ it('retains aggregate adjudication indicator when more than the visible returned
  const run={...completed,finalized:false};
  const html=markup([run],[{...attempt,state:'completed',finished_at:run.finished_at}],{...progress,pending:2,pending_adjudication:2});
  expect(html).toContain('aria-label="cli current review state"');
- expect(html).toContain('review-pill-status">Needs adjudication');
+ expect(html).toContain('<span class="review-pill-status">Adjudicating</span>');
+ expect(html).toContain('aria-label="cli current review state"><span class="badge review-channel-position">Needs adjudication</span>');
 });
 
 
