@@ -138,10 +138,159 @@ func (p *standingRiskParser) line(line string, stack []string) (handled, ok bool
 	return false, true
 }
 
+// Only this explicitly historical report is recognized as narrative. Counts
+// are bounded and must reconcile; the report supplies no current inventory or
+// comparison proof. Unknown wording, nonzero routes and current claims retain
+// the global finding guard.
+var standingHistoricalCheckpoint = regexp.MustCompile(`^The latest reported Hosted review checkpoint lists (0|[1-9][0-9]{0,2}) accepted findings: (0|[1-9][0-9]{0,2}) minor and (0|[1-9][0-9]{0,2}) trivial, with (0|[1-9][0-9]{0,2}) major and 0 routed\. Finding details and current review findings are not available\.$`)
+
+func standingHistoricalCheckpointLine(line string) bool {
+	counts := standingHistoricalCheckpoint.FindStringSubmatch(line)
+	if counts == nil {
+		return false
+	}
+	var values [4]int
+	for i := range values {
+		values[i], _ = strconv.Atoi(counts[i+1]) // The bounded decimal grammar cannot overflow.
+	}
+	return values[0] <= 100 && values[0] == values[1]+values[2]+values[3]
+}
+
+// This parser observes the existing visibility/HTML scanner; it never removes
+// or hides text. It recognizes one closed, root walkthrough Summary envelope
+// with one generated release-notes region. Only a complete envelope can exempt
+// its one standalone historical checkpoint line from the numeric-claim guard.
+// All other lines, including other claims in that same region, remain guarded.
+// Line-based ancestry cannot credit an owner across an unfinished HTML tag.
+var standingIncompleteOwnerTag = regexp.MustCompile(`(?i)</?(?:dd|dl|details)(?:[ \t/][^>]*|)$`)
+
+type standingHistoricalParser struct {
+	phase, claimLine         int
+	seen, invalid, bodyBreak bool
+}
+
+func (p *standingHistoricalParser) line(line string, stack []string, index int, inRecent bool) {
+	if line == "" {
+		return
+	}
+	ancestry := strings.Join(stack, "/")
+	const releaseStart = "<!-- This is an auto-generated comment: release notes by coderabbit.ai -->"
+	const releaseEnd = "<!-- end of auto-generated comment: release notes by coderabbit.ai -->"
+	switch line {
+	case "<!-- walkthrough_start -->":
+		if p.seen || inRecent || ancestry != "" {
+			p.invalid = true
+		}
+		p.seen, p.phase = true, 1
+		return
+	case "<!-- walkthrough_end -->":
+		if p.phase != 10 || inRecent || ancestry != "" {
+			p.invalid = true
+		}
+		p.phase = 11
+		return
+	case releaseStart:
+		if p.phase != 5 || inRecent || ancestry != "details/dl/dd" {
+			p.invalid = true
+		}
+		p.phase = 6
+		return
+	case releaseEnd:
+		if p.phase != 6 || inRecent || ancestry != "details/dl/dd" {
+			p.invalid = true
+		}
+		p.phase = 7
+		return
+	}
+	if strings.Contains(line, "<!-- walkthrough_") || strings.Contains(line, "release notes by coderabbit.ai") {
+		p.invalid = true
+	}
+	if p.phase == 0 || p.phase == 11 {
+		return
+	}
+	if standingIncompleteOwnerTag.MatchString(line) {
+		p.invalid = true
+	}
+	if inRecent {
+		p.invalid = true
+		return
+	}
+	switch p.phase {
+	case 1:
+		if ancestry != "" || line != "<details>" {
+			p.invalid = true
+		}
+		p.phase = 2
+	case 2:
+		if ancestry != "details" || line != "<summary><strong>Summary</strong></summary>" {
+			p.invalid = true
+		}
+		p.phase = 3
+	case 3:
+		if ancestry != "details" || line != "<dl>" {
+			p.invalid = true
+		}
+		p.phase = 4
+	case 4:
+		if ancestry != "details/dl" || line != "<dd>" {
+			p.invalid = true
+		}
+		p.phase = 5
+	case 5:
+		if ancestry != "details/dl/dd" || line != "<br>" || p.bodyBreak {
+			p.invalid = true
+		}
+		p.bodyBreak = true
+	case 6:
+		if ancestry != "details/dl/dd" {
+			p.invalid = true
+		}
+		if standingHistoricalCheckpointLine(line) {
+			if p.claimLine != 0 {
+				p.invalid = true
+			}
+			p.claimLine = index + 1
+		}
+	case 7:
+		if ancestry == "details/dl/dd" && line == "</dd>" {
+			p.phase = 8
+		}
+	case 8:
+		if ancestry != "details/dl" || line != "</dl>" {
+			p.invalid = true
+		}
+		p.phase = 9
+	case 9:
+		if ancestry != "details" || line != "</details>" {
+			p.invalid = true
+		}
+		p.phase = 10
+	case 10:
+		p.invalid = true
+	}
+}
+
+// The exact opening lines establish the root details/dl/dd as the owner.
+// Observe every actual closing token, not just ancestry at line boundaries:
+// </dd><dd> must not replace that owner while preserving the same tag path.
+// Only the three standalone final closing lines may pop its original frames.
+func (p *standingHistoricalParser) close(depth int) {
+	if p.phase < 5 || p.phase > 10 || depth > 3 {
+		return
+	}
+	if !(p.phase == 8 && depth == 3 || p.phase == 9 && depth == 2 || p.phase == 10 && depth == 1) {
+		p.invalid = true
+	}
+}
+
+func (p *standingHistoricalParser) allows(index int) bool {
+	return !p.invalid && p.phase == 11 && p.claimLine == index+1
+}
+
 // standingSections requires visible root recent metadata and the specifically
 // labelled Merge Risk coverage envelope. Other HTML containers and examples
 // cannot supply protocol proof. Recent metadata has its own closed grammar.
-func standingSections(body string) (recent []string, coverage string, statusZero, ok bool) {
+func standingSections(body string, historical *standingHistoricalParser) (recent []string, coverage string, statusZero, ok bool) {
 	var stack []string
 	var fence byte
 	fenceLength := 0
@@ -149,7 +298,7 @@ func standingSections(body string) (recent []string, coverage string, statusZero
 	inStatus, statusSeen, statusClaim := false, false, false
 	starts, ends := 0, 0
 	risk := standingRiskParser{}
-	for _, raw := range strings.Split(body, "\n") {
+	for index, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
@@ -195,6 +344,9 @@ func standingSections(body string) (recent []string, coverage string, statusZero
 					continue
 				}
 			}
+		}
+		if historical != nil && !comment && !pre {
+			historical.line(line, stack, index, inRecent)
 		}
 		if !comment && len(stack) == 0 {
 			switch {
@@ -266,6 +418,9 @@ func standingSections(body string) (recent []string, coverage string, statusZero
 			if closing {
 				if len(stack) == 0 || stack[len(stack)-1] != tag {
 					return nil, "", false, false
+				}
+				if historical != nil {
+					historical.close(len(stack))
 				}
 				stack = stack[:len(stack)-1]
 			} else if !strings.HasSuffix(token, "/>") {
@@ -421,14 +576,18 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 	if !sound {
 		return zero, false
 	}
-	for _, line := range lines {
-		if requireZero && !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text)) {
-			return zero, false
-		}
+	var historical *standingHistoricalParser
+	if requireZero {
+		historical = &standingHistoricalParser{}
 	}
-	recent, coverage, statusZero, valid := standingSections(body)
+	recent, coverage, statusZero, valid := standingSections(body, historical)
 	if !valid {
 		return zero, false
+	}
+	for index, line := range lines {
+		if requireZero && !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text) && !historical.allows(index)) {
+			return zero, false
+		}
 	}
 	p := standingRecentParser{}
 	for _, line := range recent {

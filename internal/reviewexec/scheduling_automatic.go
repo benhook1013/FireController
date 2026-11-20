@@ -308,19 +308,19 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 			out = append(out, []any{parent, "source_prefix_incomplete"})
 			break
 		}
-		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
+		_, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
 		if err != nil {
 			return nil, err
 		}
-		control, err := readRoundRecord(ctx, tx, project, parent, channel)
+		_, err = readRoundRecord(ctx, tx, project, parent, channel)
 		if err != nil {
 			return nil, err
 		}
-		obligations, err := sourceObligationCount(ctx, tx, project, parent)
+		_, err = sourceObligationCount(ctx, tx, project, parent)
 		if err != nil {
 			return nil, err
 		}
-		routes, err := pendingIncomingRoutes(ctx, tx, project, parent)
+		_, err = pendingIncomingRoutes(ctx, tx, project, parent)
 		if err != nil {
 			return nil, err
 		}
@@ -328,7 +328,9 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
 			return nil, err
 		}
-		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes})
+		// Ancestor review work is validated above, but cannot rearm a child.
+		// Only actual source dependency identity belongs in its intent basis.
+		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA})
 		parent = p.ParentPullNumber
 	}
 	return out, nil

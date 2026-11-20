@@ -235,7 +235,7 @@ func integrationSelectionWorker(t *testing.T, f *attemptFixture) {
 	}
 }
 
-func TestAdoptionHoldsIntegrationFinalPredecessorRecheck(t *testing.T) {
+func TestAdoptionHoldsIntegrationAncestorObligationsStayLocal(t *testing.T) {
 	for _, mode := range []string{"covered", "closed", "tapered", "merged"} {
 		t.Run(mode, func(t *testing.T) {
 			f, prior, id, predecessor := coverageFixture(t, 0, false)
@@ -289,7 +289,11 @@ func TestAdoptionHoldsIntegrationFinalPredecessorRecheck(t *testing.T) {
 				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "merged-source-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 				integrationSourceHeld(t, err)
 			} else {
-				integrationSourceHeld(t, f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, predecessors...))
+				if err := f.e.VerifyAction(t.Context(), attemptProject, child.ID, child.Revision, predecessors...); err != nil {
+					t.Fatal("ancestor adoption work blocked child review", err)
+				}
+				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "ancestor-target-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+				integrationSourceHeld(t, err)
 			}
 			if after := integrationHoldDetail(t, f, hold.ID); !reflect.DeepEqual(beforeHold, after) || after.Status != "open" {
 				t.Fatal("final guard changed the retained source hold", beforeHold, after)
@@ -600,9 +604,11 @@ func TestAdoptionHoldsIntegrationSelectionRechecksActualParent(t *testing.T) {
 		t.Fatal(worked, err)
 	}
 	got := selectionRead(t, f, r.ID)
-	if !imported || got.State != "held" || got.Reason != "source_obligations_pending" || got.OperationID != "" || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
-		t.Fatal("late actual-parent hold escaped transactional child admission", got)
+	if !imported || got.State != "selected" || got.OperationID == "" || roundOperation(t, f, got.OperationID).PullNumber != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("ancestor adoption work blocked exact child selection", got)
 	}
+	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "late-ancestor-target-still-held", Request{ExpectedConfigurationRevision: 2, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
+	integrationSourceHeld(t, err)
 }
 
 func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(t *testing.T) {

@@ -10,6 +10,7 @@ import { runMessageWatch, runEventWatch, type MessageWatchSource, type EventWatc
 import { validPresentationSnapshot, validPresentation, validMetadataPage, validPresentationConfig, type PresentationConfig } from './presentation';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
+import { progressPulls, validReviewProgress, type ReviewProgress } from './review-progress';
 
 const maxBytes = 1 << 20;
 const maxItems = 100;
@@ -796,6 +797,13 @@ export class Api {
     if (!value.items.every(validReviewPull) || new Set(value.items.map(item => item.number)).size !== value.items.length) throw new ApiError('invalid_response', 'The service returned an invalid review queue.');
     return value as unknown as ReviewQueue;
   }
+  async reviewProgress(pulls: number[], signal?: AbortSignal): Promise<ReviewProgress> {
+    if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Choose between 1 and 100 distinct pull request numbers.');
+    const query = new URLSearchParams({ pull_numbers: pulls.join(','), view: 'stages' });
+    const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), query), signal, undefined, 128 << 10, assessmentJSON, true);
+    if (!validReviewProgress(value, this.projectId, pulls)) throw new ApiError('invalid_response', 'The service returned invalid current review progress.');
+    return value;
+  }
   async reviewPull(number: number, snapshot?: string, signal?: AbortSignal): Promise<ReviewPull> {
     if (!pullNumber(number)) throw new ApiError('invalid_request', 'The pull request number is invalid.');
     const query = reviewQuery(snapshot);
@@ -929,17 +937,19 @@ export class Api {
   }
 
   private projectRoute(suffix: string): string { return `/api/v1/projects/${encodeURIComponent(this.projectId)}${suffix ? `/${suffix}` : ''}`; }
-  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse): Promise<unknown> {
+  private async finiteGet(path: string, signal?: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse, operationWait = false): Promise<unknown> {
     this.ensureOpen();
     const request = requestBudget([signal, this.session.signal], 5000);
     try {
       if (!this.verifiedInstanceId) throw new ApiError('not_connected', 'Connect to the selected project before reading data.');
-      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes, decode);
+      return await this.getJson(path, this.verifiedInstanceId, request.signal, worker, responseMaxBytes, decode, operationWait);
     } catch (error) { throw this.transportError(error, request.expired(), request.signal); }
     finally { request.close(); }
   }
-  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse): Promise<unknown> {
-    const response = await fetch(urlFor(path), { method: 'GET', headers: this.headers(instanceId, worker), redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
+  private async getJson(path: string, instanceId: string | undefined, signal: AbortSignal, worker?: string, responseMaxBytes = maxBytes, decode: (text: string) => unknown = JSON.parse, operationWait = false): Promise<unknown> {
+    const headers = this.headers(instanceId, worker);
+    if (operationWait) headers.set('X-FC-Operation-Wait', '5');
+    const response = await fetch(urlFor(path), { method: 'GET', headers, redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
     return readJson(response, signal, responseMaxBytes, decode);
   }
