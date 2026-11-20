@@ -379,6 +379,7 @@ type sourceWaitOptions struct {
 	hostedObserver     bool
 	sourceRefusalV4    bool
 	ciWatchChange      bool
+	ciFailedTests      bool
 	ciWorkflowDetails  bool
 	seconds            int
 	status             *int
@@ -451,6 +452,9 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 		r.Header.Set("Prefer", "wait="+strconv.Itoa(wait.seconds))
 		if wait.ciWatchChange {
 			r.Header.Set("X-FC-CI-Watch", "change-v3")
+		}
+		if wait.ciFailedTests {
+			r.Header.Set("X-FC-CI-Failed-Tests", "1")
 		}
 		if wait.ciWorkflowDetails {
 			r.Header.Set("X-FC-CI-Workflow-Details", "3")

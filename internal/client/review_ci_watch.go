@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -13,7 +14,7 @@ const CIWatchDefaultSeconds = 300
 
 type CIWatchTarget struct {
 	PullNumber          int64   `json:"pull_number"`
-	HeadSHA             string  `json:"head_sha"`
+	HeadSHA             string  `json:"head_sha,omitempty"`
 	BaseSHA             string  `json:"base_sha,omitempty"`
 	AfterObservationKey string  `json:"after_observation_key,omitempty"`
 	FailureWorkflowIDs  []int64 `json:"failure_workflow_ids,omitempty"`
@@ -30,7 +31,19 @@ type CIWorkflowFailure struct {
 	Conclusion string `json:"conclusion"`
 }
 
+type CIWatchFailedJob struct {
+	WorkflowID     int64    `json:"workflow_id"`
+	RunID          int64    `json:"run_id"`
+	RunAttempt     int64    `json:"run_attempt"`
+	JobID          int64    `json:"job_id"`
+	CheckRunID     int64    `json:"check_run_id"`
+	GateCheckRunID int64    `json:"gate_check_run_id"`
+	Tests          []string `json:"tests,omitempty"`
+}
+
 type CIWatchTargetResult struct {
+	FailedJobTests         []CIWatchFailedJob      `json:"failed_job_tests,omitempty"`
+	FailureDetailState     string                  `json:"failure_detail_state,omitempty"`
 	WorkflowAttentionBasis string                  `json:"workflow_attention_basis,omitempty"`
 	MergeBaseMismatch      *CIMergeBaseMismatch    `json:"merge_base_mismatch,omitempty"`
 	PullNumber             int64                   `json:"pull_number"`
@@ -65,12 +78,21 @@ type CIWatchResult struct {
 }
 
 func ValidateCIWatchTargets(targets []CIWatchTarget) error {
+	return validateCIWatchTargets(targets, false)
+}
+
+// ValidateCIWatchCLITargets additionally accepts headless PR targets.
+func ValidateCIWatchCLITargets(targets []CIWatchTarget) error {
+	return validateCIWatchTargets(targets, true)
+}
+
+func validateCIWatchTargets(targets []CIWatchTarget, allowResolve bool) error {
 	if len(targets) < 1 || len(targets) > CIWatchMaxTargets {
 		return validation()
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !controlHex(target.AfterObservationKey, 64)) {
+		if !validPullNumber(target.PullNumber) || seen[target.PullNumber] || target.HeadSHA == "" && (!allowResolve || target.BaseSHA != "" || target.AfterObservationKey != "") || target.HeadSHA != "" && !controlHex(target.HeadSHA, 40) || target.BaseSHA != "" && !controlHex(target.BaseSHA, 40) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !controlHex(target.AfterObservationKey, 64)) {
 			return validation()
 		}
 		seen[target.PullNumber] = true
@@ -91,16 +113,33 @@ func ValidateCIWatchTargets(targets []CIWatchTarget) error {
 // WatchCI collects fresh CI facts for exact commit pins. This POST is a read:
 // it has no idempotency key, enrollment, mutation retry or unknown-write result.
 func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds int) (CIWatchResult, error) {
-	if ValidateCIWatchTargets(targets) != nil || ValidateReviewOperationWait(seconds) != nil {
+	return c.watchCI(ctx, targets, seconds, false, false)
+}
+
+// WatchCIWithFailedTests opts a single-target agent CLI call into bounded diagnostics.
+func (c *Client) WatchCIWithFailedTests(ctx context.Context, targets []CIWatchTarget, seconds int) (CIWatchResult, error) {
+	return c.watchCI(ctx, targets, seconds, true, len(targets) == 1)
+}
+
+func (c *Client) watchCI(ctx context.Context, targets []CIWatchTarget, seconds int, allowResolve, failedTests bool) (CIWatchResult, error) {
+	if validateCIWatchTargets(targets, allowResolve) != nil || ValidateReviewOperationWait(seconds) != nil {
 		return CIWatchResult{}, validation()
 	}
 	targets = append([]CIWatchTarget(nil), targets...)
 	for i := range targets {
 		targets[i].FailureWorkflowIDs = append([]int64(nil), targets[i].FailureWorkflowIDs...)
 	}
+	type wireTarget struct {
+		CIWatchTarget
+		ResolveHead bool `json:"resolve_head,omitempty"`
+	}
+	var wire []wireTarget
+	for _, target := range targets {
+		wire = append(wire, wireTarget{target, target.HeadSHA == ""})
+	}
 	body, err := json.Marshal(struct {
-		Targets []CIWatchTarget `json:"targets"`
-	}{targets})
+		Targets []wireTarget `json:"targets"`
+	}{wire})
 	if err != nil {
 		return CIWatchResult{}, validation()
 	}
@@ -120,7 +159,7 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	var status int
 	read := func(ctx context.Context, remaining int) error {
 		value = CIWatchResult{}
-		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciWorkflowDetails: workflowDetails})
+		return c.requestBoundedOptions(ctx, http.MethodPost, c.projectPath("reviews", "ci", "watch"), nil, true, "", body, http.StatusOK, false, &value, 512<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, ciWatchChange: true, ciFailedTests: failedTests, ciWorkflowDetails: workflowDetails})
 	}
 	if explicitBases {
 		err = resumeTracedResultWait(ctx, requested, seconds, read)
@@ -146,7 +185,51 @@ func (c *Client) WatchCI(ctx context.Context, targets []CIWatchTarget, seconds i
 	if value.ProjectID != c.identity.ProjectID || !validCIWatchResult(value, targets) {
 		return CIWatchResult{}, invalidResponse()
 	}
+	for i := range value.Targets {
+		item := &value.Targets[i]
+		// Optional details are never allowed to invalidate a CI verdict.
+		if !failedTests || !validCIWatchFailedTests(*item) {
+			item.FailedJobTests = nil
+			item.FailureDetailState = ""
+		}
+		if failedTests && item.State == "failed" && !item.WaitingForChange && item.FailureDetailState == "" {
+			item.FailureDetailState = "unavailable"
+		}
+	}
 	return value, nil
+}
+
+var ciFailureName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.$]{0,161}$`)
+
+func validCIWatchFailedTests(item CIWatchTargetResult) bool {
+	if item.State != "failed" || item.WaitingForChange || len(item.FailedJobTests) > 3 || !oneReviewOf(item.FailureDetailState, "available", "unavailable") {
+		return false
+	}
+	available := false
+	seen := map[int64]bool{}
+	for _, row := range item.FailedJobTests {
+		if row.WorkflowID <= 0 || row.RunID <= 0 || row.RunAttempt <= 0 || row.JobID <= 0 || row.CheckRunID <= 0 || row.GateCheckRunID <= 0 || seen[row.CheckRunID] || len(row.Tests) > 8 {
+			return false
+		}
+		seen[row.CheckRunID] = true
+		matched := false
+		for _, check := range item.Checks {
+			if check.State == "failed" && check.CheckRun != nil && check.CheckRun.ID == row.GateCheckRunID && check.CheckRun.Status == "completed" && check.CheckRun.Conclusion == "failure" {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+		for _, name := range row.Tests {
+			if !ciFailureName.MatchString(name) {
+				return false
+			}
+			available = true
+		}
+	}
+	return available == (item.FailureDetailState == "available")
 }
 
 // Keep CI wait validation and interruption guidance local to this read.
@@ -200,6 +283,12 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 	state := "pending"
 	for i, item := range value.Targets {
 		pin := targets[i]
+		if pin.HeadSHA == "" {
+			if item.HeadSHA != "" && !controlHex(item.HeadSHA, 40) {
+				return false
+			}
+			pin.HeadSHA = item.HeadSHA
+		}
 		if item.Reason == "ci_merge_base_mismatch" && (item.State != "pending" || item.Selection != "") {
 			return false
 		}
@@ -231,7 +320,7 @@ func validCIWatchResult(value CIWatchResult, targets []CIWatchTarget) bool {
 		if item.State == "passed" && (item.Reason != "" || item.Required == 0 || item.Satisfied != item.Required) || item.State == "unconfigured" && item.Required != 0 || item.State == "failed" && item.Failed == 0 {
 			return false
 		}
-		if oneReviewOf(item.State, "passed", "failed", "unconfigured") && (item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "") {
+		if oneReviewOf(item.State, "passed", "failed", "unconfigured") && (pin.HeadSHA == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "") {
 			return false
 		}
 		if oneReviewOf(item.State, "passed", "failed") && (item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA) {
@@ -256,7 +345,7 @@ func validCIWatchWorkflowFailures(item CIWatchTargetResult, pin CIWatchTarget) b
 	if len(item.WorkflowFailures) == 0 {
 		return true
 	}
-	if item.State != "pending" || len(item.WorkflowFailures) > 16 || item.ObservationKey == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "" || !headOnly && item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA || item.Reason == "ci_watch_refresh_pending" {
+	if item.State != "pending" || len(item.WorkflowFailures) > 16 || item.ObservationKey == "" || pin.HeadSHA == "" || item.ObservedHeadSHA != pin.HeadSHA || item.ObservedBaseSHA == "" || pin.BaseSHA != "" && item.ObservedBaseSHA != pin.BaseSHA || item.BaseRef == "" || item.GateRef == "" || item.ObservedAt == "" || !headOnly && item.Selection == "" || item.Selection == "head" && item.CICommitSHA != pin.HeadSHA || item.Reason == "ci_watch_refresh_pending" {
 		return false
 	}
 	selected, workflows, jobs, checks := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}, map[int64]bool{}

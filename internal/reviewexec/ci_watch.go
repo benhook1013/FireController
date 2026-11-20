@@ -12,6 +12,7 @@ import (
 )
 
 type CIWatchTarget struct {
+	IncludeFailedTests       bool    `json:"-"`
 	AllowPassedRearm         bool    `json:"-"`
 	AllowHeadAttention       bool    `json:"-"`
 	AllowHistoricalAttention bool    `json:"-"`
@@ -24,6 +25,9 @@ type CIWatchTarget struct {
 
 type CIWatchItem struct {
 	CIWatchTarget
+	failedJobRepository    string
+	FailedJobTests         []CIWatchFailedJob                  `json:"failed_job_tests,omitempty"`
+	FailureDetailState     string                              `json:"failure_detail_state,omitempty"`
 	WorkflowAttentionBasis string                              `json:"workflow_attention_basis,omitempty"`
 	MergeBaseMismatch      *reviewprovider.CIMergeBaseMismatch `json:"merge_base_mismatch,omitempty"`
 	State                  string                              `json:"state"`
@@ -95,7 +99,7 @@ func validCIWatchTargets(targets []CIWatchTarget) bool {
 	}
 	seen := map[int64]bool{}
 	for _, target := range targets {
-		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !hash.MatchString(target.AfterObservationKey)) {
+		if target.PullNumber < 1 || target.PullNumber > 2147483647 || seen[target.PullNumber] || target.HeadSHA == "" && (target.BaseSHA != "" || target.AfterObservationKey != "") || target.HeadSHA != "" && !sha.MatchString(target.HeadSHA) || target.BaseSHA != "" && !sha.MatchString(target.BaseSHA) || target.AfterObservationKey != "" && (target.BaseSHA == "" || !hash.MatchString(target.AfterObservationKey)) {
 			return false
 		}
 		seen[target.PullNumber] = true
@@ -197,6 +201,52 @@ func (e *Engine) watchCIFromProjected(ctx context.Context, scope core.Scope, tar
 		return CIWatchResult{}, err
 	}
 	defer s.unregisterCIWatch(sub)
+	complete := func(value CIWatchResult) (CIWatchResult, error) {
+		if len(value.Targets) != 1 || !targets[0].IncludeFailedTests || value.State != "failed" {
+			if len(value.Targets) == 1 {
+				value.Targets[0].FailedJobTests = nil
+			}
+			return bounded(value)
+		}
+		item := &value.Targets[0]
+		if len(item.FailedJobTests) == 0 || time.Until(deadline) <= 250*time.Millisecond {
+			item.FailedJobTests = nil
+			item.FailureDetailState = "unavailable"
+			return bounded(value)
+		}
+		reader, release := s.claimCIFailureNames(binding)
+		if reader == nil {
+			item.FailedJobTests = nil
+			item.FailureDetailState = "unavailable"
+			return bounded(value)
+		}
+		defer release()
+		logDeadline := time.Now().Add(ciWatchFailedTestsBudget)
+		if waitLimit := deadline.Add(-250 * time.Millisecond); waitLimit.Before(logDeadline) {
+			logDeadline = waitLimit
+		}
+		logCtx, cancel := context.WithDeadline(ctx, logDeadline)
+		enrichCIWatchFailures(logCtx, reader, item)
+		cancel()
+		fresh, err := readBinding()
+		if err != nil {
+			return CIWatchResult{}, err
+		}
+		if fresh != binding {
+			return CIWatchResult{}, core.Fail("ci_watch_binding_changed", "The CI watch project source binding changed; start a fresh watch with current targets.", 409)
+		}
+		newest, err := e.currentCIWatchResult(s, sub)
+		if err != nil {
+			return CIWatchResult{}, err
+		}
+		now := newest.Targets[0]
+		if now.State != item.State || now.ObservedHeadSHA != item.ObservedHeadSHA || now.ObservedBaseSHA != item.ObservedBaseSHA || now.ObservationKey != item.ObservationKey {
+			item.FailedJobTests = nil
+			item.FailureDetailState = "unavailable"
+		}
+		return bounded(value)
+	}
+
 	remaining := time.Duration(0)
 	if waitSeconds > 0 {
 		remaining = time.Until(deadline)
@@ -216,7 +266,7 @@ func (e *Engine) watchCIFromProjected(ctx context.Context, scope core.Scope, tar
 			return CIWatchResult{}, err
 		}
 		if value.State != "pending" {
-			return bounded(value)
+			return complete(value)
 		}
 		if waitSeconds == 0 || !time.Now().Before(deadline) {
 			// This snapshot was just authorized; no quiet wait occurred that
@@ -241,7 +291,7 @@ func (e *Engine) watchCIFromProjected(ctx context.Context, scope core.Scope, tar
 				return CIWatchResult{}, err
 			}
 			value.TimedOut = value.State == "pending"
-			return bounded(value)
+			return complete(value)
 		case <-sub.changed:
 		}
 	}

@@ -20,6 +20,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
 	w.Header().Add("Vary", "X-FC-CI-Watch")
 	w.Header().Add("Vary", "X-FC-CI-Workflow-Details")
+	w.Header().Add("Vary", "X-FC-CI-Failed-Tests")
 	watchVersion := r.Header.Get("X-FC-CI-Watch")
 	changeAware := len(r.Header.Values("X-FC-CI-Watch")) == 1 && (watchVersion == "change-v1" || watchVersion == "change-v2" || watchVersion == "change-v3")
 	workflowVersion := r.Header.Get("X-FC-CI-Workflow-Details")
@@ -59,7 +60,8 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Targets []struct {
 			PullNumber          int64           `json:"pull_number"`
-			HeadSHA             string          `json:"head_sha"`
+			HeadSHA             json.RawMessage `json:"head_sha"`
+			ResolveHead         json.RawMessage `json:"resolve_head,omitempty"`
 			BaseSHA             json.RawMessage `json:"base_sha,omitempty"`
 			AfterObservationKey json.RawMessage `json:"after_observation_key,omitempty"`
 			FailureWorkflowIDs  json.RawMessage `json:"failure_workflow_ids,omitempty"`
@@ -74,6 +76,15 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	targets := make([]CIWatchTarget, 0, len(input.Targets))
 	for _, value := range input.Targets {
+		head := ""
+		if len(value.HeadSHA) > 0 && (json.Unmarshal(value.HeadSHA, &head) != nil || head == "") {
+			core.WriteError(w, invalid())
+			return
+		}
+		if head == "" && string(value.ResolveHead) != "true" || head != "" && len(value.ResolveHead) > 0 {
+			core.WriteError(w, invalid())
+			return
+		}
 		base := ""
 		if len(value.BaseSHA) > 0 && (json.Unmarshal(value.BaseSHA, &base) != nil || string(value.BaseSHA) == "null" || base == "") {
 			core.WriteError(w, invalid())
@@ -89,7 +100,7 @@ func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {
 			core.WriteError(w, invalid())
 			return
 		}
-		targets = append(targets, CIWatchTarget{AllowPassedRearm: changeAware && watchVersion == "change-v3", PullNumber: value.PullNumber, HeadSHA: value.HeadSHA, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows, AllowHeadAttention: headAttention && len(workflows) > 0, AllowHistoricalAttention: headAttention && watchVersion == "change-v3" && workflowVersion == "3" && len(workflows) > 0})
+		targets = append(targets, CIWatchTarget{IncludeFailedTests: len(input.Targets) == 1 && len(r.Header.Values("X-FC-CI-Failed-Tests")) == 1 && r.Header.Get("X-FC-CI-Failed-Tests") == "1", AllowPassedRearm: changeAware && watchVersion == "change-v3", PullNumber: value.PullNumber, HeadSHA: head, BaseSHA: base, AfterObservationKey: after, FailureWorkflowIDs: workflows, AllowHeadAttention: headAttention && len(workflows) > 0, AllowHistoricalAttention: headAttention && watchVersion == "change-v3" && workflowVersion == "3" && len(workflows) > 0})
 	}
 	if !validCIWatchTargets(targets) {
 		core.WriteError(w, invalid())

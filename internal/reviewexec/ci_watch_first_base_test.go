@@ -102,3 +102,32 @@ func TestCIWatchFirstBaseIgnoresUnprovenSource(t *testing.T) {
 		})
 	}
 }
+func TestCIWatchPRNumberPinsFirstFreshHead(t *testing.T) {
+	f, s, clock, reader, scope := ciWatchFixture(t)
+	binding, err := f.e.ciWatchBinding(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.registerCIWatch(scope, binding, []CIWatchTarget{{PullNumber: 42}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.unregisterCIWatch(sub)
+	if item := s.ciWatchResult(sub).Targets[0]; item.HeadSHA != "" || item.State != "pending" {
+		t.Fatal(item)
+	}
+	reader.states[42] = "satisfied"
+	watchTick(t, f, s)
+	original := lifecyclePull(42)
+	if item := s.ciWatchResult(sub).Targets[0]; item.State != "passed" || item.HeadSHA != original.HeadSHA || sub.bases[0] != original.BaseSHA {
+		t.Fatal(item)
+	}
+	changed := original
+	changed.HeadSHA = strings.Repeat("d", 40)
+	reader.pulls[42] = changed
+	clock.Add(ciWatchFallbackInterval)
+	watchTick(t, f, s)
+	if item := s.ciWatchResult(sub).Targets[0]; item.State != "superseded" || item.HeadSHA != original.HeadSHA || item.ObservedHeadSHA != changed.HeadSHA {
+		t.Fatal(item)
+	}
+}

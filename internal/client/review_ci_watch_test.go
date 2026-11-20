@@ -237,3 +237,34 @@ func TestCIWatchCapabilityRefusalPrecedesStrictSuccessDecode(t *testing.T) {
 		})
 	}
 }
+func TestCIWatchPRNumberRequestsFreshPin(t *testing.T) {
+	result := ciWatchSample()
+	result.Targets = result.Targets[1:]
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/instance" {
+			handshake(w)
+			return
+		}
+		w.Header().Set("X-FC-CI-Watch", "change-v3")
+		var input struct{ Targets []map[string]json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || len(input.Targets) != 1 {
+			t.Error("invalid request", err)
+			return
+		}
+		target := input.Targets[0]
+		if string(target["pull_number"]) != "4" || string(target["resolve_head"]) != "true" || len(target["head_sha"]) != 0 || len(target["base_sha"]) != 0 {
+			t.Error("unexpected PR-only fields", target)
+		}
+		write(w, 200, result)
+	}))
+	defer s.Close()
+	c := newClient(t, s)
+	targets := []client.CIWatchTarget{{PullNumber: 4}}
+	if client.ValidateCIWatchTargets(targets) == nil {
+		t.Fatal("implicit head accepted by the legacy validator")
+	}
+	got, err := c.WatchCIWithFailedTests(t.Context(), targets, 2)
+	if err != nil || got.State != "passed" || got.Targets[0].HeadSHA != ciWatchPins()[1].HeadSHA {
+		t.Fatal(got, err)
+	}
+}

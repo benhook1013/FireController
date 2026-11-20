@@ -212,7 +212,7 @@ func executeReview(ctx context.Context, service *client.Client, call invocation)
 	case "operations":
 		return service.ReviewOperations(ctx, call.reviewOperations)
 	case "ci-wait":
-		value, err := service.WatchCI(ctx, call.ciWatch.targets, call.ciWatch.seconds)
+		value, err := service.WatchCIWithFailedTests(ctx, call.ciWatch.targets, call.ciWatch.seconds)
 		return client.AgentCIWatch(value), err
 	case "publication":
 		return service.ReviewCheckpointPublication(ctx, call.position[0])

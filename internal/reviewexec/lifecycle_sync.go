@@ -136,6 +136,7 @@ type lifecycleLaneSchedule struct {
 	accounts    map[string]bool
 }
 type lifecycleSchedule struct {
+	ciFailureLogBusy             map[string]bool
 	qualificationClaimed         map[string]bool
 	metadataQualificationClaimed map[string]bool
 	sharing                      lifecycleSharingTelemetry

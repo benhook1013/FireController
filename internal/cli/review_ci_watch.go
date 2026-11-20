@@ -17,9 +17,12 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 	waitSet := false
 	after := map[int64]string{}
 	workflows := map[int64][]int64{}
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		args = append([]string{"--pr"}, args...)
+	}
 	for i := 0; i < len(args); i++ {
 		flag, raw, assigned := strings.Cut(args[i], "=")
-		if flag != "--target" && flag != "--wait-seconds" && flag != "--after-observation" && flag != "--failure-workflow" {
+		if flag != "--pr" && flag != "--target" && flag != "--wait-seconds" && flag != "--after-observation" && flag != "--failure-workflow" {
 			return nil, false
 		}
 		if !assigned {
@@ -60,14 +63,20 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 			}
 			continue
 		}
-		if len(parts) != 2 && len(parts) != 3 {
+		if flag == "--pr" && len(parts) != 1 || flag == "--target" && (len(parts) < 1 || len(parts) > 3) {
 			return nil, false
 		}
 		number, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil || strconv.FormatInt(number, 10) != parts[0] || len(parts) == 3 && parts[2] == "" {
 			return nil, false
 		}
-		target := client.CIWatchTarget{PullNumber: number, HeadSHA: parts[1]}
+		target := client.CIWatchTarget{PullNumber: number}
+		if len(parts) > 1 {
+			if parts[1] == "" {
+				return nil, false
+			}
+			target.HeadSHA = parts[1]
+		}
 		if len(parts) == 3 {
 			target.BaseSHA = parts[2]
 		}
@@ -82,5 +91,5 @@ func parseCIWatch(args []string) (*ciWatchInvocation, bool) {
 	if len(after) != 0 || len(workflows) != 0 {
 		return nil, false
 	}
-	return call, client.ValidateCIWatchTargets(call.targets) == nil
+	return call, client.ValidateCIWatchCLITargets(call.targets) == nil
 }

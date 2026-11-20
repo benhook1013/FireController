@@ -209,6 +209,10 @@ func (s *lifecycleSchedule) ciWatchResult(sub *ciWatchSubscription) CIWatchResul
 			item.Checks = []SourceCIContext{}
 		}
 		item.CIWatchTarget = target
+		if !target.IncludeFailedTests || item.State != "failed" {
+			item.FailedJobTests = nil
+			item.FailureDetailState = ""
+		}
 		if item.State != "pending" || item.Reason != "ci_merge_base_mismatch" {
 			item.MergeBaseMismatch = nil
 		}
@@ -390,7 +394,7 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 	interested := false
 	for sub := range claim.entry.owners {
 		for i, expected := range sub.targets {
-			if expected.PullNumber == target.number && expected.HeadSHA == pull.HeadSHA && (sub.bases[i] == "" || sub.bases[i] == pull.BaseSHA) {
+			if expected.PullNumber == target.number && (expected.HeadSHA == "" || expected.HeadSHA == pull.HeadSHA) && (sub.bases[i] == "" || sub.bases[i] == pull.BaseSHA) {
 				interested = true
 			}
 		}
@@ -471,6 +475,11 @@ func (e *Engine) observeCIWatch(ctx context.Context, target lifecycleTarget, s *
 		item.State, item.Reason = "failed", "ci_required_checks_failed"
 	}
 	item.ObservationKey = ciWatchObservationKey(target.project, observation, item)
+	if item.State == "failed" {
+		item.FailedJobTests = ciWatchFailedJobDetails(observation, item.Checks)
+		item.failedJobRepository = observation.Target.Repository
+	}
+
 	if item.State == "pending" {
 		item.WorkflowFailures = ciWatchValidatedWorkflowFailures(observation, claim.workflowIDs, workflowFailures)
 		if len(item.WorkflowFailures) > 0 {

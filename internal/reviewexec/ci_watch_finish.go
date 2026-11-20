@@ -63,6 +63,9 @@ func (s *lifecycleSchedule) finishCIWatch(ctx context.Context, target lifecycleT
 			if owned != entry || claim.version < sub.minimum[i] {
 				continue
 			}
+			if sub.targets[i].HeadSHA == "" && sha.MatchString(item.ObservedHeadSHA) && sha.MatchString(item.ObservedBaseSHA) {
+				sub.targets[i].HeadSHA = item.ObservedHeadSHA
+			}
 			if sub.superseded[i] == nil && item.ObservedHeadSHA == sub.targets[i].HeadSHA && sha.MatchString(item.ObservedBaseSHA) && (sub.bases[i] == "" || item.ObservedBaseSHA == sub.bases[i]) && entry.wanted == entry.done {
 				outcome = sharePublished
 			}

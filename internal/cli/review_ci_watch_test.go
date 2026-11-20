@@ -57,3 +57,16 @@ func TestCIWatchHelpDocumentationAndBoundLauncher(t *testing.T) {
 		}
 	}
 }
+func TestCIWatchPRNumberSyntax(t *testing.T) {
+	for _, args := range [][]string{{"42"}, {"--pr", "42"}, {"--target", "42"}} {
+		call, ok := parseCIWatch(args)
+		if !ok || len(call.targets) != 1 || call.targets[0].PullNumber != 42 || call.targets[0].HeadSHA != "" {
+			t.Fatalf("%v: %#v %v", args, call, ok)
+		}
+	}
+	for _, args := range [][]string{{"42", "--after-observation", "42:" + strings.Repeat("a", 64)}, {"--target", "42:"}, {"--target", "42::" + strings.Repeat("a", 40)}, {"--pr", "42:" + strings.Repeat("a", 40)}} {
+		if _, ok := parseCIWatch(args); ok {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
