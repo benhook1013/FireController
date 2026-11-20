@@ -3,13 +3,17 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
@@ -179,22 +183,110 @@ func TestWorkerRetirementBlockersCleanupHistoryAndActiveTargets(t *testing.T) {
 	}
 }
 
+// Named callers let the test distinguish the two handlers in the admission
+// wait, rather than mistaking an unrelated writer or goroutine for a contender.
+func retirementRaceRequest(f *fixture, path, actor string) *httptest.ResponseRecorder {
+	return request(f.handler, "POST", path+"/retire", f.admin, "race-retire", actor, "{}")
+}
+
+func retirementRaceAssignment(f *fixture, base, actor, target string) *httptest.ResponseRecorder {
+	return request(f.handler, "POST", base+"/jobs", f.admin, "race-job", actor, `{"title":"Racing assignment","worker_id":"`+target+`"}`)
+}
+
 func TestWorkerRetirementAdmissionRaceAndBoundedBlockers(t *testing.T) {
 	f, project, actor, target := retirementFixture(t)
 	base := "/api/v1/projects/" + project
 	path := base + "/workers/" + target
-	start := make(chan struct{})
+	req := httptest.NewRequest("POST", "/", nil)
+	req.SetPathValue("project_id", project)
+	req.Header.Set("Authorization", "Bearer "+f.admin)
+	scope, err := f.store.Scope(req, "write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release, held := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var releaseOnce sync.Once
+	releaseWriter := func() { releaseOnce.Do(func() { close(release) }) }
+	var writers sync.WaitGroup
+	defer func() {
+		releaseWriter()
+		allDone := make(chan struct{})
+		go func() { writers.Wait(); close(allDone) }()
+		select {
+		case <-allDone:
+		case <-time.After(3 * time.Second):
+			t.Error("test writers did not exit after admission release")
+		}
+	}()
+	writers.Add(1)
+	go func() {
+		defer writers.Done()
+		_, err := f.store.Mutate(t.Context(), scope, core.Mutation{
+			Operation: "proof.retirement_hold", Target: target, Key: "hold-retirement-race", Request: struct{}{},
+		}, func(context.Context, *sql.Tx) (any, error) {
+			close(entered)
+			<-release
+			return struct{}{}, nil
+		})
+		held <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("test writer did not acquire admission")
+	}
 	retire, assign := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		<-start
-		retire <- request(f.handler, "POST", path+"/retire", f.admin, "race-retire", actor, `{}`)
-	}()
-	go func() {
-		<-start
-		assign <- request(f.handler, "POST", base+"/jobs", f.admin, "race-job", actor, `{"title":"Racing assignment","worker_id":"`+target+`"}`)
-	}()
-	close(start)
-	r, a := <-retire, <-assign
+	writers.Add(2)
+	go func() { defer writers.Done(); retire <- retirementRaceRequest(f, path, actor) }()
+	go func() { defer writers.Done(); assign <- retirementRaceAssignment(f, base, actor, target) }()
+	// Go 1.27's runtime.Stack wait labels are test instrumentation only.
+	// Match two separately owned handlers and Store.Mutate, not file offsets
+	// or a global goroutine count. Fail closed if the pinned format changes.
+	stack := make([]byte, 64<<10)
+	deadline := time.Now().Add(time.Second)
+	for {
+		retirementWaiting, assignmentWaiting := false, false
+		n := runtime.Stack(stack, true)
+		if n == len(stack) {
+			stack = make([]byte, 2*len(stack))
+			continue
+		}
+		for _, trace := range strings.Split(string(stack[:n]), "\n\n") {
+			firstLine, _, _ := strings.Cut(trace, "\n")
+			if !strings.Contains(firstLine, "[select]") || !strings.Contains(trace, "internal/core.(*Store).Mutate(") {
+				continue
+			}
+			retirementWaiting = retirementWaiting || strings.Contains(trace, ".retirementRaceRequest(")
+			assignmentWaiting = assignmentWaiting || strings.Contains(trace, ".retirementRaceAssignment(")
+		}
+		if retirementWaiting && assignmentWaiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("did not observe both requests waiting for write admission: retirement=%t assignment=%t", retirementWaiting, assignmentWaiting)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	releaseWriter()
+	select {
+	case err := <-held:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("test writer did not return")
+	}
+	result := func(name string, response <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+		t.Helper()
+		select {
+		case got := <-response:
+			return got
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s did not return after write admission was released", name)
+			return nil
+		}
+	}
+	r, a := result("retirement", retire), result("assignment", assign)
 	if !(r.Code == 200 && a.Code == 409 || r.Code == 409 && a.Code == 201) {
 		t.Fatal("retirement and new assignment both succeeded or lost state", r.Code, r.Body.String(), a.Code, a.Body.String())
 	}

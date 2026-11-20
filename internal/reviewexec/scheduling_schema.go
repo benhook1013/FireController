@@ -20,13 +20,15 @@ func EnsureSchedulingSchema(ctx context.Context, store *core.Store) error {
 	return store.EnsureSchema(ctx, "review_scheduling", SchedulingSchemaSQL(), schedulingV2MigrationSQL())
 }
 
+const schedulingAutomaticCLIColumn = `automatic_cli INTEGER NOT NULL DEFAULT 0 CHECK(automatic_cli IN(0,1))`
+
 func schedulingV2MigrationSQL() []string {
-	return []string{`ALTER TABLE review_scheduling ADD COLUMN automatic_cli INTEGER NOT NULL DEFAULT 0 CHECK(automatic_cli IN(0,1))`}
+	return []string{`ALTER TABLE review_scheduling ADD COLUMN ` + schedulingAutomaticCLIColumn}
 }
 
 // SchedulingSchemaV2SQL is the canonical physical shape after the additive migration.
 func SchedulingSchemaV2SQL() []string {
 	statements := SchedulingSchemaSQL()
-	statements[0] = statements[0][:len(statements[0])-1] + ", automatic_cli INTEGER NOT NULL DEFAULT 0 CHECK(automatic_cli IN(0,1)))"
+	statements[0] = statements[0][:len(statements[0])-1] + ", " + schedulingAutomaticCLIColumn + ")"
 	return statements
 }
