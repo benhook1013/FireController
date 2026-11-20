@@ -15,6 +15,27 @@ afterEach(() => { fixture.items = []; sizing.measured = true; });
 const stamp = '2026-11-01T00:00:00Z';
 const rounds = Array.from({ length: 12 }, (_, i): ReviewRunSummary => ({ id:`run_${i}`,source:'fixture',source_run_id:`round_${i}`,pull_number:1,channel:'cli',head_sha:'a'.repeat(40),reviewer:'Reviewer',scope:'Comparison',coverage_limits:[],outcome:'completed',complete:true,attributable:true,finalized:true,found:i,accepted:0,routed:0,fixed:0,started_at:stamp,finished_at:stamp }));
 describe('shared width-sized review previews', () => {
+  it.each([
+    { mode: 'eager', total: 2, recent: [rounds[4], { ...rounds[3], channel: 'hosted' }, rounds[2]], enabled: false, shown: [2, 4], placeholders: 0 },
+    { mode: 'eager', total: 3, recent: [rounds[4], { ...rounds[3], outcome: 'failed' }], enabled: true, shown: [4], placeholders: 2 },
+    { mode: 'nearby', total: 3, recent: [], enabled: false, shown: [], placeholders: 3 },
+    { mode: 'nearby', total: 0, recent: [], enabled: false, shown: [], placeholders: 0 },
+  ] as const)('uses the retained prefix with $mode loading and $total completed rounds', ({ mode, total, recent, enabled, shown, placeholders }) => {
+    sizing.capacity = 6;
+    const client = new QueryClient();
+    const reviewRuns = vi.fn();
+    try {
+      const session = {api:{reviewRuns},controller:new AbortController()} as unknown as Session;
+      const html = renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['test'],home:'/projects/test',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView summaryPreview={mode} number={1} snapshot="snapshot" head={'a'.repeat(40)} attempts={[]} recentRuns={[...recent]} expected={total} channelTotals={{cli:total,hosted:recent.some(run => run.channel === 'hosted') ? 1 : 0,manual:0,subagent:0}} /></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);
+      const query = client.getQueryCache().getAll().find(query=>query.queryKey.includes('cli'))!;
+      expect((query.options as { enabled?: boolean }).enabled).toBe(enabled);
+      expect([...html.matchAll(/aria-label="Open cli run round_(\d+):/gu)].map(match=>Number(match[1]))).toEqual(shown);
+      expect(html.match(/review-round-placeholder/gu) ?? []).toHaveLength(placeholders);
+      expect(html.includes('role="status"')).toBe(mode === 'eager' && placeholders > 0);
+      expect(reviewRuns).not.toHaveBeenCalled();
+    } finally { client.clear(); }
+  });
+
   it('keeps an unmeasured preview disabled instead of requesting the display fallback', () => {
     sizing.measured = false; sizing.capacity = 6;
     const client = new QueryClient();

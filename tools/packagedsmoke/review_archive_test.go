@@ -335,6 +335,8 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		DetailRequests          int    `json:"detail_requests"`
 		FixtureWrites           int    `json:"fixture_writes"`
 		MobilePagination        bool   `json:"mobile_pagination"`
+		InitialPreviewReads     int    `json:"initial_preview_reads"`
+		TotalPreviewReads       int    `json:"total_preview_reads"`
 		QueueWindow             bool   `json:"queue_window"`
 		MergedHistory           bool   `json:"merged_history"`
 	}
@@ -347,10 +349,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	// merged PR201 one timeline page with no attempts. Width-sized channel
 	// previews are verified separately against measured demand, without cursors
 	// or automatic archive walking, including the bounded reload.
-	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.MobilePagination || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
+	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.MobilePagination || result.InitialPreviewReads < 1 || result.InitialPreviewReads >= result.TotalPreviewReads || result.TotalPreviewReads != 28 || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
-		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history", "mobile-queue-pagination":
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history", "mobile-queue-pagination", "queue-preview-visibility":
 			phase = result.Phase
 		}
 		if result.DriverLine > 0 && result.DriverLine <= 10000 {
@@ -386,7 +388,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if external.Load() != 0 || observations.Load() != 1 {
 		t.Fatal("archive workload attempted provider/external HTTP")
 	}
-	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/width-sized-channel/attempts20 pinned-tail/current-reset/source-collision, fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), engine.Load())
+	t.Logf("packaged archives passed in %s: runs=123 attempts=123 CLI/MCP default5+explicit continuation, browser timeline25/width-sized-channel/attempts20 pinned-tail/current-reset/source-collision, queue20_previews_initial=%d queue20_previews_after_scroll=%d fixture_observations=1 daemon_external=0 blocked_engine=%d owned_processes=0", time.Since(started).Round(time.Millisecond), result.InitialPreviewReads, result.TotalPreviewReads, engine.Load())
 }
 
 func seedArchiveRoutedWork(t *testing.T, ctx context.Context, data, project, worker, instance, admin string) {

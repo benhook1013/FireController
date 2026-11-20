@@ -117,7 +117,7 @@ try {
     try {
       const head = page.getByRole('region',{name:'Review queue head',exact:true});
       await head.waitFor();
-      const pills = head.locator('.review-round-pill');
+      const pills = head.locator('a.review-round-pill');
       await expect(pills).toHaveCount(6); // Initial mobile view retains its six-pill grid.
       await expect(head.getByRole('region',{name:'CLI CodeRabbit',exact:true}).locator('.review-lane-heading')).toContainText(`${Number(config.count)} runs`);
       for (const width of [1440,390,320]) {
@@ -134,7 +134,7 @@ try {
           const container=element.closest('.delivery-hero');
           const link=element.querySelector('[aria-label="Jump to review queue"]');
           const linkStyle=getComputedStyle(link);
-          return {head:rect(element),row:rect(element.querySelector('.review-queue-row')),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkFamily:linkStyle.fontFamily,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('.review-round-pill')].filter(pill=>pill.getClientRects().length>0).map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
+          return {head:rect(element),row:rect(element.querySelector('.review-queue-row')),identity:rect(identity),project:rect(project),container:rect(container),square:getComputedStyle(container).borderTopLeftRadius === '0px' && getComputedStyle(element).borderTopLeftRadius === '0px',roundedPills:[...element.querySelectorAll('.review-round-pill')].every(pill=>parseFloat(getComputedStyle(pill).borderTopLeftRadius)>0),link:rect(link),linkText:link.textContent,linkChildren:link.childElementCount,linkWeight:linkStyle.fontWeight,linkFamily:linkStyle.fontFamily,linkDecoration:linkStyle.textDecorationLine,joined:getComputedStyle(container).gap === 'normal' || getComputedStyle(container).gap === '0px',twoTone:getComputedStyle(element).backgroundColor !== getComputedStyle(container).backgroundColor || getComputedStyle(element).backgroundImage !== 'none',groups:[...element.querySelectorAll('.review-lane')].map(rect),pills:[...element.querySelectorAll('a.review-round-pill')].filter(pill=>pill.getClientRects().length>0).map(pill=>({pill:rect(pill),stats:rect(pill.querySelector('strong')),date:rect(pill.querySelector('time')),statsLines:lineCount(pill.querySelector('strong')),dateLines:lineCount(pill.querySelector('time')),text:pill.querySelector('strong').textContent,dateText:pill.querySelector('time').textContent}))};
         });
         if(config.proof_directory){await fs.mkdir(config.proof_directory,{recursive:true,mode:0o700});await fs.writeFile(config.proof_directory+'/merge-head-geometry.json',JSON.stringify({width,head:geometry.head,row:geometry.row,link:geometry.link,weight:geometry.linkWeight,family:geometry.linkFamily,pills:geometry.pills.map(item=>({pill:item.pill,stats:item.stats,date:item.date,statsLines:item.statsLines,dateLines:item.dateLines}))}),{mode:0o600});}
         need(geometry.groups.length === 2 && geometry.pills.length === Math.min(count,capacity));
@@ -182,7 +182,8 @@ try {
 
   phase = 'metadata-refresh';
   // Hold the replacement summaries after the new queue metadata arrives.
-  // Populated history and its original links must survive the transition.
+  // Detailed history keeps its original links while the current hero can
+  // render the new, complete queue preview immediately.
   const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
   let heldRefreshReads = 0;
   const refreshPattern = config.origin+prefix+`/reviews/pulls/${number}/*`;
@@ -198,10 +199,12 @@ try {
   const response = await fetch(config.origin+prefix+'/reviews/observations',{method:'POST',headers:{Authorization:'Bearer '+admin,'X-FC-Instance':config.instance,'X-FC-Worker':config.worker,'Idempotency-Key':'packaged-archive-new-observation','Content-Type':'application/json'},body:raw,signal:AbortSignal.timeout(5000)});
   need(response.status === 201); await response.arrayBuffer();
   await current.page.locator('.review-detail-overview').getByRole('heading',{name:`#${number} Current archive metadata`,exact:true}).waitFor();
-  await expect.poll(() => heldRefreshReads).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => heldRefreshReads).toBeGreaterThanOrEqual(2);
   await expect(current.rounds.locator('.review-history-row')).toHaveCount(50);
   await expect(current.attempts.locator('li')).toHaveCount(40);
-  await expect(current.page.locator('.delivery-merge-head .review-round-pill')).toHaveCount(6);
+  const currentHero = current.page.locator('.delivery-merge-head');
+  await expect(currentHero.locator('a.review-round-pill')).toHaveCount(1);
+  await expect(currentHero.getByRole('link',{name:/^Open cli run current-only-run:/u})).toHaveCount(1);
   await expect(current.page.locator('.delivery-merge-head .review-round-placeholder')).toHaveCount(0);
   need(await current.rounds.locator('.review-history-details-link').evaluateAll((links,snapshot)=>links.every(link=>new URL(link.href).searchParams.get('snapshot')===snapshot),config.snapshot));
   releaseRefresh(); releaseRefresh=undefined;
@@ -383,10 +386,11 @@ try {
   need(await pinned.rounds.getByRole('button',{name:'Load earlier rounds',exact:true}).count() === 0);
   need(await pinned.attempts.getByRole('button',{name:'Load more attempts',exact:true}).count() === 0);
   for (const view of [current,pinned]) need(await view.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  // The pinned detail retains its original snapshot while its current hero
-  // reads one bounded page for the new comparison. Neither walks that archive.
+  // The pinned detail keeps its original snapshot. The current hero has
+  // the one completed round in the queue response and needs no archive read.
   const pinnedCurrentHero = archives.filter(item => item.name === pinned.name && item.feed === 'runs' && item.channel === 'cli' && item.snapshot !== config.snapshot);
-  need(pinnedCurrentHero.length === 1 && pinnedCurrentHero[0].cursor === null && pinnedCurrentHero[0].limit === 6);
+  need(pinnedCurrentHero.length === 0);
+  await expect(pinned.page.locator('.delivery-merge-head').getByRole('link',{name:/^Open cli run current-only-run:/u})).toHaveCount(1);
   // Reload restores the current hero and may invalidate its first page once
   // when the live workspace snapshot arrives. Neither read follows a cursor.
   const previews = archives.filter(item=>item.feed === 'runs' && item.view === null);
@@ -450,8 +454,106 @@ try {
   }
   await current.page.unroute(queueRoute,paginateQueue);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);
+  // A full queue page with mixed channel coverage, short prefixes and a
+  // channel whose recent summaries are all failed starts.
+  phase = 'queue-preview-visibility';
+  const page = current.page;
+  const initialSnapshot = 'review_snapshot_' + '1'.repeat(32);
+  const nextSnapshot = 'review_snapshot_' + '2'.repeat(32);
+  let previewSnapshot = initialSnapshot;
+  const starts = [];
+  const reviewsPath = new RegExp('/reviews/pulls/(30[1-9]|31[0-9]|320)/runs(?:\\?|$)', 'u');
+  const stamp = '2026-01-01T00:00:00Z';
+  const metadata = snapshot => ({ project_id: config.project, revision: snapshot === initialSnapshot ? 1 : 2, snapshot_id: snapshot, source: 'fixture', observed_at: stamp, recorded_at: stamp });
+  const run = (pull, channel, ordinal, snapshot, outcome = 'completed') => ({
+    id: 'review_run_' + (pull * 1000 + ordinal + (channel === 'cli' ? 100 : 0) + (snapshot === nextSnapshot ? 1000000 : 0)).toString(16).padStart(32, '0'),
+    source: 'fixture', source_run_id: `${channel}-${ordinal}-${snapshot === initialSnapshot ? 'initial' : 'updated'}`, pull_number: pull, channel,
+    head_sha: 'a'.repeat(40), reviewer: 'Fixture reviewer', scope: 'full', coverage_limits: [], outcome,
+    attributable: true, complete: outcome === 'completed', started_at: stamp, finished_at: stamp,
+    found: 0, accepted: 0, routed: 0, finalized: outcome === 'completed', fixed: 0,
+  });
+  const fixture = Array.from({length: 20}, (_, index) => {
+    const pull = index + 301;
+    const covered = index % 4 === 0;
+    return {pull, covered, cli: pull === 320 ? 0 : covered ? 2 : 4, hosted: pull === 302 ? 0 : covered ? 1 : 4};
+  });
+  const serveQueue = async route => {
+    if (new URL(route.request().url()).searchParams.get('view') !== 'merged') { await route.continue(); return; }
+    const snapshot = previewSnapshot;
+    const items = fixture.map(({pull, covered, cli, hosted}, index) => {
+      const failed = ordinal => run(pull, 'hosted', ordinal, snapshot, 'failed');
+      const recent = covered ? [run(pull, 'cli', 2, snapshot), run(pull, 'hosted', 1, snapshot), run(pull, 'cli', 1, snapshot)]
+        : pull === 320 ? [failed(9), failed(8), failed(7)]
+        : pull === 302 ? [run(pull, 'cli', 4, snapshot), failed(9), failed(8)]
+        : [run(pull, 'cli', 4, snapshot), run(pull, 'hosted', 4, snapshot), failed(9)];
+      return {number: pull, title: `Preview fixture ${pull}`, state: 'merged', head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40), base_ref: 'main',
+        ci_state: 'success', mergeability: 'unknown', complete: true, run_count: cli + hosted + recent.filter(item => item.outcome === 'failed').length,
+        run_counts: {hosted, cli, manual: 0, subagent: 0}, attempt_count: 0, recent_runs: recent, latest_attempts: [], queue_position: 19 - index};
+    });
+    await route.fulfill({json: {...metadata(snapshot), configured: true, items, has_more: false}});
+  };
+  let releaseFirstPreview;
+  const heldPreview = new Promise(resolve => { releaseFirstPreview = resolve; });
+  const serveRuns = async route => {
+    const url = new URL(route.request().url());
+    const pull = Number(url.pathname.split('/').at(-2));
+    const channel = url.searchParams.get('channel'), snapshot = url.searchParams.get('snapshot');
+    const total = fixture.find(item => item.pull === pull)[channel];
+    need(['cli', 'hosted'].includes(channel) && total > 0 && [initialSnapshot, nextSnapshot].includes(snapshot));
+    starts.push({pull, channel, snapshot});
+    if (pull === 302 && snapshot === initialSnapshot) await heldPreview;
+    const items = Array.from({length: total}, (_, index) => run(pull, channel, total - index, snapshot));
+    await route.fulfill({json: {...metadata(snapshot), items, has_more: false}});
+  };
+  await page.route(queueRoute, serveQueue);
+  await page.route(reviewsPath, serveRuns);
+  const row = pull => queue.locator(`#review-pr-${pull}`);
+  const previewLinks = (pull, channel) => row(pull).getByRole('link', {name: new RegExp(`^Open ${channel} run `, 'u')});
+  let initialPreviewReads, totalPreviewReads;
+  try {
+    await page.setViewportSize({width:390,height:700});
+    await page.goto(`${config.origin}${current.home}/reviews/history`);
+    await expect(queue.locator('.review-queue-row')).toHaveCount(20);
+    await row(302).scrollIntoViewIfNeeded();
+    await expect(previewLinks(301, 'cli')).toHaveCount(2);
+    await expect(previewLinks(301, 'cli').first()).toHaveAttribute('aria-label', /^Open cli run cli-1-initial:/u);
+    await expect(previewLinks(302, 'cli')).toHaveCount(1);
+    await expect(row(302).locator('.review-round-placeholder')).toHaveCount(3);
+    await expect(row(320).locator('.review-round-placeholder')).toHaveCount(4);
+    await expect(row(320).getByRole('status')).toHaveCount(0);
+    await expect.poll(() => starts.some(item => item.pull === 302)).toBe(true);
+    initialPreviewReads = starts.length;
+    need(!starts.some(item => item.pull === 301 || item.pull === 320));
+    releaseFirstPreview();
+    await expect(previewLinks(302, 'cli')).toHaveCount(4);
+    await expect(previewLinks(302, 'cli').first()).toHaveAttribute('aria-label', /^Open cli run cli-1-initial:/u);
+    for (const {pull, hosted, cli} of fixture) {
+      await row(pull).scrollIntoViewIfNeeded();
+      await expect(previewLinks(pull, 'hosted')).toHaveCount(hosted);
+      await expect(previewLinks(pull, 'cli')).toHaveCount(cli);
+    }
+    const fetched = new Set(starts.map(({pull, channel}) => `${pull}/${channel}`));
+    const expected = fixture.flatMap(({pull, covered, hosted, cli}) => covered ? [] : [...(hosted ? [`${pull}/hosted`] : []), ...(cli ? [`${pull}/cli`] : [])]);
+    totalPreviewReads = starts.length;
+    need(initialPreviewReads < expected.length && totalPreviewReads === fetched.size && fetched.size === expected.length && expected.every(key => fetched.has(key)));
+    previewSnapshot = nextSnapshot;
+    await page.getByRole('button', {name: 'Refresh visible data'}).evaluate(button => button.click());
+    await expect(previewLinks(302, 'cli')).toHaveCount(1);
+    await expect(previewLinks(302, 'cli').first()).toHaveAttribute('aria-label', /^Open cli run cli-4-updated:/u);
+    await expect(previewLinks(302, 'cli').first()).toHaveAttribute('href', new RegExp(`snapshot=${nextSnapshot}$`, 'u'));
+    need(!starts.some(item => item.pull === 302 && item.snapshot === nextSnapshot));
+    await row(302).scrollIntoViewIfNeeded();
+    await expect(previewLinks(302, 'cli')).toHaveCount(4);
+    await expect(previewLinks(302, 'cli').first()).toHaveAttribute('aria-label', /^Open cli run cli-1-updated:/u);
+    need(starts.filter(item => item.pull === 302 && item.snapshot === nextSnapshot).length === 1);
+    need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);
+  } finally {
+    releaseFirstPreview();
+    await page.unroute(reviewsPath, serveRuns);
+    await page.unroute(queueRoute, serveQueue);
+  }
   await Promise.all(contexts.map(context=>context.close())); await browser.close(); browser=undefined; await server.close(); server=undefined;
-  console.log(JSON.stringify({state:'PASS',mobile_pagination:true,archive_requests:verifiedArchiveRequests,explicit_archive_requests:explicit.length,preview_requests:previews.length,explicit_pages_verified:true,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
+  console.log(JSON.stringify({state:'PASS',initial_preview_reads:initialPreviewReads,total_preview_reads:totalPreviewReads,mobile_pagination:true,archive_requests:verifiedArchiveRequests,explicit_archive_requests:explicit.length,preview_requests:previews.length,explicit_pages_verified:true,max_limit:Math.max(...archives.map(item=>item.limit)),source_collisions:true,pinned_tail:true,current_reset:true,inline_findings:true,queue_window:true,merged_history:true,detail_requests:details.length,fixture_writes:1}));
 } catch (error) {
   // Retain only the fixed phase and bounded source line, never error text.
   const line = /review_archive\.mjs:(\d+):\d+/u.exec(error?.stack ?? '');
