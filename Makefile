@@ -101,6 +101,7 @@ smoke:
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedQualificationCoordination$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -vet=all -tags=packaged_smoke -run '^TestPackagedSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedUpgradeSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedRemoteMCP$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedPublicationSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedMapImportSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedTransferSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke

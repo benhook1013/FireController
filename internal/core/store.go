@@ -19,7 +19,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 3
+// Version four fences older binaries that cannot enforce connector bindings.
+const schemaVersion = 4
 
 // OpenOption configures a store before it opens or creates any files.
 type OpenOption func(*storeOptions) error
@@ -200,10 +201,6 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 		if _, err = conn.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,1,0)", NewID("credential"), NewID("principal"), tokenHash(token)); err != nil {
 			return storageError(err)
 		}
-		if _, err = conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
-			return storageError(err)
-		}
-		version = schemaVersion
 	}
 	var key string
 	if err = conn.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='instance_id'").Scan(&s.instanceID); err != nil {
@@ -224,6 +221,16 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 	if version == 1 || version == 2 {
 		if err = migrateReceiptTimestamps(ctx, conn, time.Now()); err != nil {
 			return err
+		}
+	}
+	if version < 4 {
+		for _, statement := range ConnectorCredentialSchemaSQL() {
+			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				return storageError(err)
+			}
+		}
+		if _, err = conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
+			return storageError(err)
 		}
 	}
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -293,9 +300,6 @@ func migrateReceiptTimestamps(ctx context.Context, conn *sql.Conn, migratedAt ti
 		return storageError(err)
 	}
 	if _, err := conn.ExecContext(ctx, "UPDATE receipts SET created_at=?", ReceiptTimestamp(migratedAt)); err != nil {
-		return storageError(err)
-	}
-	if _, err := conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
 		return storageError(err)
 	}
 	return nil

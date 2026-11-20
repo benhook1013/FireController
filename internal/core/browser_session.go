@@ -92,6 +92,9 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession
 	if err != nil {
 		return BrowserSession{}, nil, err
 	}
+	if scope.connector {
+		return BrowserSession{}, nil, Fail("forbidden", "A connector credential cannot create a browser session.", 403)
+	}
 	var writes, presentation bool
 	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
@@ -241,7 +244,7 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 		return Scope{}, browserSessionClaims{}, bad
 	}
 	var principal string
-	err := s.db.QueryRowContext(r.Context(), `SELECT principal_id FROM credentials WHERE token_sha256=? AND revoked=0`, claims.CredentialHash).Scan(&principal)
+	err := s.db.QueryRowContext(r.Context(), `SELECT principal_id FROM credentials WHERE token_sha256=? AND revoked=0 AND NOT EXISTS (SELECT 1 FROM connector_credentials WHERE credential_id=credentials.id)`, claims.CredentialHash).Scan(&principal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Scope{}, browserSessionClaims{}, bad
 	}

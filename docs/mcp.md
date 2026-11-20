@@ -1,5 +1,7 @@
 # Local MCP Tools
 
+The daemon also supports opt-in [Streamable HTTP with dedicated worker-bound credentials](remote-mcp.md).
+
 ## Implemented boundary
 
 `fcmcp` exposes the tools listed below over local stdio using the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk), pinned to v1.8.0. Tools call the shared typed HTTP client. The service owns authentication, project scope, permission checks, cursors and storage; the adapter never shells out to `fc`; explicit review requests authorize service-owned background provider work. Both CLI and MCP job/message and review-evidence mutations use the same typed client and API. [Unified job state](job-state.md) supplies one guarded update and one default working-context read; progress history is explicit. The [quiet message wait](message-wait.md) owns a persistent incoming stream for one bounded call. The [remote MCP contract](remote-mcp.md) defines the planned Streamable HTTP surface. Automatic chat wakeups remain unimplemented.

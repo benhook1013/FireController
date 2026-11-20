@@ -33,6 +33,12 @@ func receiptOriginSource(t *testing.T, version int) (*restoreFixture, *sql.DB) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&existing); err != nil {
 		t.Fatal(err)
 	}
+	if version == 3 {
+		if _, err = db.Exec(`DROP TABLE connector_credentials; PRAGMA user_version=3`); err != nil {
+			t.Fatal(err)
+		}
+		return f, db
+	}
 	if existing != version {
 		tx, err := db.Begin()
 		if err != nil {
@@ -58,7 +64,7 @@ func receiptOriginSource(t *testing.T, version int) (*restoreFixture, *sql.DB) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = tx.Exec(`DROP TABLE previous_receipts; PRAGMA user_version=` + fmt.Sprint(version)); err != nil {
+		if _, err = tx.Exec(`DROP TABLE previous_receipts; DROP TABLE connector_credentials; PRAGMA user_version=` + fmt.Sprint(version)); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(); err != nil {

@@ -2,7 +2,7 @@
 
 ## Status and owner
 
-This is the target contract for serving FireController tools over Streamable HTTP. The [local stdio adapter](mcp.md) is implemented. Remote transport, bound credentials, installed hosting, and Claude.ai acceptance have separate implementation and proof milestones.
+This document owns the Streamable HTTP and worker-bound credential contract. The daemon implements the opt-in transport and native credential provisioning alongside the [local stdio adapter](mcp.md). Installed hosting and Claude.ai connector discovery and safe read require separate qualification.
 
 ## Resource and connector
 
@@ -11,6 +11,15 @@ Mount `/mcp` on the existing FireController daemon and publish it on the install
 The first release uses a dedicated worker-bound bearer credential in the standard `Authorization` header. A custom connector that offers Request headers selects No sign-in for OAuth and adds a required `Authorization` value of `Bearer <connector token>`. The FireController server still authenticates every request. Register a separate connector entry for each project and worker binding. Share a connector only with people intended to exercise that worker's access. Anthropic limits availability of fixed request headers, and some plans limit the number of connectors. Verify the intended account's actual setup. [Claude custom connector documentation](https://claude.com/docs/connectors/custom/add-unlisted#authenticate-with-request-headers).
 
 If the target account lacks fixed request headers, report that compatibility dependency on the implementation job. A generic remote HTTP client can still qualify transport, but Claude.ai acceptance requires a working connector in the target account. The OAuth path, if required for that account, uses an operator-selected authorization server, MCP protected resource discovery, and an operator-controlled mapping from issuer and subject to the same FireController project, worker, and grant boundary. FireController validates resource audience and current authorization on each call. Identity claims from a caller do not create a worker binding. Resolve issuer and account availability before implementing that extension. [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+
+### Operator setup
+
+1. In the bound project's manager profile, generate a fresh, high-entropy secret in a private credential file. Use the same owner-private file handling as the [native client setup](onboarding.md#private-agent-setup-commands).
+2. Register the credential with `fc credentials grant --credential-file /private/connector.token --connector-worker WORKER_ID --permission read --key KEY` using that manager binding. Select `write` or `manage` only if the connector needs those capabilities. The receipt identifies the credential, project, and connector worker.
+3. Start the daemon with `--remote-mcp-origin https://controller.example.com` and install the [opt-in proxy route](hosting.md#remote-mcp-route). Share the token privately with the intended connector owner.
+4. Create a custom connector pointing to the canonical HTTPS URL ending in `/mcp`. On an account with Request headers, select No sign-in, add a required `Authorization` header, and supply `Bearer <connector token>`. Select a separate project and worker binding by using its own connector entry and token.
+
+Rotate by creating a fresh dedicated grant and replacing the connector's private credential, then revoke the prior grant by its receipt ID using `fc credentials revoke CREDENTIAL_ID --key KEY`. Use `fc credentials update --help` for guarded permission changes under the same binding.
 
 ## Worker-bound credentials
 
@@ -27,6 +36,12 @@ Reuse the [stdio tool catalog and adapter](mcp.md) for schemas, handlers, annota
 Use the pinned [Go SDK Streamable HTTP handler](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v1.8.0/mcp#StreamableHTTPOptions) in stateless mode. Support initialization, paginated discovery, and tool invocation over `POST /mcp`. Stream replies over the originating POST where needed for bounded waits. Authenticated standalone GET and DELETE return 405 in this mode. There are no resumable MCP sessions or idle chat wakeups. Clients recover waits by replaying the existing cursor or reading the original operation. They recover uncertain writes with the original binding, arguments, and idempotency key. A dropped connection never proves rollback or cancels already accepted provider work. Keep supported protocol versions and host behavior in the compatibility record. [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 
 Validate the canonical Host at the trusted proxy and application boundary, and validate any supplied Origin against an explicit allowlist. Allow clients that omit Origin. Apply body limits consistent with documented tool envelopes and bounded concurrent request and wait admission before allocating expensive work. Set proxy response buffering and upstream timeouts for this route using the existing [hosting rules](hosting.md), and prove actual streaming against the installed proxy. Recheck authorization before delivering sensitive results from long waits and release waiter capacity on completion or cancellation. Keep secrets, headers, private tool inputs and payloads out of logs, traces, metrics, URLs, and error responses. The standard job, review, and pause controls continue to govern tool work.
+
+### Local transport limits
+
+The endpoint admits 32 concurrent HTTP requests and eight concurrent tool calls with extended wait budgets. Each POST accepts one JSON-RPC object up to 2 MiB plus 16 KiB. The application accepts its canonical Origin and additional exact HTTPS origins configured by repeated `--remote-mcp-allowed-origin` flags. Clients that omit Origin remain eligible. The pinned SDK advertises 2026-07-28, 2025-11-25, 2025-06-18, and 2025-03-26; discovery and tool execution are qualified locally with 2026-07-28 and 2025-11-25.
+
+Binding metadata is base schema v4. Earlier binaries refuse this schema at startup because they cannot enforce its credential boundary. The existing backup and restore path retains binding metadata and revokes the copied credentials, including connector credentials. An activated restore requires newly provisioned connectors.
 
 ## Build, deployment, and completion proof
 

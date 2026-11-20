@@ -302,6 +302,13 @@ func encoded(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func actorAllowed(ctx context.Context, tx *sql.Tx, project, actor, worker string) (bool, error) {
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials c WHERE c.principal_id=? AND c.revoked=0 AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_write=1)) AND (?='' OR EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=?))`, actor, project, worker, project, worker).Scan(&n)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM credentials c
+		LEFT JOIN connector_credentials b ON b.credential_id=c.id
+		WHERE c.principal_id=? AND c.revoked=0
+		AND (b.credential_id IS NULL OR (c.is_admin=0 AND b.project_id=? AND b.worker_id=? AND NOT EXISTS(
+			SELECT 1 FROM worker_retirements r WHERE r.project_id=b.project_id AND r.worker_id=b.worker_id)))
+		AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_write=1
+			AND (b.credential_id IS NULL OR g.can_read=1)))
+		AND (?='' OR EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=?))`, actor, project, worker, project, worker, project, worker).Scan(&n)
 	return n == 1, err
 }

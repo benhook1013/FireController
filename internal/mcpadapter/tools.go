@@ -85,7 +85,15 @@ type definition struct {
 }
 
 func boundServer(binding profile.Binding) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128})
+	return toolServer(binding, nil)
+}
+
+func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
+	options := &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128}
+	if remote != nil {
+		options.SupportedProtocolVersions = remoteProtocolVersions
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "firecontroller", Version: Version}, options)
 	definitions := append(toolDefinitions(), checkpointDefinitions()...)
 	definitions = append(definitions, jobRevisionDefinition())
 	definitions = append(definitions, roundControlDefinitions()...)
@@ -140,6 +148,15 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			if err != nil {
 				return resultFailure(err), nil
 			}
+			binding := stdioBinding
+			var connector *connectorRequest
+			if remote != nil {
+				connector, _ = ctx.Value(connectorRequestKey{}).(*connectorRequest)
+				if connector == nil {
+					return resultFailure(connectorAccessChanged(false)), nil
+				}
+				binding.Context = connector.identity
+			}
 			if tool.name == "context" {
 				return result(struct {
 					profile.Context
@@ -149,7 +166,22 @@ func boundServer(binding profile.Binding) *mcp.Server {
 			timeout := toolCallBudget(tool.name, args)
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			service, err := transports.newClient(ctx, binding, request.Session)
+			var service *client.Client
+			if remote == nil {
+				service, err = transports.newClient(ctx, binding, request.Session)
+			} else {
+				stop := context.AfterFunc(connector.lifetime, cancel)
+				defer stop()
+				if timeout > 15*time.Second || args.waitMS > 0 {
+					select {
+					case remote.waits <- struct{}{}:
+						defer func() { <-remote.waits }()
+					default:
+						return resultFailure(diagnostic("overloaded", "Remote tool wait capacity is occupied.", "Retry the selected call later with its original arguments and key.")), nil
+					}
+				}
+				service, err = client.NewConnector(ctx, connector.identity, remote.destination, connector.token, remote.pool)
+			}
 			if err != nil {
 				return resultFailure(err), nil
 			}
@@ -386,6 +418,16 @@ func boundServer(binding profile.Binding) *mcp.Server {
 					value, err = service.MarkSeen(ctx, args.key, args.id)
 				case "inbox_ack":
 					value, err = service.Acknowledge(ctx, args.key, args.id, args.worker)
+				}
+			}
+			if connector != nil {
+				// Native transactions and waits enforce current authority. Recheck
+				// before returning, including results already read by the client.
+				checkCtx, cancelCheck := context.WithTimeout(connector.lifetime, 2*time.Second)
+				allowed := remote.store.ReauthorizeConnector(checkCtx, connector.token, connector.binding) == nil
+				cancelCheck()
+				if !allowed {
+					return resultFailure(connectorAccessChanged(write)), nil
 				}
 			}
 			if err != nil {

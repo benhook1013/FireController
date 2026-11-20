@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -74,8 +75,9 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		TokenSHA256 string   `json:"token_sha256"`
-		Permissions []string `json:"permissions"`
+		TokenSHA256       string          `json:"token_sha256"`
+		Permissions       []string        `json:"permissions"`
+		ConnectorWorkerID json.RawMessage `json:"connector_worker_id,omitempty"`
 	}
 	if err = core.ReadJSON(w, r, &request); err != nil {
 		core.WriteError(w, err)
@@ -90,6 +92,14 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	var connectorWorker string
+	if request.ConnectorWorkerID != nil {
+		if json.Unmarshal(request.ConnectorWorkerID, &connectorWorker) != nil || !boundedText(connectorWorker, 128) {
+			core.WriteError(w, core.Fail("validation_failed", "Select one active connector worker.", 400))
+			return
+		}
+		request.ConnectorWorkerID, _ = json.Marshal(connectorWorker)
 	}
 	request.Permissions = normalized
 	k, err := key(r)
@@ -113,10 +123,18 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO grants(credential_id,project_id,can_read,can_write,can_manage) VALUES(?,?,?,?,?)", id, scope.ProjectID, permissions.read, permissions.write, permissions.manage); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "credentials.granted", id, 1, map[string]any{"id": id, "principal_id": principal, "permissions": request.Permissions}); err != nil {
+		event := map[string]any{"id": id, "principal_id": principal, "permissions": request.Permissions}
+		receipt := map[string]string{"id": id, "principal_id": principal, "project_id": scope.ProjectID, "outcome": "granted"}
+		if connectorWorker != "" {
+			if err = core.BindConnectorCredential(ctx, tx, id, scope.ProjectID, connectorWorker); err != nil {
+				return nil, err
+			}
+			event["connector_worker_id"], receipt["connector_worker_id"] = connectorWorker, connectorWorker
+		}
+		if err = core.AppendEvent(ctx, tx, scope, "credentials.granted", id, 1, event); err != nil {
 			return nil, err
 		}
-		return map[string]string{"id": id, "principal_id": principal, "project_id": scope.ProjectID, "outcome": "granted"}, nil
+		return receipt, nil
 	})
 	complete(w, result, err)
 }

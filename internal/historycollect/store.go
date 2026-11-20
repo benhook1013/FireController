@@ -115,7 +115,7 @@ func checkActor(ctx context.Context, tx *sql.Tx, scope core.Scope) error {
 	if scope.ProjectID == "" || scope.WorkerID == "" {
 		return core.Fail("worker_required", "Select the collection project and worker.", 400)
 	}
-	if err := core.CheckProjectAdministrator(ctx, tx, scope.ProjectID, scope.PrincipalID); err != nil {
+	if err := core.CheckProjectAdministrator(ctx, tx, scope.ProjectID, scope.PrincipalID, scope.WorkerID); err != nil {
 		return err
 	}
 	return core.CheckWorker(ctx, tx, scope.ProjectID, scope.WorkerID)

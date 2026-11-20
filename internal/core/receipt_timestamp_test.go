@@ -42,7 +42,7 @@ func TestReceiptTimestampMigrationAndReplay(t *testing.T) {
 	if err != nil || string(got) != string(original) || readTimestamp(s) != stamp || calls != 1 {
 		t.Fatalf("exact replay changed the timestamp, response or callback: %d %s %v", calls, got, err)
 	}
-	if _, err := s.DB().Exec(`ALTER TABLE receipts DROP COLUMN created_at; PRAGMA user_version=2`); err != nil {
+	if _, err := s.DB().Exec(`ALTER TABLE receipts DROP COLUMN created_at; DROP TABLE connector_credentials; PRAGMA user_version=2`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -55,7 +55,7 @@ func TestReceiptTimestampMigrationAndReplay(t *testing.T) {
 	}
 	defer opened.Close()
 	var version int
-	if err := opened.DB().QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+	if err := opened.DB().QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("base v2 was not upgraded: version=%d err=%v", version, err)
 	}
 	migratedStamp := readTimestamp(opened)

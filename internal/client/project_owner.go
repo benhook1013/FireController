@@ -62,14 +62,16 @@ type WorkerCreateReceipt struct {
 	Outcome  string `json:"outcome"`
 }
 type GrantProjectCredentialRequest struct {
-	TokenSHA256 string   `json:"token_sha256"`
-	Permissions []string `json:"permissions"`
+	TokenSHA256       string   `json:"token_sha256"`
+	ConnectorWorkerID string   `json:"connector_worker_id,omitempty"`
+	Permissions       []string `json:"permissions"`
 }
 type ProjectCredentialReceipt struct {
-	ID          string `json:"id"`
-	PrincipalID string `json:"principal_id,omitempty"`
-	ProjectID   string `json:"project_id"`
-	Outcome     string `json:"outcome"`
+	ConnectorWorkerID string `json:"connector_worker_id,omitempty"`
+	ID                string `json:"id"`
+	PrincipalID       string `json:"principal_id,omitempty"`
+	ProjectID         string `json:"project_id"`
+	Outcome           string `json:"outcome"`
 }
 
 func ownerChannels(values []string) bool {
@@ -139,7 +141,7 @@ func ValidateCreateWorker(r CreateWorkerRequest) error {
 	return nil
 }
 func ValidateGrantProjectCredential(r GrantProjectCredentialRequest) error {
-	if len(r.TokenSHA256) != 64 || !lowerHex(r.TokenSHA256) || r.Permissions == nil || len(r.Permissions) < 1 || len(r.Permissions) > 3 {
+	if r.ConnectorWorkerID != "" && !validID(r.ConnectorWorkerID) || len(r.TokenSHA256) != 64 || !lowerHex(r.TokenSHA256) || r.Permissions == nil || len(r.Permissions) < 1 || len(r.Permissions) > 3 {
 		return mutationValidation()
 	}
 	seen := map[string]bool{}
@@ -233,8 +235,8 @@ func (c *Client) GrantProjectCredential(ctx context.Context, key string, r Grant
 	if err := c.mutate(ctx, http.MethodPost, c.projectPath("credentials"), key, r, http.StatusOK, &v); err != nil {
 		return v, err
 	}
-	if !validID(v.ID) || !validID(v.PrincipalID) || v.ProjectID != c.identity.ProjectID || v.Outcome != "granted" {
-		return ProjectCredentialReceipt{}, unknownMutation("invalid_response", "The credential receipt was invalid; retain the digest, permissions and key.", 200)
+	if !validID(v.ID) || !validID(v.PrincipalID) || v.ProjectID != c.identity.ProjectID || v.ConnectorWorkerID != r.ConnectorWorkerID || v.Outcome != "granted" {
+		return ProjectCredentialReceipt{}, unknownMutation("invalid_response", "The credential receipt was invalid; retain the digest, permissions, selected worker and key.", 200)
 	}
 	return v, nil
 }

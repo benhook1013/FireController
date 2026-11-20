@@ -11,6 +11,7 @@ import (
 )
 
 type Scope struct {
+	connector      bool
 	PrincipalID    string
 	ProjectID      string
 	WorkerID       string
@@ -30,10 +31,11 @@ type Mutation struct {
 }
 
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Status  int    `json:"-"`
-	Details any    `json:"details,omitempty"`
+	Code            string `json:"code"`
+	Message         string `json:"message"`
+	Status          int    `json:"-"`
+	Details         any    `json:"details,omitempty"`
+	bearerChallenge bool
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -71,6 +73,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	}
 	if w.Header().Get("X-Request-ID") == "" {
 		w.Header().Set("X-Request-ID", NewID("request"))
+	}
+	if failure.bearerChallenge && w.Header().Get("WWW-Authenticate") == "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="FireController"`)
 	}
 	logMutationOverload(err, w.Header().Get("X-Request-ID"))
 	WriteJSON(w, failure.Status, struct {

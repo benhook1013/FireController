@@ -57,7 +57,7 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 		}
 		flag, value, assigned := strings.Cut(args[i], "=")
 		switch flag {
-		case "--file", "--key", "--name", "--token-sha256", "--credential-file", "--permission":
+		case "--file", "--key", "--name", "--token-sha256", "--credential-file", "--permission", "--connector-worker":
 		default:
 			return nil, false
 		}
@@ -107,7 +107,8 @@ func parseOwnerManagement(operation string, args []string) (*ownerManagementInvo
 		}
 	case "credentials grant":
 		allowed["--token-sha256"], allowed["--credential-file"], allowed["--permission"] = true, true, true
-		in.grant = client.GrantProjectCredentialRequest{TokenSHA256: values["--token-sha256"], Permissions: permissions}
+		allowed["--connector-worker"] = true
+		in.grant = client.GrantProjectCredentialRequest{TokenSHA256: values["--token-sha256"], Permissions: permissions, ConnectorWorkerID: values["--connector-worker"]}
 		if (in.credentialFile == "") == (in.grant.TokenSHA256 == "") {
 			return nil, false
 		}

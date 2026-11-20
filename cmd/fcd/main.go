@@ -24,6 +24,7 @@ import (
 	"github.com/benhook1013/FireController/internal/historycollect"
 	"github.com/benhook1013/FireController/internal/inbox"
 	"github.com/benhook1013/FireController/internal/jobs"
+	"github.com/benhook1013/FireController/internal/mcpadapter"
 	"github.com/benhook1013/FireController/internal/opvars"
 	"github.com/benhook1013/FireController/internal/presentation"
 	"github.com/benhook1013/FireController/internal/projectmap"
@@ -61,6 +62,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	flags.SetOutput(stderr)
 	dataDir := flags.String("data-dir", "", "private local data directory (required)")
 	listen := flags.String("listen", "127.0.0.1:8080", "loopback HTTP listen address")
+	var remoteMCP mcpadapter.RemoteConfig
+	flags.StringVar(&remoteMCP.Origin, "remote-mcp-origin", "", "canonical HTTPS origin; explicitly enables worker-bound Streamable HTTP at /mcp")
+	flags.Func("remote-mcp-allowed-origin", "additional permitted HTTPS Origin header (repeatable)", func(origin string) error {
+		remoteMCP.AllowedOrigins = append(remoteMCP.AllowedOrigins, origin)
+		return nil
+	})
 	tokenFile := flags.String("github-token-file", "", "optional private GitHub credential file")
 	githubWebhookSecretFile := flags.String("github-webhook-secret-file", "", "optional private GitHub webhook secret file; enables signed observation hints")
 	historyEnabled := flags.Bool("history-collection", false, "enable explicitly requested GitHub history collection")
@@ -95,6 +102,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	}
 	if flags.NArg() != 0 || *dataDir == "" || !loopback(*listen) {
 		diagnostic(stderr, "configuration_invalid", "Provide --data-dir and a loopback --listen address.")
+		return 2
+	}
+	if err := remoteMCP.Validate(); err != nil {
+		diagnostic(stderr, "configuration_invalid", err.Error())
 		return 2
 	}
 	if *cliParallel < 1 || *cliParallel > 16 {
@@ -259,6 +270,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		return 2
 	}
 	defer listener.Close()
+	if remoteMCP.Origin != "" {
+		handler, closeRemote, err := mcpadapter.NewRemoteHandler(ctx, store, remoteMCP, listener.Addr().String())
+		if err != nil {
+			diagnostic(stderr, "configuration_invalid", err.Error())
+			return 2
+		}
+		defer closeRemote()
+		mux.Handle("/mcp", handler)
+	}
 	reviewCtx, cancelReviews := context.WithCancel(ctx)
 	var reviewDone <-chan error
 	if !recovery.ProvidersHeld {

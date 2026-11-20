@@ -157,7 +157,14 @@ func schedulingAuthorizerAllowed(ctx context.Context, tx *sql.Tx, s schedulingRe
 		return false, nil
 	}
 	var allowed bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c WHERE c.id=? AND c.principal_id=? AND c.revoked=0 AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1 AND g.can_manage=1)) AND EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=? AND NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)))`, s.credential, s.actor, s.ProjectID, s.ProjectID, s.AuthorizingWorkerID).Scan(&allowed)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c
+		LEFT JOIN connector_credentials b ON b.credential_id=c.id
+		WHERE c.id=? AND c.principal_id=? AND c.revoked=0
+		AND (b.credential_id IS NULL OR (c.is_admin=0 AND b.project_id=? AND b.worker_id=?))
+		AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1 AND g.can_manage=1))
+		AND EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=?
+			AND NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)))`,
+		s.credential, s.actor, s.ProjectID, s.AuthorizingWorkerID, s.ProjectID, s.ProjectID, s.AuthorizingWorkerID).Scan(&allowed)
 	return allowed, err
 }
 func (e *Engine) ReadScheduling(ctx context.Context, scope core.Scope) (Scheduling, error) {

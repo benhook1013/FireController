@@ -54,15 +54,50 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 	if err := ctx.Err(); err != nil {
 		return nil, contextError(err)
 	}
-	base, err := url.Parse(binding.Context.ServerURL)
-	identity := binding.Context
-	if err != nil || !safeURL(base, binding.Context.ServerURL) || !cleanText(identity.Profile, 256) || !validID(identity.InstanceID) || !validID(identity.ProjectID) || !validID(identity.WorkerID) || binding.CredentialFile == "" {
-		return nil, fail("binding_invalid", "The service profile must contain a safe URL and explicit bounded identities.", "Correct the selected private profile.", 0)
+	if binding.CredentialFile == "" {
+		return nil, invalidBinding()
+	}
+	base, err := validateBinding(binding.Context, binding.Context.ServerURL)
+	if err != nil {
+		return nil, err
 	}
 	token, err := readCredential(binding.CredentialFile)
 	if err != nil {
 		return nil, err
 	}
+	return connect(ctx, binding.Context, base, token, binding.CredentialFile, pool)
+}
+
+// NewConnector uses a request-owned credential and the daemon's literal
+// loopback address. The reported service identity remains the public origin.
+func NewConnector(ctx context.Context, identity profile.Context, destination, token string, pool *TransportPool) (*Client, error) {
+	base, err := validateBinding(identity, destination)
+	if err != nil {
+		return nil, err
+	}
+	if base.Scheme != "http" || !net.ParseIP(base.Hostname()).IsLoopback() || base.Port() == "" || base.Path != "" || token == "" {
+		return nil, invalidBinding()
+	}
+	return connect(ctx, identity, base, token, "", pool)
+}
+
+func validateBinding(identity profile.Context, destination string) (*url.URL, error) {
+	base, err := url.Parse(destination)
+	if err != nil || !safeURL(base, destination) || !cleanText(identity.Profile, 256) || !validID(identity.InstanceID) || !validID(identity.ProjectID) || !validID(identity.WorkerID) {
+		return nil, invalidBinding()
+	}
+	return base, nil
+}
+
+func invalidBinding() error {
+	return fail("binding_invalid", "The service profile must contain a safe URL and explicit bounded identities.", "Correct the selected private profile.", 0)
+}
+
+func connect(ctx context.Context, identity profile.Context, base *url.URL, token, credentialFile string, pool *TransportPool) (*Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, contextError(err)
+	}
+	var err error
 	var transport *http.Transport
 	var sessionID string
 	waitTransports := &waitTransportCache{}
@@ -78,7 +113,7 @@ func newClient(ctx context.Context, binding profile.Binding, pool *TransportPool
 			return nil, err
 		}
 	}
-	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: binding.CredentialFile, transport: transport, borrowedTransport: pool != nil, waitTransports: waitTransports, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	c := &Client{sessionID: sessionID, identity: identity, base: base, token: token, credentialFile: credentialFile, transport: transport, borrowedTransport: pool != nil, waitTransports: waitTransports, http: &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	var instance struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -774,7 +809,7 @@ func safeCode(value string) bool {
 	return true
 }
 func (c *Client) sensitive(value string) bool {
-	return strings.Contains(value, c.token) || strings.Contains(value, c.credentialFile)
+	return strings.Contains(value, c.token) || c.credentialFile != "" && strings.Contains(value, c.credentialFile)
 }
 func (c *Client) safeDetails(value any, code string) any {
 	if code == "review_busy" {

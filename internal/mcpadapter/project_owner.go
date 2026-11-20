@@ -120,7 +120,7 @@ func ownerManagementArguments(name string, raw json.RawMessage) (arguments, erro
 	case "worker_create":
 		valid = ownerDecode(body, &in.worker, "name") && client.ValidateCreateWorker(in.worker) == nil
 	case "project_credential_grant":
-		valid = ownerDecode(body, &in.grant, "token_sha256", "permissions") && client.ValidateGrantProjectCredential(in.grant) == nil
+		valid = ownerDecode(body, &in.grant, "token_sha256", "permissions") && (fields["connector_worker_id"] == nil || validID(in.grant.ConnectorWorkerID)) && client.ValidateGrantProjectCredential(in.grant) == nil
 	case "worker_retire", "project_credential_revoke":
 		valid = ownerDecode(body, &struct{}{})
 	case "project_credential_update":
@@ -190,7 +190,7 @@ func ownerManagementDefinitions() []definition {
 	add("worker_create", "Project writer: create one named worker in this bound project. Returns its ID; does not switch the acting worker, create credentials or start an agent.", map[string]any{"idempotency_key": key, "name": text(200)}, "idempotency_key", "name")
 	digest := text(64)
 	digest["pattern"] = "^[a-f0-9]{64}$"
-	add("project_credential_grant", "Project manager: grant this project to a distinct non-admin credential using only its lowercase SHA-256 digest. Raw tokens never enter tool arguments/output; generate/store credentials privately through onboarding. manage implies read/write. Explicit key; no other-project or instance authority.", map[string]any{"idempotency_key": key, "token_sha256": digest, "permissions": permissions}, "idempotency_key", "token_sha256", "permissions")
+	add("project_credential_grant", "Project manager: grant this project to a distinct non-admin credential using only its lowercase SHA-256 digest. Raw tokens never enter tool arguments/output; generate/store credentials privately through onboarding. manage implies read/write. Select connector_worker_id to bind one active worker immutably. Explicit key; no other-project or instance authority.", map[string]any{"idempotency_key": key, "token_sha256": digest, "permissions": permissions, "connector_worker_id": text(128)}, "idempotency_key", "token_sha256", "permissions")
 	add("project_credential_revoke", "Project manager: revoke a known credential's access to this project only. Preserves its other-project grants; no token or acting identity change. Explicit key, original ID retained after unknown outcome.", map[string]any{"idempotency_key": key, "credential_id": text(128)}, "idempotency_key", "credential_id")
 	add("project_credential_update", "Project manager: replace one existing non-admin credential's permissions in this project under an exact expected_permissions guard. Preserves credential, principal, token and worker binding; changes no other project. manage implies read/write. No hidden role or identity switching.", map[string]any{"idempotency_key": key, "credential_id": text(128), "expected_permissions": permissions, "permissions": permissions}, "idempotency_key", "credential_id", "expected_permissions", "permissions")
 	return defs

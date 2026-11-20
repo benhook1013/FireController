@@ -236,6 +236,7 @@ type tableVersion struct {
 // execution. Inspection never opens a Store or installs/rewrites a schema.
 var supportedDomains = map[string]int{"review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 9, "inbox": 2, "review_notifications": 1, "reviews": 13, "review_policy": 2, "review_execution": 12, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 6, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"connector_credentials":             {"", 4, "credential_id project_id worker_id"},
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":            {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
 	"review_automatic_selections":       {"review_scheduling", 1, "selection_id project_id scheduling_revision basis_sha256 settled_basis_sha256 pull_number pull_basis_sha256 actor_id worker_id credential_id"},
@@ -596,7 +597,7 @@ func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
-	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 3) {
+	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 4) {
 		return nil, invalid()
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 129`)
@@ -619,6 +620,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	}
 	if !actual["metadata"] {
 		return nil, invalid()
+	}
+	if version >= 4 {
+		objects := map[string]physicalSchemaObject{"connector_credentials": {"table", historyDefinitionSQL(core.ConnectorCredentialSchemaSQL()[0])}}
+		if err := validatePhysicalSchemaObjects(ctx, db, objects, []string{"connector_credentials"}); err != nil {
+			return nil, err
+		}
 	}
 	rows, err = db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(key AS BLOB))<=128 THEN key END,CASE WHEN length(CAST(value AS BLOB))<=4096 THEN value END FROM metadata WHERE key LIKE 'schema:%' OR key LIKE 'restore:%' LIMIT 129`)
 	if err != nil {
@@ -650,7 +657,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if err != nil {
 		return nil, invalid()
 	}
-	if err = validateTriggers(ctx, db, versions["reviews"], versions["review_comparison"], versions["review_route_policy"], versions["review_adoption_obligations"], versions["review_applicability"], versions["review_evidence"]); err != nil {
+	if err = validateTriggers(ctx, db, version, versions["reviews"], versions["review_comparison"], versions["review_route_policy"], versions["review_adoption_obligations"], versions["review_applicability"], versions["review_evidence"]); err != nil {
 		return nil, err
 	}
 	if err = validateRetentionMetadata(ctx, db, versions["reviews"]); err != nil {
@@ -787,7 +794,7 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		}
 	}
 	for name, spec := range tables {
-		expected := spec.domain == "" || versions[spec.domain] >= spec.since
+		expected := spec.domain == "" && version >= spec.since || spec.domain != "" && versions[spec.domain] >= spec.since
 		// Main and develop assigned different layouts to reviews version 10.
 		// The physical schema check validates the exact selected layout.
 		if name == "review_hosted_discovery_state" && versions["reviews"] == 10 {
@@ -1678,7 +1685,7 @@ func validateHistoryPhysicalSchema(ctx context.Context, db sqlReader, version in
 // and route-policy domains additionally own exact invalidation/retention triggers.
 // Exact text and table binding are required; inspection never executes custom
 // trigger programs, and restore must reject them before rotating credentials.
-func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparisonVersion, routePolicyVersion, adoptionVersion, applicabilityVersion, evidenceVersion int) error {
+func validateTriggers(ctx context.Context, db sqlReader, baseVersion, reviewVersion, comparisonVersion, routePolicyVersion, adoptionVersion, applicabilityVersion, evidenceVersion int) error {
 	expected := map[string]string{}
 	expectedTables := map[string]string{}
 	if reviewVersion >= 2 && reviewVersion <= 3 {
@@ -1689,6 +1696,9 @@ func validateTriggers(ctx context.Context, db sqlReader, reviewVersion, comparis
 		}
 	}
 	var nativeDefinitions []string
+	if baseVersion >= 4 {
+		nativeDefinitions = append(nativeDefinitions, core.ConnectorCredentialSchemaSQL()...)
+	}
 	if evidenceVersion >= 6 {
 		nativeDefinitions = append(nativeDefinitions, reviewexec.CLIEvidenceRecoverySchemaSQL()...)
 	}
@@ -1884,6 +1894,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"job_checklist_history":           {canonicalFK("jobs", "project_id,job_id", "project_id,id", "CASCADE")},
 	"restore_history":                 {},
 	"workers":                         {canonicalFK("projects", "project_id", "id", "NO ACTION")},
+	"connector_credentials":           {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("grants", "credential_id,project_id", "credential_id,project_id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"grants":                          {canonicalFK("credentials", "credential_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"events":                          {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"jobs":                            {canonicalFK("projects", "project_id", "id", "CASCADE"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
