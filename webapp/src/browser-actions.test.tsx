@@ -7,9 +7,9 @@ import type { InboxItem } from './types';
 
 const context = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock('./workspace', () => ({ useWorkspace: () => context.value, signalFor: (session: { controller: AbortController }, signal: AbortSignal) => AbortSignal.any([session.controller.signal, signal]) }));
-function workspace(allowWrites = true, worker = 'worker_one', actions = new BrowserActionMemory(() => 'test_key')) {
+function workspace(allowWrites = true, worker = 'worker_one', actions = new BrowserActionMemory(() => 'test_key'), retired = false) {
   const api = { browserCapabilities: { allow_writes: allowWrites, can_edit_presentation: false }, sendMessage: vi.fn(), markMessageSeen: vi.fn(), acknowledgeMessage: vi.fn() };
-  context.value = { session: { api, actions, controller: new AbortController(), worker: worker ? { id: worker, name: 'Worker' } : null }, key: ['test', worker], home: '/projects/project_one', fail: vi.fn() };
+  context.value = { session: { api, actions, controller: new AbortController(), worker: worker ? { id: worker, name: 'Worker', retired } : null }, key: ['test', worker], home: '/projects/project_one', fail: vi.fn() };
   return api;
 }
 function render(value: React.ReactNode) { return renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}>{value}</QueryClientProvider>); }
@@ -100,6 +100,13 @@ describe('explicit browser actions', () => {
     workspace(true, ''); expect(render(<><MessageComposer /><RecipientActions item={item} /></>)).toBe('');
     workspace(true, 'worker_other'); expect(render(<RecipientActions item={item} />)).toBe('');
     workspace(); const html = render(<RecipientActions item={item} />); expect(html).toContain('Mark seen'); expect(html).toContain('Acknowledge');
+  });
+  it('does not offer new message or reply from a retired historical selection', () => {
+    const api = workspace(true, 'worker_one', undefined, true);
+    const reply = { id: item.id, conversation_id: item.conversation_id, sender_worker_id: 'worker_sender', recipient_worker_id: 'worker_one', body: 'History', created_at: item.created_at };
+    expect(render(<><MessageComposer /><MessageComposer reply={reply} /></>)).toBe('');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(render(<RecipientActions item={item} />)).toContain('Mark seen');
   });
   it('restores locked retry content in its original worker view, including seen state updated by live reads', async () => {
     const actions = new BrowserActionMemory(() => 'original_key');

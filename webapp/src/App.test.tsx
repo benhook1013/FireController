@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from './api';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { CapturedComparisonRefusal, CapturedComparisonResult, ReviewPullView, ReviewQueueView } from './App';
+import { CapturedComparisonRefusal, CapturedComparisonResult, ReviewPullView, ReviewQueueView, restoredWorker } from './App';
 import { useReviewProgress } from './review-progress-view';
 
 describe('captured comparison refusal presentation', () => {
@@ -105,5 +106,25 @@ describe('current review progress after a refresh error', () => {
       progressHookContext.query = null;
       progressHookContext.workspace = null;
     }
+  });
+});
+
+describe('saved inbox worker restoration', () => {
+  it('uses the exact worker detail and preserves a retired historical selection', async () => {
+    const retired = { id: 'worker_one', project_id: 'project_one', name: 'Archive', retired: true };
+    const worker = vi.fn().mockResolvedValue(retired);
+    const signal = new AbortController().signal;
+    await expect(restoredWorker({ worker }, retired.id, signal)).resolves.toEqual(retired);
+    expect(worker).toHaveBeenCalledExactlyOnceWith(retired.id, signal);
+  });
+
+  it('clears only a missing worker and preserves other failures', async () => {
+    const worker = vi.fn().mockRejectedValueOnce(new ApiError('not_found', 'Missing', 404))
+      .mockRejectedValueOnce(new ApiError('forbidden', 'Forbidden', 403))
+      .mockRejectedValueOnce(new ApiError('invalid_response', 'Invalid'));
+    const signal = new AbortController().signal;
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).resolves.toBeNull();
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 });

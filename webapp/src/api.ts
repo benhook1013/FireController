@@ -160,8 +160,8 @@ async function readFailure(response: Response, signal: AbortSignal): Promise<Api
 function validProject(value: unknown, expected: string): value is Project {
   return record(value) && keys(value, ['id', 'name', 'github_repository_id', 'repository']) && value.id === expected && contentText(value.name, 200) && Number.isSafeInteger(value.github_repository_id) && Number(value.github_repository_id) > 0 && text(value.repository, 300);
 }
-function validWorker(value: unknown, projectId: string): value is Worker {
-  return record(value) && keys(value, ['id', 'project_id', 'name']) && id(value.id) && value.project_id === projectId && displayName(value.name);
+function validWorker(value: unknown, projectId: string, historical = false): value is Worker {
+  return record(value) && keys(value, ['id', 'project_id', 'name'], historical ? ['retired'] : []) && id(value.id) && value.project_id === projectId && displayName(value.name) && (!Object.hasOwn(value, 'retired') || typeof value.retired === 'boolean');
 }
 function validSummary(value: unknown): value is JobSummary {
   return record(value) && keys(value, ['id', 'title', 'worker_id', 'status', 'revision']) && id(value.id) && contentText(value.title, 240) && text(value.worker_id, 128, true) && typeof value.status === 'string' && jobStatuses.has(value.status) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0;
@@ -605,7 +605,7 @@ export class Api {
   async worker(workerId: string, signal?: AbortSignal): Promise<Worker> {
     if (!id(workerId)) throw new ApiError('invalid_request', 'The worker identifier is invalid.');
     const value = await this.finiteGet(this.projectRoute(`workers/${encodeURIComponent(workerId)}`), signal, undefined, 4096, assessmentJSON);
-    if (!validWorker(value, this.projectId) || value.id !== workerId) throw new ApiError('invalid_response', 'The service returned an invalid worker.');
+    if (!validWorker(value, this.projectId, true) || value.id !== workerId) throw new ApiError('invalid_response', 'The service returned an invalid worker.');
     return value;
   }
   async workerPrimary(workerId: string, signal?: AbortSignal): Promise<WorkerPrimary> {
