@@ -232,7 +232,7 @@ func snapshotDelete(refs historyReferences, a, fence string, virtual bool) strin
 func pruneReviewHistory(ctx context.Context, p *pass, cutoff time.Time) error {
 	refs, err := discoverHistoryReferences(ctx, p.store.DB())
 	if err != nil {
-		return err
+		return historyFailure("schema_discovery", err)
 	}
 	var after string
 	for {
@@ -242,12 +242,12 @@ func pruneReviewHistory(ctx context.Context, p *pass, cutoff time.Time) error {
 			return nil
 		}
 		if err != nil {
-			return err
+			return historyFailure("project_scan", err)
 		}
 		after = project
 		floor, err := projectFloor(ctx, p, project, cutoff)
 		if err != nil {
-			return err
+			return historyFailure("project_floor", err)
 		}
 		if floor == 0 {
 			continue
@@ -323,22 +323,22 @@ func pruneHistoryProject(ctx context.Context, p *pass, refs historyReferences, p
 	fence := strconv.FormatInt(floor, 10)
 	for _, k := range historyKinds {
 		if err := p.delete(ctx, k.members, "project_id=? AND end_revision IS NOT NULL AND end_revision<=?", project, floor); err != nil {
-			return err
+			return historyFailure("membership_delete", err)
 		}
 	}
 	if !p.dryRun {
 		for _, k := range historyKinds {
 			if err := shiftHistoryMemberships(ctx, p, k, project, floor); err != nil {
-				return err
+				return historyFailure("membership_shift", err)
 			}
 		}
 	}
 	for _, table := range versionTables {
 		if err := p.delete(ctx, table, table+".project_id=? AND "+versionDelete(refs, table, table, fence, p.dryRun), project); err != nil {
-			return err
+			return historyFailure("version_delete", err)
 		}
 	}
-	return pruneHistorySnapshots(ctx, p, refs, project, fence)
+	return historyFailure("snapshot_batch", pruneHistorySnapshots(ctx, p, refs, project, fence))
 }
 
 func shiftHistoryMemberships(ctx context.Context, p *pass, k historyKind, project string, floor int64) error {

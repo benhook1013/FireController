@@ -121,6 +121,8 @@ func (e *Engine) listOperationsSnapshot(ctx context.Context, scope core.Scope, o
 				// history cannot crowd an older actionable result out of discovery.
 				// Fix timestamps use RecordFindingFix's UTC RFC3339Nano shape;
 				// SQLite's broader date/relative-time syntax cannot settle a fix.
+				// Only an exact ready comparison proof vouches for an operational fix:
+				// derivation validates its body, and ledger changes dirty that proof.
 				query += ` OR (o.state='completed' AND EXISTS (
  SELECT 1 FROM review_execution_evidence e
  LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
@@ -128,7 +130,11 @@ func (e *Engine) listOperationsSnapshot(ctx context.Context, scope core.Scope, o
  AND (s.evidence_id IS NULL OR json_type(s.body_json,'$.finalized') IS NOT 'true'
  OR json_type(s.body_json,'$.findings') IS NOT 'array' OR EXISTS (
   SELECT 1 FROM json_each(s.body_json,'$.findings') f
-  WHERE json_extract(f.value,'$.disposition')='accepted' AND (
+  WHERE json_extract(f.value,'$.disposition')='accepted'
+  AND NOT (json_type(f.value,'$.operational_proof') IS 'object' AND EXISTS (
+   SELECT 1 FROM review_comparison_proofs p WHERE p.operation_id=o.id AND p.project_id=o.project_id
+   AND p.pull_number=o.pull_number AND p.channel=o.channel AND p.evidence_id=e.id AND p.state='ready'
+  )) AND (
    json_type(f.value,'$.fix_sha') IS NOT 'text' OR length(json_extract(f.value,'$.fix_sha'))<>40
    OR json_extract(f.value,'$.fix_sha') GLOB '*[^0-9a-f]*'
    OR json_type(f.value,'$.proof_note') IS NOT 'text' OR trim(json_extract(f.value,'$.proof_note'))=''

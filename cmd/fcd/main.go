@@ -309,9 +309,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 	if !recovery.ProvidersHeld {
 		retentionDone = retention.Run(reviewCtx, store, retentionConfig, func(report retention.Report) {
 			_ = json.NewEncoder(stderr).Encode(struct {
-				Event string `json:"event"`
+				Event        string `json:"event"`
+				FailurePhase string `json:"failure_phase,omitempty"`
+				FailureClass string `json:"failure_class,omitempty"`
 				retention.Report
-			}{"retention_pass", report})
+			}{Event: "retention_pass", FailurePhase: report.HistoryFailurePhase, FailureClass: report.HistoryFailureClass, Report: report})
 		}, func(err error) {
 			diagnostic(stderr, "retention_unavailable", "Database retention could not acquire the configured backup phase lease.")
 		})

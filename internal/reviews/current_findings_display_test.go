@@ -2,6 +2,8 @@ package reviews
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -203,4 +205,34 @@ func TestCurrentFindingsDisplayPartialRetainedInventory(t *testing.T) {
 	if timeline.Items[0].RetainedUndecided == nil || *timeline.Items[0].RetainedUndecided != 0 || timeline.Items[0].Complete {
 		t.Fatal("partial evidence acquired complete credit", timeline.Items[0])
 	}
+}
+
+func TestCurrentFindingsDisplayOperationalReceiptNotPending(t *testing.T) {
+	f := newAPIFixture(t)
+	run := nativeUndecidedRun("operational-proof-and-real-pending", 2)
+	mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
+	input := nativeAdjudicationInput(run)
+	for i := range input.Findings {
+		decideNativeFinding(&input.Findings[i], "accepted")
+	}
+	note := "Verified non-code remediation."
+	digest := sha256.Sum256([]byte(note))
+	input.Findings[0].OperationalProof = &OperationalProof{Digest: hex.EncodeToString(digest[:]), Note: note, ActorID: "operator-one", RecordedAt: "2026-01-01T00:05:00Z"}
+	input.Finalized, input.FrozenCounts = true, &NativeCounts{Found: 2, Accepted: 2}
+	if _, changed, err := applyNativeAdjudication(f, input); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
+	id := runOpaqueID(f.project, nativeSource, run.SourceRunID)
+	var detail RunDetailResponse
+	currentFindingsDisplayRead(t, f, "/runs/"+id, &detail)
+	assertCurrentFindingCounts(t, detail.Run, 2, 1)
+	if !detail.Run.Finalized || detail.Run.Fixed != 1 || len(detail.Findings) != 2 || detail.Findings[0].OperationalProof == nil || detail.Findings[1].OperationalProof != nil {
+		t.Fatalf("incorrect detailed receipt projection: %+v", detail)
+	}
+	var timeline RunsResponse
+	currentFindingsDisplayRead(t, f, "/pulls/1/runs?view=timeline", &timeline)
+	if len(timeline.Items) != 1 {
+		t.Fatal(timeline)
+	}
+	assertCurrentFindingCounts(t, timeline.Items[0], 2, 1)
 }

@@ -39,6 +39,10 @@ type Report struct {
 	DryRun     bool             `json:"dry_run"`
 	Deleted    map[string]int64 `json:"deleted"`
 	Error      string           `json:"error"`
+
+	// Scheduled operator diagnostics only; the durable five-field report stays stable.
+	HistoryFailurePhase string `json:"-"`
+	HistoryFailureClass string `json:"-"`
 }
 
 func (c Config) Validate() error {
@@ -123,6 +127,11 @@ func RunPass(ctx context.Context, store *core.Store, cfg Config, now time.Time) 
 	for _, step := range steps {
 		if err = step.run(); err != nil {
 			r.Error = step.name + "_failed"
+			var failure *historyPhaseError
+			if errors.As(err, &failure) {
+				r.HistoryFailurePhase = failure.phase
+				r.HistoryFailureClass = historyErrorClass(failure.cause)
+			}
 			break
 		}
 	}

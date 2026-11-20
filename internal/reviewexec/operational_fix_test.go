@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/benhook1013/FireController/internal/core"
 	"strings"
 	"testing"
@@ -136,5 +137,41 @@ func TestOperationalFixNativeProjectionReadback(t *testing.T) {
 	detail := cliPublicationDetail(t, f, evidence.Anchor.PullNumber, id)
 	if detail.Run.Fixed != 1 || detail.Run.Accepted != 1 || detail.Findings[0].FixSHA != "" || detail.Findings[0].OperationalProof == nil {
 		t.Fatalf("incorrect projection %+v", detail)
+	}
+}
+
+func TestOperationalFixAttentionExcludesFinalizedReceipt(t *testing.T) {
+	f, a, evidence := cliPublicationFixture(t, 1, "completed")
+	id := evidence.ID
+	adjudicationDecide(t, f, id, "accept-no-proof", 0, 0, "accepted")
+	adjudicationComplete(t, f, a)
+	pending := listOperationPage(t, f, "?status=attention&channel=cli")
+	if len(pending.Items) != 1 || pending.Items[0].ID != a.OperationID {
+		t.Fatalf("missing real pending operation: %+v", pending)
+	}
+	writer := f.scope(t, attemptProject, f.writer, false)
+	r := OperationalFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedDigest: adjudicationSHA(""), ProofNote: "Verified operational remediation"}
+	body, err := f.e.RecordOperationalFix(t.Context(), writer, "attention-operational", id, r)
+	adjudicationReceipt(t, body, err, id, "operational_fix_recorded", 2)
+	stillPending := listOperationPage(t, f, "?status=attention&channel=cli")
+	if len(stillPending.Items) != 1 || stillPending.Items[0].ID != a.OperationID {
+		t.Fatalf("unfinalized operation must stay in attention: %+v", stillPending)
+	}
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "attention-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	adjudicationReceipt(t, body, err, id, "finalized", 3)
+	if page := listOperationPage(t, f, "?status=attention&channel=cli"); len(page.Items) != 0 || page.HasMore {
+		t.Fatalf("settled receipt was not excluded: %+v", page)
+	}
+	if page := listOperationPage(t, f, "?status=all&channel=cli"); len(page.Items) != 1 || page.Items[0].ID != a.OperationID {
+		t.Fatalf("settled history disappeared: %+v", page)
+	}
+	// A changed ledger invalidates the ready proof; malformed operational evidence
+	// must still enter the bounded validation path and fail closed.
+	if _, err := f.store.DB().Exec(`UPDATE review_adjudication_state SET body_json=json_set(body_json,'$.findings[0].operational_proof.digest',?) WHERE evidence_id=?`, strings.Repeat("0", 64), id); err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/api/v1/projects/%s/reviews/operations?status=attention&channel=cli", attemptProject)
+	if w := f.request("GET", path, f.reader, "", ""); w.Code != 500 {
+		t.Fatalf("malformed receipt hidden: %d %s", w.Code, w.Body.String())
 	}
 }

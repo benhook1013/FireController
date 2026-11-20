@@ -9,6 +9,7 @@ import (
 // Display-only current obligations are distinct from immutable finalized source
 // counts. Selected run versions keep pinned snapshots from seeing later decisions.
 // Read scalar inventory for only the displayed page, never finding bodies.
+// Finding versions store a validated operational receipt or the canonical 'null'.
 func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string, groups ...[]RunSummary) error {
 	if err := attachDisplayStarts(ctx, tx, project, groups...); err != nil {
 		return err
@@ -33,7 +34,7 @@ func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string,
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT r.id,count(f.source_finding_id),
  coalesce(sum(CASE WHEN f.disposition='accepted' THEN 1 ELSE 0 END),0),
- coalesce(sum(CASE WHEN f.disposition='accepted' AND f.fix_sha='' THEN 1 ELSE 0 END),0)
+ coalesce(sum(CASE WHEN f.disposition='accepted' AND f.fix_sha='' AND f.operational_proof_json='null' THEN 1 ELSE 0 END),0)
  FROM json_each(?) selected JOIN review_runs r ON r.id=selected.value
  LEFT JOIN review_finding_versions f ON f.project_id=r.project_id AND f.run_id=r.id
  AND f.pull_number=r.pull_number AND f.run_version_revision=r.version_revision
