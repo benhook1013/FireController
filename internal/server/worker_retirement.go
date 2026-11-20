@@ -25,6 +25,19 @@ type workerRetirementStatus struct {
 	Blockers  workerRetirementBlockers `json:"blockers"`
 }
 
+// Drive each arm from the target worker's own index range. The jobs-first
+// CROSS JOIN keeps the second arm from scanning a project's unrelated notes.
+// UNION counts a note that matches both its direct and job target only once.
+const workerRetirementPendingNotes = `SELECT id,count(*) OVER() FROM (
+ SELECT n.id FROM notes AS n INDEXED BY notes_project_worker_created
+ WHERE n.project_id=? AND n.worker_id=? AND n.status='pending'
+ UNION
+ SELECT n.id FROM jobs AS j INDEXED BY jobs_project_worker_order
+ CROSS JOIN notes AS n INDEXED BY notes_project_job_created
+ ON n.project_id=j.project_id AND n.job_id=j.id
+ WHERE j.project_id=? AND j.worker_id=? AND n.status='pending'
+)`
+
 func retirementItems(ctx context.Context, tx *sql.Tx, query string, args ...any) (workerRetirementItems, error) {
 	items := workerRetirementItems{IDs: []string{}}
 	rows, err := tx.QueryContext(ctx, query+` ORDER BY id LIMIT 20`, args...)
@@ -55,7 +68,7 @@ func readWorkerRetirement(ctx context.Context, tx *sql.Tx, project, worker strin
 	if err != nil {
 		return status, err
 	}
-	status.Blockers.Notes, err = retirementItems(ctx, tx, `SELECT n.id,count(*) OVER() FROM notes n WHERE n.project_id=? AND n.status='pending' AND (n.worker_id=? OR EXISTS(SELECT 1 FROM jobs j WHERE j.project_id=n.project_id AND j.id=n.job_id AND j.worker_id=?))`, project, worker, worker)
+	status.Blockers.Notes, err = retirementItems(ctx, tx, workerRetirementPendingNotes, project, worker, project, worker)
 	if err != nil {
 		return status, err
 	}
