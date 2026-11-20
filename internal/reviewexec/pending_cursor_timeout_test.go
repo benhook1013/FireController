@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/benhook1013/FireController/internal/core"
 	"runtime"
@@ -9,6 +10,70 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPendingCandidateReadKeepsCompletedValidationAtExpiry(t *testing.T) {
+	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(1, 0))
+	defer cancel()
+	if err := pendingCandidateReadError(ctx, Operation{ID: "validated"}, nil, true); err != nil {
+		t.Fatal("discarded a validated ordinary candidate", err)
+	}
+	if err := pendingCandidateReadError(ctx, Operation{}, nil, true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("empty classification hid row-local expiry", err)
+	}
+	if err := pendingCandidateReadError(ctx, Operation{}, nil, false); err != nil {
+		t.Fatal("rewound an unavailable row with no returned prefix or recorded retry", err)
+	}
+	storageFailure := errors.New("ordinary test storage failure")
+	if err := pendingCandidateReadError(ctx, Operation{}, storageFailure, false); !errors.Is(err, storageFailure) {
+		t.Fatal("expiry concealed a storage error", err)
+	}
+}
+
+func TestPendingDraftOnlyExhaustionRetainsCursorUntilSettlement(t *testing.T) {
+	e := &Engine{}
+	const lane = 1
+	cursor := pendingScanPosition{"2020", "ordinary-origin"}
+	before := pendingScanPosition{"2021", "last examined"}
+	slow := pendingScanPosition{"2022", "slow"}
+	advance := func(pos pendingScanPosition) { e.pendingScanCursor[lane] = pos }
+	var receipt pendingExhaustion
+
+	// A Draft was returned, but no ordinary item was available before expiry.
+	retainPendingExhaustion(advance, cursor, nil, before, slow, &receipt)
+	if receipt.timedOut != slow || e.pendingScanCursor[lane] != cursor {
+		t.Fatal("draft-only batch failed to retain ordinary replay and exhaustion", receipt)
+	}
+	e.finishPendingBatch(lane, receipt, false, false)
+	e.finishPendingBatch(lane, receipt, true, true)
+	if e.pendingScanCursor[lane] != cursor || e.pendingScanTimeout[lane] != (pendingScanPosition{}) {
+		t.Fatal("an unconfirmed or overloaded draft-only batch advanced ordinary work")
+	}
+	e.finishPendingBatch(lane, receipt, true, false)
+	if e.pendingScanCursor[lane] != before || e.pendingScanTimeout[lane] != slow {
+		t.Fatal("the slow ordinary row did not gain a fresh scan")
+	}
+	e.rewindTimedOutPendingCandidate(lane, before, slow)
+	if e.pendingScanCursor[lane] != slow || e.pendingScanTimeout[lane] != (pendingScanPosition{}) {
+		t.Fatal("a genuinely repeated deadline did not rotate past the slow row")
+	}
+}
+
+func TestPendingOrdinaryExhaustionUsesSlowRowPredecessorOnlyAfterSettlement(t *testing.T) {
+	e := &Engine{}
+	prefix := pendingScanPosition{"2020", "prefix"}
+	before := pendingScanPosition{"2021", "slow-predecessor"}
+	slow := pendingScanPosition{"2022", "slow"}
+	var receipt pendingExhaustion
+	retainPendingExhaustion(func(pos pendingScanPosition) { e.pendingScanCursor[0] = pos },
+		pendingScanPosition{}, &prefix, before, slow, &receipt)
+	if e.pendingScanCursor[0] != prefix {
+		t.Fatal("ordinary prefix was not retained for replay before settlement")
+	}
+	e.finishPendingBatch(0, receipt, true, false)
+	if e.pendingScanCursor[0] != before || e.pendingScanTimeout[0] != slow {
+		t.Fatal("confirmed prefix was substituted for the slow row's predecessor")
+	}
+}
 
 func TestPendingCandidateTimeoutRetriesOnceThenRotates(t *testing.T) {
 	e := &Engine{}
@@ -104,6 +169,12 @@ func TestMixedPendingBatchRotatesOnlyAfterRowLocalExhaustion(t *testing.T) {
 		operations, err := f.e.scanPendingInLane(scanCtx, false, 256, 0, &receipt)
 		cancel()
 		f.e.schedulingNow = nil
+		if i == 1 {
+			if !hitSlow || !errors.Is(err, context.DeadlineExceeded) || len(operations) != 0 {
+				t.Fatal("fresh retry did not start directly at slow row", operations, receipt, err)
+			}
+			break
+		}
 		if err != nil || !hitSlow || len(operations) != 1 || operations[0].ID != prefix.ID || receipt.timedOut.id != slow.ID {
 			t.Fatal("missing exact prefix and offender", operations, receipt, err)
 		}
@@ -116,8 +187,8 @@ func TestMixedPendingBatchRotatesOnlyAfterRowLocalExhaustion(t *testing.T) {
 		if state := supervisorOperationState(t, f, prefix.ID); state != "queued" {
 			t.Fatal("stale prefix claimed", state)
 		}
-		if i == 0 && f.e.pendingScanCursor[0] != (pendingScanPosition{}) {
-			t.Fatal("oldest prefix not replayed on first receipt")
+		if i == 0 && f.e.pendingScanCursor[0].id != prefix.ID {
+			t.Fatal("first receipt did not retry from immediately before the slow row")
 		}
 	}
 	if f.e.pendingScanCursor[0].id != slow.ID {
