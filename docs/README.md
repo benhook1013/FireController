@@ -42,6 +42,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Quiet agent message wait](message-wait.md): selected bounded CLI/MCP subscription behavior, output and host proof limits.
 - [Incoming message events](message-events.md): scoped inbox snapshots, replay and bounded waits.
 - [Local MCP tools](mcp.md): bound read/write stdio tools and protocol/host proof limits.
+- [Remote MCP](remote-mcp.md): target Streamable HTTP contract, worker-bound credentials, and Claude.ai acceptance.
 - [Project management](local-api.md): explicit project-scoped management grants, bound credential administration and supported operation discovery; [architecture](architecture.md#projects-and-actors) keeps instance administration separate.
 - [Local API](local-api.md): implemented coordination endpoints, bootstrap and limits.
 - [Retained review history](review-history-growth.md): lifetime growth, original producers, immutable versions and bounded transfer/read requirements.
