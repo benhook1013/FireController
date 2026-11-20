@@ -49,6 +49,11 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 				return nil, false
 			}
 			value = args[i]
+			// A separated flag after --key is almost always a missing value.
+			// Callers deliberately using such a key can use --key=VALUE.
+			if flag == "--key" && strings.HasPrefix(value, "--") {
+				return nil, false
+			}
 		}
 		if value == "" && flag != "--reason" {
 			return nil, false

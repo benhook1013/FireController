@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/benhook1013/FireController/internal/strictjson"
 	"math"
 	"net/http"
@@ -146,7 +147,7 @@ func (c *Client) ConfigureReviewScheduling(ctx context.Context, key string, inpu
 	}
 	var receipt ReviewRequestReceipt
 	if err := c.mutate(ctx, http.MethodPost, c.projectPath("reviews", "scheduling"), key, input, http.StatusOK, &receipt); err != nil {
-		return receipt, err
+		return receipt, schedulingConflictGuidance(err, "reviews scheduling / review_scheduling_read")
 	}
 	if receipt.ID != c.identity.ProjectID || receipt.State != "scheduling_configured" || receipt.Revision != input.ExpectedRevision+1 {
 		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The scheduling receipt was invalid; retain the original key and request.", http.StatusOK)
@@ -175,10 +176,22 @@ func (c *Client) ConfigureReviewPullScheduling(ctx context.Context, key string, 
 	var receipt ReviewRequestReceipt
 	id := strconv.FormatInt(pull, 10)
 	if err := c.mutate(ctx, http.MethodPost, c.projectPath("reviews", "pulls", id, "scheduling"), key, input, http.StatusOK, &receipt); err != nil {
-		return receipt, err
+		return receipt, schedulingConflictGuidance(err, "reviews scheduling read --pr "+id+" / review_pull_scheduling_read")
 	}
 	if receipt.ID != id || receipt.State != "pull_scheduling_updated" || receipt.Revision != input.ExpectedRevision+1 {
 		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The PR scheduling receipt was invalid; retain the original key and request.", http.StatusOK)
 	}
 	return receipt, nil
+}
+
+// Rewrite only a confirmed stale revision. Preserve original replay guidance
+// for timeouts, storage failures, and other unknown mutation outcomes.
+func schedulingConflictGuidance(err error, currentRead string) error {
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "review_conflict" || failure.Status != http.StatusConflict || failure.OutcomeUnknown {
+		return err
+	}
+	copy := *failure
+	copy.Action = "Read current scheduling with " + currentRead + ". If the change is still needed, submit a new request with the current revision and a new idempotency key."
+	return &copy
 }

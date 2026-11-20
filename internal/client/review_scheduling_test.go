@@ -71,6 +71,10 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 	}
 	_, err = writer.ConfigureReviewPullScheduling(t.Context(), "stale-pause", 2, paused)
 	checkError(t, err, "review_conflict")
+	var conflict *client.Error
+	if !errors.As(err, &conflict) || !strings.Contains(conflict.Action, "reviews scheduling read --pr 2") || !strings.Contains(conflict.Action, "new idempotency key") {
+		t.Fatal("missing scoped PR conflict guidance", err)
+	}
 	_, err = reader.ConfigureReviewPullScheduling(t.Context(), "reader-pause", 2, paused)
 	checkError(t, err, "forbidden")
 	_, err = writer.ConfigureReviewPullScheduling(t.Context(), "pause-outside-queue", 99, paused)
@@ -97,6 +101,9 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 	}
 	_, err = owner.ConfigureReviewScheduling(t.Context(), "stale-enable", enable)
 	checkError(t, err, "review_conflict")
+	if !errors.As(err, &conflict) || !strings.Contains(conflict.Action, "review_scheduling_read") || !strings.Contains(conflict.Action, "current revision") {
+		t.Fatal("missing scoped project conflict guidance", err)
+	}
 	current, err := reader.ReviewScheduling(t.Context())
 	if err != nil || !current.AutomaticHosted || current.Revision != 1 || current.AuthorizingWorkerID != f.sender || current.Reason != "" {
 		t.Fatal(current, err)
@@ -108,6 +115,23 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 	resumed, err := reader.ReviewPullScheduling(t.Context(), 2)
 	if err != nil || resumed.Paused || resumed.Revision != 2 || resumed.Reason != "" {
 		t.Fatal(resumed, err)
+	}
+	// Use the actual server/store rather than inferring persistence from wire shape.
+	yes, no := true, false
+	for i, tc := range []struct {
+		hosted, wantCLI bool
+		cli             *bool
+	}{{true, true, &yes}, {false, true, nil}, {true, false, &no}} {
+		rev := int64(i + 1)
+		request := client.ConfigureReviewSchedulingRequest{ExpectedRevision: rev, AutomaticHosted: tc.hosted, AutomaticCLI: tc.cli}
+		key := []string{"enable-cli", "preserve-cli", "disable-cli"}[i]
+		if _, err := owner.ConfigureReviewScheduling(t.Context(), key, request); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := reader.ReviewScheduling(t.Context())
+		if err != nil || saved.Revision != rev+1 || saved.AutomaticHosted != tc.hosted || saved.AutomaticCLI != tc.wantCLI {
+			t.Fatal("wrong stored scheduling settings", saved, err)
+		}
 	}
 	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id=?`, ownerID); err != nil {
 		t.Fatal(err)
