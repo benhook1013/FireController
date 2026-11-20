@@ -462,9 +462,29 @@ func TestHostedSubmittedAdditionalOnlyCountsEveryItem(t *testing.T) {
 	}
 }
 
+func TestSubmittedBareActionableLabelIsLineScoped(t *testing.T) {
+	if !hasBareSubmittedActionableLabel("**Actionable comments posted**") {
+		t.Fatal("expected standalone formatted declaration to remain visible")
+	}
+	if hasBareSubmittedActionableLabel("Preserve the **actionable comments posted** label.") {
+		t.Fatal("ordinary prose was classified as a standalone declaration")
+	}
+	if !hasSubmittedActionableClaim("**Actionable comments posted**: 1") {
+		t.Fatal("a counted formatted label was lost")
+	}
+}
+
+func TestSubmittedRenderedCountTextPreservesSemanticSeparators(t *testing.T) {
+	const original = "Re<em>view</em><br>summary: 2"
+	if got := submittedRenderedCountText(original); got != "Review summary: 2" {
+		t.Fatalf("rendered count projection = %q", got)
+	}
+}
+
 func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 	for _, prose := range []string{
 		"Preserve the actionable comments posted label.",
+		"Preserve the **actionable comments posted** label.",
 		"Preserve the actionable comments <span>posted</span> label.",
 		"<!-- **Actionable comments <span>posted</span>: 99** -->",
 		"Preserve the actionable comments posted\nlabel.",

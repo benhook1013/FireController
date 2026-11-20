@@ -38,7 +38,7 @@ func (p *submittedReviewParser) additionalOnly() bool {
 // A count declaration has a label separator (including malformed values), a
 // numeric value without its separator, or a bare formatted label. Mentioning
 // the phrase in ordinary finding prose is not a declaration.
-var submittedActionableClaim = regexp.MustCompile(`(?i)actionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b|[ \t]*\*\*)`)
+var submittedActionableClaim = regexp.MustCompile(`(?i)actionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b)`)
 
 // Complete provider collections independently prove the absence of attached or
 // in-window orphan roots before this check. The positive counted category must
@@ -59,7 +59,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 		if line.countContinues {
 			continue
 		}
-		if hasSubmittedActionableClaim(count.String()) {
+		if hasSubmittedActionableClaim(count.String()) || hasBareSubmittedActionableLabel(count.String()) {
 			return false
 		}
 		count.Reset()
@@ -88,6 +88,31 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 // conservative count-refusal projection, not a general HTML inventory parser.
 var submittedCountDecoration = regexp.MustCompile(`(?s)</?[A-Za-z](?:[^<>"']|"[^"]*"|'[^']*')*>`)
 
+// A formatted label without a value belongs to the line-level grammar only.
+// The same formatted phrase inside a normal sentence is not metadata.
+var bareSubmittedActionableLabel = regexp.MustCompile(`(?i)^\s*(?:[-+]\s+)?\*\*\s*actionable\s+comments\s+posted\s*\*\*\s*$`)
+
+func hasBareSubmittedActionableLabel(line string) bool {
+	return bareSubmittedActionableLabel.MatchString(submittedRenderedCountText(line))
+}
+
+// HTML layout breaks separate words, while inline style tags do not. This
+// projection can refuse count metadata but cannot supply structure or offsets.
+var submittedCountTagName = regexp.MustCompile(`^</?([A-Za-z][A-Za-z0-9-]*)`)
+
+func submittedRenderedCountText(text string) string {
+	return html.UnescapeString(submittedCountDecoration.ReplaceAllStringFunc(text, func(tag string) string {
+		match := submittedCountTagName.FindStringSubmatch(tag)
+		if match != nil {
+			switch strings.ToLower(match[1]) {
+			case "br", "p", "div", "li", "ul", "ol", "hr", "section", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "tr", "td", "th":
+				return " "
+			}
+		}
+		return ""
+	}))
+}
+
 // Decoration removal is a refusal-only view: it cannot supply structural markers,
 // inventory or source offsets. Both joining and separating tags are conservative
 // refusal views: inline tags can split words, while br/block tags separate them.
@@ -97,6 +122,7 @@ func hasSubmittedActionableClaim(text string) bool {
 	for _, visible := range []string{text,
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")),
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, " ")),
+		submittedRenderedCountText(text),
 	} {
 		visible = strings.Map(func(r rune) rune {
 			if unicode.IsSpace(r) {
