@@ -320,8 +320,20 @@ func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 				if channel == "cli" {
 					otherChannel = "hosted"
 				}
-				if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections a JOIN review_selections s ON s.id=a.selection_id WHERE s.channel=?`, otherChannel); got < 1 {
-					t.Fatal("other channel was suppressed", got)
+				// Front frames and retry selections are channel-local. On the
+				// unaffected channel either project can legitimately be selected.
+				if fault == "front" || fault == "oversized-front" || fault == "retry-selection" {
+					if got := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections a JOIN review_selections s ON s.id=a.selection_id WHERE s.channel=?`, otherChannel); got < 1 {
+						t.Fatal("other channel was suppressed", got)
+					}
+					return
+				}
+				const otherProjectIntents = `SELECT count(*) FROM review_automatic_selections a JOIN review_selections s ON s.id=a.selection_id WHERE a.project_id=? AND s.channel=?`
+				if got := attemptCount(t, f.store, otherProjectIntents, otherAttemptProject, otherChannel); got != 1 {
+					t.Fatal("healthy project not selected on the other channel", got)
+				}
+				if got := attemptCount(t, f.store, otherProjectIntents, attemptProject, otherChannel); got != 0 {
+					t.Fatal("project with shared invalid state selected on the other channel", got)
 				}
 			})
 		}
