@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -44,6 +45,11 @@ func TestPackagedRemoteMCP(t *testing.T) {
 	}
 	ctx, stop := context.WithTimeout(context.Background(), 50*time.Second)
 	t.Cleanup(stop)
+	// Keep transient probes out of the shared HTTP client and drain each body
+	// before wrapping up the fixture. The SDK exercises a separate transport.
+	rawTransport := &http.Transport{DisableKeepAlives: true}
+	defer rawTransport.CloseIdleConnections()
+	rawHTTP := &http.Client{Transport: rawTransport, Timeout: stepTimeout}
 	binDir := os.Getenv("FC_SMOKE_BIN_DIR")
 	if binDir == "" {
 		binDir = "../../bin"
@@ -73,7 +79,7 @@ func TestPackagedRemoteMCP(t *testing.T) {
 		first = predecessor
 	}
 	initial := startDaemon(t, ctx, first, data, env)
-	requireRemoteSmokeStatus(t, ctx, "http://"+initial.address+"/mcp", "", "", http.StatusNotFound)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, "http://"+initial.address+"/mcp", "", "", http.StatusNotFound)
 	initial.stop(t)
 	adminFile := filepath.Join(data, "bootstrap-admin.token")
 	admin, err := os.ReadFile(adminFile)
@@ -142,9 +148,9 @@ func TestPackagedRemoteMCP(t *testing.T) {
 	if nginx := os.Getenv("FC_REMOTE_MCP_NGINX"); nginx != "" {
 		gateway = startRemoteSmokeNginx(t, nginx, online.address, env)
 	}
-	requireRemoteSmokeStatus(t, ctx, gateway+"/mcp", "foreign.example.com", bearer, http.StatusForbidden)
-	requireRemoteSmokeStatus(t, ctx, gateway+"/mcp", packagedConnectorHost, "", http.StatusUnauthorized)
-	requireRemoteSmokeStatus(t, ctx, gateway+"/mcp", packagedConnectorHost, bearer, http.StatusMethodNotAllowed)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, gateway+"/mcp", "foreign.example.com", bearer, http.StatusForbidden)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, gateway+"/mcp", packagedConnectorHost, "", http.StatusUnauthorized)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, gateway+"/mcp", packagedConnectorHost, bearer, http.StatusMethodNotAllowed)
 
 	transport := &http.Transport{Proxy: nil}
 	defer transport.CloseIdleConnections()
@@ -194,6 +200,10 @@ func TestPackagedRemoteMCP(t *testing.T) {
 		t.Fatal("packaged read lost committed worker attribution")
 	}
 	t.Logf("packaged discovery %d tools across pages, bounded wait, write/read and exact replay", catalogCount)
+	if err := cs.Close(); err != nil {
+		t.Fatal("cannot close the packaged MCP session before stopping the daemon")
+	}
+	transport.CloseIdleConnections()
 	online.stop(t)
 
 	bound := bundle()
@@ -207,12 +217,12 @@ func TestPackagedRemoteMCP(t *testing.T) {
 	runRemoteSmokeOperator(t, ctx, fcd, env, "restore-activate", "--data-dir", restoredDir, "--expect-instance", restored.InstanceID, "--fenced-predecessor", online.instance, "--admin-token-file", freshAdmin)
 	replacement := startDaemon(t, ctx, fcd, restoredDir, env, "--remote-mcp-origin", "https://"+packagedConnectorHost)
 	replacementURL := "http://" + replacement.address
-	requireRemoteSmokeStatus(t, ctx, replacementURL+"/mcp", packagedConnectorHost, bearer, 401)
-	requireRemoteSmokeStatus(t, ctx, replacementURL+"/api/v1/instance", "", bearer, 401)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, replacementURL+"/mcp", packagedConnectorHost, bearer, 401)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, replacementURL+"/api/v1/instance", "", bearer, 401)
 	fresh := core.NewID("synthetic")
 	issue(replacementURL, replacement.instance, freshAdmin, writeSmokeToken(t, private, "fresh-connector.token", fresh), "grant-replacement")
-	requireRemoteSmokeStatus(t, ctx, replacementURL+"/mcp", packagedConnectorHost, fresh, 405)
-	requireRemoteSmokeStatus(t, ctx, replacementURL+prefix, "", fresh, 403)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, replacementURL+"/mcp", packagedConnectorHost, fresh, 405)
+	requireRemoteSmokeStatus(t, ctx, rawHTTP, replacementURL+prefix, "", fresh, 403)
 	readReplacement := func(acting string, want int) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, "GET", replacementURL+prefix+"/jobs/"+original.ID, nil)
@@ -221,11 +231,11 @@ func TestPackagedRemoteMCP(t *testing.T) {
 		}
 		req.Header.Set("Authorization", "Bearer "+fresh)
 		req.Header.Set("X-FC-Worker", acting)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := rawHTTP.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		finishRemoteSmokeResponse(t, resp)
 		if resp.StatusCode != want {
 			t.Fatalf("restored read status=%d, want %d", resp.StatusCode, want)
 		}
@@ -233,6 +243,8 @@ func TestPackagedRemoteMCP(t *testing.T) {
 	readReplacement(worker, 200)
 	readReplacement(other, 403)
 	t.Log("packaged v4 backup, inspect and restore passed with and without bindings; activated copy refused the old connector and scoped a freshly issued connector")
+	rawTransport.CloseIdleConnections()
+	replacement.stop(t)
 }
 
 func runRemoteSmokeOperator(t *testing.T, ctx context.Context, binary string, env []string, args ...string) json.RawMessage {
@@ -253,7 +265,7 @@ func runRemoteSmokeOperator(t *testing.T, ctx context.Context, binary string, en
 	return stdout.bytes()
 }
 
-func requireRemoteSmokeStatus(t *testing.T, ctx context.Context, endpoint, host, secret string, want int) {
+func requireRemoteSmokeStatus(t *testing.T, ctx context.Context, rawHTTP *http.Client, endpoint, host, secret string, want int) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -265,13 +277,23 @@ func requireRemoteSmokeStatus(t *testing.T, ctx context.Context, endpoint, host,
 	if secret != "" {
 		req.Header.Set("Authorization", "Bearer "+secret)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := rawHTTP.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	finishRemoteSmokeResponse(t, resp)
 	if resp.StatusCode != want {
 		t.Fatalf("HTTP status=%d want=%d", resp.StatusCode, want)
+	}
+}
+
+func finishRemoteSmokeResponse(t *testing.T, resp *http.Response) {
+	t.Helper()
+	const maxResponse = 64 << 10
+	n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse+1))
+	closeErr := resp.Body.Close()
+	if readErr != nil || closeErr != nil || n > maxResponse {
+		t.Fatal("cannot drain and close the packaged HTTP probe response")
 	}
 }
 
