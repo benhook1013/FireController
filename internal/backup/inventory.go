@@ -624,6 +624,10 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 	if version >= 4 {
 		objects := map[string]physicalSchemaObject{"connector_credentials": {"table", historyDefinitionSQL(core.ConnectorCredentialSchemaSQL()[0])}}
 		if err := validatePhysicalSchemaObjects(ctx, db, objects, []string{"connector_credentials"}); err != nil {
+			// An interrupted inspection cannot establish that the schema is corrupt.
+			if checkContext(ctx) != nil {
+				return nil, unavailable()
+			}
 			return nil, err
 		}
 	}
