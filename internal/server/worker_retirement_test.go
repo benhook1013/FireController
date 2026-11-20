@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -262,5 +263,36 @@ func TestWorkerListRawQueryBound(t *testing.T) {
 			status = 400
 		}
 		require(t, request(f.handler, "GET", base+query, f.admin, "", "", ""), status)
+	}
+}
+func TestWorkerRetirementNoteBlockersDeduplicateAndKeepScope(t *testing.T) {
+	f, project, actor, target := retirementFixture(t)
+	base := "/api/v1/projects/" + project
+	other := f.worker(t, project, "Other")
+	job := func(worker string) string {
+		return retirementJSON(t, f, "POST", base+"/jobs", f.admin, actor, map[string]any{"title": "Retained job", "worker_id": worker, "status": "completed"}, 201)["id"].(string)
+	}
+	note := func(worker, job string) string {
+		return retirementJSON(t, f, "POST", base+"/notes", f.admin, actor, map[string]any{"worker_id": worker, "job_id": job, "phase": "", "kind": "reminder", "body": "Retained note"}, 201)["id"].(string)
+	}
+	owned, unrelated, unassigned := job(target), job(other), job("")
+	both := note(target, owned)
+	direct := note(target, "")
+	jobOnly := note("", owned)
+	directOtherJob := note(target, unrelated)
+	note(other, unrelated)
+	note("", unassigned)
+	dismissed := note(target, owned)
+	retirementJSON(t, f, "PATCH", base+"/notes/"+dismissed, f.admin, actor, map[string]any{"expected_revision": 1, "status": "consumed"}, 200)
+
+	foreign := f.project(t, "owner/two")
+	foreignWorker := f.worker(t, foreign, "Foreign")
+	retirementJSON(t, f, "POST", "/api/v1/projects/"+foreign+"/notes", f.admin, foreignWorker, map[string]any{"worker_id": foreignWorker, "job_id": "", "phase": "", "kind": "reminder", "body": "Other project note"}, 201)
+
+	want := []string{both, direct, jobOnly, directOtherJob}
+	slices.Sort(want)
+	got := retirementStatus(t, f, base+"/workers/"+target+"/retirement", f.admin).Blockers.Notes
+	if got.Count != len(want) || !slices.Equal(got.IDs, want) {
+		t.Fatalf("pending note blockers: got %v, want sorted unique IDs %v", got, want)
 	}
 }

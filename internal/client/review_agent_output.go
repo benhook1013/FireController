@@ -13,6 +13,13 @@ func AgentReviewSelection(value ReviewRunState) ReviewSelectionOutput {
 	out := ReviewSelectionOutput{ReviewRunState: value}
 	if value.Selection.State == "held" && value.Selection.OperationID == "" && value.Operation == nil {
 		out.Diagnostic = selectionSourceDiagnostic(value.Selection.Reason)
+	} else if op := value.Operation; op != nil && value.Selection.OperationID == op.ID && op.ID != "" {
+		switch op.State {
+		case "queued":
+			out.Diagnostic = schedulingDiagnostic(op.queuedCause)
+		case "held":
+			out.Diagnostic = agentReviewOperationDiagnostic(op.Channel, op.State, op.Reason)
+		}
 	}
 	return out
 }
@@ -24,7 +31,7 @@ func selectionSourceDiagnostic(reason string) *ReviewOperationDiagnostic {
 	if reason == "automation_authorization_changed" {
 		return &ReviewOperationDiagnostic{"This selection stopped before it created a review operation because its scheduling authorization no longer applies.", "Read review_scheduling_read / reviews scheduling. A project manager can authorize future automatic selections through an active bound worker. The retained selection records the refusal."}
 	}
-	if hint := schedulingDiagnostic(reason); hint != nil {
+	if hint := heldSchedulingDiagnostic(reason); hint != nil {
 		return hint
 	}
 	if reason == "pull_draft" {
@@ -135,7 +142,7 @@ func agentReviewOperationDiagnostic(channel, state, reason string) *ReviewOperat
 	// Queued reasons can outlive a resumed pause; only the current queued cause
 	// can establish a scheduling hold. Held operations retain their own reason.
 	if state == "held" {
-		return schedulingDiagnostic(reason)
+		return heldSchedulingDiagnostic(reason)
 	}
 	return nil
 }

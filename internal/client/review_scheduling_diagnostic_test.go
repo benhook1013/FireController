@@ -89,7 +89,7 @@ func TestHeldSchedulingDiagnosticsIgnoreQueuedCause(t *testing.T) {
 			operation := ReviewOperation{State: "held", Channel: channel, Reason: reason, queuedCause: competingCause}
 			status := ReviewOperationStatus{State: "held", Stage: "held", Channel: channel, Reason: reason, queuedCause: competingCause, NextAction: "read_diagnostics"}
 			full, compact := AgentReviewOperation(operation), AgentReviewOperationStatus(status)
-			if !reflect.DeepEqual(full.Diagnostic, schedulingDiagnostic(reason)) || !reflect.DeepEqual(compact.Diagnostic, full.Diagnostic) || !reflect.DeepEqual(full.ReviewOperation, operation) || !reflect.DeepEqual(compact.ReviewOperationStatus, status) {
+			if !reflect.DeepEqual(full.Diagnostic, heldSchedulingDiagnostic(reason)) || !reflect.DeepEqual(compact.Diagnostic, full.Diagnostic) || !reflect.DeepEqual(full.ReviewOperation, operation) || !reflect.DeepEqual(compact.ReviewOperationStatus, status) {
 				t.Fatal("held scheduling guidance or retained facts changed", full, compact)
 			}
 		}
@@ -105,5 +105,29 @@ func TestSchedulingDiagnosticExplainsInterruptedAuthorization(t *testing.T) {
 	}
 	if strings.Contains(diagnostic.Explanation, "Automatic Hosted") {
 		t.Fatal("shared authorization diagnostic excluded CLI")
+	}
+}
+func TestLinkedSchedulingDiagnosticUsesCurrentOrHistoricalOperation(t *testing.T) {
+	selection := ReviewRunSelection{State: "selected", OperationID: "review-original"}
+	for _, tc := range []struct{ state, cause, reason, want string }{
+		{"queued", "pull_scheduling_paused", "", "New reviews are paused for this PR"},
+		{"queued", "cooldown", "pull_scheduling_paused", ""},
+		{"held", "automatic_intent_retained", "pull_scheduling_paused", "does not establish the current PR pause"},
+		{"completed", "", "pull_scheduling_paused", ""},
+	} {
+		op := &ReviewOperation{ID: selection.OperationID, State: tc.state, Channel: "cli", Reason: tc.reason, queuedCause: tc.cause}
+		result := AgentReviewSelection(ReviewRunState{Selection: selection, Operation: op})
+		if result.Operation != op || result.Selection != selection {
+			t.Fatal("changed retained inputs", result)
+		}
+		if tc.want == "" {
+			if result.Diagnostic != nil {
+				t.Fatal("unexpected scheduling block", result)
+			}
+			continue
+		}
+		if result.Diagnostic == nil || !strings.Contains(result.Diagnostic.Explanation, tc.want) {
+			t.Fatal("missing exact scheduling block", result)
+		}
 	}
 }

@@ -20,6 +20,7 @@ func TestReviewSchedulingCLIExplicitControlsBeforeProfile(t *testing.T) {
 		{"configure", "--automatic-hosted=true", "--expect-revision=3", "--key=enable"},
 		{"pause", "--pr", "7", "--expect-revision", "0", "--reason", "Preparing changes", "--key", "pause"},
 		{"resume", "--pr", "7", "--expect-revision", "1", "--key", "resume"},
+		{"pause", "--pr=7", "--expect-revision=0", "--key=--reason=maintenance"},
 	} {
 		call, ok := parseInvocation(append([]string{"reviews", "scheduling"}, args...))
 		if !ok || call.reviewScheduling == nil || call.command != "reviews" {
@@ -33,6 +34,8 @@ func TestReviewSchedulingCLIExplicitControlsBeforeProfile(t *testing.T) {
 		{"configure", "--automatic-hosted", "true", "--expect-revision", "-1", "--key", "bad-revision"},
 		{"--pr", "0"}, {"--pr", "07"}, {"--pr", "7", "--pr", "8"}, {"--key", "read-mutation"},
 		{"pause", "--pr", "7", "--expect-revision", "0"},
+		{"pause", "--pr=7", "--expect-revision=0", "--key", "--reason=maintenance"},
+		{"configure", "--automatic-hosted=true", "--expect-revision=0", "--key", "--automatic-cli=true"},
 		{"pause", "--pr", "7", "--expect-revision", "0", "--key", "bad-reason", "--reason", "line\nbreak"},
 		{"pause", "--pr", "7", "--expect-revision", "0", "--key", "bad-reason", "--reason", strings.Repeat("x", 257)},
 		{"resume", "--pr", "7", "--expect-revision", "1", "--key", "unexpected-reason", "--reason", "hidden"},

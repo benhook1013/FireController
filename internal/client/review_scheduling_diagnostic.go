@@ -11,3 +11,13 @@ func schedulingDiagnostic(reason string) *ReviewOperationDiagnostic {
 	}
 	return nil
 }
+
+func heldSchedulingDiagnostic(reason string) *ReviewOperationDiagnostic {
+	if reason == "pull_scheduling_paused" {
+		return &ReviewOperationDiagnostic{
+			"This request did not dispatch because new reviews were paused for this PR at the time. The retained hold does not establish the current PR pause.",
+			"Read review_pull_scheduling_read / reviews scheduling read --pr N for the current state. Resuming the PR cannot reopen this historical held request. Do not reset rounds or grant more reviews to clear a pause.",
+		}
+	}
+	return schedulingDiagnostic(reason)
+}

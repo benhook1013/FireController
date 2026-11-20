@@ -97,9 +97,7 @@ func boundServer(binding profile.Binding) *mcp.Server {
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args arguments
 			var err error
-			if reviewSchedulingTool(tool.name) {
-				args, err = reviewSchedulingArguments(tool.name, request.Params.Arguments)
-			} else if tool.name == "wait_for_ci" {
+			if tool.name == "wait_for_ci" {
 				args, err = ciWatchArguments(request.Params.Arguments)
 			} else if ownerManagementTool(tool.name) {
 				args, err = ownerManagementArguments(tool.name, request.Params.Arguments)
