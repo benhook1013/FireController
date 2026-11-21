@@ -612,3 +612,18 @@ func TestAutomaticCLIAccountChangeWaitsForNextPass(t *testing.T) {
 		t.Fatal("fresh account produced an unexpected attribution count", got)
 	}
 }
+
+func TestSchedulingCLIPinnedPausedSelectionDoesNotClaimPriority(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4})
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	admissionSQL(t, f, "UPDATE projects SET repository='benhook1013/FireMUD' WHERE id=?", attemptProject)
+	schedulingPause(t, f, 2, 0, true)
+	pinned := int64(2)
+	if _, err := f.e.EnqueueRun(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "explicit-pinned-pr", RunRequest{Channel: "cli", ExpectedPullNumber: &pinned}); err != nil {
+		t.Fatal(err)
+	}
+	low := f.enqueue(t, otherAttemptProject, "nonpreferred-pull", "cli", 2, 1)
+	if a, err := f.e.StartAttempt(t.Context(), otherAttemptProject, low.ID); err != nil || a.ID == "" {
+		t.Fatalf("pinned paused selection stalled healthy project's attempt: %+v %v", a, err)
+	}
+}

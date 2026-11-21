@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 	"time"
 )
@@ -147,7 +148,14 @@ candidates:
 		if prior.Provider != capability.Provider || prior.Account != capability.Account {
 			continue
 		}
-		for _, pull := range c.Queue {
+		queue := c.Queue
+		if r.ExpectedPullNumber != 0 {
+			if !slices.Contains(queue, r.ExpectedPullNumber) {
+				continue
+			}
+			queue = []int64{r.ExpectedPullNumber}
+		}
+		for _, pull := range queue {
 			pause, err := readPullScheduling(ctx, tx, r.ProjectID, pull)
 			if err != nil {
 				if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {

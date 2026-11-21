@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,6 +176,32 @@ func automaticPullBasisChannel(ctx context.Context, tx *sql.Tx, project string, 
 	return automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
 }
 
+// This historical label is part of the retained digest. Do not change it
+// when tightening the SQL used to obtain the same valid rows.
+func automaticAdjudicationBasisLabel(channel string) string {
+	return `SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='` + channel + `' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`
+}
+
+func automaticAdjudicationBasisSQL(channel string) string {
+	// CASE keeps JSON functions away from unavailable input. A null/omitted
+	// slice was historically empty, not malformed. Keep same-channel rows
+	// and their contribution independent of the opposite-channel test.
+	return `WITH evidence AS (
+		SELECT a.evidence_id,a.revision,CASE
+		  WHEN o.channel='` + channel + `' THEN 1
+		  WHEN typeof(e.body_json)='text' AND length(CAST(e.body_json AS BLOB))<=` + strconv.Itoa(MaxEvidenceInputBytes+8192) + `
+		  THEN CASE WHEN json_valid(e.body_json) THEN CASE
+		    WHEN json_type(e.body_json,'$.capture.review.Findings')='array' THEN json_array_length(e.body_json,'$.capture.review.Findings')
+		    WHEN COALESCE(json_type(e.body_json,'$.capture.review.Findings'),'null')='null' THEN 0
+		  END END END AS count
+		FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id
+		JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id
+		WHERE a.project_id=? AND o.pull_number=?
+	)
+	SELECT CASE WHEN count IS NOT NULL THEN evidence_id END,revision FROM evidence
+	WHERE count IS NULL OR count>0 ORDER BY evidence_id LIMIT 10001`
+}
+
 func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channel string, basisRevision int64) func(string, bool, ...any) error {
 	return func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
@@ -182,7 +209,12 @@ func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channe
 		}
 		h.Write([]byte(query))
 		h.Write([]byte{0})
-		rows, err := tx.QueryContext(ctx, automaticBasisQuery(query, pinJoins), args...)
+		executionQuery := automaticBasisQuery(query, pinJoins)
+		adjudication := query == automaticAdjudicationBasisLabel(channel)
+		if adjudication {
+			executionQuery = automaticAdjudicationBasisSQL(channel)
+		}
+		rows, err := tx.QueryContext(ctx, executionQuery, args...)
 		if err != nil {
 			return err
 		}
@@ -209,6 +241,9 @@ func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channe
 				if b, ok := v.([]byte); ok {
 					values[i] = string(b)
 				}
+			}
+			if adjudication && values[0] == nil {
+				return schedulingUnavailable()
 			}
 			// Keep the original query label and JSON framing. Only the
 			// channel's semantic revision differs after a relevant write.
@@ -240,7 +275,7 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 	}{
 		{`SELECT revision,paused,reason FROM review_pull_scheduling WHERE project_id=? AND pull_number=?`, []any{project, pull}},
 		{`SELECT epoch,grant_revision,closed,minimum,maximum,maximum_unbounded,used,dry,tapered FROM review_round_controls WHERE project_id=? AND pull_number=? AND channel='` + channel + `'`, []any{project, pull}},
-		{`SELECT a.evidence_id,a.revision FROM review_adjudication_state a JOIN review_execution_evidence e ON e.id=a.evidence_id AND e.project_id=a.project_id JOIN review_operations o ON o.id=e.operation_id AND o.project_id=e.project_id WHERE a.project_id=? AND o.pull_number=? AND (o.channel='` + channel + `' OR json_array_length(json_extract(e.body_json,'$.capture.review.Findings'))>0) ORDER BY a.evidence_id LIMIT 10001`, []any{project, pull}},
+		{automaticAdjudicationBasisLabel(channel), []any{project, pull}},
 		{`SELECT id,revision,state,disposition,has_fix FROM review_finding_routes WHERE project_id=? AND (source_pull_number=? OR target_pull_number=?) ORDER BY id LIMIT 10001`, []any{project, pull, pull}},
 		{`SELECT o.id,o.revision,o.status FROM review_adoption_targets t JOIN review_adoption_obligations o ON o.id=t.obligation_id AND o.project_id=t.project_id WHERE t.project_id=? AND t.pull_number=? ORDER BY o.id LIMIT 10001`, []any{project, pull}},
 	}

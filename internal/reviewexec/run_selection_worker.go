@@ -163,12 +163,12 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
-	state, reason             string
-	sourceReason              string
-	prefix                    []SourcePlan
-	number                    int64
-	head                      string
-	automaticHostedQueueLimit *int
+	state, reason       string
+	sourceReason        string
+	prefix              []SourcePlan
+	number              int64
+	head                string
+	automaticQueueLimit *int
 }
 
 // retryRunSelectionLocal retains completed source reads while only retrying
@@ -218,8 +218,8 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 }
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
-	var automaticHostedQueueLimit *int
-	defer func() { result.automaticHostedQueueLimit = automaticHostedQueueLimit }()
+	var automaticQueueLimit *int
+	defer func() { result.automaticQueueLimit = automaticQueueLimit }()
 	// Bound source work before metadata lookahead. Local suppression still
 	// rechecks the live prefix at admission if queued work changes afterward.
 	limit, automatic := len(c.Queue), false
@@ -247,8 +247,8 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	if err != nil {
 		return runChoice{}, err
 	}
-	if automatic && r.Channel == "hosted" {
-		automaticHostedQueueLimit = &limit
+	if automatic {
+		automaticQueueLimit = &limit
 	}
 	c.Queue = c.Queue[:limit]
 	if len(c.Queue) == 0 {
@@ -650,12 +650,12 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			defer func() {
 				if resultErr == nil && bindingValidated {
 					var pull int64
-					var reason string
-					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &reason); err != nil {
+					var state, reason string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(o.pull_number,0),s.state,s.reason FROM review_selections s LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=?`, r.ID, r.ProjectID).Scan(&pull, &state, &reason); err != nil {
 						resultErr = err
 						return
 					}
-					if reason != "selection_changed" {
+					if state != "queued" && reason != "selection_changed" {
 						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
 					}
 				}
@@ -692,15 +692,15 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return updateRun(ctx, tx, current, "held", reason, "")
 			}
 			bindingValidated = true
-			if choice.automaticHostedQueueLimit != nil {
+			if choice.automaticQueueLimit != nil {
 				// The existing binding pins the configured queue. If its
 				// waiting boundary moved while reading source, do not settle
-				// the newly exposed suffix without an ordinary fresh read.
+				// stale source bounds without an ordinary fresh read.
 				limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 				if err != nil {
 					return err
 				}
-				if limit > *choice.automaticHostedQueueLimit {
+				if limit != *choice.automaticQueueLimit {
 					return updateRun(ctx, tx, current, "held", "selection_changed", "")
 				}
 			}

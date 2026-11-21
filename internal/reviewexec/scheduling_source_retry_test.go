@@ -384,3 +384,47 @@ func TestAutomaticSourceRetryAcceptanceOrderSurvivesClockRollback(t *testing.T) 
 		t.Fatal("wall-clock rollback erased a later accepted intent")
 	}
 }
+
+func TestAutomaticSourceRetryIgnoresEarlierAcceptanceWithFutureTimestamp(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	older := f.enqueue(t, attemptProject, "earlier-accepted-operation", "hosted", 2, 1)
+	scope := selectionScope(t, f, attemptProject, f.writer, "write")
+	if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-earlier-operation", older.ID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	at := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	admissionSQL(t, f, "UPDATE review_operations SET created_at=?,updated_at=? WHERE id=?", at, at, older.ID)
+	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		superseded, err := automaticSourceSuperseded(ctx, tx, r)
+		if err == nil && superseded {
+			t.Fatal("earlier durable acceptance cannot supersede its later intent")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutomaticInitialReadCanResumeAfterCancelledInterveningIntent(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	original := schedulingLatest(t, f)
+	recovery0030Claim(t, f, original.ID)
+	intervening := f.enqueue(t, attemptProject, "intervening-operation", "hosted", 2, 1)
+	scope := selectionScope(t, f, attemptProject, f.writer, "write")
+	if _, err := f.e.ControlOperation(t.Context(), scope, "cancel-intervening-operation", intervening.ID, OperationControl{ExpectedRevision: 1, Action: "cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	selectionNext(t, f, &refreshTestReader{})
+	got := selectionRead(t, f, original.ID)
+	if got.State != "selected" || got.OperationID == "" || got.OperationID == intervening.ID {
+		t.Fatalf("proven unfinished initial read did not resume: %+v", got)
+	}
+}

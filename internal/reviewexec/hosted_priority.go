@@ -82,6 +82,9 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 		}
 		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
 		if err != nil {
+			if pullSchedulingRefused(err) {
+				continue
+			}
 			return nil, err
 		}
 		if valid {

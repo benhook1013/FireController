@@ -674,6 +674,18 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 	return e.processPendingBatch(ctx, drivers, releaseProbe, worker, operations, receipt)
 }
 
+// A deterministic scheduling refusal requeues only unused preparation. Other
+// candidate-local history failures keep their preparation and reservation.
+func (e *Engine) classifyUnavailablePreparation(ctx context.Context, o Operation, a Attempt, err error) (bool, error) {
+	if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+		return true, nil
+	}
+	if schedulingRefused(err) {
+		return true, e.finishPreparation(a, "held", "automatic_scheduling_unavailable")
+	}
+	return automaticProjectRefused(err) || isStoredUnavailable(err, storedRoundHistory), nil
+}
+
 func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion) error {
 	overloaded := false
 	claimed := false
@@ -750,6 +762,14 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if errors.As(err, &recoverable) {
 				return err
 			}
+			if ctx.Err() == nil {
+				if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
+					if settleErr != nil {
+						return settleErr
+					}
+					continue
+				}
+			}
 			state := "held"
 			reason := preparationReason(err)
 			if explicitCLI && reason == "pull_draft" {
@@ -784,16 +804,9 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
-			// Preserve the unused preparation and reservation on damaged retained
-			// history, without stopping unrelated candidates. Configuration damage
-			// also carries the broader project-local tag, so classify it first.
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
-				continue
-			}
-			if automaticProjectRefused(err) {
-				// Only proven scheduling-local corruption releases this unused preparation.
-				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
-					return err
+			if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
+				if settleErr != nil {
+					return settleErr
 				}
 				continue
 			}

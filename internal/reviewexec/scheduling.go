@@ -71,8 +71,31 @@ type schedulingRecord struct {
 	actor, credential string
 }
 
+// Scheduling failures are a subset of project-local failures. A pull-local
+// refusal is independent of other pulls; shared scheduling faults are not.
+type schedulingStateError struct {
+	error
+	pullLocal bool
+}
+
+func (e *schedulingStateError) Unwrap() error { return e.error }
+
 func schedulingUnavailable() error {
 	return automaticProjectStateFailure("storage_unavailable", "Stored review scheduling is unavailable.", 503)
+}
+
+func schedulingRecordUnavailable(pullLocal bool) error {
+	return &schedulingStateError{error: schedulingUnavailable(), pullLocal: pullLocal}
+}
+
+func schedulingRefused(err error) bool {
+	var scheduling *schedulingStateError
+	return errors.As(err, &scheduling)
+}
+
+func pullSchedulingRefused(err error) bool {
+	var scheduling *schedulingStateError
+	return errors.As(err, &scheduling) && scheduling.pullLocal
 }
 func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s schedulingRecord, err error) {
 	s.ProjectID = project
@@ -95,11 +118,11 @@ func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s scheduli
 	s.credential, credentialOK = credential.(string)
 	s.UpdatedAt, updatedOK = updated.(string)
 	if !revisionOK || !hostedOK || !cliOK || !actorOK || !workerOK || !credentialOK || !updatedOK || hostedValue < 0 || hostedValue > 1 || cliValue < 0 || cliValue > 1 {
-		return s, schedulingUnavailable()
+		return s, schedulingRecordUnavailable(false)
 	}
 	s.AutomaticHosted, s.AutomaticCLI = hostedValue == 1, cliValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.actor) || !roundTime(s.UpdatedAt) || (s.AutomaticHosted || s.AutomaticCLI) && (!identifier.MatchString(s.AuthorizingWorkerID) || !identifier.MatchString(s.credential)) {
-		return s, schedulingUnavailable()
+		return s, schedulingRecordUnavailable(false)
 	}
 	return s, nil
 }
@@ -295,11 +318,11 @@ func readPullScheduling(ctx context.Context, tx *sql.Tx, project string, pull in
 	s.ActorID, actorOK = actor.(string)
 	s.UpdatedAt, updatedOK = updated.(string)
 	if !revisionOK || !pausedOK || !reasonOK || !actorOK || !updatedOK || pausedValue < 0 || pausedValue > 1 {
-		return s, schedulingUnavailable()
+		return s, schedulingRecordUnavailable(true)
 	}
 	s.Paused = pausedValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
-		return s, schedulingUnavailable()
+		return s, schedulingRecordUnavailable(true)
 	}
 	return s, nil
 }

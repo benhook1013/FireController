@@ -61,11 +61,13 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	// A retained projection cannot predate a matching scheduling event.
+	// A genuine project scheduling event must have a projection at least
+	// as new. Only projects with no retained history default to revision zero.
 	var ahead bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_scheduling s WHERE EXISTS(
-		SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.project_id
-		AND e.event_type='review.scheduling_updated' AND e.revision>s.revision))`).Scan(&ahead)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events e
+		LEFT JOIN review_scheduling s ON s.project_id=e.project_id
+		WHERE e.event_type='review.scheduling_updated' AND e.resource_id=e.project_id
+		AND (s.project_id IS NULL OR e.revision>s.revision))`).Scan(&ahead)
 	if err != nil {
 		return err
 	}
@@ -77,6 +79,7 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
+	controls := 0
 	for rows.Next() {
 		var s PullScheduling
 		if err = scanSchedulingSnapshot(rows, &s.ProjectID, &s.PullNumber, &s.Revision, &s.Paused, &s.Reason, &s.ActorID, &s.UpdatedAt); err != nil {
@@ -86,9 +89,7 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 			err = schedulingUnavailable()
 			break
 		}
-		if err = validatePullSchedulingEvent(ctx, tx, s); err != nil {
-			break
-		}
+		controls++
 	}
 	if err == nil {
 		err = rows.Err()
@@ -99,6 +100,9 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	if err := validatePullSchedulingEvents(ctx, tx, controls); err != nil {
+		return err
 	}
 	if err := validateOrphanPullSchedulingEvents(ctx, tx); err != nil {
 		return err
@@ -224,30 +228,49 @@ func validPullSchedulingPayload(payload sql.NullString, pull int64, paused bool)
 		event.PullNumber == pull && event.Paused != nil && *event.Paused == paused
 }
 
-// A restored control must agree with its latest retained user decision.
-func validatePullSchedulingEvent(ctx context.Context, tx *sql.Tx, s PullScheduling) error {
-	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB))<=4096 THEN payload_json END FROM events WHERE project_id=? AND event_type='review.pull_scheduling_updated' AND resource_id=? AND revision>=? ORDER BY revision DESC,sequence DESC LIMIT 2`, s.ProjectID, strconv.FormatInt(s.PullNumber, 10), s.Revision)
+// Scan the event journal once for existing pull controls. With events on the
+// outer side of this join, SQLite can seek the control's composite primary key
+// rather than reading the same project's event history once for each control.
+// Ordered qualifying matches keep duplicate detection constant-space.
+const pullSchedulingSnapshotEventsSQL = `SELECT s.project_id,s.pull_number,s.revision,s.paused,s.actor_id,
+	e.revision,e.actor_id,CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END
+	FROM events e CROSS JOIN review_pull_scheduling s
+	WHERE e.event_type='review.pull_scheduling_updated' AND s.project_id=e.project_id
+	AND s.pull_number=CAST(e.resource_id AS INTEGER) AND CAST(s.pull_number AS TEXT)=e.resource_id
+	AND e.revision>=s.revision
+	ORDER BY s.project_id,s.pull_number`
+
+func validatePullSchedulingEvents(ctx context.Context, tx *sql.Tx, controls int) error {
+	if controls == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, pullSchedulingSnapshotEventsSQL)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	count := 0
+	var lastProject string
+	var lastPull int64
 	for rows.Next() {
-		count++
-		var revision int64
-		var actor string
+		var project, actor, eventActor string
+		var pull, controlRevision, paused int64
+		var nativeRevision any
 		var payload sql.NullString
-		if err := rows.Scan(&revision, &actor, &payload); err != nil {
+		if err := rows.Scan(&project, &pull, &controlRevision, &paused, &actor, &nativeRevision, &eventActor, &payload); err != nil {
 			return err
 		}
-		if count != 1 || revision != s.Revision || actor != s.ActorID || !validPullSchedulingPayload(payload, s.PullNumber, s.Paused) {
+		revision, integer := nativeRevision.(int64)
+		if (project == lastProject && pull == lastPull) || !integer || revision != controlRevision || eventActor != actor || !validPullSchedulingPayload(payload, pull, paused == 1) {
 			return schedulingUnavailable()
 		}
+		count++
+		lastProject, lastPull = project, pull
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if count != 1 {
+	if count != controls {
 		return schedulingUnavailable()
 	}
 	return rows.Close()
