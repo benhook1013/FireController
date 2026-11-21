@@ -197,24 +197,13 @@ function expireBinding(binding: BrowserSessionBinding): void {
   const api = Api.resume(binding.projectID, binding.sessionID, binding.instanceID);
   void api.endBrowserSession().catch(() => {}).finally(() => api.close());
 }
-async function restoredWorker(api: Api, workerID: string, signal: AbortSignal): Promise<Worker | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  const combined = AbortSignal.any([signal, controller.signal]);
-  const cursors = new Set<string>();
-  let cursor: string | undefined;
+export async function restoredWorker(api: Pick<Api, 'worker'>, workerID: string, signal: AbortSignal): Promise<Worker | null> {
   try {
-    do {
-      if (combined.aborted) throw new ApiError('deadline_exceeded', 'The selected worker could not be verified in time.');
-      const page = await api.workers({ limit: 100, ...(cursor ? { cursor } : {}) }, combined);
-      const found = page.items.find(worker => worker.id === workerID);
-      if (found) return found;
-      if (!page.has_more) return null;
-      if (!page.cursor || cursors.has(page.cursor)) throw new ApiError('invalid_response', 'The worker pages did not advance.');
-      cursor = page.cursor; cursors.add(cursor);
-    } while (!combined.aborted);
-    throw new ApiError('deadline_exceeded', 'The selected worker could not be verified in time.');
-  } finally { clearTimeout(timer); }
+    return await api.worker(workerID, signal);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404 && error.code === 'not_found') return null;
+    throw error;
+  }
 }
 
 function Flame() { return <img className="flame" src={flameEmber} alt="" aria-hidden="true" />; }

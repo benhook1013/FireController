@@ -1,0 +1,96 @@
+// Compiled inside the pinned predecessor checkout by generate-admin-parent-fixture.sh.
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/benhook1013/FireController/internal/backup"
+	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/inbox"
+	"github.com/benhook1013/FireController/internal/server"
+)
+
+func main() {
+	if len(os.Args) != 3 {
+		panic("expected source and bundle directories")
+	}
+	ctx := context.Background()
+	store, err := core.Open(ctx, os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	defer store.Close()
+	if err := inbox.EnsureSchema(ctx, store); err != nil {
+		panic(err)
+	}
+	admin, err := os.ReadFile(filepath.Join(os.Args[1], "bootstrap-admin.token"))
+	if err != nil {
+		panic(err)
+	}
+	mux := server.New(store, server.WithRepositoryResolver(func(context.Context, string) (server.RepositoryIdentity, error) {
+		return server.RepositoryIdentity{ID: 801, FullName: "fixture/predecessor"}, nil
+	}))
+	inbox.Register(mux, store)
+	worker := ""
+	call := func(path, key, token string, input any) []byte {
+		body, err := json.Marshal(input)
+		if err != nil {
+			panic(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Idempotency-Key", key)
+		if worker != "" {
+			r.Header.Set("X-FC-Worker", worker)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code < 200 || w.Code >= 300 {
+			panic(fmt.Sprintf("fixture request %s failed: %d %s", path, w.Code, w.Body.String()))
+		}
+		return w.Body.Bytes()
+	}
+	identifier := func(body []byte) string {
+		var v struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(body, &v) != nil || v.ID == "" {
+			panic("missing fixture identity")
+		}
+		return v.ID
+	}
+	project := identifier(call("/api/v1/projects", "parent-project", strings.TrimSpace(string(admin)), map[string]string{"name": "Predecessor fixture", "repository": "fixture/predecessor"}))
+	base := "/api/v1/projects/" + project
+	worker = identifier(call(base+"/workers", "parent-worker", strings.TrimSpace(string(admin)), map[string]string{"name": "Predecessor worker"}))
+	const token = "synthetic-pinned-parent-writer-token"
+	call(base+"/credentials", "parent-writer", strings.TrimSpace(string(admin)), map[string]any{"token_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(token))), "permissions": []string{"read", "write"}})
+	message := identifier(call(base+"/messages", "parent-send", token, map[string]string{"recipient_worker_id": worker, "body": "Retained message with literal <text>"}))
+	ack := call(base+"/messages/"+message+"/ack", "parent-empty-ack", token, map[string]string{})
+	metadata, err := json.Marshal(map[string]string{"project": project, "worker": worker, "message": message, "token": token, "ack_response": string(ack)})
+	if err != nil {
+		panic(err)
+	}
+	if err = os.WriteFile(filepath.Join(os.Args[2], "fixture.json"), metadata, 0600); err != nil {
+		panic(err)
+	}
+	var live, domains int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM credentials WHERE revoked=0`).Scan(&live); err != nil || live == 0 {
+		panic("parent must have a live credential")
+	}
+	if err := store.DB().QueryRow(`SELECT count(*) FROM metadata WHERE key IN ('schema:project_management','schema:worker_retirements')`).Scan(&domains); err != nil || domains != 0 {
+		panic("parent contains administration domains")
+	}
+	if _, err := backup.Create(ctx, store, os.Args[1], os.Args[2]); err != nil {
+		panic(err)
+	}
+	fmt.Println("Generated genuine predecessor bundle")
+}

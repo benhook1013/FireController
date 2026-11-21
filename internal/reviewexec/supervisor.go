@@ -99,7 +99,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver, skipped
 			cancelWork()
 		}
 	})
-	for range 2 {
+	for worker := range 2 {
 		workers.Go(func() {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
@@ -113,7 +113,7 @@ func (e *Engine) supervise(ctx context.Context, owned map[string]Driver, skipped
 				if workCtx.Err() != nil {
 					return
 				}
-				if err := e.processNext(workCtx, owned); err != nil {
+				if err := e.processNextInLane(workCtx, owned, worker); err != nil {
 					select {
 					case failures <- err:
 					default:
@@ -140,6 +140,68 @@ func (e *Engine) pending(ctx context.Context) ([]Operation, error) {
 
 type pendingScanPosition struct{ createdAt, id string }
 
+type pendingExhaustion struct {
+	beforeTimedOut, timedOut pendingScanPosition
+}
+
+// Record the slow row only after retaining the prefix replay cursor. A Draft
+// probe does not advance the ordinary cursor and may be the only returned item.
+func retainPendingExhaustion(advance func(pendingScanPosition), cursor pendingScanPosition, firstOrdinary *pendingScanPosition, before, timedOut pendingScanPosition, receipt *pendingExhaustion) {
+	if firstOrdinary != nil {
+		cursor = *firstOrdinary
+	}
+	advance(cursor)
+	if receipt != nil {
+		*receipt = pendingExhaustion{before, timedOut}
+	}
+}
+
+// Expiry can surface as an empty, row-local unavailable classification. A
+// nonempty successful validation stays eligible for guarded admission.
+func pendingCandidateReadError(ctx context.Context, o Operation, err error, chargeEmptyExpiry bool) error {
+	if err == nil && o.ID == "" && chargeEmptyExpiry {
+		return ctx.Err()
+	}
+	return pendingScanError(ctx, err)
+}
+
+func (e *Engine) finishPendingBatch(worker int, receipt pendingExhaustion, examined, overloaded bool) {
+	if examined && !overloaded && receipt.timedOut != (pendingScanPosition{}) {
+		e.rewindTimedOutPendingCandidate(worker, receipt.beforeTimedOut, receipt.timedOut)
+	}
+}
+
+// Allow a candidate whose remaining snapshot budget ran out one fresh retry.
+// A second timeout rotates past it for this traversal only; the normal wrap
+// revisits it without changing eligibility or the queued operation.
+func (e *Engine) rewindTimedOutPendingCandidate(worker int, before, candidate pendingScanPosition) {
+	e.pendingScanMu.Lock()
+	defer e.pendingScanMu.Unlock()
+	if e.pendingScanTimeout[worker] == candidate {
+		e.pendingScanTimeout[worker] = pendingScanPosition{}
+		e.pendingScanCursor[worker] = candidate
+		return
+	}
+	e.pendingScanTimeout[worker] = candidate
+	e.pendingScanCursor[worker] = before
+}
+
+func (e *Engine) pendingCandidateHasFreshRetry(worker int, candidate pendingScanPosition) bool {
+	e.pendingScanMu.Lock()
+	defer e.pendingScanMu.Unlock()
+	return e.pendingScanTimeout[worker] == candidate
+}
+
+// A completed candidate validation ends its timeout streak, including when
+// current admission says there is no eligible work for that row.
+func (e *Engine) finishPendingCandidateValidation(worker int, candidate pendingScanPosition) {
+	e.pendingScanMu.Lock()
+	defer e.pendingScanMu.Unlock()
+	if e.pendingScanTimeout[worker] == candidate {
+		e.pendingScanTimeout[worker] = pendingScanPosition{}
+	}
+}
+
 // Transaction rollback caused by this scan's own deadline is not a storage
 // outage. Preserve unrelated failures even if the deadline happens concurrently.
 func pendingScanError(ctx context.Context, err error) error {
@@ -149,9 +211,23 @@ func pendingScanError(ctx context.Context, err error) error {
 	return err
 }
 
-func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operations []Operation, resultErr error) {
+func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) ([]Operation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	return e.scanPendingForWorker(ctx, probeDrafts, 256)
+}
+
+// scanPendingForWorker separates bounded batch traversal from the worker budget.
+// Callers supply the snapshot deadline and maximum ordinary candidates.
+func (e *Engine) scanPendingForWorker(ctx context.Context, probeDrafts bool, batchLimit int) ([]Operation, error) {
+	worker := 0
+	if probeDrafts {
+		worker = 1
+	}
+	return e.scanPendingInLane(ctx, probeDrafts, batchLimit, worker, nil)
+}
+
+func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchLimit, worker int, receipt *pendingExhaustion) (operations []Operation, resultErr error) {
 	// SQL may report ErrTxDone after the scan deadline rolls back its transaction.
 	defer func() {
 		resultErr = pendingScanError(ctx, resultErr)
@@ -325,10 +401,6 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 	// Each supervisor worker retains only a scan position, never eligibility.
 	// Advance before validating a row so a single expensive blocked candidate
 	// cannot restart the same prefix after every bounded-snapshot timeout.
-	worker := 0
-	if probeDrafts {
-		worker = 1
-	}
 	e.pendingScanMu.Lock()
 	cursor := e.pendingScanCursor[worker]
 	e.pendingScanMu.Unlock()
@@ -346,7 +418,7 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 	defer rows.Close()
 	// Apply the dispatch bound after filtering known waits and unavailable
 	// accounts. The read transaction supplies the overall scan deadline.
-	limit := len(out) + 256
+	limit := len(out) + batchLimit
 	position := cursor
 	var firstReturned *pendingScanPosition
 	resumeReturned := func() {
@@ -370,17 +442,22 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 		filterArgs := append(append([]any(nil), args...), operation)
 		filterErr := tx.QueryRowContext(ctx, `SELECT id FROM (`+query+` AND o.id=?)`, filterArgs...).Scan(&eligible)
 		if errors.Is(filterErr, sql.ErrNoRows) {
+			e.finishPendingCandidateValidation(worker, position)
 			continue
 		}
 		if filterErr != nil {
 			filterErr = pendingScanError(ctx, filterErr)
 			if errors.Is(filterErr, context.DeadlineExceeded) {
-				advance(before)
+				if len(out) == 0 {
+					e.rewindTimedOutPendingCandidate(worker, before, position)
+				} else {
+					advance(before)
+				}
 			} else {
 				advance(cursor)
 			}
 			if len(out) != 0 && errors.Is(filterErr, context.DeadlineExceeded) {
-				resumeReturned()
+				retainPendingExhaustion(advance, cursor, firstReturned, before, position, receipt)
 				return out, nil
 			}
 			return nil, filterErr
@@ -390,25 +467,35 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 				if capability, ok := e.capabilities[cfg.configuration.CapabilityID]; ok && capability.Fingerprint == fingerprint {
 					key := accountKey{capability.Provider, capability.Account}
 					if cliUnavailable[key] || now.Before(cliRetryDeadlines[key]) {
+						e.finishPendingCandidateValidation(worker, position)
 						continue
 					}
 				}
 			}
 		}
 		o, err := readCandidate(project, operation)
-		if err != nil {
-			err = pendingScanError(ctx, err)
+		// Without a returned prefix, a known unavailable row may consume the
+		// budget while classifying its local failure. Keep traversal progress
+		// unless this exact row is already on its recorded fresh retry.
+		chargeEmptyExpiry := len(out) != 0 ||
+			(ctx.Err() != nil && e.pendingCandidateHasFreshRetry(worker, position))
+		if err = pendingCandidateReadError(ctx, o, err, chargeEmptyExpiry); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				advance(before)
+				if len(out) == 0 {
+					e.rewindTimedOutPendingCandidate(worker, before, position)
+				} else {
+					advance(before)
+				}
 			} else {
 				advance(cursor) // Never rotate past an operational storage failure.
 			}
 			if len(out) != 0 && errors.Is(err, context.DeadlineExceeded) {
-				resumeReturned()
+				retainPendingExhaustion(advance, cursor, firstReturned, before, position, receipt)
 				return out, nil
 			}
 			return nil, err
 		}
+		e.finishPendingCandidateValidation(worker, position)
 		if o.ID != "" {
 			if firstReturned == nil {
 				firstReturned = &before
@@ -428,7 +515,10 @@ func (e *Engine) pendingForWorker(ctx context.Context, probeDrafts bool) (operat
 		return nil, err
 	}
 	if len(out) < limit {
-		advance(pendingScanPosition{})
+		e.pendingScanMu.Lock()
+		e.pendingScanCursor[worker] = pendingScanPosition{}
+		e.pendingScanTimeout[worker] = pendingScanPosition{}
+		e.pendingScanMu.Unlock()
 	} else {
 		// Selection processes at most one returned candidate. Do not rotate past
 		// the unprocessed remainder merely because the scan filled its batch.
@@ -545,6 +635,11 @@ func (e *Engine) skipUnavailableWait(ctx context.Context, o Operation, err error
 }
 
 func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) error {
+	return e.processNextInLane(ctx, drivers, 0)
+}
+
+// Each supervised worker owns its ordinary scan lane across Draft permit changes.
+func (e *Engine) processNextInLane(ctx context.Context, drivers map[string]Driver, worker int) error {
 	probe := e.draftProbePermit.CompareAndSwap(false, true)
 	release := func() {
 		if probe {
@@ -553,21 +648,34 @@ func (e *Engine) processNext(ctx context.Context, drivers map[string]Driver) err
 		}
 	}
 	defer release()
-	return e.processNextWithProbe(ctx, drivers, probe, release)
+	return e.processNextWithProbe(ctx, drivers, probe, release, worker)
 }
 
 func (e *Engine) processNextForWorker(ctx context.Context, drivers map[string]Driver, probeDrafts bool) error {
-	return e.processNextWithProbe(ctx, drivers, probeDrafts, func() {})
+	worker := 0
+	if probeDrafts {
+		worker = 1
+	}
+	return e.processNextWithProbe(ctx, drivers, probeDrafts, func() {}, worker)
 }
 
-func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Driver, probeDrafts bool, releaseProbe func()) error {
-	operations, err := e.pendingForWorker(ctx, probeDrafts)
+func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Driver, probeDrafts bool, releaseProbe func(), worker int) error {
+	scanCtx, cancelScan := context.WithTimeout(ctx, 2*time.Second)
+	var receipt pendingExhaustion
+	operations, err := e.scanPendingInLane(scanCtx, probeDrafts, 256, worker, &receipt)
+	cancelScan()
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
 		return persistenceFailure()
 	}
+	return e.processPendingBatch(ctx, drivers, releaseProbe, worker, operations, receipt)
+}
+
+func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion) error {
+	overloaded := false
+	claimed := false
 	for _, o := range operations {
 		if ctx.Err() != nil {
 			return nil
@@ -586,6 +694,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			}
 			var refusal *core.Error
 			if errors.As(err, &refusal) && (refusal.Code == "overloaded" || refusal.Code == "review_conflict") {
+				overloaded = overloaded || refusal.Code == "overloaded"
 				continue
 			}
 			return persistenceFailure()
@@ -609,6 +718,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 			if errors.As(err, &failure) {
 				switch failure.Code {
 				case "review_busy", "review_conflict", "overloaded":
+					overloaded = overloaded || failure.Code == "overloaded"
 					continue
 				}
 			}
@@ -617,6 +727,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 		if a.ID == "" {
 			continue
 		}
+		claimed = true
 		// The operation retained its exact configuration revision; StartAttempt
 		// has already checked that this is still the current configuration.
 		c, err := e.configurationRevision(ctx, o.ProjectID, o.ConfigurationRevision)
@@ -738,6 +849,7 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 		_, err = e.persistAdvance(a, result.State, result.Reason, result.ExternalID)
 		return err
 	}
+	e.finishPendingBatch(worker, receipt, ctx.Err() == nil && !claimed, overloaded)
 	return nil
 }
 

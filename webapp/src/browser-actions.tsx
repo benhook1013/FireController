@@ -108,7 +108,7 @@ export function MessageComposer({ reply }: { reply?: Message }) {
   const action = useBrowserAction<SendInput, { id: string; conversation_id: string; outcome: 'sent' }>(slot,
     (input, actionKey, signal) => session.api.sendMessage(input.worker, input.recipient, input.body, input.replyTo, actionKey, signal),
     async receipt => { setOpen(true); setBody(''); setSentConversation(receipt.conversation_id); await queryClient.invalidateQueries({ queryKey: [...key, 'inbox'] }); if (reply) await queryClient.invalidateQueries({ queryKey: [...key, 'thread', reply.conversation_id] }); });
-  if (!worker || !session.api.browserCapabilities.allow_writes || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
+  if (!worker || session.worker?.retired || !session.api.browserCapabilities.allow_writes || reply && reply.sender_worker_id !== worker && reply.recipient_worker_id !== worker) return null;
   const input = action.retained?.input;
   const submit = (event: FormEvent) => { event.preventDefault(); void action.run({ worker, recipient: replyRecipient || recipient, body, replyTo: reply?.id ?? '' }); };
   return <section className="browser-composer" aria-label={reply ? 'Reply composer' : 'New message composer'}>
