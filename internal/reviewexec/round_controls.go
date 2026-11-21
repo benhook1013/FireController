@@ -78,7 +78,7 @@ AND NOT EXISTS(SELECT 1 FROM review_round_operation_bindings b WHERE b.operation
 AND (p.state='dirty' OR (json_extract(e.body_json,'$.capture.review.Complete')=1 AND json_extract(e.body_json,'$.capture.review.Outcome')='completed' AND COALESCE(json_extract(s.body_json,'$.finalized'),0)=0)) LIMIT 1`
 
 func roundUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review round controls are unavailable.", 500)
+	return newStoredUnavailable(storedRoundHistory, "Stored review round controls are unavailable.")
 }
 func roundDenied(code, message string) error { return core.Fail(code, message, 409) }
 func roundScope(project string, pull int64, channel string) bool {

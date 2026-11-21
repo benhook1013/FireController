@@ -150,18 +150,60 @@ func TestAutomaticGeneratorsIsolateRetainedParentCycle(t *testing.T) {
 			admissionSQL(t, f, `UPDATE review_execution_config SET body_json=json_set(body_json,'$.mode','stacked') WHERE project_id=?`, attemptProject)
 			now, sha := stamp(), strings.Repeat("a", 40)
 			prefix := []frontPull{{Number: 2, State: "open", HeadSHA: sha, BaseSHA: sha, BaseRef: "four", ParentPullNumber: 4, ParentSHA: sha, ObservedAt: now}, {Number: 4, State: "open", HeadSHA: sha, BaseSHA: sha, BaseRef: "two", ParentPullNumber: 2, ParentSHA: sha, ObservedAt: now}}
+			// Use the real writer for both shapes: changing only the back edge
+			// must retain the valid prefix, while the cyclic prefix is degraded
+			// to the explicit unavailable frame before it reaches storage.
+			if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				c, revision, err := readConfiguration(ctx, tx, attemptProject)
+				if err != nil {
+					return err
+				}
+				run := Run{ProjectID: attemptProject, ConfigurationRevision: revision, Channel: channel}
+				acyclic := append([]frontPull(nil), prefix...)
+				acyclic[1].ParentPullNumber = 0
+				for _, candidate := range []struct {
+					prefix   []frontPull
+					complete bool
+					reason   string
+				}{
+					{prefix: acyclic, complete: true},
+					{prefix: prefix, reason: "source_unavailable"},
+				} {
+					plans := (frontFrame{repository: 801, prefix: candidate.prefix}).plans()
+					if err := writeFrontFrame(ctx, tx, run, 801, c, runChoice{prefix: plans}); err != nil {
+						return err
+					}
+					frame, found, err := readFrontFrame(ctx, tx, attemptProject, channel)
+					if err != nil {
+						return err
+					}
+					wantPrefix := 0
+					if candidate.complete {
+						wantPrefix = len(candidate.prefix)
+					}
+					if !found || frame.complete != candidate.complete || frame.sourceReason != candidate.reason || len(frame.prefix) != wantPrefix {
+						t.Fatalf("unexpected persisted front frame: found=%v complete=%v reason=%q prefix=%d", found, frame.complete, frame.sourceReason, len(frame.prefix))
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			// Simulate a legacy retained row from before the writer enforced
+			// the graph invariant; do not bypass the guard in production.
 			raw, err := json.Marshal(prefix)
 			if err != nil {
 				t.Fatal(err)
 			}
-			admissionSQL(t, f, `INSERT INTO review_front_frames VALUES(?,?,801,1,?,?,1,'',?)`, attemptProject, channel, now, now, string(raw))
-			// Prove the fixture reaches the narrow cycle error, not generic corruption.
+			admissionSQL(t, f, `UPDATE review_front_frames SET checked_at=?,source_observed_at=?,complete=1,source_reason='',prefix_json=? WHERE project_id=? AND channel=?`, now, now, string(raw), attemptProject, channel)
 			err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 				_, err := automaticDependenciesChannel(ctx, tx, attemptProject, 2, channel)
 				return err
 			})
-			if !errors.Is(err, errAutomaticParentCycle) {
-				t.Fatal("invalid cycle fixture", err)
+			var refusal *core.Error
+			if !automaticProjectRefused(err) || !errors.As(err, &refusal) || refusal.Code != "storage_unavailable" {
+				t.Fatal("expected a project-local retained-frame refusal", err)
 			}
 			for _, project := range []string{attemptProject, otherAttemptProject} {
 				zero := int64(0)
@@ -180,9 +222,12 @@ func TestAutomaticGeneratorsIsolateRetainedParentCycle(t *testing.T) {
 			if err != nil || !worked {
 				t.Fatal("project cycle stopped healthy project", worked, err)
 			}
-			var project string
-			if err := f.store.DB().QueryRow(`SELECT project_id FROM review_automatic_selections`).Scan(&project); err != nil || project != otherAttemptProject {
-				t.Fatal(project, err)
+			var selections, healthy int
+			if err := f.store.DB().QueryRow(`SELECT count(*),count(CASE WHEN project_id=? THEN 1 END) FROM review_automatic_selections`, otherAttemptProject).Scan(&selections, &healthy); err != nil {
+				t.Fatal(err)
+			}
+			if selections != 1 || healthy != 1 {
+				t.Fatalf("expected exactly one selection for the healthy project: total=%d healthy=%d", selections, healthy)
 			}
 			// Shared storage failure must still reach the coordinator rather than being hidden.
 			admissionSQL(t, f, `ALTER TABLE review_front_frames RENAME TO missing_front_frames`)

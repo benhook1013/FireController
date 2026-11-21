@@ -99,14 +99,12 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 	if err != nil {
 		return "", err
 	}
+	initial, err := automaticSourceInitialRead(ctx, tx, r)
+	if err != nil || initial {
+		return "", err
+	}
 	if accepted != current {
-		initial, err := automaticSourceInitialRead(ctx, tx, r)
-		if err != nil {
-			return "", err
-		}
-		if !initial {
-			return "automation_authorization_changed", nil
-		}
+		return "automation_authorization_changed", nil
 	}
 	superseded, err := automaticSourceSuperseded(ctx, tx, r)
 	if err != nil {
@@ -142,7 +140,7 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 	// that intent was cancelled, denied, held or completed. A directly submitted
 	// operation is also a fence; never recover behind its cancellation/uncertainty.
 	// Compare parsed times, not RFC3339 text with variable fractional precision.
-	// Millisecond ties conservatively fence rather than ordering by random IDs.
+	// For rows with no acceptance event, millisecond ties conservatively fence.
 	// Event sequence is the durable acceptance order even if the wall clock
 	// moves backwards. Missing acceptance evidence is not permission to retry.
 	var accepted int64
@@ -154,6 +152,19 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 		return false, err
 	}
 	var superseded bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND id<>? AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND julianday(created_at)>=julianday(?)) OR EXISTS(SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.selection_requested' AND s.channel=?) OR EXISTS(SELECT 1 FROM events e JOIN review_operations o ON o.project_id=e.project_id AND o.id=e.resource_id WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.requested' AND o.channel=?)`, r.ProjectID, r.Channel, r.ID, r.CreatedAt, r.ProjectID, r.Channel, r.CreatedAt, r.ProjectID, accepted, r.Channel, r.ProjectID, accepted, r.Channel).Scan(&superseded)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM review_selections s WHERE s.project_id=? AND s.channel=? AND s.id<>?
+ AND julianday(s.created_at)>=julianday(?)
+ AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.id AND e.event_type='review.selection_requested' AND e.revision=1)
+) OR EXISTS(
+ SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.channel=? AND julianday(o.created_at)>=julianday(?)
+ AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=o.project_id AND e.resource_id=o.id AND e.event_type='review.requested' AND e.revision=1)
+) OR EXISTS(
+ SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id
+ WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.selection_requested' AND e.revision=1 AND s.channel=?
+) OR EXISTS(
+ SELECT 1 FROM events e JOIN review_operations o ON o.project_id=e.project_id AND o.id=e.resource_id
+ WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.requested' AND e.revision=1 AND o.channel=?
+)`, r.ProjectID, r.Channel, r.ID, r.CreatedAt, r.ProjectID, r.Channel, r.CreatedAt, r.ProjectID, accepted, r.Channel, r.ProjectID, accepted, r.Channel).Scan(&superseded)
 	return superseded, err
 }

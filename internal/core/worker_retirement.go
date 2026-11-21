@@ -10,9 +10,9 @@ import (
 )
 
 func (s *Store) ensureWorkerRetirements(ctx context.Context) error {
-	return s.EnsureSchema(ctx, "worker_retirements", []string{
+	return s.ensureSchemaWithPreflight(ctx, "worker_retirements", [][]string{{
 		`CREATE TABLE worker_retirements(project_id TEXT NOT NULL REFERENCES projects(id),worker_id TEXT NOT NULL,retired_at TEXT NOT NULL,actor_id TEXT NOT NULL,PRIMARY KEY(project_id,worker_id),FOREIGN KEY(project_id,worker_id) REFERENCES workers(project_id,id))`,
-	})
+	}}, checkAdministrationVersions, nil)
 }
 
 // CheckActiveWorker is for new coordination targets. CheckWorker and ordinary

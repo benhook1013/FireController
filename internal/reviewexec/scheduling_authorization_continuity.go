@@ -35,7 +35,7 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 	if revision < 1 || revision >= current.Revision || current.Revision-revision > 10000 {
 		return false, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,payload_json FROM events WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision BETWEEN ? AND ? ORDER BY revision,sequence LIMIT 10002`, r.ProjectID, r.ProjectID, revision, current.Revision)
+	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB))<=4096 THEN payload_json END FROM events WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision BETWEEN ? AND ? ORDER BY revision,sequence LIMIT 10002`, r.ProjectID, r.ProjectID, revision, current.Revision)
 	if err != nil {
 		return false, err
 	}
@@ -44,7 +44,7 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 	for rows.Next() {
 		var retainedRevision any
 		var actor string
-		var payload []byte
+		var payload sql.NullString
 		if err = rows.Scan(&retainedRevision, &actor, &payload); err != nil {
 			return false, err
 		}
@@ -56,7 +56,7 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 			Hosted *bool `json:"automatic_hosted"`
 			CLI    *bool `json:"automatic_cli"`
 		}
-		if len(payload) > 4096 || strictjson.Validate(payload) != nil || json.Unmarshal(payload, &settings) != nil {
+		if !payload.Valid || strictjson.Validate([]byte(payload.String)) != nil || json.Unmarshal([]byte(payload.String), &settings) != nil {
 			return false, nil
 		}
 		enabled := settings.Hosted
