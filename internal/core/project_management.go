@@ -10,17 +10,17 @@ import (
 // Project management is an explicit grant alongside read/write, never an
 // instance-administrator credential or an automatic upgrade of existing writers.
 func (s *Store) ensureProjectManagement(ctx context.Context) error {
-	return s.EnsureSchema(ctx, "project_management", []string{
+	return s.ensureSchemaWithPreflight(ctx, "project_management", [][]string{{
 		`ALTER TABLE grants ADD COLUMN can_manage INTEGER NOT NULL DEFAULT 0 CHECK(can_manage IN(0,1) AND (can_manage=0 OR (can_read=1 AND can_write=1)))`,
-	})
+	}}, checkAdministrationVersions, nil)
 }
 
-// Check both additive core formats before changing either; partial upgrades must
-// not modify a database whose other administration domain is newer.
-func (s *Store) checkAdministrationVersions(ctx context.Context) error {
+// Before each administration migration writes, check both formats under its own
+// exclusive writer transaction. This preserves independent domain commits.
+func checkAdministrationVersions(ctx context.Context, conn *sql.Conn) error {
 	for _, domain := range []string{"project_management", "worker_retirements"} {
 		var raw string
-		err := s.db.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", "schema:"+domain).Scan(&raw)
+		err := conn.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", "schema:"+domain).Scan(&raw)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

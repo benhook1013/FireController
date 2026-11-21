@@ -183,6 +183,100 @@ func TestProjectManagementNewerRetirementBlocksBeforeManagementMigration(t *test
 	}
 }
 
+func TestProjectManagementRechecksRetirementVersionAtMigrationBoundary(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "db")
+	s, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	other, err := sql.Open("sqlite", filepath.Join(dir, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	for _, query := range []string{
+		`DELETE FROM metadata WHERE key='schema:project_management'`,
+		`ALTER TABLE grants DROP COLUMN can_manage`,
+	} {
+		if _, err = other.ExecContext(t.Context(), query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := s.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlierCheck := checkAdministrationVersions(t.Context(), conn)
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if earlierCheck != nil {
+		t.Fatal("initial administrative versions are supported", earlierCheck)
+	}
+	result, err := other.ExecContext(t.Context(), `UPDATE metadata SET value='2' WHERE key='schema:worker_retirements'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		t.Fatal("retirement version did not advance exactly once", changed, err)
+	}
+	err = s.ensureProjectManagement(t.Context())
+	if failure, ok := err.(*Error); !ok || failure.Code != "schema_unsupported" {
+		t.Fatal("management migration did not refuse newer retirement version", err)
+	}
+	if got := managementRows(t, other, `SELECT key FROM metadata WHERE key='schema:project_management'`); got != "[]" {
+		t.Fatal("management migration left version metadata")
+	}
+	var count int
+	if err = other.QueryRow(`SELECT count(*) FROM pragma_table_info('grants') WHERE name='can_manage'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("management migration left column", count, err)
+	}
+}
+
+func TestAdministrationLaterFailurePreservesEarlierDomainCommit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "db")
+	s, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, query := range []string{
+		`DELETE FROM metadata WHERE key IN ('schema:project_management','schema:worker_retirements')`,
+		`ALTER TABLE grants DROP COLUMN can_manage`,
+		`DROP TABLE worker_retirements`,
+		`CREATE TRIGGER reject_retirement_version BEFORE INSERT ON metadata WHEN NEW.key='schema:worker_retirements' BEGIN SELECT RAISE(ABORT,'synthetic retirement failure'); END`,
+	} {
+		if _, err = db.ExecContext(t.Context(), query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, err := Open(t.Context(), dir)
+	if err == nil {
+		next.Close()
+		t.Fatal("startup ignored the retirement migration failure")
+	}
+	if failure, ok := err.(*Error); !ok || failure.Code != "storage_unavailable" {
+		t.Fatal("startup did not return the retirement SQL failure", err)
+	}
+	if got := managementRows(t, db, `SELECT key,value FROM metadata WHERE key IN ('schema:project_management','schema:worker_retirements') ORDER BY key`); got != `[["schema:project_management","1"]]` {
+		t.Fatal("migration metadata did not preserve only the earlier committed domain", got)
+	}
+	if got := managementRows(t, db, `SELECT name FROM pragma_table_info('grants') WHERE name='can_manage'`); got != `[["can_manage"]]` {
+		t.Fatal("earlier management schema change did not persist", got)
+	}
+	if got := managementRows(t, db, `SELECT name FROM sqlite_schema WHERE type='table' AND name='worker_retirements'`); got != "[]" {
+		t.Fatal("failed retirement domain left its table behind", got)
+	}
+}
+
 func TestProjectManagementRealParentMigrationFailureRollsBack(t *testing.T) {
 	parent := os.Getenv("FC_ADMIN_PARENT_FIXTURE")
 	if parent == "" {
