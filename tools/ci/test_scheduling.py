@@ -86,6 +86,7 @@ def inventory(text):
     expected_lanes.update({f'Go race ({name})': index % 20
                            for index, name in enumerate(race_order)})
     expected_lanes['Go race (reviewexec-5)'] = 4
+    expected_lanes['Go race (rest-0)'] = 12
     assert {family for _, lane, family in result if lane == 19} == {'validate'}
     assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
