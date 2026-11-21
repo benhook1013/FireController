@@ -184,6 +184,8 @@ func scanSchedulingSnapshot(row interface{ Scan(...any) error }, destinations ..
 
 // An absent control reads as resumed. Refuse a restore if its latest
 // retained event instead proves a pause or cannot be read as that identity.
+// Rank every event before projecting its native revision; never fall back to
+// an older valid resume when the winning revision cannot be trusted.
 func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `WITH orphan AS (
 		SELECT e.project_id,e.resource_id,e.revision,
@@ -195,28 +197,37 @@ func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 			AND CAST(s.pull_number AS TEXT)=e.resource_id
 		WHERE e.event_type='review.pull_scheduling_updated' AND s.pull_number IS NULL
 	)
-	SELECT resource_id,revision,payload,matches FROM orphan WHERE newest=1`)
+	SELECT resource_id,CASE WHEN typeof(revision)='integer' THEN revision END,payload,matches FROM orphan WHERE newest=1`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var resource string
-		var revision, matches int64
-		var payload sql.NullString
-		if err := rows.Scan(&resource, &revision, &payload, &matches); err != nil {
+		if err := validateOrphanPullSchedulingEvent(rows); err != nil {
 			return err
-		}
-		pull, err := strconv.ParseInt(resource, 10, 32)
-		if err != nil || pull < 1 || strconv.FormatInt(pull, 10) != resource || revision < 1 || matches != 1 ||
-			!validPullSchedulingPayload(payload, pull, false) {
-			return schedulingUnavailable()
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	return rows.Close()
+}
+
+func validateOrphanPullSchedulingEvent(row interface{ Scan(...any) error }) error {
+	var resource string
+	var revision any
+	var matches int64
+	var payload sql.NullString
+	if err := row.Scan(&resource, &revision, &payload, &matches); err != nil {
+		return err
+	}
+	nativeRevision, revisionOK := revision.(int64)
+	pull, err := strconv.ParseInt(resource, 10, 32)
+	if err != nil || pull < 1 || strconv.FormatInt(pull, 10) != resource || !revisionOK || nativeRevision < 1 || matches != 1 ||
+		!validPullSchedulingPayload(payload, pull, false) {
+		return schedulingUnavailable()
+	}
+	return nil
 }
 
 func validPullSchedulingPayload(payload sql.NullString, pull int64, paused bool) bool {
