@@ -101,3 +101,30 @@ func TestSchedulingSnapshotPullEventStreamKeepsProjectIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOrphanResumeRequiresNativeRevisionWithoutChangingCompatibility(t *testing.T) {
+	tx := schedulingEventSnapshotFixture(t)
+	// Read-only codec probes. No malformed event is installed or ranked.
+	for _, tc := range []struct {
+		name     string
+		revision any
+		valid    bool
+	}{
+		{"integer", int64(2), true},
+		{"real", float64(2), false},
+		{"text", "2", false},
+		{"null", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := tx.QueryRowContext(t.Context(), `SELECT '2', ?, '{"pull_number":2,"paused":false}', 1`, tc.revision)
+			err := validateOrphanPullSchedulingEvent(row)
+			if tc.valid {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				attemptCode(t, err, "storage_unavailable")
+			}
+		})
+	}
+}
