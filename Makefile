@@ -126,6 +126,7 @@ browser-smoke:
 	$(GO) test -tags=packaged_smoke -run '^TestPackagedReviewArchiveSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedAccumulatedBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedMultiProjectBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
+	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedProjectSwitchBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^TestPackagedSessionFailureBrowserSmoke$$' -count=1 -timeout=60s ./tools/packagedsmoke
 	$(GO) test -v -tags=packaged_smoke -run '^Test(PackagedSubagentReportsSmoke|SubagentProxyCanceledDialCleanup)$$' -count=1 -timeout=60s ./tools/packagedsmoke
 

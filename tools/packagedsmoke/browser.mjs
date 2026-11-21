@@ -62,7 +62,7 @@ try {
   const bindingKey = 'firecontroller.browser-session.v1';
   const loginAuthority = async (loginResponse, allowWrites, canEditPresentation) => {
     const posted = loginResponse.request().postDataJSON();
-    need(posted && Object.keys(posted).length === 1 && typeof posted.session_id === 'string' && /^[a-f0-9]{32}$/u.test(posted.session_id));
+    need(posted && Object.keys(posted).length === 2 && posted.project_switching === true && typeof posted.session_id === 'string' && /^[a-f0-9]{32}$/u.test(posted.session_id));
     // The page has accepted this login; inspect actual cookie authority rather
     // than an unbounded CDP response-finished/body observer.
     const current = await page.evaluate(async ({prefix, bindingKey, sessionID, project, instance}) => {
@@ -289,7 +289,7 @@ try {
     }
     if (url.pathname === prefix + '/browser-session' && request.method() === 'POST') {
       sessionPosts++;
-      try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==1 || typeof body.session_id!=='string' || !body.session_id) forbiddenWrites++; }
+      try { const body=JSON.parse(request.postData()); if (Object.keys(body).length!==2 || typeof body.session_id!=='string' || !body.session_id || body.project_switching!==true) forbiddenWrites++; }
       catch { forbiddenWrites++; }
     }
     else if (url.pathname === prefix + '/browser-session/renew' && request.method() === 'POST') { sessionRenewals++; if (request.postData() !== '{}' || request.headers()['authorization'] || request.headers()['x-fc-instance'] !== config.instance) forbiddenWrites++; }

@@ -50,14 +50,21 @@ export class ApiError extends Error {
 }
 
 export interface BrowserCapabilities { allow_writes: boolean; can_edit_presentation: boolean }
-export interface BrowserSessionView extends BrowserCapabilities { session_id: string; instance_id: string; project_id: string; expires_at: string }
+export interface BrowserProjectOption { id: string; handle: string; name: string }
+export interface BrowserSessionView extends BrowserCapabilities { session_id: string; instance_id: string; project_id: string; expires_at: string; projects?: BrowserProjectOption[] }
 export type BrowserPresentationConfig = PresentationConfig;
 export interface QueueSorting { project_id: string; revision: number; mode: 'auto' | 'manual'; writable: boolean; reason?: 'compatible_backup_and_rollback_readers_required' | 'reviews_unconfigured' }
 export interface QueueSortingReceipt { id: string; state: 'configured'; revision: number }
 export interface BrowserMessageReceipt { id: string; conversation_id: string; outcome: 'sent' | 'seen' | 'acknowledged' | 'unchanged' }
 export interface BrowserPresentationReceipt { project_id: string; revision: number; outcome: 'updated' | 'unchanged' }
 function browserSessionView(value: unknown, selector: string, instance: string, project: string): value is BrowserSessionView {
-  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes);
+  return record(value) && keys(value, ['session_id', 'instance_id', 'project_id', 'expires_at', 'allow_writes', 'can_edit_presentation'], ['projects']) && value.session_id === selector && value.instance_id === instance && value.project_id === project && sessionExpiry(value.expires_at) && typeof value.allow_writes === 'boolean' && typeof value.can_edit_presentation === 'boolean' && (!value.can_edit_presentation || value.allow_writes) && (!Object.hasOwn(value, 'projects') || validBrowserProjects(value.projects));
+}
+function validBrowserProjects(value: unknown): value is BrowserProjectOption[] {
+  return Array.isArray(value) && value.length <= 8 && value.every(option => record(option) && keys(option, ['id', 'handle', 'name']) && id(option.id) && typeof option.handle === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(option.handle) && displayName(option.name)) && new Set(value.map(option => option.id)).size === value.length && new Set(value.map(option => option.handle)).size === value.length;
+}
+function copyBrowserSession(value: BrowserSessionView): BrowserSessionView {
+  return { ...value, ...(value.projects ? { projects: value.projects.map(option => ({ ...option })) } : {}) };
 }
 function mutationKey(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value && !/[^\x20-\x7e]/u.test(value); }
 
@@ -589,6 +596,7 @@ export class Api {
   private expectedInstanceID?: string;
   private capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
   private renewal?: Promise<BrowserSessionView>;
+  private switching = false;
   private currentSession?: BrowserSessionView;
   private readonly streamConnections = new Set<AbortController>();
 
@@ -598,7 +606,7 @@ export class Api {
     this.boundProjectId = projectId;
   }
   get instanceId(): string | undefined { return this.verifiedInstanceId; }
-  get browserSession(): BrowserSessionView | undefined { return this.currentSession && { ...this.currentSession }; }
+  get browserSession(): BrowserSessionView | undefined { return this.currentSession && copyBrowserSession(this.currentSession); }
   get browserCapabilities(): BrowserCapabilities { return { ...this.capabilities }; }
 
   static resume(projectID: string, sessionID: string, expectedInstanceID: string): Api {
@@ -640,7 +648,7 @@ export class Api {
       let capabilities: BrowserCapabilities = { allow_writes: false, can_edit_presentation: false };
       let session: BrowserSessionView | undefined;
       if (this.browserSessionID) {
-        const current = await this.getJson(this.projectRoute('browser-session'), value.instance_id, budget.signal, undefined, 4096, assessmentJSON);
+        const current = await this.getJson(this.projectRoute('browser-session'), value.instance_id, budget.signal, undefined, 16384, assessmentJSON);
         if (!browserSessionView(current, this.browserSessionID, value.instance_id, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
         capabilities = { allow_writes: current.allow_writes, can_edit_presentation: current.can_edit_presentation };
         session = current;
@@ -654,7 +662,7 @@ export class Api {
     finally { budget.close(); }
   }
 
-  async startBrowserSession(signal?: AbortSignal): Promise<BrowserSessionView> {
+  async startBrowserSession(signal?: AbortSignal, projectSwitching = false): Promise<BrowserSessionView> {
     this.ensureOpen();
     if (!this.verifiedInstanceId || !this.token || this.browserSessionID || this.pendingBrowserSessionID) throw new ApiError('not_connected', 'Verify the project credential before starting a browser session.');
     const selector = newSessionID();
@@ -665,19 +673,49 @@ export class Api {
     this.expectedInstanceID = instance;
     try {
       const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json', 'Content-Type': 'application/json', 'X-FC-Instance': instance });
-      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      const response = await fetch(urlFor(this.projectRoute('browser-session')), { method: 'POST', headers, body: JSON.stringify({ session_id: selector, ...(projectSwitching ? { project_switching: true } : {}) }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
       if (!response.ok) throw await readFailure(response, budget.signal);
-      const value = await readJson(response, budget.signal, 4096, assessmentJSON);
+      const value = await readJson(response, budget.signal, projectSwitching ? 16384 : 4096, assessmentJSON);
       if (!browserSessionView(value, selector, instance, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
       if (budget.signal.aborted) throw new ApiError('cancelled', 'The browser connection was cancelled.');
       this.browserSessionID = selector;
       this.pendingBrowserSessionID = undefined;
       this.token = '';
       this.capabilities = { allow_writes: value.allow_writes, can_edit_presentation: value.can_edit_presentation };
-      this.currentSession = { ...value };
-      return value;
+      this.currentSession = copyBrowserSession(value);
+      return copyBrowserSession(value);
     } catch (error) { throw this.transportError(error, budget.expired(), budget.signal); }
     finally { budget.close(); }
+  }
+
+  // Issuing a target cookie never replaces this source binding. The caller
+  // retains its fresh selector even after a lost response, then verifies the
+  // cookie with Api.resume before handing off routes or removing the source.
+  async switchBrowserSession(projectID: string, sessionID: string, signal?: AbortSignal): Promise<BrowserSessionView> {
+    this.ensureOpen();
+    if (!this.browserSessionID || !this.verifiedInstanceId) throw new ApiError('not_connected', 'Verify the browser session before switching projects.');
+    if (!sessionSelector(sessionID) || sessionID === this.browserSessionID || projectID === this.projectId || !this.currentSession?.projects?.some(option => option.id === projectID)) throw new ApiError('invalid_request', 'Select a project from this connection.');
+    if (this.switching) throw new ApiError('invalid_request', 'A project switch is already in progress.');
+    this.switching = true;
+    const instance = this.verifiedInstanceId;
+    const budget = requestBudget([signal, this.session.signal], 5000);
+    let dispatched = false, knownRefusal = false;
+    try {
+      const headers = this.headers(instance);
+      headers.set('Content-Type', 'application/json');
+      if (budget.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      dispatched = true;
+      const response = await fetch(urlFor(this.projectRoute('browser-session/switch')), { method: 'POST', headers, body: JSON.stringify({ project_id: projectID, session_id: sessionID }), redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
+      knownRefusal = !response.ok && response.status < 500;
+      if (!response.ok) throw await readFailure(response, budget.signal);
+      const value = await readJson(response, budget.signal, 16384, assessmentJSON);
+      if (!browserSessionView(value, sessionID, instance, projectID)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      if (budget.signal.aborted || this.closed) throw new DOMException('Aborted', 'AbortError');
+      return value;
+    } catch (error) {
+      const failure = this.transportError(error, budget.expired(), budget.signal);
+      throw new ApiError(failure.code, failure.message, failure.status, dispatched && !knownRefusal);
+    } finally { budget.close(); this.switching = false; }
   }
 
   async endBrowserSession(signal?: AbortSignal): Promise<void> {
@@ -718,15 +756,15 @@ export class Api {
       const response = await fetch(urlFor(this.projectRoute('browser-session/renew')), { method: 'POST', headers, body: '{}', redirect: 'error', credentials: 'same-origin', cache: 'no-store', signal: budget.signal });
       knownRefusal = !response.ok && response.status < 500;
       if (!response.ok) throw await readFailure(response, budget.signal);
-      const value = await readJson(response, budget.signal, 4096, assessmentJSON);
+      const value = await readJson(response, budget.signal, 16384, assessmentJSON);
       if (!browserSessionView(value, selector, instance, this.projectId)) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
       if (budget.signal.aborted || this.closed) throw new DOMException('Aborted', 'AbortError');
       this.capabilities = { allow_writes: value.allow_writes, can_edit_presentation: value.can_edit_presentation };
-      this.currentSession = { ...value };
+      this.currentSession = copyBrowserSession(value);
       // Replace transport connections, not watch lifetimes. Their processed
       // cursors survive, so renewal does not resnapshot or expand archives.
       this.retireStreamConnections();
-      return value;
+      return copyBrowserSession(value);
     } catch (error) {
       // Set-Cookie can succeed before its response body is lost. Reopen using
       // the actual cookie instead of trusting an old connection's expiry.

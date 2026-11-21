@@ -67,6 +67,15 @@ export function clearBrowserSession(target = storage(), recovery = recoveryStora
   if (binding) forgetRecovery(binding, recovery);
   try { target?.removeItem(browserSessionKey); } catch { /* storage may be disabled */ }
 }
+// A verified handoff can forget the retired source without erasing the new
+// tab binding or a newer same-project recovery record from another tab.
+export function forgetBrowserSession(binding: BrowserSessionBinding, target = storage(), recovery = recoveryStorage()): void {
+  const current = readTab(target);
+  if (current?.instanceID === binding.instanceID && current.projectID === binding.projectID && current.sessionID === binding.sessionID) {
+    try { target?.removeItem(browserSessionKey); } catch { /* storage may be disabled */ }
+  }
+  forgetRecovery(binding, recovery);
+}
 export function saveBrowserSession(binding: BrowserSessionBinding, target = storage(), recovery = recoveryStorage()): boolean {
   if (!validBinding(binding) || !target) { clearBrowserSession(target, recovery); return false; }
   try { target.setItem(browserSessionKey, JSON.stringify(binding)); }

@@ -298,7 +298,12 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- browser.Wait() }()
 	joined := false
-	defer func() {
+	cleaned := false
+	cleanupBrowser := func() {
+		if cleaned {
+			return
+		}
+		cleaned = true
 		if pid := output.browserPID(); pid > 1 {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
@@ -310,7 +315,8 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 				t.Error("archive browser did not join")
 			}
 		}
-	}()
+	}
+	defer cleanupBrowser()
 	select {
 	case err = <-done:
 		joined = true
@@ -360,6 +366,10 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 		}
 		t.Fatalf("packaged archive browser failed at phase=%s; raw output withheld to protect fixture authority", phase)
 	}
+	// Detach browser and gateway connections before testing daemon shutdown.
+	cleanupBrowser()
+	gateway.CloseClientConnections()
+	gateway.Close()
 	daemon.stop(t)
 	after := readUpgradeState(t, ctx, data)
 	// One new observation appends changed bodies/memberships, closes the old

@@ -13,8 +13,41 @@ const multiProjectConnectorPath = "/api/v1/operator/connector-credentials"
 
 type testConnectorGrant struct {
 	ProjectID   string   `json:"project_id"`
-	WorkerID    string   `json:"worker_id"`
+	WorkerID    string   `json:"worker_id,omitempty"`
 	Permissions []string `json:"permissions"`
+}
+
+func TestProvisionPersonalCredentialKeepsProjectRolesSeparate(t *testing.T) {
+	f := setup(t)
+	one, two := f.project(t, "owner/one"), f.project(t, "owner/two")
+	const outside = "project_fixture_outside"
+	if _, err := f.store.DB().Exec(`INSERT INTO projects(id,name,github_repository_id,repository) VALUES(?,'Other project',3,'owner/outside');
+INSERT INTO project_handles(project_id,handle) VALUES(?,'outside')`, outside, outside); err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "/api/v1/operator/browser-credentials"
+	const token = "synthetic-personal-shared-project-token"
+	oneGrant := testConnectorGrant{ProjectID: one, Permissions: []string{"read", "write"}}
+	twoGrant := testConnectorGrant{ProjectID: two, Permissions: []string{"read"}}
+	body := connectorGrantBody(t, token, oneGrant, twoGrant)
+	manager := "synthetic-personal-issuer-project-manager"
+	projectManagerGrant(t, f, one, manager)
+	require(t, request(f.handler, "POST", endpoint, manager, "not-instance-admin", "", body), http.StatusForbidden)
+	otherWorker := f.worker(t, two, "other worker")
+	bad := twoGrant
+	bad.WorkerID = otherWorker
+	require(t, request(f.handler, "POST", endpoint, f.admin, "no-browser-worker-binding", "", connectorGrantBody(t, token, oneGrant, bad)), http.StatusBadRequest)
+	created := require(t, request(f.handler, "POST", endpoint, f.admin, "issue-personal", "", body), http.StatusOK)
+	id := created["id"].(string)
+	var count int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM connector_credentials WHERE credential_id=?`, id).Scan(&count); err != nil || count != 0 {
+		t.Fatal("personal credential acquired a connector worker binding", count, err)
+	}
+	require(t, request(f.handler, "GET", "/api/v1/projects/"+one, token, "", "", ""), http.StatusOK)
+	require(t, request(f.handler, "GET", "/api/v1/projects/"+two, token, "", "", ""), http.StatusOK)
+	require(t, request(f.handler, "GET", "/api/v1/projects/"+outside, token, "", "", ""), http.StatusForbidden)
+	require(t, request(f.handler, "POST", "/api/v1/projects/"+one+"/workers", token, "allowed-write", "", `{"name":"synthetic"}`), http.StatusOK)
+	require(t, request(f.handler, "POST", "/api/v1/projects/"+two+"/workers", token, "denied-write", "", `{"name":"synthetic"}`), http.StatusForbidden)
 }
 
 func connectorGrantBody(t *testing.T, token string, projects ...testConnectorGrant) string {

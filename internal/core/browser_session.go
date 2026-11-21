@@ -29,6 +29,7 @@ type browserSessionClaims struct {
 	ExpiresAt           int64  `json:"expires_at"`
 	AllowWrites         bool   `json:"allow_writes"`
 	CanEditPresentation bool   `json:"can_edit_presentation"`
+	ProjectGrants       string `json:"ps,omitempty"`
 }
 
 type BrowserSession struct {
@@ -38,6 +39,9 @@ type BrowserSession struct {
 	ExpiresAt           string `json:"expires_at"`
 	AllowWrites         bool   `json:"allow_writes"`
 	CanEditPresentation bool   `json:"can_edit_presentation"`
+	// A pointer keeps legacy session values comparable, with no wire change
+	// when project switching was not explicitly enabled at login.
+	Projects *[]BrowserSessionProject `json:"projects,omitempty"`
 }
 
 func (s *Store) browserSessionCodec() *securecookie.SecureCookie {
@@ -79,6 +83,12 @@ func browserSessionCookie(r *http.Request, id string) *http.Cookie {
 // current bearer credential, pinning its effective initial capabilities. It
 // allocates no durable mutation or user receipt.
 func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession, *http.Cookie, error) {
+	return s.CreateBrowserSessionWithProjectSwitching(r, id, false)
+}
+
+// CreateBrowserSessionWithProjectSwitching optionally freezes a bounded set of
+// currently readable projects and their independent initial browser ceilings.
+func (s *Store) CreateBrowserSessionWithProjectSwitching(r *http.Request, id string, switching bool) (BrowserSession, *http.Cookie, error) {
 	if !browserSessionID.MatchString(id) {
 		return BrowserSession{}, nil, Fail("validation_failed", "Provide a 32-character lowercase hexadecimal session identity.", 400)
 	}
@@ -95,17 +105,23 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession
 	if scope.connector {
 		return BrowserSession{}, nil, Fail("forbidden", "A connector credential cannot create a browser session.", 403)
 	}
-	var writes, presentation bool
+	expires := time.Now().UTC().Truncate(time.Second).Add(browserSessionLifetime)
+	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix()}
+	var projects *[]BrowserSessionProject
 	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
-		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, true, true)
+		claims.AllowWrites, claims.CanEditPresentation, err = s.browserCapabilities(ctx, tx, scope, true, true)
+		if err == nil && switching {
+			claims.ProjectGrants, err = s.captureBrowserProjectGrants(ctx, tx, scope)
+			if err == nil {
+				projects, err = s.browserSelectableProjects(ctx, tx, scope, claims)
+			}
+		}
 		return err
 	})
 	if err != nil {
 		return BrowserSession{}, nil, err
 	}
-	expires := time.Now().UTC().Truncate(time.Second).Add(browserSessionLifetime)
-	claims := browserSessionClaims{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, CredentialHash: scope.tokenHash, ExpiresAt: expires.Unix(), AllowWrites: writes, CanEditPresentation: presentation}
 	cookie := browserSessionCookie(r, id)
 	cookie.Value, err = s.browserSessionCodec().Encode(cookie.Name, claims)
 	if err != nil {
@@ -113,7 +129,7 @@ func (s *Store) CreateBrowserSession(r *http.Request, id string) (BrowserSession
 	}
 	cookie.MaxAge = int(browserSessionLifetime.Seconds())
 	cookie.Expires = expires
-	return BrowserSession{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: writes, CanEditPresentation: presentation}, cookie, nil
+	return BrowserSession{SessionID: id, InstanceID: s.instanceID, ProjectID: scope.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: claims.AllowWrites, CanEditPresentation: claims.CanEditPresentation, Projects: projects}, cookie, nil
 }
 
 // CurrentBrowserSession returns effective capabilities of the explicitly bound
@@ -130,6 +146,9 @@ func (s *Store) CurrentBrowserSession(r *http.Request) (BrowserSession, error) {
 	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		out.AllowWrites, out.CanEditPresentation, err = s.browserCapabilities(ctx, tx, scope, claims.AllowWrites, claims.CanEditPresentation)
+		if err == nil {
+			out.Projects, err = s.browserSelectableProjects(ctx, tx, scope, claims)
+		}
 		return err
 	})
 	return out, err
@@ -153,9 +172,13 @@ func (s *Store) RenewBrowserSession(r *http.Request) (BrowserSession, *http.Cook
 		return BrowserSession{}, nil, err
 	}
 	var writes, presentation bool
+	var projects *[]BrowserSessionProject
 	err = s.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		writes, presentation, err = s.browserCapabilities(ctx, tx, scope, claims.AllowWrites, claims.CanEditPresentation)
+		if err == nil {
+			projects, err = s.browserSelectableProjects(ctx, tx, scope, claims)
+		}
 		return err
 	})
 	if err != nil {
@@ -170,7 +193,7 @@ func (s *Store) RenewBrowserSession(r *http.Request) (BrowserSession, *http.Cook
 	}
 	cookie.MaxAge = int(browserSessionLifetime.Seconds())
 	cookie.Expires = expires
-	return BrowserSession{SessionID: claims.SessionID, InstanceID: claims.InstanceID, ProjectID: claims.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: writes, CanEditPresentation: presentation}, cookie, nil
+	return BrowserSession{SessionID: claims.SessionID, InstanceID: claims.InstanceID, ProjectID: claims.ProjectID, ExpiresAt: expires.Format(time.RFC3339), AllowWrites: writes, CanEditPresentation: presentation, Projects: projects}, cookie, nil
 }
 
 func (s *Store) browserCapabilities(ctx context.Context, q querier, scope Scope, requested, allowPresentation bool) (bool, bool, error) {
@@ -241,6 +264,9 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 	}
 	var claims browserSessionClaims
 	if s.browserSessionCodec().Decode(cookie.Name, value, &claims) != nil || claims.SessionID != values[0] || claims.InstanceID != s.instanceID || !browserSessionIdentity.MatchString(claims.InstanceID) || !browserSessionIdentity.MatchString(claims.ProjectID) || !browserCredentialHash.MatchString(claims.CredentialHash) || !browserSessionExpiryValid(claims.ExpiresAt, time.Now()) {
+		return Scope{}, browserSessionClaims{}, bad
+	}
+	if !browserProjectGrantsValid(claims) {
 		return Scope{}, browserSessionClaims{}, bad
 	}
 	var principal string

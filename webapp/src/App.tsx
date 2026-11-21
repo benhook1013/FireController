@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } fr
 import type { FormEvent } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, matchPath, useBlocker, useLocation, useMatch, useNavigate, useNavigationType, useParams, useSearchParams } from 'react-router';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Api, ApiError, type BrowserSessionView } from './api';
+import { Api, ApiError, type BrowserSessionView, type BrowserProjectOption } from './api';
 import { WorkspaceContext, useWorkspace, signalFor, usePaging, Pager, ReadState, errorText } from './workspace';
 import type { Session } from './workspace';
 import { canonicalProjectLocation, projectAddress, projectHome, projectMatches } from './project-address';
@@ -22,7 +22,7 @@ import { jobFilterSearch, readJobFilters, type JobFilters } from './job-navigati
 import { refreshEventQueries } from './queries';
 import { ReviewQueueView, ReviewPullView, ReviewRunView } from './review-workspace';
 import { HeaderUtilitiesSkeleton, PageSkeleton, WorkspaceSkeleton } from './loading';
-import { clearBrowserSession, hasBrowserSession, loadBrowserSession, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
+import { clearBrowserSession, forgetBrowserSession, hasBrowserSession, loadBrowserSession, newSessionID, renewedBrowserSessionBinding, saveBrowserSession, terminalBrowserSession, type BrowserSessionBinding } from './browser-session';
 import { BrowserSessionRenewal, listenForSessionActivity } from './session-renewal';
 import { applyPresentationRoot } from './presentation';
 import { PresentationContext, usePresentation, useProjectHeading } from './presentation-context';
@@ -46,6 +46,25 @@ export function leavesActionProject(projectId: string, pathname: string, handle?
   return !projectMatches({id:projectId, handle} as Project, matchPath('/projects/:projectId/*', pathname)?.params.projectId);
 }
 
+// Use the update owner's write/draft markers, including collapsed drafts.
+// Unlike an automatic reload, an explicit project change may leave paged reads.
+export function browserProjectSwitchSafe(unresolved: number, root: Document = document): boolean {
+  if (unresolved > 0 || root.visibilityState !== 'visible' || root.querySelector('[data-browser-dirty="true"], [data-browser-busy="true"]')) return false;
+  return !root.activeElement?.matches('[data-browser-draft] input, [data-browser-draft] textarea, [data-browser-draft] select, [data-browser-draft] [contenteditable="true"]');
+}
+
+export async function verifyProjectSwitch(source: Api, target: Api, selector: string, signal: AbortSignal) {
+  try { await source.switchBrowserSession(target.projectId, selector, signal); }
+  catch (error) {
+    // Set-Cookie can succeed before its body is lost. Only normal resume can
+    // recover that result; a definite refusal never initiates target reads.
+    if (!(error instanceof ApiError && error.outcomeUnknown) || signal.aborted) throw error;
+  }
+  const project = await target.connect(signal);
+  const presentationSnapshot = await target.presentation(signal);
+  return { project, presentationSnapshot };
+}
+
 export default function App() {
   const location = useLocation();
   return <><BrowserUpdate />{location.pathname === '/public' || location.pathname.startsWith('/public/') ? <PublicSiteRouter /> : <PrivateApp />}</>;
@@ -67,7 +86,11 @@ function PrivateApp() {
   const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const current = useRef<Session | null>(null);
-  useEffect(() => guardBrowserUpdate(() => Boolean(current.current?.actions.unresolved)), []);
+  const switching = useRef<{ api: Api; controller: AbortController; routeKey: string } | null>(null);
+  const [switchBusy, setSwitchBusy] = useState(false);
+  const [switchNotice, setSwitchNotice] = useState('');
+  useEffect(() => guardBrowserUpdate(() => Boolean(current.current?.actions.unresolved || switching.current)), []);
+  useEffect(() => { notifyBrowserUpdateSafety(); }, [switchBusy]);
   const pending = useRef<{ api: Api; controller: AbortController; projectId: string; routeKey: string } | null>(null);
   const saved = useRef<BrowserSessionBinding | null>(null);
   const [resumable, setResumable] = useState<BrowserSessionBinding | null>(null);
@@ -82,6 +105,8 @@ function PrivateApp() {
   const renewal = useRef<BrowserSessionRenewal<BrowserSessionView> | null>(null);
   const [metadataRetry, setMetadataRetry] = useState<{ lifetime: AbortController; attempt: number }>();
   const clear = useCallback((message = '') => {
+    switching.current?.controller.abort(); switching.current?.api.close(); switching.current = null;
+    setSwitchBusy(false); setSwitchNotice('');
     const expiring = pending.current?.api ?? current.current?.api;
     if (expiring) void expiring.endBrowserSession().catch(() => {});
     else if (saved.current) expireBinding(saved.current);
@@ -107,9 +132,11 @@ function PrivateApp() {
   useEffect(() => {
     if (current.current && !projectMatches(current.current.project, routeProject)) clear('Connect to open this project.');
     if (pending.current && location.key !== pending.current.routeKey) clear('Connect to open this project.');
+    if (switching.current && location.key !== switching.current.routeKey) { switching.current.controller.abort(); switching.current.api.close(); switching.current = null; setSwitchBusy(false); }
   }, [routeProject, location.key, clear]);
   useEffect(() => { setSignIn(new URLSearchParams(location.search).has('signin')); }, [routeProject]);
   useEffect(() => () => {
+    switching.current?.controller.abort(); switching.current?.api.close(); switching.current = null;
     pending.current?.controller.abort(); pending.current?.api.close(); pending.current = null;
     const old = current.current; old?.controller.abort(); old?.projectController.abort(); old?.api.close();
     applyPresentationRoot(document.documentElement, document);
@@ -142,7 +169,7 @@ function PrivateApp() {
         binding = refreshed;
       }
       if (!binding) {
-        const started = await api.startBrowserSession(controller.signal);
+        const started = await api.startBrowserSession(controller.signal, true);
         if (!active()) return;
         binding = { version: 1, projectID: started.project_id, instanceID: started.instance_id, sessionID: started.session_id, expiresAt: started.expires_at, selectedworkerID: '' };
       }
@@ -167,6 +194,46 @@ function PrivateApp() {
         if (terminal(error)) clear(errorText(error));
         else { pending.current = null; setConnecting(false); setRestoring(false); setNotice(errorText(error)); }
       }
+    }
+  }
+  async function switchProject(projectID: string) {
+    const old = current.current;
+    if (!old || switching.current || pending.current || projectID === old.project.id || !old.api.browserSession?.projects?.some(option => option.id === projectID)) return;
+    if (!browserProjectSwitchSafe(old.actions.unresolved)) { setSwitchNotice('Finish or clear your edit and resolve pending actions before switching projects.'); return; }
+    const selector = newSessionID();
+    const api = Api.resume(projectID, selector, old.instanceId);
+    const controller = new AbortController();
+    const attempt = { api, controller, routeKey: route.current.key };
+    switching.current = attempt; setSwitchBusy(true); setSwitchNotice('');
+    const active = () => switching.current === attempt && current.current?.api === old.api && !controller.signal.aborted && route.current.key === attempt.routeKey;
+    let adopted = false;
+    try {
+      const { project, presentationSnapshot } = await verifyProjectSwitch(old.api, api, selector, controller.signal);
+      if (!active()) return;
+      const verified = api.browserSession;
+      if (!verified) throw new ApiError('invalid_response', 'The service returned an invalid browser session.');
+      const binding: BrowserSessionBinding = { version: 1, projectID: project.id, ...(project.handle ? { projectHandle: project.handle } : {}), instanceID: old.instanceId, sessionID: selector, expiresAt: verified.expires_at, selectedworkerID: '' };
+      if (!saveBrowserSession(binding)) throw new ApiError('browser_storage_unavailable', 'The browser session could not be retained safely.');
+      forgetBrowserSession(old.binding);
+      const next: Session = { api, project, instanceId: old.instanceId, nonce: nonce(), controller: new AbortController(), projectController: controller, presentationSnapshot, worker: null, binding, actions: new BrowserActionMemory(), renewalAttemptAt: performance.now() };
+      // No source worker, draft, query identity, route suffix, search or hash
+      // crosses the handoff. Late source callbacks lose their current owner.
+      switching.current = null; current.current = next; adopted = true;
+      saved.current = binding; setResumable(binding);
+      old.controller.abort(); old.projectController.abort(); old.api.close();
+      void old.api.endBrowserSession().catch(() => {});
+      void queryClient.cancelQueries({ queryKey: ['fc', old.nonce] }); queryClient.removeQueries({ queryKey: ['fc', old.nonce] });
+      appearanceAcceptor.current = createAppearanceAcceptor(project.id, () => current.current?.api === api && !controller.signal.aborted, setAppearance);
+      appearanceAcceptor.current(presentationSnapshot.presentation);
+      setMetadataStatus('connecting'); setSession(next); setSwitchBusy(false); setNotice('');
+      navigate(projectHome(project), { replace: true });
+    } catch (error) {
+      // Target refusal is not a source-session logout. Keep the readable
+      // source and its cookie; any uncertain target is cleaned up below.
+      if (active()) setSwitchNotice(terminal(error) || error instanceof ApiError && error.status === 404 ? 'This project is no longer available to this connection.' : errorText(error));
+    } finally {
+      if (!adopted) { controller.abort(); api.close(); void api.endBrowserSession().catch(() => {}); }
+      if (switching.current === attempt) { switching.current = null; setSwitchBusy(false); }
     }
   }
   function selectWorker(worker: Worker | null) {
@@ -251,7 +318,7 @@ function PrivateApp() {
   }, [projectLifetime, metadataAttempt, routeProject, queryClient, clear]);
   async function refreshVisibleData() {
     const live = current.current;
-    if (!live || live.controller.signal.aborted || refreshingSession === live) return;
+    if (!live || switching.current || live.controller.signal.aborted || refreshingSession === live) return;
     setRefreshingSession(live);
     const key = ['fc', live.nonce, live.instanceId, live.project.id, live.worker?.id ?? ''];
     const acceptAppearance = appearanceAcceptor.current;
@@ -269,6 +336,8 @@ function PrivateApp() {
     clear(); setSignIn(false); navigate(home);
   }
   const connected = session && projectMatches(session.project, routeProject);
+  const projectOptions = connected ? session.api.browserSession?.projects : undefined;
+  const showProjectSwitcher = connected && canSwitchProject(session.project.id, projectOptions);
   const visibleAppearance = connected ? appearance : undefined;
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   const login = <Connect key={routeProject ?? 'root'} inline={Boolean(routeProject)} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />;
@@ -276,8 +345,18 @@ function PrivateApp() {
   const historyGeneration = new URLSearchParams(location.search).get('generation') ?? undefined;
   const validHistory = !publishedHistory || Number.isSafeInteger(historyRevision) && Number(historyRevision) > 0 && String(historyRevision) === publishedHistory.params.revision && validPublicGeneration(historyGeneration);
   return <PresentationContext.Provider value={visibleAppearance}>
-    <header className="mast workspace-mast"><div className="mast-inner"><Link className="brand" to={connected ? projectHome(session.project) : routeProject && !restoring && !resumable ? `/projects/${encodeURIComponent(routeProject)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link><div className="mast-meta"><span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>{!connected && routeProject && !restoring && !resumable && <button type="button" onClick={() => setSignIn(value => !value)} aria-expanded={signIn}>Sign in</button>}{!connected && (restoring || resumable || connecting || session) && <HeaderUtilitiesSkeleton />}{connected && <ProjectHeaderUtilities status={metadataStatus} refreshing={refreshingSession === session} refresh={() => void refreshVisibleData()} disconnect={disconnect} />}</div></div></header>
-    {connected ? <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
+    <header className="mast workspace-mast"><div className="mast-inner">
+      <Link className="brand" to={connected ? projectHome(session.project) : routeProject && !restoring && !resumable ? `/projects/${encodeURIComponent(routeProject)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link>
+      <div className="mast-meta">
+        {showProjectSwitcher ? <ProjectSwitcher projectID={session.project.id} projects={projectOptions} busy={switchBusy} select={project => void switchProject(project)} />
+          : <span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>}
+        {!connected && routeProject && !restoring && !resumable && <button type="button" onClick={() => setSignIn(value => !value)} aria-expanded={signIn}>Sign in</button>}
+        {!connected && (restoring || resumable || connecting || session) && <HeaderUtilitiesSkeleton />}
+        {connected && <ProjectHeaderUtilities status={metadataStatus} refreshing={refreshingSession === session} busy={switchBusy} refresh={() => void refreshVisibleData()} disconnect={disconnect} />}
+      </div>
+    </div></header>
+    {connected && switchNotice && <p className="project-switch-notice notice" role="alert">{switchNotice}</p>}
+    {connected ? switchBusy ? <WorkspaceSkeleton /> : <Workspace key={session.nonce} session={session} metadataStatus={metadataStatus} reconnectProjectUpdates={reconnectProjectUpdates} selectWorker={selectWorker} fail={error => { if (terminal(error)) clear(errorText(error)); }} />
       : session || restoring || resumable ? <OpeningProject sidebar={Boolean(matchPath('/projects/:projectId/inbox/*', location.pathname))} busy={Boolean(session) || restoring || connecting} notice={notice} retry={() => setReconnect(value => value + 1)} cancel={() => clear('Connection cancelled.')} />
       : publicRoute && routeProject && validPublicAddress(routeProject) && validHistory ? <>{signIn && login}<PublicProjectAddress key={`${routeProject}:${historyRevision ?? ''}:${historyGeneration ?? ''}`} address={routeProject} revision={historyRevision} generation={historyGeneration} embedded fallback={signIn ? <p className="empty">This project has no published overview.</p> : login} /></> : login}
     <footer className="footer"><span className="attribution">Powered by <a href="https://github.com/benhook1013/FireController" target="_blank" rel="noreferrer noopener">FireController</a></span>{connected && <BackupHealthIndicator key={session.nonce} session={session} />}</footer>
@@ -369,8 +448,25 @@ export function ProjectConnectionStatus({ status, connectedLabel = 'Connected' }
   return <span className={`connection-note connection-${status}`} role="status" aria-label={`Project updates: ${status === 'live' ? 'connected' : label.toLowerCase()}`}>{label}</span>;
 }
 
-export function ProjectHeaderUtilities({ status, refreshing, refresh, disconnect }: { status: LiveStatus; refreshing: boolean; refresh(): void; disconnect(): void }) {
-  return <div className="header-utilities" role="group" aria-label="Project utilities"><ProjectConnectionStatus status={status} /><button type="button" aria-label="Refresh visible data" aria-busy={refreshing} disabled={refreshing} onClick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button><button type="button" onClick={disconnect}>Sign out</button></div>;
+function canSwitchProject(projectID: string, projects?: BrowserProjectOption[]): projects is BrowserProjectOption[] {
+  return Boolean(projects?.some(project => project.id === projectID) && projects.some(project => project.id !== projectID));
+}
+
+export function ProjectSwitcher({ projectID, projects, busy, select }: { projectID: string; projects?: BrowserProjectOption[]; busy: boolean; select(projectID: string): void }) {
+  if (!canSwitchProject(projectID, projects)) return null;
+  return <label className="project-switcher">
+    <span className="visually-hidden">Switch project</span>
+    <select aria-label="Switch project" value={projectID} disabled={busy} aria-busy={busy} onChange={event => select(event.target.value)}>
+      {projects.map(project => {
+        const duplicateName = projects.some(other => other.id !== project.id && other.name === project.name);
+        return <option key={project.id} value={project.id}>{duplicateName ? `${project.name} · ${project.handle}` : project.name}</option>;
+      })}
+    </select>
+  </label>;
+}
+
+export function ProjectHeaderUtilities({ status, refreshing, busy = false, refresh, disconnect }: { status: LiveStatus; refreshing: boolean; busy?: boolean; refresh(): void; disconnect(): void }) {
+  return <div className="header-utilities" role="group" aria-label="Project utilities"><ProjectConnectionStatus status={status} /><button type="button" aria-label="Refresh visible data" aria-busy={refreshing} disabled={refreshing || busy} onClick={refresh}>{refreshing ? 'Refreshing…' : 'Refresh'}</button><button type="button" onClick={disconnect}>Sign out</button></div>;
 }
 
 export function ProjectIdentityHero({ name, repository, category, introduction, overviewHref }: { name: string; repository: string; category?: string; introduction?: string; overviewHref?: string }) {

@@ -75,6 +75,7 @@ func Register(mux apiroutes.Registrar, store *core.Store, options ...Option) {
 	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
 	apiroutes.Private(mux).HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
 	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/browser-session/switch", a.switchBrowserSession)
 	apiroutes.Private(mux).HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
@@ -86,6 +87,7 @@ func Register(mux apiroutes.Registrar, store *core.Store, options ...Option) {
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
 	apiroutes.Private(mux).HandleFunc("POST /api/v1/operator/connector-credentials", a.grantMultiProjectConnector)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/operator/browser-credentials", a.grantMultiProjectBrowserCredential)
 	apiroutes.Private(mux).HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
 	apiroutes.Private(mux).HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
 	if a.browser != nil {
