@@ -87,8 +87,9 @@ def inventory(text):
                            for index, name in enumerate(race_order)})
     expected_lanes['Go race (reviewexec-5)'] = 4
     expected_lanes['Go race (rest-0)'] = 12
-    expected_lanes.update({f'Go race (reviewexec-{index+6})': lane
-                           for index, lane in enumerate([1, 6, 11, 14, 17, 4])})
+    expected_lanes.update({f'Go race (reviewexec-{index})': lane
+                           for index, lane in [(6, 1), (8, 11), (9, 14), (10, 17), (11, 4)]})
+    expected_lanes['Go race (reviewexec-1b)'] = 15
     assert {family for _, lane, family in result if lane == 19} == {'validate'}
     assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
@@ -308,6 +309,17 @@ class SchedulingTests(unittest.TestCase):
             self.offer_run(s, run, lambda name: 1 + (sum(map(ord, name)) + index) % 17)
         self.finish_runs(s, runs)
         self.assertEqual(max(map(len, s.snapshots)), 20)
+
+    def test_reviewexec_tail_preserves_separate_lane_and_context(self):
+        slots = {name: lane for name, lane, _ in self.jobs}
+        self.assertEqual(slots['Go race (reviewexec-1)'], 6)
+        self.assertEqual(slots['Go race (reviewexec-1b)'], slots['Go race (reviews-3)'])
+        self.assertNotIn('Go race (reviewexec-7)', slots)
+        s = Scheduler()
+        s.offer(Job('earlier', 'Go race (reviewexec-1)', slots['Go race (reviewexec-1)'], 50))
+        s.offer(Job('later', 'Go race (reviewexec-1b)', slots['Go race (reviewexec-1b)']))
+        self.assertEqual({job.name for job, _ in s.active.values()},
+                         {'Go race (reviewexec-1)', 'Go race (reviewexec-1b)'})
 
     def test_rest_zero_can_run_while_slot_four_is_occupied(self):
         slots = {name: lane for name, lane, _ in self.jobs}
