@@ -112,15 +112,19 @@ func (e *Engine) ConfigurePolicy(ctx context.Context, scope core.Scope, key stri
 func readPolicy(ctx context.Context, tx *sql.Tx, project string) (PolicyRecord, error) {
 	var record PolicyRecord
 	var body string
-	err := tx.QueryRowContext(ctx, `SELECT project_id,revision,actor_id,created_at,body_json FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&record.ProjectID, &record.Revision, &record.ActorID, &record.RecordedAt, &body)
+	var bodyValue, revisionValue any
+	err := tx.QueryRowContext(ctx, `SELECT project_id,revision,actor_id,created_at,body_json FROM review_policy_config WHERE project_id=? ORDER BY revision DESC LIMIT 1`, project).Scan(&record.ProjectID, &revisionValue, &record.ActorID, &record.RecordedAt, &bodyValue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PolicyRecord{}, core.Fail("reviews_policy_unconfigured", "Configure explicit project review requirements before assessing policy.", 409)
 	}
 	if err != nil {
 		return PolicyRecord{}, err
 	}
-	if len(body) > 1024 || strictjson.Decode([]byte(body), &record.Policy) != nil || !validPolicy(record.Policy) {
-		return PolicyRecord{}, core.Fail("storage_unavailable", "Stored project review policy is unavailable.", 500)
+	var validBody, validRevision bool
+	body, validBody = bodyValue.(string)
+	record.Revision, validRevision = revisionValue.(int64)
+	if !validBody || !validRevision || record.Revision < 1 || len(body) > 1024 || strictjson.Decode([]byte(body), &record.Policy) != nil || !validPolicy(record.Policy) {
+		return PolicyRecord{}, automaticProjectStateFailure("storage_unavailable", "Stored project review policy is unavailable.", 500)
 	}
 	return record, nil
 }

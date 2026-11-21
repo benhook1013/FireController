@@ -135,7 +135,7 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 		return err
 	}
 	defer rows.Close()
-	var cancelled []string
+	var cancelled, scheduling []string
 	var first string
 	var earliest time.Time
 	tied := false
@@ -152,6 +152,10 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 		}
 		if !state.Valid || !retainedReason.Valid || state.String != "held" || attemptState != "held" {
 			return waitUnavailable()
+		}
+		if retainedReason.String == "pull_scheduling_paused" || retainedReason.String == "automation_authorization_changed" || retainedReason.String == "automatic_scheduling_unavailable" {
+			scheduling = append(scheduling, id)
+			continue
 		}
 		if o.Channel == "cli" && retainedReason.String == cliDraftWait {
 			continue
@@ -173,6 +177,21 @@ func validateFirstCooldown(ctx context.Context, q EvidenceQuery, o Operation, ba
 		return err
 	}
 	rows.Close()
+	// Scheduling guards detach unused preparations without becoming quota
+	// baselines. Reuse the same strict journal proof as snapshot validation.
+	for _, id := range scheduling {
+		a, err := readAttempt(ctx, q, o.ProjectID, id)
+		if err != nil {
+			return waitDependencyError(err)
+		}
+		_, unused, err := historicalUnusedPreparationOperation(ctx, q, o, a, true)
+		if err != nil {
+			return waitDependencyError(err)
+		}
+		if !unused {
+			return waitUnavailable()
+		}
+	}
 	for _, id := range cancelled {
 		if err := validateUnqueriedRetryHistory(ctx, q, o, id, baseline); err != nil {
 			return err

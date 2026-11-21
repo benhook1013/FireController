@@ -27,10 +27,24 @@ func sourceObligationCount(ctx context.Context, tx *sql.Tx, project string, pull
 	return facts.Open, sourceObligationReadError(err)
 }
 
+// Preserve the existing unused-attempt recovery for typed carried-obligation
+// storage faults without classifying other project-local history as scheduling.
+type sourceObligationProjectStateError struct{ error }
+
+func (e *sourceObligationProjectStateError) Unwrap() error { return e.error }
+
+func isSourceObligationProjectStateError(err error) bool {
+	var source *sourceObligationProjectStateError
+	return errors.As(err, &source)
+}
+
 func sourceObligationReadError(err error) error {
 	var failure *core.Error
 	if errors.As(err, &failure) && failure.Code == "repository_changed" {
 		return sourceHold("repository_changed")
+	}
+	if adoptionholds.IsProjectStateError(err) {
+		return &sourceObligationProjectStateError{&automaticProjectStateError{err}}
 	}
 	return err
 }

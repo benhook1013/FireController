@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
@@ -225,9 +226,7 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil || count != 0 {
 			t.Fatal("predecessor domain not empty", err)
 		}
-		if _, err := f.store.DB().Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
-			t.Fatal(err)
-		}
+		dropSelectionPredecessorDomains(t, f.store.DB())
 		bundle := restoreBundle(t, f)
 		if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 			t.Fatal(err)
@@ -235,14 +234,22 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 	})
 }
 
-// Removing the independent optional domain reconstructs the unchanged parent
-// physical schema, rather than relabeling a newer reviews/execution migration.
+// The newer scheduling and front-cache domains must be absent from a
+// predecessor snapshot along with selection. Scheduling references selections
+// directly, so leaving it installed would not describe a valid predecessor.
+func dropSelectionPredecessorDomains(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DROP TABLE review_front_frames; DROP TABLE review_selections; DELETE FROM metadata WHERE key IN ('schema:review_scheduling','schema:review_fronts','schema:review_selection')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Removing the new optional domains reconstructs a valid parent schema without
+// relabeling a newer reviews/execution migration.
 func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testing.T) {
 	f := newRestoreFixture(t)
 	db := f.store.DB()
-	if _, err := db.Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
-		t.Fatal(err)
-	}
+	dropSelectionPredecessorDomains(t, db)
 	before := backupRows(t, db)
 	schema := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
 	metadata := restoreRows(t, db, `SELECT key,value FROM metadata ORDER BY key`)
@@ -269,10 +276,10 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 			t.Fatal("upgrade changed business bytes", table)
 		}
 	}
-	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name<>'review_selections' ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
+	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames') ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
 		t.Fatal("upgrade changed predecessor physical SQL")
 	}
-	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key<>'schema:review_selection' ORDER BY key`); !reflect.DeepEqual(metadata, got) {
+	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key NOT IN ('schema:review_selection','schema:review_scheduling','schema:review_fronts') ORDER BY key`); !reflect.DeepEqual(metadata, got) {
 		t.Fatal("upgrade changed parent metadata")
 	}
 	var count int
@@ -283,11 +290,25 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
 		t.Fatal("selection domain version", version, err)
 	}
-	if len(after) != len(before)+1 {
-		t.Fatal("upgrade added another table domain")
+	if len(after) != len(before)+5 {
+		t.Fatal("upgrade did not reinstall the newer optional domains", len(before), len(after))
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames','review_pr_followers')`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("deferred domain installed", count, err)
+	for domain, version := range map[string]string{"review_selection": "1", "review_scheduling": "2", "review_fronts": "1"} {
+		var got string
+		if err := db.QueryRow(`SELECT value FROM metadata WHERE key=?`, "schema:"+domain).Scan(&got); err != nil || got != version {
+			t.Fatal("reinstalled domain version", domain, got, err)
+		}
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames')`).Scan(&count); err != nil || count != 5 {
+		t.Fatal("new optional domain tables were not reinstalled", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_pr_followers'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("unexpected deferred domain installed", count, err)
+	}
+	for _, table := range []string{"review_scheduling", "review_pull_scheduling", "review_automatic_selections", "review_front_frames"} {
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatal("upgrade manufactured optional-domain activity", table, count, err)
+		}
 	}
 	if err := reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
 		t.Fatal(err)

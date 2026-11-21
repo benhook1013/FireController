@@ -95,6 +95,20 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
+		scheduling, err := readPullScheduling(ctx, tx, project, o.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			return nil
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Status == 403 {
+				return nil
+			}
+			return err
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -149,6 +163,11 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 				return holdOperation(ctx, tx, o, refusal.Code, at)
 			}
 			return err
+		}
+		if preferred, err := e.preferredCLIQueued(ctx, tx, o, c); err != nil {
+			return err
+		} else if preferred {
+			return nil
 		}
 		var repositoryID int64
 		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
@@ -239,6 +258,15 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
+		}
+		// Preparation may have overlapped a PR pause or a withdrawal of the
+		// automatic intent's authority. Recheck in this admission transaction,
+		// before recording a possibly issued action.
+		if err := requirePullScheduling(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			return err
 		}
 		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
 			return err
@@ -375,7 +403,9 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 			return err
 		}
 		operationState, operationAttempt := state, o.AttemptID
-		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+		// Only an unused preparation may detach and retain the same queued intent.
+		retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed" || reason == "automatic_scheduling_unavailable"
+		if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
 			operationState, operationAttempt = "queued", ""
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
@@ -497,7 +527,7 @@ func (e *Engine) recoverInterruptedSelected(ctx context.Context, skipped, select
 			if err != nil {
 				// Corrupt authority stays reserved; it cannot prevent unrelated
 				// projects from recovering or authorize a replacement attempt.
-				if isStoredUnavailable(err, storedOperationIdentity) || isWaitUnavailable(err) {
+				if isStoredUnavailable(err, storedOperationIdentity) || isRetainedOperationDecodeError(err) || isWaitUnavailable(err) {
 					slog.WarnContext(ctx, "Interrupted operation authority unavailable", "operation_id", a.OperationID, "attempt_id", a.ID)
 					continue
 				}

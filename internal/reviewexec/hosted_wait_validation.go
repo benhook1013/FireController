@@ -18,6 +18,7 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 		LEFT JOIN review_operations o ON o.id=a.operation_id
 		JOIN review_execution_transitions t ON t.attempt_id=a.id
 		WHERE (o.id IS NULL OR o.attempt_id<>a.id) AND t.reason IN ('allowance_exhausted','hosted_allowance_cooldown')
+		UNION SELECT o.project_id,o.id FROM review_operations o JOIN review_execution_attempts a ON a.operation_id=o.id JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE a.id<>o.attempt_id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed','automatic_scheduling_unavailable')
 		ORDER BY 2`, cliDraftWait, cliDraftWait)
 	if err != nil {
 		return err
@@ -76,7 +77,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 	}
 	var firstDeadline, lastDeadline, baselineDeadline time.Time
 	foundCurrent := o.AttemptID == ""
-	foundDraft := false
+	foundDetached, foundDraft := false, false
 	for _, id := range ids {
 		a, err := readAttempt(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -95,15 +96,16 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			}
 			continue
 		}
-		_, draft, err := historicalCLIDraftOperation(ctx, tx, o, a)
+		historicalUnused, unused, err := historicalUnusedPreparationOperation(ctx, tx, o, a, true)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return waitUnavailable()
 			}
 			return err
 		}
-		if draft {
-			foundDraft = true
+		if unused {
+			foundDetached = true
+			foundDraft = foundDraft || historicalUnused.Reason == cliDraftWait
 			continue
 		}
 		if !hasBaseline {
@@ -173,7 +175,7 @@ func validateOperationWaitHistory(ctx context.Context, tx *sql.Tx, o Operation) 
 			return waitUnavailable()
 		}
 	}
-	if !foundCurrent || o.Wait == nil && !foundDraft {
+	if !foundCurrent || o.Wait == nil && !foundDetached || o.Reason == cliDraftWait && !foundDraft {
 		return waitUnavailable()
 	}
 	if hasBaseline {
