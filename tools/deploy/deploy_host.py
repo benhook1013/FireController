@@ -235,6 +235,7 @@ def main(argv=None):
     p.add_argument("--lock-wait", type=int, default=1200, help="seconds to wait for a running backup")
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with the image")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
+    p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
     a = p.parse_args(argv)
     if not SHA.fullmatch(a.source) or not HEX64.fullmatch(a.fcd_sha256) or not re.fullmatch(r"localhost/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", a.image):
         p.error("source, fcd hash or image reference is malformed")
@@ -266,6 +267,8 @@ def main(argv=None):
                        "--drain-seconds", str(a.drain_seconds), "--memory-limit", a.memory_limit]
         if a.retention_mode is not None:
             rollout_cmd.extend(["--retention-mode", a.retention_mode])
+        if a.remote_mcp_mode is not None:
+            rollout_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
         rollout_cmd.extend(["--kubectl", "k3s", "kubectl"])
         rollout = subprocess.run(rollout_cmd, capture_output=True, text=True, timeout=a.drain_seconds + 600)
         if rollout.returncode != 0:

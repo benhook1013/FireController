@@ -62,6 +62,7 @@ def main(argv=None):
     p.add_argument("--drain-seconds", type=int, default=600)
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with every rollout")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"], help="explicitly set database retention mode on the live Controller; omit to preserve current mode")
+    p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
     a = p.parse_args(argv)
 
     source = require_clean_develop()
@@ -111,6 +112,8 @@ def main(argv=None):
                     "--drain-seconds", str(a.drain_seconds), "--memory-limit", a.memory_limit]
         if a.retention_mode is not None:
             host_cmd.extend(["--retention-mode", a.retention_mode])
+        if a.remote_mcp_mode is not None:
+            host_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
         code = subprocess.run(ssh + [" ".join(shlex.quote(x) for x in host_cmd)]).returncode
         if code == 0:
             # Keep this and the previous deploy bundle; drop older ones.

@@ -16,7 +16,7 @@ If the target account lacks fixed request headers, report that compatibility dep
 
 1. In the bound project's manager profile, generate a fresh, high-entropy secret in a private credential file. Use the same owner-private file handling as the [native client setup](onboarding.md#private-agent-setup-commands).
 2. Register the credential with `fc credentials grant --credential-file /private/connector.token --connector-worker WORKER_ID --permission read --key KEY` using that manager binding. Select `write` or `manage` only if the connector needs those capabilities. The receipt identifies the credential, project, and connector worker.
-3. Start the daemon with `--remote-mcp-origin https://controller.example.com` and install the [opt-in proxy route](hosting.md#remote-mcp-route). Share the token privately with the intended connector owner.
+3. Stage and verify the [opt-in proxy route](hosting.md#remote-mcp-route) while the daemon route is disabled. Then enable remote MCP through the guarded rollout for the canonical HTTPS origin. Share the token privately with the intended connector owner.
 4. Create a custom connector pointing to the canonical HTTPS URL ending in `/mcp`. On an account with Request headers, select No sign-in, add a required `Authorization` header, and supply `Bearer <connector token>`. Select a separate project and worker binding by using its own connector entry and token.
 
 Rotate by creating a fresh dedicated grant and replacing the connector's private credential, then revoke the prior grant by its receipt ID using `fc credentials revoke CREDENTIAL_ID --key KEY`. Use `fc credentials update --help` for guarded permission changes under the same binding.

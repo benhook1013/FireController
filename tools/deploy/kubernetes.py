@@ -86,6 +86,52 @@ def retention_args(current, mode):
     return args + (["--retention-dry-run"] if mode == "dry-run" else [])
 
 
+def remote_mcp_args(current, mode, origin):
+    """Validate the existing selector and change only the explicit MCP opt-in."""
+    if mode is None:
+        return current
+    if not isinstance(current, list) or not all(isinstance(value, str) for value in current):
+        raise ValueError("invalid existing controller arguments")
+    if mode not in ("enable", "disable"):
+        raise ValueError("invalid remote MCP mode")
+
+    def require_https(value):
+        parsed = urllib.parse.urlsplit(value)
+        # Accessing port also rejects malformed or out-of-range ports.
+        _ = parsed.port
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment
+                or parsed.path not in ("", "/") or any(c.isspace() for c in value)
+                or "?" in value or "#" in value or parsed.netloc.endswith(":")):
+            raise ValueError("remote MCP requires a canonical HTTPS origin")
+
+    if mode == "enable":
+        require_https(origin)
+    result, found, index = [], False, 0
+    while index < len(current):
+        value = current[index]
+        flag, equals, inline = value.partition("=")
+        if flag not in ("--remote-mcp-origin", "-remote-mcp-origin"):
+            result.append(value)
+            index += 1
+            continue
+        if found:
+            raise ValueError("duplicate existing remote MCP origin selector")
+        found = True
+        index += 1
+        if not equals:
+            if index == len(current):
+                raise ValueError("missing existing remote MCP origin value")
+            inline = current[index]
+            index += 1
+        require_https(inline)
+    if mode == "enable":
+        if "--" in result:
+            raise ValueError("cannot enable remote MCP after an argument terminator")
+        result.extend(["--remote-mcp-origin", origin.rstrip("/")])
+    return result
+
+
 def main():
     artifact_lease_options()  # Refuse invalid enrollment before any rollout action.
     p = argparse.ArgumentParser(description=__doc__)
@@ -102,6 +148,7 @@ def main():
     p.add_argument("--kubectl", nargs="+", default=["kubectl"], help="Command prefix, for example --kubectl k3s kubectl")
     p.add_argument("--memory-limit", help="Controller container memory limit to apply with the image, for example 1Gi")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
+    p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
     args = p.parse_args()
     if args.memory_limit is not None and not re.fullmatch(r"[1-9][0-9]{0,5}(Mi|Gi)", args.memory_limit):
         p.error("memory limit must look like 512Mi or 1Gi")
@@ -110,6 +157,8 @@ def main():
     origin = urllib.parse.urlsplit(args.url)
     if origin.username or origin.password or origin.query or origin.fragment or origin.path not in ("", "/") or not origin.hostname or origin.scheme != "https" and not (origin.scheme == "http" and origin.hostname in ("127.0.0.1", "::1", "localhost")):
         p.error("url must be an HTTPS origin or loopback HTTP origin")
+    if args.remote_mcp_mode == "enable":
+        remote_mcp_args([], "enable", args.url)  # Refuse HTTP before credentials or external actions.
     # Credentials are neither command arguments nor printed diagnostic material.
     credential = args.credential_file.read_text().strip()
     if not credential or len(credential) > 256 or any(c.isspace() for c in credential):
@@ -147,7 +196,8 @@ def main():
     if sum(c["name"] == args.container for c in containers) != 1:
         p.error("selected controller container is unavailable")
     selected = next(c for c in containers if c["name"] == args.container)
-    desired_retention_args = retention_args(selected.get("args", []), args.retention_mode)
+    desired_args = remote_mcp_args(selected.get("args", []), args.remote_mcp_mode, args.url)
+    desired_args = retention_args(desired_args, args.retention_mode)
     if api("GET", "/api/v1/instance").get("instance_id") != args.instance_id:
         p.error("unexpected service instance")
     api("GET", "/api/v1/operator/deployment-drain")  # Refuse unsupported old servers before changing anything.
@@ -198,8 +248,8 @@ def main():
                 c["imagePullPolicy"] = "IfNotPresent"
                 if args.memory_limit:
                     c.setdefault("resources", {}).setdefault("limits", {})["memory"] = args.memory_limit
-                if args.retention_mode is not None:
-                    c["args"] = desired_retention_args
+                if args.retention_mode is not None or args.remote_mcp_mode is not None:
+                    c["args"] = desired_args
         annotations = deployment["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})
         annotations["firecontroller.dev/source-commit"] = args.source_revision
         annotations["firecontroller.dev/image-reference"] = args.image
@@ -214,7 +264,7 @@ def main():
         installed = next(c for c in current["spec"]["template"]["spec"]["containers"] if c["name"] == args.container)
         if installed["image"] != args.image:
             raise RuntimeError("selected image changed during rollout")
-        if args.retention_mode is not None and installed.get("args", []) != desired_retention_args:
+        if (args.retention_mode is not None or args.remote_mcp_mode is not None) and installed.get("args", []) != desired_args:
             raise RuntimeError("selected Controller arguments changed during rollout")
         wait_for_recovery(lambda: (api("GET", "/api/v1/instance"), api("GET", "/api/v1/operator/deployment-drain")), args.instance_id)
         print(json.dumps({"state": "deployed", "image": args.image, "drain_deadline_reached": forced}))
