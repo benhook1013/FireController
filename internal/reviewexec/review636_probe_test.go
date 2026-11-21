@@ -1,9 +1,12 @@
 package reviewexec
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func TestReview636AncestorHoldBeforeAllChildAdmission(t *testing.T) {
@@ -84,27 +87,73 @@ func TestReview636AncestorHoldBeforeAllChildAdmission(t *testing.T) {
 	}
 }
 
-func TestReview636OtherChannelChangeRetainsSourceRetry(t *testing.T) {
-	f, original := sourceRetryFixture(t)
-	ageSourceRetry(t, f, original.ID)
+func TestReview636CompletedSourceRetryUsesCurrentSharedRevision(t *testing.T) {
+	f, stale := sourceRetryFixture(t)
+	ageSourceRetry(t, f, stale.ID)
+	stale = selectionRead(t, f, stale.ID)
 	one := int64(1)
 	on := true
 	_, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "other-channel", SchedulingRequest{ExpectedRevision: &one, AutomaticHosted: &on, AutomaticCLI: &on})
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertRevision := func(selectionID string, acceptedWant, currentWant int64) {
+		t.Helper()
+		var accepted, current int64
+		err := f.store.DB().QueryRow(`SELECT a.scheduling_revision,s.revision FROM review_automatic_selections a
+			JOIN review_scheduling s ON s.project_id=a.project_id WHERE a.selection_id=? AND a.project_id=?`,
+			selectionID, attemptProject).Scan(&accepted, &current)
+		if err != nil || accepted != acceptedWant || current != currentWant {
+			t.Fatalf("retained selection revision=%d current=%d, want %d/%d: %v", accepted, current, acceptedWant, currentWant, err)
+		}
+	}
+	assertRevision(stale.ID, 1, 2)
+
+	// Changing only CLI leaves the Hosted intent basis unchanged, but must not
+	// requeue a completed hold under its superseded shared authorization.
+	reader := &refreshTestReader{}
+	worked, err := f.e.generateAutomaticHosted(t.Context(), map[string]TargetReader{"test-capability": reader})
+	if err != nil || worked || reader.calls.Load() != 0 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatalf("stale retry performed work or replaced the held intent: worked=%t calls=%d err=%v", worked, reader.calls.Load(), err)
+	}
+	if got := selectionRead(t, f, stale.ID); got != stale {
+		t.Fatalf("stale held selection was rewritten: %+v", got)
+	}
+
+	// A deliberate Hosted rearm creates a distinct current-authority intent.
+	// When that fresh intent reaches a transient hold, its bounded retry must
+	// still work; the previous settings edit isn't a permanent veto.
+	schedulingEnable(t, f, 2, true)
 	schedulingGenerate(t, f, true)
-	got := schedulingLatest(t, f)
-	if got.ID != original.ID || got.State != "queued" {
-		t.Fatalf("original source retry stranded: %+v", got)
+	fresh := schedulingLatest(t, f)
+	if fresh.ID == stale.ID || fresh.State != "queued" {
+		t.Fatalf("fresh revision did not obtain its own intent: %+v", fresh)
 	}
-	selectionNext(t, f, &refreshTestReader{})
-	got = schedulingLatest(t, f)
-	if got.ID != original.ID || got.State != "selected" || got.OperationID == "" {
-		t.Fatalf("recovered source intent cannot admit child: %+v", got)
+	assertRevision(fresh.ID, 3, 3)
+	selectionNext(t, f, &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
+		return reviewprovider.Repository{}, context.DeadlineExceeded
+	}})
+	if got := selectionRead(t, f, fresh.ID); got.State != "held" || got.Reason != "source_fetch_timeout" || got.OperationID != "" {
+		t.Fatalf("fresh intent did not retain a transient hold: %+v", got)
 	}
-	schedulingGenerate(t, f, false)
-	if attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
-		t.Fatal("recovery duplicated work")
+	ageSourceRetry(t, f, fresh.ID)
+	schedulingGenerate(t, f, true)
+	if got := selectionRead(t, f, fresh.ID); got.State != "queued" || got.OperationID != "" {
+		t.Fatalf("current held intent did not requeue: %+v", got)
+	}
+	reader = &refreshTestReader{}
+	selectionNext(t, f, reader)
+	got := selectionRead(t, f, fresh.ID)
+	if got.State != "selected" || got.OperationID == "" || reader.calls.Load() == 0 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 2 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+		t.Fatalf("current retry did not create exactly one child without provider execution: %+v", got)
+	}
+	if old := selectionRead(t, f, stale.ID); old != stale {
+		t.Fatalf("fresh retry rewrote the old held intent: %+v", old)
 	}
 }
