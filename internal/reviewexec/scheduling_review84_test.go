@@ -15,7 +15,7 @@ func TestReview84DraftWaitDoesNotFenceIndependentCLI(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, attemptProject, c, "cli")
+		limit, err := f.e.automaticHostedQueuedPrefixChannel(ctx, tx, attemptProject, c, "cli")
 		if err == nil && limit != 2 {
 			t.Fatalf("draft fenced independent successor: %d", limit)
 		}

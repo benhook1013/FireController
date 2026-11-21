@@ -4,10 +4,45 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"math/big"
+	"strconv"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+// schedulingInteger accepts the exact integral JSON numbers advertised by the
+// scheduling tool schema. Do not pass through float64: revision CAS might target
+// a different revision above the binary64 exact-integer range.
+type schedulingInteger int64
+
+func (n *schedulingInteger) UnmarshalJSON(raw []byte) error {
+	s := string(raw)
+	if len(s) == 0 || (s[0] != '-' && (s[0] < '0' || s[0] > '9')) || !json.Valid(raw) {
+		return invalidArguments()
+	}
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		// Bound exponent work before exact rational parsing. The caller's
+		// 4096-byte input ceiling makes any nonzero value beyond this
+		// bound either fractional or outside int64.
+		exp, err := strconv.ParseInt(s[i+1:], 10, 16)
+		if err != nil || exp < -4116 || exp > 4116 {
+			mantissa := strings.TrimLeft(s[:i], "-0.")
+			if mantissa == "" {
+				*n = 0
+				return nil
+			}
+			return invalidArguments()
+		}
+	}
+	v, ok := new(big.Rat).SetString(s)
+	if !ok || !v.IsInt() || !v.Num().IsInt64() {
+		return invalidArguments()
+	}
+	*n = schedulingInteger(v.Num().Int64())
+	return nil
+}
 
 func reviewSchedulingWrite(name string) bool {
 	return name == "review_scheduling_configure" || name == "review_pull_scheduling_update"
@@ -35,20 +70,20 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 	}
 	if name == "review_pull_scheduling_read" {
 		var wire struct {
-			PullNumber int64 `json:"pull_number"`
+			PullNumber schedulingInteger `json:"pull_number"`
 		}
 		if strictjson.Decode(raw, &wire) != nil || wire.PullNumber < 1 || wire.PullNumber > 2147483647 {
 			return args, invalidArguments()
 		}
-		args.pullNumber = wire.PullNumber
+		args.pullNumber = int64(wire.PullNumber)
 		return args, nil
 	}
 	if name == "review_scheduling_configure" {
 		var wire struct {
-			Revision *int64 `json:"expected_revision"`
-			Enabled  *bool  `json:"automatic_hosted"`
-			CLI      *bool  `json:"automatic_cli,omitempty"`
-			Key      string `json:"idempotency_key"`
+			Revision *schedulingInteger `json:"expected_revision"`
+			Enabled  *bool              `json:"automatic_hosted"`
+			CLI      *bool              `json:"automatic_cli,omitempty"`
+			Key      string             `json:"idempotency_key"`
 		}
 		if strictjson.Decode(raw, &wire) != nil || wire.Revision == nil || wire.Enabled == nil || !client.ValidMutationKey(wire.Key) {
 			return args, invalidArguments()
@@ -58,18 +93,18 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 			return args, invalidArguments()
 		}
 		args.key = wire.Key
-		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: *wire.Revision, AutomaticHosted: *wire.Enabled, AutomaticCLI: wire.CLI}
+		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: int64(*wire.Revision), AutomaticHosted: *wire.Enabled, AutomaticCLI: wire.CLI}
 		if client.ValidateConfigureReviewScheduling(args.reviewScheduling) != nil {
 			return arguments{}, invalidArguments()
 		}
 		return args, nil
 	}
 	var wire struct {
-		PullNumber int64   `json:"pull_number"`
-		Revision   *int64  `json:"expected_revision"`
-		Paused     *bool   `json:"paused"`
-		Reason     *string `json:"reason,omitempty"`
-		Key        string  `json:"idempotency_key"`
+		PullNumber schedulingInteger  `json:"pull_number"`
+		Revision   *schedulingInteger `json:"expected_revision"`
+		Paused     *bool              `json:"paused"`
+		Reason     *string            `json:"reason,omitempty"`
+		Key        string             `json:"idempotency_key"`
 	}
 	if name != "review_pull_scheduling_update" || strictjson.Decode(raw, &wire) != nil || wire.Revision == nil || wire.Paused == nil || !client.ValidMutationKey(wire.Key) {
 		return args, invalidArguments()
@@ -78,8 +113,8 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 	if json.Unmarshal(raw, &present) != nil || present["reason"] != nil && (wire.Reason == nil || !*wire.Paused) {
 		return args, invalidArguments()
 	}
-	args.key, args.pullNumber = wire.Key, wire.PullNumber
-	args.reviewPullScheduling = client.ConfigureReviewPullSchedulingRequest{ExpectedRevision: *wire.Revision, Paused: *wire.Paused}
+	args.key, args.pullNumber = wire.Key, int64(wire.PullNumber)
+	args.reviewPullScheduling = client.ConfigureReviewPullSchedulingRequest{ExpectedRevision: int64(*wire.Revision), Paused: *wire.Paused}
 	if wire.Reason != nil {
 		args.reviewPullScheduling.Reason = *wire.Reason
 	}

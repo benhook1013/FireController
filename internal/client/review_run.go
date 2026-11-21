@@ -148,16 +148,21 @@ func (c *Client) WaitReviewSelection(ctx context.Context, id string, waitSeconds
 		return ReviewRunState{}, validation()
 	}
 	var result ReviewRunState
+	var queuedCause string
 	var status int
 	err := resumeResultWait(ctx, waitSeconds, func(ctx context.Context, remaining int) error {
 		result = ReviewRunState{}
-		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "selections", id), nil, true, "", nil, http.StatusOK, false, &result, 64<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status})
+		queuedCause = ""
+		return c.requestBoundedOptions(ctx, http.MethodGet, c.projectPath("reviews", "selections", id), nil, true, "", nil, http.StatusOK, false, &result, 64<<10, decodeReviewResponse, &sourceWaitOptions{seconds: remaining, status: &status, queuedCause: &queuedCause})
 	})
 	if err != nil {
 		return ReviewRunState{}, reviewSelectionWaitTargetError(err, id)
 	}
 	if result.Selection.ID != id || !c.validReviewRun(result) {
 		return ReviewRunState{}, invalidResponse()
+	}
+	if result.Operation != nil && result.Operation.State == "queued" {
+		result.Operation.queuedCause = queuedCause
 	}
 	return result, nil
 }
