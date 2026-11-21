@@ -57,7 +57,7 @@ func localHelp() helpResponse {
 				{"publication prepare --file CHANGES_JSON --output NEW_PRIVATE_FILE", "Manager preview; private file, no publication."},
 				{"jobs history | progress-history | revision", "Private archives; operation --help gives syntax. No automatic pagination."},
 				{"credentials help", "Project grants and permissions; no raw token arguments."},
-				{"reviews queue / queue-add / queue-move / queue-remove / queue-restore / queue-reorder", "Queue reads/changes; project writes require revision/key. Local --help."},
+				{"reviews queue / queue-add / queue-move / queue-remove / queue-restore / queue-reorder", "Writes require revision and key."},
 				{"reviews operations", "Attention including unfinished results; --status pending selects provider work, --all includes history. operation ID reads detail."},
 				{"reviews help", "Review commands, following and exact --help."},
 				{"reviews evidence | adjudication | decide | fix | decide-batch | fix-batch | finalize", "Native evidence/guarded proof: docs/review-controls.md. publish --help covers GitHub checkpoints."},
