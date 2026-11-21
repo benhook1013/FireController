@@ -98,13 +98,17 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		if revision != *c.ExpectedRevision {
 			return nil, conflict()
 		}
-		return e.persistConfiguration(ctx, tx, scope, previous, c, revision)
+		return e.persistConfiguration(ctx, tx, scope, previous, c, revision, 0, nil)
 	})
 }
 
 // persistConfiguration is shared by administrative replacement and narrow
 // ordinary queue edits. Callers establish authority and the exact prior revision.
-func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, c Configuration, revision int64) (Receipt, error) {
+// A nonnil order scopes bulk reorder publication to only the selected PR slots.
+func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, c Configuration, revision, restore int64, order []int64) (Receipt, error) {
+	if restore != 0 && e.publishQueue == nil {
+		return Receipt{}, core.Fail("review_projection_unavailable", "Restoring a retired PR requires the native review queue projection.", 409)
+	}
 	if revision == math.MaxInt64 {
 		return Receipt{}, core.Fail("revision_exhausted", "The execution configuration revision cannot advance further.", 409)
 	}
@@ -140,10 +144,19 @@ func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope cor
 			}
 		}
 	}
+	projectionChanged := false
 	if e.publishQueue != nil {
-		if err := e.publishQueue(ctx, tx, scope, previous.Queue, c.Queue); err != nil {
+		publishedQueue := c.Queue
+		if order != nil {
+			publishedQueue = order
+		}
+		projectionChanged, err = e.publishQueue(ctx, tx, scope, previous.Queue, publishedQueue, restore)
+		if err != nil {
 			return Receipt{}, err
 		}
+	}
+	if order != nil && slices.Equal(previous.Queue, c.Queue) && !projectionChanged {
+		return Receipt{ID: scope.ProjectID, State: "unchanged", Revision: revision}, nil
 	}
 	for _, number := range c.Queue {
 		if !slices.Contains(previous.Queue, number) {

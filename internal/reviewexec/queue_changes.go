@@ -5,31 +5,48 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/benhook1013/FireController/internal/strictjson"
 	"math"
 	"net/http"
 	"slices"
 
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
-// QueueChange edits only one existing project's scheduling list. No provider,
+// QueueChange edits only an existing project's scheduling list. No provider,
 // mode, channel, pause or existing per-PR control is chosen by this request.
 type QueueChange struct {
-	ExpectedConfigurationRevision int64  `json:"expected_configuration_revision"`
-	PullNumber                    int64  `json:"pull_number"`
-	Before                        *int64 `json:"before,omitempty"`
-	After                         *int64 `json:"after,omitempty"`
-	Position                      string `json:"position,omitempty"`
-	Reason                        string `json:"reason,omitempty"`
+	ExpectedConfigurationRevision int64   `json:"expected_configuration_revision"`
+	PullNumber                    int64   `json:"pull_number,omitempty"`
+	Before                        *int64  `json:"before,omitempty"`
+	After                         *int64  `json:"after,omitempty"`
+	Position                      string  `json:"position,omitempty"`
+	Reason                        string  `json:"reason,omitempty"`
+	Order                         []int64 `json:"order,omitempty"`
 }
 
 func validateQueueChange(action string, r QueueChange) error {
-	if action != "add" && action != "move" && action != "remove" {
+	if action != "add" && action != "move" && action != "remove" && action != "restore" && action != "reorder" {
 		return invalid()
 	}
-	if r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 || r.PullNumber < 1 || r.PullNumber > 2147483647 {
+	if r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 {
+		return invalid()
+	}
+	if action == "reorder" {
+		if r.PullNumber != 0 || r.Before != nil || r.After != nil || r.Position != "" || r.Reason != "" || len(r.Order) < 2 || len(r.Order) > 100 {
+			return invalid()
+		}
+		seen := make(map[int64]bool, len(r.Order))
+		for _, number := range r.Order {
+			if number < 1 || number > 2147483647 || seen[number] {
+				return invalid()
+			}
+			seen[number] = true
+		}
+		return nil
+	}
+	if r.Order != nil || r.PullNumber < 1 || r.PullNumber > 2147483647 {
 		return core.Fail("validation_failed", "Provide a positive expected_configuration_revision and a positive 32-bit pull_number.", 400)
 	}
 	if action == "remove" {
@@ -62,14 +79,35 @@ func validateQueueChange(action string, r QueueChange) error {
 	return nil
 }
 func changedQueue(queue []int64, action string, r QueueChange) ([]int64, error) {
+	if action == "reorder" {
+		selected := make(map[int64]bool, len(r.Order))
+		for _, number := range r.Order {
+			if !slices.Contains(queue, number) {
+				return nil, core.Fail("review_not_configured", "Every reordered PR must be enrolled in the configured queue.", 409)
+			}
+			selected[number] = true
+		}
+		out := slices.Clone(queue)
+		next := 0
+		for i, number := range queue {
+			if selected[number] {
+				out[i] = r.Order[next]
+				next++
+			}
+		}
+		return out, nil
+	}
 	index := slices.Index(queue, r.PullNumber)
+	if action == "restore" && index >= 0 && r.Before == nil && r.After == nil && r.Position == "" {
+		return slices.Clone(queue), nil
+	}
 	if action == "add" && index >= 0 {
 		return nil, core.Fail("review_queue_duplicate", "This PR is already enrolled; use queue move to change its position.", 409)
 	}
 	if (action == "move" || action == "remove") && index < 0 {
 		return nil, core.Fail("review_not_configured", "This PR is not enrolled; use queue add first.", 409)
 	}
-	if action == "add" && len(queue) >= 100 {
+	if (action == "add" || action == "restore" && index < 0) && len(queue) >= 100 {
 		return nil, core.Fail("review_queue_full", "The configured queue already contains 100 PRs; retain completed history and deliberately update scheduling before adding another.", 409)
 	}
 	out := slices.Clone(queue)
@@ -129,7 +167,7 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 			}
 		}
 		baseQueue := previous.Queue
-		if action == "add" && len(baseQueue) >= 100 && !slices.Contains(baseQueue, r.PullNumber) {
+		if (action == "add" || action == "restore") && len(baseQueue) >= 100 && !slices.Contains(baseQueue, r.PullNumber) {
 			baseQueue, err = compactMergedQueue(ctx, tx, scope.ProjectID, previous, r.Before, r.After)
 			if err != nil {
 				return nil, err
@@ -139,7 +177,7 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 		if err != nil {
 			return nil, err
 		}
-		if slices.Equal(queue, previous.Queue) {
+		if action != "restore" && action != "reorder" && slices.Equal(queue, previous.Queue) {
 			return Receipt{ID: scope.ProjectID, State: "unchanged", Revision: revision}, nil
 		}
 		next := previous
@@ -149,7 +187,15 @@ func (e *Engine) ChangeQueue(ctx context.Context, scope core.Scope, key, action 
 		if err := validateConfigurationShape(next); err != nil {
 			return nil, err
 		}
-		receipt, err := e.persistConfiguration(ctx, tx, scope, previous, next, revision)
+		var restore int64
+		var order []int64
+		if action == "restore" {
+			restore = r.PullNumber
+		}
+		if action == "reorder" {
+			order = r.Order
+		}
+		receipt, err := e.persistConfiguration(ctx, tx, scope, previous, next, revision, restore, order)
 		if err == nil && action == "remove" {
 			err = reviews.RetireExecutionPull(ctx, tx, scope, r.PullNumber, r.Reason)
 		}
@@ -180,6 +226,20 @@ func (e *Engine) changeQueueHTTP(action string) http.HandlerFunc {
 		if strictjson.Decode(raw, &request) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil {
 			core.WriteError(w, invalid())
 			return
+		}
+		if action == "restore" || action == "reorder" {
+			for field := range fields {
+				allowed := field == "expected_configuration_revision"
+				if action == "restore" {
+					allowed = allowed || field == "pull_number" || field == "before" || field == "after" || field == "position"
+				} else {
+					allowed = allowed || field == "order"
+				}
+				if !allowed {
+					core.WriteError(w, invalid())
+					return
+				}
+			}
 		}
 		for _, value := range fields {
 			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {

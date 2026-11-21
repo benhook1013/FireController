@@ -134,7 +134,7 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 			return args, invalidArguments()
 		}
 	}
-	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" {
+	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" || name == "review_queue_restore" || name == "review_queue_reorder" {
 		return queueChangeArguments(name, data)
 	}
 	if name == "review_following_read" || name == "review_following_update" {
@@ -308,7 +308,7 @@ func mutationTool(name string) bool {
 	if reviewBatchTool(name) {
 		return true
 	}
-	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" || name == "review_start" || name == "review_rounds_configure" {
+	if name == "review_queue_add" || name == "review_queue_move" || name == "review_queue_remove" || name == "review_queue_restore" || name == "review_queue_reorder" || name == "review_start" || name == "review_rounds_configure" {
 		return true
 	}
 	if name == "job_summary_set" || name == "job_primary_replace" || name == "job_update" || name == "job_checklist_replace" || name == "job_checklist_item_update" {

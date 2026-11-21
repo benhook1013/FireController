@@ -394,7 +394,7 @@ var internalCatalogueParsers = map[string]string{
 	"parseReviewTransfer":           "parseInvocation owns transfer spellings; import-* is internal reuse",
 	"parseSubagentReview":           "parseInvocation owns the three subagent spellings",
 	"parseReviewFollowing":          "parseInvocation owns follow/unfollow/following",
-	"parseReviewQueueChange":        "parseInvocation owns queue-add/move/remove",
+	"parseReviewQueueChange":        "parseInvocation owns queue-add/move/remove/restore/reorder",
 	"parseReviewRun":                "parseReview owns start/run-read",
 	"parseOwnerManagement":          "ownerManagementOperation owns registration",
 	"parseAdoptionObligationsAdopt": "adopt-preview/adopt-apply are internal; args[0] is registered separately",

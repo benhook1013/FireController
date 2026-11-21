@@ -111,7 +111,37 @@ func TestQueueChangeMCPOrdinaryWriterAndLostResponse(t *testing.T) {
 	if final.Revision != 5 || config.Queue == nil || len(config.Queue) != 0 {
 		t.Fatal(final, config)
 	}
-
+	restore := map[string]any{"expected_configuration_revision": 5, "pull_number": 3, "idempotency_key": "mcp-restore-3"}
+	drop.Store(true)
+	diagnosticResult(t, call(t, session, "review_queue_restore", restore), "connection_failed", true)
+	var restored client.ReviewRequestReceipt
+	decodeResult(t, call(t, session, "review_queue_restore", restore), &restored)
+	if restored.Revision != 6 || restored.State != "configured" {
+		t.Fatal(restored)
+	}
+	decodeResult(t, call(t, session, "review_queue_restore", map[string]any{"expected_configuration_revision": 6, "pull_number": 2, "position": "first", "idempotency_key": "mcp-restore-2"}), &final)
+	if final.Revision != 7 {
+		t.Fatal(final)
+	}
+	reorder := map[string]any{"expected_configuration_revision": 7, "order": []int64{3, 2}, "idempotency_key": "mcp-reorder"}
+	drop.Store(true)
+	diagnosticResult(t, call(t, session, "review_queue_reorder", reorder), "connection_failed", true)
+	decodeResult(t, call(t, session, "review_queue_reorder", reorder), &final)
+	if final.Revision != 8 || final.State != "configured" {
+		t.Fatal(final)
+	}
+	decodeResult(t, call(t, session, "review_queue_restore", restore), &replay)
+	if replay != restored {
+		t.Fatal("restore replay changed", replay, restored)
+	}
+	decodeResult(t, call(t, session, "review_queue_reorder", map[string]any{"expected_configuration_revision": 8, "order": []int64{3, 2}, "idempotency_key": "mcp-reorder-noop"}), &final)
+	if final.Revision != 8 || final.State != "unchanged" {
+		t.Fatal(final)
+	}
+	decodeResult(t, call(t, session, "review_execution_read", nil), &config)
+	if len(config.Queue) != 2 || config.Queue[0] != 3 || config.Queue[1] != 2 {
+		t.Fatal("restore/reorder dispatch did not publish selected order", config)
+	}
 }
 func TestQueueChangeMCPInvalidArgumentsBeforeCredentials(t *testing.T) {
 	var requests atomic.Int64
@@ -121,6 +151,30 @@ func TestQueueChangeMCPInvalidArgumentsBeforeCredentials(t *testing.T) {
 	binding.ServerURL = server.URL
 	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": binding}, "missing-queue-token"), "chosen")
 	for _, test := range []struct{ name, raw string }{
+		{"review_queue_restore", `{}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":2147483648,"idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"before":3,"idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"before":2,"position":"first","idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"reason":"","idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"order":[],"idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"before":null,"idempotency_key":"k"}`},
+		{"review_queue_restore", `{"expected_configuration_revision":1,"pull_number":3,"idempotency_key":"k","idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":null,"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,3],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,0],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,-1],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2147483648],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2.5],"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2],"pull_number":0,"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2],"position":"","idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2],"before":1,"idempotency_key":"k"}`},
+		{"review_queue_reorder", `{"expected_configuration_revision":1,"order":[3,2],"reason":"","idempotency_key":"k"}`},
+		{"review_queue_add", `{"expected_configuration_revision":1,"pull_number":3,"order":[],"idempotency_key":"k"}`},
+		{"review_queue_move", `{"expected_configuration_revision":1,"pull_number":3,"position":"first","order":[],"idempotency_key":"k"}`},
+		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"reason":"defunct","order":[],"idempotency_key":"k"}`},
 		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"idempotency_key":"k"}`},
 		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"reason":"defunct","before":2,"idempotency_key":"k"}`},
 		{"review_queue_remove", `{"expected_configuration_revision":1,"pull_number":3,"reason":null,"idempotency_key":"k"}`},
@@ -134,5 +188,73 @@ func TestQueueChangeMCPInvalidArgumentsBeforeCredentials(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Fatal("invalid queue input contacted service")
+	}
+}
+
+func TestQueueRestoreReorderMCPExactSchemasAndAnnotations(t *testing.T) {
+	session := reviewControlsStdio(t, profiles(t, map[string]profile.Context{"chosen": localContext()}, "missing-queue-schema-token"), "chosen")
+	tools, err := allDiscoveredTools(t, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, tool := range tools.Tools {
+		if tool.Name != "review_queue_restore" && tool.Name != "review_queue_reorder" {
+			continue
+		}
+		found++
+		var schema struct {
+			AdditionalProperties bool                       `json:"additionalProperties"`
+			Properties           map[string]json.RawMessage `json:"properties"`
+			Required             []string                   `json:"required"`
+		}
+		encoded, err := json.Marshal(tool.InputSchema)
+		if err != nil || json.Unmarshal(encoded, &schema) != nil || schema.AdditionalProperties {
+			t.Fatal(tool.Name, string(encoded), err)
+		}
+		allowed := []string{"expected_configuration_revision", "idempotency_key", "pull_number", "before", "after", "position"}
+		required := []string{"expected_configuration_revision", "idempotency_key", "pull_number"}
+		if tool.Name == "review_queue_reorder" {
+			allowed = []string{"expected_configuration_revision", "idempotency_key", "order"}
+			required = allowed
+			var order struct {
+				Type        string `json:"type"`
+				MinItems    int    `json:"minItems"`
+				MaxItems    int    `json:"maxItems"`
+				UniqueItems bool   `json:"uniqueItems"`
+				Items       struct {
+					Type    string `json:"type"`
+					Minimum int64  `json:"minimum"`
+					Maximum int64  `json:"maximum"`
+				} `json:"items"`
+			}
+			if json.Unmarshal(schema.Properties["order"], &order) != nil || order.Type != "array" || order.MinItems != 2 || order.MaxItems != 100 || !order.UniqueItems || order.Items.Type != "integer" || order.Items.Minimum != 1 || order.Items.Maximum != 2147483647 {
+				t.Fatal("order schema differs from permitted values", string(encoded))
+			}
+		}
+		if len(schema.Properties) != len(allowed) || len(schema.Required) != len(required) {
+			t.Fatal("schema field inventory drift", string(encoded))
+		}
+		for _, field := range allowed {
+			if _, ok := schema.Properties[field]; !ok {
+				t.Fatal("missing allowed property", tool.Name, field)
+			}
+		}
+		for _, field := range required {
+			present := false
+			for _, actual := range schema.Required {
+				present = present || actual == field
+			}
+			if !present {
+				t.Fatal("missing required property", tool.Name, field)
+			}
+		}
+		a := tool.Annotations
+		if a == nil || a.ReadOnlyHint || !a.IdempotentHint || a.OpenWorldHint == nil || *a.OpenWorldHint || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "review_queue_reorder") {
+			t.Fatal("queue write annotation drift", tool.Name, a)
+		}
+	}
+	if found != 2 {
+		t.Fatal("new queue tools missing", found)
 	}
 }

@@ -19,7 +19,7 @@ func TestQueueChangeCLIOrdinaryWriterAndLocalValidation(t *testing.T) {
 			t.Fatal(args, code, stderr)
 		}
 	}
-	for _, name := range []string{"queue-add", "queue-move", "queue-remove"} {
+	for _, name := range []string{"queue-add", "queue-move", "queue-remove", "queue-restore", "queue-reorder"} {
 		code, out, stderr := run([]string{"reviews", name, "--help"}, nil)
 		if code != 0 || stderr != "" || !strings.Contains(out, "Project write access") {
 			t.Fatal(code, out, stderr)
@@ -94,7 +94,27 @@ func TestQueueChangeCLIOrdinaryWriterAndLocalValidation(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &empty) != nil || empty.Queue == nil || len(empty.Queue) != 0 {
 		t.Fatal(code, out, stderr)
 	}
-
+	restored := invoke("queue-restore", "3", "--expect-config", "5", "--key", "restore-3")
+	if restored.Revision != 6 || restored.State != "configured" {
+		t.Fatal(restored)
+	}
+	if next := invoke("queue-restore", "2", "--first", "--expect-config", "6", "--key", "restore-2"); next.Revision != 7 {
+		t.Fatal(next)
+	}
+	if reordered := invoke("queue-reorder", "--order", "3,2", "--expect-config", "7", "--key", "reorder-3-2"); reordered.Revision != 8 {
+		t.Fatal(reordered)
+	}
+	if replay := invoke("queue-restore", "3", "--expect-config", "5", "--key", "restore-3"); replay != restored {
+		t.Fatal("restore replay changed", replay, restored)
+	}
+	if noop := invoke("queue-reorder", "--order=3,2", "--expect-config", "8", "--key", "reorder-noop"); noop.Revision != 8 || noop.State != "unchanged" {
+		t.Fatal(noop)
+	}
+	code, out, stderr = mutationInvoke(t, profiles, "builder", "reviews", "execution")
+	var reordered client.ReviewExecutionConfiguration
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &reordered) != nil || len(reordered.Queue) != 2 || reordered.Queue[0] != 3 || reordered.Queue[1] != 2 {
+		t.Fatal("restore/reorder dispatch did not publish selected order", code, out, stderr)
+	}
 }
 
 func TestQueueRemoveCLIRejectsInvalidInputBeforeCredentials(t *testing.T) {
@@ -107,6 +127,54 @@ func TestQueueRemoveCLIRejectsInvalidInputBeforeCredentials(t *testing.T) {
 		code, out, stderr := run(append([]string{"--profiles-file", "/missing/profiles", "reviews", "queue-remove"}, args...), map[string]string{"FC_PROFILE": "missing"})
 		if code != cli.ExitUsage || out != "" || !strings.Contains(stderr, "invalid_arguments") {
 			t.Fatal(args, code, out, stderr)
+		}
+	}
+}
+
+func TestQueueRestoreReorderCLIRejectsInvalidInputBeforeCredentials(t *testing.T) {
+	for _, args := range [][]string{
+		{"queue-restore"},
+		{"queue-restore", "0"},
+		{"queue-restore", "2147483648"},
+		{"queue-restore", "42", "--reason="},
+		{"queue-restore", "42", "--reason", "superseded"},
+		{"queue-restore", "42", "--order", "42,17"},
+		{"queue-restore", "42", "--before", "42"},
+		{"queue-restore", "42", "--first", "--last"},
+		{"queue-restore", "42", "--after", "17", "--first"},
+		{"queue-restore", "42", "--before", "17", "--before", "18"},
+		{"queue-reorder"},
+		{"queue-reorder", "42", "--order", "42,17"},
+		{"queue-reorder", "--order", ""},
+		{"queue-reorder", "--order", "42"},
+		{"queue-reorder", "--order", "42,42"},
+		{"queue-reorder", "--order", "42,0"},
+		{"queue-reorder", "--order", "42,-1"},
+		{"queue-reorder", "--order", "42,2147483648"},
+		{"queue-reorder", "--order", "42,017"},
+		{"queue-reorder", "--order", "42, 17"},
+		{"queue-reorder", "--order", "42,17,"},
+		{"queue-reorder", "--order", "42,17", "--order", "17,42"},
+		{"queue-reorder", "--order", "42,17", "--first"},
+		{"queue-reorder", "--order", "42,17", "--after", "18"},
+		{"queue-reorder", "--order", "42,17", "--reason="},
+		{"queue-add", "42", "--order", "42,17"},
+		{"queue-move", "42", "--first", "--order", "42,17"},
+		{"queue-remove", "42", "--reason", "defunct", "--order", "42,17"},
+	} {
+		args = append(args, "--expect-config", "1", "--key", "k")
+		code, out, stderr := run(append([]string{"--profiles-file", "/missing/profiles", "reviews"}, args...), map[string]string{"FC_PROFILE": "missing"})
+		if code != cli.ExitUsage || out != "" || !strings.Contains(stderr, "invalid_arguments") {
+			t.Fatal(args, code, out, stderr)
+		}
+	}
+}
+
+func TestQueueRestoreReorderHelpDiscoveryIsLocal(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"reviews", "help"}} {
+		code, out, stderr := run(append([]string{"--profiles-file", "/missing/profiles"}, args...), map[string]string{"FC_PROFILE": "missing"})
+		if code != cli.ExitSuccess || stderr != "" || !strings.Contains(out, "queue-restore") || !strings.Contains(out, "queue-reorder") {
+			t.Fatal("local discovery omitted queue actions or loaded profile", args, code, out, stderr)
 		}
 	}
 }

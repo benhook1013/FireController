@@ -11,16 +11,33 @@ import (
 )
 
 type ReviewQueueChange struct {
-	ExpectedConfigurationRevision int64  `json:"expected_configuration_revision"`
-	PullNumber                    int64  `json:"pull_number"`
-	Before                        *int64 `json:"before,omitempty"`
-	After                         *int64 `json:"after,omitempty"`
-	Position                      string `json:"position,omitempty"`
-	Reason                        string `json:"reason,omitempty"`
+	ExpectedConfigurationRevision int64   `json:"expected_configuration_revision"`
+	PullNumber                    int64   `json:"pull_number,omitempty"`
+	Before                        *int64  `json:"before,omitempty"`
+	After                         *int64  `json:"after,omitempty"`
+	Position                      string  `json:"position,omitempty"`
+	Reason                        string  `json:"reason,omitempty"`
+	Order                         []int64 `json:"order,omitempty"`
 }
 
 func ValidateReviewQueueChange(action string, r ReviewQueueChange) error {
-	if !oneReviewOf(action, "add", "move", "remove") || r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 || !validPullNumber(r.PullNumber) {
+	if !oneReviewOf(action, "add", "move", "remove", "restore", "reorder") || r.ExpectedConfigurationRevision < 1 || r.ExpectedConfigurationRevision == math.MaxInt64 {
+		return mutationValidation()
+	}
+	if action == "reorder" {
+		if r.PullNumber != 0 || r.Before != nil || r.After != nil || r.Position != "" || r.Reason != "" || len(r.Order) < 2 || len(r.Order) > 100 {
+			return mutationValidation()
+		}
+		seen := make(map[int64]bool, len(r.Order))
+		for _, number := range r.Order {
+			if !validPullNumber(number) || seen[number] {
+				return mutationValidation()
+			}
+			seen[number] = true
+		}
+		return nil
+	}
+	if !validPullNumber(r.PullNumber) || r.Order != nil {
 		return mutationValidation()
 	}
 	if action == "remove" {
@@ -74,7 +91,7 @@ func (c *Client) ChangeReviewQueue(ctx context.Context, action, key string, r Re
 	if out.ReviewSize != nil && !reviewsize.Valid(*out.ReviewSize, r.PullNumber) {
 		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The queue sizing information could not be verified; preserve the original action key.", http.StatusCreated)
 	}
-	if out.ID != c.identity.ProjectID || out.Revision != want || !oneReviewOf(out.State, "configured", "unchanged") || action == "add" && out.State == "unchanged" {
+	if out.ID != c.identity.ProjectID || out.Revision != want || !oneReviewOf(out.State, "configured", "unchanged") || (action == "add" || action == "restore") && out.State == "unchanged" {
 		return ReviewRequestReceipt{}, unknownMutation("invalid_response", "The queue-change receipt was invalid; recover the original action with its same arguments, key and binding.", http.StatusCreated)
 	}
 	return out, nil
@@ -108,7 +125,10 @@ func queueChangeError(err error) error {
 		e.Action = "Read the current configured queue and retained history before selecting a removal target. No queue change was made."
 	case "review_target_retired":
 		e.Message = "This PR was explicitly retired."
-		e.Action = "Confirm deliberate reactivation with the project operator before enrolling it again. Retained review history is preserved; no queue change was made."
+		e.Action = "Use reviews queue-restore (MCP review_queue_restore) for deliberate reactivation with the current configuration revision and an explicit key. Retained review history is preserved; no queue change was made."
+	case "review_target_not_retired":
+		e.Message = "This PR is not explicitly retired."
+		e.Action = "Read reviews execution (MCP review_execution_read). Use ordinary reviews queue-add (MCP review_queue_add) if it is missing, or reviews queue-move (MCP review_queue_move) to change an enrolled PR's position, with the current configuration revision and an explicit key. No queue change was made."
 	case "review_not_configured":
 		e.Message = "The selected PR is not enrolled in the configured queue."
 		e.Action = "Read reviews execution (MCP review_execution_read). Use reviews queue-add (MCP review_queue_add) for the intended missing PR with that current revision and an explicit key. No queue change was made."

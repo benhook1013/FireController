@@ -189,28 +189,42 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 		})
 	}
 	t.Cleanup(closeMCP)
-	moveArgs := map[string]any{"expected_configuration_revision": 2, "pull_number": 3, "position": "first", "idempotency_key": "bound-move-three"}
-	for range 2 {
-		toolCtx, stop := context.WithTimeout(ctx, stepTimeout)
-		result, err := session.CallTool(toolCtx, &mcp.CallToolParams{Name: "review_queue_move", Arguments: moveArgs})
-		stop()
-		if err != nil || result == nil || result.IsError {
-			t.Fatal("bound MCP move/replay failed")
-		}
-		raw, err := json.Marshal(result.StructuredContent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var moved struct {
-			ID       string
-			State    string
-			Revision int64
-		}
-		decode(t, raw, &moved)
-		if moved.ID != project || moved.Revision != 3 {
-			t.Fatal("MCP receipt changed", moved)
+	mcpChange := func(name string, args map[string]any, revision int64) {
+		t.Helper()
+		for range 2 {
+			toolCtx, stop := context.WithTimeout(ctx, stepTimeout)
+			result, err := session.CallTool(toolCtx, &mcp.CallToolParams{Name: name, Arguments: args})
+			stop()
+			if err != nil || result == nil || result.IsError {
+				t.Fatalf("bound %s or exact replay failed", name)
+			}
+			raw, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var changed struct {
+				ID       string
+				Revision int64
+			}
+			decode(t, raw, &changed)
+			if changed.ID != project || changed.Revision != revision {
+				t.Fatal("MCP receipt changed", changed)
+			}
 		}
 	}
+	mcpChange("review_queue_move", map[string]any{"expected_configuration_revision": 2, "pull_number": 3, "position": "first", "idempotency_key": "bound-move-three"}, 3)
+	readQueue([]int64{3, 2})
+
+	runCLI(t, ctx, filepath.Join(bin, "fc"), env, "--profiles-file", profiles, "--profile", "builder", "reviews", "queue-remove", "3", "--reason", "defunct", "--expect-config", "3", "--key", "bound-retire-three")
+	readQueue([]int64{2})
+	restoreArgs := []string{"--profiles-file", profiles, "--profile", "builder", "reviews", "queue-restore", "3", "--expect-config", "4", "--key", "bound-restore-three"}
+	restored := runCLI(t, ctx, filepath.Join(bin, "fc"), env, restoreArgs...)
+	afterRestore := readQueue([]int64{2, 3})
+	if replay := runCLI(t, ctx, filepath.Join(bin, "fc"), env, restoreArgs...); !bytes.Equal(replay, restored) || readQueue([]int64{2, 3}).SnapshotID != afterRestore.SnapshotID {
+		t.Fatal("CLI restore replay changed the receipt or published another snapshot")
+	}
+	mcpChange("review_queue_reorder", map[string]any{"expected_configuration_revision": 5, "order": []int64{3, 2}, "idempotency_key": "bound-reorder-three-two"}, 6)
+
 	closeMCP()
 	last := readQueue([]int64{3, 2})
 	if !bytes.Equal(receipt, call("POST", "/execution/configuration", "queue-config-a", body)) || readQueue([]int64{3, 2}).SnapshotID != last.SnapshotID {
@@ -235,5 +249,5 @@ func TestPackagedExecutionQueueEnrollmentSmoke(t *testing.T) {
 	if binaryHash(t, daemonBinary) != beforeHash {
 		t.Fatal("daemon binary changed")
 	}
-	t.Logf("packaged single-queue enrollment/insertion/reorder/replay passed in %s; no display write, provider dispatch or owned process remains", time.Since(started).Round(time.Millisecond))
+	t.Logf("packaged queue enrollment, restore, selected reorder and replay passed in %s without provider dispatch", time.Since(started).Round(time.Millisecond))
 }

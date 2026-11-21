@@ -23,15 +23,29 @@ func parseReviewQueueChange(call invocation, args []string) (invocation, bool) {
 		n, err := strconv.ParseInt(s, 10, 64)
 		return n, err == nil && n > 0 && strconv.FormatInt(n, 10) == s
 	}
-	number, ok := parseNumber(args[0])
-	if !ok {
-		return call, false
+	in := &reviewQueueChangeInvocation{action: strings.TrimPrefix(call.subcommand, "queue-")}
+	start := 0
+	if in.action != "reorder" {
+		number, ok := parseNumber(args[0])
+		if !ok {
+			return call, false
+		}
+		in.input.PullNumber = number
+		start = 1
 	}
-	in := &reviewQueueChangeInvocation{action: strings.TrimPrefix(call.subcommand, "queue-"), input: client.ReviewQueueChange{PullNumber: number}}
 	seen := map[string]bool{}
-	for i := 1; i < len(args); i++ {
+	for i := start; i < len(args); i++ {
 		flag, value, assigned := strings.Cut(args[i], "=")
-		if seen[flag] {
+		allowed := flag == "--expect-config" || flag == "--key"
+		switch in.action {
+		case "reorder":
+			allowed = allowed || flag == "--order"
+		case "remove":
+			allowed = allowed || flag == "--reason"
+		default:
+			allowed = allowed || flag == "--before" || flag == "--after" || flag == "--first" || flag == "--last"
+		}
+		if !allowed || seen[flag] {
 			return call, false
 		}
 		seen[flag] = true
@@ -41,9 +55,6 @@ func parseReviewQueueChange(call invocation, args []string) (invocation, bool) {
 			}
 			in.input.Position = strings.TrimPrefix(flag, "--")
 			continue
-		}
-		if flag != "--before" && flag != "--after" && flag != "--expect-config" && flag != "--key" && flag != "--reason" {
-			return call, false
 		}
 		if !assigned {
 			i++
@@ -58,6 +69,16 @@ func parseReviewQueueChange(call invocation, args []string) (invocation, bool) {
 		}
 		if flag == "--key" {
 			in.key = value
+			continue
+		}
+		if flag == "--order" {
+			for _, part := range strings.Split(value, ",") {
+				n, ok := parseNumber(part)
+				if !ok {
+					return call, false
+				}
+				in.input.Order = append(in.input.Order, n)
+			}
 			continue
 		}
 		n, ok := parseNumber(value)

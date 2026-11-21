@@ -426,7 +426,8 @@ func TestHostedContinuationEarlierFrontRunsBeforeSameSelectionResumes(t *testing
 		admissionSQL(t, f, `UPDATE review_execution_config SET body_json=json_set(body_json,'$.queue',json('[4,2]')) WHERE project_id=?`, attemptProject)
 		scope := f.scope(t, attemptProject, f.admin, true)
 		if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-			return reviews.PublishExecutionQueue(ctx, tx, scope, []int64{2, 4}, []int64{4, 2})
+			_, err := reviews.PublishExecutionQueue(ctx, tx, scope, []int64{2, 4}, []int64{4, 2}, 0)
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}

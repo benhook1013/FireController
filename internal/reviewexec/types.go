@@ -185,7 +185,7 @@ type Engine struct {
 	running                    atomic.Bool
 	publishAdjudication        func(context.Context, *sql.Tx, core.Scope, ReviewAdjudication) error
 	publishAttempt             func(context.Context, *sql.Tx, Attempt) error
-	publishQueue               func(context.Context, *sql.Tx, core.Scope, []int64, []int64) error
+	publishQueue               func(context.Context, *sql.Tx, core.Scope, []int64, []int64, int64) (bool, error)
 }
 
 // EngineOption composes trusted application integrations before an engine is

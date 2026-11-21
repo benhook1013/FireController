@@ -609,7 +609,7 @@ func parseInvocation(args []string) (invocation, bool) {
 		call.ownerManagement, ok = parseOwnerManagement(call.command+" "+call.subcommand, operationArgs)
 		return call, ok
 	}
-	if call.command == "reviews" && (call.subcommand == "queue-add" || call.subcommand == "queue-move" || call.subcommand == "queue-remove") {
+	if call.command == "reviews" && (call.subcommand == "queue-add" || call.subcommand == "queue-move" || call.subcommand == "queue-remove" || call.subcommand == "queue-restore" || call.subcommand == "queue-reorder") {
 		return parseReviewQueueChange(call, operationArgs)
 	}
 	if call.command == "reviews" && (call.subcommand == "following" || call.subcommand == "follow" || call.subcommand == "unfollow") {

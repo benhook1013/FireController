@@ -10,7 +10,7 @@ import (
 )
 
 func TestQueueChangeRefusalHasActionableCause(t *testing.T) {
-	for _, code := range []string{"review_queue_duplicate", "review_queue_anchor_missing", "review_queue_full", "review_target_retired", "review_not_configured", "reviews_unconfigured"} {
+	for _, code := range []string{"review_queue_duplicate", "review_queue_anchor_missing", "review_queue_full", "review_target_retired", "review_target_not_retired", "review_not_configured", "reviews_unconfigured"} {
 		t.Run(code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/instance") {
@@ -25,6 +25,12 @@ func TestQueueChangeRefusalHasActionableCause(t *testing.T) {
 			var out *client.Error
 			if !errors.As(err, &out) || out.Code != code || out.OutcomeUnknown || strings.Contains(out.Message, "PRIVATE") || strings.Contains(out.Action, "Check the selected instance") || out.Message == "The service refused this scoped request." {
 				t.Fatal(out, err)
+			}
+			if code == "review_target_retired" && (!strings.Contains(out.Action, "reviews queue-restore") || !strings.Contains(out.Action, "review_queue_restore") || strings.Contains(out.Action, "project operator")) {
+				t.Fatal("retired refusal omitted ordinary restore", out)
+			}
+			if code == "review_target_not_retired" && (!strings.Contains(out.Action, "reviews queue-add") || !strings.Contains(out.Action, "reviews queue-move")) {
+				t.Fatal("nonretired refusal omitted ordinary add/move", out)
 			}
 		})
 	}

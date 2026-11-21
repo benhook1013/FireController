@@ -60,6 +60,8 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/add", e.changeQueueHTTP("add"))
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/remove", e.changeQueueHTTP("remove"))
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/move", e.changeQueueHTTP("move"))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/restore", e.changeQueueHTTP("restore"))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/reorder", e.changeQueueHTTP("reorder"))
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/requests", e.enqueueHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/operations", e.readOperationsHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/watch", e.reviewWatchHTTP)
