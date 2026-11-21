@@ -13,16 +13,16 @@ describe('retained automatic review waiting', () => {
     vi.useFakeTimers();vi.setSystemTime('2026-10-30T12:00:00Z');
     expect(operationWaitLabel(wait)).toBe('Cooldown · 30m');
     const future = renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>);
-    expect(future).toContain('Cooldown · 30m');expect(future).toContain('earliest retry, not a promised review start');
+    expect(future).toContain('Cooldown · 30m');expect(future).toContain('Next automatic recheck at or after');
     vi.setSystemTime('2026-10-30T12:30:01Z');expect(operationWaitLabel(wait)).toBe('Waiting');
     expect(operationWaitLabel({...wait,paused:true})).toBe('Paused');
-    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={{...wait,paused:true}}/>)).toContain('resume is explicit');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={{...wait,paused:true}}/>)).toContain('Resume this request to let it run.');
     expect(operationWaitLabel({paused:false})).toBe('Waiting');
   });
   it('preserves limits/counts without claiming that queued cooldown is a review in flight', () => {
     expect(validRoundProgress(progress,'hosted')).toBe(true);
     const html=renderToStaticMarkup(<ReviewProgressView value={progress}/>);
-    expect(html).toContain('Up to 3 more reviews');expect(html).toContain('At least 1 more');expect(html).toContain('Taper 0/2');
+    expect(html).toContain('Up to 3 more reviews');expect(html).toContain('At least 1 more');expect(html).toContain('Clean streak 0/2');
     expect(html).not.toMatch(/in flight|awaiting review result|review pending/u);
     const adjudication=renderToStaticMarkup(<ReviewProgressView value={{...progress,pending:2,pending_adjudication:1}}/>);
     expect(adjudication).toContain('1 awaiting adjudication');
@@ -36,8 +36,8 @@ describe('retained automatic review waiting', () => {
     expect(operationWaitLabel(wait,Date.now(),'cli')).toBe('Quota wait');
     const html=renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait} channel="cli"/>);
     expect(html).toContain('Quota wait');
-    expect(html).toContain('next automatic quota check');
-    expect(html).toContain('not a provider reset or promised start');
+    expect(html).toContain('Next quota recheck:');
+    expect(html).toContain('Review starts depend on quota at the recheck.');
     expect(html).not.toContain('Cooldown');
     const counts=renderToStaticMarkup(<ReviewProgressView value={cliProgress}/>);
     expect(counts).toContain('Up to 3 more reviews');
@@ -71,7 +71,7 @@ describe('retained CLI full-capacity estimate',()=>{
     expect(html).not.toContain('<button');
     expect(html).toContain('>in 45m</time>');expect(html).toContain('>in 15m</time>');
     expect(html).toContain('dateTime="2026-10-30T13:00:00.000Z"');
-    expect(html).toContain('does not establish the next available slot, refill pattern or review start');
+    expect(html).toContain('Review starts depend on quota at the recheck.');
     expect(html).not.toContain('(past estimate)');
     vi.setSystemTime('2026-10-30T13:15:00Z');
     expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={value} channel="cli"/>)).toContain('(past estimate)');
@@ -95,7 +95,7 @@ describe('accepted Hosted queue priority', () => {
     const html = renderToStaticMarkup(<ReviewOperationWaitBadge wait={queued}/>);
     expect(html).toContain('Behind #4');
     expect(html).not.toContain('Cooldown');
-    expect(html).not.toContain('earliest retry');
+    expect(html).toContain('Earliest recheck:');
     expect(operationWaitLabel(wait, Date.parse('2026-10-30T12:00:00Z'))).toBe('Cooldown · 30m');
     expect(operationWaitLabel({...queued, paused:true})).toBe('Paused');
   });

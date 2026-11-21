@@ -50,7 +50,7 @@ describe('current round progress', () => {
   });
   it('keeps historical run counts separate and does not turn allowance into permission to dispatch', () => {
     const html=renderToStaticMarkup(<ReviewProgressView value={current}/>);
-    expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 review pending');expect(html).toContain('Taper 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
+    expect(html).toContain('Up to 3 more reviews');expect(html).not.toContain('of 5 used');expect(html).toContain('1 review pending');expect(html).toContain('Clean streak 0/1');expect(html).not.toMatch(/Ready|Idle|run recorded|coverage/i);
     expect(renderToStaticMarkup(<ReviewProgressView value={absent}/>)).toBe('');
     expect(roundProgressState({...current,closed:true})).toBe('No reviews remaining');
     expect(roundProgressState({...current,tapered:true,dry:1})).toBe('No reviews remaining');
@@ -62,7 +62,7 @@ describe('current round progress', () => {
     expect(validRoundProgress(value,'hosted')).toBe(true);
     expect(roundProgressState(value)).toBe('More rounds allowed');
     const html=renderToStaticMarkup(<ReviewProgressView value={value}/>);
-    expect(html).toContain('No maximum');expect(html).toContain('At least 1 more');expect(html).toContain('Taper 0/1');
+    expect(html).toContain('No maximum');expect(html).toContain('At least 1 more');expect(html).toContain('Clean streak 0/1');
     expect(html).not.toMatch(/remaining|of 0 used|Allowance used/u);
     const api=await connected();const response={...result,items:[{pull_number:31,channels:[value,absent]}]};
     vi.stubGlobal('fetch',vi.fn(async()=>json(response)));expect(await api.reviewProgress([31])).toEqual(response);
@@ -83,9 +83,9 @@ describe('current round progress', () => {
   });
   it('does not present an adopted exhausted allowance as zero completed history', () => {
     const tapered = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, dry:1, taper:1, tapered:true, pending:0}}/>);
-    expect(tapered).toContain('No reviews remaining'); expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|Taper 1\/1/u);
+    expect(tapered).toContain('No reviews remaining'); expect(tapered).toContain('Taper met'); expect(tapered).not.toMatch(/of 0|Clean streak 1\/1/u);
     const exhausted = renderToStaticMarkup(<ReviewProgressView value={{...current, maximum:0, used:0, pending:0}}/>);
-    expect(exhausted).toContain('No reviews remaining'); expect(exhausted).not.toMatch(/of 0|Taper 0\/1/u);
+    expect(exhausted).toContain('No reviews remaining'); expect(exhausted).not.toMatch(/of 0|Clean streak 0\/1/u);
   });
   it('keeps an added minimum visible when the retained clean streak already meets its target', () => {
     for (const dry of [1, 2]) {
@@ -95,11 +95,11 @@ describe('current round progress', () => {
       expect(html).toContain('Up to 5 more reviews');
       expect(html).toContain('At least 1 more');
       expect(html).toContain('Clean streak target met');
-      expect(html).toContain(`title="Consecutive eligible rounds with no accepted findings: ${dry}; target 1.`);
-      expect(html).not.toMatch(/Taper [12]\/1|No reviews remaining|Taper met/u);
+      expect(html).toContain(`title="${dry} reviews in a row with no accepted findings. This can end reviews once the minimum is met.`);
+      expect(html).not.toMatch(/Clean streak [12]\/1|No reviews remaining|Taper met/u);
     }
     const pendingStreak = renderToStaticMarkup(<ReviewProgressView value={{ ...current, minimum: 1, used: 0, dry: 1, taper: 2, pending: 0 }} />);
-    expect(pendingStreak).toContain('Taper 1/2');
+    expect(pendingStreak).toContain('Clean streak 1/2');
     expect(pendingStreak).toContain('At least 1 more');
     expect(pendingStreak).not.toContain('Clean streak target met');
   });
@@ -125,7 +125,7 @@ describe('current round progress', () => {
     expect(validRoundProgress(value,'cli')).toBe(true);
     expect(roundProgressState(value)).toBe('More rounds allowed');
     const html=renderToStaticMarkup(<ReviewProgressView value={value}/>);
-    expect(html).toContain('Up to 1 more review');expect(html).toContain('Taper 0/3');
+    expect(html).toContain('Up to 1 more review');expect(html).toContain('Clean streak 0/3');
     expect(html).not.toMatch(/Taper met|Clean streak target met|No reviews remaining/u);
   });
 
@@ -142,7 +142,7 @@ describe('current round progress', () => {
       expect(roundProgressStopReason(value)).toBe(reason);
       expect(html).toContain('<details><summary class="review-progress-state">No reviews remaining</summary><span>' + reason + '</span></details>');
       expect(html.match(/No reviews remaining/gu)).toHaveLength(1);
-      expect(html).not.toMatch(/Up to|At least|Taper 0\/1|Review closed/);
+      expect(html).not.toMatch(/Up to|At least|Clean streak 0\/1|Review closed/);
     }
     expect(roundProgressStopReason(current)).toBeUndefined();
     expect(roundProgressStopReason({ ...current, maximum_unbounded: true, maximum: 0 })).toBeUndefined();

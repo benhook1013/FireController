@@ -78,14 +78,17 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [expanded]);
   useEffect(() => { if (behind || !wait.retry_not_before) return; const timer = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(timer); }, [behind, wait.retry_not_before]);
-  if (behind) return <span className="badge review-channel-position" title={`Queued behind PR #${wait.queue_ahead_pull_number}. Its accepted Hosted request has priority. This review has not started.`}>{operationWaitLabel(wait, now, channel)}</span>;
+  if (behind) {
+    const recheck = wait.retry_not_before ? ` Earliest recheck: ${new Date(wait.retry_not_before).toLocaleString()}.` : '';
+    return <span className="badge review-channel-position" title={`Waiting for that PR’s Hosted review request.${recheck}`}>{operationWaitLabel(wait, now, channel)}</span>;
+  }
   const description = wait.paused
-    ? 'This review request is paused before dispatch. Its retry deadline is retained; resume is explicit.'
+    ? 'Resume this request to let it run.'
     : channel === 'cli' && wait.retry_not_before
-      ? `Included CLI quota is exhausted. This request remains queued; the next automatic quota check follows the retained recheck time below. This is a server recheck time, not a provider reset or promised start. No review is running.`
+      ? 'The review is queued while CLI quota is exhausted.'
       : wait.retry_not_before
-      ? `This same request automatically rechecks at or after ${new Date(wait.retry_not_before).toLocaleString()}. This is the earliest retry, not a promised review start. No review is running.`
-      : 'This request is waiting before dispatch. No review is running.';
+      ? `Next automatic recheck at or after ${new Date(wait.retry_not_before).toLocaleString()}.`
+      : 'The review hasn’t started.';
   const allowance=channel === 'cli' ? wait.cli_allowance : undefined;
   const estimate=allowance ? Date.parse(allowance.observed_at)+allowance.full_capacity_in_ms : undefined;
   if (channel !== 'cli' || !wait.retry_not_before) return <span className="badge review-channel-position" title={description}>{operationWaitLabel(wait, now, channel)}</span>;
@@ -102,7 +105,7 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
         <span>{description}</span>
         {estimate !== undefined && <span>Provider full-capacity estimate: <time dateTime={new Date(estimate).toISOString()} title={new Date(estimate).toLocaleString()}>{relative(estimate)}</time>{estimate <= now ? ' (past estimate)' : ''}. <small>{new Date(estimate).toLocaleString()}</small></span>}
         <span>{wait.paused ? 'Retained recheck' : 'Next quota recheck'}: <time dateTime={wait.retry_not_before} title={new Date(retry).toLocaleString()}>{relative(retry)}</time>{retry <= now ? ' (awaiting recheck)' : ''}. <small>{new Date(retry).toLocaleString()}</small></span>
-        {estimate !== undefined && <span>The provider estimate does not establish the next available slot, refill pattern or review start. {estimate <= now ? 'The retained estimate is in the past; current quota has not been confirmed.' : 'Actual availability must be rechecked.'}</span>}
+        <span>Review starts depend on quota at the recheck.</span>
       </span>
     </span>
   </span>;

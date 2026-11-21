@@ -23,7 +23,7 @@ export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
   return <div className="review-current-progress" aria-label={`Current ${value.channel} round limits`}>
     {finished ? <details><summary className="review-progress-state">{roundProgressState(value)}</summary><span>{stopReason}</span></details> : <span className="review-progress-state">{roundProgressAllowance(value)}</span>}
     {!finished && remaining && value.minimum > value.used && <span>At least {value.minimum - value.used} more</span>}
-    {!finished && remaining && <span title={`Consecutive eligible rounds with no accepted findings: ${value.dry}; target ${value.taper}. A maximum can finish early after its minimum is met.`}>{value.dry >= value.taper ? 'Clean streak target met' : `Taper ${value.dry}/${value.taper}`}</span>}
+    {!finished && remaining && <span title={`${value.dry} reviews in a row with no accepted findings. This can end reviews once the minimum is met.`}>{value.dry >= value.taper ? 'Clean streak target met' : `Clean streak ${value.dry}/${value.taper}`}</span>}
     {value.pending_execution !== undefined && value.pending_adjudication !== undefined ? <>
       {!value.wait && value.pending_execution > 0 && <span>{value.pending_execution} awaiting review result</span>}
       {value.pending_adjudication > 0 && <span>{value.pending_adjudication} awaiting adjudication</span>}

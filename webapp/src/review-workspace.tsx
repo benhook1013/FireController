@@ -151,43 +151,56 @@ export function missingPullFacts(pull: ReviewPullSummary): string[] {
 function ReviewObservationBadge({ value }: { value: ReviewPullSummary['observation'] }) {
   if (!value || ['current', 'not_enrolled', 'waiting'].includes(value.state)) return null;
   const hostedOnly = value.state === 'retrying' && value.error === 'external_hosted_identity_unproven' && value.hosted_error === value.error;
-  const checked = value.last_success_at ? time(value.last_success_at) : 'not yet checked by this service process';
-  const title = hostedOnly
-    ? `Some Hosted review history could not yet be imported. Last successful PR check: ${checked}.`
-    : `GitHub observation: ${reviewLabel(value.state)}${value.error ? ` · ${reviewLabel(value.error)}` : ''}. Last successful check: ${checked}.`;
+  const checked = value.last_success_at ? `Last successful PR check: ${time(value.last_success_at)}.` : '';
+  const reasons: Record<string, string> = {
+    provider_unavailable: 'Couldn’t read GitHub.',
+    provider_rate_limited: 'GitHub’s request limit was reached.',
+    ci_refresh_unavailable: 'Couldn’t refresh CI.',
+  };
+  const reason = hostedOnly ? 'Some Hosted reviews are still missing.' : reasons[value.error ?? ''];
+  const title = [reason, checked].filter(Boolean).join(' ') || undefined;
   return <span className="badge neutral" title={title}>{hostedOnly ? 'Hosted history: Incomplete' : `GitHub: ${reviewLabel(value.state)}`}</span>;
 }
 const movingCIReasons: Record<string, string> = {
-  ci_merge_base_mismatch:'The base branch advanced, but GitHub’s test merge still uses a different base. CI for the latest base cannot yet be confirmed; earlier results remain saved.',
-  ci_merge_pending:'GitHub has not finished calculating the test merge for this PR.',
-  ci_merge_identity_unproven:'GitHub’s test merge could not yet be matched to the current PR comparison.',
+  ci_merge_base_mismatch:'GitHub is still testing an older base.',
+  ci_merge_pending:'Waiting for GitHub to prepare the test merge.',
+  ci_merge_identity_unproven:'Couldn’t match GitHub’s test merge to this PR.',
   ci_candidate_changed:'The PR or its test merge changed while CI was being checked.',
-  ci_target_changed:'The PR comparison changed while CI was being checked.',
+  ci_target_changed:'The PR changed during the CI check.',
 };
-function reviewCIReason(pull: ReviewPullSummary): string | undefined {
-  const reason = pull.observation?.ci_error;
-  return reason ? movingCIReasons[reason] ?? reviewLabel(reason) : undefined;
-}
 function reviewCIDisplay(pull: ReviewPullSummary) {
   const observation = pull.observation;
-  const moving = observation?.ci_error && Object.hasOwn(movingCIReasons, observation.ci_error);
-  if (pull.state === 'open' && moving) {
-    return { state: 'unknown', label: 'Checking CI', detail: 'Required CI for the active PR comparison has not yet been verified.' };
+  const reason = observation?.ci_error ?? '';
+  if (pull.state === 'open' && Object.hasOwn(movingCIReasons, reason)) {
+    return { state: 'unknown', label: 'Checking CI', detail: movingCIReasons[reason] };
   }
   const attempted = Boolean(observation?.ci_error || observation?.ci_checked_at);
   const retained = attempted || observation?.state === 'comparison_changed' ? 'unknown' : pull.ci_state;
   const state = observation?.ci_gate_state ?? retained;
   if (state === 'success' || state === 'failure' || state === 'not_required') {
-    return { state, label: `Required CI: ${state === 'not_required' ? 'None' : reviewLabel(state)}`, detail: '' };
+    return { state, label: `Required CI: ${state === 'not_required' ? 'None' : reviewLabel(state)}`, detail: state === 'not_required' ? 'Optional checks are separate.' : '' };
   }
   // The observer binds these fields to the current head, base SHA and base ref.
   if (observation?.ci_gate_state === 'pending' && observation.ci_error === 'ci_required_checks_pending') {
-    return { state: 'pending', label: 'CI pending', detail: 'Observed required checks are queued or running.' };
+    return { state: 'pending', label: 'CI pending', detail: 'Required checks are queued or running.' };
   }
   if (attempted || observation?.ci_gate_state === 'unknown' || pull.state !== 'open') {
-    return { state: 'unknown', label: 'CI status unavailable', detail: 'An authoritative required CI status could not be established from the available evidence.' };
+    const state = 'unknown';
+    if (reason === 'ci_required_check_missing') {
+      return { state, label: 'Checks not reported', detail: 'GitHub hasn’t reported all required checks yet.' };
+    }
+    if (/^ci_(provider_timeout|collection_deadline)(_|$)/u.test(reason)) {
+      return { state, label: 'CI check timed out', detail: 'Couldn’t finish reading the required checks.' };
+    }
+    if (/^ci_provider_rate_limited(_|$)/u.test(reason)) {
+      return { state, label: 'CI unverified', detail: 'GitHub’s request limit was reached.' };
+    }
+    if (/^ci_provider_(unavailable|server_error)(_|$)/u.test(reason)) {
+      return { state, label: 'CI unverified', detail: 'Couldn’t get the check results from GitHub.' };
+    }
+    return { state, label: 'CI unverified', detail: 'No verified result for the required checks yet.' };
   }
-  return { state: 'unknown', label: 'Checking CI', detail: 'Required CI for the active PR comparison has not yet been verified.' };
+  return { state: 'unknown', label: 'Checking CI', detail: 'Waiting for the first check of this PR revision.' };
 }
 export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   if (pull.state === 'merged' || pull.state === 'closed') return null;
@@ -195,7 +208,13 @@ export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   const labels:Record<string,string>={github_behind:'Behind',github_dirty:'Conflicts',github_draft:'Draft',draft:'Draft',github_unstable:'Checks failing',github_has_hooks:'Hooks'};
   const states={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
   const colours={ready:'mergeable',blocked:'conflicting',pending:'pending',unknown:'unknown'};
-  const reasons:Record<string,string>={pull_state_unknown:'PR state is unknown.',draft:'Draft PR.',github_clean:'GitHub reports this PR is ready to merge. Required CI and controller review work are shown separately.',github_blocked:'GitHub reports merging is blocked.',github_behind:'GitHub reports this PR is behind its base branch.',github_dirty:'GitHub reports merge conflicts.',github_draft:'GitHub reports a draft PR.',github_unstable:'GitHub reports failing checks; this does not establish that an optional failure blocks merging. Required CI is shown separately.',github_has_hooks:'GitHub reports pre-receive hooks; this observation does not establish that those hooks will pass.',merge_state_unknown:'GitHub merge state is unknown for this comparison.'};
+  const reasons:Record<string,string>={
+    github_clean:'GitHub reports no merge blockers.',
+    github_blocked:'Open the PR on GitHub to see what’s blocking the merge.',
+    github_behind:'This PR needs changes from its base branch.',
+    github_unstable:'GitHub reports failing checks. Some may be optional.',
+    github_has_hooks:'Waiting for GitHub’s merge hooks.',
+  };
   return <span title={reasons[status.reason]} className={`badge review-fact-pill review-mergeability review-fact-${colours[status.state]}`}>Merge: {labels[status.reason] ?? states[status.state]}</span>;
 }
 function reviewSizeTooltip(pull: ReviewPullSummary): string | undefined {
@@ -210,13 +229,11 @@ function reviewSizeTooltip(pull: ReviewPullSummary): string | undefined {
   return parts.join(' ') || undefined;
 }
 
-function reviewCITooltip(pull: ReviewPullSummary, display: ReturnType<typeof reviewCIDisplay>): string {
+function reviewCITooltip(pull: ReviewPullSummary, display: ReturnType<typeof reviewCIDisplay>): string | undefined {
   const gate = pull.observation?.ci_gate_ref;
-  const scope = gate ? `Required checks for final branch ${gate}, evaluated on the actual PR comparison against ${pull.base_ref}. This does not prove a hypothetical merge into ${gate} was tested.` : 'Retained required CI observation; its gate is not verified by the current observer.';
-  const empty = display.state === 'not_required' ? ' The observed gate had no required checks. Optional workflow results are separate.' : '';
-  const checked = pull.observation?.ci_checked_at ? ` Last checked ${time(pull.observation.ci_checked_at)}.` : '';
-  const reason = reviewCIReason(pull);
-  return scope + empty + checked + (display.detail ? ` ${display.detail}` : '') + (reason ? ` ${reason}` : '');
+  const scope = gate && pull.base_ref && gate !== pull.base_ref ? `Checks for ${gate} on the PR against ${pull.base_ref}.` : '';
+  const checked = pull.observation?.ci_checked_at ? `Last checked ${time(pull.observation.ci_checked_at)}.` : '';
+  return [display.detail, scope, checked].filter(Boolean).join(' ') || undefined;
 }
 
 function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {

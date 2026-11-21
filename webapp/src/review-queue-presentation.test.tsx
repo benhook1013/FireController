@@ -205,7 +205,7 @@ describe('truthful stored review presentation', () => {
   it('distinguishes no required CI from an unknown observation without claiming workflow success', () => {
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'not_required' }} />);
     expect(html).toContain('Required CI: None');
-    expect(html).toContain('Optional workflow results are separate.');
+    expect(html).toContain('Optional checks are separate.');
     expect(html).not.toContain('Required CI: Success');
     expect(html).not.toContain('CI status is unknown.');
     expect(markup(<ReviewPullFacts pull={{ ...pull(2), ci_state: 'unknown' }} />)).toContain('>Checking CI</span>');
@@ -213,12 +213,12 @@ describe('truthful stored review presentation', () => {
   it('identifies incomplete Hosted history without calling healthy PR checks a GitHub retry', () => {
     const observation = { state: 'retrying' as const, checked_at: '2026-10-23T13:24:02Z', last_success_at: '2026-10-23T13:24:02Z', error: 'external_hosted_identity_unproven', hosted_error: 'external_hosted_identity_unproven' };
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), observation }} />);
-    expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('Some Hosted review history could not yet be imported.');
+    expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('Some Hosted reviews are still missing.');
     expect(html).toContain('Last successful PR check:'); expect(html).not.toContain('GitHub: Retrying');
     for (const error of ['provider_unavailable', 'provider_rate_limited', 'ci_refresh_unavailable']) {
       const failed = markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, error } }} />);
       expect(failed).toContain('GitHub: Retrying'); expect(failed).not.toContain('Hosted history: Incomplete');
-      if (error === 'ci_refresh_unavailable') { expect(failed).toContain('CI refresh unavailable'); expect(failed).not.toContain('Ci refresh'); }
+      if (error === 'ci_refresh_unavailable') { expect(failed).toContain('Couldn’t refresh CI.'); }
     }
     expect(markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, state: 'current', error: undefined, hosted_error: undefined } }} />)).not.toContain('GitHub:');
   });
@@ -288,8 +288,8 @@ describe('truthful stored review presentation', () => {
       expect(html).toContain(`review-ci review-fact-${ci_state}`);
       expect(html).toContain(`review-mergeability review-fact-${colour}`);
       expect(html).toContain(`Merge: ${label}`);
-      if(reason==='github_unstable') expect(html).toContain('does not establish that an optional failure blocks merging');
-      if(reason==='github_has_hooks') expect(html).toContain('does not establish that those hooks will pass');
+      if(reason==='github_unstable') expect(html).toContain('Some may be optional.');
+      if(reason==='github_has_hooks') expect(html).toContain('Waiting for GitHub’s merge hooks.');
     }
   });
 
@@ -508,7 +508,7 @@ describe('retained CI explanation',()=>{
     value.observation = { state: 'current', ci_checked_at: '2026-10-28T12:12:35Z', ci_gate_ref: 'main', ci_gate_state: 'pending', ci_error: 'ci_required_checks_pending' };
     const html = markup(<ReviewPullFacts pull={value} />);
     expect(html).toContain('>CI pending · main</span>');
-    expect(html).toContain('Observed required checks are queued or running.');
+    expect(html).toContain('Required checks are queued or running.');
     expect(html).toContain('review-ci review-fact-pending');
   });
 
@@ -519,7 +519,7 @@ describe('retained CI explanation',()=>{
     for (const ci_state of ['unknown', 'pending'] as const) {
       const value: ReviewPullSummary = { ...pull(7), ci_state, observation: { state: 'current', ci_checked_at: '2026-10-28T12:12:35Z', ci_error } };
       const html = markup(<ReviewPullFacts pull={value} />);
-      expect(html).toContain('>CI status unavailable</span>');
+      expect(html).toContain('>CI unverified</span>');
       expect(html).toContain('review-ci review-fact-unknown');
       expect(html).not.toContain('>CI pending');
       expect(html).not.toContain('>Checking CI');
@@ -527,13 +527,26 @@ describe('retained CI explanation',()=>{
     }
   });
 
+  it.each([
+    ['ci_required_checks_unproven', 'CI unverified', 'No verified result for the required checks yet.'],
+    ['ci_required_check_missing', 'Checks not reported', 'GitHub hasn’t reported all required checks yet.'],
+    ['ci_collection_deadline_head_results', 'CI check timed out', 'Couldn’t finish reading the required checks.'],
+    ['ci_provider_timeout', 'CI check timed out', 'Couldn’t finish reading the required checks.'],
+    ['ci_provider_rate_limited_head_results', 'CI unverified', 'GitHub’s request limit was reached.'],
+  ])('explains unverified CI without repeating the branch or guessing a cause (%s)', (ci_error, label, explanation) => {
+    const value: ReviewPullSummary = { ...pull(7), base_ref: 'main', ci_state: 'unknown', observation: { state: 'current', ci_gate_ref: 'main', ci_gate_state: 'unknown', ci_error } };
+    const html = markup(<ReviewPullFacts pull={value} />);
+    expect(html).toContain(`title="${explanation}"`);
+    expect(html).toContain(`>${label} · main</span>`);
+  });
+
   it('distinguishes an unverified active comparison from attempted unknown evidence without guessing from PR success times', () => {
     const value: ReviewPullSummary = { ...pull(7), ci_state: 'unknown', observation: { state: 'current', last_success_at: '2026-10-28T12:12:35Z' } };
     expect(markup(<ReviewPullFacts pull={value} />)).toContain('>Checking CI</span>');
     value.observation!.ci_checked_at = '2026-10-28T12:12:35Z';
-    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI status unavailable</span>');
+    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI unverified</span>');
     value.observation = { state: 'current', ci_gate_ref: 'main', ci_gate_state: 'unknown' };
-    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI status unavailable · main</span>');
+    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI unverified · main</span>');
   });
 
   it.each(['ci_merge_base_mismatch', 'ci_merge_pending', 'ci_merge_identity_unproven', 'ci_candidate_changed', 'ci_target_changed'])('shows Checking CI for a known moving or pending comparison (%s)', ci_error => {
@@ -542,7 +555,7 @@ describe('retained CI explanation',()=>{
       const html = markup(<ReviewPullFacts pull={value} />);
       expect(html).toContain('>Checking CI</span>');
       expect(html).not.toContain('>CI pending');
-      expect(html).not.toContain('>CI status unavailable');
+      expect(html).not.toContain('>CI unverified');
       expect(html).toContain('Merge: Ready');
       expect(value.ci_state).toBe(ci_state);
     }
@@ -553,10 +566,10 @@ describe('retained CI explanation',()=>{
     const html = markup(<ReviewPullFacts pull={value} />);
     expect(html).toContain('>Checking CI</span>');
     expect(html).not.toContain('>CI pending');
-    expect(html).not.toContain('>CI status unavailable');
+    expect(html).not.toContain('>CI unverified');
     // A CI attempt can match even when the broader observer still reports movement.
     value.observation = { state: 'comparison_changed', ci_error: 'ci_provider_unavailable' };
-    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI status unavailable</span>');
+    expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI unverified</span>');
     value.observation = { state: 'comparison_changed', ci_error: 'ci_required_checks_pending', ci_gate_ref: 'main', ci_gate_state: 'pending' };
     expect(markup(<ReviewPullFacts pull={value} />)).toContain('>CI pending · main</span>');
   });
@@ -569,7 +582,7 @@ describe('retained CI explanation',()=>{
     const html = markup(<ReviewPullFacts pull={value} />);
     expect(html).toContain(`>Required CI: ${label} · main</span>`);
     expect(html).not.toContain('>Checking CI');
-    expect(html).not.toContain('>CI status unavailable');
+    expect(html).not.toContain('>CI unverified');
   });
 
   it('does not infer a CI lookup failure from errors confined to Hosted history', () => {
@@ -577,7 +590,7 @@ describe('retained CI explanation',()=>{
     for (const ci_state of ['success', 'pending', 'unknown'] as const) {
       const html = markup(<ReviewPullFacts pull={{ ...pull(7), ci_state, observation }} />);
       expect(html).toContain('Hosted history: Incomplete');
-      expect(html).not.toContain('CI status unavailable');
+      expect(html).not.toContain('CI unverified');
       expect(html).toContain(ci_state === 'success' ? '>Required CI: Success</span>' : '>Checking CI</span>');
     }
   });
@@ -585,12 +598,12 @@ describe('retained CI explanation',()=>{
   it('does not imply active checking for unknown closed history or show current CI after merge', () => {
     for (const ci_error of [undefined, 'ci_merge_pending']) {
       const closed = markup(<ReviewPullFacts pull={{ ...pull(7, 'closed'), ci_state: 'unknown', observation: { state: 'current', ci_error } }} />);
-      expect(closed).toContain('>CI status unavailable</span>');
+      expect(closed).toContain('>CI unverified</span>');
       expect(closed).not.toContain('Checking CI');
     }
     const merged = markup(<ReviewPullFacts pull={{ ...pull(7, 'merged'), ci_state: 'unknown', observation: { state: 'current', ci_error: 'ci_merge_pending' } }} />);
     expect(merged).not.toContain('Checking CI');
-    expect(merged).not.toContain('CI status unavailable');
+    expect(merged).not.toContain('CI unverified');
     expect(merged).not.toContain('review-ci');
   });
 
@@ -598,7 +611,7 @@ describe('retained CI explanation',()=>{
     const value:ReviewPullSummary={...pull(7),ci_state:'unknown',merge_status:{state:'ready',reason:'github_clean'},observation:{state:'current',ci_checked_at:'2026-10-28T12:12:35Z',ci_error:'ci_merge_base_mismatch'}};
     const html=markup(<ReviewPullFacts pull={value}/>);
     expect(html).toContain('>Checking CI</span>');expect(html).toContain('Merge: Ready');
-    expect(html.match(/earlier results remain saved/gu)).toHaveLength(1);
+    expect(html).toContain("GitHub is still testing an older base.");
     expect(html).not.toContain('Ci merge base mismatch');expect(value.ci_state).toBe('unknown');
   });
 });
@@ -620,8 +633,7 @@ it.each(['unknown','pending','success','failure','not_required'] as const)('labe
   const value:ReviewPullSummary={...pull(7),base_ref:'feature/parent',ci_state,observation:{state:'current',last_success_at:'2026-10-28T12:12:35Z',ci_checked_at:'2026-10-28T12:12:35Z',ci_gate_ref:'main',ci_gate_state:ci_state}};
   const html=markup(<ReviewPullFacts pull={value}/>);
   expect(html).toContain('· main');
-  expect(html).toContain('Required checks for final branch main, evaluated on the actual PR comparison against feature/parent.');
-  expect(html).toContain('does not prove a hypothetical merge into main was tested');
+  expect(html).toContain('Checks for main on the PR against feature/parent.');
   expect(html).toContain('Last checked');
 });
 
@@ -630,5 +642,5 @@ it('does not relabel selected-base empty CI as final-gate proof', () => {
   const html=markup(<ReviewPullFacts pull={value}/>);
   expect(html).toContain('>CI pending · main</span>');
   expect(html).not.toContain('Required CI: None');
-  expect(html).not.toContain('had no required checks');
+  expect(html).not.toContain('Optional checks are separate.');
 });

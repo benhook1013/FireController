@@ -25,22 +25,29 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 		ref        string
 	}
 	byBranch := map[branch][]int{}
+	observedByBranch := map[branch][]int{}
 	parents := map[int64]int64{}
 	children := map[int][]int{}
 	groups := make([]int, len(nodes))
 	invalid := make([]bool, len(nodes))
 	parent := make([]int, len(nodes))
+	mergedAnchor := make([]bool, len(nodes))
 	deliveryRefs := map[string]bool{}
 	for i, n := range nodes {
 		groups[i], parent[i] = i, -1
 		b := n.metadata.Branches
-		if b != nil && b.DeliveryRef != "" {
+		// Historical delivery targets may be stale. They can qualify an anchor
+		// locally, but cannot contradict otherwise current active topology.
+		if (n.state == "open" || n.state == "unknown") && b != nil && b.DeliveryRef != "" {
 			deliveryRefs[b.DeliveryRef] = true
 		}
 		invalid[i] = n.state != "open" || b == nil || b.HeadRepositoryID <= 0 || b.HeadRef == "" || b.DeliveryRef == "" || n.base == ""
-		if n.state == "open" && b != nil && b.HeadRepositoryID > 0 && b.HeadRef != "" {
+		if b != nil && b.HeadRepositoryID > 0 && b.HeadRef != "" {
 			key := branch{b.HeadRepositoryID, b.HeadRef}
-			byBranch[key] = append(byBranch[key], i)
+			observedByBranch[key] = append(observedByBranch[key], i)
+			if n.state == "open" {
+				byBranch[key] = append(byBranch[key], i)
+			}
 		}
 	}
 	var find func(int) int
@@ -68,6 +75,19 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 			continue
 		}
 		matches := byBranch[branch{repository, n.base}]
+		if len(matches) == 0 && b != nil && b.DeliveryRef != "" {
+			observed := observedByBranch[branch{repository, n.base}]
+			if len(observed) == 1 {
+				p := nodes[observed[0]]
+				if p.state == "merged" && p.metadata.Branches.DeliveryRef == b.DeliveryRef {
+					// A uniquely observed merged parent anchors ordering only. Do not
+					// join its pinned history slot, rewrite the base, or invent an
+					// active/display dependency on that terminal PR.
+					mergedAnchor[i] = true
+					continue
+				}
+			}
+		}
 		if len(matches) != 1 {
 			invalid[i] = true
 			for _, j := range matches {
@@ -104,7 +124,8 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 		}
 	}
 	// Each node has at most one parent. A connected component with no unique
-	// delivery root contains a cycle or unresolved edge, and must remain untouched.
+	// delivery or merged-parent ordering root contains a cycle or unresolved edge,
+	// and must remain untouched.
 	for i := range nodes {
 		g := find(i)
 		if len(roots[g]) != 1 {
@@ -119,7 +140,7 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 			continue
 		}
 		if parent[i] < 0 {
-			if len(children[i]) == 0 {
+			if len(children[i]) == 0 && !mergedAnchor[i] {
 				independent = append(independent, i)
 			} else {
 				stackRoots = append(stackRoots, i)
@@ -210,7 +231,7 @@ func displayParents(nodes []queueNode, repository int64) map[int64]int64 {
 	deliveryRefs := map[string]bool{}
 	for _, n := range nodes {
 		b := n.metadata.Branches
-		if b != nil {
+		if (n.state == "open" || n.state == "unknown") && b != nil {
 			deliveryRefs[b.DeliveryRef] = true
 		}
 		if n.state != "open" || b == nil || b.HeadRepositoryID != repository {
@@ -241,6 +262,11 @@ func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) (
 	return orderedRecentNodesMode(nodes, repository, cutoff, "auto")
 }
 func orderedRecentNodesMode(nodes []queueNode, repository int64, cutoff time.Time, mode string) ([]queueNode, map[int64]int64) {
+	if mode == "auto" {
+		// Keep terminal metadata available until active ordering is resolved.
+		// topologyOrders pins terminal slots; the browser separates history below.
+		nodes, _, _ = topologyOrders(nodes, repository)
+	}
 	var open, other []queueNode
 	for _, n := range nodes {
 		switch n.state {
@@ -258,9 +284,6 @@ func orderedRecentNodesMode(nodes []queueNode, repository int64, cutoff time.Tim
 		if i < 2 || n.metadata.MergedAt == "" || !at.Before(cutoff) {
 			recent = append(recent, n)
 		}
-	}
-	if mode == "auto" {
-		open, _, _ = topologyOrders(open, repository)
 	}
 	parents := displayParents(nodes, repository)
 	return append(append(recent, open...), other...), parents
