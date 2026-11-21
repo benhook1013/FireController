@@ -7,12 +7,14 @@ from pathlib import Path
 PREFIX = "github.com/benhook1013/FireController/"
 FAMILIES = {"backup": 8, "reviewexec": 6, "reviews": 4, "reviewruntime": 2}
 REST_SHARDS = 2
+REVIEWEXEC_SPLIT = "reviewexec-1"
+REVIEWEXEC_SPLIT_TAIL = "reviewexec-1b"
 
 
 def shards():
     counts = {**FAMILIES, "rest": REST_SHARDS}
     return [f"{family}-{index}" for index in range(max(counts.values()))
-            for family, count in counts.items() if index < count]
+            for family, count in counts.items() if index < count] + [REVIEWEXEC_SPLIT_TAIL]
 
 
 def select_packages(shard, inventory):
@@ -38,7 +40,10 @@ def select_packages(shard, inventory):
 
 
 def select_tests(shard, package, inventory):
-    family, index = shard.rsplit("-", 1)
+    if shard not in shards():
+        raise ValueError("unknown Go test shard")
+    original = REVIEWEXEC_SPLIT if shard == REVIEWEXEC_SPLIT_TAIL else shard
+    family, index = original.rsplit("-", 1)
     if family not in FAMILIES or package != PREFIX + "internal/" + family:
         raise ValueError("test partition/package mismatch")
     names = []
@@ -54,10 +59,17 @@ def select_tests(shard, package, inventory):
     # one deterministic partition rather than rejecting valid discovery output.
     names = sorted(set(names), key=lambda name: name.encode("utf-8"))
     partitions = [names[i::FAMILIES[family]] for i in range(FAMILIES[family])]
+    # Split only the previously overloaded slice. Do not change the
+    # modulo used to assign names to any of the other five reviewexec jobs.
+    if family == "reviewexec":
+        original_slice = partitions[1]
+        partitions[1] = original_slice[::2]
+        partitions.append(original_slice[1::2])
     sets = [set(part) for part in partitions]
     if any(not part for part in sets) or set().union(*sets) != set(names) or sum(map(len, sets)) != len(names):
         raise ValueError("incomplete or empty Go test partition")
-    return "^(" + "|".join(re.escape(name) for name in partitions[int(index)]) + ")$"
+    selected = partitions[-1] if shard == REVIEWEXEC_SPLIT_TAIL else partitions[int(index)]
+    return "^(" + "|".join(re.escape(name) for name in selected) + ")$"
 
 
 def main():

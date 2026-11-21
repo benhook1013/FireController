@@ -35,12 +35,14 @@ class SelectionTests(unittest.TestCase):
 
     def test_all_tests_examples_and_fuzz_seeds_belong_to_exactly_one_partition(self):
         names = [f"TestCase{i:03}" for i in range(50)] + ["ExampleAPI", "FuzzDecode"]
-        for family, count in SELECT.FAMILIES.items():
+        for family in SELECT.FAMILIES:
             package = SELECT.PREFIX + "internal/" + family
             inventory = "\n".join(reversed(names)) + f"\nBenchmarkIgnore\nok\t{package}\t0.001s\n"
             membership = {name: 0 for name in names}
-            for index in range(count):
-                expression = SELECT.select_tests(f"{family}-{index}", package, inventory)
+            for shard in SELECT.shards():
+                if not shard.startswith(f"{family}-"):
+                    continue
+                expression = SELECT.select_tests(shard, package, inventory)
                 self.assertTrue(expression.startswith("^(") and expression.endswith(")$"))
                 self.assertIsNone(re.fullmatch(expression, "TestCase000Suffix"))
                 self.assertIsNone(re.fullmatch(expression, "BenchmarkIgnore"))
@@ -53,20 +55,39 @@ class SelectionTests(unittest.TestCase):
         # Go registers internal and external implementations separately even
         # when their valid top-level names match. One expression selects both.
         repeated = names + [names[0], "ExampleAPI", "FuzzDecode"]
-        for family, count in SELECT.FAMILIES.items():
+        for family in SELECT.FAMILIES:
             package = SELECT.PREFIX + "internal/" + family
             baseline = "\n".join(names) + f"\nok\t{package}\t0.001s\n"
             inventory = "\n".join(repeated) + f"\nok\t{package}\t0.001s\n"
             reordered = "\n".join(reversed(repeated)) + f"\nok\t{package}\t0.001s\n"
             expressions = []
-            for index in range(count):
-                shard = f"{family}-{index}"
+            for shard in SELECT.shards():
+                if not shard.startswith(f"{family}-"):
+                    continue
                 expression = SELECT.select_tests(shard, package, inventory)
                 self.assertEqual(expression, SELECT.select_tests(shard, package, baseline))
                 self.assertEqual(expression, SELECT.select_tests(shard, package, reordered))
                 expressions.append(expression)
             for occurrence in repeated:
                 self.assertEqual(sum(bool(re.fullmatch(expr, occurrence)) for expr in expressions), 1)
+
+    def test_reviewexec_split_changes_only_the_overloaded_partition(self):
+        package = SELECT.PREFIX + "internal/reviewexec"
+        names = sorted([f"TestCase{i:04}" for i in range(1021)] + ["ExampleAPI", "FuzzDecode"])
+        inventory = "\n".join(reversed(names))
+        old_slices = [set(names[index::6]) for index in range(6)]
+
+        def matches(shard):
+            expression = SELECT.select_tests(shard, package, inventory)
+            return {name for name in names if re.fullmatch(expression, name)}
+
+        for index in (0, 2, 3, 4, 5):
+            self.assertEqual(matches(f"reviewexec-{index}"), old_slices[index])
+        left, right = matches("reviewexec-1"), matches("reviewexec-1b")
+        self.assertTrue(left and right)
+        self.assertFalse(left & right)
+        self.assertEqual(left | right, old_slices[1])
+        self.assertLessEqual(abs(len(left) - len(right)), 1)
 
     def test_bad_package_inventories_and_unknown_shards_fail_closed(self):
         for inventory in ["", "bad/package", "\n".join(self.inventory() * 2), self.inventory()[0] + "\n\n"]:
