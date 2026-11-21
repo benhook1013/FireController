@@ -14,14 +14,14 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 	call := &mutationInvocation{operation: "jobs " + operation}
 	allowed := map[string]bool{"--key": true, "--expect-revision": true}
 	if operation == "update" {
-		for _, flag := range []string{"--title", "--brief", "--brief-file", "--worker", "--status", "--progress", "--progress-file", "--next", "--next-file", "--blocker", "--blocker-file", "--evidence"} {
+		for _, flag := range []string{"--title", "--brief", "--brief-file", "--worker", "--status", "--progress", "--progress-file", "--next", "--next-file", "--blocker", "--blocker-file", "--evidence", "--blocked-by"} {
 			allowed[flag] = true
 		}
 	} else {
 		allowed["--expect-checklist-revision"], allowed["--items"], allowed["--items-file"] = true, true, true
 	}
 	values := make(map[string]string)
-	var positions, evidence []string
+	var positions, evidence, blockedBy []string
 	for i := 0; i < len(args); i++ {
 		argument := args[i]
 		if !strings.HasPrefix(argument, "-") {
@@ -32,7 +32,7 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 		if !allowed[flag] {
 			return nil, false
 		}
-		if _, duplicate := values[flag]; duplicate && flag != "--evidence" {
+		if _, duplicate := values[flag]; duplicate && flag != "--evidence" && flag != "--blocked-by" {
 			return nil, false
 		}
 		if !assigned {
@@ -48,6 +48,12 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 		if flag == "--evidence" {
 			evidence = append(evidence, value)
 			if len(evidence) > 10 {
+				return nil, false
+			}
+		}
+		if flag == "--blocked-by" {
+			blockedBy = append(blockedBy, value)
+			if len(blockedBy) > 20 {
 				return nil, false
 			}
 		}
@@ -67,6 +73,12 @@ func parseJobProgress(operation string, args []string) (*mutationInvocation, boo
 			return nil, false
 		}
 		call.patch = client.UpdateJobRequest{ExpectedRevision: revision}
+		if _, ok := values["--blocked-by"]; ok {
+			if len(blockedBy) == 1 && blockedBy[0] == "" {
+				blockedBy = []string{}
+			}
+			call.patch.BlockedBy = &blockedBy
+		}
 		for flag, dst := range map[string]**string{"--title": &call.patch.Title, "--brief": &call.patch.Brief, "--worker": &call.patch.WorkerID, "--status": &call.patch.Status} {
 			if v, ok := values[flag]; ok {
 				value := v
