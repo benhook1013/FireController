@@ -64,12 +64,12 @@ def inventory(text):
         else:
             assert slot[1].isdigit()
             result.append((expected_names[job], int(slot[1]), job))
-    assert len(result) == 27
-    assert len({name for name, _, _ in result}) == 27
+    assert len(result) == 28
+    assert len({name for name, _, _ in result}) == 28
     assert {lane for _, lane, _ in result} == set(range(20))
     assert all(0 <= lane < 20 for _, lane, _ in result)
     assert Counter(family for _, _, family in result) == {
-        'linux': 22, 'native-smoke': 2, 'static': 1, 'qualification': 1, 'validate': 1,
+        'linux': 23, 'native-smoke': 2, 'static': 1, 'qualification': 1, 'validate': 1,
     }
     expected_lanes = {
         'Source and browser checks': 2, 'Packaged qualification': 3,
@@ -87,6 +87,7 @@ def inventory(text):
                            for index, name in enumerate(race_order)})
     expected_lanes['Go race (reviewexec-5)'] = 4
     expected_lanes['Go race (rest-0)'] = 12
+    expected_lanes['Go race (reviewexec-1b)'] = 15
     assert {family for _, lane, family in result if lane == 19} == {'validate'}
     assert {name: lane for name, lane, _ in result} == expected_lanes, 'documented slot affinity changed'
     return result
@@ -216,15 +217,16 @@ class SchedulingTests(unittest.TestCase):
 
     def finish_runs(self, scheduler, runs):
         completed = Counter()
+        required = len(self.jobs) - 1
         gate_lane = next(lane for _, lane, family in self.jobs if family == 'validate')
         while scheduler.active:
             for job in scheduler.step():
                 if job.name != 'validate':
                     completed[job.run] += 1
-                    if completed[job.run] == 26:
+                    if completed[job.run] == required:
                         scheduler.offer(Job(job.run, 'validate', gate_lane))
-        self.assertEqual(completed, {run: 26 for run in runs})
-        self.assertEqual(len(scheduler.intervals), 27 * len(runs))
+        self.assertEqual(completed, {run: required for run in runs})
+        self.assertEqual(len(scheduler.intervals), len(self.jobs) * len(runs))
         self.assertFalse(scheduler.rejected)
         self.assertLessEqual(max(map(len, scheduler.snapshots)), 20)
         for run in runs:
@@ -234,7 +236,7 @@ class SchedulingTests(unittest.TestCase):
                                 if j.run == run and j.name != 'validate'))
 
     def test_real_inventory_includes_every_required_context(self):
-        self.assertEqual(len(self.jobs), 27)
+        self.assertEqual(len(self.jobs), 28)
 
     def test_guards_refuse_missing_lane_extra_jobs_and_revision_changes(self):
         mutations = [
@@ -244,6 +246,8 @@ class SchedulingTests(unittest.TestCase):
             self.text.replace(WORKFLOW_SUPERSESSION, WORKFLOW_SUPERSESSION.replace('  cancel-in-progress: true', '  queue: max\n  cancel-in-progress: false'), 1),
             self.text.replace('shard: reviewexec-5\n            slot: 4',
                               'shard: reviewexec-5\n            slot: 19', 1),
+            self.text.replace('shard: reviewexec-1b\n            slot: 15',
+                              'shard: reviewexec-1b\n            slot: 19', 1),
             self.text.replace('group: firecontroller-ci-slot-2', 'group: firecontroller-ci-slot-9', 1),
             self.text.replace('      queue: max', '      queue: single', 1),
             self.text.replace('      cancel-in-progress: false', '      cancel-in-progress: true', 1),
@@ -401,7 +405,7 @@ class SchedulingTests(unittest.TestCase):
         legacy = LegacyRun(self.jobs, 'legacy')
         families = Counter(legacy.families[name] for name in legacy.active)
         self.assertEqual(families, {'linux': 16, 'static': 1, 'qualification': 1, 'native-smoke': 2})
-        self.assertEqual(len(legacy.pending_linux), 6)
+        self.assertEqual(len(legacy.pending_linux), 7)
         self.assertNotIn('validate', legacy.active)
         self.assertEqual(len(s.active), 19)
         # Both admitted runs start at model time zero. Legacy jobs occupy real
@@ -421,7 +425,7 @@ class SchedulingTests(unittest.TestCase):
         # gate start early after all race shards finish.
         legacy = LegacyRun(self.jobs, 'legacy', lambda name: 5 if name == 'Packaged qualification' else 1)
         legacy.step()
-        self.assertEqual(sum(legacy.families[name] == 'linux' for name in legacy.active), 6)
+        self.assertEqual(sum(legacy.families[name] == 'linux' for name in legacy.active), 7)
         self.assertFalse(legacy.pending_linux)
         legacy.step()
         self.assertEqual(set(legacy.active), {'Packaged qualification'})
