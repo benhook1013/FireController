@@ -73,7 +73,8 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 			observed = p.ObservedAt
 		}
 	}
-	return f.observedAt == observed
+	checked, _ := time.Parse(time.RFC3339Nano, f.checkedAt)
+	return f.observedAt == observed && (len(f.prefix) == 0 || !checked.Before(latest))
 }
 func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Configuration, choice runChoice) error {
 	f := frontFrame{repository: repo, configuration: r.ConfigurationRevision, checkedAt: stamp(), sourceReason: choice.sourceReason, prefix: []frontPull{}}

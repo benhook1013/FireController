@@ -34,7 +34,11 @@ func (s *Store) EnsureSchema(ctx context.Context, domain string, migrations ...[
 // migration deadline and atomic rollback, including schema version metadata.
 // Work must honor the context and use bounded batches, with no filesystem, network or
 // provider calls, and must not commit or roll back the connection itself.
-func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
+func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, migrations [][]string, backfill func(context.Context, *sql.Conn) error) error {
+	return s.ensureSchemaWithPreflight(ctx, domain, migrations, nil, backfill)
+}
+
+func (s *Store) ensureSchemaWithPreflight(ctx context.Context, domain string, migrations [][]string, preflight, backfill func(context.Context, *sql.Conn) error) (resultErr error) {
 	if domain == "" || len(migrations) == 0 {
 		return Fail("schema_invalid", "A domain schema requires an identity and migrations.", 500)
 	}
@@ -70,6 +74,11 @@ func (s *Store) EnsureSchemaWithBackfill(ctx context.Context, domain string, mig
 			}
 		}
 	}()
+	if preflight != nil {
+		if err = preflight(ctx, conn); err != nil {
+			return err
+		}
+	}
 	key := "schema:" + domain
 	var raw string
 	version := 0
