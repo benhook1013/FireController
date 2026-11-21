@@ -12,7 +12,7 @@ func TestSupervisorTypedPreparationRefusals(t *testing.T) {
 		refusal                     func() error
 		reservations                int
 	}{
-		{"scheduling", "queued", "automatic_scheduling_unavailable", func() error { return schedulingRecordUnavailable(true) }, 0},
+		{"scheduling", "queued", "automatic_scheduling_unavailable", schedulingRecordUnavailable, 0},
 		{"round-history", "preparing", "", roundUnavailable, 1},
 		{"retained-history", "preparing", "", func() error {
 			return automaticProjectStateFailure("storage_unavailable", "Synthetic retained history unavailable.", 503)

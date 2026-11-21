@@ -674,8 +674,8 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 	return e.processPendingBatch(ctx, drivers, releaseProbe, worker, operations, receipt)
 }
 
-// A deterministic scheduling refusal requeues only unused preparation. Other
-// candidate-local history failures keep their preparation and reservation.
+// A typed scheduling refusal requeues only unused preparation. Other local
+// history failures retain the preparation and reservation.
 func (e *Engine) classifyUnavailablePreparation(ctx context.Context, o Operation, a Attempt, err error) (bool, error) {
 	if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 		return true, nil
@@ -803,6 +803,15 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 		if err != nil {
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
+			}
+			// Preserve the existing recovery for a proven project-wide source
+			// obligation fault at admission. The retained reason keeps old
+			// detached attempts compatible with snapshot validation.
+			if isSourceObligationProjectStateError(err) {
+				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+					return err
+				}
+				continue
 			}
 			if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
 				if settleErr != nil {
