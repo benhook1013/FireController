@@ -52,6 +52,7 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	}
 	observed := ""
 	var latest time.Time
+	parents := make(map[int64]int64, len(f.prefix))
 	for i, p := range f.prefix {
 		if p.Number != c.Queue[i] || (p.State != "open" && p.State != "closed") || p.Merged && p.State != "closed" || !sha.MatchString(p.HeadSHA) || !sha.MatchString(p.BaseSHA) || !sha.MatchString(p.ParentSHA) || p.ParentSHA != p.BaseSHA || p.BaseRef == "" || !safeText(p.BaseRef, 256) || !roundTime(p.ObservedAt) || p.SourceReason != "" && !perPullSourceHold(p.SourceReason) {
 			return false
@@ -67,15 +68,42 @@ func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 			}
 		}
 
+		parents[p.Number] = p.ParentPullNumber
+
 		at, _ := time.Parse(time.RFC3339Nano, p.ObservedAt)
 		if observed == "" || at.After(latest) {
 			latest = at
 			observed = p.ObservedAt
 		}
 	}
+	if !acyclicFrontParents(parents) {
+		return false
+	}
 	checked, _ := time.Parse(time.RFC3339Nano, f.checkedAt)
 	return f.observedAt == observed && (len(f.prefix) == 0 || !checked.Before(latest))
 }
+
+// acyclicFrontParents checks observed edges only; an unobserved parent is not
+// evidence of a cycle in the retained prefix.
+func acyclicFrontParents(parents map[int64]int64) bool {
+	seen := make(map[int64]int64, len(parents))
+	for start := range parents {
+		for number := start; number != 0; number = parents[number] {
+			if seen[number] == start {
+				return false
+			}
+			if seen[number] != 0 {
+				break
+			}
+			if _, observed := parents[number]; !observed {
+				break
+			}
+			seen[number] = start
+		}
+	}
+	return true
+}
+
 func writeFrontFrame(ctx context.Context, tx *sql.Tx, r Run, repo int64, c Configuration, choice runChoice) error {
 	f := frontFrame{repository: repo, configuration: r.ConfigurationRevision, checkedAt: stamp(), sourceReason: choice.sourceReason, prefix: []frontPull{}}
 	var hasProjection bool
