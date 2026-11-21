@@ -1157,7 +1157,7 @@ try {
   await expect(mergedFacts.locator('.review-merged-age time')).toHaveAttribute('datetime', merged.merged_at);
   await expect(mergedFacts).not.toContainText('Draft');
   await expect(mergedFacts.locator('.review-ci')).toHaveCount(0);
-  await expect(openFacts).toContainText('Required CI: Unknown');
+  await expect(openFacts.locator('.review-ci')).toHaveText('Checking CI');
   await expect(openFacts.locator('.review-mergeability')).toHaveText('Merge: Unknown');
   const headRow = page.locator('#review-pr-32');
   const headJumpPosition = () => headRow.evaluate(element => {
