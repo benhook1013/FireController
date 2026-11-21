@@ -74,37 +74,63 @@ func TestRecovery0030InterruptedInitialReadKeepsChannelContinuity(t *testing.T) 
 	}
 }
 
-func TestRecovery0030CompletedSourceHoldRetainsUnchangedChannelBasis(t *testing.T) {
+func TestRecovery0030CompletedSourceHoldRequiresCurrentSchedulingRevision(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, interruptions := range []int{0, 1, 2, 4} {
-			t.Run(channel+"/"+string(rune('0'+interruptions)), func(t *testing.T) {
-				var f *attemptFixture
-				var original Run
-				if channel == "hosted" {
-					f, original = sourceRetryFixture(t)
-				} else {
-					f, original = cliSourceRetryFixture(t)
+		for _, changeOtherChannel := range []bool{false, true} {
+			interruptionsToTest := []int{1}
+			if changeOtherChannel {
+				interruptionsToTest = []int{0, 1, 2, 4}
+			}
+			for _, interruptions := range interruptionsToTest {
+				revisionCase := "unchanged-revision"
+				if changeOtherChannel {
+					revisionCase = "changed-other-channel"
 				}
-				ageSourceRetry(t, f, original.ID)
-				if channel == "hosted" {
-					schedulingGenerate(t, f, true)
-				} else {
-					schedulingCLIGenerate(t, f, true)
-				}
-				for range interruptions {
-					recovery0030Claim(t, f, original.ID)
-					if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
-						t.Fatal(err)
+				t.Run(channel+"/"+revisionCase+"/"+string(rune('0'+interruptions)), func(t *testing.T) {
+					var f *attemptFixture
+					var original Run
+					if channel == "hosted" {
+						f, original = sourceRetryFixture(t)
+					} else {
+						f, original = cliSourceRetryFixture(t)
 					}
-				}
-				recovery0030EnableBoth(t, f)
-				reader := &refreshTestReader{}
-				selectionNext(t, f, reader)
-				got := selectionRead(t, f, original.ID)
-				if got.State != "selected" || got.OperationID == "" || got.ID != original.ID || reader.calls.Load() == 0 {
-					t.Fatal("completed hold lost unchanged channel continuity", got)
-				}
-			})
+					ageSourceRetry(t, f, original.ID)
+					if channel == "hosted" {
+						schedulingGenerate(t, f, true)
+					} else {
+						schedulingCLIGenerate(t, f, true)
+					}
+					for range interruptions {
+						recovery0030Claim(t, f, original.ID)
+						if err := f.e.RecoverReviewRuns(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if changeOtherChannel {
+						// Keep the selected channel on, but enable the other channel.
+						// Its distinct scheduling basis does not preserve the shared
+						// authorization revision of a completed source hold.
+						recovery0030EnableBoth(t, f)
+					}
+					reader := &refreshTestReader{}
+					selectionNext(t, f, reader)
+					got := selectionRead(t, f, original.ID)
+					if got.ID != original.ID || got.ActorID != original.ActorID || got.WorkerID != original.WorkerID ||
+						attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 ||
+						attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts`) != 0 {
+						t.Fatal("retained selection changed, duplicated or attempted provider work", got)
+					}
+					operations := attemptCount(t, f.store, `SELECT count(*) FROM review_operations`)
+					if changeOtherChannel {
+						if got.State != "held" || got.Reason != "automation_authorization_changed" ||
+							got.OperationID != "" || operations != 0 || reader.calls.Load() != 0 {
+							t.Fatal("stale shared revision must stop before source read or child operation", got)
+						}
+					} else if got.State != "selected" || got.OperationID == "" || operations != 1 || reader.calls.Load() == 0 {
+						t.Fatal("current shared revision must resume the original bounded retry", got)
+					}
+				})
+			}
 		}
 	}
 }
