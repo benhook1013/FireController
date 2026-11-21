@@ -69,6 +69,21 @@ describe('routed findings API boundary', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('accepts retained source titles through the 4096 UTF-8 byte boundary', async () => {
+    const api = await connected();
+    const value = detail();
+    vi.stubGlobal('fetch', vi.fn(async () => json(value)));
+
+    value.source_finding.title = 'x'.repeat(631);
+    expect(await api.reviewRoute(routeID)).toEqual(value);
+
+    value.source_finding.title = 'é'.repeat(2048);
+    expect(await api.reviewRoute(routeID)).toEqual(value);
+
+    value.source_finding.title += 'x';
+    await expect(api.reviewRoute(routeID)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
   it('retains full counts and an explicit selected page without draining its continuation or fetching details', async () => {
     const api = await connected(); const value = page();
     const fetch = vi.fn(async () => json(value)); vi.stubGlobal('fetch', fetch);
