@@ -113,17 +113,31 @@ func (c *Client) MarkSeen(ctx context.Context, key, id string) (MessageReceipt, 
 	return c.transition(ctx, key, id, "seen")
 }
 
-func (c *Client) Acknowledge(ctx context.Context, key, id string) (MessageReceipt, error) {
-	return c.transition(ctx, key, id, "ack")
+func (c *Client) Acknowledge(ctx context.Context, key, id string, selectedWorker ...string) (MessageReceipt, error) {
+	worker, err := c.selectedWorker(selectedWorker)
+	if err != nil {
+		return MessageReceipt{}, err
+	}
+	// Keep the default receipt identity for both omitted and explicit self selections.
+	if worker == c.identity.WorkerID {
+		return c.transition(ctx, key, id, "ack")
+	}
+	return c.transition(ctx, key, id, "ack", worker)
 }
 
-func (c *Client) transition(ctx context.Context, key, id, action string) (MessageReceipt, error) {
+func (c *Client) transition(ctx context.Context, key, id, action string, selectedWorker ...string) (MessageReceipt, error) {
 	if !validMutationKey(key) || !validID(id) {
 		return MessageReceipt{}, mutationValidation()
 	}
 	var result MessageReceipt
 	path := c.projectPath("messages", id, action)
-	if err := c.mutate(ctx, http.MethodPost, path, key, struct{}{}, http.StatusOK, &result); err != nil {
+	var input struct {
+		WorkerID string `json:"worker_id,omitempty"`
+	}
+	if len(selectedWorker) == 1 {
+		input.WorkerID = selectedWorker[0]
+	}
+	if err := c.mutate(ctx, http.MethodPost, path, key, input, http.StatusOK, &result); err != nil {
 		return MessageReceipt{}, err
 	}
 	want := action

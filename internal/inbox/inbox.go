@@ -115,10 +115,10 @@ func (h *handler) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: "messages.send", Target: "collection", Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		if err := core.CheckWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
 			return nil, err
 		}
-		if err := core.CheckWorker(ctx, tx, scope.ProjectID, request.RecipientWorkerID); err != nil {
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, request.RecipientWorkerID); err != nil {
 			return nil, err
 		}
 		id := core.NewID("msg")
@@ -399,18 +399,43 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 		core.WriteError(w, err)
 		return
 	}
-	if scope.WorkerID == "" {
-		core.WriteError(w, core.Fail("validation_failed", "Select the recipient with X-FC-Worker.", http.StatusBadRequest))
-		return
-	}
 	if _, err := core.QueryKeys(r, "validation_failed"); err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	var request struct{}
-	if err := core.ReadJSON(w, r, &request); err != nil {
+	var request struct {
+		WorkerID string `json:"worker_id,omitempty"`
+	}
+	var input struct {
+		WorkerID json.RawMessage `json:"worker_id,omitempty"`
+	}
+	var body any = &input
+	if !ack {
+		body = &struct{}{}
+	}
+	if err := core.ReadJSON(w, r, body); err != nil {
 		core.WriteError(w, err)
 		return
+	}
+	if input.WorkerID != nil && (json.Unmarshal(input.WorkerID, &request.WorkerID) != nil || !cleanID(request.WorkerID)) {
+		core.WriteError(w, core.Fail("validation_failed", "An explicit worker_id must identify the message recipient.", http.StatusBadRequest))
+		return
+	}
+	recipientWorker := scope.WorkerID
+	if request.WorkerID != "" {
+		recipientWorker = request.WorkerID
+	}
+	if !cleanID(recipientWorker) {
+		core.WriteError(w, core.Fail("validation_failed", "Select the recipient with X-FC-Worker or an explicit worker_id for acknowledgement.", http.StatusBadRequest))
+		return
+	}
+	onBehalf := recipientWorker != scope.WorkerID
+	if onBehalf {
+		if scope.WorkerID == "" {
+			core.WriteError(w, core.Fail("validation_failed", "Select the acting worker with X-FC-Worker for acknowledgement on behalf of another recipient.", http.StatusBadRequest))
+			return
+		}
+		scope = scope.RequireAdministration()
 	}
 	id := r.PathValue("message_id")
 	operation, outcome := "messages.seen", "seen"
@@ -423,26 +448,35 @@ func (h *handler) transition(w http.ResponseWriter, r *http.Request, ack bool) {
 		return
 	}
 	result, err := h.store.Mutate(r.Context(), scope, core.Mutation{Operation: operation, Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		if onBehalf {
+			if err := h.store.RequireProjectManagementTx(ctx, tx, scope); err != nil {
+				return nil, err
+			}
+		}
 		var conversationID, recipient string
 		if err := tx.QueryRowContext(ctx, "SELECT conversation_id,recipient_worker_id FROM inbox_messages WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&conversationID, &recipient); err != nil {
 			return nil, missing(err)
 		}
-		if recipient != scope.WorkerID {
+		if recipient != recipientWorker {
 			return nil, core.Fail("forbidden", "Only the message recipient can change receipt state.", http.StatusForbidden)
 		}
 		var seen, acknowledged bool
 		var revision int64
-		if err := tx.QueryRowContext(ctx, "SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?", scope.ProjectID, id, scope.WorkerID).Scan(&seen, &acknowledged, &revision); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT seen,acknowledged,revision FROM inbox_recipient_state WHERE project_id=? AND message_id=? AND worker_id=?", scope.ProjectID, id, recipientWorker).Scan(&seen, &acknowledged, &revision); err != nil {
 			return nil, err
 		}
 		if (ack && acknowledged) || (!ack && seen) {
 			return receipt{ID: id, ConversationID: conversationID, Outcome: "unchanged"}, nil
 		}
 		acknowledged = acknowledged || ack
-		if _, err := tx.ExecContext(ctx, "UPDATE inbox_recipient_state SET seen=1,acknowledged=?,revision=revision+1 WHERE project_id=? AND message_id=? AND worker_id=?", acknowledged, scope.ProjectID, id, scope.WorkerID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_recipient_state SET seen=1,acknowledged=?,revision=revision+1 WHERE project_id=? AND message_id=? AND worker_id=?", acknowledged, scope.ProjectID, id, recipientWorker); err != nil {
 			return nil, err
 		}
-		if err := core.AppendEvent(ctx, tx, scope, "message."+outcome, id, revision+1, map[string]string{"conversation_id": conversationID, "recipient_worker_id": scope.WorkerID}); err != nil {
+		payload := map[string]string{"conversation_id": conversationID, "recipient_worker_id": recipientWorker}
+		if onBehalf {
+			payload["actor_worker_id"] = scope.WorkerID
+		}
+		if err := core.AppendEvent(ctx, tx, scope, "message."+outcome, id, revision+1, payload); err != nil {
 			return nil, err
 		}
 		return receipt{ID: id, ConversationID: conversationID, Outcome: outcome}, nil

@@ -123,6 +123,7 @@ type Engine struct {
 	draftProbeCursor           string
 	pendingScanMu              sync.Mutex
 	pendingScanCursor          [2]pendingScanPosition
+	pendingScanTimeout         [2]pendingScanPosition
 	runWake                    chan struct{}
 	runRunning                 atomic.Bool
 	hostedObserverMu           sync.Mutex

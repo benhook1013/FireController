@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from './api';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CapturedComparisonRefusal, CapturedComparisonResult } from './App';
+import { CapturedComparisonRefusal, CapturedComparisonResult, restoredWorker } from './App';
 
 describe('captured comparison refusal presentation', () => {
   it('explains the repository binding refusal without suggesting a refresh', () => {
@@ -37,5 +38,25 @@ describe('carried captured assessment presentation', () => {
     expect(html).toContain('Project review requirements are unconfigured.');
     expect(html).toContain('1 carried source obligation(s) remain pending.');
     expect(html).not.toContain('Required rounds complete');
+  });
+});
+
+describe('saved inbox worker restoration', () => {
+  it('uses the exact worker detail and preserves a retired historical selection', async () => {
+    const retired = { id: 'worker_one', project_id: 'project_one', name: 'Archive', retired: true };
+    const worker = vi.fn().mockResolvedValue(retired);
+    const signal = new AbortController().signal;
+    await expect(restoredWorker({ worker }, retired.id, signal)).resolves.toEqual(retired);
+    expect(worker).toHaveBeenCalledExactlyOnceWith(retired.id, signal);
+  });
+
+  it('clears only a missing worker and preserves other failures', async () => {
+    const worker = vi.fn().mockRejectedValueOnce(new ApiError('not_found', 'Missing', 404))
+      .mockRejectedValueOnce(new ApiError('forbidden', 'Forbidden', 403))
+      .mockRejectedValueOnce(new ApiError('invalid_response', 'Invalid'));
+    const signal = new AbortController().signal;
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).resolves.toBeNull();
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(restoredWorker({ worker }, 'worker_one', signal)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 });
