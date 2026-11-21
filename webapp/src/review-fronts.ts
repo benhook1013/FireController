@@ -15,7 +15,7 @@ export interface ReviewFronts {
   configuration_revision: number; policy_revision: number; snapshot_id?: string;
   queue: number[]; channels: ReviewFrontChannel[];
 }
-export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
+export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued' | 'held'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 export interface ReviewChannelPosition { text: string; description?: string }
 export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'Review results are finalized, and accepted findings still need fixes before another review in this channel.'};
 
@@ -102,5 +102,13 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
     const channels = priorities.filter(item => item.index === first && matchesPriority(pull, item.priority) && !closed(item.channel)).map(item => item.channel);
     if (channels.length) return [{kind:'front',text:'Review front',channels,description:`First PR with ${names(channels)} review rounds remaining. Each channel shows its own readiness and execution status.`}];
   }
-  return position > first ? [{kind:'queued',text:'Queued',description:'Behind the first PR with review rounds remaining.'}] : [];
+  if (position <= first) return [];
+
+  const current = progress?.pull_number === pull.number ? progress : undefined;
+  if ((current?.incoming_routes_pending ?? 0) > 0) {
+    const executing = current?.channels.some(channel => (channel.pending_execution ?? channel.pending) > 0) ||
+      pull.latest_attempts.some(attempt => !attempt.finished_at && ['preparing','prepared','posting','active'].includes(attempt.state));
+    if (!executing) return [{kind:'held',text:'Findings pending',description:'Incoming routed findings hold new reviews.'}];
+  }
+  return [{kind:'queued',text:'Queued',description:'Behind the first PR with review rounds remaining.'}];
 }

@@ -140,6 +140,20 @@ describe('truthful stored review presentation', () => {
     expect(unclassified).not.toContain('>Fixes pending</span>');
   });
 
+  it('shows a later receiving row findings hold without replacing retained channel work', () => {
+    const v=fronts();
+    v.channels=[{...v.channels[0],state:'held',reason:'review_evidence_pending'}, {...v.channels[0],channel:'cli',state:'held',reason:'review_evidence_pending'}];
+    const progress:ReviewProgressItem={pull_number:3,incoming_routes_pending:1,channels:['hosted','cli'].map(channel=>({channel:channel as 'hosted'|'cli',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:5,taper:2,used:1,dry:0,tapered:false,pending:1,pending_execution:0,pending_adjudication:1}))};
+    const html=markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={progress} />);
+    expect(html).toContain('>Findings pending</span>');
+    expect(html).toContain('>1 incoming routed finding</a>');
+    expect(html).toContain('>Needs adjudication</span>');
+    expect(html).not.toContain('>Queued</span>');
+    for (const incoming of [0,undefined]) {
+      expect(markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={{...progress,incoming_routes_pending:incoming}} />)).toContain('>Queued</span>');
+    }
+  });
+
   it('shows no current badge or explanation for an intentionally cancelled preflight wait', () => {
     const attempt: ReviewAttemptSummary = { source_attempt_id: `review_attempt_${'a'.repeat(32)}`, channel: 'hosted', head_sha: 'c'.repeat(40), state: 'held', reason: 'hosted_allowance_cooldown', started_at: '2026-11-01T00:00:00Z', finished_at: '2026-11-01T00:00:20Z', duration_seconds: 20, source_run_id: '', trigger_id: '', provider_review_id: '' };
     const row = { ...pull(2), attempt_count: 1, latest_attempts: [attempt] };

@@ -50,6 +50,8 @@ The optional `review_fronts` schema version one owns a project/channel current-f
 
 Delivery and Reviews share one bounded local front read. A response must match the displayed current workspace and relevant PR identities before a front badge is shown. Current round closure remains separate from source position. Queued means an established position behind a channel's known front, not a promise that all provider or admission checks would pass. Historical snapshot pages do not present current front state as historical permission.
 
+For a later open row, matching current progress with a positive incoming routed-findings count replaces the generic **Queued** badge with **Findings pending**. Missing, zero or another PR's progress does not establish this hold. **Review closed** and active execution retain precedence; the **Review front** marker and each channel's admission, cooldown and retained-work status remain independent.
+
 Proof covers different channel fronts, blocking predecessors, incoming routes/evidence, closure/taper and policy changes, incomplete-prefix exhaustion, source failure, concurrent configuration/display changes, retirement, restart/backup/restore validation and scope isolation. Front reads add no provider calls. Browser proof covers mixed/unknown states, stale responses and narrow layouts; no live provider or operational cutover claim follows from synthetic fixtures.
 
 ## Queue display during an operator stop

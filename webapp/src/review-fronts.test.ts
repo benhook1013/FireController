@@ -14,6 +14,27 @@ const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({chann
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('current review position badges',()=>{
+  it('replaces only a later row queue badge with its proven incoming findings hold',()=>{
+    const v=value();
+    v.channels=v.channels.map(channel=>({...channel,state:'held',reason:'review_evidence_pending'}));
+    const progress:ReviewProgressItem={pull_number:4,incoming_routes_pending:1,channels:[control('hosted'),control('cli')].map(channel=>({...channel,pending:1,pending_execution:0,pending_adjudication:1}))};
+    expect(reviewQueueBadges(pull(4),snapshot,v,progress)[0]).toMatchObject({kind:'held',text:'Findings pending',description:expect.stringContaining('Incoming routed findings')});
+    for (const absent of [undefined,{...progress,incoming_routes_pending:0},{...progress,incoming_routes_pending:undefined},{...progress,pull_number:3}]) {
+      expect(reviewQueueBadges(pull(4),snapshot,v,absent)[0]?.text).toBe('Queued');
+    }
+    expect(reviewQueueBadges(pull(4),'stale',v,progress)).toEqual([]);
+    expect(reviewQueueBadges({...pull(4),state:'merged'},snapshot,v,progress)).toEqual([]);
+    expect(reviewQueueBadges(pull(4),snapshot,v,{...progress,channels:[control('hosted',true),control('cli',true)]})[0]?.text).toBe('Review closed');
+    expect(reviewQueueBadges(pull(4),snapshot,v,{...progress,channels:[{...control('cli'),pending:1,pending_execution:1,pending_adjudication:0}]})[0]?.text).toBe('Queued');
+    const active={...pull(4),latest_attempts:[{channel:'cli',state:'active'} as ReviewPullSummary['latest_attempts'][number]]};
+    expect(reviewQueueBadges(active,snapshot,v,progress)[0]?.text).toBe('Queued');
+    const stale=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)},{...pull(3),head_sha:'c'.repeat(40)},pull(4)],v);
+    expect(reviewQueueBadges(pull(4),snapshot,stale,progress)).toEqual([]);
+    expect(reviewQueueBadges(pull(2),snapshot,v,{...progress,pull_number:2})[0]?.text).toBe('Review front');
+    const ready=value();
+    expect(reviewChannelPosition(pull(3),snapshot,'cli',ready,{...progress,pull_number:3})?.text).toBe('Up next');
+    expect(reviewChannelPosition(pull(4),snapshot,'cli',ready,progress)?.text).toBe('Queued');
+  });
   it('distinguishes a verified front, local queue position and carried admission hold',()=>{
     const v=value();v.channels=[front('hosted',2)];
     expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)?.text).toBe('Up next');
