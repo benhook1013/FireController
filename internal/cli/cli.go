@@ -46,6 +46,7 @@ type options struct {
 }
 
 type invocation struct {
+	reviewScheduling       *reviewSchedulingInvocation
 	ownerManagement        *ownerManagementInvocation
 	includeRetired         bool
 	ciWatch                *ciWatchInvocation
@@ -359,7 +360,7 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	if err != nil {
 		return reportClientError(stderr, err, ctx)
 	}
-	if call.reviewOperationControl != nil {
+	if call.reviewOperationControl != nil || call.reviewScheduling != nil && call.reviewScheduling.action != "read" {
 		encoded, err := json.Marshal(value)
 		if err == nil {
 			encoded = append(encoded, '\n')
@@ -413,6 +414,27 @@ func parseInvocation(args []string) (invocation, bool) {
 		return call, false
 	}
 	call.command = remaining[0]
+	// Scheduling help is entirely local and has exact leaf grammar.
+	if len(remaining) >= 3 {
+		words := remaining
+		if words[0] == "help" {
+			words = words[1:]
+		} else if words[len(words)-1] == "--help" {
+			words = words[:len(words)-1]
+		} else {
+			words = nil
+		}
+		if len(words) == 2 || len(words) == 3 {
+			if words[0] == "reviews" && words[1] == "scheduling" {
+				name := strings.Join(words, " ")
+				if _, ok := operationHelp(name); ok {
+					call.operationHelp = name
+					return call, true
+				}
+			}
+		}
+	}
+
 	if len(remaining) == 2 && (remaining[1] == "help" || remaining[1] == "--help") && (call.command == "credentials" || call.command == "workers" || call.command == "reviews") {
 		call.operationHelp = call.command + " help"
 		return call, true

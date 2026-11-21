@@ -474,8 +474,9 @@ func (c *Client) requestWithCapabilities(ctx context.Context, method string, seg
 	defer response.Body.Close()
 	if wait != nil && wait.queuedCause != nil {
 		*wait.queuedCause = ""
-		if response.Header.Get("X-FC-Review-Queued") == "cli_quota_wait" {
-			*wait.queuedCause = "cli_quota_wait"
+		switch cause := response.Header.Get("X-FC-Review-Queued"); cause {
+		case "cli_quota_wait", "pull_scheduling_paused", "automation_authorization_changed", "automatic_intent_retained":
+			*wait.queuedCause = cause
 		}
 	}
 	if response.StatusCode >= 300 && response.StatusCode < 400 {

@@ -15,6 +15,9 @@ type operationHelpResponse struct {
 }
 
 func emitOperationHelp(operation string, stdout, stderr io.Writer) int {
+	if help, ok := operationHelp(operation); ok {
+		return emit(stdout, stderr, help)
+	}
 	if help, ok := ownerManagementHelp(operation); ok {
 		return emit(stdout, stderr, help)
 	}
