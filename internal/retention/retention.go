@@ -68,8 +68,9 @@ func legacyTime(column string) string {
 	return "substr(" + column + ",1,19)||'.'||substr(CASE WHEN substr(" + column + ",20,1)='.' THEN substr(" + column + ",21,length(" + column + ")-21) ELSE '' END||'000000000',1,9)||'Z'"
 }
 
-// Run waits one configured interval before its first pass, and never overlaps
-// passes. Held leases skip the pass rather than delaying backup or deployment.
+// Run first tries after at most five minutes, then waits the configured
+// interval between passes. Initial busy skips retain the short delay.
+// Passes never overlap or delay backup or deployment while acquiring the lease.
 func Run(ctx context.Context, store *core.Store, cfg Config, report func(Report), failed func(error)) <-chan struct{} {
 	if cfg.Interval == 0 {
 		return nil
@@ -77,10 +78,14 @@ func Run(ctx context.Context, store *core.Store, cfg Config, report func(Report)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for wait(ctx, cfg.Interval) == nil && ctx.Err() == nil {
+		delay := min(cfg.Interval, 5*time.Minute)
+		for wait(ctx, delay) == nil && ctx.Err() == nil {
 			r, skip, err := RunPass(ctx, store, cfg, time.Now())
 			if ctx.Err() != nil {
 				return
+			}
+			if !skip || err != nil {
+				delay = cfg.Interval
 			}
 			if !skip && report != nil {
 				report(r)
