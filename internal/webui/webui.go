@@ -2,6 +2,8 @@
 package webui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -33,6 +35,7 @@ func Handler() http.Handler {
 }
 
 func handlerFS(files fs.FS) http.Handler {
+	compressed := gzipAssets(files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		securityHeaders(w)
 		path := r.URL.Path
@@ -67,14 +70,23 @@ func handlerFS(files fs.FS) http.Handler {
 			writeError(w, r, "not_found", "This browser resource is unavailable.", http.StatusNotFound)
 			return
 		}
-		data, err := fs.ReadFile(files, name)
-		if err != nil {
-			if name == "index.html" {
-				writeError(w, r, "browser_unavailable", "The browser build is unavailable.", http.StatusServiceUnavailable)
-			} else {
-				writeError(w, r, "not_found", "This browser resource is unavailable.", http.StatusNotFound)
+		data, hasVariant := compressed[name]
+		if hasVariant {
+			w.Header().Add("Vary", "Accept-Encoding")
+		}
+		if hasVariant && acceptsGzip(r.Header.Values("Accept-Encoding")) {
+			w.Header().Set("Content-Encoding", "gzip")
+		} else {
+			var err error
+			data, err = fs.ReadFile(files, name)
+			if err != nil {
+				if name == "index.html" {
+					writeError(w, r, "browser_unavailable", "The browser build is unavailable.", http.StatusServiceUnavailable)
+				} else {
+					writeError(w, r, "not_found", "This browser resource is unavailable.", http.StatusNotFound)
+				}
+				return
 			}
-			return
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", cache)
@@ -84,6 +96,103 @@ func handlerFS(files fs.FS) http.Handler {
 			_, _ = w.Write(data)
 		}
 	})
+}
+
+// The public build emits its bundles directly in assets. Only retain useful
+// variants of existing immutable JS/CSS; never compress request-derived data.
+func gzipAssets(files fs.FS) map[string][]byte {
+	variants := make(map[string][]byte)
+	entries, err := fs.ReadDir(files, "assets")
+	if err != nil {
+		return variants
+	}
+	for _, entry := range entries {
+		name := "assets/" + entry.Name()
+		if entry.IsDir() || !bundledHash.MatchString(name) || (!strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css")) {
+			continue
+		}
+		data, err := fs.ReadFile(files, name)
+		if err != nil {
+			continue
+		}
+		var buf bytes.Buffer
+		writer := gzip.NewWriter(&buf)
+		_, writeErr := writer.Write(data)
+		closeErr := writer.Close()
+		if writeErr == nil && closeErr == nil && buf.Len() < len(data) {
+			variants[name] = buf.Bytes()
+		}
+	}
+	return variants
+}
+
+func acceptsGzip(fields []string) bool {
+	gzipQ, wildcardQ, identityQ := -1, -1, -1
+	for _, field := range fields {
+		for _, item := range strings.Split(field, ",") {
+			parts := strings.Split(item, ";")
+			var quality *int
+			switch strings.ToLower(strings.TrimSpace(parts[0])) {
+			case "gzip":
+				quality = &gzipQ
+			case "*":
+				quality = &wildcardQ
+			case "identity":
+				quality = &identityQ
+			default:
+				continue
+			}
+			q := 1000
+			if len(parts) == 2 {
+				key, value, ok := strings.Cut(strings.TrimSpace(parts[1]), "=")
+				if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+					q = 0
+				} else {
+					q = encodingQuality(strings.TrimSpace(value))
+				}
+			} else if len(parts) > 2 {
+				q = 0
+			}
+			// Conflicting or malformed duplicates must not override an exclusion.
+			if *quality < 0 || q == 0 || (*quality > 0 && q > *quality) {
+				*quality = q
+			}
+		}
+	}
+	if gzipQ < 0 {
+		gzipQ = wildcardQ
+	}
+	if identityQ < 0 {
+		identityQ = 1000
+		if wildcardQ == 0 {
+			identityQ = 0
+		}
+	}
+	// Preserve the existing identity fallback when gzip is unavailable.
+	return gzipQ > 0 && identityQ <= gzipQ
+}
+
+// Parse the HTTP qvalue grammar, not floats (which accept NaN and exponents).
+// Invalid qualities are treated as unacceptable.
+func encodingQuality(value string) int {
+	whole, fraction, _ := strings.Cut(value, ".")
+	if (whole != "0" && whole != "1") || len(fraction) > 3 {
+		return 0
+	}
+	q := 0
+	for _, digit := range fraction {
+		if digit < '0' || digit > '9' || (whole == "1" && digit != '0') {
+			return 0
+		}
+		q = q*10 + int(digit-'0')
+	}
+	for i := len(fraction); i < 3; i++ {
+		q *= 10
+	}
+	if whole == "1" {
+		return 1000
+	}
+	return q
 }
 
 func securityHeaders(w http.ResponseWriter) {

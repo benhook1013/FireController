@@ -1,7 +1,11 @@
 package webui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,6 +20,11 @@ func browserFixture() http.Handler {
 		"third-party-licenses.txt":     {Data: []byte("Bundled dependency licenses\n")},
 		"assets/index-Ab12_c-D.js":     {Data: []byte("export const fixture = true;\n")},
 		"assets/index-0123abcd.css":    {Data: []byte("body { color: red; }\n")},
+		"assets/large-Ab12_c-D.js":     {Data: []byte(strings.Repeat("export const fixture = true;\n", 200))},
+		"assets/large-0123abcd.css":    {Data: []byte(strings.Repeat("body { color: red; }\n", 200))},
+		"assets/large.js":              {Data: []byte(strings.Repeat("export const fixture = true;\n", 200))},
+		"assets/large-Ab12_c-D.svg":    {Data: []byte(strings.Repeat("<svg/>", 200))},
+		"assets/large-Ab12_c-D.woff2":  {Data: []byte(strings.Repeat("synthetic font", 200))},
 		"assets/logo.svg":              {Data: []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")},
 		"assets/font-Abc12345.woff2":   {Data: []byte("synthetic font")},
 		"assets/index-Ab12_c-D.js.map": {Data: []byte("private source-map fixture")},
@@ -27,10 +36,14 @@ func browserFixture() http.Handler {
 	})
 }
 
-func request(t *testing.T, handler http.Handler, method, path string) *httptest.ResponseRecorder {
+func request(t *testing.T, handler http.Handler, method, path string, acceptEncoding ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(method, path, nil))
+	r := httptest.NewRequest(method, path, nil)
+	for _, field := range acceptEncoding {
+		r.Header.Add("Accept-Encoding", field)
+	}
+	handler.ServeHTTP(w, r)
 	if w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("X-Frame-Options") != "DENY" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatal("missing browser security headers")
 	}
@@ -180,6 +193,122 @@ func TestAssetsHaveExplicitMIMEAndOnlyFingerprintedNamesAreImmutable(t *testing.
 	}
 }
 
+func TestImmutableBundleEncodingNegotiationAndHEAD(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{"/assets/large-Ab12_c-D.js", "/assets/large-0123abcd.css"} {
+		identity := request(t, handler, http.MethodGet, path)
+		for _, tc := range []struct {
+			name   string
+			fields []string
+			gzip   bool
+		}{
+			{"absent", nil, false},
+			{"empty", []string{""}, false},
+			{"gzip", []string{"gzip"}, true},
+			{"case", []string{" GZip ; Q=1.000 "}, true},
+			{"identity default preference", []string{"br, gzip;q=0.001"}, false},
+			{"positive with identity excluded", []string{"identity;q=0, gzip;q=0.001"}, true},
+			{"identity", []string{"identity"}, false},
+			{"br only", []string{"br"}, false},
+			{"excluded", []string{"gzip;q=0"}, false},
+			{"wildcard", []string{"*"}, true},
+			{"wildcard lower preference", []string{"*;q=0.5"}, false},
+			{"wildcard excluded", []string{"*;q=0"}, false},
+			{"explicit exclusion", []string{"gzip;q=0, *;q=1"}, false},
+			{"explicit positive", []string{"*;q=0, gzip;q=0.5"}, true},
+			{"identity preferred", []string{"gzip;q=0.5, identity;q=0.9"}, false},
+			{"gzip preferred", []string{"gzip;q=0.9, identity;q=0.5"}, true},
+			{"equal preference", []string{"gzip;q=0.5, identity;q=0.5"}, true},
+			{"multiple fields", []string{"br", "gzip;q=0.8", "identity;q=0.7"}, true},
+			{"multiple exclusion", []string{"*", "gzip;q=0"}, false},
+			{"multiple identity preference", []string{"gzip;q=0.5", "identity"}, false},
+			{"duplicate positive", []string{"gzip;q=0.5", "GZIP;q=0.8", "identity;q=0.7"}, true},
+			{"duplicate exclusion first", []string{"gzip;q=0", "gzip"}, false},
+			{"duplicate exclusion last", []string{"gzip", "gzip;q=0"}, false},
+			{"missing quality", []string{"gzip;q="}, false},
+			{"invalid quality", []string{"gzip;q=invalid, *"}, false},
+			{"nan quality", []string{"gzip;q=NaN"}, false},
+			{"negative quality", []string{"gzip;q=-0.1"}, false},
+			{"too high quality", []string{"gzip;q=1.001"}, false},
+			{"integer too high", []string{"gzip;q=2"}, false},
+			{"exponent quality", []string{"gzip;q=1e0"}, false},
+			{"excess precision", []string{"gzip;q=0.0001"}, false},
+			{"missing leading zero", []string{"gzip;q=.5"}, false},
+			{"quoted quality", []string{`gzip;q="1"`}, false},
+			{"unknown parameter", []string{"gzip;level=1"}, false},
+			{"duplicate parameter", []string{"gzip;q=1;q=0"}, false},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				get := request(t, handler, http.MethodGet, path, tc.fields...)
+				if get.Code != http.StatusOK || get.Header().Get("Vary") != "Accept-Encoding" || get.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" || get.Header().Get("Content-Type") != identity.Header().Get("Content-Type") || get.Header().Get("Content-Length") != strconv.Itoa(get.Body.Len()) {
+					t.Fatalf("representation metadata differs: %d %v", get.Code, get.Header())
+				}
+				if tc.gzip {
+					assertGzipBytes(t, get, identity.Body.Bytes())
+				} else if get.Header().Get("Content-Encoding") != "" || !bytes.Equal(get.Body.Bytes(), identity.Body.Bytes()) || get.Header().Get("Content-Length") != identity.Header().Get("Content-Length") {
+					t.Fatal("identity representation changed")
+				}
+				head := request(t, handler, http.MethodHead, path, tc.fields...)
+				if head.Code != get.Code || head.Body.Len() != 0 {
+					t.Fatal("HEAD status or body differs")
+				}
+				for _, key := range []string{"Content-Encoding", "Content-Length", "Content-Type", "Cache-Control", "Vary"} {
+					if head.Header().Get(key) != get.Header().Get(key) {
+						t.Fatalf("HEAD %s differs from GET", key)
+					}
+				}
+			})
+		}
+	}
+}
+
+func assertGzipBytes(t *testing.T, response *httptest.ResponseRecorder, original []byte) {
+	t.Helper()
+	if response.Header().Get("Content-Encoding") != "gzip" || response.Body.Len() >= len(original) {
+		t.Fatal("expected a smaller gzip representation")
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(response.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if err != nil || closeErr != nil || !bytes.Equal(decoded, original) {
+		t.Fatalf("gzip did not preserve original asset bytes: read=%v close=%v", err, closeErr)
+	}
+}
+
+func TestGzipLeavesOtherResourcesAndErrorsUnchanged(t *testing.T) {
+	handler := browserFixture()
+	for _, path := range []string{
+		"/", "/projects/p/jobs", "/public/project", "/browser-build.json", "/third-party-licenses.txt",
+		"/assets/index-Ab12_c-D.js", "/assets/index-0123abcd.css", // gzip would be larger
+		"/assets/large.js", "/assets/large-Ab12_c-D.svg", "/assets/large-Ab12_c-D.woff2",
+		"/assets/nested/index.js", "/assets/site.webmanifest", "/assets/missing-Ab12_c-D.js",
+		"/api/v1/projects/p", "/assets/index-Ab12_c-D.js.map", "/assets/%69ndex-Ab12_c-D.js",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+			plain := request(t, handler, method, path)
+			encoded := request(t, handler, method, path, "gzip, *")
+			if encoded.Code != plain.Code || encoded.Header().Get("Content-Encoding") != "" || encoded.Header().Get("Vary") != "" {
+				t.Fatalf("gzip changed ineligible response: %s %s", method, path)
+			}
+			for _, key := range []string{"Content-Length", "Content-Type", "Cache-Control"} {
+				if encoded.Header().Get(key) != plain.Header().Get(key) {
+					t.Fatalf("gzip changed %s for %s %s", key, method, path)
+				}
+			}
+			// Error bodies contain independent request IDs; successful bytes must match.
+			if plain.Code == http.StatusOK && !bytes.Equal(encoded.Body.Bytes(), plain.Body.Bytes()) {
+				t.Fatalf("gzip changed ineligible bytes: %s %s", method, path)
+			}
+			if method == http.MethodHead && encoded.Body.Len() != 0 {
+				t.Fatal("ineligible HEAD wrote a body")
+			}
+		}
+	}
+}
+
 func TestBrowserMethodsAndMissingBuildAreSafe(t *testing.T) {
 	handler := browserFixture()
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodPatch} {
@@ -203,9 +332,35 @@ func TestBrowserMethodsAndMissingBuildAreSafe(t *testing.T) {
 func TestPublicHandlerUsesEmbeddedBuild(t *testing.T) {
 	// The embedded HTML may be regenerated by the owning UI build lane. This
 	// checks the public constructor without coupling to placeholder/UI wording.
-	w := request(t, Handler(), http.MethodGet, "/")
+	handler := Handler()
+	w := request(t, handler, http.MethodGet, "/")
 	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Type"), "text/html") || w.Body.Len() == 0 {
 		t.Fatal("public handler did not serve embedded browser build")
+	}
+	entries, err := fs.ReadDir(assets, "assets/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		name := "assets/" + entry.Name()
+		if !bundledHash.MatchString(name) || (!strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css")) {
+			continue
+		}
+		original, err := fs.ReadFile(assets, "assets/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := request(t, handler, http.MethodGet, "/"+name)
+		encoded := request(t, handler, http.MethodGet, "/"+name, "gzip")
+		if plain.Code != http.StatusOK || encoded.Code != http.StatusOK || !bytes.Equal(plain.Body.Bytes(), original) || plain.Header().Get("Content-Length") != strconv.Itoa(len(original)) {
+			t.Fatal("embedded identity asset changed")
+		}
+		assertGzipBytes(t, encoded, original)
+		count++
+	}
+	if count < 2 {
+		t.Fatal("embedded JS/CSS proof did not exercise both bundles")
 	}
 }
 
