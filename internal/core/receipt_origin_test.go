@@ -150,7 +150,7 @@ func TestReceiptOriginMigratesV1BytesAndInactiveProvenance(t *testing.T) {
 			if got := receiptRows(t, s.DB(), `SELECT DISTINCT instance_id FROM receipts`); !reflect.DeepEqual(got, [][]string{{origin}}) {
 				t.Fatal("predecessor receipts relabeled", got)
 			}
-			if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"4"}}) {
+			if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"5"}}) {
 				t.Fatal("base version not advanced")
 			}
 			stamps := receiptRows(t, s.DB(), `SELECT DISTINCT created_at FROM receipts`)
@@ -267,7 +267,7 @@ func TestReceiptOriginInvalidRestoreAndSQLFailureRollBack(t *testing.T) {
 		"malformed global key":  `UPDATE metadata SET value='bad' WHERE key='signing_key'`,
 		"missing global key":    `DELETE FROM metadata WHERE key='signing_key'`,
 		"copy SQL failure":      `ALTER TABLE receipts RENAME COLUMN response_json TO broken_response`,
-		"newer schema":          `PRAGMA user_version=5`,
+		"newer schema":          `PRAGMA user_version=6`,
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -307,7 +307,7 @@ func TestReceiptOriginInvalidRestoreAndSQLFailureRollBack(t *testing.T) {
 			}
 			version := "1"
 			if name == "newer schema" {
-				version = "5"
+				version = "6"
 			}
 			if got := receiptRows(t, db, `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{version}}) {
 				t.Fatal("failed migration advanced base version")

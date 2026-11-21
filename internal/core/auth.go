@@ -133,7 +133,7 @@ func (s *Store) authenticate(r *http.Request) (Scope, error) {
 		return Scope{}, err
 	}
 	scope.PrincipalID = credential.principal
-	scope.connector = credential.binding.ProjectID != ""
+	scope.connector = credential.connector
 	if err := s.checkExpectedInstance(r); err != nil {
 		return Scope{}, err
 	}
@@ -176,11 +176,18 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 	if credential.principal != scope.PrincipalID {
 		return invalidBearer()
 	}
-	if credential.binding.ProjectID != "" {
-		if scope.sessionProject != "" || scope.ProjectID != credential.binding.ProjectID || scope.WorkerID != credential.binding.WorkerID {
+	if credential.connector {
+		if scope.sessionProject != "" {
 			return Fail("forbidden", "The credential does not grant this project operation.", 403)
 		}
-		binding, err := currentConnectorAccess(ctx, q, credential)
+		var matches bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM connector_credentials WHERE credential_id=? AND project_id=? AND worker_id=?)`, credential.id, scope.ProjectID, scope.WorkerID).Scan(&matches); err != nil {
+			return storageError(err)
+		}
+		if !matches {
+			return Fail("forbidden", "The credential does not grant this project operation.", 403)
+		}
+		binding, err := currentConnectorAccess(ctx, q, credential, scope.ProjectID)
 		if err != nil {
 			return err
 		}

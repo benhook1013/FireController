@@ -89,6 +89,10 @@ func boundServer(binding profile.Binding) *mcp.Server {
 }
 
 func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
+	return connectorToolServer(stdioBinding, remote, false)
+}
+
+func connectorToolServer(stdioBinding profile.Binding, remote *remoteMCP, multiProject bool) *mcp.Server {
 	options := &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128}
 	if remote != nil {
 		options.SupportedProtocolVersions = remoteProtocolVersions
@@ -120,6 +124,12 @@ func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
 	definitions = append(definitions, followingDefinitions()...)
 	definitions = append(definitions, ownerManagementDefinitions()...)
 	definitions = append(definitions, existingManagementDefinitions()...)
+	if multiProject {
+		for i, tool := range definitions {
+			definitions[i] = multiProjectDefinition(tool)
+		}
+		definitions = append(definitions, connectorProjectsDefinition())
+	}
 	known := make(map[string]bool)
 	transports := sessionTransports{pools: make(map[*mcp.ServerSession]*client.TransportPool)}
 	updates := newClientUpdateNotice()
@@ -133,18 +143,29 @@ func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
 			defer func() { updates.Apply(response) }()
 			var args arguments
 			var err error
-			if projectMapTool(tool.name) {
-				args, err = projectMapArguments(tool.name, request.Params.Arguments)
+			raw := request.Params.Arguments
+			var project string
+			if multiProject && tool.name != connectorProjectsTool {
+				raw, project, err = selectedConnectorProjectArguments(raw)
+				if err != nil {
+					return resultFailure(err), nil
+				}
+			}
+			if tool.name == connectorProjectsTool {
+				// Reuse the existing strict zero-argument contract.
+				args, err = parseArguments("context", raw)
+			} else if projectMapTool(tool.name) {
+				args, err = projectMapArguments(tool.name, raw)
 			} else if trackingTool(tool.name) {
-				args, err = trackingArguments(tool.name, request.Params.Arguments)
+				args, err = trackingArguments(tool.name, raw)
 			} else if tool.name == "wait_for_messages" {
-				args, err = messageWaitArguments(request.Params.Arguments)
+				args, err = messageWaitArguments(raw)
 			} else if noteTool(tool.name) {
-				args, err = noteArguments(tool.name, request.Params.Arguments)
+				args, err = noteArguments(tool.name, raw)
 			} else if workerPauseTool(tool.name) {
-				args, err = workerPauseArguments(tool.name, request.Params.Arguments)
+				args, err = workerPauseArguments(tool.name, raw)
 			} else {
-				args, err = parseArguments(tool.name, request.Params.Arguments)
+				args, err = parseArguments(tool.name, raw)
 			}
 			if err != nil {
 				return resultFailure(err), nil
@@ -156,9 +177,25 @@ func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
 				if connector == nil {
 					return resultFailure(connectorAccessChanged(false)), nil
 				}
+				if tool.name == connectorProjectsTool {
+					value, err := connectorProjectCatalog(ctx, remote.store, connector)
+					if err != nil {
+						return resultFailure(err), nil
+					}
+					return result(value, false), nil
+				}
+				if multiProject {
+					connector, err = selectConnectorProject(ctx, remote.store, connector, project)
+					if err != nil {
+						return resultFailure(err), nil
+					}
+				}
 				binding.Context = connector.identity
 			}
 			if tool.name == "context" {
+				if connector != nil && reauthorizeConnector(ctx, remote.store, connector.token, connector.binding) != nil {
+					return resultFailure(connectorAccessChanged(false)), nil
+				}
 				return result(struct {
 					profile.Context
 					buildinfo.Connection
@@ -428,10 +465,17 @@ func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
 				allowed := remote.store.ReauthorizeConnector(checkCtx, connector.token, connector.binding) == nil
 				cancelCheck()
 				if !allowed {
-					return resultFailure(connectorAccessChanged(write)), nil
+					var failure error = connectorAccessChanged(write)
+					if multiProject {
+						failure = connectorProjectReplayError(failure)
+					}
+					return resultFailure(failure), nil
 				}
 			}
 			if err != nil {
+				if multiProject {
+					err = connectorProjectReplayError(err)
+				}
 				return resultFailure(err), nil
 			}
 			return result(value, false), nil

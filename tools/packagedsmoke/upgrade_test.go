@@ -32,7 +32,7 @@ import (
 
 // jobsFourFixtureBaseVersion is the current base schema used by this fixture.
 // The historical reconstruction below changes only the jobs component.
-const jobsFourFixtureBaseVersion = 4
+const jobsFourFixtureBaseVersion = 5
 
 // This reconstructs the supported add-only jobs4 schema, with other components
 // current. It proves packaged migration composition, not old-binary compatibility,

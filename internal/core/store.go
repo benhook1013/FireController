@@ -19,8 +19,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Version four fences older binaries that cannot enforce connector bindings.
-const schemaVersion = 4
+// Version five fences older binaries that assume one connector project binding.
+const schemaVersion = 5
 
 // OpenOption configures a store before it opens or creates any files.
 type OpenOption func(*storeOptions) error
@@ -229,6 +229,12 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 				return storageError(err)
 			}
 		}
+	} else if version == 4 {
+		if err = migrateConnectorCredentials(ctx, conn); err != nil {
+			return err
+		}
+	}
+	if version < schemaVersion {
 		if _, err = conn.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(schemaVersion)); err != nil {
 			return storageError(err)
 		}
@@ -240,6 +246,29 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 	var journal string
 	if err = conn.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&journal); err != nil || journal != "wal" {
 		return Fail("storage_unavailable", "The database cannot enable durable WAL storage.", 500)
+	}
+	return nil
+}
+
+// migrateConnectorCredentials shares initialize's exclusive transaction. Copy
+// historical bindings, including revoked credentials, before installing the
+// insert guard that rejects new bindings for revoked credentials.
+func migrateConnectorCredentials(ctx context.Context, conn *sql.Conn) error {
+	objects := ConnectorCredentialSchemaSQL()
+	statements := []string{
+		"DROP TRIGGER connector_binding_update",
+		"DROP TRIGGER connector_binding_delete",
+		"DROP TRIGGER connector_binding_insert",
+		"ALTER TABLE connector_credentials RENAME TO connector_credentials_v4",
+		objects[0],
+		"INSERT INTO connector_credentials(credential_id,project_id,worker_id) SELECT credential_id,project_id,worker_id FROM connector_credentials_v4",
+		"DROP TABLE connector_credentials_v4",
+	}
+	statements = append(statements, objects[1:]...)
+	for _, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return storageError(err)
+		}
 	}
 	return nil
 }

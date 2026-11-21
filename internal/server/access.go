@@ -68,6 +68,25 @@ func (p projectPermissions) values() []string {
 	return values
 }
 
+func validCredentialHash(value string) bool {
+	hash, err := hex.DecodeString(value)
+	return err == nil && len(hash) == sha256.Size && value == strings.ToLower(value)
+}
+
+func createGrantCredential(ctx context.Context, tx *sql.Tx, digest string) (id, principal string, err error) {
+	var existing string
+	err = tx.QueryRowContext(ctx, "SELECT id FROM credentials WHERE token_sha256=?", digest).Scan(&existing)
+	if err == nil {
+		return "", "", core.Fail("credential_already_configured", "Use a distinct client credential for a new grant.", 409)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", err
+	}
+	id, principal = core.NewID("credential"), core.NewID("principal")
+	_, err = tx.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,0,0)", id, principal, digest)
+	return id, principal, err
+}
+
 func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 	scope, err := a.store.AdminScope(r)
 	if err != nil {
@@ -83,8 +102,7 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	hash, err := hex.DecodeString(request.TokenSHA256)
-	if err != nil || len(hash) != sha256.Size || request.TokenSHA256 != strings.ToLower(request.TokenSHA256) {
+	if !validCredentialHash(request.TokenSHA256) {
 		core.WriteError(w, core.Fail("validation_failed", "Provide the lowercase SHA-256 hash of a client credential.", 400))
 		return
 	}
@@ -108,16 +126,8 @@ func (a *api) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "credentials.grant", Target: "credentials", Key: k, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var existing string
-		err := tx.QueryRowContext(ctx, "SELECT id FROM credentials WHERE token_sha256=?", request.TokenSHA256).Scan(&existing)
-		if err == nil {
-			return nil, core.Fail("credential_already_configured", "Use a distinct client credential for a new grant.", 409)
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		id, principal := core.NewID("credential"), core.NewID("principal")
-		if _, err = tx.ExecContext(ctx, "INSERT INTO credentials(id,principal_id,token_sha256,is_admin,revoked) VALUES(?,?,?,0,0)", id, principal, request.TokenSHA256); err != nil {
+		id, principal, err := createGrantCredential(ctx, tx, request.TokenSHA256)
+		if err != nil {
 			return nil, err
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO grants(credential_id,project_id,can_read,can_write,can_manage) VALUES(?,?,?,?,?)", id, scope.ProjectID, permissions.read, permissions.write, permissions.manage); err != nil {

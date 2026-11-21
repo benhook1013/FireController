@@ -216,7 +216,7 @@ func TestActivationRefusalsDoNotMutateRestore(t *testing.T) {
 			case "unrevoked predecessor":
 				activationExec(t, f.dir, `UPDATE credentials SET revoked=0 WHERE is_admin=1`)
 			case "newer schema":
-				activationExec(t, f.dir, `PRAGMA user_version=5`)
+				activationExec(t, f.dir, `PRAGMA user_version=6`)
 			case "canceled":
 				c, cancel := context.WithCancel(ctx)
 				cancel()

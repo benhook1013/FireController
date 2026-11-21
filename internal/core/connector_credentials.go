@@ -5,11 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
-// ConnectorCredentialSchemaSQL returns the canonical base schema v4 objects.
-func ConnectorCredentialSchemaSQL() []string {
+// MaxConnectorProjects bounds the immutable project bindings of one connector.
+const MaxConnectorProjects = 16
+
+// ConnectorCredentialV4SchemaSQL retains the canonical predecessor objects for
+// validating backups produced before multi-project connectors were supported.
+func ConnectorCredentialV4SchemaSQL() []string {
 	return []string{
 		`CREATE TABLE connector_credentials (
 		credential_id TEXT NOT NULL PRIMARY KEY REFERENCES credentials(id),
@@ -29,6 +34,25 @@ func ConnectorCredentialSchemaSQL() []string {
 	}
 }
 
+// ConnectorCredentialSchemaSQL returns the canonical base schema v5 objects.
+func ConnectorCredentialSchemaSQL() []string {
+	objects := ConnectorCredentialV4SchemaSQL()
+	objects[0] = `CREATE TABLE connector_credentials (
+		credential_id TEXT NOT NULL REFERENCES credentials(id),
+		project_id TEXT NOT NULL CHECK(project_id<>''),
+		worker_id TEXT NOT NULL CHECK(worker_id<>''),
+		PRIMARY KEY (credential_id,project_id),
+		FOREIGN KEY (credential_id,project_id) REFERENCES grants(credential_id,project_id),
+		FOREIGN KEY (project_id,worker_id) REFERENCES workers(project_id,id)
+	)`
+	objects[3] = `CREATE TRIGGER connector_binding_insert BEFORE INSERT ON connector_credentials
+	WHEN EXISTS (SELECT 1 FROM connector_credentials WHERE credential_id=NEW.credential_id AND project_id=NEW.project_id)
+	OR (SELECT count(*) FROM connector_credentials WHERE credential_id=NEW.credential_id)>=` + strconv.Itoa(MaxConnectorProjects) + `
+	OR NOT EXISTS (SELECT 1 FROM credentials WHERE id=NEW.credential_id AND is_admin=0 AND revoked=0)
+	BEGIN SELECT RAISE(ABORT, 'invalid connector binding'); END`
+	return objects
+}
+
 // BindConnectorCredential is part of the native grant mutation. The new
 // credential and grant must be inserted in the same write transaction.
 func BindConnectorCredential(ctx context.Context, tx *sql.Tx, id, project, worker string) error {
@@ -46,10 +70,17 @@ type ConnectorBinding struct {
 	manage    bool
 }
 
+// ConnectorAccess contains only currently usable bindings. MultiProject is based
+// on all immutable bindings, so losing access cannot restore legacy routing.
+type ConnectorAccess struct {
+	Bindings     []ConnectorBinding
+	MultiProject bool
+}
+
 type bearerCredential struct {
 	id, principal string
 	admin         bool
-	binding       ConnectorBinding
+	connector     bool
 }
 
 func invalidBearer() error {
@@ -70,9 +101,9 @@ func bearerToken(r *http.Request) (string, error) {
 
 func currentCredential(ctx context.Context, q querier, hash string) (bearerCredential, error) {
 	var c bearerCredential
-	err := q.QueryRowContext(ctx, `SELECT c.id,c.principal_id,c.is_admin,COALESCE(b.project_id,''),COALESCE(b.worker_id,'')
-		FROM credentials c LEFT JOIN connector_credentials b ON b.credential_id=c.id
-		WHERE c.token_sha256=? AND c.revoked=0`, hash).Scan(&c.id, &c.principal, &c.admin, &c.binding.ProjectID, &c.binding.WorkerID)
+	err := q.QueryRowContext(ctx, `SELECT c.id,c.principal_id,c.is_admin,
+		EXISTS(SELECT 1 FROM connector_credentials b WHERE b.credential_id=c.id)
+		FROM credentials c WHERE c.token_sha256=? AND c.revoked=0`, hash).Scan(&c.id, &c.principal, &c.admin, &c.connector)
 	if errors.Is(err, sql.ErrNoRows) {
 		return bearerCredential{}, invalidBearer()
 	}
@@ -82,16 +113,18 @@ func currentCredential(ctx context.Context, q querier, hash string) (bearerCrede
 	return c, nil
 }
 
-func currentConnectorAccess(ctx context.Context, q querier, c bearerCredential) (ConnectorBinding, error) {
-	binding := c.binding
-	if c.admin || binding.ProjectID == "" || binding.WorkerID == "" {
+func currentConnectorAccess(ctx context.Context, q querier, c bearerCredential, project string) (ConnectorBinding, error) {
+	if c.admin || !c.connector {
 		return ConnectorBinding{}, invalidBearer()
 	}
-	err := q.QueryRowContext(ctx, `SELECT g.can_write,g.can_manage FROM workers w JOIN grants g ON g.project_id=w.project_id
+	var binding ConnectorBinding
+	err := q.QueryRowContext(ctx, `SELECT b.project_id,b.worker_id,g.can_write,g.can_manage
+		FROM connector_credentials b JOIN grants g ON g.credential_id=b.credential_id AND g.project_id=b.project_id
+		JOIN workers w ON w.project_id=b.project_id AND w.id=b.worker_id
 		JOIN credentials c ON c.id=g.credential_id AND c.revoked=0 AND c.is_admin=0
-		WHERE g.credential_id=? AND g.can_read=1 AND w.project_id=? AND w.id=?
+		WHERE b.credential_id=? AND b.project_id=? AND g.can_read=1
 		AND NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)`,
-		c.id, binding.ProjectID, binding.WorkerID).Scan(&binding.write, &binding.manage)
+		c.id, project).Scan(&binding.ProjectID, &binding.WorkerID, &binding.write, &binding.manage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConnectorBinding{}, invalidBearer()
 	}
@@ -101,27 +134,31 @@ func currentConnectorAccess(ctx context.Context, q querier, c bearerCredential) 
 	return binding, nil
 }
 
-// AuthenticateConnector derives the entire binding from a current dedicated
+// AuthenticateConnector derives all active bindings from a current dedicated
 // bearer. Native handlers independently reauthorize that bearer for each tool.
-func (s *Store) AuthenticateConnector(r *http.Request) (ConnectorBinding, string, error) {
+func (s *Store) AuthenticateConnector(r *http.Request) (ConnectorAccess, string, error) {
 	token, err := bearerToken(r)
 	if err != nil {
-		return ConnectorBinding{}, "", err
+		return ConnectorAccess{}, "", err
 	}
 	if strings.Contains(token, ",") {
-		return ConnectorBinding{}, "", invalidBearer()
+		return ConnectorAccess{}, "", invalidBearer()
 	}
-	binding, err := s.connectorAccess(r.Context(), token)
+	access, err := s.connectorAccess(r.Context(), token)
 	if err != nil {
-		return ConnectorBinding{}, "", err
+		return ConnectorAccess{}, "", err
 	}
-	return binding, token, nil
+	return access, token, nil
 }
 
 // ReauthorizeConnector checks the original binding and its current access
 // before returning a tool result to the authenticated caller.
 func (s *Store) ReauthorizeConnector(ctx context.Context, token string, binding ConnectorBinding) error {
-	current, err := s.connectorAccess(ctx, token)
+	c, err := currentCredential(ctx, s.db, tokenHash(token))
+	if err != nil {
+		return err
+	}
+	current, err := currentConnectorAccess(ctx, s.db, c, binding.ProjectID)
 	if err != nil {
 		return err
 	}
@@ -133,10 +170,36 @@ func (s *Store) ReauthorizeConnector(ctx context.Context, token string, binding 
 	return nil
 }
 
-func (s *Store) connectorAccess(ctx context.Context, token string) (ConnectorBinding, error) {
-	c, err := currentCredential(ctx, s.db, tokenHash(token))
+func (s *Store) connectorAccess(ctx context.Context, token string) (ConnectorAccess, error) {
+	// Mode and active grants share one read snapshot. Counting historical bindings
+	// separately from filtering active grants prevents implicit legacy fallback.
+	rows, err := s.db.QueryContext(ctx, `SELECT b.project_id,b.worker_id,g.can_write,g.can_manage,
+		(SELECT count(*) FROM connector_credentials all_bindings WHERE all_bindings.credential_id=c.id)
+		FROM credentials c JOIN connector_credentials b ON b.credential_id=c.id
+		JOIN grants g ON g.credential_id=b.credential_id AND g.project_id=b.project_id
+		JOIN workers w ON w.project_id=b.project_id AND w.id=b.worker_id
+		WHERE c.token_sha256=? AND c.revoked=0 AND c.is_admin=0 AND g.can_read=1
+		AND NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)
+		ORDER BY b.project_id,b.worker_id LIMIT ?`, tokenHash(token), MaxConnectorProjects)
 	if err != nil {
-		return ConnectorBinding{}, err
+		return ConnectorAccess{}, storageError(err)
 	}
-	return currentConnectorAccess(ctx, s.db, c)
+	defer rows.Close()
+	var access ConnectorAccess
+	for rows.Next() {
+		var binding ConnectorBinding
+		var total int
+		if err := rows.Scan(&binding.ProjectID, &binding.WorkerID, &binding.write, &binding.manage, &total); err != nil {
+			return ConnectorAccess{}, storageError(err)
+		}
+		access.Bindings = append(access.Bindings, binding)
+		access.MultiProject = total > 1
+	}
+	if err := rows.Err(); err != nil {
+		return ConnectorAccess{}, storageError(err)
+	}
+	if len(access.Bindings) == 0 {
+		return ConnectorAccess{}, invalidBearer()
+	}
+	return access, nil
 }

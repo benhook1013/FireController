@@ -67,6 +67,7 @@ type connectorRequestKey struct{}
 type connectorRequest struct {
 	identity profile.Context
 	binding  core.ConnectorBinding
+	access   core.ConnectorAccess
 	token    string
 	lifetime context.Context
 }
@@ -95,7 +96,13 @@ func NewRemoteHandler(lifetime context.Context, store *core.Store, c RemoteConfi
 		pool: client.NewTransportPool(), waits: make(chan struct{}, remoteWaits),
 	}
 	server := toolServer(profile.Binding{}, remote)
-	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	multiServer := connectorToolServer(profile.Binding{}, remote, true)
+	streamable := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		if request, ok := r.Context().Value(connectorRequestKey{}).(*connectorRequest); ok && request.access.MultiProject {
+			return multiServer
+		}
+		return server
+	}, &mcp.StreamableHTTPOptions{
 		Stateless: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		// The wrapper checks the explicitly configured public Host and Origin.
 		DisableLocalhostProtection: true, MaxRequestBodyBytes: remoteBodyBytes,
@@ -131,8 +138,11 @@ func NewRemoteHandler(lifetime context.Context, store *core.Store, c RemoteConfi
 		stop := context.AfterFunc(lifetime, cancel)
 		defer stop()
 		authCtx, cancelAuth := context.WithTimeout(ctx, 2*time.Second)
-		binding, token, err := store.AuthenticateConnector(r.WithContext(authCtx))
+		access, token, err := store.AuthenticateConnector(r.WithContext(authCtx))
 		cancelAuth()
+		if err == nil && (len(access.Bindings) == 0 || !access.MultiProject && len(access.Bindings) != 1) {
+			err = core.Fail("unauthorized", "A valid connector credential is required.", http.StatusUnauthorized)
+		}
 		if err != nil {
 			var failure *core.Error
 			if errors.As(err, &failure) && failure.Status == http.StatusUnauthorized {
@@ -164,8 +174,13 @@ func NewRemoteHandler(lifetime context.Context, store *core.Store, c RemoteConfi
 			return
 		}
 		request := &connectorRequest{
-			identity: profile.Context{Profile: "connector", ServerURL: c.Origin, InstanceID: store.InstanceID(), ProjectID: binding.ProjectID, WorkerID: binding.WorkerID},
-			binding:  binding, token: token, lifetime: ctx,
+			identity: profile.Context{Profile: "connector", ServerURL: c.Origin, InstanceID: store.InstanceID()},
+			access:   access, token: token, lifetime: ctx,
+		}
+		if !access.MultiProject {
+			request.binding = access.Bindings[0]
+			request.identity.ProjectID = request.binding.ProjectID
+			request.identity.WorkerID = request.binding.WorkerID
 		}
 		r = r.Clone(context.WithValue(ctx, connectorRequestKey{}, request))
 		r.Header.Del("Authorization")

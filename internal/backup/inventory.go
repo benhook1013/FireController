@@ -597,7 +597,7 @@ func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
-	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 4) {
+	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 5) {
 		return nil, invalid()
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 129`)
@@ -622,13 +622,29 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 		return nil, invalid()
 	}
 	if version >= 4 {
-		objects := map[string]physicalSchemaObject{"connector_credentials": {"table", historyDefinitionSQL(core.ConnectorCredentialSchemaSQL()[0])}}
+		definitions := core.ConnectorCredentialSchemaSQL()
+		if version == 4 {
+			definitions = core.ConnectorCredentialV4SchemaSQL()
+		}
+		objects := map[string]physicalSchemaObject{"connector_credentials": {"table", historyDefinitionSQL(definitions[0])}}
 		if err := validatePhysicalSchemaObjects(ctx, db, objects, []string{"connector_credentials"}); err != nil {
 			// An interrupted inspection cannot establish that the schema is corrupt.
 			if checkContext(ctx) != nil {
 				return nil, unavailable()
 			}
 			return nil, err
+		}
+		// Triggers constrain new bindings, not rows copied while those triggers
+		// were absent. Recheck retained authority and cardinality independently.
+		// Revoked credentials remain valid history, including after restore.
+		var invalidBindings bool
+		if err := db.QueryRowContext(ctx, `SELECT
+			EXISTS(SELECT 1 FROM connector_credentials b JOIN credentials c ON c.id=b.credential_id WHERE c.is_admin<>0)
+			OR EXISTS(SELECT 1 FROM connector_credentials GROUP BY credential_id HAVING count(*)>16)`).Scan(&invalidBindings); err != nil || invalidBindings {
+			if checkContext(ctx) != nil {
+				return nil, unavailable()
+			}
+			return nil, invalid()
 		}
 	}
 	rows, err = db.QueryContext(ctx, `SELECT CASE WHEN length(CAST(key AS BLOB))<=128 THEN key END,CASE WHEN length(CAST(value AS BLOB))<=4096 THEN value END FROM metadata WHERE key LIKE 'schema:%' OR key LIKE 'restore:%' LIMIT 129`)
@@ -1708,7 +1724,9 @@ func validateTriggers(ctx context.Context, db sqlReader, baseVersion, reviewVers
 		}
 	}
 	var nativeDefinitions []string
-	if baseVersion >= 4 {
+	if baseVersion == 4 {
+		nativeDefinitions = append(nativeDefinitions, core.ConnectorCredentialV4SchemaSQL()...)
+	} else if baseVersion >= 5 {
 		nativeDefinitions = append(nativeDefinitions, core.ConnectorCredentialSchemaSQL()...)
 	}
 	if evidenceVersion >= 6 {
