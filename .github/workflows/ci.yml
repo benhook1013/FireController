@@ -114,7 +114,7 @@ jobs:
           - shard: reviewruntime-0
             slot: 3
           - shard: rest-0
-            slot: 4
+            slot: 12
           - shard: backup-1
             slot: 5
           - shard: reviewexec-1
