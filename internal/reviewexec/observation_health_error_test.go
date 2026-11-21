@@ -9,12 +9,59 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
+
+func TestObservationHealthBindsCIErrorToComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		head      string
+		baseSHA   string
+		baseRef   string
+		gateState string
+		current   bool
+	}{
+		{name: "current failed attempt without gate state", head: "head", baseSHA: "base", baseRef: "main", current: true},
+		{name: "current gate", head: "head", baseSHA: "base", baseRef: "main", gateState: "failure", current: true},
+		{name: "stale head", head: "old-head", baseSHA: "base", baseRef: "main", gateState: "failure"},
+		{name: "stale base SHA", head: "head", baseSHA: "old-base", baseRef: "main", gateState: "failure"},
+		{name: "stale base ref", head: "head", baseSHA: "base", baseRef: "old-main", gateState: "failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, clock := lifecycleFixture(t)
+			f.e.lifecycleSchedule = s
+			f.e.lifecycleRunning.Store(true)
+			at := clock.Now()
+			s.due[lifecycleKey{attemptProject, 2}] = lifecycleDue{
+				head: "head", baseSHA: "base", baseRef: "main",
+				checkedAt: at, successAt: at, next: at.Add(time.Minute), lastErrorCode: "provider_unavailable",
+				ciHead: tc.head, ciBaseSHA: tc.baseSHA, ciBaseRef: tc.baseRef,
+				ciGateRef: "main", ciGateState: tc.gateState, ciCheckedAt: at, ciError: "ci_unavailable",
+				hostedCheckedAt: at, hostedError: "hosted_unavailable",
+			}
+			_, health, err := f.e.ObservationHealth(t.Context(), attemptProject, []reviews.PullSummary{{Number: 2, HeadSHA: "head", BaseSHA: "base", BaseRef: "main"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := health[2]
+			if tc.current {
+				if h.CICheckedAt != observationTime(at) || h.CIError != "ci_unavailable" || h.CIGateRef != "main" || h.CIGateState != tc.gateState {
+					t.Fatalf("current CI attempt lost: %+v", h)
+				}
+			} else if h.CICheckedAt != "" || h.CIError != "" || h.CIGateRef != "" || h.CIGateState != "" {
+				t.Fatalf("stale CI attempt projected onto current comparison: %+v", h)
+			}
+			if h.State != "retrying" || h.Error != "provider_unavailable" || h.CheckedAt != observationTime(at) || h.LastSuccessAt != observationTime(at) || h.NextCheckAt != observationTime(at.Add(time.Minute)) || h.HostedCheckedAt != observationTime(at) || h.HostedError != "hosted_unavailable" {
+				t.Fatalf("general or Hosted observation health changed: %+v", h)
+			}
+		})
+	}
+}
 
 func TestObservationHealthSanitizesProviderCodesForTypedQueue(t *testing.T) {
 	for _, lane := range []lifecycleLane{lifecycleMetadata, lifecycleEnrichment} {

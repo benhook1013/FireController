@@ -80,9 +80,10 @@ func (e *Engine) ObservationHealth(ctx context.Context, project string, pulls []
 			account := s.accounts[e.capabilities[c.CapabilityID].Provider+"\x00"+e.capabilities[c.CapabilityID].Account]
 			s.mu.Unlock()
 			now := s.options.Now()
-			h = reviews.PullObservationHealth{State: "waiting", CheckedAt: observationTime(due.checkedAt), LastSuccessAt: observationTime(due.successAt), NextCheckAt: observationTime(due.next), Error: due.lastErrorCode, CICheckedAt: observationTime(due.ciCheckedAt), CIError: due.ciError, HostedCheckedAt: observationTime(due.hostedCheckedAt), HostedError: due.hostedError}
+			h = reviews.PullObservationHealth{State: "waiting", CheckedAt: observationTime(due.checkedAt), LastSuccessAt: observationTime(due.successAt), NextCheckAt: observationTime(due.next), Error: due.lastErrorCode, HostedCheckedAt: observationTime(due.hostedCheckedAt), HostedError: due.hostedError}
 			if due.ciHead == pull.HeadSHA && due.ciBaseSHA == pull.BaseSHA && due.ciBaseRef == pull.BaseRef {
 				h.CIGateRef, h.CIGateState = due.ciGateRef, due.ciGateState
+				h.CICheckedAt, h.CIError = observationTime(due.ciCheckedAt), due.ciError
 			}
 			if h.Error == "" {
 				// Repository/pull reads and local publication can fail before an
