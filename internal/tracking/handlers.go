@@ -11,27 +11,28 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // Register mounts provider-free milestone and item endpoints.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux apiroutes.Registrar, store *core.Store) {
 	base := "/api/v1/projects/{project_id}/tracking"
-	mux.HandleFunc("POST "+base+"/batch", batch(store))
-	mux.HandleFunc("GET "+base+"/items", listItems(store))
-	mux.HandleFunc("GET "+base+"/items/{key}", getItem(store))
-	mux.HandleFunc("PUT "+base+"/items/{key}", putItem(store))
-	mux.HandleFunc("PATCH "+base+"/items/{key}", patchItem(store))
-	mux.HandleFunc("POST "+base+"/items/{key}/links", changeLinks(store))
-	mux.HandleFunc("GET "+base+"/items/{key}/history", itemHistory(store))
-	mux.HandleFunc("GET "+base+"/items/{key}/history/{revision}", itemRevision(store))
-	mux.HandleFunc("GET "+base+"/milestones", listMilestones(store))
-	mux.HandleFunc("GET "+base+"/milestones/{key}", getMilestone(store))
-	mux.HandleFunc("PUT "+base+"/milestones/{key}", putMilestone(store))
-	mux.HandleFunc("PATCH "+base+"/milestones/{key}", patchMilestone(store))
-	mux.HandleFunc("GET "+base+"/milestones/{key}/history", milestoneHistory(store))
-	mux.HandleFunc("GET "+base+"/milestones/{key}/history/{revision}", milestoneRevision(store))
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/batch", batch(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/items", listItems(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/items/{key}", getItem(store))
+	apiroutes.Client(mux).HandleFunc("PUT "+base+"/items/{key}", putItem(store))
+	apiroutes.Client(mux).HandleFunc("PATCH "+base+"/items/{key}", patchItem(store))
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/items/{key}/links", changeLinks(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/items/{key}/history", itemHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/items/{key}/history/{revision}", itemRevision(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/milestones", listMilestones(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/milestones/{key}", getMilestone(store))
+	apiroutes.Client(mux).HandleFunc("PUT "+base+"/milestones/{key}", putMilestone(store))
+	apiroutes.Client(mux).HandleFunc("PATCH "+base+"/milestones/{key}", patchMilestone(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/milestones/{key}/history", milestoneHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/milestones/{key}/history/{revision}", milestoneRevision(store))
 }
 
 func scopeFor(store *core.Store, w http.ResponseWriter, r *http.Request, permission string, keys ...string) (core.Scope, bool) {

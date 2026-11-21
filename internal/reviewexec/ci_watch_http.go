@@ -8,11 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (e *Engine) registerCIWatchHTTP(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/ci/watch", e.ciWatchHTTP)
+func (e *Engine) registerCIWatchHTTP(mux apiroutes.Registrar) {
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/ci/watch", e.ciWatchHTTP)
 }
 
 func (e *Engine) ciWatchHTTP(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviews"
 )
@@ -88,9 +89,9 @@ func (e *Engine) ConfigureFollowing(ctx context.Context, scope core.Scope, key s
 	})
 }
 
-func (e *Engine) registerFollowingHTTP(mux *http.ServeMux) {
+func (e *Engine) registerFollowingHTTP(mux apiroutes.Registrar) {
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		mux.HandleFunc(method+" /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/following", func(w http.ResponseWriter, r *http.Request) {
+		apiroutes.Client(mux).HandleFunc(method+" /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/following", func(w http.ResponseWriter, r *http.Request) {
 			permission := "read"
 			if r.Method == http.MethodPut {
 				permission = "write"

@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/coordimportmodel"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/inbox"
@@ -37,10 +38,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	}, []string{messageSchemaSQL})
 }
 
-func Register(mux *http.ServeMux, store *core.Store) {
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/coordination/imports", current(store))
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/coordination/imports/preview", preview(store))
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/coordination/imports/apply", apply(store))
+func Register(mux apiroutes.Registrar, store *core.Store) {
+	apiroutes.Private(mux).HandleFunc("GET /api/v1/projects/{project_id}/coordination/imports", current(store))
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/coordination/imports/preview", preview(store))
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/coordination/imports/apply", apply(store))
 }
 
 func invalid(message string) error { return core.Fail("validation_failed", message, 400) }

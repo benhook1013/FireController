@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -18,18 +19,18 @@ const maxMessageStreamFrame = 1 << 20
 // RegisterMessageStream registers only the selected-worker incoming feed.
 // The shutdown signal cancels persistent streams without interrupting ordinary
 // requests that are draining gracefully.
-func RegisterMessageStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context) {
+func RegisterMessageStream(mux apiroutes.Registrar, store *core.Store, shutdownContext context.Context) {
 	registerEventStream(mux, store, shutdownContext, "GET /api/v1/projects/{project_id}/message-events/stream", false)
 }
 
 // RegisterProjectStream registers the worker-independent project metadata feed.
-func RegisterProjectStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context) {
+func RegisterProjectStream(mux apiroutes.Registrar, store *core.Store, shutdownContext context.Context) {
 	registerEventStream(mux, store, shutdownContext, "GET /api/v1/projects/{project_id}/project-events/stream", true)
 }
 
-func registerEventStream(mux *http.ServeMux, store *core.Store, shutdownContext context.Context, pattern string, project bool) {
+func registerEventStream(mux apiroutes.Registrar, store *core.Store, shutdownContext context.Context, pattern string, project bool) {
 	a := &api{store: store}
-	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+	apiroutes.Client(mux).HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		streamContext, cancel := context.WithCancel(r.Context())
 		stop := context.AfterFunc(shutdownContext, cancel)
 		if shutdownContext.Err() != nil {

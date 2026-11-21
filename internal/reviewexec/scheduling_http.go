@@ -2,18 +2,19 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
 	"strconv"
 )
 
-func (e *Engine) registerSchedulingHTTP(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/lanes/{channel}/decisions", e.selectionDecisionHistoryHTTP)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/lanes/{channel}/diagnostics", e.readLaneDiagnosticHTTP)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
+func (e *Engine) registerSchedulingHTTP(mux apiroutes.Registrar) {
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/lanes/{channel}/decisions", e.selectionDecisionHistoryHTTP)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/lanes/{channel}/diagnostics", e.readLaneDiagnosticHTTP)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
 }
 func (e *Engine) schedulingHTTP(w http.ResponseWriter, r *http.Request) {
 	permission := "read"

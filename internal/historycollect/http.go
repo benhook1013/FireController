@@ -7,17 +7,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (e *Engine) Register(mux *http.ServeMux) {
+func (e *Engine) Register(mux apiroutes.Registrar) {
 	base := "/api/v1/projects/{project_id}/history/collections"
-	mux.HandleFunc("POST "+base, e.enqueueHTTP)
-	mux.HandleFunc("GET "+base+"/{collection_id}", e.readHTTP)
-	mux.HandleFunc("POST "+base+"/{collection_id}/resume", e.changeHTTP("resume"))
-	mux.HandleFunc("POST "+base+"/{collection_id}/cancel", e.changeHTTP("cancel"))
-	mux.HandleFunc("GET "+base+"/{collection_id}/pages", e.pagesHTTP)
-	mux.HandleFunc("GET "+base+"/{collection_id}/pages/{page_id}", e.captureHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base, e.enqueueHTTP)
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/{collection_id}", e.readHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/{collection_id}/resume", e.changeHTTP("resume"))
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/{collection_id}/cancel", e.changeHTTP("cancel"))
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/{collection_id}/pages", e.pagesHTTP)
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/{collection_id}/pages/{page_id}", e.captureHTTP)
 }
 
 func (e *Engine) pagesHTTP(w http.ResponseWriter, r *http.Request) {

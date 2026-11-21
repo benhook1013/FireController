@@ -8,24 +8,25 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
 // Register mounts provider-free project-map and job association endpoints.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux apiroutes.Registrar, store *core.Store) {
 	registerImport(mux, store)
 	base := "/api/v1/projects/{project_id}"
-	mux.HandleFunc("POST "+base+"/map/entries", createEntry(store))
-	mux.HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
-	mux.HandleFunc("PATCH "+base+"/map/entries/{entry_id}", updateEntry(store))
-	mux.HandleFunc("GET "+base+"/map/entries", listEntries(store))
-	mux.HandleFunc("GET "+base+"/map/editorial", editorialEntries(store))
-	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}", getEntry(store))
-	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history", entryHistory(store))
-	mux.HandleFunc("GET "+base+"/map/entries/{entry_id}/history/{revision}", getRevision(store))
-	mux.HandleFunc("GET "+base+"/jobs/{job_id}/workstream", getJobWorkstream(store))
-	mux.HandleFunc("PUT "+base+"/jobs/{job_id}/workstream", replaceJobWorkstream(store))
-	mux.HandleFunc("GET "+base+"/jobs/{job_id}/workstream/history", jobWorkstreamHistory(store))
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/map/entries", createEntry(store))
+	apiroutes.Client(mux).HandleFunc("PUT "+base+"/map/entries/{entry_id}", replaceEntry(store))
+	apiroutes.Client(mux).HandleFunc("PATCH "+base+"/map/entries/{entry_id}", updateEntry(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/map/entries", listEntries(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/map/editorial", editorialEntries(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/map/entries/{entry_id}", getEntry(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/map/entries/{entry_id}/history", entryHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/map/entries/{entry_id}/history/{revision}", getRevision(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/jobs/{job_id}/workstream", getJobWorkstream(store))
+	apiroutes.Client(mux).HandleFunc("PUT "+base+"/jobs/{job_id}/workstream", replaceJobWorkstream(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/jobs/{job_id}/workstream/history", jobWorkstreamHistory(store))
 }
 func scopeFor(store *core.Store, w http.ResponseWriter, r *http.Request, permission string, keys ...string) (core.Scope, bool) {
 	scope, err := store.Scope(r, permission)
