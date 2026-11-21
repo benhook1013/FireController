@@ -231,7 +231,7 @@ func TestPullMetadataQueueEditAndAdditivePreserve(t *testing.T) {
 }
 
 // Compare every pre-existing logical table, omitting only the authorized schema
-// version, new metadata column and separately asserted empty preference domain;
+// markers, new metadata column and separately asserted empty preference domain;
 // no historical body or operational row may change.
 func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 	t.Helper()
@@ -271,7 +271,7 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 			if err = rows.Scan(targets...); err != nil {
 				t.Fatal(err)
 			}
-			if table == "metadata" && (values[0] == "schema:reviews" || values[0] == "schema:review_notifications") {
+			if table == "metadata" && (values[0] == "schema:reviews" || values[0] == "schema:review_notifications" || values[0] == "schema:review_retention_indexes") {
 				continue
 			}
 			var old []any

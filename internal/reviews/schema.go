@@ -15,6 +15,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := store.EnsureSchemaWithCompatibility(ctx, "reviews", migrations, reconcileReviewSchemaLineage, ensureCurrentReviewIndexes); err != nil {
 		return err
 	}
+	if err := store.EnsureSchema(ctx, "review_retention_indexes", SnapshotReferenceIndexSchemaSQL()); err != nil {
+		return err
+	}
 	return EnsureNotificationSchema(ctx, store)
 }
 

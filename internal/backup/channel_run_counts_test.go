@@ -24,7 +24,7 @@ func TestChannelRunCountsCanonicalSchema(t *testing.T) {
 	if err := store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version < 13 {
 		t.Fatal("current reviews schema", version, err)
 	}
-	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), version, true); err != nil {
+	if err := validateHistoryPhysicalSchema(t.Context(), store.DB(), version, true, true); err != nil {
 		t.Fatal("physical", err)
 	}
 	if err := validateHistoryViews(t.Context(), store.DB(), version); err != nil {

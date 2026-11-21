@@ -10,6 +10,8 @@ All jobs retain revision 1, the latest twenty distinct revisions per owner and r
 
 ## Rollout and recovery
 
+Daemon startup and `fcd migrate` install composite indexes for review history's snapshot references. These let retention check references within the normal bounded write budget. The index upgrade adds no history rows and preserves the review data format.
+
 For the first authorized deployment, use `python3 tools/deploy/deploy.py --retention-mode dry-run`. This explicitly adds the daemon flag through the normal deploy. Do not confuse this with the deployment tool's separate build-only `--dry-run`. Routine deployments omit `--retention-mode` to preserve the existing daemon setting. Check the first non-skipped dry-run status before authorizing a deploy with `--retention-mode enabled`. The worker skips any scheduled pass if deployment or backup still owns the lease; do not bypass that lease to obtain a report.
 
 Startup and `fcd migrate` perform a one-time SQLite conversion to incremental auto-vacuum before serving. This conversion is a physical database rewrite even if the retention worker is in dry-run mode; predeploy rehearsal tests it on the snapshot copy. Provision temporary disk headroom and retain a compatible pre-conversion backup and binary; subsequent startup does not repeat it. A non-dry pass uses bounded incremental vacuum calls after pruning. Verify the first live report against database and backup size, SQLite quick check, and managed backup inspection. Source-only tests do not establish live size or growth results.

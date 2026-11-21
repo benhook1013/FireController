@@ -73,6 +73,9 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 				if err := EnsureNotificationSchema(t.Context(), f.store); err != nil {
 					t.Fatal(err)
 				}
+				if err := f.store.EnsureSchema(t.Context(), "review_retention_indexes", SnapshotReferenceIndexSchemaSQL()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var metadataBefore string
 			const metadataQuery = `SELECT group_concat(hex(metadata_json),'|') FROM (SELECT metadata_json FROM review_pull_versions ORDER BY project_id,number,version_revision)`
@@ -85,7 +88,7 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 				t.Fatal(err)
 			}
 			if lineage == "integrated13" && currentDigest != historyMigrationDatabaseDigest(t, f) {
-				t.Fatal("current integrated-v13 startup was not an exact no-op")
+				t.Fatal("startup after all current migrations was not an exact no-op")
 			}
 			if after := metadataLegacyRows(t, f); !reflect.DeepEqual(before, after) {
 				t.Fatal("retained data changed")
