@@ -4,10 +4,45 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"math/big"
+	"strconv"
+	"strings"
 
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
+
+// schedulingInteger accepts the exact integral JSON numbers advertised by the
+// scheduling tool schema. Do not pass through float64: revision CAS might target
+// a different revision above the binary64 exact-integer range.
+type schedulingInteger int64
+
+func (n *schedulingInteger) UnmarshalJSON(raw []byte) error {
+	s := string(raw)
+	if len(s) == 0 || (s[0] != '-' && (s[0] < '0' || s[0] > '9')) || !json.Valid(raw) {
+		return invalidArguments()
+	}
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		// Bound exponent work before exact rational parsing. The caller's
+		// 4096-byte input ceiling makes any nonzero value beyond this
+		// bound either fractional or outside int64.
+		exp, err := strconv.ParseInt(s[i+1:], 10, 16)
+		if err != nil || exp < -4116 || exp > 4116 {
+			mantissa := strings.TrimLeft(s[:i], "-0.")
+			if mantissa == "" {
+				*n = 0
+				return nil
+			}
+			return invalidArguments()
+		}
+	}
+	v, ok := new(big.Rat).SetString(s)
+	if !ok || !v.IsInt() || !v.Num().IsInt64() {
+		return invalidArguments()
+	}
+	*n = schedulingInteger(v.Num().Int64())
+	return nil
+}
 
 func reviewSchedulingWrite(name string) bool {
 	return name == "review_scheduling_configure" || name == "review_pull_scheduling_update"
@@ -45,20 +80,20 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 	}
 	if name == "review_pull_scheduling_read" {
 		var wire struct {
-			PullNumber int64 `json:"pull_number"`
+			PullNumber schedulingInteger `json:"pull_number"`
 		}
 		if strictjson.Decode(raw, &wire) != nil || wire.PullNumber < 1 || wire.PullNumber > 2147483647 {
 			return args, invalidArguments()
 		}
-		args.pullNumber = wire.PullNumber
+		args.pullNumber = int64(wire.PullNumber)
 		return args, nil
 	}
 	if name == "review_scheduling_configure" {
 		var wire struct {
-			Revision *int64 `json:"expected_revision"`
-			Enabled  *bool  `json:"automatic_hosted"`
-			CLI      *bool  `json:"automatic_cli,omitempty"`
-			Key      string `json:"idempotency_key"`
+			Revision *schedulingInteger `json:"expected_revision"`
+			Enabled  *bool              `json:"automatic_hosted"`
+			CLI      *bool              `json:"automatic_cli,omitempty"`
+			Key      string             `json:"idempotency_key"`
 		}
 		if strictjson.Decode(raw, &wire) != nil || wire.Revision == nil || wire.Enabled == nil || !client.ValidMutationKey(wire.Key) {
 			return args, invalidArguments()
@@ -68,18 +103,18 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 			return args, invalidArguments()
 		}
 		args.key = wire.Key
-		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: *wire.Revision, AutomaticHosted: *wire.Enabled, AutomaticCLI: wire.CLI}
+		args.reviewScheduling = client.ConfigureReviewSchedulingRequest{ExpectedRevision: int64(*wire.Revision), AutomaticHosted: *wire.Enabled, AutomaticCLI: wire.CLI}
 		if client.ValidateConfigureReviewScheduling(args.reviewScheduling) != nil {
 			return arguments{}, invalidArguments()
 		}
 		return args, nil
 	}
 	var wire struct {
-		PullNumber int64   `json:"pull_number"`
-		Revision   *int64  `json:"expected_revision"`
-		Paused     *bool   `json:"paused"`
-		Reason     *string `json:"reason,omitempty"`
-		Key        string  `json:"idempotency_key"`
+		PullNumber schedulingInteger  `json:"pull_number"`
+		Revision   *schedulingInteger `json:"expected_revision"`
+		Paused     *bool              `json:"paused"`
+		Reason     *string            `json:"reason,omitempty"`
+		Key        string             `json:"idempotency_key"`
 	}
 	if name != "review_pull_scheduling_update" || strictjson.Decode(raw, &wire) != nil || wire.Revision == nil || wire.Paused == nil || !client.ValidMutationKey(wire.Key) {
 		return args, invalidArguments()
@@ -88,8 +123,8 @@ func reviewSchedulingArguments(name string, raw json.RawMessage) (arguments, err
 	if json.Unmarshal(raw, &present) != nil || present["reason"] != nil && (wire.Reason == nil || !*wire.Paused) {
 		return args, invalidArguments()
 	}
-	args.key, args.pullNumber = wire.Key, wire.PullNumber
-	args.reviewPullScheduling = client.ConfigureReviewPullSchedulingRequest{ExpectedRevision: *wire.Revision, Paused: *wire.Paused}
+	args.key, args.pullNumber = wire.Key, int64(wire.PullNumber)
+	args.reviewPullScheduling = client.ConfigureReviewPullSchedulingRequest{ExpectedRevision: int64(*wire.Revision), Paused: *wire.Paused}
 	if wire.Reason != nil {
 		args.reviewPullScheduling.Reason = *wire.Reason
 	}
@@ -115,7 +150,7 @@ func reviewSchedulingDefinitions() []definition {
 	return []definition{
 		{"review_lane_diagnostic", "Read every configured PR in one channel against retained source facts and current local evidence/dependency policy. Includes source time/completeness and exact blocking parent. Provider-free and read-only; locally_ready is NOT fresh admission, automatic eligibility or a promise of dispatch. No new selection, retry, provider call, cap or control change.", object(map[string]any{"channel": map[string]any{"type": "string", "enum": []string{"cli", "hosted"}}}, "channel")},
 		{"review_scheduling_read", "Read this project's automatic Hosted and CLI settings and current queued PR pauses in one provider-free call. No settings, review or allowance changes. See docs/review-scheduling.md.", object(map[string]any{})},
-		{"review_scheduling_configure", "Project manager: explicitly enable or disable automatic future Hosted or CLI requests under existing source, obligation, round and provider guards. Both default off. Optional automatic_cli preserves the current CLI setting when omitted. Existing grants and taper apply; no automatic adjudication or grant increase. Enabling retains this connection's current credential and active bound worker; withdrawn authority stops new automatic actions. This setting can authorize asynchronous provider work. Current revision and explicit key required; no automatic mutation retry. See docs/review-scheduling.md.", object(map[string]any{"expected_revision": revision, "automatic_hosted": map[string]any{"type": "boolean"}, "automatic_cli": map[string]any{"type": "boolean", "description": "Optional CLI opt-in; omission preserves the current setting."}, "idempotency_key": key}, "expected_revision", "automatic_hosted", "idempotency_key")},
+		{"review_scheduling_configure", "Project manager: explicitly enable or disable automatic future Hosted or CLI requests under existing source, obligation, round and provider guards. Both default off. Optional automatic_cli preserves the current CLI setting when omitted. Existing grants and taper apply; no automatic adjudication or grant increase. If either channel stays enabled, this connection's current credential and active bound worker become the shared authorizer for new work, even when disabling only the other channel. Omission preserves the CLI setting, not the authorizer; withdrawn authority stops new automatic actions. This setting can authorize asynchronous provider work. Current revision and explicit key required; no automatic mutation retry. See docs/review-scheduling.md.", object(map[string]any{"expected_revision": revision, "automatic_hosted": map[string]any{"type": "boolean"}, "automatic_cli": map[string]any{"type": "boolean", "description": "Optional CLI opt-in; omission preserves the current setting."}, "idempotency_key": key}, "expected_revision", "automatic_hosted", "idempotency_key")},
 		{"review_pull_scheduling_read", "Read one PR's temporary scheduling pause before or after an intent exists. Does not change Draft, grant, taper, closure or active provider work.", object(map[string]any{"pull_number": pull}, "pull_number")},
 		{"review_pull_scheduling_update", "Writer: explicitly pause or resume new and undispatched reviews for one PR, including automatic Hosted and CLI selection. Does not cancel already-issued reviews or stop collecting results, change round credit or clear a separate operation pause. Retain current revision/key; reason is optional plain text only while paused and must be omitted on resume. See docs/review-scheduling.md.", pullUpdate},
 	}

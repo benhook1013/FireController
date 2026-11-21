@@ -383,6 +383,18 @@ func parseInvocation(args []string) (invocation, bool) {
 	remaining := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		argument := args[i]
+		// In scheduling pause, --reason owns its next token even when the
+		// literal reason resembles a global option. Profile selection is
+		// otherwise still processed in its normal positions.
+		if argument == "--reason" && len(remaining) >= 3 &&
+			remaining[0] == "reviews" && remaining[1] == "scheduling" && remaining[2] == "pause" {
+			remaining = append(remaining, argument)
+			if i+1 < len(args) {
+				i++
+				remaining = append(remaining, args[i])
+			}
+			continue
+		}
 		flag, value, assigned := strings.Cut(argument, "=")
 		if flag != "--profile" && flag != "--profiles-file" {
 			remaining = append(remaining, argument)

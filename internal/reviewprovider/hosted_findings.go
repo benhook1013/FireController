@@ -53,7 +53,9 @@ type findingLine struct {
 	start, end, next, quote int
 	text                    string
 	countText               string // Visible comment-excluded text for contradictory count checks only.
-	countContinues          bool   // A comment hides this physical line boundary.
+	preCountText            string // Visible HTML preformatted text, for refusal only.
+	preCountContinues       bool
+	countContinues          bool // A comment hides this physical line boundary.
 	hidden                  bool
 }
 
@@ -63,7 +65,7 @@ func findingLines(body string) ([]findingLine, bool) {
 	var lines []findingLine
 	var fence byte
 	fenceLength, fenceQuote, pre := 0, 0, 0
-	comment := false
+	comment, preComment := false, false
 	for offset := 0; offset < len(body); {
 		end := strings.IndexByte(body[offset:], '\n')
 		next := len(body)
@@ -86,6 +88,12 @@ func findingLines(body string) ([]findingLine, bool) {
 		l := findingLine{start: offset, end: end, next: next, quote: quote, text: strings.TrimSpace(text)}
 		trimmed := strings.TrimLeft(text, " ")
 		indent := len(text) - len(trimmed)
+		wasPre := pre > 0
+		// Preformatted text stays hidden for retained markers and inventory.
+		// Capture only rendered text for the additional-only count check.
+		if quote <= 1 && fence == 0 && !comment && (wasPre || indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed)) {
+			l.preCountText = findingCommentVisible(trimmed, &preComment)
+		}
 		if quote > 1 {
 			l.hidden = true
 		} else if fence != 0 {
@@ -128,6 +136,10 @@ func findingLines(body string) ([]findingLine, bool) {
 		}
 		if !l.hidden {
 			l.countText = l.text
+		}
+		l.preCountContinues = pre > 0
+		if !l.preCountContinues {
+			preComment = false
 		}
 		l.countContinues = comment
 		lines = append(lines, l)

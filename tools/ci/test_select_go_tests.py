@@ -18,19 +18,6 @@ class SelectionTests(unittest.TestCase):
             SELECT.PREFIX + name for name in ["cmd/fc", "cmd/fcd", "internal/new_package", "tools/new_tool"]
         ]
 
-    def test_reviewexec_halves_preserve_each_former_shard_exactly(self):
-        names = [f"TestCase{i:04}" for i in range(1097)]
-        package = SELECT.PREFIX + "internal/reviewexec"
-        inventory = "\n".join(names)
-        for old_index in range(6):
-            expressions = [re.compile(SELECT.select_tests(f"reviewexec-{index}", package, inventory))
-                           for index in (old_index, old_index + 6)]
-            halves = [{name for name in names if expression.fullmatch(name)}
-                      for expression in expressions]
-            self.assertFalse(halves[0] & halves[1])
-            self.assertEqual(halves[0] | halves[1], set(names[old_index::6]))
-            self.assertLessEqual(abs(len(halves[0]) - len(halves[1])), 1)
-
     def test_new_packages_and_every_existing_package_have_an_owner(self):
         inventory = "\n".join(reversed(self.inventory())) + "\n"
         isolated = {SELECT.PREFIX + "internal/" + family for family in SELECT.FAMILIES}
@@ -48,12 +35,14 @@ class SelectionTests(unittest.TestCase):
 
     def test_all_tests_examples_and_fuzz_seeds_belong_to_exactly_one_partition(self):
         names = [f"TestCase{i:03}" for i in range(50)] + ["ExampleAPI", "FuzzDecode"]
-        for family, count in SELECT.FAMILIES.items():
+        for family in SELECT.FAMILIES:
             package = SELECT.PREFIX + "internal/" + family
             inventory = "\n".join(reversed(names)) + f"\nBenchmarkIgnore\nok\t{package}\t0.001s\n"
             membership = {name: 0 for name in names}
-            for index in range(count):
-                expression = SELECT.select_tests(f"{family}-{index}", package, inventory)
+            for shard in SELECT.shards():
+                if not shard.startswith(f"{family}-"):
+                    continue
+                expression = SELECT.select_tests(shard, package, inventory)
                 self.assertTrue(expression.startswith("^(") and expression.endswith(")$"))
                 self.assertIsNone(re.fullmatch(expression, "TestCase000Suffix"))
                 self.assertIsNone(re.fullmatch(expression, "BenchmarkIgnore"))
@@ -66,14 +55,15 @@ class SelectionTests(unittest.TestCase):
         # Go registers internal and external implementations separately even
         # when their valid top-level names match. One expression selects both.
         repeated = names + [names[0], "ExampleAPI", "FuzzDecode"]
-        for family, count in SELECT.FAMILIES.items():
+        for family in SELECT.FAMILIES:
             package = SELECT.PREFIX + "internal/" + family
             baseline = "\n".join(names) + f"\nok\t{package}\t0.001s\n"
             inventory = "\n".join(repeated) + f"\nok\t{package}\t0.001s\n"
             reordered = "\n".join(reversed(repeated)) + f"\nok\t{package}\t0.001s\n"
             expressions = []
-            for index in range(count):
-                shard = f"{family}-{index}"
+            for shard in SELECT.shards():
+                if not shard.startswith(f"{family}-"):
+                    continue
                 expression = SELECT.select_tests(shard, package, inventory)
                 self.assertEqual(expression, SELECT.select_tests(shard, package, baseline))
                 self.assertEqual(expression, SELECT.select_tests(shard, package, reordered))
@@ -81,11 +71,30 @@ class SelectionTests(unittest.TestCase):
             for occurrence in repeated:
                 self.assertEqual(sum(bool(re.fullmatch(expr, occurrence)) for expr in expressions), 1)
 
+    def test_all_twelve_halves_preserve_the_six_former_partitions(self):
+        package = SELECT.PREFIX + "internal/reviewexec"
+        names = sorted([f"TestCase{i:04}" for i in range(1097)] + ["ExampleAPI", "FuzzDecode"])
+        inventory = "\n".join(reversed(names))
+
+        def names_for(shard):
+            expression = SELECT.select_tests(shard, package, inventory)
+            return [name for name in names if re.fullmatch(expression, name)]
+
+        for index in range(6):
+            first = f"reviewexec-{index}"
+            second = "reviewexec-1b" if index == 1 else f"reviewexec-{index + 6}"
+            former = names[index::6]
+            left, right = names_for(first), names_for(second)
+            self.assertEqual(left, former[::2])
+            self.assertEqual(right, former[1::2])
+            self.assertFalse(set(left) & set(right))
+        self.assertNotIn("reviewexec-7", SELECT.shards())
+
     def test_bad_package_inventories_and_unknown_shards_fail_closed(self):
         for inventory in ["", "bad/package", "\n".join(self.inventory() * 2), self.inventory()[0] + "\n\n"]:
             with self.subTest(inventory=inventory), self.assertRaises(ValueError):
                 SELECT.select_packages("rest-0", inventory)
-        for shard in ["rest-2", "backup-8", "reviewexec-12", "unknown-0"]:
+        for shard in ["rest-2", "backup-8", "reviewexec-7", "reviewexec-12", "unknown-0"]:
             with self.subTest(shard=shard), self.assertRaises(ValueError):
                 SELECT.select_packages(shard, "\n".join(self.inventory()))
         with self.assertRaises(ValueError):

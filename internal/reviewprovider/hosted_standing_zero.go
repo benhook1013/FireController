@@ -562,6 +562,30 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 	return parts[4], true
 }
 
+// Preserve structural marker handling and the single exact historical
+// exemption. The comment-excluded projection is refusal-only and must never
+// inherit that exemption or contribute structural inventory.
+func standingInventoryContradictsZero(lines []findingLine, historical *standingHistoricalParser) bool {
+	var visible strings.Builder
+	for index, line := range lines {
+		if !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text) && !historical.allows(index)) {
+			return true
+		}
+		if line.hidden {
+			visible.WriteString(line.countText)
+		}
+		if line.countContinues {
+			continue
+		}
+		text := visible.String()
+		if strings.Contains(text, "Actionable comments posted:") || standingFindingClaim.MatchString(text) {
+			return true
+		}
+		visible.Reset()
+	}
+	return false
+}
+
 func parseStandingZero(body string) (HostedStandingZero, bool) {
 	return parseStandingMetadata(body, true)
 }
@@ -584,10 +608,8 @@ func parseStandingMetadata(body string, requireZero bool) (zero HostedStandingZe
 	if !valid {
 		return zero, false
 	}
-	for index, line := range lines {
-		if requireZero && !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text) && !historical.allows(index)) {
-			return zero, false
-		}
+	if requireZero && standingInventoryContradictsZero(lines, historical) {
+		return zero, false
 	}
 	p := standingRecentParser{}
 	for _, line := range recent {

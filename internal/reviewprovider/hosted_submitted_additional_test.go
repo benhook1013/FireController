@@ -548,3 +548,31 @@ func TestHostedSubmittedAdditionalOnlyRejectsInlineHTMLActionableClaim(t *testin
 		})
 	}
 }
+
+func TestHostedSubmittedAdditionalOnlyChecksVisibleCountFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name, text  string
+		contradicts bool
+	}{
+		{"linked heading", "# [Actionable comments posted](https://example.invalid/review): 1", true},
+		{"linked clause", "Actionable [comments](https://example.invalid/review) posted: 1", true},
+		{"URL is not rendered text", "[Reference](https://example.invalid/Actionable%20comments%20posted:%201)", false},
+		{"visible pre counts", "<pre>Actionable comments posted: 1</pre>", true},
+		{"visible multiline pre counts", "<pre>\n    Actionable comments\n    posted: 1\n</pre>", true},
+		{"ordinary pre prose", "<pre>\n    Discuss the actionable comments posted label.\n</pre>", false},
+		{"hidden pre comment", "<pre><!-- Actionable comments posted: 99 --></pre>", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := submittedAdditionalFixture(t)
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "_Source: Linters/SAST tools_", tc.text+"\n_Source: Linters/SAST tools_", 1)
+			got := f.extract(t)
+			if tc.contradicts {
+				if got.Complete || got.Publication.State == "attributed" || len(got.Findings) != 0 {
+					t.Fatal("visible actionable declaration supplied complete additional-only inventory")
+				}
+			} else if !got.Complete || len(got.Findings) != 1 {
+				t.Fatalf("ordinary non-declaration lost positive inventory: %+v", got)
+			}
+		})
+	}
+}

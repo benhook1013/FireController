@@ -81,7 +81,10 @@ func (e *Engine) ReadLaneDiagnostic(ctx context.Context, scope core.Scope, chann
 				out.SourceReason = "repository_changed"
 			}
 		}
-		usable := found && frame.configuration == revision && frame.repository == repository
+		// A partial observation can retain earlier candidates even when a
+		// later read detects a repository change. Those candidates are not
+		// usable diagnostics, even if the stored binding still matches.
+		usable := found && frame.configuration == revision && frame.repository == repository && frame.sourceReason != "repository_changed"
 		out.SourceComplete = usable && frame.complete
 		plans := frame.plans()
 		byNumber := map[int64]*SourcePlan{}

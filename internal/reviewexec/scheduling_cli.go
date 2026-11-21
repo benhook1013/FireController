@@ -7,22 +7,49 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+const automaticCLITraversalLimit = 100
+
+// Each priority group has independent wraparound and a reserved part of the
+// bounded traversal. An idle group lends its unused slots to the other one.
+func automaticCLIProjects(ctx context.Context, tx *sql.Tx, preferred bool, cursor string, limit int) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT s.project_id FROM review_scheduling s LEFT JOIN projects p ON p.id=s.project_id
+		WHERE s.automatic_cli=1 AND COALESCE(lower(p.repository)=?,0)=?
+		ORDER BY (s.project_id<=?),s.project_id LIMIT ?`, preferredCLIRepository, preferred, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	var projects []string
+	for rows.Next() {
+		var project string
+		if err = rows.Scan(&project); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return projects, rows.Close()
+}
+
+func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	var preferred, other []string
 	if err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id FROM review_scheduling WHERE automatic_cli=1 ORDER BY (SELECT lower(repository) FROM projects WHERE id=project_id)<>?,(project_id<=?),project_id LIMIT 100`, preferredCLIRepository, e.automaticCLICursor)
+		const half = automaticCLITraversalLimit / 2
+		var err error
+		preferred, err = automaticCLIProjects(ctx, tx, true, e.automaticCLICursor, half)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var p string
-			if err = rows.Scan(&p); err != nil {
-				return err
-			}
-			projects = append(projects, p)
+		other, err = automaticCLIProjects(ctx, tx, false, e.automaticCLIOtherCursor, automaticCLITraversalLimit-len(preferred))
+		if err != nil {
+			return err
 		}
-		return rows.Err()
+		if len(preferred) == half && len(other) < half {
+			preferred, err = automaticCLIProjects(ctx, tx, true, e.automaticCLICursor, automaticCLITraversalLimit-len(other))
+		}
+		return err
 	}); err != nil {
 		return false, err
 	}
@@ -31,8 +58,12 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 	// must not starve simply because preferred work is always available.
 	generated := false
 	selectedAccounts := map[string]bool{}
-	for _, project := range projects {
-		e.automaticCLICursor = project
+	for i, project := range append(preferred, other...) {
+		if i < len(preferred) {
+			e.automaticCLICursor = project
+		} else {
+			e.automaticCLIOtherCursor = project
+		}
 		var account string
 		err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			c, _, err := readConfiguration(ctx, tx, project)

@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 	"time"
 )
@@ -106,23 +107,9 @@ func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operat
 	if err != nil {
 		return false, err
 	}
-	var ids []pendingCandidateID
-	for rows.Next() {
-		var id pendingCandidateID
-		if err = rows.Scan(&id.project, &id.operation); err != nil {
-			break
-		}
-		ids = append(ids, id)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	closeErr := rows.Close()
+	ids, err := readPreferredSelectionIDs(rows)
 	if err != nil {
 		return false, err
-	}
-	if closeErr != nil {
-		return false, closeErr
 	}
 candidates:
 	for _, id := range ids {
@@ -147,7 +134,14 @@ candidates:
 		if prior.Provider != capability.Provider || prior.Account != capability.Account {
 			continue
 		}
-		for _, pull := range c.Queue {
+		queue := c.Queue
+		if r.ExpectedPullNumber != 0 {
+			if !slices.Contains(queue, r.ExpectedPullNumber) {
+				continue
+			}
+			queue = []int64{r.ExpectedPullNumber}
+		}
+		for _, pull := range queue {
 			pause, err := readPullScheduling(ctx, tx, r.ProjectID, pull)
 			if err != nil {
 				if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
@@ -161,4 +155,34 @@ candidates:
 		}
 	}
 	return false, nil
+}
+
+// Read candidate keys before other lookups; database/sql can otherwise coerce
+// a non-text value to a different key.
+func readPreferredSelectionIDs(rows *sql.Rows) ([]pendingCandidateID, error) {
+	var err error
+	var ids []pendingCandidateID
+	for rows.Next() {
+		var id pendingCandidateID
+		var rawID any
+		if err = rows.Scan(&id.project, &rawID); err != nil {
+			break
+		}
+		var text bool
+		if id.operation, text = rawID.(string); !text {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return ids, nil
 }

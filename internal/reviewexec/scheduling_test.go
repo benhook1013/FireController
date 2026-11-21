@@ -92,7 +92,7 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 			t.Fatalf("HEAD %s must use the read path: status=%d body=%s", path, head.Code, head.Body.String())
 		}
 	}
-	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
+	for _, body := range []string{`{}`, `{"expected_revision":0}`, `{"expected_revision":0,"automatic_hosted":null}`, `{"expected_revision":0,"automatic_hosted":false,"automatic_cli":null}`, `{"expected_revision":0,"automatic_hosted":false,"AUTOMATIC_CLI":null}`, `{"expected_revision":0,"automatic_hosted":true,"token":"private"}`, `{"expected_revision":0,"automatic_hosted":true,"automatic_hosted":false}`} {
 		if w = call("POST", "scheduling", f.writer, core.NewID("key"), body); w.Code != 400 {
 			t.Fatal(w.Code, w.Body.String())
 		}
@@ -384,7 +384,7 @@ func TestSchedulingProjectionRefreshDoesNotRegenerateAndValidatorPreservesRevoca
 		if err != nil {
 			return err
 		}
-		before, _, err := automaticPlanningBasis(ctx, tx, attemptProject, c, "")
+		before, _, err := f.e.automaticPlanningBasis(ctx, tx, attemptProject, c, "")
 		if err != nil {
 			return err
 		}
@@ -406,7 +406,7 @@ func TestSchedulingProjectionRefreshDoesNotRegenerateAndValidatorPreservesRevoca
 		if _, err = tx.ExecContext(ctx, `UPDATE review_front_frames SET checked_at=?,source_observed_at=?,prefix_json=? WHERE project_id=?`, at, at, string(body), attemptProject); err != nil {
 			return err
 		}
-		after, _, err := automaticPlanningBasis(ctx, tx, attemptProject, c, "")
+		after, _, err := f.e.automaticPlanningBasis(ctx, tx, attemptProject, c, "")
 		if err != nil {
 			return err
 		}
@@ -1616,39 +1616,47 @@ func TestSchedulingWaitSnapshotRequiresActualDraftProof(t *testing.T) {
 }
 
 func TestAutomaticSelectionDoesNotSettleNewlyExposedQueueSuffix(t *testing.T) {
-	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
-	f.enqueue(t, attemptProject, "ordinary-queued-boundary", "hosted", 4, 1)
-	schedulingEnable(t, f, 0, true)
-	schedulingGenerate(t, f, true)
-	before := schedulingLatest(t, f)
-
-	var readSix atomic.Bool
-	reader := &refreshTestReader{
-		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
-			schedulingPause(t, f, 4, 0, true)
-			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
-		},
-		pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
-			if n == 6 {
-				readSix.Store(true)
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+			f.enqueue(t, attemptProject, "ordinary-queued-boundary", channel, 4, 1)
+			enable, generate := schedulingEnable, schedulingGenerate
+			if channel == "cli" {
+				enable, generate = schedulingCLIEnable, schedulingCLIGenerate
 			}
-			return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "closed", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
-		},
-	}
-	selectionNext(t, f, reader)
-	after := selectionRead(t, f, before.ID)
-	var basis string
-	if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, before.ID).Scan(&basis); err != nil {
-		t.Fatal(err)
-	}
-	if readSix.Load() || after.State != "held" || after.Reason != "selection_changed" || basis != "" {
-		t.Fatalf("unacquired suffix retired: readSix=%t state=%s reason=%s basis=%s", readSix.Load(), after.State, after.Reason, basis)
-	}
-	schedulingGenerate(t, f, true)
-	reader.repository = nil
-	selectionNext(t, f, reader)
-	if !readSix.Load() {
-		t.Fatal("fresh selection did not acquire newly exposed pull")
+			enable(t, f, 0, true)
+			generate(t, f, true)
+			before := schedulingLatest(t, f)
+
+			var readSix atomic.Bool
+			reader := &refreshTestReader{
+				repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+					schedulingPause(t, f, 4, 0, true)
+					return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+				},
+				pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+					if n == 6 {
+						readSix.Store(true)
+					}
+					return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "closed", HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+				},
+			}
+			selectionNext(t, f, reader)
+			after := selectionRead(t, f, before.ID)
+			var basis string
+			if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, before.ID).Scan(&basis); err != nil {
+				t.Fatal(err)
+			}
+			if readSix.Load() || after.State != "held" || after.Reason != "selection_changed" || basis != "" {
+				t.Fatalf("unacquired suffix retired: readSix=%t state=%s reason=%s basis=%s", readSix.Load(), after.State, after.Reason, basis)
+			}
+			generate(t, f, true)
+			reader.repository = nil
+			selectionNext(t, f, reader)
+			if !readSix.Load() {
+				t.Fatal("fresh selection did not acquire newly exposed pull")
+			}
+		})
 	}
 }
 
@@ -1669,7 +1677,28 @@ func TestAutomaticCLISelectionKeepsExistingSourceLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	choice, err := f.e.chooseRun(t.Context(), r, 801, c, &refreshTestReader{})
-	if err != nil || choice.automaticHostedQueueLimit != nil || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 {
-		t.Fatalf("CLI source remains limited to PR2, without a Hosted settlement pin: %+v err=%v", choice, err)
+	if err != nil || (choice.automaticQueueLimit == nil || *choice.automaticQueueLimit != 1) || len(choice.prefix) != 1 || choice.prefix[0].Pull.Number != 2 {
+		t.Fatalf("CLI source must retain a cutoff after acquiring only PR2: %+v err=%v", choice, err)
+	}
+}
+
+func TestAutomaticSelectionDoesNotPublishShrinkingQueuePrefix(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2, 4, 6})
+	f.enqueue(t, attemptProject, "ordinary-later-boundary", "hosted", 6, 1)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	before := schedulingLatest(t, f)
+	frames := snapshotTable(t, f, "review_front_frames")
+	reader := &refreshTestReader{
+		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+			f.enqueue(t, attemptProject, "ordinary-new-boundary", "hosted", 2, 1)
+			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+		},
+	}
+	selectionNext(t, f, reader)
+	after := selectionRead(t, f, before.ID)
+	if after.State != "held" || after.Reason != "selection_changed" || after.OperationID != "" ||
+		snapshotTable(t, f, "review_front_frames") != frames {
+		t.Fatalf("selection published against superseded cutoff: %+v", after)
 	}
 }

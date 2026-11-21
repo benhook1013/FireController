@@ -172,3 +172,24 @@ func TestReviewSchedulingLeafHelpKeepsExactGrammar(t *testing.T) {
 		t.Fatal("help-looking reason was treated as local help", call, ok)
 	}
 }
+
+func TestSchedulingPauseProfileShapedReasonIsLiteral(t *testing.T) {
+	for _, args := range [][]string{
+		{"--reason", "--profile=other"},
+		{"--reason=--profile=other"},
+		{"--reason", "--profile"},
+		{"--reason=--profile"},
+		{"--reason", "--profiles-file=other"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd := []string{"--profile", "selected", "reviews", "scheduling", "pause", "--pr", "2", "--expect-revision", "0", "--key", "pause-2"}
+			cmd = append(cmd, args...)
+			cmd = append(cmd, "--profiles-file", "expected.json")
+			got, ok := parseInvocation(cmd)
+			want := strings.TrimPrefix(args[len(args)-1], "--reason=")
+			if !ok || got.profile != "selected" || got.profilesFile != "expected.json" || got.reviewScheduling == nil || got.reviewScheduling.pause.Reason != want {
+				t.Fatalf("literal scheduling reason not retained: got %+v, wanted %q", got, want)
+			}
+		})
+	}
+}

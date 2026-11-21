@@ -82,6 +82,8 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 		}
 		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
 		if err != nil {
+			// A refused earlier pull does not prove the later request is independent.
+			// Preserve this project's priority fence; callers isolate unrelated projects.
 			return nil, err
 		}
 		if valid {

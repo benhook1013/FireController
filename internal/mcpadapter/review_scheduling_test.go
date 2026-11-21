@@ -1,6 +1,7 @@
 package mcpadapter_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,7 +72,7 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 		t.Fatal(paused)
 	}
 	var state client.ReviewPullScheduling
-	decodeResult(t, call(t, writer, "review_pull_scheduling_read", map[string]any{"pull_number": 7}), &state)
+	decodeResult(t, call(t, writer, "review_pull_scheduling_read", map[string]any{"pull_number": json.RawMessage("7.0")}), &state)
 	if !state.Paused || state.Reason != "Preparing changes" || state.ProjectID != f.project {
 		t.Fatal(state)
 	}

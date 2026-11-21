@@ -7,11 +7,13 @@ from pathlib import Path
 PREFIX = "github.com/benhook1013/FireController/"
 FAMILIES = {"backup": 8, "reviewexec": 12, "reviews": 4, "reviewruntime": 2}
 REST_SHARDS = 2
+REVIEWEXEC_TAIL = "reviewexec-1b"
 
 
 def shards():
     counts = {**FAMILIES, "rest": REST_SHARDS}
-    return [f"{family}-{index}" for index in range(max(counts.values()))
+    return [REVIEWEXEC_TAIL if family == "reviewexec" and index == 7 else f"{family}-{index}"
+            for index in range(max(counts.values()))
             for family, count in counts.items() if index < count]
 
 
@@ -38,7 +40,9 @@ def select_packages(shard, inventory):
 
 
 def select_tests(shard, package, inventory):
-    family, index = shard.rsplit("-", 1)
+    if shard not in shards():
+        raise ValueError("unknown Go test shard")
+    family, index = ("reviewexec", "7") if shard == REVIEWEXEC_TAIL else shard.rsplit("-", 1)
     if family not in FAMILIES or package != PREFIX + "internal/" + family:
         raise ValueError("test partition/package mismatch")
     names = []

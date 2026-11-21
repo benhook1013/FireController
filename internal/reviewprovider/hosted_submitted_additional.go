@@ -52,8 +52,16 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	if !sound {
 		return false
 	}
-	var count, visibleText strings.Builder
+	var count, visibleText, preCount strings.Builder
 	for _, line := range lines {
+		preCount.WriteString(line.preCountText)
+		preCount.WriteByte(' ')
+		if !line.preCountContinues {
+			if hasSubmittedPlainActionableClaim(submittedRenderedCountText(preCount.String())) {
+				return false
+			}
+			preCount.Reset()
+		}
 		count.WriteString(line.countText)
 		visibleText.WriteString(line.countText)
 		if line.countContinues {
@@ -118,19 +126,27 @@ func submittedRenderedCountText(text string) string {
 // refusal views: inline tags can split words, while br/block tags separate them.
 // Keep the raw check as well so decorated examples
 // cannot erase an already visible contradictory declaration.
+// Inline Markdown link destinations do not contribute rendered count text.
+// This refusal-only projection never yields structure or finding offsets.
+var submittedCountMarkdownLink = regexp.MustCompile(`\[([^\]\r\n]+)\]\((?:[^()\r\n]|\([^()\r\n]*\))*\)`)
+
+func hasSubmittedPlainActionableClaim(text string) bool {
+	return submittedActionableClaim.MatchString(strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, text))
+}
+
 func hasSubmittedActionableClaim(text string) bool {
 	for _, visible := range []string{text,
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")),
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, " ")),
 		submittedRenderedCountText(text),
 	} {
-		visible = strings.Map(func(r rune) rune {
-			if unicode.IsSpace(r) {
-				return ' '
-			}
-			return r
-		}, visible)
-		if submittedActionableClaim.MatchString(visible) || submittedActionableClaim.MatchString(
+		visible = submittedCountMarkdownLink.ReplaceAllString(visible, "${1}")
+		if hasSubmittedPlainActionableClaim(visible) || hasSubmittedPlainActionableClaim(
 			strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(visible)) {
 			return true
 		}

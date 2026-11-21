@@ -164,3 +164,31 @@ func TestRunSelectionCapacityPreservesActualChild409AndSavepoint(t *testing.T) {
 		t.Fatal("actual 409 retried or retained partial child work", got)
 	}
 }
+
+func TestAutomaticSelectionCapacityDoesNotSettlePendingBasis(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingCLIEnable(t, f, 0, true)
+	schedulingCLIGenerate(t, f, true)
+	r := schedulingLatest(t, f)
+	reader := &refreshTestReader{
+		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
+			selectionCapacityFill(t, f, attemptProject)
+			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
+		},
+	}
+	selectionNext(t, f, reader)
+	var settled string
+	if err := f.store.DB().QueryRow("SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?", r.ID).Scan(&settled); err != nil {
+		t.Fatal(err)
+	}
+	got := selectionRead(t, f, r.ID)
+	if got.State != "queued" || got.OperationID != "" || settled != "" {
+		t.Fatalf("capacity retry must retain its unsettled selection: %+v basis=%q", got, settled)
+	}
+	selectionCapacityRelease(t, f, attemptProject)
+	selectionNext(t, f, &refreshTestReader{})
+	got = selectionRead(t, f, r.ID)
+	if got.State != "selected" || got.OperationID == "" {
+		t.Fatalf("same selection did not retry after capacity release: %+v", got)
+	}
+}

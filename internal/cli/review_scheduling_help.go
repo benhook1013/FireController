@@ -25,7 +25,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 	case "reviews scheduling configure":
 		out.Usage = "<bound launcher> reviews scheduling configure --automatic-hosted true|false [--automatic-cli true|false] --expect-revision N --key KEY"
 		out.Required = []string{"--automatic-hosted true|false", "--expect-revision N (current project scheduling revision, including 0)", "--key KEY"}
-		out.Semantics = []string{"Requires project-management authority. Read reviews scheduling for the current project scheduling revision. Enabling authorizes future automatic Hosted or CLI requests through this connection's active bound worker under the existing review guards. Both default off; CLI omission preserves the current value. Automation does not adjudicate findings or increase grants.", recovery}
+		out.Semantics = []string{"Requires project-management authority. Read reviews scheduling for the current project scheduling revision. Enabling authorizes future automatic Hosted or CLI requests through this connection's active bound worker under the existing review guards. Both default off. Omitting --automatic-cli preserves the setting, not the authorizer. If either channel stays enabled, the current authenticated manager and bound worker become the shared authorizer for new work, even when disabling only the other channel. Automation does not adjudicate findings or increase grants.", recovery}
 		out.Optional = []string{"--automatic-cli true|false (separate opt-in; omission preserves the current CLI setting)"}
 		out.Example = "<bound launcher> reviews scheduling configure --automatic-hosted true --expect-revision 0 --key automatic-hosted-1"
 		out.Documentation = "docs/review-scheduling.md"
