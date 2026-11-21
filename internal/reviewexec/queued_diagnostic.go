@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -102,8 +103,9 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			cause = cliDraftWait
 			return nil
 		}
+		var compatible bool
 		if op.Channel == "cli" {
-			compatible, err := compatibleQueuedConfiguration(ctx, tx, op, latest, latestRevision)
+			compatible, err = compatibleQueuedConfiguration(ctx, tx, op, latest, latestRevision)
 			if err != nil {
 				return err
 			}
@@ -132,8 +134,16 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			return nil
 		}
 		cause = "awaiting_scheduler"
-		capability, ok := e.capabilities[original.CapabilityID]
-		if !ok || capability.Fingerprint != op.CapabilityFingerprint {
+		if op.Channel != "cli" {
+			compatible, err = compatibleQueuedConfiguration(ctx, tx, op, latest, latestRevision)
+			if err != nil {
+				return err
+			}
+		}
+		capability, ok := e.capabilities[latest.CapabilityID]
+		if !compatible || !ok || e.validateConfiguration(latest) != nil ||
+			!slices.Contains(latest.Queue, op.PullNumber) || !slices.Contains(latest.Channels, op.Channel) ||
+			capability.Fingerprint != op.CapabilityFingerprint {
 			cause = ""
 			return nil
 		}

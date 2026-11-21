@@ -163,12 +163,13 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
-	state, reason       string
-	sourceReason        string
-	prefix              []SourcePlan
-	number              int64
-	head                string
-	automaticQueueLimit *int
+	state, reason          string
+	sourceReason           string
+	prefix                 []SourcePlan
+	number                 int64
+	head                   string
+	automaticQueueLimit    *int
+	automaticBasisRevision int64
 }
 
 // retryRunSelectionLocal retains completed source reads while only retrying
@@ -219,13 +220,18 @@ func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configurati
 
 func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader, sourceBudget time.Duration) (result runChoice, resultErr error) {
 	var automaticQueueLimit *int
-	defer func() { result.automaticQueueLimit = automaticQueueLimit }()
+
+	var basisRevision int64
+	defer func() {
+		result.automaticQueueLimit = automaticQueueLimit
+		result.automaticBasisRevision = basisRevision
+	}()
 	// Bound source work before metadata lookahead. Local suppression still
 	// rechecks the live prefix at admission if queued work changes afterward.
 	limit, automatic := len(c.Queue), false
 	err := retryRunSelectionRead(ctx, func() error {
 		// An expired snapshot must not shorten a later retry's input.
-		limit, automatic = len(c.Queue), false
+		limit, automatic, basisRevision = len(c.Queue), false, 0
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
 				return err
@@ -234,14 +240,15 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 				return nil
 			}
 			var err error
-			limit, err = automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+			limit, err = e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 			if err != nil {
 				return err
 			}
 			if limit < 0 || limit > len(c.Queue) {
 				return schedulingUnavailable()
 			}
-			return nil
+			basisRevision, err = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)
+			return err
 		})
 	})
 	if err != nil {
@@ -655,7 +662,15 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						resultErr = err
 						return
 					}
-					if state != "queued" && reason != "selection_changed" {
+					settle := state != "queued" && reason != "selection_changed"
+					if settle && pull == 0 && choice.automaticBasisRevision != 0 {
+						var currentBasis int64
+						currentBasis, resultErr = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)
+						// An old no-child result is still retained as history, but
+						// it cannot suppress the source read of a newly rearmed lane.
+						settle = resultErr == nil && currentBasis == choice.automaticBasisRevision
+					}
+					if settle {
 						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
 					}
 				}
@@ -696,7 +711,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				// The existing binding pins the configured queue. If its
 				// waiting boundary moved while reading source, do not settle
 				// stale source bounds without an ordinary fresh read.
-				limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+				limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 				if err != nil {
 					return err
 				}

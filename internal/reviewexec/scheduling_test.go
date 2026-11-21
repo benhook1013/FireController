@@ -384,7 +384,7 @@ func TestSchedulingProjectionRefreshDoesNotRegenerateAndValidatorPreservesRevoca
 		if err != nil {
 			return err
 		}
-		before, _, err := automaticPlanningBasis(ctx, tx, attemptProject, c, "")
+		before, _, err := f.e.automaticPlanningBasis(ctx, tx, attemptProject, c, "")
 		if err != nil {
 			return err
 		}
@@ -406,7 +406,7 @@ func TestSchedulingProjectionRefreshDoesNotRegenerateAndValidatorPreservesRevoca
 		if _, err = tx.ExecContext(ctx, `UPDATE review_front_frames SET checked_at=?,source_observed_at=?,prefix_json=? WHERE project_id=?`, at, at, string(body), attemptProject); err != nil {
 			return err
 		}
-		after, _, err := automaticPlanningBasis(ctx, tx, attemptProject, c, "")
+		after, _, err := f.e.automaticPlanningBasis(ctx, tx, attemptProject, c, "")
 		if err != nil {
 			return err
 		}
