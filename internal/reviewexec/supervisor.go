@@ -687,13 +687,17 @@ func (e *Engine) classifyUnavailablePreparation(ctx context.Context, o Operation
 }
 
 func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion) error {
+	return e.processPendingBatchWithDraftCheck(ctx, drivers, releaseProbe, worker, operations, receipt, e.checkCLIDraft)
+}
+
+func (e *Engine) processPendingBatchWithDraftCheck(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion, checkDraft func(context.Context, Operation, map[string]Driver) (bool, bool, bool, error)) error {
 	overloaded := false
 	claimed := false
 	for _, o := range operations {
 		if ctx.Err() != nil {
 			return nil
 		}
-		proceed, draftReady, explicitCLI, err := e.checkCLIDraft(ctx, o, drivers)
+		proceed, draftReady, explicitCLI, err := checkDraft(ctx, o, drivers)
 		// Selection includes at most one Draft intent, ahead of ordinary work.
 		// Its bounded source read is over; never retain the permit during a
 		// potentially long preparation or dispatch.
@@ -702,7 +706,7 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if ctx.Err() != nil {
 				return nil
 			}
-			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error

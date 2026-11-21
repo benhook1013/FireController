@@ -22,9 +22,17 @@ func requireSourceObligationsClear(ctx context.Context, tx *sql.Tx, project stri
 	return nil
 }
 
-func sourceObligationCount(ctx context.Context, tx *sql.Tx, project string, pull int64) (int64, error) {
+// The automatic dependency count is distinct from the admission guard above.
+func sourceObligationCount(ctx context.Context, tx adoptionholds.Query, project string, pull int64) (int64, error) {
 	facts, err := adoptionholds.ReadFacts(ctx, tx, project, pull)
-	return facts.Open, sourceObligationReadError(err)
+	refusal := sourceObligationReadError(err)
+	var failure *core.Error
+	if errors.As(err, &failure) && failure.Code == "repository_changed" {
+		// A retained binding mismatch prevents planning only for this project.
+		// Keep the public source hold and do not enter unused-attempt recovery.
+		return 0, &automaticProjectStateError{refusal}
+	}
+	return facts.Open, refusal
 }
 
 // Preserve the existing unused-attempt recovery for typed carried-obligation

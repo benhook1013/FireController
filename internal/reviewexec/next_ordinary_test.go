@@ -22,8 +22,8 @@ func TestQueuedReservationRequiresCurrentCapability(t *testing.T) {
 			}
 			f.configure(t, attemptProject, "other-account", 1, false)
 			cause, reservation = f.e.queuedDiagnosticDetails(t.Context(), scope, op.ID, op.Revision)
-			if cause == "reservation_busy" || reservation != nil {
-				t.Fatalf("obsolete capability represented as current reservation: %q %+v", cause, reservation)
+			if cause != "awaiting_scheduler" || reservation != nil {
+				t.Fatalf("obsolete capability must leave a generic diagnostic with no reservation: %q %+v", cause, reservation)
 			}
 		})
 	}

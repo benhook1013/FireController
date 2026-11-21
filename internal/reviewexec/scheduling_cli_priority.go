@@ -107,23 +107,9 @@ func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operat
 	if err != nil {
 		return false, err
 	}
-	var ids []pendingCandidateID
-	for rows.Next() {
-		var id pendingCandidateID
-		if err = rows.Scan(&id.project, &id.operation); err != nil {
-			break
-		}
-		ids = append(ids, id)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	closeErr := rows.Close()
+	ids, err := readPreferredSelectionIDs(rows)
 	if err != nil {
 		return false, err
-	}
-	if closeErr != nil {
-		return false, closeErr
 	}
 candidates:
 	for _, id := range ids {
@@ -169,4 +155,34 @@ candidates:
 		}
 	}
 	return false, nil
+}
+
+// Read candidate keys before other lookups; database/sql can otherwise coerce
+// a non-text value to a different key.
+func readPreferredSelectionIDs(rows *sql.Rows) ([]pendingCandidateID, error) {
+	var err error
+	var ids []pendingCandidateID
+	for rows.Next() {
+		var id pendingCandidateID
+		var rawID any
+		if err = rows.Scan(&id.project, &rawID); err != nil {
+			break
+		}
+		var text bool
+		if id.operation, text = rawID.(string); !text {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return ids, nil
 }
