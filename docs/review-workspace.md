@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit administrator action. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
+The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit project-management action. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
 
 This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md); [automatic provider observation](github-observation.md) separately updates existing enrolled PRs and retained external Hosted history. Fresh-source aggregate policy and merge-readiness assessment remain separate contracts. Explicit [captured-comparison policy assessment](review-controls.md#captured-comparison-assessment) is a separate provider-free read. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
 
@@ -12,12 +12,12 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 
 | Method and path | Result |
 | --- | --- |
-| `POST /reviews/observations` | Administrator-only, revision-guarded observation append with a required idempotency key. |
-| `POST /reviews/import/preview` | Administrator-only, provider-free prepared observation preview; no receipt or write. |
-| `POST /reviews/import/apply` | Administrator-only prepared observation apply bound to its preview, with the existing observation receipt semantics. |
-| `POST /reviews/transfer/preview` | Read-only administrator preview of bounded additive original-producer history. |
-| `POST /reviews/transfer/apply` | Exact preview-bound administrator additive history apply. |
-| `POST /reviews/queue/edits` | Selected metadata/order edits, retirement and reactivation (administrator). |
+| `POST /reviews/observations` | Project management or instance administration; revision-guarded observation append with a required idempotency key. |
+| `POST /reviews/import/preview` | Project management or instance administration; provider-free prepared observation preview; no receipt or write. |
+| `POST /reviews/import/apply` | Project management or instance administration; prepared observation apply bound to its preview, with the existing observation receipt semantics. |
+| `POST /reviews/transfer/preview` | Project management or instance administration; read-only preview of bounded additive original-producer history. |
+| `POST /reviews/transfer/apply` | Project management or instance administration; exact preview-bound additive history apply. |
+| `POST /reviews/queue/edits` | Selected metadata/order edits, retirement and reactivation (project management or instance administration). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary; no lifetime attempt array. |
 | `GET /reviews/pulls/{number}/attempts` | Newest-first original-producer attempt archive with cursor pagination. |
@@ -28,9 +28,9 @@ Queue, run and attempt lists default to 20 items and accept `limit` up to 100 an
 
 Cursors bind the principal, project, route, order and retained snapshot. New imports cannot change a continuation page from an older snapshot. Detail links retain that snapshot for consistent drill-down. Access is checked again on every request, including historical reads and exact mutation retries. Unknown, duplicate and malformed query fields are rejected. PR numbers use canonical positive decimal values through 2147483647.
 
-## Administrator observations
+## Project-managed observations
 
-The [prepared import contract](review-import.md) owns guided preview/apply and profile-bound administrator CLI commands. These routes share the observation transaction below; preview does not reserve a workspace revision.
+Observation append requires `manage` permission for the selected project or instance administration; ordinary project read/write permission is insufficient. The [prepared import contract](review-import.md#selected-sources-and-destination) owns guided preview/apply and profile-bound CLI/MCP commands. These routes share the observation transaction below; preview does not reserve a workspace revision.
 
 The strict JSON body requires `expected_revision` (zero for the first observation), the configured stable GitHub `repository_id`, a bounded `source`, an RFC3339 `observed_at`, ordered `queue` entries and explicit `retired` entries. Omitted arrays normalize to empty arrays. The body and its normalized form are bounded to 256 KiB. A changed request under an existing idempotency key conflicts; an exact retained replay returns the original receipt before re-evaluating the revision. Replay still requires current authorization.
 
@@ -64,7 +64,7 @@ Merged PRs remain in the queue as completed history. Removing a previously visib
 
 The browser exposes Reviews, PR history and run-finding pages, with source timestamps, incomplete or missing data, head mismatches, historical counts and source coverage limitations visible. It escapes imported text and generates external PR/commit links only from the verified project repository. It does not render imported HTML or accept arbitrary link destinations. “Refresh visible data” rereads the stored snapshot; it neither refreshes GitHub nor starts a review. These pages have no timer-based polling or new live transport. The [browser guide](browser-guide.md) owns connection privacy and packaging.
 
-An initial installation may populate this boundary through a small explicit import. Profile-bound CLI commands `reviews queue`, `reviews pull`, `reviews runs`, `reviews attempts` and `reviews run`, plus the five matching [MCP read tools](mcp.md), inspect these stored projections without provider work. Queue/run/attempt tools default to five entries, while explicit run detail loads full findings. Snapshot selectors retain historical consistency. Startup conversion is limited to the supported retained-review schema. Optional [native executors](review-execution.md) publish retained native evidence through their own trusted path. Review observation writes are not exposed as worker tools.
+An initial installation may populate this boundary through a small explicit import. Profile-bound CLI commands `reviews queue`, `reviews pull`, `reviews runs`, `reviews attempts` and `reviews run`, plus the five matching [MCP read tools](mcp.md), inspect these stored projections without provider work. Queue/run/attempt tools default to five entries, while explicit run detail loads full findings. Snapshot selectors retain historical consistency. Startup conversion is limited to the supported retained-review schema. Optional [native executors](review-execution.md) publish retained native evidence through their own trusted path. Direct observation append is not exposed as a worker tool; explicit prepared import and transfer use the project-management CLI/MCP boundary.
 
 ## Validation status
 
@@ -80,11 +80,11 @@ These checks use synthetic observations on Linux/WSL Chromium. They do not estab
 
 ### Selected queue edits
 
-Administrator queue edits maintain selected stored metadata, relative ordering and explicit retirement/reactivation without resubmitting a complete retained workspace. They are an administrator maintenance boundary, not another ordinary worker enrollment step.
+Project-management queue edits maintain selected stored metadata, relative ordering and explicit retirement/reactivation without resubmitting a complete retained workspace. They are a project-management maintenance boundary, not another ordinary worker enrollment step.
 
 Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses additive transfer for selected history and `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Neither operation requires a complete project export or a lifetime PR ceiling.
 
-Queue edits require administrator access, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for administrator provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
+Queue edits require `manage` permission for the selected project or instance administration, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for management provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
 
 Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` under the [PR display metadata contract](#optional-pr-display-metadata). CI permits `unknown`, `pending`, `success`, `failure` and `not_required`. Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
 
@@ -94,13 +94,13 @@ Each `retired` entry names a currently visible PR and its `superseded` or `defun
 
 Omitted PRs and records remain unchanged. Revision admission, the new snapshot, history references, compact summaries, receipt, event and public projection refresh commit together. A queue edit inherits the prior observation time and does no provider work; it cannot claim freshly collected source facts. Exact original-key replay returns its original receipt after later changes or restart, subject to current authorization. A changed request under the same key conflicts. Successful HTTP 201 returns only the snapshot `id`, new `revision` and `outcome: queue_edited`.
 
-The bound administrator CLI is:
+The bound project-management CLI is:
 
 ```sh
 fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key
 ```
 
-It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. MCP `review_queue_edit` sends the same native document and explicit `idempotency_key`; service administrator admission still applies. It does not request reviews or change scheduling configuration.
+It validates a bounded regular file before credentials or network access, retains the ordinary five-second budget and never generates a key or retries automatically. A lost or invalid mutation response requires recovery with the original request, key and binding. MCP `review_queue_edit` sends the same native document and explicit `idempotency_key`; the same project-management or instance-administration admission still applies, including on original-key replay. It does not request reviews or change scheduling configuration.
 
 Focused regressions grow the workspace through actual native publication beyond 200 PRs, apply selected edits without dropping omitted merged history, preserve original cursor/detail and evidence bytes, retain retirement through later native publication, and prove exact original-key replay after intervening edits and database reopen. Optional-metadata, relative-order, rollback and client tests cover the same selected-edit boundary. CLI and SDK MCP tests exercise strict/authenticated native calls and lost-receipt recovery. These source checks do not establish live-provider behavior or installed rollout.
 

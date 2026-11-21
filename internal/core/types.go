@@ -17,8 +17,10 @@ type Scope struct {
 	tokenHash      string
 	instanceID     string
 	admin          bool
+	instanceAdmin  bool
 	readOnly       bool
 	expiresAt      time.Time
+	sessionManage  bool
 	sessionProject string
 }
 

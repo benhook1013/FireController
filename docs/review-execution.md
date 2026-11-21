@@ -301,3 +301,7 @@ Focused proof covers parser-to-native source identity, strict HTTP/client varian
 ## Explicit selection entry point
 
 A [durable channel selection](review-round-controls.md#one-explicit-channel-front-run) may link one ordinary request through the same transactional admission helper used by exact-target requests. The selector adds no provider privilege, round allowance or completion credit. Native preparation and final provider guards remain authoritative after selection.
+
+## Project management authority
+
+Explicit project managers may replace project policy and an already operator-bound execution configuration. Both methods pin management before receipt replay and reauthorize the current exact credential. Initial binding and capability changes remain instance-operator actions. This native administration prerequisite preserves policy `paused_channels`, configuration revision/CAS and existing operation/selection lifecycle; it does not introduce automatic scheduling, timer waits or terminal-intent resumption. Retired worker IDs remain valid historical review attribution; retirement does not settle or cancel review operations.

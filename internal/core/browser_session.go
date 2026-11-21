@@ -148,11 +148,17 @@ func (s *Store) browserCapabilities(ctx context.Context, q querier, scope Scope,
 		}
 		return false, false, err
 	}
-	var admin int
-	if err := q.QueryRowContext(ctx, `SELECT is_admin FROM credentials WHERE token_sha256=? AND revoked=0`, scope.tokenHash).Scan(&admin); err != nil {
-		return false, false, storageError(err)
+	if !allowPresentation {
+		return true, false, nil
 	}
-	return true, allowPresentation && admin == 1, nil
+	if err := s.authorize(ctx, q, scope, "admin"); err != nil {
+		var e *Error
+		if errors.As(err, &e) && e.Code == "forbidden" {
+			return true, false, nil
+		}
+		return false, false, err
+	}
+	return true, true, nil
 }
 
 // ExpireBrowserSession clears only the explicitly selected tab's cookie. It
@@ -208,7 +214,7 @@ func (s *Store) browserScope(r *http.Request) (Scope, browserSessionClaims, erro
 	if project != claims.ProjectID {
 		return Scope{}, browserSessionClaims{}, Fail("forbidden", "The browser session permits only its project reads.", 403)
 	}
-	scope := Scope{ProjectID: project, WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID}
+	scope := Scope{ProjectID: project, WorkerID: r.Header.Get("X-FC-Worker"), tokenHash: claims.CredentialHash, instanceID: s.instanceID, readOnly: true, expiresAt: time.Unix(claims.ExpiresAt, 0), sessionProject: claims.ProjectID, sessionManage: claims.CanEditPresentation}
 	if len(r.Header.Values("X-FC-Worker")) > 1 || len(scope.WorkerID) > 128 {
 		return Scope{}, browserSessionClaims{}, Fail("validation_failed", "Select at most one valid worker identity.", 400)
 	}

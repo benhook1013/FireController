@@ -16,7 +16,7 @@ const projectFeed = "events:project-metadata"
 var projectEventTypes = [...]string{
 	"project.presentation_changed", "map.entry_created", "map.entry_updated",
 	"job.workstream_changed", "job.created", "job.updated", "job.checkpointed", "job.update_appended", "job.checklist_replaced",
-	"workers.created", "worker.pause_changed", "worker.primary_job_changed",
+	"workers.created", "workers.retired", "worker.pause_changed", "worker.primary_job_changed",
 	"note.created", "note.updated",
 	"review.observed", "reviews.policy_configured", "reviews.rounds_configured",
 	"reviews.adoption_obligations_imported", "reviews.adoption_obligation_resolved", "reviews.adoption_obligation_retargeted",

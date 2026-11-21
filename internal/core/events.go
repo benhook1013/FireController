@@ -74,7 +74,10 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 			if err := rows.Scan(&event.Sequence, &event.ProjectID, &event.Type, &event.ResourceID, &event.Revision, &event.ActorID, &payload, &event.CreatedAt); err != nil {
 				return err
 			}
-			event.Payload = json.RawMessage(payload)
+			event.Payload, err = messageFeedPayload(event.Type, payload)
+			if err != nil {
+				return err
+			}
 			page.Items = append(page.Items, event)
 		}
 		if err := rows.Err(); err != nil {
@@ -89,4 +92,18 @@ func (s *Store) readMessageEvents(ctx context.Context, scope Scope, after int64,
 		return nil
 	})
 	return page, err
+}
+
+// Preserve the existing feed bytes and bounds unless the new peer-ACK audit
+// field needs attenuation. The true actor remains in durable event storage.
+func messageFeedPayload(kind, payload string) (json.RawMessage, error) {
+	var retained map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &retained); err != nil {
+		return nil, err
+	}
+	if _, ok := retained["actor_worker_id"]; !ok {
+		return json.RawMessage(payload), nil
+	}
+	delete(retained, "actor_worker_id")
+	return json.Marshal(retained)
 }

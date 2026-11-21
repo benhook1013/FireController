@@ -132,7 +132,7 @@ func replaceWorkerPause(store *core.Store) http.HandlerFunc {
 			return
 		}
 		result, err := store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.pause", Target: worker, Key: key, Request: req}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-			if err := primaryWorker(ctx, tx, scope.ProjectID, worker); err != nil {
+			if err := activePrimaryWorker(ctx, tx, scope.ProjectID, worker); err != nil {
 				return nil, err
 			}
 			current, err := readWorkerPause(ctx, tx, scope.ProjectID, worker)

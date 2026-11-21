@@ -70,6 +70,9 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
 	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
+	mux.HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/retirement", a.workerRetirement)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/retire", a.retireWorker)
 	if a.browser != nil {
 		mux.Handle("/", a.browser)
 	} else {
@@ -111,6 +114,7 @@ type projectValue struct {
 	Repository   string `json:"repository"`
 }
 type workerValue struct {
+	Retired   bool   `json:"retired,omitempty"`
 	ID        string `json:"id"`
 	ProjectID string `json:"project_id"`
 	Name      string `json:"name"`
@@ -299,7 +303,11 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	query, err := listQuery(r)
+	if len(r.URL.RawQuery) > 16<<10 {
+		core.WriteError(w, core.Fail("validation_failed", "Use only one limit, one cursor and one include_retired query parameter.", 400))
+		return
+	}
+	query, err := core.QueryKeys(r, "validation_failed", "limit", "cursor", "include_retired")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -309,13 +317,21 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	includeRetired := query.Get("include_retired") == "true"
+	if _, exists := query["include_retired"]; exists && !includeRetired {
+		core.WriteError(w, core.Fail("validation_failed", "Use include_retired=true to include archived workers.", 400))
+		return
+	}
 	filter := "workers"
+	if includeRetired {
+		filter += ":include_retired"
+	}
 	after, err := a.store.ParseCursor(scope, filter, query.Get("cursor"))
 	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
-	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id>? ORDER BY id LIMIT ?", scope.ProjectID, after, limit+1)
+	rows, err := a.store.DB().QueryContext(r.Context(), "SELECT id,project_id,name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM workers w WHERE project_id=? AND id>? AND (? OR NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)) ORDER BY id LIMIT ?", scope.ProjectID, after, includeRetired, limit+1)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -324,7 +340,7 @@ func (a *api) listWorkers(w http.ResponseWriter, r *http.Request) {
 	values := make([]workerValue, 0, limit+1)
 	for rows.Next() {
 		var value workerValue
-		if err = rows.Scan(&value.ID, &value.ProjectID, &value.Name); err != nil {
+		if err = rows.Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired); err != nil {
 			core.WriteError(w, err)
 			return
 		}
@@ -354,7 +370,7 @@ func (a *api) worker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var value workerValue
-	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,project_id,name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name)
+	err = a.store.DB().QueryRowContext(r.Context(), "SELECT id,project_id,name,EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id) FROM workers w WHERE project_id=? AND id=?", scope.ProjectID, r.PathValue("worker_id")).Scan(&value.ID, &value.ProjectID, &value.Name, &value.Retired)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = core.Fail("not_found", "The worker is unavailable in this project.", 404)
 	}

@@ -141,7 +141,13 @@ func TestSettlementConfigurationReplayAfterCapabilityRemovalOrNarrowing(t *testi
 			if err != nil || !bytes.Equal(first, replay) {
 				t.Fatal("exact successful configuration retry did not retain its original receipt", err)
 			}
-			_, err = f.e.Configure(context.Background(), scope, "new-unavailable-configuration", c)
+			_, err = f.e.Configure(context.Background(), scope, "stale-unavailable-configuration", c)
+			attemptCode(t, err, "review_conflict")
+			// A fresh request must pass CAS before capability availability is checked.
+			current := c
+			currentRevision := int64(1)
+			current.ExpectedRevision = &currentRevision
+			_, err = f.e.Configure(context.Background(), scope, "new-unavailable-configuration", current)
 			attemptCode(t, err, "validation_failed")
 			changed := c
 			changed.Mode = "stacked"

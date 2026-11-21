@@ -144,6 +144,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
@@ -157,8 +158,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Generate pinned administration predecessor bundle
+        run: bash tools/ci/generate-admin-parent-fixture.sh "$RUNNER_TEMP/admin-parent-fixture"
+      - name: Verify genuine predecessor inactive restore
+        env:
+          FC_ADMIN_PARENT_FIXTURE: ${{ runner.temp }}/admin-parent-fixture
+        run: go test -race -v -count=1 -run '^(TestProjectManagementRealParentBundleRemainsInactive|TestProjectManagementRealParentUpgradePreservesAllRowsAndSchemas|TestProjectManagementRealParentMigrationFailureRollsBack|TestWorkerRetirementRealParentEmptyACKAndRetiredSendReplay)$' ./internal/backup ./internal/core ./internal/inbox
       - run: make build
       - name: Smoke packaged binaries
+        env:
+          FC_ADMIN_PARENT_FIXTURE: ${{ runner.temp }}/admin-parent-fixture
         run: make smoke
       - name: Install pinned Chromium
         working-directory: webapp
