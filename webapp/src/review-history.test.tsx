@@ -80,7 +80,7 @@ describe('per-PR inline retained review history', () => {
     const value = { ...run('counts'), accepted: 4, accepted_severity: {critical: 1, major: 1, minor: 1, trivial: 0, unknown: 1, complete: true} };
     const html = markup(<ReviewAcceptedCounts run={value} />);
     for (const text of ['Critical', 'Major / Minor / Trivial', 'severity unknown']) expect(html).toContain(text);
-    expect(html).toContain('4 accepted findings');
+    expect(html).toContain('4 accepted · Major / Minor / Trivial');
     expect(html).toContain('Accepted: <strong>1/1/0</strong>');
     expect(html).not.toContain('review-severity-high');
     const incomplete = markup(<ReviewAcceptedCounts run={{...value, accepted_severity:{...value.accepted_severity,complete:false}}} />);

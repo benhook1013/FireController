@@ -43,7 +43,7 @@ describe('current review position badges',()=>{
     expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
     const stopped={...v,channels:[{...front('hosted',2),state:'held' as const,reason:'local_queue_position',source_observed_at:undefined}]};
     const local=currentReviewFronts(snapshot,[pull(2)],stopped);
-    expect(reviewChannelPosition(pull(2),snapshot,'hosted',local)).toMatchObject({text:'Queue position',description:expect.stringContaining('have not been verified')});
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',local)).toMatchObject({text:'Queue position',description:expect.stringContaining('Source checks are still outstanding.')});
     for (const changed of [{...pull(2),head_sha:'c'.repeat(40)},{...pull(2),base_sha:'c'.repeat(40)},{...pull(2),base_ref:'other'},{...pull(2),state:'merged' as const}]) expect(reviewChannelPosition(changed,snapshot,'hosted',v)).toBeUndefined();
     expect(reviewChannelPosition(pull(2),'other-snapshot','hosted',v)).toBeUndefined();
     expect(reviewChannelPosition(pull(2),snapshot,'cli',v)).toBeUndefined();
@@ -51,9 +51,9 @@ describe('current review position badges',()=>{
   it.each(['hosted', 'cli'] as const)('distinguishes finalized fixes from results pending for %s without inferring from the recent preview', channel => {
     const v = value();
     v.channels = [{ ...front(channel, 2), state: 'held', reason: 'review_fixes_pending' }];
-    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'Review results are finalized, and accepted findings still need fixes before another review in this channel.' });
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toEqual({ text: 'Fixes pending', description: 'See the accepted findings in Review history.' });
     v.channels[0].reason = 'review_evidence_pending';
-    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toMatchObject({ text: 'Results pending', description: expect.stringContaining('capture or adjudication') });
+    expect(reviewChannelPosition(pull(2), snapshot, channel, v)).toMatchObject({ text: 'Results pending', description: expect.stringContaining('captured results or decisions') });
     v.channels[0].reason = 'external_hosted_pending';
     expect(reviewChannelPosition(pull(2), snapshot, channel, v)?.text).toBe('Manual results pending');
   });
@@ -167,7 +167,7 @@ describe('independent queued priority during source failure',()=>{
   it('keeps priority visible without making a ready claim, including later queued work',()=>{
     const v=waiting();
     expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
-    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Source unverified',description:expect.stringContaining('Source verification unavailable')});
+    expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Source unverified',description:expect.stringContaining('Check the current head and base')});
     expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
     expect(v.channels[0].state).toBe('unknown');
     expect(v.channels[0].pull_number).toBeUndefined();
@@ -193,7 +193,7 @@ describe('independent queued priority during source failure',()=>{
 
 it.each(['hosted','cli'] as const)('shows stored queue position within idle later %s lanes without claiming admission',channel=>{
  const v=value();v.channels=[{...front(channel,2),queued_priority:priority(2)}];
- expect(reviewChannelPosition(pull(4),snapshot,channel,v)).toMatchObject({text:'Queued',description:expect.stringContaining('have not been verified')});
+ expect(reviewChannelPosition(pull(4),snapshot,channel,v)).toMatchObject({text:'Queued',description:expect.stringContaining('Source checks are still outstanding.')});
  expect(reviewChannelPosition(pull(4),'stale',channel,v)).toBeUndefined();
  v.channels[0].queued_priority=undefined;
  expect(reviewChannelPosition(pull(4),snapshot,channel,v)).toBeUndefined();

@@ -213,7 +213,7 @@ describe('truthful stored review presentation', () => {
   it('identifies incomplete Hosted history without calling healthy PR checks a GitHub retry', () => {
     const observation = { state: 'retrying' as const, checked_at: '2026-10-23T13:24:02Z', last_success_at: '2026-10-23T13:24:02Z', error: 'external_hosted_identity_unproven', hosted_error: 'external_hosted_identity_unproven' };
     const html = markup(<ReviewPullFacts pull={{ ...pull(2), observation }} />);
-    expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('Some Hosted reviews are still missing.');
+    expect(html).toContain('Hosted history: Incomplete'); expect(html).toContain('See CodeRabbit on GitHub for the full review history.');
     expect(html).toContain('Last successful PR check:'); expect(html).not.toContain('GitHub: Retrying');
     for (const error of ['provider_unavailable', 'provider_rate_limited', 'ci_refresh_unavailable']) {
       const failed = markup(<ReviewPullFacts pull={{ ...pull(2), observation: { ...observation, error } }} />);
@@ -264,7 +264,7 @@ describe('truthful stored review presentation', () => {
     missing.queue=[2];
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:missing,progress:[progress]});
     expect(html).toContain('>Queue position</span>');
-    expect(html).toContain('Review dispatch held (local queue position)');
+    expect(html).toContain('First in line. Source checks are still outstanding.');
     expect(html).not.toContain('>Up next</span>');
   });
 	 it('retains the closed badge and striped-rail class while front data catches up',()=>{
@@ -508,7 +508,7 @@ describe('retained CI explanation',()=>{
     value.observation = { state: 'current', ci_checked_at: '2026-10-28T12:12:35Z', ci_gate_ref: 'main', ci_gate_state: 'pending', ci_error: 'ci_required_checks_pending' };
     const html = markup(<ReviewPullFacts pull={value} />);
     expect(html).toContain('>CI pending · main</span>');
-    expect(html).toContain('Required checks are queued or running.');
+    expect(html).toContain('Open the PR’s Checks tab on GitHub for workflow progress.');
     expect(html).toContain('review-ci review-fact-pending');
   });
 
@@ -528,10 +528,10 @@ describe('retained CI explanation',()=>{
   });
 
   it.each([
-    ['ci_required_checks_unproven', 'CI unverified', 'No verified result for the required checks yet.'],
-    ['ci_required_check_missing', 'Checks not reported', 'GitHub hasn’t reported all required checks yet.'],
-    ['ci_collection_deadline_head_results', 'CI check timed out', 'Couldn’t finish reading the required checks.'],
-    ['ci_provider_timeout', 'CI check timed out', 'Couldn’t finish reading the required checks.'],
+    ['ci_required_checks_unproven', 'CI unverified', 'Open the PR’s Checks tab on GitHub for workflow progress.'],
+    ['ci_required_check_missing', 'Checks not reported', 'A workflow can be running before its required check appears. Open the PR’s Checks tab on GitHub for workflow progress.'],
+    ['ci_collection_deadline_head_results', 'CI check timed out', 'Open the PR’s Checks tab on GitHub for workflow progress.'],
+    ['ci_provider_timeout', 'CI check timed out', 'Open the PR’s Checks tab on GitHub for workflow progress.'],
     ['ci_provider_rate_limited_head_results', 'CI unverified', 'GitHub’s request limit was reached.'],
   ])('explains unverified CI without repeating the branch or guessing a cause (%s)', (ci_error, label, explanation) => {
     const value: ReviewPullSummary = { ...pull(7), base_ref: 'main', ci_state: 'unknown', observation: { state: 'current', ci_gate_ref: 'main', ci_gate_state: 'unknown', ci_error } };

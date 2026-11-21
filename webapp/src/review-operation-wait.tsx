@@ -88,10 +88,14 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
       ? 'The review is queued while CLI quota is exhausted.'
       : wait.retry_not_before
       ? `Next automatic recheck at or after ${new Date(wait.retry_not_before).toLocaleString()}.`
-      : 'The review hasn’t started.';
+      : undefined;
   const allowance=channel === 'cli' ? wait.cli_allowance : undefined;
   const estimate=allowance ? Date.parse(allowance.observed_at)+allowance.full_capacity_in_ms : undefined;
-  if (channel !== 'cli' || !wait.retry_not_before) return <span className="badge review-channel-position" title={description}>{operationWaitLabel(wait, now, channel)}</span>;
+  if (channel !== 'cli' || !wait.retry_not_before) {
+    const label = operationWaitLabel(wait, now, channel);
+    const cooldown = channel === 'hosted' && !wait.paused && wait.retry_not_before && Date.parse(wait.retry_not_before) > now;
+    return <span className={`badge review-channel-position${cooldown ? ' review-hosted-cooldown' : ''}`} title={description}>{label}</span>;
+  }
   const retry = Date.parse(wait.retry_not_before);
   const relative = (stamp: number) => {
     if (stamp <= now) return relativeAge(new Date(stamp).toISOString(), now);

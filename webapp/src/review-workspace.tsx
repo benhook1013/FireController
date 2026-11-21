@@ -157,7 +157,7 @@ function ReviewObservationBadge({ value }: { value: ReviewPullSummary['observati
     provider_rate_limited: 'GitHub’s request limit was reached.',
     ci_refresh_unavailable: 'Couldn’t refresh CI.',
   };
-  const reason = hostedOnly ? 'Some Hosted reviews are still missing.' : reasons[value.error ?? ''];
+  const reason = hostedOnly ? 'See CodeRabbit on GitHub for the full review history.' : reasons[value.error ?? ''];
   const title = [reason, checked].filter(Boolean).join(' ') || undefined;
   return <span className="badge neutral" title={title}>{hostedOnly ? 'Hosted history: Incomplete' : `GitHub: ${reviewLabel(value.state)}`}</span>;
 }
@@ -168,6 +168,7 @@ const movingCIReasons: Record<string, string> = {
   ci_candidate_changed:'The PR or its test merge changed while CI was being checked.',
   ci_target_changed:'The PR changed during the CI check.',
 };
+const ciChecksHelp = 'Open the PR’s Checks tab on GitHub for workflow progress.';
 function reviewCIDisplay(pull: ReviewPullSummary) {
   const observation = pull.observation;
   const reason = observation?.ci_error ?? '';
@@ -182,15 +183,15 @@ function reviewCIDisplay(pull: ReviewPullSummary) {
   }
   // The observer binds these fields to the current head, base SHA and base ref.
   if (observation?.ci_gate_state === 'pending' && observation.ci_error === 'ci_required_checks_pending') {
-    return { state: 'pending', label: 'CI pending', detail: 'Required checks are queued or running.' };
+    return { state: 'pending', label: 'CI pending', detail: ciChecksHelp };
   }
   if (attempted || observation?.ci_gate_state === 'unknown' || pull.state !== 'open') {
     const state = 'unknown';
     if (reason === 'ci_required_check_missing') {
-      return { state, label: 'Checks not reported', detail: 'GitHub hasn’t reported all required checks yet.' };
+      return { state, label: 'Checks not reported', detail: `A workflow can be running before its required check appears. ${ciChecksHelp}` };
     }
     if (/^ci_(provider_timeout|collection_deadline)(_|$)/u.test(reason)) {
-      return { state, label: 'CI check timed out', detail: 'Couldn’t finish reading the required checks.' };
+      return { state, label: 'CI check timed out', detail: ciChecksHelp };
     }
     if (/^ci_provider_rate_limited(_|$)/u.test(reason)) {
       return { state, label: 'CI unverified', detail: 'GitHub’s request limit was reached.' };
@@ -198,7 +199,7 @@ function reviewCIDisplay(pull: ReviewPullSummary) {
     if (/^ci_provider_(unavailable|server_error)(_|$)/u.test(reason)) {
       return { state, label: 'CI unverified', detail: 'Couldn’t get the check results from GitHub.' };
     }
-    return { state, label: 'CI unverified', detail: 'No verified result for the required checks yet.' };
+    return { state, label: 'CI unverified', detail: ciChecksHelp };
   }
   return { state: 'unknown', label: 'Checking CI', detail: 'Waiting for the first check of this PR revision.' };
 }
@@ -209,7 +210,6 @@ export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   const states={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
   const colours={ready:'mergeable',blocked:'conflicting',pending:'pending',unknown:'unknown'};
   const reasons:Record<string,string>={
-    github_clean:'GitHub reports no merge blockers.',
     github_blocked:'Open the PR on GitHub to see what’s blocking the merge.',
     github_behind:'This PR needs changes from its base branch.',
     github_unstable:'GitHub reports failing checks. Some may be optional.',
@@ -539,9 +539,9 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const placeholders = previewPending ? Math.max(0, Math.min(currentTotal, slots) - visiblePills.length) : 0;
   const completedTotal = returned?.outcome === 'completed' ? currentTotal : total;
   return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title}
-    status={<>{updateFailed && <span className="badge neutral" title="The latest round history could not be loaded. Available rounds remain displayed; refresh to retry.">Update failed</span>}{currentStatus && <span className="review-pill-status review-lane-current-state" aria-label={`${channel} current review state`}>{currentStatus}</span>}</>}
+    status={<>{updateFailed && <span className="badge neutral" title="Refresh to retry loading review history.">Update failed</span>}{currentStatus && <span className="review-pill-status review-lane-current-state" aria-label={`${channel} current review state`}>{currentStatus}</span>}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
-    metadataTitle="Completed PR review progress survives later Git changes; original reviewed commits remain in run details">
+    metadataTitle="Past reviews stay in history when the PR changes.">
     <ReviewProgressView value={progress} />
     {placeholders > 0 && announcePreviewLoading && <span className="visually-hidden" role="status">Loading retained rounds</span>}
     {visiblePills.length > 0 || attemptPill || placeholders > 0 ? <div className="review-round-pills review-recent-rounds">
@@ -632,7 +632,7 @@ export function ReviewAcceptedCounts({ run }: { run: ReviewRunSummary }) {
   if (!run.finalized && !partialCLIResult(run)) return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
   const counts = run.accepted_severity;
   if (!counts?.complete) return <span className="review-count review-count-accepted" title="Accepted severity breakdown unavailable for this retained record">Accepted: <strong>{run.accepted}</strong></span>;
-  return <span className="review-count review-count-accepted" title={`${run.accepted} accepted findings · Major / Minor / Trivial`}>
+  return <span className="review-count review-count-accepted" title={`${run.accepted} accepted · Major / Minor / Trivial`}>
     Accepted: <strong>{counts.major}/{counts.minor}/{counts.trivial}</strong>
     {counts.critical > 0 && <> · {counts.critical} Critical</>}
     {counts.unknown > 0 && <> · {counts.unknown} severity unknown</>}

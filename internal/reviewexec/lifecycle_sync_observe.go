@@ -182,7 +182,7 @@ func (e *Engine) observeLifecycle(ctx context.Context, target lifecycleTarget, s
 		} else {
 			target.due.ciGateRef = repo.DefaultBranch
 			target.due.ciCommit = observation.SelectedCommitSHA
-			ciReason = observation.Reason
+			ciReason = summarizeSourceCI(observation).Reason
 			if ciReason == "" && observation.State == "unproven" {
 				ciReason = "ci_unproven"
 			}

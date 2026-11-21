@@ -23,9 +23,9 @@ export function ReviewSchedulingBar() {
   const {session,key,ready}=useWorkspace();
   const query=useQuery({queryKey:reviewSchedulingKey(key),queryFn:({signal})=>session.api.reviewScheduling(signalFor(session,signal)),enabled:ready,staleTime:30_000,refetchInterval:60_000,retry:false});
   const value=query.data;
-  if (!value) return query.error ? <span className="review-scheduling-status" title="Scheduling settings could not be loaded.">Scheduling unavailable</span> : null;
+  if (!value) return query.error ? <span className="review-scheduling-status" title="Refresh to retry loading scheduling settings.">Scheduling unavailable</span> : null;
   const blocked=value.reason==='provider_hold'?'Provider hold':value.reason==='authorizer_unavailable'?'Authorizer unavailable':undefined;
-  return <div className="review-scheduling-bar"><span className="review-scheduling-status" title="Each channel is separately opt-in under existing grants and review limits.">Automatic Hosted: {value.automatic_hosted?'On':'Off'} · Automatic CLI: {value.automatic_cli?'On':'Off'}</span>{blocked && <span className="review-scheduling-warning" title={value.reason}>{blocked}</span>}
+  return <div className="review-scheduling-bar"><span className="review-scheduling-status" title="These settings control new automatic requests.">Automatic Hosted: {value.automatic_hosted?'On':'Off'} · Automatic CLI: {value.automatic_cli?'On':'Off'}</span>{blocked && <span className="review-scheduling-warning">{blocked}</span>}
     {session.api.browserCapabilities?.can_edit_presentation && <ProjectSchedulingEditor value={value} reload={async()=>{const result=await query.refetch();return result.data;}} />}
   </div>;
 }

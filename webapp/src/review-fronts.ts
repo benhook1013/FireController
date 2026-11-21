@@ -17,7 +17,7 @@ export interface ReviewFronts {
 }
 export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued' | 'held'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 export interface ReviewChannelPosition { text: string; description?: string }
-export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'Review results are finalized, and accepted findings still need fixes before another review in this channel.'};
+export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'See the accepted findings in Review history.'};
 
 // Queue position is useful even without a source frame, but is not admission.
 // Keep an established hold visible instead of suggesting another request.
@@ -27,7 +27,10 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
   if (front?.queued_priority && matchesPriority(pull, front.queued_priority) && (front.state === 'unknown' || front.state === 'held' && ['reviews_paused','local_queue_position','restore_recovery_held'].includes(front.reason ?? ''))) {
     const rounds = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
     if (rounds?.configured && (rounds.closed || rounds.tapered || !rounds.maximum_unbounded && rounds.used >= rounds.maximum)) return undefined;
-    return {text:front.state === 'unknown' ? 'Source unverified' : front.reason === 'reviews_paused' ? 'Paused' : front.reason === 'restore_recovery_held' ? 'Held' : 'Queue position',description:`First remaining ${channel === 'hosted' ? 'Hosted' : 'CLI'} position under local queue and round controls. ${front.state === 'unknown' ? 'Source verification unavailable' : 'Review dispatch held'}${front.reason ? ` (${front.reason.replaceAll('_',' ')})` : ''}; this does not authorize a review.`};
+    if (front.state === 'unknown') return {text:'Source unverified',description:'First in line. Check the current head and base in Review history.'};
+    if (front.reason === 'reviews_paused') return {text:'Paused',description:'First in line. New reviews wait until scheduling resumes.'};
+    if (front.reason === 'restore_recovery_held') return {text:'Held',description:'Restored review work still needs operator reconciliation.'};
+    return {text:'Queue position',description:'First in line. Source checks are still outstanding.'};
   }
   if (!front) return undefined;
   if (front.pull_number !== pull.number) {
@@ -35,26 +38,26 @@ export function reviewChannelPosition(pull: ReviewPullSummary, snapshot: string,
     const ahead = priority ? fronts.queue.indexOf(priority.pull_number) : -1;
     const here = fronts.queue.indexOf(pull.number);
     // Stored order establishes only queue position, never source admission.
-    if (ahead >= 0 && here > ahead) return {text:'Queued',description:'Behind the first remaining PR in this channel. Source and admission have not been verified.'};
+    if (ahead >= 0 && here > ahead) return {text:'Queued',description:'An earlier PR goes first. Source checks are still outstanding.'};
     return undefined;
   }
   if (front.head_sha !== pull.head_sha || front.base_sha !== pull.base_sha || front.base_ref !== pull.base_ref) return undefined;
   if (front.state === 'held' && !['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) {
     const held = new Map<string, ReviewChannelPosition>([
-      ['source_obligations_pending', {text:'Carried work',description:'Unresolved work carried over at cutover holds new reviews. Read the carried work in Review details.'}],
-      ['source_obligations_unavailable', {text:'Held',description:'Carried review work could not be checked. New reviews remain held.'}],
-      ['routed_findings_pending', {text:'Findings pending',description:'Incoming routed findings hold new reviews.'}],
-      ['external_hosted_pending', {text:'Manual results pending',description:'Settle the captured manual Hosted results before starting another Hosted review.'}],
-      ['review_evidence_pending', {text:'Results pending',description:'Review capture or adjudication is still pending before another review; accepted findings may also need fixes.'}],
+      ['source_obligations_pending', {text:'Carried work',description:'Work from an earlier review holds new reviews. See Review history.'}],
+      ['source_obligations_unavailable', {text:'Held',description:'FireController could not check earlier review work.'}],
+      ['routed_findings_pending', {text:'Findings pending',description:'Open Routed findings in Review history.'}],
+      ['external_hosted_pending', {text:'Manual results pending',description:'Finish the captured manual review in Review history.'}],
+      ['review_evidence_pending', {text:'Results pending',description:'Check for captured results or decisions in Review history.'}],
       ['review_fixes_pending', reviewFixesPending],
-      ['predecessor_unfinished', {text:'Dependency hold',description:'This PR depends on unfinished predecessor work.'}],
+      ['predecessor_unfinished', {text:'Dependency hold',description:'Check the parent PR’s remaining reviews and fixes.'}],
     ]);
-    return held.get(front.reason ?? '') ?? {text:'Held',description:'The stored admission check holds new reviews. Check review details before requesting another review.'};
+    return held.get(front.reason ?? '') ?? {text:'Held',description:'See Review history for details before requesting a review.'};
   }
   const rounds = progress?.pull_number === pull.number ? progress.channels.find(item => item.channel === channel) : undefined;
   if (rounds?.configured && (rounds.closed || rounds.tapered || !rounds.maximum_unbounded && rounds.used >= rounds.maximum)) return undefined;
   if (front.state === 'ready') return {text:'Up next'};
-  if (front.state === 'held' && ['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) return {text:'Queue position',description:front.reason === 'reviews_paused' ? 'First remaining position in this channel; review dispatch is stopped.' : 'First remaining position in this channel. Source and admission have not been verified.'};
+  if (front.state === 'held' && ['reviews_paused', 'local_queue_position'].includes(front.reason ?? '')) return {text:'Queue position',description:front.reason === 'reviews_paused' ? 'First in line. New reviews wait until scheduling resumes.' : 'First in line. Source checks are still outstanding.'};
   return undefined;
 }
 

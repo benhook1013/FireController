@@ -14,7 +14,9 @@ describe('retained automatic review waiting', () => {
     expect(operationWaitLabel(wait)).toBe('Cooldown · 30m');
     const future = renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>);
     expect(future).toContain('Cooldown · 30m');expect(future).toContain('Next automatic recheck at or after');
+    expect(future).toContain('review-hosted-cooldown');
     vi.setSystemTime('2026-10-30T12:30:01Z');expect(operationWaitLabel(wait)).toBe('Waiting');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>)).not.toContain('review-hosted-cooldown');
     expect(operationWaitLabel({...wait,paused:true})).toBe('Paused');
     expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={{...wait,paused:true}}/>)).toContain('Resume this request to let it run.');
     expect(operationWaitLabel({paused:false})).toBe('Waiting');
@@ -39,6 +41,7 @@ describe('retained automatic review waiting', () => {
     expect(html).toContain('Next quota recheck:');
     expect(html).toContain('Review starts depend on quota at the recheck.');
     expect(html).not.toContain('Cooldown');
+    expect(html).not.toContain('review-hosted-cooldown');
     const counts=renderToStaticMarkup(<ReviewProgressView value={cliProgress}/>);
     expect(counts).toContain('Up to 3 more reviews');
     expect(counts).not.toContain('awaiting review result');
