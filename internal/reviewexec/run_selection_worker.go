@@ -222,30 +222,35 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	defer func() { result.automaticHostedQueueLimit = automaticHostedQueueLimit }()
 	// Bound source work before metadata lookahead. Local suppression still
 	// rechecks the live prefix at admission if queued work changes afterward.
-	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var automatic bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
-			return err
-		}
-		if !automatic {
+	limit, automatic := len(c.Queue), false
+	err := retryRunSelectionRead(ctx, func() error {
+		// An expired snapshot must not shorten a later retry's input.
+		limit, automatic = len(c.Queue), false
+		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+				return err
+			}
+			if !automatic {
+				return nil
+			}
+			var err error
+			limit, err = automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+			if err != nil {
+				return err
+			}
+			if limit < 0 || limit > len(c.Queue) {
+				return schedulingUnavailable()
+			}
 			return nil
-		}
-		limit, err := automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
-		if err != nil {
-			return err
-		}
-		if limit < 0 || limit > len(c.Queue) {
-			return schedulingUnavailable()
-		}
-		if r.Channel == "hosted" {
-			automaticHostedQueueLimit = &limit
-		}
-		c.Queue = c.Queue[:limit]
-		return nil
+		})
 	})
 	if err != nil {
 		return runChoice{}, err
 	}
+	if automatic && r.Channel == "hosted" {
+		automaticHostedQueueLimit = &limit
+	}
+	c.Queue = c.Queue[:limit]
 	if len(c.Queue) == 0 {
 		return runChoice{state: "empty", reason: "queue_complete"}, nil
 	}
@@ -569,7 +574,8 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if ctx.Err() != nil {
 		return true, nil
 	}
-	if automaticProjectRefused(readErr) {
+	var readFailure *core.Error
+	if automaticProjectRefused(readErr) || (errors.As(readErr, &readFailure) && readFailure.Code == "local_read_unavailable") {
 		return e.holdRunLocalRefusal(ctx, r)
 	}
 	if readErr != nil {
