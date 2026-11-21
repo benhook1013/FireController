@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -21,17 +22,17 @@ const (
 )
 
 // Register adds the messages API to the shared authenticated application mux.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux apiroutes.Registrar, store *core.Store) {
 	h := &handler{store: store}
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", originRead(h.readMessage))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", originRead(h.readDelivery))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", originRead(h.list))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", originRead(h.listOutbox))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", originRead(h.snapshot))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", originRead(h.conversation))
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/ack", h.ack)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/messages", h.send)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}", originRead(h.readMessage))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/messages/{message_id}/delivery", originRead(h.readDelivery))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}", originRead(h.list))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/outbox/{worker_id}", originRead(h.listOutbox))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/inbox/{worker_id}/snapshot", originRead(h.snapshot))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/conversations/{conversation_id}", originRead(h.conversation))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/seen", h.seen)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/messages/{message_id}/ack", h.ack)
 }
 
 type handler struct{ store *core.Store }

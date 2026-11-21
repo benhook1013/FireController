@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
@@ -42,43 +43,43 @@ func WithPublicProjection(refresh func(context.Context, *sql.Tx, string, string)
 }
 
 // Register mounts the basic jobs API on the shared project API mux.
-func Register(mux *http.ServeMux, store *core.Store, options ...Option) {
+func Register(mux apiroutes.Registrar, store *core.Store, options ...Option) {
 	var config registration
 	for _, option := range options {
 		option(&config)
 	}
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/notes", createNote(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes", listNotes(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}", getNote(store))
-	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/notes/{note_id}", patchNote(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history", noteHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history/{revision}", getNoteRevision(store))
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/jobs", createJob(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs", listJobs(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/delivery", delivery(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/status", getJobStatus(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary", getSummary(store))
-	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/summary", replaceSummary(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history", summaryHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history/{revision}", getSummaryRevision(store))
-	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store, config.publicProjection))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history/{revision}", getJobRevision(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/progress/history", currentProgressHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist", getChecklist(store))
-	mux.HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/checklist", replaceChecklist(store))
-	mux.HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}/checklist/items/{item_id}", updateChecklistItem(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist/history", checklistHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", getPrimaryJob(store))
-	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", replacePrimaryJob(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job/history", primaryJobHistory(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause", getWorkerPause(store))
-	mux.HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/pause", replaceWorkerPause(store))
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause/history", workerPauseHistory(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/notes", createNote(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/notes", listNotes(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}", getNote(store))
+	apiroutes.Client(mux).HandleFunc("PATCH /api/v1/projects/{project_id}/notes/{note_id}", patchNote(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history", noteHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/notes/{note_id}/history/{revision}", getNoteRevision(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/jobs", createJob(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs", listJobs(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/delivery", delivery(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}", getJob(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/status", getJobStatus(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary", getSummary(store))
+	apiroutes.Client(mux).HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/summary", replaceSummary(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history", summaryHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/summary/history/{revision}", getSummaryRevision(store))
+	apiroutes.Client(mux).HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}", editJob(store, config.publicProjection))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history", jobHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/history/{revision}", getJobRevision(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/progress/history", currentProgressHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/updates", updateHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist", getChecklist(store))
+	apiroutes.Client(mux).HandleFunc("PUT /api/v1/projects/{project_id}/jobs/{job_id}/checklist", replaceChecklist(store))
+	apiroutes.Client(mux).HandleFunc("PATCH /api/v1/projects/{project_id}/jobs/{job_id}/checklist/items/{item_id}", updateChecklistItem(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checklist/history", checklistHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints/latest", latestCheckpoint(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/jobs/{job_id}/checkpoints", checkpointHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", getPrimaryJob(store))
+	apiroutes.Client(mux).HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/primary-job", replacePrimaryJob(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/primary-job/history", primaryJobHistory(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause", getWorkerPause(store))
+	apiroutes.Client(mux).HandleFunc("PUT /api/v1/projects/{project_id}/workers/{worker_id}/pause", replaceWorkerPause(store))
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/pause/history", workerPauseHistory(store))
 }
 
 type job struct {

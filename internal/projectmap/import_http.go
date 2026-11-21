@@ -8,16 +8,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func registerImport(mux *http.ServeMux, store *core.Store) {
+func registerImport(mux apiroutes.Registrar, store *core.Store) {
 	base := "/api/v1/projects/{project_id}/map"
-	mux.HandleFunc("POST "+base+"/import/preview", previewPreparedImport(store))
-	mux.HandleFunc("POST "+base+"/import", applyImportHTTP(store))
-	mux.HandleFunc("GET "+base+"/imports/{source_key}", readImportHTTP(store, false))
-	mux.HandleFunc("GET "+base+"/imports/{source_key}/history", importHistoryHTTP(store))
-	mux.HandleFunc("GET "+base+"/imports/{source_key}/history/{revision}", readImportHTTP(store, true))
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/import/preview", previewPreparedImport(store))
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/import", applyImportHTTP(store))
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/imports/{source_key}", readImportHTTP(store, false))
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/imports/{source_key}/history", importHistoryHTTP(store))
+	apiroutes.Private(mux).HandleFunc("GET "+base+"/imports/{source_key}/history/{revision}", readImportHTTP(store, true))
 }
 func importScope(store *core.Store, w http.ResponseWriter, r *http.Request, write bool, keys ...string) (core.Scope, bool) {
 	scope, err := store.AdminScope(r)

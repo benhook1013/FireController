@@ -26,6 +26,12 @@ The authenticated `GET /api/v1/instance` returns the durable instance ID. Bound 
 
 The global-administrator-only `/api/v1/operator/deployment-drain` supports GET status, POST `{}` to begin a process-local dispatch drain, and DELETE to abandon it. It is an operator deployment control, separate from project pauses and agent workflows; the [release guide](releases.md#bounded-kubernetes-rollout) owns its lifecycle and bounded rollout behavior.
 
+### API discovery
+
+`GET /api/v1` accepts the same bearer authentication as `/api/v1/instance`. It returns `routes`, a sorted list of explicit `method` and `path` templates for supported v1 client operations and public project reads. When a template uses `{project_id}`, clients can supply a project handle or ID. For example, `GET /api/v1/projects/firemud/jobs` is the job list for handle `firemud`.
+
+The route index contains static capability metadata. Each operation continues to enforce its existing project scope and permissions. The index lists explicit methods, omits implicit `HEAD` behavior, and excludes administrative operations, internal browser-session endpoints, compatibility routes and provider hooks. Route registrations select discovery visibility when mounted.
+
 ### Browser sessions
 
 The embedded browser derives an explicitly attenuated session after its bearer-authenticated instance/project handshake; browser actions derive automatically from the credential and current grants. CLI and MCP clients retain their existing bearer transport. `POST /api/v1/projects/{project_id}/browser-session` requires one bearer credential, the matching `X-FC-Instance` header, no browser-session selector and a strict body containing only `session_id` (32 lowercase hexadecimal characters). It returns `session_id`, `instance_id`, `project_id`, absolute RFC3339 UTC `expires_at`, `allow_writes` and `can_edit_presentation`, plus a renewable 24-hour encrypted and authenticated HttpOnly SameSite=Strict cookie. The cookie contains the originating credential hash rather than the raw credential. Session creation creates no domain receipt or event and calls no provider.

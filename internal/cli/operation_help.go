@@ -104,7 +104,7 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Documentation = "docs/worker-focus.md"
 	case "jobs help":
 		out.Usage = "<bound launcher> jobs help"
-		out.Optional = []string{"jobs primary --help", "jobs primary-set --help", "jobs primary-clear --help", "jobs primary-history --help", "jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs revision JOB_ID REVISION", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
+		out.Optional = []string{"jobs create --help", "jobs primary --help", "jobs primary-set --help", "jobs primary-clear --help", "jobs primary-history --help", "jobs assigned", "jobs read JOB_ID", "jobs status JOB_ID", "jobs revision JOB_ID REVISION", "jobs history --help", "jobs progress-history --help", "jobs update --help", "jobs checklist-item --help"}
 		out.Semantics = []string{"Use jobs read for the full current standing brief and progress; jobs status and assigned are selection aids.", "jobs history contains private state snapshots including historical briefs; progress-history contains only archived progress. Each archive read is one bounded page with explicit continuation."}
 		out.Example = "<bound launcher> jobs history --help"
 		out.Documentation = "docs/development.md"
@@ -637,11 +637,51 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		}
 		out.Documentation = "docs/notes.md"
 	case "items set", "items create", "items link", "items unlink", "items upsert", "milestones create", "milestones set":
-		out.Usage = "<bound launcher> " + operation + " ..."
+		out.Usage = "<bound launcher> " + operation + " KEY"
 		out.Required = []string{"KEY (items/milestones key, e.g. v1 or GR-2.1)"}
-		out.Optional = []string{"--key KEY (generated when omitted)", "--expect-revision N (optional guard; required for --title/--description on set)"}
-		out.Semantics = []string{"Writes are keyed upserts or set changes: repeating one converges on the same state and returns outcome unchanged.", "items create KEY --title T [--status planned|active|blocked|deferred|done|dropped] [--milestone M] [--parent P] [--labels a,b]. items set KEY with any of --status, --milestone, --clear-milestone, --parent, --clear-parent, --labels, --add-labels, --remove-labels, --revisit-when, --position, --title, --description.", "items link|unlink KEY TYPE:REF [--role delivers|proof|blocks|related] [--label L]; types job, pr, route, note, item, url; pr:N uses the project repository. Unlink without --role removes every role.", "items upsert --file BATCH_JSON declares up to 20 milestones and 100 items atomically. milestones create KEY --title T [--target-date YYYY-MM-DD]; milestones set KEY --state open|closed."}
-		out.Example = "<bound launcher> items set GR-2.1 --status done"
+		out.Optional = []string{"--key KEY (generated when omitted)"}
+		out.Semantics = []string{"Writes are keyed upserts or set changes: repeating one converges on the same state and returns outcome unchanged."}
+		switch operation {
+		case "items create", "milestones create", "items set", "milestones set":
+			out.Optional = append(out.Optional, "--description TEXT", "--position N")
+			if strings.HasPrefix(operation, "items ") {
+				out.Optional = append(out.Optional, "--status planned|active|blocked|deferred|done|dropped", "--milestone KEY", "--parent KEY", "--labels a,b", "--revisit-when TEXT")
+			} else {
+				out.Optional = append(out.Optional, "--target-date YYYY-MM-DD")
+			}
+			if strings.HasSuffix(operation, " create") {
+				out.Usage += " --title TEXT [options]"
+				out.Required = append(out.Required, "--title TEXT")
+				out.Semantics = append(out.Semantics, "Create-only revision 0 is implicit; no --expect-revision flag.")
+				out.Example = "<bound launcher> " + operation + " v1 --title Release"
+			} else {
+				out.Usage += " [changes]"
+				out.Required = append(out.Required, "at least one change")
+				out.Optional = append(out.Optional, "--title TEXT", "--expect-revision N (optional positive guard; required for --title/--description)")
+				out.Semantics = append(out.Semantics, "Omitted fields stay unchanged. Title and description edits require the current positive --expect-revision.")
+				if operation == "items set" {
+					out.Optional = append(out.Optional, "--clear-milestone", "--clear-parent", "--add-labels a,b", "--remove-labels a,b")
+					out.Example = "<bound launcher> items set GR-2.1 --status done"
+				} else {
+					out.Optional = append(out.Optional, "--state open|closed")
+					out.Example = "<bound launcher> milestones set v1 --state closed"
+				}
+			}
+		case "items link", "items unlink":
+			out.Usage += " TYPE:REF [options]"
+			out.Required = append(out.Required, "TYPE:REF")
+			out.Optional = append(out.Optional, "--expect-revision N (optional positive guard)", "--role delivers|proof|blocks|related")
+			out.Semantics = append(out.Semantics, "Types: job, pr, route, note, item, url; pr:N uses the project repository. Link defaults to role delivers. Unlink without --role removes every role.")
+			if operation == "items link" {
+				out.Optional = append(out.Optional, "--label TEXT")
+			}
+			out.Example = "<bound launcher> " + operation + " GR-2.1 pr:42"
+		case "items upsert":
+			out.Usage = "<bound launcher> items upsert --file ABSOLUTE_JSON_PATH [--key KEY]"
+			out.Required = []string{"--file ABSOLUTE_JSON_PATH"}
+			out.Semantics = append(out.Semantics, "Declares up to 20 milestones and 100 items atomically from a JSON batch file. Record keys and optional revision guards belong in the batch, not positional arguments or --expect-revision.")
+			out.Example = "<bound launcher> items upsert --file /private/batch.json"
+		}
 		out.Documentation = "docs/tracking.md"
 	case "map update":
 		out.Usage = "<bound launcher> map update ENTRY_ID --expect-revision N --file /absolute/changes.json --key KEY"
@@ -661,12 +701,28 @@ func operationHelp(operation string) (operationHelpResponse, bool) {
 		out.Next = "Review the prepared publication, then publication apply --file PREPARED_FILE --preview-sha256 RETURNED_HASH --key KEY. Use publication preview --file PREPARED_FILE to recover a lost preview hash."
 		out.Documentation = "docs/public-site.md"
 	default:
-		return operationHelpResponse{}, false
+		return discoveryOperationHelp(operation)
 	}
 	switch operation {
 	case "inbox list", "inbox sent", "workers pause-state", "workers pause-history", "workers pause", "workers resume", "jobs primary", "jobs primary-history", "jobs primary-set", "jobs primary-clear":
 		out.Optional = append(out.Optional, "--worker WORKER_ID (same-project target; omitted uses bound worker)")
 		out.Semantics = append(out.Semantics, "The target worker is a resource selector. The selected profile's acting worker and project remain unchanged.")
+	}
+	group := strings.TrimSuffix(operation, " help")
+	if children, ok := discoveryGroups[group]; ok {
+		for _, child := range strings.Fields(children) {
+			entry := group + " " + child + " --help"
+			found := false
+			for _, existing := range out.Optional {
+				if existing == entry {
+					found = true
+					break
+				}
+			}
+			if !found {
+				out.Optional = append(out.Optional, entry)
+			}
+		}
 	}
 	return out, true
 }

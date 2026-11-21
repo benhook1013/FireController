@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/presentation"
 )
@@ -39,11 +40,17 @@ func WithBrowser(handler http.Handler) Option {
 }
 
 func New(store *core.Store, options ...Option) *http.ServeMux {
+	mux := http.NewServeMux()
+	Register(mux, store, options...)
+	return mux
+}
+
+// Register mounts the base service routes on a mux or discovery recorder.
+func Register(mux apiroutes.Registrar, store *core.Store, options ...Option) {
 	a := &api{store: store}
 	for _, option := range options {
 		option(a)
 	}
-	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		core.WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})
@@ -54,32 +61,32 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 		}
 		core.WriteJSON(w, 200, map[string]string{"status": "ready"})
 	})
-	mux.HandleFunc("GET /api/v1/instance", func(w http.ResponseWriter, r *http.Request) {
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/instance", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := store.Authenticate(r); err != nil {
 			core.WriteError(w, err)
 			return
 		}
 		core.WriteJSON(w, 200, map[string]string{"instance_id": store.InstanceID()})
 	})
-	mux.HandleFunc("POST /api/v1/projects", a.createProject)
-	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}", a.project)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/backup-health", a.backupHealth)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)
-	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/rename", a.renameWorker)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/retirement", a.workerRetirement)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/retire", a.retireWorker)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
-	mux.HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
-	mux.HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
-	mux.HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
-	mux.HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects", a.createProject)
+	apiroutes.Private(mux).HandleFunc("GET /api/v1/projects", a.listProjects)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}", a.project)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/backup-health", a.backupHealth)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/browser-session", a.createBrowserSession)
+	apiroutes.Private(mux).HandleFunc("GET /api/v1/projects/{project_id}/browser-session", a.currentBrowserSession)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/browser-session/renew", a.renewBrowserSession)
+	apiroutes.Private(mux).HandleFunc("DELETE /api/v1/projects/{project_id}/browser-session", a.deleteBrowserSession)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/workers", a.createWorker)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers", a.listWorkers)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}", a.worker)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/rename", a.renameWorker)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/{worker_id}/retirement", a.workerRetirement)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/workers/{worker_id}/retire", a.retireWorker)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/workers/presence", a.workerPresence)
+	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/message-events", a.messageEvents)
+	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/credentials", a.grant)
+	apiroutes.Private(mux).HandleFunc("PUT /api/v1/projects/{project_id}/credentials/{credential_id}", a.replaceGrant)
+	apiroutes.Private(mux).HandleFunc("DELETE /api/v1/projects/{project_id}/credentials/{credential_id}", a.revoke)
 	if a.browser != nil {
 		mux.Handle("/", a.browser)
 	} else {
@@ -87,7 +94,6 @@ func New(store *core.Store, options ...Option) *http.ServeMux {
 			core.WriteError(w, core.Fail("not_found", "This API capability is unavailable.", 404))
 		})
 	}
-	return mux
 }
 
 func boundedText(value string, max int) bool {

@@ -10,16 +10,17 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/presentationmodel"
 )
 
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux apiroutes.Registrar, store *core.Store) {
 	base := "/api/v1/projects/{project_id}/presentation"
-	mux.HandleFunc("GET "+base, current(store))
-	mux.HandleFunc("PUT "+base, replace(store))
-	mux.HandleFunc("GET "+base+"/history", history(store))
-	mux.HandleFunc("GET "+base+"/history/{revision}", revision(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base, current(store))
+	apiroutes.Private(mux).HandleFunc("PUT "+base, replace(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/history", history(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/history/{revision}", revision(store))
 }
 func respond(w http.ResponseWriter, v any, err error) {
 	if err != nil {

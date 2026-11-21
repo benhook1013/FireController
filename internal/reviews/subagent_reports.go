@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -21,11 +22,11 @@ const subagentSource = "worker-subagent"
 
 var subagentRunID = regexp.MustCompile(`^review_run_[a-f0-9]{32}$`)
 
-func registerSubagentReports(mux *http.ServeMux, store *core.Store) {
+func registerSubagentReports(mux apiroutes.Registrar, store *core.Store) {
 	base := "/api/v1/projects/{project_id}/reviews/subagent-reports"
-	mux.HandleFunc("POST "+base, recordSubagentReport(store))
-	mux.HandleFunc("GET "+base+"/{run_id}", readSubagentReportHTTP(store))
-	mux.HandleFunc("POST "+base+"/{run_id}/updates", updateSubagentReportHTTP(store))
+	apiroutes.Client(mux).HandleFunc("POST "+base, recordSubagentReport(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/{run_id}", readSubagentReportHTTP(store))
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/{run_id}/updates", updateSubagentReportHTTP(store))
 }
 
 func subagentScope(w http.ResponseWriter, r *http.Request, store *core.Store, permission string) (core.Scope, bool) {

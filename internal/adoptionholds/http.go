@@ -1,20 +1,22 @@
 package adoptionholds
 
 import (
-	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
-	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
 	"strconv"
+
+	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
+	"github.com/benhook1013/FireController/internal/apiroutes"
+	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (s *Service) Register(mux *http.ServeMux) {
+func (s *Service) Register(mux apiroutes.Registrar) {
 	const base = "/api/v1/projects/{project_id}/reviews/adoption-obligations"
-	mux.HandleFunc("GET "+base, s.listHTTP)
-	mux.HandleFunc("POST "+base+"/preview", s.previewHTTP)
-	mux.HandleFunc("POST "+base+"/apply", s.applyHTTP)
-	mux.HandleFunc("GET "+base+"/{id}", s.detailHTTP)
-	mux.HandleFunc("POST "+base+"/{id}/resolve", s.resolveHTTP)
-	mux.HandleFunc("POST "+base+"/{id}/retarget", s.retargetHTTP)
+	apiroutes.Client(mux).HandleFunc("GET "+base, s.listHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/preview", s.previewHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/apply", s.applyHTTP)
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/{id}", s.detailHTTP)
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/{id}/resolve", s.resolveHTTP)
+	apiroutes.Client(mux).HandleFunc("POST "+base+"/{id}/retarget", s.retargetHTTP)
 }
 func (s *Service) scope(w http.ResponseWriter, r *http.Request, admin bool) (core.Scope, bool) {
 	var scope core.Scope

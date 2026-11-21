@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/backup"
 	"github.com/benhook1013/FireController/internal/coordimport"
 	"github.com/benhook1013/FireController/internal/core"
@@ -232,33 +233,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		diagnosticError(stderr, err)
 		return 3
 	}
-	mux := server.New(store, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()), server.WithBackupHealthFiles(backupHealthFiles), server.WithBackupHealthReader(backup.ReadHealthRecord))
-	jobs.Register(mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
-		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
-	}))
-	projectmap.Register(mux, store)
-	tracking.Register(mux, store)
-	presentation.Register(mux, store)
-	opvars.Register(mux, store)
-	inbox.Register(mux, store)
-	coordimport.Register(mux, store)
-	reviews.Register(mux, store, execution.ObservationHealth)
-	for _, path := range []string{"/about", "/privacy", "/backup-info.css"} {
-		mux.Handle(path, webui.BackupInfoHandler())
-	}
-	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
-	execution.Register(mux)
+	var hook http.Handler
 	if len(webhookSecret) > 0 {
-		hook, hookErr := githubhook.New(webhookSecret, execution.HintGitHub)
-		if hookErr != nil {
+		hook, err = githubhook.New(webhookSecret, execution.HintGitHub)
+		if err != nil {
 			diagnostic(stderr, "configuration_invalid", "The GitHub webhook configuration is invalid.")
 			return 3
 		}
-		mux.Handle("POST /api/v1/hooks/github", hook)
 	}
-	collection.Register(mux)
-	server.RegisterMessageStream(mux, store, ctx)
-	server.RegisterProjectStream(mux, store, ctx)
+	mux := newDaemonRoutes(ctx, store, execution, collection, hook, server.WithRepositoryResolver(resolver), server.WithBrowser(webui.Handler()), server.WithBackupHealthFiles(backupHealthFiles), server.WithBackupHealthReader(backup.ReadHealthRecord))
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", address)
 	if err != nil {
@@ -422,6 +405,36 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (exitCode
 		}
 	}
 	return 0
+}
+
+// newDaemonRoutes is the shared production composition, also exercised without
+// listeners, background workers, provider credentials or provider calls in tests.
+func newDaemonRoutes(ctx context.Context, store *core.Store, execution *reviewexec.Engine, collection *historycollect.Engine, hook http.Handler, options ...server.Option) *apiroutes.Recorder {
+	mux := apiroutes.New()
+	server.Register(mux, store, options...)
+	apiroutes.RegisterIndex(mux, store)
+	jobs.Register(mux, store, jobs.WithPublicProjection(func(ctx context.Context, tx *sql.Tx, project, job string) error {
+		return publicsite.RefreshForJob(ctx, tx, project, job, reviews.PublicSiteReviewFacts)
+	}))
+	projectmap.Register(mux, store)
+	tracking.Register(mux, store)
+	presentation.Register(mux, store)
+	opvars.Register(mux, store)
+	inbox.Register(mux, store)
+	coordimport.Register(mux, store)
+	reviews.Register(mux, store, execution.ObservationHealth)
+	for _, path := range []string{"/about", "/privacy", "/backup-info.css"} {
+		mux.Handle(path, webui.BackupInfoHandler())
+	}
+	publicsite.New(store, reviews.PublicSiteReviewFacts).Register(mux, ctx)
+	execution.Register(mux)
+	if hook != nil {
+		apiroutes.Private(mux).Handle("POST /api/v1/hooks/github", hook)
+	}
+	collection.Register(mux)
+	server.RegisterMessageStream(mux, store, ctx)
+	server.RegisterProjectStream(mux, store, ctx)
+	return mux
 }
 
 func validateLoopbackListener(listener net.Listener) bool {

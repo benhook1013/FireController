@@ -9,24 +9,25 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 )
 
-func (s *Service) Register(mux *http.ServeMux, shutdown context.Context) {
+func (s *Service) Register(mux apiroutes.Registrar, shutdown context.Context) {
 	if shutdown == nil {
 		shutdown = context.Background()
 	}
 	base := "/api/v1/projects/{project_id}/publication"
-	mux.HandleFunc("GET "+base, s.configurationHTTP)
-	mux.HandleFunc("POST "+base+"/preview", s.previewHTTP)
-	mux.HandleFunc("PUT "+base, s.applyHTTP)
-	mux.HandleFunc("POST "+base+"/unpublish", s.unpublishHTTP)
+	apiroutes.Private(mux).HandleFunc("GET "+base, s.configurationHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/preview", s.previewHTTP)
+	apiroutes.Private(mux).HandleFunc("PUT "+base, s.applyHTTP)
+	apiroutes.Private(mux).HandleFunc("POST "+base+"/unpublish", s.unpublishHTTP)
 	public := "/api/v1/public/projects/{slug}"
-	mux.HandleFunc("GET /api/v1/public/project-locations/{address}", s.locationHTTP)
-	mux.HandleFunc("GET "+public, s.currentHTTP)
-	mux.HandleFunc("GET "+public+"/history", s.historyHTTP)
-	mux.HandleFunc("GET "+public+"/history/{revision}", s.revisionHTTP)
-	mux.HandleFunc("GET "+public+"/events", func(w http.ResponseWriter, r *http.Request) {
+	apiroutes.Public(mux).HandleFunc("GET /api/v1/public/project-locations/{address}", s.locationHTTP)
+	apiroutes.Public(mux).HandleFunc("GET "+public, s.currentHTTP)
+	apiroutes.Public(mux).HandleFunc("GET "+public+"/history", s.historyHTTP)
+	apiroutes.Public(mux).HandleFunc("GET "+public+"/history/{revision}", s.revisionHTTP)
+	apiroutes.Public(mux).HandleFunc("GET "+public+"/events", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		stop := context.AfterFunc(shutdown, cancel)
 		defer func() { stop(); cancel() }()

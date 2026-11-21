@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/benhook1013/FireController/internal/apiroutes"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/opvarsmodel"
 )
@@ -133,12 +134,12 @@ func storageProject(scope, project string) string {
 // Register mounts the project-scoped routes. Reads use ordinary project read
 // permission; writes use administrative scope, and instance-wide writes also
 // require an instance administrator.
-func Register(mux *http.ServeMux, store *core.Store) {
+func Register(mux apiroutes.Registrar, store *core.Store) {
 	base := "/api/v1/projects/{project_id}/vars"
-	mux.HandleFunc("GET "+base, list(store))
-	mux.HandleFunc("GET "+base+"/{key}", read(store))
-	mux.HandleFunc("PUT "+base+"/{key}", write(store))
-	mux.HandleFunc("GET "+base+"/{key}/history", history(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base, list(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/{key}", read(store))
+	apiroutes.Private(mux).HandleFunc("PUT "+base+"/{key}", write(store))
+	apiroutes.Client(mux).HandleFunc("GET "+base+"/{key}/history", history(store))
 }
 
 func respond(w http.ResponseWriter, v any, err error) {
